@@ -33,6 +33,13 @@ export interface ReviewSourceLine extends SourceRange {
    */
   readonly cardSkip?: boolean;
   /**
+   * The `=before N` copy of a context line that the full view ALSO leaves out, because nothing on it differs from its
+   * `=N` twin: the two copies are byte-identical, so the one thing a second copy could add is a mask on the before side.
+   * Set only where no mask touches the before copy; a masked before copy stays listed, because that is the one place its
+   * mask can be inspected (ADR-0134 §2). The card skips every before copy ({@link ReviewSourceLine.cardSkip}).
+   */
+  readonly fullSkip?: boolean;
+  /**
    * Whether the ending notation is printed after this line (ADR-0129 §4). `false` only for a `lf`/`crlf` line whose
    * side is uniformly that ending and whose other side is empty or the same — the ordinary case. A differing,
    * mixed or unterminated ending always shows its token, so a change of endings can never look unchanged.
@@ -57,6 +64,14 @@ export interface ReviewDocument {
   readonly changedRemainingLines: readonly number[];
   /** Index of the first changed line, so the compact card can open on the change rather than on the file's top. */
   readonly firstChangedLine: number | undefined;
+  /** Suffix counts over the lines the full view lists (everything but {@link ReviewSourceLine.fullSkip}). */
+  readonly fullRemainingLines: readonly number[];
+  readonly fullRemainingBytes: readonly number[];
+  /**
+   * Index of the first line of every change, in order: what "next change" and "previous change" move between. A change is a
+   * run of changed lines; two runs no more than {@link CHANGE_GAP_LINES} unchanged lines apart are one change.
+   */
+  readonly changeStarts: readonly number[];
 }
 export interface ReviewCursor {
   readonly line: number;
@@ -190,6 +205,9 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
     cardRemainingBytes: [0],
     changedRemainingLines: [0],
     firstChangedLine: undefined,
+    fullRemainingLines: [0],
+    fullRemainingBytes: [0],
+    changeStarts: [],
   });
   if (!validPreviewBounds(preview) || !validPreviewDiff(preview)) return invalid();
   const fields: ReviewField[] = [],
@@ -226,6 +244,8 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   const remainingBytes = indexRemainingBytes(lines, fields);
   const cardLines = indexRemainingLines(lines);
   const cardBytes = indexRemainingBytes(lines, fields, (line) => line.cardSkip !== true);
+  const fullLines = indexRemainingLines(lines, (line) => line.fullSkip !== true);
+  const fullBytes = indexRemainingBytes(lines, fields, (line) => line.fullSkip !== true);
   const required = requiredInspectionRanges(lines, fields, masks);
   return {
     valid: required.length <= 8192,
@@ -239,6 +259,9 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
     cardRemainingBytes: cardBytes,
     changedRemainingLines: indexRemainingChanges(lines),
     firstChangedLine: firstChangedIndex(lines),
+    fullRemainingLines: fullLines,
+    fullRemainingBytes: fullBytes,
+    changeStarts: indexChangeStarts(lines),
     sourceBytes: fields.reduce((sum, field) => sum + reviewBytes(field.text), 0),
     changedBytes,
     changedLines,
@@ -249,9 +272,16 @@ const INVISIBLE = /[\p{C}\p{Z}\p{Default_Ignorable_Code_Point}]/u;
 const BLANKS = new Set([0x2800, 0x16fe4, 0x1d159]);
 export function escapeReviewCharacter(char: string, trailing: boolean, numeric = false): string {
   const cp = char.codePointAt(0) ?? 0;
-  if (char === '\t' && !numeric) return '<TAB>';
-  if (char === ' ' && trailing && !numeric) return '<SP>';
-  if (numeric || char === '<' || (char !== ' ' && INVISIBLE.test(char)) || BLANKS.has(cp))
+  if (char === '\t') return '<TAB>';
+  if (char === ' ' && trailing) return '<SP>';
+  // `numeric` (the `p` view) writes every NON-ASCII character as its code point; printable ASCII stays readable, and the
+  // tokens above and below (a tab, a trailing space, a control, `<`) are the same in both views.
+  if (
+    (numeric && cp > 0x7f) ||
+    char === '<' ||
+    (char !== ' ' && INVISIBLE.test(char)) ||
+    BLANKS.has(cp)
+  )
     return `<U+${cp.toString(16).toUpperCase().padStart(4, '0')}>`;
   return char;
 }
@@ -259,6 +289,11 @@ export interface ReviewPage {
   readonly rows: readonly string[];
   /** The role of each row in {@link ReviewPage.rows}, parallel to it. */
   readonly kinds: readonly ReviewRowKind[];
+  /**
+   * The framing label each row starts with (`target`, `field name`, `+12`, `=12`, …), parallel to {@link ReviewPage.rows}.
+   * Typed UI framing: a view that restyles a row strips THIS, never guesses from the row's text.
+   */
+  readonly labels: readonly string[];
   /** Masked companion of exactly these emitted rows, never a second viewport projection. */
   readonly maskedRows: readonly string[];
   /** Source actually readable in this frame: placeholders do not prove their hidden bytes. */
@@ -273,11 +308,26 @@ export interface ReviewPage {
    * from its cut onwards. A card that cannot show every change must say so and must not grant more than one answer.
    */
   readonly hiddenChanges: number;
+  /** {@link ReviewPage.hiddenChanges} split by side: changed lines before the page's first row, and from its cut onwards. */
+  readonly changesAbove: number;
+  readonly changesBelow: number;
+  /**
+   * Where the page sits among the lines the view lists: how many come before its first line, how many are left after its
+   * cut, and how many there are. Counts of listed lines (the skip set in force), never of rows.
+   */
+  readonly position: { readonly above: number; readonly below: number; readonly total: number };
+  /** The width and height the page was projected for, so a key can page by exactly what is drawn. */
+  readonly columns: number;
+  readonly rowLimit: number;
   readonly valid: boolean;
 }
 
 /** Lines of unchanged context the compact card keeps above the first change. */
 export const CARD_CONTEXT_LINES = 3;
+/** The most unchanged lines between two edits that still count as one change: context above one and below the other. */
+export const CHANGE_GAP_LINES = 2 * CARD_CONTEXT_LINES;
+/** The most listed lines one change spans, however closely its edits follow one another (about two pages at 24 rows). */
+export const CHANGE_SPAN_LINES = 40;
 
 /**
  * The line the compact card opens on. A long file's first rows are not what the person is deciding on, so the card
@@ -285,16 +335,27 @@ export const CARD_CONTEXT_LINES = 3;
  * `base` (the first line the card would otherwise show). A preview whose rows before the diff are not diff rows (a
  * target or field row) keeps `base`: those rows are the call's identity and must stay on the card.
  */
-export function cardStartLine(document: ReviewDocument, base: number): number {
+export function cardStartLine(
+  document: ReviewDocument,
+  base: number,
+  fit?: { readonly budgetRows: number; readonly rowsOf: (index: number) => number },
+): number {
   const first = document.firstChangedLine;
   if (first === undefined || first <= base || document.lines[base]?.kind === undefined) return base;
   let start = first,
-    context = 0;
+    context = 0,
+    used = 0;
   while (start > base && context < CARD_CONTEXT_LINES) {
     const line = document.lines[start - 1];
     if (line === undefined) break;
     if (line.cardSkip !== true) {
       if (line.kind !== 'context') break;
+      // Lines that wrap can fill the whole card: the context may take only the rows `fit` allows, so the change is drawn.
+      if (fit !== undefined) {
+        const own = fit.rowsOf(start - 1);
+        if (used + own > fit.budgetRows) break;
+        used += own;
+      }
       context++;
     }
     start--;
@@ -311,6 +372,7 @@ export function projectReviewPage(
   reveal = false,
   numeric = false,
   compact = false,
+  dedupe = false,
 ): ReviewPage {
   const page: PageProjection = {
     document,
@@ -320,6 +382,7 @@ export function projectReviewPage(
     numeric,
     rows: [],
     kinds: [],
+    labels: [],
     maskedRows: [],
     visibleSource: [],
     shown: [],
@@ -328,23 +391,24 @@ export function projectReviewPage(
     valid: document.valid && columns >= 32 && rowLimit >= 1,
     work: 0,
   };
+  // The skip set in force: the card leaves out every before copy; the deduplicated full view only the unmasked ones.
+  const skipped = (index: number): boolean => {
+    const line = document.lines[index];
+    return (compact && line?.cardSkip === true) || (dedupe && line?.fullSkip === true);
+  };
   while (page.valid && page.lineIndex < document.lines.length && page.rows.length < rowLimit) {
-    if (compact && document.lines[page.lineIndex]?.cardSkip === true) {
-      // The full view lists this line; the compact card shows its context line once, so it takes no row.
+    if (skipped(page.lineIndex)) {
+      // This copy's twin is listed; a view that leaves the copy out gives it no row.
       page.lineIndex++;
       page.offset = 0;
-      if (++page.work > 65_536) page.valid = false;
+      if (++page.work > PAGE_WORK_LIMIT) page.valid = false;
       continue;
     }
     if (!appendReviewLine(page)) break;
   }
-  // A skipped line at the tail is not "more to read": settle on the next line the card would show.
-  if (compact) {
-    while (
-      page.valid &&
-      page.lineIndex < document.lines.length &&
-      document.lines[page.lineIndex]?.cardSkip === true
-    ) {
+  // A skipped line at the tail is not "more to read": settle on the next line the view would list.
+  if (compact || dedupe) {
+    while (page.valid && page.lineIndex < document.lines.length && skipped(page.lineIndex)) {
       page.lineIndex++;
       page.offset = 0;
     }
@@ -353,18 +417,44 @@ export function projectReviewPage(
     page.lineIndex >= document.lines.length
       ? undefined
       : { line: page.lineIndex, offset: page.offset };
+  const changes = hiddenChangedLines(document, cursor, next);
+  const listed = compact
+    ? document.cardRemainingLines
+    : dedupe
+      ? document.fullRemainingLines
+      : undefined;
+  const after = next?.line ?? document.lines.length;
   return {
     rows: page.rows,
     kinds: page.kinds,
+    labels: page.labels,
     maskedRows: page.maskedRows,
     visibleSource: page.visibleSource,
     shown: reveal ? page.shown : [],
     next,
     hiddenLines: compact
-      ? (document.cardRemainingLines[next?.line ?? document.lines.length] ?? 0)
-      : document.lines.length - (next?.line ?? document.lines.length),
-    hiddenBytes: hiddenReviewBytes(document, next, compact),
-    hiddenChanges: hiddenChangedLines(document, cursor, next),
+      ? (document.cardRemainingLines[after] ?? 0)
+      : dedupe
+        ? (document.fullRemainingLines[after] ?? 0)
+        : document.lines.length - after,
+    hiddenBytes: hiddenReviewBytes(document, next, compact, dedupe),
+    hiddenChanges: changes.above + changes.below,
+    changesAbove: changes.above,
+    changesBelow: changes.below,
+    position:
+      listed === undefined
+        ? {
+            above: Math.min(cursor.line, document.lines.length),
+            below: document.lines.length - after,
+            total: document.lines.length,
+          }
+        : {
+            above: (listed[0] ?? 0) - (listed[Math.min(cursor.line, document.lines.length)] ?? 0),
+            below: listed[after] ?? 0,
+            total: listed[0] ?? 0,
+          },
+    columns,
+    rowLimit,
     valid: page.valid,
   };
 }
@@ -381,18 +471,17 @@ function hiddenChangedLines(
   document: ReviewDocument,
   cursor: ReviewCursor,
   next: ReviewCursor | undefined,
-): number {
+): { readonly above: number; readonly below: number } {
   const suffix = document.changedRemainingLines;
   const before = document.changedLines - (suffix[cursor.line] ?? 0);
   const lineStart = document.lines[cursor.line]?.start ?? 0;
   const startsInsideChangedLine =
     cursor.offset > lineStart && (suffix[cursor.line] ?? 0) - (suffix[cursor.line + 1] ?? 0) === 1;
   const cutInsideSameLine = next !== undefined && next.line === cursor.line;
-  return (
-    before +
-    (startsInsideChangedLine && !cutInsideSameLine ? 1 : 0) +
-    (suffix[next?.line ?? document.lines.length] ?? 0)
-  );
+  return {
+    above: before + (startsInsideChangedLine && !cutInsideSameLine ? 1 : 0),
+    below: suffix[next?.line ?? document.lines.length] ?? 0,
+  };
 }
 
 interface PageProjection {
@@ -403,6 +492,7 @@ interface PageProjection {
   readonly numeric: boolean;
   readonly rows: string[];
   readonly kinds: ReviewRowKind[];
+  readonly labels: string[];
   readonly maskedRows: string[];
   readonly visibleSource: SourceRange[];
   readonly shown: SourceRange[];
@@ -473,37 +563,105 @@ function emitReviewRow(
   }
   page.rows.push(row);
   page.kinds.push(line.kind ?? 'meta');
+  page.labels.push(line.label);
   page.maskedRows.push(masked + ending);
 }
+/** The most work one projected page may do, in tokens; past it the page is not valid and the screen says so. */
+export const PAGE_WORK_LIMIT = 65_536;
+
+/** The most tokens one row holds: three per column. Combining marks and conjunct chains add no width, so without a bound one
+ *  row could take a whole megabyte line and cost quadratic time to measure; past it the run goes on in the next row, every
+ *  byte still drawn once. */
+export const ROW_TOKENS_PER_COLUMN = 3;
+
+/** The token a source position is drawn as, and where the next one starts. */
+function tokenAt(
+  page: PageProjection,
+  line: ReviewSourceLine,
+  field: ReviewField,
+  position: number,
+): { readonly token: string; readonly next: number } {
+  const mask = page.reveal ? undefined : maskAt(field.masks, position);
+  const char = String.fromCodePoint(field.text.codePointAt(position) ?? 0);
+  return mask === undefined
+    ? {
+        token: escapeReviewCharacter(
+          char,
+          isTrailingCharacter(line, field, position),
+          page.numeric,
+        ),
+        next: position + char.length,
+      }
+    : { token: maskToken(mask, field, position, line.end), next: Math.min(line.end, mask.end) };
+}
+
 function projectReviewRow(
   page: PageProjection,
   line: ReviewSourceLine,
   field: ReviewField,
 ): ReviewRow {
-  let position = Math.max(line.start, page.offset),
-    text = `${line.label} `;
-  const start = position;
-  let width = displayWidth(text);
-  while (position < line.end) {
-    if (++page.work > 65_536) {
+  const label = `${line.label} `;
+  const start = Math.max(line.start, page.offset);
+  const maxTokens = Math.max(16, ROW_TOKENS_PER_COLUMN * page.columns);
+  const parts: string[] = [];
+  const ends: number[] = [];
+  let position = start;
+  let sum = displayWidth(label);
+  while (position < line.end && parts.length < maxTokens) {
+    if (++page.work > PAGE_WORK_LIMIT) {
       page.valid = false;
       break;
     }
-    const mask = page.reveal ? undefined : maskAt(field.masks, position);
-    const char = String.fromCodePoint(field.text.codePointAt(position) ?? 0);
-    const token =
-      mask === undefined
-        ? escapeReviewCharacter(char, isTrailingCharacter(line, field, position), page.numeric)
-        : maskToken(mask, field, position, line.end);
+    const { token, next } = tokenAt(page, line, field, position);
     const tokenWidth = displayWidth(token);
-    if (width + tokenWidth > page.columns) {
-      if (position === start) page.valid = false;
+    if (sum + tokenWidth > page.columns) {
+      if (parts.length === 0) page.valid = false;
       break;
     }
-    text += token;
-    width += tokenWidth;
-    position = mask === undefined ? position + char.length : Math.min(line.end, mask.end);
+    parts.push(token);
+    ends.push(next);
+    sum += tokenWidth;
+    position = next;
   }
+  // The sum of the tokens' widths is a close ESTIMATE of the row's width, not the width: exact for most text, short for a
+  // keycap (a digit and U+20E3 are two cells, not one plus none) and long for some emoji and jamo sequences. The terminal
+  // measures the whole row, and a row drawn wider than its page would be cut or wrapped, hiding bytes the page reports as shown.
+  // So the row is measured as the string it is and, if it is too wide, the longest prefix that fits is found by halving — each
+  // probe one whole-row measure, a probe is VERIFIED because width is not monotone in the prefix (a modifier can narrow a
+  // cluster), so the cost is the row times its logarithm, never the row squared.
+  let text = label + parts.join('');
+  let width = displayWidth(text);
+  if (page.valid && width > page.columns && parts.length > 0) {
+    let fits = 0;
+    let over = parts.length - 1;
+    while (fits < over) {
+      const probe = (fits + over + 1) >> 1;
+      if (displayWidth(label + parts.slice(0, probe).join('')) <= page.columns) fits = probe;
+      else over = probe - 1;
+    }
+    parts.length = fits;
+    ends.length = fits;
+    position = ends.at(-1) ?? start;
+    text = label + parts.join('');
+    width = displayWidth(text);
+  }
+  // A row never ends between a base character and the zero-width mark that belongs to it (a keycap's digit and its U+20E3) —
+  // unless giving the base back would make the row wider than its page (width is not monotone).
+  if (page.valid && position < line.end && parts.length > 1) {
+    const last = parts[parts.length - 1] ?? '';
+    if (displayWidth(last) > 0 && displayWidth(tokenAt(page, line, field, position).token) === 0) {
+      const shorter = label + parts.slice(0, -1).join('');
+      const shorterWidth = displayWidth(shorter);
+      if (shorterWidth <= page.columns) {
+        parts.pop();
+        ends.pop();
+        position = ends.at(-1) ?? start;
+        text = shorter;
+        width = shorterWidth;
+      }
+    }
+  }
+  if (page.valid && parts.length === 0 && start < line.end) page.valid = false;
   return { start, position, text, width };
 }
 function reviewEnding(ending: ReviewSourceLine['ending']): string {
@@ -568,9 +726,14 @@ function hiddenReviewBytes(
   document: ReviewDocument,
   next: ReviewCursor | undefined,
   compact = false,
+  dedupe = false,
 ): number {
   const nextLine = next === undefined ? undefined : document.lines[next.line];
-  const suffix = compact ? document.cardRemainingBytes : document.remainingBytes;
+  const suffix = compact
+    ? document.cardRemainingBytes
+    : dedupe
+      ? document.fullRemainingBytes
+      : document.remainingBytes;
   const remaining = suffix[next?.line ?? document.lines.length] ?? 0;
   if (nextLine === undefined || next === undefined) return remaining;
   return (
@@ -719,6 +882,8 @@ function appendDiffLines(
         changed: false,
         kind: 'context',
         cardSkip: true,
+        // The twin is byte-identical; only a mask on this side could make the copy worth listing.
+        fullSkip: !touchesMask(fields[before], line.before.start, line.before.end),
         showEnding,
       });
     }
@@ -796,12 +961,54 @@ function firstChangedIndex(lines: readonly ReviewSourceLine[]): number | undefin
   const index = lines.findIndex((line) => line.changed);
   return index < 0 ? undefined : index;
 }
-/** Suffix counts of the lines the compact card shows. */
-function indexRemainingLines(lines: readonly ReviewSourceLine[]): number[] {
+/** Suffix counts of the lines a view lists: the compact card's by default, the full view's with its own predicate. */
+function indexRemainingLines(
+  lines: readonly ReviewSourceLine[],
+  include: (line: ReviewSourceLine) => boolean = (line) => line.cardSkip !== true,
+): number[] {
   const remaining: number[] = Array.from({ length: lines.length + 1 }, () => 0);
-  for (let index = lines.length - 1; index >= 0; index--)
-    remaining[index] = (remaining[index + 1] ?? 0) + (lines[index]?.cardSkip === true ? 0 : 1);
+  for (let index = lines.length - 1; index >= 0; index--) {
+    const line = lines[index];
+    remaining[index] = (remaining[index + 1] ?? 0) + (line !== undefined && include(line) ? 1 : 0);
+  }
   return remaining;
+}
+/**
+ * The first line of every change: a run of changed lines, joined to the one before it when no more than
+ * {@link CHANGE_GAP_LINES} unchanged lines lie between them — two edits a few lines apart are one thing to read, so "next
+ * change" does not stop between them (the unified diff's own hunk rule).
+ */
+function indexChangeStarts(lines: readonly ReviewSourceLine[]): number[] {
+  const starts: number[] = [];
+  let gap = Number.POSITIVE_INFINITY;
+  let span = 0;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line?.fullSkip !== true) span++;
+    if (line?.changed === true) {
+      // A chain of edits each a few lines from the next is not one thing to read: a change is also at most
+      // CHANGE_SPAN_LINES listed lines long, so "next change" keeps reaching them.
+      if (gap > CHANGE_GAP_LINES || span > CHANGE_SPAN_LINES) {
+        starts.push(index);
+        span = 0;
+      }
+      gap = 0;
+    } else if (line?.fullSkip !== true) gap++;
+  }
+  return starts;
+}
+/** Whether any mask of `field` overlaps `[start, end)`. */
+function touchesMask(field: ReviewField | undefined, start: number, end: number): boolean {
+  if (field === undefined) return false;
+  let low = 0,
+    high = field.masks.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((field.masks[middle]?.end ?? 0) <= start) low = middle + 1;
+    else high = middle;
+  }
+  const mask = field.masks[low];
+  return mask !== undefined && mask.start < Math.max(end, start + 1);
 }
 function requiredInspectionRanges(
   lines: readonly ReviewSourceLine[],

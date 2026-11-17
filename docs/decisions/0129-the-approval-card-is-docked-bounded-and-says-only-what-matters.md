@@ -2,6 +2,7 @@
 
 - **Status**: Accepted — 2026-11-16, by the maintainer (the placement, the reject/abort semantics and the sequencing were decided after the survey recorded in [the analysis](../analysis/approval-card-and-chat-modes-2026-11-16.md)). The D64 round and the separate security sittings on the approval path ran on 2026-11-17 (see notes 6–11 below and the [phase register](../roadmap/phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)); the maintainer's acceptance is owed.
 - **Date**: 2026-11-16
+- **Amended by**: [ADR-0134](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) §1 — the details and call-list screens no longer "keep the key set and behaviour ADR-0120 gave them". The card is unchanged.
 - **Amends**: [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) §3 and its 2026-11-11 review notes (**presentation only**: where the card sits, how much it says, and the line-ending notation), the [MVP-3 interaction contract](../reference/cli/chat-session.md#mvp-3-interaction-contract) (the list of what the card names), and [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)'s key legend.
 - **Related**: [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0122](0122-the-home-is-the-interactive-product.md), [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)
 

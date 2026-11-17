@@ -85,6 +85,10 @@ session as a content-free marker, [ADR-0119](docs/decisions/0119-an-interrupted-
 implemented locally; D64 rounds 1–4 and four security sittings found no blocker/high, their fixes are in, the gates pass on the final source, and the maintainer's acceptance is owed) and MVP-3d (`ask_user`;
 [ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; [ADR-0133](docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) (2026-11-16) stores the question and the answer with the session so later turns and `chat resume` see them; ADR-0132's own design/implementation reviews and security sitting are recorded in it, and ADR-0133's D64 cumulative round, separate security sitting (one medium, fixed) and focused corrective sitting (no blocker, high or medium) ran on 2026-11-16 with their fixes on `development`, and the full gate passes on the final source — the final-head platform checks and the maintainer's acceptance are owed). Their exact status
 lives in [current.md](docs/roadmap/current.md).
+On 2026-11-17 the maintainer kept the Ctrl-chord approval keys and had the approval card's full view (`[v]`) and `/details`
+rebuilt as one readable screen ([ADR-0134](docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md);
+implemented on `development`, four review rounds and four separate security sittings recorded in the phase register; the
+final-source gate passes; final-head CI and the maintainer's acceptance are owed).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

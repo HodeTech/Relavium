@@ -14,8 +14,10 @@ import {
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
 import {
+  inspectionPending,
   reviewInspected,
   reviewOffersAlways,
+  reviewRequiredTarget,
   toolReviewPage,
   toolReviewTarget,
   type ToolReviewState,
@@ -26,8 +28,16 @@ import {
   cardStats,
   cardVerb,
   cardWarnings,
-  fullViewConfirmLegend,
 } from './tool-review-card.js';
+import {
+  callListView,
+  fullChrome,
+  fullBodyRows,
+  fullStatusRow,
+  type CallListRow,
+  type FullChrome,
+  type InspectionPending,
+} from './tool-review-screen.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   createReviewDocument,
@@ -152,9 +162,13 @@ export function ToolReviewHost(
     acknowledgement.invalidate();
     props.store.invalidateToolReview();
   }, [props.size.cols, props.size.rows, props.store, acknowledgement]);
-  const page =
-    review === undefined ? undefined : toolReviewPage(review, props.size.cols, props.size.rows);
   const identity = reviewIdentity(snapshot, props.size.cols);
+  const { page, chrome } = reviewScreen(
+    snapshot,
+    props.size,
+    props.clipboard !== undefined,
+    identity,
+  );
   pageRef.current = page;
   useLayoutEffect(() => {
     if (blocked !== undefined && blocked !== review) setBlocked(undefined);
@@ -200,22 +214,98 @@ export function ToolReviewHost(
   }
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
-      <Text bold>{reviewTitle(review)}</Text>
       {review.screen === 'list' ? (
-        <ReviewCallList snapshot={snapshot} review={review} rows={props.size.rows} />
-      ) : (
-        <ReviewContent
+        <ReviewCallList
           snapshot={snapshot}
           review={review}
-          page={page}
-          identity={identity}
           columns={props.size.cols}
           rows={props.size.rows}
+          color={props.color === true}
         />
+      ) : (
+        chrome !== undefined && (
+          <ReviewScreen
+            review={review}
+            page={page}
+            chrome={chrome}
+            columns={props.size.cols}
+            rows={props.size.rows}
+            color={props.color === true}
+          />
+        )
       )}
-      {review.message !== '' && <Text>{escaped(review.message)}</Text>}
     </Box>
   );
+}
+
+/**
+ * The page a review screen draws and the chrome around it, from one snapshot. The full view's chrome is counted once, here,
+ * and the page is given exactly the rows that are left: the model that sizes the body and the view that draws the rest cannot
+ * disagree (ADR-0134 §3). Exported so a test derives "the page the host drew" from the same function the host uses.
+ */
+export function reviewScreen(
+  snapshot: ChatStoreSnapshot,
+  size: { readonly cols: number; readonly rows: number },
+  canCopy: boolean,
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined = reviewIdentity(snapshot, size.cols),
+): { readonly page: ReviewPage | undefined; readonly chrome: FullChrome | undefined } {
+  const review = snapshot.review;
+  if (review === undefined) return { page: undefined, chrome: undefined };
+  if (review.screen !== 'full')
+    return { page: toolReviewPage(review, size.cols, size.rows), chrome: undefined };
+  // The chrome's ROW COUNT does not depend on the page (the key rows are always two, the status rule one), only its words
+  // do, so it is sized before the page exists and drawn after.
+  const requiredTarget = reviewRequiredTarget(review, size.cols, size.rows);
+  const pending = inspectionPending(review, requiredTarget);
+  const sizing = buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending);
+  const page = toolReviewPage(review, size.cols, size.rows, sizing.rows);
+  return {
+    page,
+    chrome: buildFullChrome(snapshot, review, size.cols, identity, canCopy, pending, page),
+  };
+}
+
+/** The full view's chrome for one frame: what `fullChrome` needs from the store, the review and the page being drawn. */
+function buildFullChrome(
+  snapshot: ChatStoreSnapshot,
+  review: ToolReviewState,
+  columns: number,
+  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined,
+  canCopy: boolean,
+  pending: InspectionPending,
+  page?: ReviewPage,
+): FullChrome {
+  const document = review.document;
+  const approval = review.kind === 'approval';
+  const cacheable = reviewOffersAlways(review, page, snapshot.approval?.cacheable === true);
+  return fullChrome({
+    kind: review.kind,
+    title: reviewTitle(review),
+    columns,
+    document,
+    identity: identity?.rows ?? [],
+    // A row is kept for the target whatever the cursor does, so the body's height never depends on where it is: the target is
+    // drawn there while the body is scrolled away from it, and the row is blank at the top, where the body's own first row IS the
+    // target (and, when it was shortened, the only place to read all of it).
+    hasTarget: document?.preview.target !== undefined,
+    pending,
+    nav: {
+      hasChanges: (document?.changeStarts.length ?? 0) > 0,
+      hasMasks: (document?.masks.length ?? 0) > 0,
+      canCopy,
+      revealed: review.reveal,
+      numeric: review.numeric,
+    },
+    keys: approval
+      ? {
+          inspected: !pending.target && pending.masks === 0,
+          cacheable,
+          scope: escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
+          confirmAlways: snapshot.alwaysConfirm && cacheable,
+        }
+      : undefined,
+    searching: review.searching,
+  });
 }
 
 /**
@@ -242,12 +332,13 @@ function keyTone(part: string, color: boolean): Record<string, unknown> {
   if (part === '[Ctrl+Y]' || part === '[Ctrl+G]') return { color: 'green', bold: true };
   if (part === '[Ctrl+N]') return { color: 'red', bold: true };
   if (part === 'Esc') return { color: 'yellow', bold: true };
-  if (part === '[Ctrl+R]' || part === '[v]') return { color: 'cyan', bold: true };
+  // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
+  if (part.startsWith('[') && part.endsWith(']')) return { color: 'cyan', bold: true };
   return { dimColor: true };
 }
 
 function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
-  const parts = row.split(/(\[Ctrl\+[YGNR]\]|\[v\]|Esc)/u).filter((part) => part.length > 0);
+  const parts = row.split(/(\[[^\]]+\]|Esc)/u).filter((part) => part.length > 0);
   return (
     <Text wrap="truncate-end">
       {parts.map((part, index) => (
@@ -267,6 +358,13 @@ function withoutLabel(row: string, label: string): string {
 /** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
 function cardBodyRow(row: string, kind: ReviewPage['kinds'][number]): string {
   return kind === 'context' && row.startsWith('=') ? ` ${row.slice(1)}` : row;
+}
+
+/** The colour of a diff row by its role: additions green, removals red, context dim, anything else plain. */
+function rowTone(kind: ReviewPage['kinds'][number], color: boolean): Record<string, unknown> {
+  if (kind === 'added') return colorProps(color, 'green');
+  if (kind === 'removed') return colorProps(color, 'red');
+  return kind === 'context' ? dimProps(color) : {};
 }
 
 /**
@@ -337,22 +435,14 @@ function ReviewCard({
         {approvalRule(columns)}
       </Text>
       {titleRows.map((row, index) => (
-        <Text key={`title-${index}`} bold wrap="truncate-end">
+        <Text key={`title-${index}`} bold>
           {row}
         </Text>
       ))}
       {(page?.rows ?? []).map((row, index) => {
         const kind = page?.kinds[index] ?? 'meta';
-        const props =
-          kind === 'added'
-            ? colorProps(color, 'green')
-            : kind === 'removed'
-              ? colorProps(color, 'red')
-              : kind === 'context'
-                ? dimProps(color)
-                : {};
         return (
-          <Text key={index} {...props}>
+          <Text key={index} {...rowTone(kind, color)}>
             {cardBodyRow(row, kind) || ' '}
           </Text>
         );
@@ -411,125 +501,173 @@ function reviewIdentity(
   );
 }
 function reviewTitle(review: ToolReviewState): string {
-  if (review.kind !== 'approval') return 'Tool details';
+  if (review.kind !== 'approval') return 'Details';
   if (review.document?.preview.kind === 'saved-result')
     return 'Deliver saved result — no new filesystem operation';
-  return 'Review tool operation';
+  return 'Review';
 }
+/** The tool-call list ([ADR-0134](../../../../../docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) §5). */
 function ReviewCallList({
   snapshot,
   review,
-  rows,
-}: Readonly<{ snapshot: ChatStoreSnapshot; review: ToolReviewState; rows: number }>): ReactElement {
-  const calls = [...snapshot.toolDisplays.values()];
-  const selectedStart = Math.max(0, review.selected - 3);
-  return (
-    <>
-      {calls.length === 0 && (
-        <Text>No retained live tools. Historical previews are unavailable.</Text>
-      )}
-      {calls.slice(selectedStart, selectedStart + Math.max(1, rows - 8)).map((call, index) => (
-        <Text key={call.callId}>
-          {review.selected === selectedStart + index ? '> ' : '  '}
-          {inputDisplay(sanitizeUntrustedInline(call.toolId))} — {call.outcome}
-          {call.document === undefined ? ' · preview unavailable' : ''}
-        </Text>
-      ))}
-      <Text>↑/↓ choose · Enter details · Esc close</Text>
-    </>
-  );
-}
-function ReviewContent({
-  snapshot,
-  review,
-  page,
-  identity,
   columns,
   rows,
+  color,
 }: Readonly<{
   snapshot: ChatStoreSnapshot;
   review: ToolReviewState;
-  page: ReviewPage | undefined;
-  identity: Pick<ReviewPage, 'rows' | 'valid'> | undefined;
   columns: number;
   rows: number;
+  color: boolean;
 }>): ReactElement {
-  const document = review.document,
-    diff = document?.preview.diff;
-  const target = review.screen === 'card' ? toolReviewTarget(review, columns, rows) : undefined;
+  const view = callListView({
+    calls: [...snapshot.toolDisplays.values()],
+    selected: review.selected,
+    columns,
+    terminalRows: rows,
+  });
   return (
     <>
-      {(identity?.rows ?? []).map((row, index) => (
-        <Text key={`identity-${index}`}>{row}</Text>
-      ))}
-      {(target?.rows ?? []).map((row, index) => (
-        <Text key={`target-${index}`}>{row}</Text>
-      ))}
-      {target?.next !== undefined && (
-        <Text>Target shortened · {target.hiddenBytes} bytes omitted · [v] inspect full target</Text>
-      )}
-      <Text>
-        {document?.changedLines ?? 0} changed lines · {document?.changedBytes ?? 0} changed bytes ·{' '}
-        {document?.masks.length ?? 0} masked spans
+      <Text bold wrap="truncate-end">
+        {view.title}
       </Text>
-      {diff !== undefined && (
-        <Text>
-          {diff.before === null ? 'New file · ' : ''}
-          {diff.before === '' ? 'Before: empty file · ' : ''}
-          {diff.after === '' ? 'After: empty file · ' : ''}endings {diff.beforeEndings} →{' '}
-          {diff.afterEndings}
+      {view.empty !== undefined && <Text wrap="truncate-end">{view.empty}</Text>}
+      {view.rows.map((row, index) => (
+        <Text key={index} wrap="truncate-end" {...callRowProps(row, color)}>
+          {row.text}
+        </Text>
+      ))}
+      {view.status.length > 0 && (
+        <Text wrap="truncate-end" {...dimProps(color)}>
+          {view.status}
         </Text>
       )}
-      {(document?.masks.length ?? 0) !== 0 && (
-        <Text>
-          Approval includes masked bytes. Changed/flagged masks require [v], [r] and visible
-          inspection.
+      <Text wrap="truncate-end" {...dimProps(color)}>
+        {view.hint}
+      </Text>
+    </>
+  );
+}
+
+function callRowProps(row: CallListRow, color: boolean): Record<string, unknown> {
+  const tone =
+    row.tone === 'bad'
+      ? colorProps(color, 'red')
+      : row.tone === 'warn'
+        ? colorProps(color, 'yellow')
+        : row.tone === 'dim'
+          ? dimProps(color)
+          : {};
+  return row.selected ? { ...tone, bold: true } : tone;
+}
+
+/** A body row of the full view: diff rows as the card draws them, a call's fields as a name and an indented value. */
+function bodyRow(
+  row: string,
+  kind: ReviewPage['kinds'][number],
+  label: string,
+  color: boolean,
+  continued = false,
+): { readonly text: string; readonly props: Record<string, unknown> } {
+  if (label === 'field name') return { text: withoutLabel(row, label), props: { bold: true } };
+  if (label === 'field value') return { text: `  ${withoutLabel(row, label)}`, props: {} };
+  // The rows of a wrapped target all start with its label; the later ones are indented under it, as the card does, so the
+  // path does not read as several.
+  if (label === 'target' && continued)
+    return { text: `${' '.repeat(label.length + 1)}${withoutLabel(row, label)}`, props: {} };
+  return { text: cardBodyRow(row, kind), props: rowTone(kind, color) };
+}
+
+/**
+ * The full view and the tool details: one readable inspection screen. The header, the warnings, the status rule and the
+ * legends all come from `fullChrome` (the page was sized by its row count); this component only draws them and the
+ * page's rows, which are the same projected rows the safety machinery acknowledges.
+ */
+function ReviewScreen({
+  review,
+  page,
+  chrome,
+  columns,
+  rows,
+  color,
+}: Readonly<{
+  review: ToolReviewState;
+  page: ReviewPage | undefined;
+  chrome: FullChrome;
+  columns: number;
+  rows: number;
+  color: boolean;
+}>): ReactElement {
+  const document = review.document;
+  const target = chrome.hasTarget ? toolReviewTarget(review, columns, rows) : undefined;
+  const targetText = withoutLabel(target?.rows[0] ?? '', 'target');
+  const body = fullBodyRows(rows, chrome.rows);
+  const drawn = page?.rows.length ?? 0;
+  return (
+    <>
+      {chrome.header.map((row, index) => (
+        <Text key={`head-${index}`} bold={index === 0} wrap="truncate-end">
+          {row}
         </Text>
-      )}
-      {(page?.rows ?? []).map((row, index) => (
-        <Text key={index}>{row || ' '}</Text>
       ))}
-      <Text>
-        {page?.hiddenLines ?? 0} hidden lines · {page?.hiddenBytes ?? 0} hidden bytes ·{' '}
-        {review.reveal ? 'REVEALED (view only)' : 'masked view'}
-      </Text>
-      {review.kind === 'approval' && (
-        <Text>
-          {reviewInspected(review, page?.requiredTarget)
-            ? 'Inspection requirements met.'
-            : 'Approval disabled — inspect required target / masked spans.'}
+      {chrome.hasTarget && (
+        <Text wrap="truncate-end" {...dimProps(color)}>
+          {review.cursor.line > 0
+            ? `target ${targetText}${target?.next !== undefined || (target?.rows.length ?? 0) > 1 ? ' …' : ''}`
+            : ' '}
         </Text>
       )}
-      {review.denial !== undefined && (
-        <Box flexDirection="column">
-          <Text>{denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}</Text>
-          <Text wrap="truncate-end">Reason to deny: {inputDisplay(review.denial)}█</Text>
-          <Text wrap="truncate-end">Enter deny · Esc stops the turn</Text>
-        </Box>
-      )}
-      {review.searching && (
-        <Text>Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find</Text>
-      )}
-      <Text>
-        {review.screen === 'card'
-          ? '[v] full view · [Ctrl+R] reason to deny'
-          : 'PgUp/PgDn pages · Home start · [r] reveal · [p] code points · / search · [c] copy masked page · [b] back'}
-      </Text>
-      {review.kind === 'approval' ? (
-        <>
-          <Text>
-            {reviewOffersAlways(review, page, snapshot.approval?.cacheable === true)
-              ? snapshot.alwaysConfirm
-                ? fullViewConfirmLegend(
-                    escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
-                  )
-                : 'Ctrl+Y once · Ctrl+G always for named tool (session) · Ctrl+N deny · Esc/Ctrl-C stops the turn'
-              : 'Ctrl+Y once · Ctrl+N deny · Esc/Ctrl-C stops the turn'}
+      {chrome.warnings.map((warning, index) => (
+        <Text key={`warn-${index}`} wrap="truncate-end" {...colorProps(color, 'yellow')}>
+          {warning}
+        </Text>
+      ))}
+      {(page?.rows ?? []).map((row, index) => {
+        const drawnRow = bodyRow(
+          row,
+          page?.kinds[index] ?? 'meta',
+          page?.labels[index] ?? '',
+          color,
+          index > 0 && page?.labels[index] === page?.labels[index - 1],
+        );
+        return (
+          // Not cut by the renderer: a row is fitted to its page by the projection, and one that were wider would wrap, make the
+          // frame taller than the terminal and be refused by the measured acknowledgement — never silently hide what it shows.
+          <Text key={index} {...drawnRow.props}>
+            {drawnRow.text || ' '}
           </Text>
-          <Text>Approval cannot override protected-path or permission denials.</Text>
-        </>
+        );
+      })}
+      {Array.from({ length: Math.max(0, body - drawn) }, (_, index) => (
+        <Text key={`pad-${index}`}> </Text>
+      ))}
+      <Text wrap="truncate-end" {...dimProps(color)}>
+        {fullStatusRow({
+          page,
+          document,
+          revealed: review.reveal,
+          numeric: review.numeric,
+          columns,
+        })}
+      </Text>
+      <Text wrap="truncate-end">{review.message === '' ? ' ' : escaped(review.message)}</Text>
+      {review.searching && (
+        <Text wrap="truncate-end">
+          Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find
+        </Text>
+      )}
+      {chrome.nav.map((row, index) => (
+        <KeyRow key={`nav-${index}`} row={row} color={color} />
+      ))}
+      {chrome.answers.map((row, index) => (
+        <KeyRow key={`answer-${index}`} row={row} color={color} />
+      ))}
+      {review.kind === 'approval' ? (
+        <Text wrap="truncate-end" {...dimProps(color)}>
+          {chrome.note}
+        </Text>
       ) : (
-        <Text>Esc/Ctrl-C close · viewing never executes a tool</Text>
+        <KeyRow row={chrome.note} color={color} />
       )}
     </>
   );

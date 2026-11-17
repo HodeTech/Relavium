@@ -375,12 +375,43 @@ token (`<LF>`, `<CRLF>`) is printed only where a line's ending differs from the 
 from the other side; `<EOF:NO_NEWLINE>` always prints. Everything below about inspection,
 masks, exact-frame acknowledgement and resource limits applies to the card and the full view alike.
 
+### The full view and the tool details
+
+([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md))
+`[v]` on the card and Enter on a `/details` call open **one** screen. The card, its answer keys and its guard are unchanged.
+
+- **Listing.** One row per unchanged line, in the card's format (a gutter number, `+`/`-`, dim context, colour where on); a call's
+  fields read as a name with its value indented below. The second copy of an unchanged line (`=before N`) is listed only when a
+  mask touches it. Every escape, mask and ending token rule is unchanged.
+- **Opens** on the first change with up to three unchanged lines above it, like the card — or on the top when the card shortened the
+  target (it is read first) or when field rows come before the diff. Details open on the top.
+- **Chrome**: a header (the screen's name, the tool's identity and the counts — always — on one row when they fit; otherwise the identity on one row under the title), a `target` row while the body is scrolled away from it,
+  only the warnings that apply (the lock names its cause and its key; a met requirement prints nothing; line endings only for a
+  change of convention), the body, a status rule (`64% · changed lines off this page: 2 above, 4 below`, plus `masked values
+  revealed (view only)` and `Unicode code points` while on), a message row (always one row, blank when empty) and a search row while the search box is open, the navigation legend
+  (`[key] words`, keys coloured; only keys that do something; movement and inspection on their own rows), the answer rows (the card's
+  two, without `[Ctrl+R]` and `[v]`, with `[b] Back to the card`) and one closing note: the protected-path sentence on an approval,
+  `[b] Back to the list   Esc closes · viewing never executes a tool` on details. One row stays empty.
+- **Keys** (none answers anything; one that acts is not typing evidence): `↑`/`↓` or `k`/`j` one listed line · `PgUp`/`PgDn` or
+  `Space` a page (a page cut inside a long line continues there) · `Home`/`End` · `Tab`/`Shift+Tab` the next/previous change (a
+  run of changed lines; runs six unchanged lines or fewer apart are one, and a change is about 40 listed lines at most; inside a
+  change longer than a page `Tab` lands on the next page that shows a changed line not yet seen and `Shift+Tab` on the page that ends on the nearest one above, so none is stepped over) · `/` search · `r` reveal (only where something is
+  masked) · `p` every non-ASCII character as its code point (`<U+0131>`; ASCII stays readable) · `c` copy the masked page · `b` back · `Esc`/Ctrl-C stop the turn on an approval, close on details.
+  Scrolling down stops at the last page that begins on a line (the screen ends on the document's last row). A row is measured as the whole string the renderer
+  (`string-width`) measures and is never cut by it: a row wider than its page would wrap — one wrapped row uses the spare row and is drawn
+  whole, a second makes the frame too tall and it is refused — and a row holds at most three tokens per column, so a run of zero-width
+  characters goes on in the next row.
+- **The call list**: oldest first, opening on the **newest**; a row is a mark (`✓`, `✗ failed`, `⊘ denied`, `? outcome unknown`,
+  `… running`), the tool, what it touched, `+a −r`; never a result (read it in the details view, through the masks). `↑`/`↓`,
+  `PgUp`/`PgDn` (ten), `Home`/`End` select; Enter opens; Esc closes.
+
 **Approval and details.** Both chat hosts reuse one pure state machine and views.
 The card names the target, exact changed/hidden byte and line counts, and `[Ctrl+G]`'s tool/session
 scope; mask counts and line-ending notes appear on it when non-zero or non-LF, and the full view always
-lists them. `[v]` opens its full view;
-the full view has bounded paging, search, both diff sides, code-point inspection,
-and an explicit `[r]` reveal action. A compact target header states its exact omitted
+lists them. `[v]` opens its full view — one readable inspection screen shared with
+`/details` ([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md);
+see [the full view and the tool details](#the-full-view-and-the-tool-details)) with
+search, code-point inspection and an explicit `[r]` reveal action. A compact target header states its exact omitted
 byte count when shortened; the full target remains a paged source field in the
 full view. A shortened target blocks affirmative answers until its complete
 source has actually been displayed there in acknowledged frames. Readable,
@@ -435,8 +466,9 @@ and an explicit empty-file state; a new empty file still has a new-file effect.
 Test literal middle dots/tokens/tabs, empty/new files and final-newline-only
 additions/removals as adversarial pairs, not just snapshots of one projection.
 
-Live `/details` opens a keyboard-selectable bounded tool-call list and the same
-inspection view, with declared preview and bounded result summary. It is a view
+Live `/details` opens a keyboard-selectable bounded tool-call list (opening on the
+newest call) and the same inspection screen as the full view, with declared preview and
+bounded result summary. It is a view
 action, never a new execution or approval. Keep targets and write diff stats
 after a live turn and order assistant text segments between calls. Failure,
 denial and unknown have distinct marks/words; missing facts never become success.
@@ -462,7 +494,7 @@ the document unavailable for approval rather than silently dropping changes.
 
 Live detail retention admits 64 calls and 32 MiB of source text per store,
 keeping an active review pinned. Older evicted details are labelled
-unavailable. Navigation retains at most 4,096 back positions, searches accept
+unavailable. Navigation keeps no history stack (motion is by geometry, ADR-0134 §5), searches accept
 256 code units, and a projected page consumes at most 65,536 source code units
 and 200 display rows. Display targets/summaries have separate 512/2,048-character
 caps and explicit omission counts; these abbreviated labels never replace the

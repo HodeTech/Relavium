@@ -248,7 +248,9 @@ event (backed by SIGWINCH on POSIX).
 custody also apply inside the Home chat and standalone chat. Prepared-write
 approval and `/details` share the
 [chat interaction contract](chat-session.md#proposed-mvp-3-interaction-contract)
-in both renderers. Tool details are chat-only; opening them executes no tool
+in both renderers; the full view and `/details` are one readable inspection screen
+([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md),
+[chat-session.md](chat-session.md#the-full-view-and-the-tool-details)). Tool details are chat-only; opening them executes no tool
 and does not activate the management strip. Their bounded private previews
 expire on teardown and are absent from restored history and transcript hatches.
 

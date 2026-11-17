@@ -23,6 +23,7 @@ import {
   resolveApprovalGuard,
   type ApprovalGuard,
   type ApprovalRefusal,
+  type ReviewKeyAction,
   type ToolReviewState,
 } from './tool-review-model.js';
 import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
@@ -465,7 +466,12 @@ export function createChatStore(
     },
     openDetails: () => {
       if (!sealed && approval === undefined) {
-        review = initialToolReview('details', toolDisplays.keys().next().value);
+        // The list opens on the newest call: the one the person has just seen happen is the one they are asking about.
+        const ids = [...toolDisplays.keys()];
+        review = {
+          ...initialToolReview('details', ids.at(-1)),
+          selected: Math.max(0, ids.length - 1),
+        };
         flush();
       }
     },
@@ -608,10 +614,12 @@ export function createChatStore(
         // Text typed into the reason box or the search query is typing whatever the key is — and so is the Enter that
         // submits it; a stray key the card has no use for is too (PR #99 security sitting H3).
         (isTypingIntoReview(review) ||
-          (action.kind === 'none' &&
+          // A key that only took a stale note down moved nothing: it is still a key the card has no use for, so typing.
+          ((action.kind === 'none' || noteOnly(review, action)) &&
             !isAffirmativeReviewKey(review, input, key) &&
             // A key the card would act on once its frame is visible is the person using the card, not typing at it.
             (visible ||
+              noteOnly(review, action) ||
               reduceToolReviewKey(review, input, key, true, reviewPage, cacheable, calls.length)
                 .kind === 'none')))
       )
@@ -650,6 +658,8 @@ export function createChatStore(
       };
       switch (action.kind) {
         case 'state': {
+          // A note a move has taken down may be needed again: the refusal is explained once per card, not once ever.
+          if (review.message !== '' && action.state.message === '') refusalNoted = false;
           review = transitionReviewState(review, action.state, calls);
           reviewPage = undefined;
           flush();
@@ -958,6 +968,14 @@ function abortError(): Error {
   const err = new Error('the approval was aborted');
   err.name = 'AbortError';
   return err;
+}
+
+/** Whether a `state` action changes nothing but the note: every other field of the review is the very same value. */
+function noteOnly(before: ToolReviewState, action: ReviewKeyAction): boolean {
+  if (action.kind !== 'state' || action.state.message === before.message) return false;
+  const was = before as unknown as Record<string, unknown>;
+  const now = action.state as unknown as Record<string, unknown>;
+  return Object.keys(was).every((name) => name === 'message' || was[name] === now[name]);
 }
 
 function boundedDisplayText(source: string, limit: number): string {

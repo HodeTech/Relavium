@@ -108,7 +108,7 @@ function endingsWord(endings: string): string {
  * change that only adds or drops the final newline does. The ordinary LF/empty pair (a new, emptied or LF file) is
  * not worth a row either.
  */
-function endingsWarning(diff: NonNullable<ToolPreview['diff']>): string | undefined {
+export function endingsWarning(diff: NonNullable<ToolPreview['diff']>): string | undefined {
   const before = diff.beforeEndings;
   const after = diff.afterEndings;
   const plain = (endings: string): boolean => endings === 'lf' || endings === 'empty';
@@ -259,11 +259,6 @@ export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
     ? `[Ctrl+Y] Allow${input.cacheable ? `   [Ctrl+G] Allow all ${input.scope} this session` : ''}`
     : '(Allow is locked until you inspect the change)';
   return [grants, '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn'];
-}
-
-/** The full view's one-line legend while the session-wide grant waits for its confirmation. */
-export function fullViewConfirmLegend(scope: string): string {
-  return `Press Enter to allow all ${scope} this session \u00b7 any other key cancels`;
 }
 
 /** Rows a denial-reason capture takes beyond the key rows it replaces (the disclosure above the input). */

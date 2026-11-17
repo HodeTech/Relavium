@@ -177,6 +177,7 @@ flowchart TD
 | 0131 | [A round that made progress resets the correction budget, and a line range past the end of a file is clipped](0131-a-round-that-made-progress-resets-the-correction-budget.md) | Accepted | 2026-11-16 |
 | 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted | 2026-11-16 |
 | 0133 | [An `ask_user` question and its answer are kept with the session](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) | Accepted | 2026-11-16 |
+| 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
 
 ## Creating a new ADR
 

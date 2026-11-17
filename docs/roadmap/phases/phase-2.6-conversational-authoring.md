@@ -5773,3 +5773,48 @@ and the eight-target CI legs. The 44 non-gating Sonar maintainability findings a
 *Verification.* Conversion and new tests by three workers (`chat-store-approval-guard` 159→209 tests, `tool-review-host` 118→144, the five remaining files 326→355, core `ask-user` 172→178); the CLI suite went from 8,601 to **8,706 passed (14 skips)** and core from 5,564 to 5,570. Mutation checks: with the answer check changed so a bare `y`/`g`/`n`/`r` answers, 61 tests fail (the weaker single-function variant fails 2, because a bare key also never enters the chord branch); with the legacy reducer approving a bare `y`, 4 fail; with the `ask_user` regex reverted, exactly the 6 new token cases fail; the workers' 13 + 8 further mutants on scratch copies were all killed. The gate steps affected re-ran on the final source: lint and strict types (17 tasks), every workspace test (CI environment), build, fence/engine/bundle checks, the compiled-CLI smoke, **1,129 acceptance-tool cases** and the enforced coverage run (914 files, **19,945 tests: 19,920 passed, 25 skips**) pass. The wire/usage/filesystem/secrets mutation controls were not repeated: nothing they run or pin was touched. A separate security sitting (opus, read-only, probes through the real Ink parser) found **no blocker, high or medium**: every bare key answers nothing with every guard off, no terminal reply, output sequence or clipboard content produces an answer chord while the always-mounted paste listener is present, and no input path is weaker than before. Its four lows and four informational notes are in [deferred-tasks.md](../deferred-tasks.md) (the Ctrl+G reflex, `modifyOtherKeys` terminals, token look-alikes, wording); it also corrected two sentences of the ADR note and one stale line of the security standard.
 
 **Not claimed.** No manual test in a real terminal (VS Code's integrated terminal, tmux, Windows Terminal, iTerm): whether a host swallows one of the four chords is unverified here, and `Esc` always stops the turn. The legacy approval prompt and its `reasonDraft` capture are dead code still in the tree (deferred-tasks); final-head CI and the maintainer's acceptance are owed.
+
+### The full view and the tool details — ADR-0134 (2026-11-17)
+
+After a manual test the maintainer found the full view (`[v]` on the approval card) and `/details` hard to use, and asked whether the Ctrl-chord answer keys were
+a mistake, since the card has no free-text field. Decisions (maintainer, 2026-11-17): **keep the chords** (the exposure is the composer's type-ahead, which lands
+on the card while a turn runs, not the card's content; a held prompt closes the same window the 1.5 s typeahead refusal closes, and only a chord closes the
+first key after silence), **keep the tool-call list and detail screens and rebuild them**, and `p` writes **only non-ASCII characters** as `<U+…>`.
+[ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) records it; it amends ADR-0120's layout and keys and
+ADR-0129 §1. The card, its keys, the guard and the answer chords do not change.
+
+**Built on `development` (uncommitted when this was written).** One `ReviewScreen` for both doors: it opens on the first change, lists each unchanged line once
+(the `=before N` copy is skipped when no mask touches it), keeps one measured frame (chrome counted once, a reserved message row, a target slot), and has line and
+page scrolling, `Home`/`End`, `Tab`/`Shift+Tab` between changes (and between the pages of a long change), a position/percentage and a status rule that names the
+changed lines off the page by side. Details open on the newest call and list `tool · target · +a −r`; a call without a diff shows no `0 changed lines` rows. The
+legend is a key row in the card's style. New files: `tool-review-scroll.ts` (motion), `tool-review-screen.ts` (words, chrome, call list).
+
+**Reviews (D64) and separate security sittings.** Four review rounds and four separate security sittings (opus, read-only, probes through the real Ink host)
+ran over the increment. They found: **one high** — a row wider than its page was cut by the renderer after the projection had counted its bytes as shown, which
+opened the mask and shortened-target locks on bytes never drawn (a digit plus U+20E3 measures two cells as a cluster and one as a sum; the same cause existed on the
+card's title rows before this ADR); **mediums** — the first fix was quadratic (65,536 combining marks froze a page 65 s), a keycap row's giving-back loop was still
+quadratic, the body's height changed when a message or the target row appeared, a search matched a skipped copy, `Tab` was O(document) (16 s on an 8 MiB keycap
+document), `Tab` stepped over part of a long change, and the context above a change was counted in lines where rows were meant (prose lines wrap). All are fixed at their roots (the row is
+measured as the whole string the renderer measures and is never cut; growth by token-width sum, one verified whole-row measure, a halving search; `Tab` by
+halving over the change index; backward `Tab` lands on the page that ends on the nearest changed line above); each fix has the reviewer's reproduction as a test,
+and the workers' oracle and mutation tests found several further real defects the probes had missed. The amendments in the ADR record each round. The fourth round's
+findings were verified with the reviewers' own reproduction and fuzz scripts (the Tab walks, the exhaustive `escapedFit` check, the stale-note guard, the
+cluster cases) and **not** by a fifth full review round, by the maintainer's choice.
+
+**Tests.** The eight review/approval test files hold **1,315 tests** (`tool-review` 263, `tool-review-host` 266, `tool-review-scroll` 137, `tool-review-listing`
+140, `tool-review-screen` 243, `tool-review-card` 41, `chat-store-review-document` 16, `chat-store-approval-guard` 209); every new family was mutation-checked on
+scratch copies, and the worker tests assert properties (every changed line is drawn on some landing, a key moves strictly, the last page is full) as well as the
+fixtures. A Sonar S6389 on a literal bidi character in a test was fixed in source with `String.fromCharCode`.
+
+**Gate on the final source (2026-11-17), run in parallel for the first time** (`run-gates-par.zsh`, a local runner that is not in the repository: serial quick steps,
+then the wire, usage, filesystem and secrets mutation controls cut with their own `--shard i/n` in parallel lanes on isolated copies, then the enforced coverage run
+alone; the tree fingerprint was identical before and after). Every step passes: workspace lint and strict types, the build and format check, the fence, engine-dependency and
+bundle-closure checks, the five smoke steps, **1,129 acceptance-tool cases**, every workspace test under the CI environment, the usage cohort and the wire, usage,
+filesystem and secrets mutation controls, and the enforced coverage run (**917 files, 20,740 tests: 20,715 passed, 25 skips**). The whole gate took **44 minutes** (the serial gate
+takes about 94). The first coverage run failed once: three `stream-containers` composition tests (markdown, untouched by this change) timed out at 5 s while the machine's
+one-minute load average spiked to 56 (unexplained source; the swap was 97% full); the same tests take 0.33–0.55 s alone under the coverage configuration, and a second
+coverage run on the identical tree passed with a peak load of 3.7 — one failure and one pass, not a measured rate, so it is recorded here and not as "flaky".
+
+**Not claimed.** No fifth complete review round and no sitting after the final round's fixes (see above). The width model follows `string-width`, which is what Ink measures; what a real terminal draws for a cluster `string-width` counts differently is the standing
+ADR-0069 assumption the measured acknowledgement cannot see, so a manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) is owed for `v`, `/details`, `p` and the chords.
+Low items are in [deferred-tasks.md](../deferred-tasks.md). Final-head CI and the maintainer's acceptance are owed.

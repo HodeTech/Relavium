@@ -12,7 +12,6 @@ import {
   cardStats,
   cardVerb,
   cardWarnings,
-  fullViewConfirmLegend,
   wrapWords,
 } from './tool-review-card.js';
 import { createReviewDocument } from './tool-review-projection.js';
@@ -436,13 +435,6 @@ describe('cardKeyRows while the session-wide grant waits for its confirmation (G
     expect(
       cardKeyRows({ inspected: true, cacheable: true, scope: 'x', confirmAlways: false }),
     ).toEqual(cardKeyRows({ inspected: true, cacheable: true, scope: 'x' }));
-  });
-  it('says the same in the full view, in one row that fits 80 columns for the common scopes', () => {
-    expect(fullViewConfirmLegend('file writes')).toBe(
-      'Press Enter to allow all file writes this session \u00b7 any other key cancels',
-    );
-    for (const scope of ['file writes', 'file edits'])
-      expect(displayWidth(fullViewConfirmLegend(scope))).toBeLessThanOrEqual(80);
   });
   it('has two refusal notes that each fit one row of the card and say what to do', () => {
     for (const note of [CARD_TYPEAHEAD_NOTE, CARD_LOCKOUT_NOTE]) {

@@ -266,3 +266,132 @@ describe('a read-only plan turn builds nothing for a call it refuses', () => {
     expect(store.getSnapshot().review?.document?.lines.length).toBeGreaterThan(0);
   });
 });
+
+/** A call that has started and delivered its preview: the details list has a target to say about it. */
+function previewedCall(store: ChatStoreController, callId: string, target: string): void {
+  store.applyToolLiveEvent({ phase: 'started', callId, toolId: 'write_file' });
+  store.applyToolLiveEvent({
+    phase: 'preview',
+    callId,
+    toolId: 'write_file',
+    preview: Object.freeze({
+      kind: 'operation' as const,
+      target,
+      fields: Object.freeze([]),
+    }),
+  });
+}
+
+/** The three calls of a conversation, oldest first, each with a target of its own so a test can tell them apart. */
+function threeCalls(): ChatStoreController {
+  const store = newStore();
+  previewedCall(store, 'oldest', 'src/oldest.ts');
+  previewedCall(store, 'middle', 'src/middle.ts');
+  previewedCall(store, 'newest', 'src/newest.ts');
+  store.bindReviewVisibility(() => true);
+  return store;
+}
+
+// ADR-0134 §6: the list opened on the OLDEST call, so a person who had just watched a tool run had to press End to ask about it.
+describe('openDetails opens the tool-call list on the newest call (ADR-0134 §6)', () => {
+  it('selects the last of several calls: selected = count − 1 and the call id of the newest', () => {
+    const store = threeCalls();
+    store.openDetails();
+    const review = store.getSnapshot().review;
+    expect(review?.kind).toBe('details');
+    expect(review?.screen).toBe('list');
+    expect(review?.selected).toBe(2);
+    expect(review?.callId).toBe('newest');
+
+    const many = newStore();
+    for (const id of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) previewedCall(many, id, `src/${id}.ts`);
+    many.openDetails();
+    expect(many.getSnapshot().review?.selected).toBe(6);
+    expect(many.getSnapshot().review?.callId).toBe('g');
+  });
+
+  it('selects the only call when there is one: index 0, and its id', () => {
+    const store = newStore();
+    previewedCall(store, 'only', 'src/only.ts');
+    store.openDetails();
+    const review = store.getSnapshot().review;
+    expect(review?.screen).toBe('list');
+    expect(review?.selected).toBe(0);
+    expect(review?.callId).toBe('only');
+  });
+
+  it('opens an empty list on no call at all: index 0, no call id, and Enter opens nothing', () => {
+    const store = newStore();
+    store.bindReviewVisibility(() => true);
+    store.openDetails();
+    const review = store.getSnapshot().review;
+    expect(review?.kind).toBe('details');
+    expect(review?.screen).toBe('list');
+    expect(review?.selected).toBe(0);
+    expect(review?.callId).toBeUndefined();
+    store.handleReviewInput('', { return: true });
+    expect(store.getSnapshot().review?.screen, 'there is nothing to open').toBe('list');
+    expect(store.getSnapshot().review?.document).toBeUndefined();
+  });
+
+  it('means the call that STARTED last, not the one that was updated last', () => {
+    const store = newStore();
+    previewedCall(store, 'first', 'src/first.ts');
+    previewedCall(store, 'second', 'src/second.ts');
+    // The first call finishes after the second began: its row is updated, but it does not move to the bottom.
+    store.applyToolLiveEvent({
+      phase: 'completed',
+      callId: 'first',
+      toolId: 'write_file',
+      outcome: 'success',
+      summary: 'Wrote src/first.ts',
+    });
+    store.openDetails();
+    expect(store.getSnapshot().review?.callId).toBe('second');
+    expect(store.getSnapshot().review?.selected).toBe(1);
+  });
+
+  it('opens the details of that newest call on Enter', () => {
+    const store = threeCalls();
+    store.openDetails();
+    store.handleReviewInput('', { return: true });
+    const review = store.getSnapshot().review;
+    expect(review?.kind).toBe('details');
+    expect(review?.screen).toBe('full');
+    expect(review?.callId).toBe('newest');
+    expect(review?.document?.preview.target).toBe('src/newest.ts');
+  });
+
+  it('opens the OLDEST call when Home is pressed first, and the newest again after End', () => {
+    const store = threeCalls();
+    store.openDetails();
+
+    store.handleReviewInput('', { home: true });
+    expect(store.getSnapshot().review?.screen).toBe('list');
+    expect(store.getSnapshot().review?.selected).toBe(0);
+    expect(store.getSnapshot().review?.callId).toBe('oldest');
+    store.handleReviewInput('', { return: true });
+    const oldest = store.getSnapshot().review;
+    expect(oldest?.screen).toBe('full');
+    expect(oldest?.callId).toBe('oldest');
+    expect(oldest?.document?.preview.target).toBe('src/oldest.ts');
+
+    store.handleReviewInput('b', {});
+    expect(store.getSnapshot().review?.screen, 'b goes back to the list').toBe('list');
+    store.handleReviewInput('', { end: true });
+    expect(store.getSnapshot().review?.selected).toBe(2);
+    expect(store.getSnapshot().review?.callId).toBe('newest');
+    store.handleReviewInput('', { return: true });
+    expect(store.getSnapshot().review?.document?.preview.target).toBe('src/newest.ts');
+  });
+
+  it('moves one call at a time from the newest: Up selects the middle call, and Enter opens it', () => {
+    const store = threeCalls();
+    store.openDetails();
+    store.handleReviewInput('', { upArrow: true });
+    expect(store.getSnapshot().review?.selected).toBe(1);
+    expect(store.getSnapshot().review?.callId).toBe('middle');
+    store.handleReviewInput('', { return: true });
+    expect(store.getSnapshot().review?.document?.preview.target).toBe('src/middle.ts');
+  });
+});

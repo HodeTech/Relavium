@@ -14,6 +14,7 @@ import {
   cardWarnings,
 } from './tool-review-card.js';
 import {
+  CARD_CONTEXT_LINES,
   cardStartLine,
   projectReviewPage,
   REVIEW_START,
@@ -23,6 +24,24 @@ import {
   type ReviewPage,
   type SourceRange,
 } from './tool-review-projection.js';
+import {
+  changeJump,
+  compareCursors,
+  fullOpeningCursor,
+  lastPageStart,
+  lineRows,
+  offPageChangeLanding,
+  pageDown,
+  pageUp,
+  scrollByLines,
+  topCursor,
+  type ScrollView,
+} from './tool-review-scroll.js';
+import {
+  FULL_DEFAULT_CHROME_ROWS,
+  fullBodyRows,
+  type InspectionPending,
+} from './tool-review-screen.js';
 
 /**
  * How long an approval card must have been continuously on screen — counted from its acknowledged frame — before an
@@ -151,7 +170,6 @@ export interface ToolReviewState {
   readonly callId: string | undefined;
   readonly document: ReviewDocument | undefined;
   readonly cursor: ReviewCursor;
-  readonly previous: readonly ReviewCursor[];
   readonly reveal: boolean;
   readonly numeric: boolean;
   readonly inspected: readonly SourceRange[];
@@ -172,8 +190,8 @@ export function initialToolReview(
     screen: initialReviewScreen(kind, document),
     callId,
     document,
-    cursor: REVIEW_START,
-    previous: [],
+    // Details open on the document's first LISTED line: a cursor never rests on a copy the full view leaves out.
+    cursor: kind === 'details' && document !== undefined ? topCursor(document) : REVIEW_START,
     reveal: false,
     numeric: false,
     inspected: [],
@@ -192,17 +210,64 @@ export function initialToolReview(
  * that shortens the target). Passing what the card draws makes the legend, the warning and the keys agree.
  */
 export function reviewInspected(state: ToolReviewState, shownTarget?: SourceRange): boolean {
+  const pending = inspectionPending(state, shownTarget);
+  return !pending.target && pending.masks === 0;
+}
+/**
+ * What of the inspection an affirmative answer needs is still owed, by cause: the whole target (when the card had to shorten
+ * it) and the masked ranges that must be revealed and drawn. {@link reviewInspected} is exactly "nothing owed", so the lock
+ * sentence the full view prints and the lock the keys enforce are one definition.
+ */
+export function inspectionPending(
+  state: ToolReviewState,
+  shownTarget?: SourceRange,
+): InspectionPending {
+  const seen = coverage(state.inspected);
   const target = state.requiredTarget ?? shownTarget;
-  const requirements = [
-    ...(state.document?.required ?? []),
-    ...(target === undefined ? [] : [target]),
-  ];
-  return requirements.every((required) =>
-    state.inspected.some(
-      (seen) =>
-        seen.field === required.field && seen.start <= required.start && seen.end >= required.end,
-    ),
-  );
+  return {
+    target: target !== undefined && !seen(target),
+    masks: (state.document?.required ?? []).filter((required) => !seen(required)).length,
+  };
+}
+/**
+ * A test for "has this range been drawn": `inspected` is kept merged and sorted by `acknowledgeToolReview`, so the one range that
+ * could cover a required one is the last whose start is not after it — a binary search instead of a scan of every range for
+ * every requirement (thousands of masks). A list that is not in that shape (a hand-built state) is scanned, as it always was.
+ */
+function coverage(inspected: readonly SourceRange[]): (required: SourceRange) => boolean {
+  let ordered = true;
+  for (let index = 1; index < inspected.length && ordered; index++) {
+    const before = inspected[index - 1];
+    const range = inspected[index];
+    if (before === undefined || range === undefined) continue;
+    ordered =
+      before.field < range.field || (before.field === range.field && before.end < range.start);
+  }
+  if (!ordered)
+    return (required) =>
+      inspected.some(
+        (range) =>
+          range.field === required.field &&
+          range.start <= required.start &&
+          range.end >= required.end,
+      );
+  return (required) => {
+    let low = 0;
+    let high = inspected.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      const range = inspected[middle];
+      if (
+        range !== undefined &&
+        (range.field < required.field ||
+          (range.field === required.field && range.start <= required.start))
+      )
+        low = middle + 1;
+      else high = middle;
+    }
+    const range = inspected[low - 1];
+    return range !== undefined && range.field === required.field && range.end >= required.end;
+  };
 }
 export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage): ToolReviewState {
   if (!page.valid) return state;
@@ -314,7 +379,30 @@ export function reduceToolReviewKey(
   }
   const modal = reduceModalReviewKey(state, input, key, visible, callCount);
   if (modal !== undefined) return modal;
-  if (input === 'v' && state.screen === 'card') return reviewChange(state, { screen: 'full' });
+  if (input === 'v' && state.screen === 'card')
+    return reviewChange(state, {
+      screen: 'full',
+      // The full view opens where the card does — on the first change — unless the target the card shortened must be read
+      // first; a page the card has not drawn yet (no frame) cannot say, so it opens at the top.
+      cursor:
+        state.document === undefined
+          ? REVIEW_START
+          : fullOpeningCursor(state.document, {
+              targetShortened:
+                page === undefined || (state.requiredTarget ?? page.requiredTarget) !== undefined,
+              // The card's geometry stands in for the full view's (a little smaller): the change must be on the page it opens.
+              ...(page === undefined
+                ? {}
+                : {
+                    view: {
+                      columns: page.columns,
+                      rowLimit: page.rowLimit,
+                      reveal: false,
+                      numeric: false,
+                    },
+                  }),
+            }),
+    });
   if (state.screen === 'full' && input === 'p')
     return reviewChange(state, { numeric: !state.numeric });
   if (!visible) return { kind: 'none' };
@@ -403,28 +491,50 @@ export function toolReviewTarget(
     false,
   );
 }
+/**
+ * The part of the target the title rows cannot hold, as a range the person must have had on screen before an affirmative
+ * answer — or `undefined` when the whole target fits. Both screens and the page read it from here, so the card's lock, the
+ * full view's lock sentence and the keys agree before any frame has been acknowledged.
+ */
+export function reviewRequiredTarget(
+  state: ToolReviewState,
+  columns: number,
+  rows: number,
+): SourceRange | undefined {
+  const document = state.document;
+  const target = toolReviewTarget(state, columns, rows);
+  const shortened = target?.next !== undefined || target?.valid === false;
+  const line = document?.preview.target === undefined ? undefined : document.lines[0];
+  return shortened && line !== undefined
+    ? { field: line.field, start: line.start, end: line.end }
+    : undefined;
+}
+/**
+ * @param chromeRows the rows the full view spends around its body ({@link fullChrome}'s `rows`); the view that draws the
+ *   chrome says how many it is, so the body is exactly what is left. Without it a fixed allowance stands in (a test, a probe).
+ */
 export function toolReviewPage(
   state: ToolReviewState,
   columns: number,
   rows: number,
+  chromeRows?: number,
 ): ReviewPage | undefined {
   const document = state.document;
   if (document === undefined || state.screen === 'list') return undefined;
   const target = toolReviewTarget(state, columns, rows);
   const shortenedTarget = target?.next !== undefined || target?.valid === false;
   const targetLine = document.preview.target === undefined ? undefined : document.lines[0];
-  const requiredTarget =
-    shortenedTarget && targetLine !== undefined
-      ? { field: targetLine.field, start: targetLine.start, end: targetLine.end }
-      : undefined;
+  const requiredTarget = reviewRequiredTarget(state, columns, rows);
   const card = state.screen === 'card';
   const denialRows =
     state.denial === undefined ? 0 : denialReasonDisclosure(Math.max(1, columns - 2)).length;
   // The card's lock is read from what the card draws (the shortened target), not only from what an acknowledged
   // frame has recorded, so its very first frame already says Allow is locked.
-  const inspected = reviewInspected(state, requiredTarget);
+  // Only the card draws its lock from this; the full view's chrome counts its own pending inspection once per frame.
+  const inspected = card ? reviewInspected(state, requiredTarget) : true;
   // The docked card (ADR-0129) spends up to half the terminal: its title, one summary row, its warnings, the two
-  // key rows and any denial capture are chrome; every other row is diff body. The full view keeps its own budget.
+  // key rows and any denial capture are chrome; every other row is diff body. The full view's chrome is counted by
+  // `fullChrome` (ADR-0134) and handed in.
   const cardRowsFor = (changesNotShown: number, linesNotShown: number): number => {
     const cardChrome =
       CARD_RULE_ROWS +
@@ -443,27 +553,39 @@ export function toolReviewPage(
       (state.message === '' ? 0 : 1);
     return Math.min(CARD_MAX_BODY_ROWS, cardRowBudget(rows) - cardChrome);
   };
-  const fullRows =
-    rows -
-    15 -
-    (state.searching ? 2 : 0) -
-    (state.denial === undefined ? 0 : denialRows + 2) -
-    (state.message === '' ? 0 : 2);
-  // The card opens on the change (with a little context above it), not on the file's first rows; the full view
-  // keeps the person's own cursor and always starts at the top.
+  const fullRows = fullBodyRows(
+    rows,
+    chromeRows ?? FULL_DEFAULT_CHROME_ROWS + (state.searching ? 1 : 0),
+  );
+  // The card opens on the change (with a little context above it), not on the file's first rows. The full view starts
+  // where the person's own cursor is — which `v` sets to the same first change — and lists each unchanged line once.
   const opening: ReviewCursor =
     card && targetLine !== undefined ? { line: 1, offset: 0 } : state.cursor;
-  const openLine = card ? cardStartLine(document, opening.line) : opening.line;
+  // The card's context is counted in rows as well as lines: wrapped lines (prose) could otherwise fill the whole card.
+  const estimate = card ? cardRowsFor(0, 0) : 0;
+  const openLine = card
+    ? cardStartLine(document, opening.line, {
+        budgetRows: Math.max(CARD_CONTEXT_LINES, Math.floor(estimate / 3)),
+        rowsOf: (index) =>
+          lineRows(document, index, {
+            columns: Math.max(0, columns - 2),
+            rowLimit: Math.max(1, estimate),
+            reveal: state.reveal,
+            numeric: state.numeric,
+          }),
+      })
+    : opening.line;
   const start = openLine === opening.line ? opening : { line: openLine, offset: 0 };
   const project = (bodyRows: number): ReviewPage =>
     projectReviewPage(
       document,
       start,
       Math.max(0, columns - 2),
-      Math.max(1, card ? bodyRows : Math.min(200, fullRows)),
+      Math.max(1, card ? bodyRows : fullRows),
       state.reveal,
       state.numeric,
       card,
+      !card,
     );
   let page = project(cardRowsFor(0, 0));
   // A change (or, without a diff, a line of the call) the body cannot reach gets its own warning row, which the body
@@ -506,12 +628,18 @@ function reduceDenialKey(state: ToolReviewState, input: string, key: ChatKey): R
     return reviewChange(state, { denial: denial + input });
   return { kind: 'none' };
 }
+/** How far PgUp and PgDn move the selection of the tool-call list. */
+const LIST_PAGE = 10;
 function reduceListKey(state: ToolReviewState, key: ChatKey, callCount: number): ReviewKeyAction {
-  if (key.upArrow) return reviewChange(state, { selected: Math.max(0, state.selected - 1) });
-  if (key.downArrow)
-    return reviewChange(state, {
-      selected: Math.min(Math.max(0, callCount - 1), state.selected + 1),
-    });
+  const last = Math.max(0, callCount - 1);
+  const select = (selected: number): ReviewKeyAction =>
+    reviewChange(state, { selected: Math.min(last, Math.max(0, selected)) });
+  if (key.upArrow) return select(state.selected - 1);
+  if (key.downArrow) return select(state.selected + 1);
+  if (key.pageUp) return select(state.selected - LIST_PAGE);
+  if (key.pageDown) return select(state.selected + LIST_PAGE);
+  if (key.home) return select(0);
+  if (key.end) return select(last);
   if (key.return) return { kind: 'select' };
   return { kind: 'none' };
 }
@@ -521,33 +649,82 @@ function reduceFullReviewKey(
   key: ChatKey,
   page: ReviewPage | undefined,
 ): ReviewKeyAction {
-  if (key.home) return reviewChange(state, { cursor: REVIEW_START, previous: [] });
-  if (input === 'r') return reviewChange(state, { reveal: !state.reveal, message: '' });
+  const document = state.document;
+  // Inspection keys: they change what is shown, never what is answered. Revealing is offered only where something is masked.
+  if (input === 'r')
+    return document !== undefined && document.masks.length > 0
+      ? reviewChange(state, { reveal: !state.reveal, message: '' })
+      : { kind: 'none' };
   if (input === '/') return reviewChange(state, { searching: true, query: '' });
   if (input === 'c') return { kind: 'copy' };
   if (input === 'b')
     return state.kind === 'approval'
-      ? reviewChange(state, { screen: 'card', reveal: false, cursor: REVIEW_START, previous: [] })
+      ? reviewChange(state, {
+          screen: 'card',
+          reveal: false,
+          numeric: false,
+          message: '',
+          cursor: REVIEW_START,
+        })
       : reviewChange(state, {
           screen: 'list',
           reveal: false,
+          numeric: false,
+          message: '',
           document: undefined,
           callId: undefined,
           requiredTarget: undefined,
           inspected: [],
           cursor: REVIEW_START,
-          previous: [],
         });
-  if ((key.pageDown || key.downArrow) && page?.next !== undefined)
-    return reviewChange(state, {
-      cursor: page.next,
-      previous: [...state.previous.slice(-4095), state.cursor],
-    });
-  if ((key.pageUp || key.upArrow) && state.previous.length > 0)
-    return reviewChange(state, {
-      cursor: state.previous.at(-1) ?? REVIEW_START,
-      previous: state.previous.slice(0, -1),
-    });
+  if (document === undefined || page === undefined) return { kind: 'none' };
+  // Movement. The geometry is the page's own, so a page, an `End` and a scroll agree with what is drawn.
+  const view: ScrollView = {
+    columns: page.columns,
+    rowLimit: page.rowLimit,
+    reveal: state.reveal,
+    numeric: state.numeric,
+  };
+  // A key that cannot move still answers: it takes down a note that is no longer true (`No later change`, a clipboard note)
+  // instead of leaving it on screen — and a key that does nothing at all is `none`, typing evidence like any other.
+  const stale = (): ReviewKeyAction =>
+    state.message === '' ? { kind: 'none' } : reviewChange(state, { message: '' });
+  const go = (cursor: ReviewCursor | undefined, missing?: string): ReviewKeyAction => {
+    if (cursor === undefined)
+      return missing === undefined ? stale() : reviewChange(state, { message: missing });
+    if (compareCursors(cursor, state.cursor) === 0) return stale();
+    return reviewChange(state, { cursor, message: '' });
+  };
+  if (key.home) return go(topCursor(document));
+  if (key.end) return go(lastPageStart(document, view));
+  if (key.upArrow || input === 'k') return go(scrollByLines(document, state.cursor, -1, view));
+  if (key.downArrow || input === 'j') return go(scrollByLines(document, state.cursor, 1, view));
+  if (key.pageUp) return go(pageUp(document, state.cursor, view));
+  if (key.pageDown || input === ' ') return go(pageDown(document, state.cursor, page.next, view));
+  if (key.tab) {
+    const forward = key.shift !== true;
+    const direction = forward ? 1 : -1;
+    // Two candidates: the opening of the next change that opens elsewhere, and the nearest changed line this page does not
+    // draw (the rest of a change longer than a page, or one the wrapped lines above push down). The NEARER one wins, so no
+    // changed line is ever stepped over: every landing shows the next one not yet seen.
+    const jumped = changeJump(document, state.cursor, direction, view);
+    const off = offPageChangeLanding(document, state.cursor, direction, view, page.next);
+    const landing =
+      jumped === undefined
+        ? off
+        : off === undefined
+          ? jumped
+          : compareCursors(off, jumped) < 0 === forward
+            ? off
+            : jumped;
+    if (landing !== undefined) return go(landing);
+    // Changed lines remain but neither lands (a partly drawn line, the last page): page toward them rather than say there is none.
+    if (forward && page.changesBelow > 0)
+      return go(pageDown(document, state.cursor, page.next, view), 'No later change');
+    if (!forward && page.changesAbove > 0)
+      return go(pageUp(document, state.cursor, view), 'No earlier change');
+    return go(undefined, forward ? 'No later change' : 'No earlier change');
+  }
   return { kind: 'none' };
 }
 /**
@@ -610,12 +787,7 @@ function reduceSearchKey(state: ToolReviewState, input: string, key: ChatKey): R
     const cursor = findReviewMatch(state.document, state.cursor, query, state.reveal);
     if (cursor === undefined)
       return reviewChange(state, { searching: false, message: 'No later visible match' });
-    return reviewChange(state, {
-      cursor,
-      previous: [...state.previous.slice(-4095), state.cursor],
-      searching: false,
-      message: 'Match found',
-    });
+    return reviewChange(state, { cursor, searching: false, message: 'Match found' });
   }
   if (key.backspace || key.delete)
     return reviewChange(state, { query: (state.query ?? '').slice(0, -1) });
@@ -631,7 +803,8 @@ function findReviewMatch(
 ): ReviewCursor | undefined {
   for (let index = cursor.line; index < document.lines.length; index++) {
     const line = document.lines[index];
-    if (line === undefined) continue;
+    // A copy the full view does not list has an identical twin that it does: the match is found there, where the page can show it.
+    if (line === undefined || line.fullSkip === true) continue;
     const field = document.fields[line.field];
     if (field === undefined) continue;
     const start = Math.max(line.start, index === cursor.line ? cursor.offset : 0);

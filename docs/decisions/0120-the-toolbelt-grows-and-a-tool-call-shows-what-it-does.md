@@ -2,6 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; proposal refined 2026-11-11)
+- **Amended by**: [ADR-0134](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) — the full view's and the tool details' layout, row budget and keys (the inspection and safety rules stay).
 - **Related**: [ADR-0029](0029-tool-policy-hardening.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0095](0095-what-an-agent-session-remembers-across-turns.md), [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md), [phase 2.6 · 2.6.M](../roadmap/phases/phase-2.6-conversational-authoring.md#26m--the-first-class-toolbelt-breadth--rendering), [MVP-A8, MVP-A9](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 > **Accepted 2026-11-11 (maintainer):** the corrected design and linked MVP-3

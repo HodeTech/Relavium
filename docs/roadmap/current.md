@@ -224,6 +224,21 @@ owns the details and what is not claimed. The native adapter findings are their 
 increment after this round; final-head platform, scanner and PR checks and the
 maintainer's acceptance are owed.
 
+**The full view and the tool details (2026-11-17): implemented on `development`, uncommitted.**
+[ADR-0134](../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)
+(Accepted 2026-11-17) rebuilt the approval card's `[v]` full view and `/details` as one readable
+screen: it opens on the first change, lists each unchanged line once, scrolls by line and page,
+jumps between changes with `Tab`/`Shift+Tab`, and says which changed lines are off the page; details
+open on the newest call and show `tool · target · +a −r`. The maintainer kept the Ctrl-chord answer
+keys. Four review rounds and four separate security sittings found one high (a row the renderer cut
+after the projection counted it as shown) and several mediums (quadratic row fitting, an O(document)
+`Tab`); all are fixed and the last round's fixes were verified with the reviewers' own reproductions,
+not a fifth round. The
+[record](phases/phase-2.6-conversational-authoring.md#the-full-view-and-the-tool-details--adr-0134-2026-11-17)
+owns the details and what is not claimed. The full gate on the final source passes (20,740 tests:
+20,715 passed, 25 skips; 1,129 acceptance-tool cases; the mutation controls; the enforced coverage run
+after one environment-caused retry the record names). Final-head CI and the maintainer's acceptance are owed.
+
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
 [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
