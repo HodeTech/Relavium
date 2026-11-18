@@ -1625,8 +1625,9 @@ fn is_absent(path: &Path) -> bool {
 /// Verify one opened inventory entry and return its size. `None` means an uncommitted entry that was
 /// removed AFTER it was opened: the producer unlinked the very file the scan holds, so its link count
 /// reads zero and the private-file check refuses it. Skip it like one that was already gone. The
-/// refusal only counts as a vanished entry when the name is really absent now; a file that is still
-/// there and fails the check is a changed index and stays fatal.
+/// refusal only counts as a vanished entry when the held file is already unlinked or the name is
+/// really absent now; a file that is still linked and fails the check is a changed index and stays
+/// fatal.
 fn verified_entry_size<P: Profile>(
     name: &str,
     path: &Path,
@@ -1636,9 +1637,27 @@ fn verified_entry_size<P: Profile>(
         P::verify_private_file(file).and_then(|()| io(file.metadata()).map(|info| info.len()));
     match verified {
         Ok(size) => Ok(Some(size)),
-        Err(_) if may_vanish_during_scan(name) && is_absent(path) => Ok(None),
+        Err(_) if may_vanish_during_scan(name) && (is_unlinked(file) || is_absent(path)) => {
+            Ok(None)
+        }
         Err(error) => Err(error),
     }
+}
+/// The held file's link count is already zero: the producer's unlink took effect on the very inode the
+/// scan holds. `unlink` lowers the link count BEFORE the name leaves the directory cache, so on Linux a
+/// lookup by name can still resolve for an instant after the held file reads zero (the name-only check
+/// failed about 40 % of 300-scan churn runs on aarch64 gnu). The link count of a held inode only goes
+/// down, so zero is exact proof that this entry is gone. There is no stable Windows read of it: a
+/// delete-pending file there is observable only on the eight-target CI, so Windows keeps the
+/// name-only proof.
+#[cfg(unix)]
+fn is_unlinked(file: &File) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().is_ok_and(|info| info.nlink() == 0)
+}
+#[cfg(not(unix))]
+fn is_unlinked(_file: &File) -> bool {
+    false
 }
 /// Result of one nonblocking claim attempt. Only `Contended` (another handle holds the claim, or the
 /// attempt was interrupted) can ever be waited out; every other failure is returned as an error.
@@ -3367,6 +3386,36 @@ mod custody_tests {
                     assert!(outcome.is_err(), "a committed record stays fatal");
                 }
             }
+            // The name can still resolve after the held file is unlinked: Linux lowers the link count
+            // before the name leaves the directory cache (a fresh file under the same name stands in for
+            // that instant). The held, dead inode proves the entry gone; the name does not decide it.
+            for (suffix, skipped) in [("reserved", true), ("prepare", true), ("record", false)] {
+                let name = format!("{nonce}.{suffix}");
+                let path = index.path.join(&name);
+                drop(
+                    TestProfile::create_private_file(&index.directory, OsStr::new(&name))
+                        .expect("entry"),
+                );
+                let file = open_scanned(&name, &path)
+                    .expect("open")
+                    .expect("the entry is there");
+                fs::remove_file(&path).expect("unlinked under the scan");
+                drop(
+                    TestProfile::create_private_file(&index.directory, OsStr::new(&name))
+                        .expect("the name resolves again"),
+                );
+                assert!(!is_absent(&path), "the name still resolves");
+                let outcome = verified_entry_size::<TestProfile>(&name, &path, &file);
+                if skipped {
+                    assert!(
+                        matches!(outcome, Ok(None)),
+                        "{suffix}: a dead inode is skipped"
+                    );
+                } else {
+                    assert!(outcome.is_err(), "a committed record stays fatal");
+                }
+                fs::remove_file(&path).expect("remove the stand-in");
+            }
             // A file that is still there and fails the private-file check is not a vanished entry.
             let name = format!("{nonce}.reserved");
             let path = index.path.join(&name);
@@ -3401,7 +3450,10 @@ mod custody_tests {
         // `.reserved`. This stress test only creates and removes `.reserved` entries (the removal half
         // of a pin; the rename half has its own deterministic tests): a scan that lists such an entry and
         // then finds it gone must skip it, not call the whole index changed (78 and 102 of 200 recovery
-        // passes failed under this churn before the fix, in two runs).
+        // passes failed under this churn before the fix, in two runs). On Linux the churn also meets the
+        // instant where an unlinked entry still resolves by name while the held file reads link count
+        // zero: 25 of 60 runs failed in an arm64 gnu container (and the PR #100 `aarch64-unknown-linux-gnu`
+        // leg) before `is_unlinked` proved the entry gone from the held file.
         let (root, home) = fixture_home("scan-churn");
         let index = Index::<TestProfile>::open(&root, true).expect("index");
         drop(

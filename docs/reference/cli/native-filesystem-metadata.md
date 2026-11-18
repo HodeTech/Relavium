@@ -458,8 +458,11 @@ whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
 `.reserved` removal) is skipped without a retry, whether it is gone before the
 scan opens it or is unlinked after the scan opened it (the held file is then
 the same inode but its link count reads zero; the entry only counts as
-vanished when its name is really absent, and a file that is still there and fails
-a check stays fatal). The TypeScript reader applies the same rule and, for an
+vanished when the held file already reads link count zero or its name is really
+absent: `unlink` lowers the count before the name leaves the directory cache, so on
+Linux the name can still resolve for an instant, and a file that is still linked
+and fails a check stays fatal; Windows keeps the name-only proof). The TypeScript
+reader applies the same rule and, for an
 entry whose `lstat` already reads link count zero (it can still succeed while an
 entry is being unlinked, with the name still there for a moment), does not require the
 name to be absent; it also runs the whole scan again for a
