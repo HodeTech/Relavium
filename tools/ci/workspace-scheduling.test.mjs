@@ -113,12 +113,19 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(command, 'turbo run lint typecheck && turbo run test --concurrency=1');
   assert.ok(packageJson.scripts.ci.split(' && ').includes('pnpm ci:workspaces'));
   const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
-  const ci = workflow.jobs.ci;
+  // The workspace job: the required `ci` context only aggregates it (pinned below with the guards).
+  const ci = workflow.jobs['ci-work'];
   const workspace = ci.steps.find((step) => step.name === 'Lint, typecheck, test');
   assert.equal(workspace.run, 'pnpm ci:workspaces');
   assert.equal(workspace.if, undefined);
   assert.equal(workspace['continue-on-error'], undefined);
   assert.equal(ci['timeout-minutes'], 25);
+  // It starts with the control jobs, after the native component only; a skipped or failed native build skips it, and the
+  // aggregate refuses the skip.
+  assert.equal(ci.needs, 'native-fs-assets');
+  assert.equal(ci.if, undefined);
+  assert.equal(ci['continue-on-error'], undefined);
+  assert.equal(ci.defaults, undefined);
   const variable = 'RELAVIUM_DB_NATIVE_DIAGNOSTICS';
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].env, [variable]);
   assert.deepEqual(turbo.config.tasks['@relavium/db#test'].dependsOn, [
@@ -312,7 +319,7 @@ test('required checks keep their branch-protection names and cannot be skipped',
   // Its guard steps keep exactly their keys: no `if`, `continue-on-error` or `shell` can soften one.
   assert.equal(workflow.jobs.ci.defaults, undefined);
   const guards = workflow.jobs.ci.steps.filter((step) => step.name?.startsWith('Require '));
-  assert.ok(guards.length >= 6);
+  assert.ok(guards.length >= 7);
   for (const guard of guards) {
     const keys = guard.env === undefined ? ['name', 'run'] : ['env', 'name', 'run'];
     assert.deepEqual(Object.keys(guard).sort(), keys, guard.name);
@@ -466,3 +473,229 @@ test('Windows cohorts retain twenty-four serial filesystem files and media cases
   assert.equal(db['continue-on-error'], undefined);
   assert.equal(db.run, 'pnpm --filter @relavium/db test');
 });
+
+/** The required `ci` context joins the workspace job (`ci-work`) and refuses every result but success; it does no work itself. */
+function checkWorkspaceJoin(workflow) {
+  const ci = workflow.jobs.ci;
+  assert.ok(ci.needs.includes('ci-work'));
+  assert.equal(ci.if, '${{ always() }}');
+  assert.equal(ci.name, 'lint · typecheck · test');
+  // The required result is the job's own: a job that tolerates failure would report success whatever its guards say.
+  assert.equal(ci['continue-on-error'], undefined);
+  // It runs repository code and needs no remote-cache credentials (the packed-CLI aggregate clears them the same way).
+  assert.deepEqual(ci.env, { TURBO_TOKEN: '', TURBO_TEAM: '' });
+  const guard = ci.steps.find((step) => step.name === 'Require complete workspace checks');
+  assert.ok(guard);
+  assert.deepEqual(Object.keys(guard).sort(), ['env', 'name', 'run']);
+  assert.deepEqual(guard.env, { WORKSPACE_CHECKS_RESULT: '${{ needs.ci-work.result }}' });
+  assert.equal(
+    guard.run,
+    "node -e \"require('node:assert/strict').equal(process.env.WORKSPACE_CHECKS_RESULT, 'success')\"",
+  );
+  assert.ok(
+    !ci.steps.some(
+      (step) => step.run === 'pnpm ci:workspaces' || step.run?.startsWith('pnpm install'),
+    ),
+    'the aggregate does no work of its own',
+  );
+  const work = workflow.jobs['ci-work'];
+  assert.equal(work.needs, 'native-fs-assets');
+  assert.equal(work.if, undefined);
+  assert.equal(work['continue-on-error'], undefined);
+  assert.ok(work.steps.some((step) => step.run === 'pnpm ci:workspaces'));
+}
+
+const readCiWorkflow = () => {
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  return parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+};
+
+test('the required ci context joins the workspace job and refuses every result but success', () => {
+  checkWorkspaceJoin(readCiWorkflow());
+});
+
+for (const [name, mutate] of [
+  [
+    'the workspace job dropped from needs',
+    (w) => (w.jobs.ci.needs = w.jobs.ci.needs.filter((id) => id !== 'ci-work')),
+  ],
+  [
+    'the workspace guard removed',
+    (w) =>
+      (w.jobs.ci.steps = w.jobs.ci.steps.filter(
+        (s) => s.name !== 'Require complete workspace checks',
+      )),
+  ],
+  [
+    'the workspace guard conditional',
+    (w) =>
+      (w.jobs.ci.steps.find((s) => s.name === 'Require complete workspace checks').if =
+        '${{ false }}'),
+  ],
+  [
+    'the workspace guard ignoring failure',
+    (w) =>
+      (w.jobs.ci.steps.find((s) => s.name === 'Require complete workspace checks')[
+        'continue-on-error'
+      ] = true),
+  ],
+  [
+    'the workspace guard neutered',
+    (w) =>
+      (w.jobs.ci.steps.find((s) => s.name === 'Require complete workspace checks').run = 'true'),
+  ],
+  [
+    'the workspace guard reading another job',
+    (w) =>
+      (w.jobs.ci.steps.find(
+        (s) => s.name === 'Require complete workspace checks',
+      ).env.WORKSPACE_CHECKS_RESULT = '${{ needs.packed-cli.result }}'),
+  ],
+  [
+    'the workspace guard under another shell',
+    (w) =>
+      (w.jobs.ci.steps.find((s) => s.name === 'Require complete workspace checks').shell =
+        'true {0}'),
+  ],
+  ['the aggregate no longer always running', (w) => delete w.jobs.ci.if],
+  ['the aggregate inheriting the remote-cache credentials', (w) => delete w.jobs.ci.env],
+  ['the aggregate tolerating failure', (w) => (w.jobs.ci['continue-on-error'] = true)],
+  ['the workspace job conditional', (w) => (w.jobs['ci-work'].if = '${{ false }}')],
+  ['the workspace job advisory', (w) => (w.jobs['ci-work']['continue-on-error'] = true)],
+  ['the workspace job without its native prerequisite', (w) => delete w.jobs['ci-work'].needs],
+  [
+    'the workspace job doing no checks',
+    (w) =>
+      (w.jobs['ci-work'].steps = w.jobs['ci-work'].steps.filter(
+        (s) => s.run !== 'pnpm ci:workspaces',
+      )),
+  ],
+  [
+    'the aggregate doing the work again',
+    (w) => w.jobs.ci.steps.push({ run: 'pnpm ci:workspaces' }),
+  ],
+]) {
+  test(`the workspace join refuses ${name}`, () => {
+    const workflow = readCiWorkflow();
+    mutate(workflow);
+    assert.throws(() => checkWorkspaceJoin(workflow), assert.AssertionError);
+  });
+}
+
+/** The commands the workspace job must run, each exactly once: the checks the required context stands for. */
+const WORKSPACE_COMMANDS = [
+  'pnpm install --frozen-lockfile',
+  'pnpm ci:workspaces',
+  'pnpm typecheck:tools',
+  'pnpm turbo run build',
+  'pnpm lint:bundle-closure',
+  'pnpm smoke:cli-bootstrap',
+  'pnpm db:sync-check',
+  'pnpm turbo run format:check',
+  'pnpm lint:fence-check',
+  'pnpm lint:engine-deps',
+  'pnpm lint:tools',
+  'pnpm lint:test-isolation',
+  'pnpm smoke:cli',
+  'pnpm smoke:media-packaging',
+  'pnpm smoke:overflow-capture',
+  'pnpm smoke:budget-replay',
+];
+
+/** Every check of the workspace job is a real, unconditional step: none can be skipped, tolerated, or turned into an echo. */
+function checkWorkspaceSteps(workflow) {
+  const work = workflow.jobs['ci-work'];
+  const checkout = work.steps[0];
+  assert.ok(checkout.uses.startsWith('actions/checkout@'));
+  // The replay check verifies frozen blobs against a predecessor commit, so the whole history is needed.
+  assert.deepEqual(checkout.with, { 'persist-credentials': false, 'fetch-depth': 0 });
+  assert.equal(work['timeout-minutes'], 25);
+  for (const command of WORKSPACE_COMMANDS) {
+    const steps = work.steps.filter((step) => step.run === command);
+    assert.equal(steps.length, 1, `${command} must be exactly one step of the workspace job`);
+  }
+  // The root ci script's own steps (less the controls, the acceptance tools and CI's package checks) are all among them.
+  const chain = packageJson.scripts.ci.split(' && ');
+  const owned = new Set(['smoke:cli-package', 'check:map-controls', 'test:acceptance-tools']);
+  for (const step of chain) {
+    const script = step.replace(/^pnpm /u, '');
+    if (step === 'turbo run build format:check') continue;
+    if (owned.has(script) || /^check:.*-mutations$/u.test(script)) continue;
+    assert.ok(
+      WORKSPACE_COMMANDS.includes(step),
+      `the ci script's ${step} must run in the workspace job`,
+    );
+  }
+  for (const step of work.steps) {
+    const name = step.name ?? step.uses;
+    assert.equal(step['continue-on-error'], undefined, name);
+    assert.equal(step['working-directory'], undefined, name);
+    // Only the diagnostics upload is conditional (it must run after a failure); only the replay fetch picks a shell.
+    const upload = step.name === 'Preserve native DB scheduling diagnostics';
+    assert.equal(step.if, upload ? '${{ always() }}' : undefined, name);
+    const bash = step.name === 'Ensure immutable replay predecessor is available';
+    assert.equal(step.shell, bash ? 'bash' : undefined, name);
+  }
+}
+
+test('every check of the workspace job is a real, unconditional step', () => {
+  checkWorkspaceSteps(readCiWorkflow());
+});
+
+for (const [name, mutate] of [
+  [
+    'a check turned into an echo',
+    (w) =>
+      (w.jobs['ci-work'].steps.find((s) => s.run === 'pnpm smoke:cli').run = 'echo pnpm smoke:cli'),
+  ],
+  [
+    'a check removed',
+    (w) =>
+      (w.jobs['ci-work'].steps = w.jobs['ci-work'].steps.filter(
+        (s) => s.run !== 'pnpm lint:tools',
+      )),
+  ],
+  ['a check run twice', (w) => w.jobs['ci-work'].steps.push({ run: 'pnpm db:sync-check' })],
+  [
+    'a check tolerating failure',
+    (w) =>
+      (w.jobs['ci-work'].steps.find((s) => s.run === 'pnpm turbo run format:check')[
+        'continue-on-error'
+      ] = true),
+  ],
+  [
+    'a check made conditional',
+    (w) =>
+      (w.jobs['ci-work'].steps.find((s) => s.run === 'pnpm smoke:overflow-capture').if =
+        '${{ false }}'),
+  ],
+  [
+    'a check run from another directory',
+    (w) =>
+      (w.jobs['ci-work'].steps.find((s) => s.run === 'pnpm lint:fence-check')['working-directory'] =
+        'scratch'),
+  ],
+  [
+    'a check under another shell',
+    (w) => (w.jobs['ci-work'].steps.find((s) => s.run === 'pnpm smoke:cli').shell = 'true {0}'),
+  ],
+  ['the history checkout shortened', (w) => delete w.jobs['ci-work'].steps[0].with['fetch-depth']],
+  [
+    'the checkout keeping its credentials',
+    (w) => delete w.jobs['ci-work'].steps[0].with['persist-credentials'],
+  ],
+  [
+    'the diagnostics upload no longer unconditional',
+    (w) =>
+      delete w.jobs['ci-work'].steps.find(
+        (s) => s.name === 'Preserve native DB scheduling diagnostics',
+      ).if,
+  ],
+]) {
+  test(`the workspace steps refuse ${name}`, () => {
+    const workflow = readCiWorkflow();
+    mutate(workflow);
+    assert.throws(() => checkWorkspaceSteps(workflow), assert.AssertionError);
+  });
+}

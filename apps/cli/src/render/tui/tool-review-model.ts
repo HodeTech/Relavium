@@ -266,7 +266,7 @@ function coverage(inspected: readonly SourceRange[]): (required: SourceRange) =>
       else high = middle;
     }
     const range = inspected[low - 1];
-    return range !== undefined && range.field === required.field && range.end >= required.end;
+    return range?.field === required.field && range.end >= required.end;
   };
 }
 export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage): ToolReviewState {
@@ -643,6 +643,18 @@ function reduceListKey(state: ToolReviewState, key: ChatKey, callCount: number):
   if (key.return) return { kind: 'select' };
   return { kind: 'none' };
 }
+
+/** Of two landings for one `Tab`, the one nearer in the direction of travel (either may be absent). */
+function nearerLanding(
+  jumped: ReviewCursor | undefined,
+  off: ReviewCursor | undefined,
+  forward: boolean,
+): ReviewCursor | undefined {
+  if (jumped === undefined) return off;
+  if (off === undefined) return jumped;
+  return compareCursors(off, jumped) < 0 === forward ? off : jumped;
+}
+
 function reduceFullReviewKey(
   state: ToolReviewState,
   input: string,
@@ -709,14 +721,7 @@ function reduceFullReviewKey(
     // changed line is ever stepped over: every landing shows the next one not yet seen.
     const jumped = changeJump(document, state.cursor, direction, view);
     const off = offPageChangeLanding(document, state.cursor, direction, view, page.next);
-    const landing =
-      jumped === undefined
-        ? off
-        : off === undefined
-          ? jumped
-          : compareCursors(off, jumped) < 0 === forward
-            ? off
-            : jumped;
+    const landing = nearerLanding(jumped, off, forward);
     if (landing !== undefined) return go(landing);
     // Changed lines remain but neither lands (a partly drawn line, the last page): page toward them rather than say there is none.
     if (forward && page.changesBelow > 0)

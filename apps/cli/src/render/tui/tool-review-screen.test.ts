@@ -34,6 +34,7 @@ import {
   fullNavLegend,
   fullStatusRow,
   fullWarnings,
+  keyLabelParts,
   type CallListEntry,
   type FullChromeInput,
   type InspectionPending,
@@ -3241,5 +3242,71 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         none();
       },
     );
+  });
+});
+
+/**
+ * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc` and the words between, in one pass. The regular expression
+ * it replaced (`/(\[[^\]]+\]|Esc)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
+ * 3.4 s). Mutation: put the oracle back, and the time bound fails; drop the `close > index + 1` test, and `[]` is a label.
+ */
+describe('keyLabelParts — a key legend in labels and words, in one pass', () => {
+  const oracle = (row: string): string[] =>
+    row.split(/(\[[^\]]+\]|Esc)/u).filter((part) => part.length > 0);
+
+  it('equals the regular expression on every string of up to six pieces', () => {
+    const pieces = ['[', ']', 'Esc', 'x', ' '];
+    let checked = 0;
+    const walk = (prefix: string, depth: number): void => {
+      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
+      checked++;
+      if (depth === 0) return;
+      for (const piece of pieces) walk(prefix + piece, depth - 1);
+    };
+    walk('', 6);
+    expect(checked).toBe(19_531);
+  });
+
+  it('is lossless: the parts put back together are the row, whatever the row holds', () => {
+    for (const row of [
+      '',
+      '[',
+      ']',
+      '[]',
+      '[[]',
+      '[a[b]c]',
+      'Esc',
+      'EscEsc',
+      '[Ctrl+Y] Allow  [Esc]',
+      'é[ü]ß',
+    ]) {
+      expect(keyLabelParts(row).join('')).toBe(row);
+    }
+  });
+
+  it('finds the labels the real legend rows hold', () => {
+    expect(keyLabelParts('[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn')).toEqual([
+      '[Ctrl+N]',
+      ' Deny   ',
+      '[b]',
+      ' Back to the card   ',
+      'Esc',
+      ' stops the turn',
+    ]);
+  });
+
+  it('treats a `[` with no `]` after it, and an empty `[]`, as plain text', () => {
+    expect(keyLabelParts('a [ b')).toEqual(['a [ b']);
+    expect(keyLabelParts('[]')).toEqual(['[]']);
+    expect(keyLabelParts('[] [x]')).toEqual(['[] ', '[x]']);
+  });
+
+  it('takes a long run of `[` (and a run of `[a` closed late) in linear time', () => {
+    for (const row of ['['.repeat(150_000), '[a'.repeat(100_000) + ']', '[]'.repeat(100_000)]) {
+      const started = performance.now();
+      keyLabelParts(row);
+      // Linear takes a few milliseconds; the quadratic expression took 3.4 s at 100,000.
+      expect(performance.now() - started).toBeLessThan(1_000);
+    }
   });
 });

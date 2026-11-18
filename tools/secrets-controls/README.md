@@ -299,7 +299,9 @@ physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 130-control / 390-phase full declaration runs as two round-robin shards of 65 controls
+(Since 2026-11-17 CI cuts the family, by then 139 controls, into three round-robin shards, `--shard k/3`; the
+figures in this paragraph are the two-shard measurement at the round-10 source.) The 130-control / 390-phase full
+declaration then ran as two round-robin shards of 65 controls
 (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,177 retained
 files (65 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many and measured
 50.24 MiB and 50.14 MiB, final export record included, against the unchanged

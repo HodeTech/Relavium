@@ -139,8 +139,11 @@ order, so the `count` shards partition the family; each shard is a selection wit
 `complete: false` and its own export, and records `shard: { index, count, declared,
 members }`, so the shards' summaries can be joined against the declaration. Only every
 shard of one count passing, each within the export bounds, covers the family. The
-secrets family runs as two shards because one export of all its controls exceeds the
-64-MiB bound; a full unsharded run still executes every control, but it cannot export.
+secrets family cannot export as one run because one export of all its controls exceeds the
+64-MiB bound; a full unsharded run still executes every control, but it cannot export. CI runs
+the secrets family as three shards and the filesystem family as two (`.github/workflows/ci.yml`;
+the secrets family ran as two until 2026-11-17, when a half had become the workflow's critical
+path), and the local gate (`pnpm gate`) cuts them the same way — a test keeps the counts equal.
 
 The permanent coordinator integration guard runs three bounded actual captures.
 Each family proves synthetic fixed/red/restored execution before a real assertion

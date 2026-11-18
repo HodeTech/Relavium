@@ -180,6 +180,22 @@ timings separately from cached task results; a local or advisory pass does not
 clear a failed required run. The full `pnpm run ci` adds the remaining build,
 formatting, isolation, smoke and causal checks.
 
+`pnpm gate` ([tools/ci/local-gate.mjs](../../tools/ci/local-gate.mjs)) is the same gate run in
+parallel, roughly 45 minutes where `pnpm run ci` takes about 94 on a developer machine. It reads the
+steps from the root `ci` script (so it cannot drift from it), runs the ordinary steps serially and
+stops at the first failure, runs the causal-control families in parallel lanes cut into the same
+shards CI runs, and then the enforced coverage run alone (`--profile fast` makes it one more lane;
+`--only <step,step>` re-runs named steps). It adds one step `pnpm run ci` lacks, the workspace
+tests under the CI environment (`CI=true GITHUB_ACTIONS=true`, past the Turbo cache). The
+installed-CLI smoke and the product map controls need every platform's native component and stay
+CI's (`--with-ci-owned` runs them). Nothing is weakened — every control, phase and case runs —
+though, as for `pnpm run ci`, the evidence-export bound (`RELAVIUM_ACCEPTANCE_EVIDENCE`) is a
+CI-only check: the gate runs the same controls in the same shards but does not export their
+evidence. The working tree is fingerprinted before and after, so a change made while the gate
+runs fails it; a step that runs longer than `--step-timeout` minutes (120) is stopped, and an
+interrupt stops every running step. It is a local convenience: the required checks in CI decide a
+merge.
+
 **Test isolation is part of that gate** (`pnpm lint:test-isolation`,
 [tools/test-isolation/check.mjs](../../tools/test-isolation/check.mjs)). A root run must
 collect this repo's tests and nothing else. A second checkout of the repo inside the working tree — an agent

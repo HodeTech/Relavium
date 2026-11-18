@@ -1592,7 +1592,7 @@ describe('the cost of a jump is counted: it grows with the logarithm of the chan
       const start = contextStartLine(document, index(document, '-4'), view);
       // The first context line above the change is the huge one: it does not fit, so there is no context at all.
       expect(start).toBe(index(document, '-4'));
-      expect(counted.rowLimits.length).toBe(1);
+      expect(counted.rowLimits).toHaveLength(1);
       for (const rowLimit of counted.rowLimits) expect(rowLimit).toBeLessThanOrEqual(budget + 1);
       expect(counted.chars, `${counted.chars} characters`).toBeLessThanOrEqual(
         (budget + 1) * 3 * view.columns,

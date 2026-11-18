@@ -5815,6 +5815,11 @@ takes about 94). The first coverage run failed once: three `stream-containers` c
 one-minute load average spiked to 56 (unexplained source; the swap was 97% full); the same tests take 0.33–0.55 s alone under the coverage configuration, and a second
 coverage run on the identical tree passed with a peak load of 3.7 — one failure and one pass, not a measured rate, so it is recorded here and not as "flaky".
 
+**After the push (2026-11-17).** The maintainer committed and pushed the increment (`13a79431`). Its `push` CI run failed because GitHub could not acquire a macOS arm64
+runner for `native metadata profile (aarch64-apple-darwin)` (the job was cancelled; five "require …" jobs downstream failed with it); the failed jobs were re-run, and the
+`pull_request` run had no failure when this was written. SonarCloud's gate was OK; of its 98 open non-gating code smells, 43 were new, and 36 were fixed in source (ADR-0134
+amendment 9 and the [deferred-tasks entry](../deferred-tasks.md)); the seven cognitive-complexity findings stay open by the maintainer's choice. The eight review test files now hold 1,320 tests.
+
 **Not claimed.** No fifth complete review round and no sitting after the final round's fixes (see above). The width model follows `string-width`, which is what Ink measures; what a real terminal draws for a cluster `string-width` counts differently is the standing
 ADR-0069 assumption the measured acknowledgement cannot see, so a manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) is owed for `v`, `/details`, `p` and the chords.
 Low items are in [deferred-tasks.md](../deferred-tasks.md). Final-head CI and the maintainer's acceptance are owed.

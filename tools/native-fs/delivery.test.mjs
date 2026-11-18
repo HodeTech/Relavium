@@ -425,7 +425,7 @@ test('source and bundled host loader pins and path-selection define cannot drift
   );
   assert.ok(NATIVE_BUILD_INPUTS.includes('apps/cli/src/engine/tool-host/fs-native-metadata.ts'));
   for (const name of [
-    'ci',
+    'ci-work',
     'fs-mutations',
     'secrets-mutations',
     'wire-mutations',
@@ -698,11 +698,13 @@ test('all twelve native consumers keep own-run separated downloads and validate 
     },
   ]) {
     const altered = JSON.parse(JSON.stringify(ci));
-    mutation(altered.jobs.ci.steps.find((step) => step.with?.pattern?.startsWith('native-fs-')));
+    mutation(
+      altered.jobs['ci-work'].steps.find((step) => step.with?.pattern?.startsWith('native-fs-')),
+    );
     assert.throws(() => checkRetryConsumers(altered, release));
   }
   const altered = JSON.parse(JSON.stringify(ci));
-  altered.jobs.ci.steps = altered.jobs.ci.steps.filter(
+  altered.jobs['ci-work'].steps = altered.jobs['ci-work'].steps.filter(
     (step) => !step.run?.includes('artifact.mjs select'),
   );
   assert.throws(() => checkRetryConsumers(altered, release));

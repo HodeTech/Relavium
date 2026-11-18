@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Execute the COMPILED CLI bundle — the artifact that actually ships.
 //
-// Shared by `.github/workflows/ci.yml`'s required job and the root `ci` script, so the local gate and the
+// Shared by `.github/workflows/ci.yml`'s required workspace job (`ci-work`) and the root `ci` script, so the local gate and the
 // real gate cannot drift on this check the way they did on `lint:tools` and the migration-sync check (#312).
 // Nothing in the required gate ran the binary before (#294): a bundle that compiled but could not boot
 // merged green.

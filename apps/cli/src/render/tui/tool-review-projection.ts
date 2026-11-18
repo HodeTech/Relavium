@@ -418,11 +418,7 @@ export function projectReviewPage(
       ? undefined
       : { line: page.lineIndex, offset: page.offset };
   const changes = hiddenChangedLines(document, cursor, next);
-  const listed = compact
-    ? document.cardRemainingLines
-    : dedupe
-      ? document.fullRemainingLines
-      : undefined;
+  const listed = listedRemainingLines(document, compact, dedupe);
   const after = next?.line ?? document.lines.length;
   return {
     rows: page.rows,
@@ -432,11 +428,7 @@ export function projectReviewPage(
     visibleSource: page.visibleSource,
     shown: reveal ? page.shown : [],
     next,
-    hiddenLines: compact
-      ? (document.cardRemainingLines[after] ?? 0)
-      : dedupe
-        ? (document.fullRemainingLines[after] ?? 0)
-        : document.lines.length - after,
+    hiddenLines: listed === undefined ? document.lines.length - after : (listed[after] ?? 0),
     hiddenBytes: hiddenReviewBytes(document, next, compact, dedupe),
     hiddenChanges: changes.above + changes.below,
     changesAbove: changes.above,
@@ -648,7 +640,7 @@ function projectReviewRow(
   // A row never ends between a base character and the zero-width mark that belongs to it (a keycap's digit and its U+20E3) —
   // unless giving the base back would make the row wider than its page (width is not monotone).
   if (page.valid && position < line.end && parts.length > 1) {
-    const last = parts[parts.length - 1] ?? '';
+    const last = parts.at(-1) ?? '';
     if (displayWidth(last) > 0 && displayWidth(tokenAt(page, line, field, position).token) === 0) {
       const shorter = label + parts.slice(0, -1).join('');
       const shorterWidth = displayWidth(shorter);
@@ -722,6 +714,26 @@ function appendReviewLineEnding(
   page.lineIndex++;
   return true;
 }
+/** The remaining-lines index of the view in use: the card's, the deduplicated full view's, or none (every line is listed). */
+function listedRemainingLines(
+  document: ReviewDocument,
+  compact: boolean,
+  dedupe: boolean,
+): readonly number[] | undefined {
+  if (compact) return document.cardRemainingLines;
+  if (dedupe) return document.fullRemainingLines;
+  return undefined;
+}
+/** The remaining-bytes index of the view in use (the same three views). */
+function listedRemainingBytes(
+  document: ReviewDocument,
+  compact: boolean,
+  dedupe: boolean,
+): readonly number[] {
+  if (compact) return document.cardRemainingBytes;
+  if (dedupe) return document.fullRemainingBytes;
+  return document.remainingBytes;
+}
 function hiddenReviewBytes(
   document: ReviewDocument,
   next: ReviewCursor | undefined,
@@ -729,11 +741,7 @@ function hiddenReviewBytes(
   dedupe = false,
 ): number {
   const nextLine = next === undefined ? undefined : document.lines[next.line];
-  const suffix = compact
-    ? document.cardRemainingBytes
-    : dedupe
-      ? document.fullRemainingBytes
-      : document.remainingBytes;
+  const suffix = listedRemainingBytes(document, compact, dedupe);
   const remaining = suffix[next?.line ?? document.lines.length] ?? 0;
   if (nextLine === undefined || next === undefined) return remaining;
   return (

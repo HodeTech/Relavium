@@ -2602,7 +2602,7 @@ describe.each(['chat', 'home'] as const)(
       expect(rows[screen.rule + 1], 'the message').toBe('No earlier change');
       expect(rows[screen.rule + 2], 'the search box').toMatch(/^Search visible source: a█/u);
       // The frame is exactly as tall as with no extra chrome at all (one row under the terminal's 24): the body gave way.
-      expect(rows.length).toBe(24);
+      expect(rows).toHaveLength(24);
       expect(rows[screen.rule - 1], 'and the body it was left is full, not padded').not.toBe('');
       expect(rows[screen.note]).toBe(FULL_NOTE);
       expect(rows.at(-1)).toBe('');
@@ -2633,7 +2633,7 @@ describe.each(['chat', 'home'] as const)(
       expect(rows[0]?.length, 'flush to the right edge of the usable width').toBe(78);
       expect(rows[1], 'the whole identity on one row').toBe(`tool ${toolId} · action fs_write`);
       expect(rows[2]).toBe('target src/app.ts');
-      expect(rows.length).toBe(24);
+      expect(rows).toHaveLength(24);
       expect(f.text()).not.toContain('Review unavailable');
       f.input.push(CTRL_Y);
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
@@ -3102,7 +3102,7 @@ describe.each(['chat', 'home'] as const)(
           plain.diff.length,
         );
         expect(message.rule, 'the status rule does not move').toBe(plain.rule);
-        expect(message.rows.length).toBe(plain.rows.length);
+        expect(message.rows).toHaveLength(plain.rows.length);
         const end = await move(f, KEY.end, (screen) => screen.message === undefined);
         expect(end.diff[0]).toBe(' 48 line 48');
         expect(end.diff.at(-1)).toBe(' 60 line 60');
@@ -3427,12 +3427,12 @@ describe.each(['chat', 'home'] as const)(
           KEY.shiftTab,
           (screen) => screen.message === 'No earlier change',
         );
-        expect(lingering.diff.length).toBe(open?.diff.length);
+        expect(lingering.diff).toHaveLength(open?.diff.length ?? -1);
         const next = await move(f, KEY.pageDown, (screen) => screen.diff[0] === ' 40 line 40');
-        expect(next.diff.length).toBe(open?.diff.length);
+        expect(next.diff).toHaveLength(open?.diff.length ?? -1);
         const last = await move(f, KEY.pageDown, (screen) => screen.diff.at(-1) === ' 60 line 60');
         expect(last.diff[0], 'the last page, clamped to a full page').toBe(' 48 line 48');
-        expect(last.diff.length).toBe(open?.diff.length);
+        expect(last.diff).toHaveLength(open?.diff.length ?? -1);
         expect(last.rows[last.rule - 1]).not.toBe('');
       });
 
@@ -3456,7 +3456,7 @@ describe.each(['chat', 'home'] as const)(
           );
           expect(shown?.rule).toBe(open?.rule);
           const end = await move(f, KEY.end, (screen) => screen.diff.at(-1) === ' 60 line 60');
-          expect(end.diff.length).toBe(open?.diff.length);
+          expect(end.diff).toHaveLength(open?.diff.length ?? -1);
           expect(end.percent).toBe(100);
           expect(end.rows[end.rule - 1]).not.toBe('');
         },
@@ -3727,7 +3727,7 @@ describe.each(['chat', 'home'] as const)(
         if (tall === undefined || short === undefined) throw new Error('no full view');
         expect(short.diff.length, 'the document really is short').toBeLessThan(tall.diff.length);
         expect(short.rows.length, 'rows-1 lines and the empty last row').toBe(24);
-        expect(tall.rows.length).toBe(24);
+        expect(tall.rows).toHaveLength(24);
         expect(short.rule, 'the status rule is where it is for a tall document').toBe(tall.rule);
         expect(short.note).toBe(tall.note);
         expect(short.rows.at(-1)).toBe('');
@@ -3737,8 +3737,8 @@ describe.each(['chat', 'home'] as const)(
         const short = details(await openDetailsOf('Clean worktree'));
         const tall = details(await openDetailsOf('a long result '.repeat(140)));
         if (tall === undefined || short === undefined) throw new Error('no details');
-        expect(short.rows.length).toBe(24);
-        expect(tall.rows.length).toBe(24);
+        expect(short.rows).toHaveLength(24);
+        expect(tall.rows).toHaveLength(24);
         expect(short.rule).toBe(tall.rule);
         expect(short.note).toBe(tall.note);
         expect(short.rows.slice(short.rule + 1).join('\n')).toBe(

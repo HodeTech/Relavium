@@ -34,6 +34,7 @@ import {
   fullChrome,
   fullBodyRows,
   fullStatusRow,
+  keyLabelParts,
   type CallListRow,
   type FullChrome,
   type InspectionPending,
@@ -337,12 +338,28 @@ function keyTone(part: string, color: boolean): Record<string, unknown> {
   return { dimColor: true };
 }
 
+/**
+ * Rows of text with a React key made of the text and the number of equal rows before it, so a key never depends on where a row
+ * sits among the others. (`index` is handed back for the few rows whose look depends on their place, such as a title.)
+ */
+function keyed<T>(
+  items: readonly T[],
+  textOf: (item: T) => string,
+): readonly { readonly key: string; readonly item: T; readonly index: number }[] {
+  const seen = new Map<string, number>();
+  return items.map((item, index) => {
+    const text = textOf(item);
+    const earlier = seen.get(text) ?? 0;
+    seen.set(text, earlier + 1);
+    return { key: `${earlier}:${text}`, item, index };
+  });
+}
+
 function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
-  const parts = row.split(/(\[[^\]]+\]|Esc)/u).filter((part) => part.length > 0);
   return (
     <Text wrap="truncate-end">
-      {parts.map((part, index) => (
-        <Text key={index} {...keyTone(part, color)}>
+      {keyed(keyLabelParts(row), (part) => part).map(({ key, item: part }) => (
+        <Text key={key} {...keyTone(part, color)}>
           {part}
         </Text>
       ))}
@@ -434,15 +451,15 @@ function ReviewCard({
       <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
         {approvalRule(columns)}
       </Text>
-      {titleRows.map((row, index) => (
-        <Text key={`title-${index}`} bold>
+      {keyed(titleRows, (row) => row).map(({ key, item: row }) => (
+        <Text key={key} bold>
           {row}
         </Text>
       ))}
-      {(page?.rows ?? []).map((row, index) => {
+      {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
         return (
-          <Text key={index} {...rowTone(kind, color)}>
+          <Text key={key} {...rowTone(kind, color)}>
             {cardBodyRow(row, kind) || ' '}
           </Text>
         );
@@ -532,8 +549,8 @@ function ReviewCallList({
         {view.title}
       </Text>
       {view.empty !== undefined && <Text wrap="truncate-end">{view.empty}</Text>}
-      {view.rows.map((row, index) => (
-        <Text key={index} wrap="truncate-end" {...callRowProps(row, color)}>
+      {keyed(view.rows, (row) => row.text).map(({ key, item: row }) => (
+        <Text key={key} wrap="truncate-end" {...callRowProps(row, color)}>
           {row.text}
         </Text>
       ))}
@@ -549,15 +566,15 @@ function ReviewCallList({
   );
 }
 
+function callToneProps(tone: CallListRow['tone'], color: boolean): Record<string, unknown> {
+  if (tone === 'bad') return colorProps(color, 'red');
+  if (tone === 'warn') return colorProps(color, 'yellow');
+  if (tone === 'dim') return dimProps(color);
+  return {};
+}
+
 function callRowProps(row: CallListRow, color: boolean): Record<string, unknown> {
-  const tone =
-    row.tone === 'bad'
-      ? colorProps(color, 'red')
-      : row.tone === 'warn'
-        ? colorProps(color, 'yellow')
-        : row.tone === 'dim'
-          ? dimProps(color)
-          : {};
+  const tone = callToneProps(row.tone, color);
   return row.selected ? { ...tone, bold: true } : tone;
 }
 
@@ -603,26 +620,25 @@ function ReviewScreen({
   const targetText = withoutLabel(target?.rows[0] ?? '', 'target');
   const body = fullBodyRows(rows, chrome.rows);
   const drawn = page?.rows.length ?? 0;
+  const targetEllipsis = target?.next !== undefined || (target?.rows.length ?? 0) > 1 ? ' …' : '';
   return (
     <>
-      {chrome.header.map((row, index) => (
-        <Text key={`head-${index}`} bold={index === 0} wrap="truncate-end">
+      {keyed(chrome.header, (row) => row).map(({ key, item: row, index }) => (
+        <Text key={key} bold={index === 0} wrap="truncate-end">
           {row}
         </Text>
       ))}
       {chrome.hasTarget && (
         <Text wrap="truncate-end" {...dimProps(color)}>
-          {review.cursor.line > 0
-            ? `target ${targetText}${target?.next !== undefined || (target?.rows.length ?? 0) > 1 ? ' …' : ''}`
-            : ' '}
+          {review.cursor.line > 0 ? `target ${targetText}${targetEllipsis}` : ' '}
         </Text>
       )}
-      {chrome.warnings.map((warning, index) => (
-        <Text key={`warn-${index}`} wrap="truncate-end" {...colorProps(color, 'yellow')}>
+      {keyed(chrome.warnings, (warning) => warning).map(({ key, item: warning }) => (
+        <Text key={key} wrap="truncate-end" {...colorProps(color, 'yellow')}>
           {warning}
         </Text>
       ))}
-      {(page?.rows ?? []).map((row, index) => {
+      {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const drawnRow = bodyRow(
           row,
           page?.kinds[index] ?? 'meta',
@@ -633,7 +649,7 @@ function ReviewScreen({
         return (
           // Not cut by the renderer: a row is fitted to its page by the projection, and one that were wider would wrap, make the
           // frame taller than the terminal and be refused by the measured acknowledgement — never silently hide what it shows.
-          <Text key={index} {...drawnRow.props}>
+          <Text key={key} {...drawnRow.props}>
             {drawnRow.text || ' '}
           </Text>
         );
@@ -656,11 +672,11 @@ function ReviewScreen({
           Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find
         </Text>
       )}
-      {chrome.nav.map((row, index) => (
-        <KeyRow key={`nav-${index}`} row={row} color={color} />
+      {keyed(chrome.nav, (row) => row).map(({ key, item: row }) => (
+        <KeyRow key={`nav-${key}`} row={row} color={color} />
       ))}
-      {chrome.answers.map((row, index) => (
-        <KeyRow key={`answer-${index}`} row={row} color={color} />
+      {keyed(chrome.answers, (row) => row).map(({ key, item: row }) => (
+        <KeyRow key={`answer-${key}`} row={row} color={color} />
       ))}
       {review.kind === 'approval' ? (
         <Text wrap="truncate-end" {...dimProps(color)}>

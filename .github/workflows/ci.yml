@@ -5,9 +5,10 @@
 #
 # Branch protection (set in the GitHub repo settings, not here): `ci`, `coverage` and `windows-concurrency`
 # are the REQUIRED status checks to merge into `main` (the Windows job since the maintainer's 2026-11-04
-# ruling: it is the CI lane that validates ADR-0106's Windows-scoped claims). Wire, usage, filesystem, secrets,
-# packed CLI and product map control jobs feed `ci` through an explicit success-only aggregation; they cannot
-# silently skip or fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
+# ruling: it is the CI lane that validates ADR-0106's Windows-scoped claims). `ci` is an aggregate: the workspace
+# job (`ci-work`: lint, typecheck, test, build, smokes) and the wire, usage, filesystem, secrets, packed CLI and
+# product map control jobs feed it through an explicit success-only aggregation; they cannot silently skip or
+# fail while `ci` stays green. The other jobs self-label `(advisory)` — `floor-check` and
 # `peer-dep-gate`.
 #
 # `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
@@ -63,19 +64,11 @@ jobs:
     permissions:
       contents: read
 
-  ci:
-    needs:
-      [
-        native-fs-assets,
-        wire-mutations,
-        usage-mutations,
-        fs-mutations,
-        secrets-mutations,
-        packed-cli,
-        map-controls,
-      ]
-    if: ${{ always() }}
-    name: lint · typecheck · test
+  # The workspace checks (lint, typecheck, test, build, smokes). They need only the native component, so they start with
+  # the long control jobs and run beside them; the required `ci` context below joins this job like the others.
+  ci-work:
+    needs: native-fs-assets
+    name: workspace checks (lint · typecheck · test · build · smokes)
     runs-on: ubuntu-latest
     # A cold lint/typecheck plus serialized workspace run takes about 12.5 minutes, before
     # build, tool checks and the replay smoke's six sequential, individually bounded 45s workers.
@@ -97,36 +90,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-
-      - name: Require complete W8 causal acceptance jobs
-        env:
-          RELAVIUM_W8_JOB_RESULTS: ${{ toJSON(needs) }}
-        run: node tools/ci/require-w8-acceptance.mjs
-
-      - name: Require complete filesystem causal controls
-        env:
-          FS_CONTROLS_RESULT: ${{ needs.fs-mutations.result }}
-        run: node -e "require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')"
-
-      - name: Require complete secrets causal controls
-        env:
-          SECRETS_CONTROLS_RESULT: ${{ needs.secrets-mutations.result }}
-        run: node -e "require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')"
-
-      - name: Require complete packed CLI controls
-        env:
-          PACKED_CLI_RESULT: ${{ needs.packed-cli.result }}
-        run: node -e "require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')"
-
-      - name: Require all native component execution legs
-        env:
-          NATIVE_FS_RESULT: ${{ needs.native-fs-assets.result }}
-        run: node -e "require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')"
-
-      - name: Require complete product map controls
-        env:
-          MAP_CONTROLS_RESULT: ${{ needs.map-controls.result }}
-        run: node -e "require('node:assert/strict').equal(process.env.MAP_CONTROLS_RESULT, 'success')"
 
       # A squash/main-based checkout need not contain development's immutable predecessor object.
       # Fetch only this canonical pin during CI setup; the acceptance harness itself stays offline.
@@ -274,6 +237,78 @@ jobs:
       - name: Smoke the budget replay compatibility harness (offline)
         run: pnpm smoke:budget-replay
 
+  # The REQUIRED `ci` context. It does no work of its own: it joins the workspace job and every control job and refuses every
+  # result except `success`. (An ordinary job-level `if` or a failed dependency would skip it, and GitHub counts a skipped
+  # required check as passing, so it runs `always()` and each guard below asserts its own dependency.) The work lives in
+  # `ci-work`, which starts with the control jobs instead of after them: the required check now ends when the slowest control
+  # job ends, not one whole job later (14.8 of the 70.5 minutes in the 2026-11-17 measurement). Like `packed-cli` it clears the remote-cache credentials:
+  # it runs repository code and has no use for them.
+  ci:
+    needs:
+      [
+        native-fs-assets,
+        ci-work,
+        wire-mutations,
+        usage-mutations,
+        fs-mutations,
+        secrets-mutations,
+        packed-cli,
+        map-controls,
+      ]
+    if: ${{ always() }}
+    name: lint · typecheck · test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Require complete W8 causal acceptance jobs
+        env:
+          RELAVIUM_W8_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: node tools/ci/require-w8-acceptance.mjs
+
+      - name: Require complete filesystem causal controls
+        env:
+          FS_CONTROLS_RESULT: ${{ needs.fs-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.FS_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete secrets causal controls
+        env:
+          SECRETS_CONTROLS_RESULT: ${{ needs.secrets-mutations.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.SECRETS_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete packed CLI controls
+        env:
+          PACKED_CLI_RESULT: ${{ needs.packed-cli.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.PACKED_CLI_RESULT, 'success')"
+
+      - name: Require all native component execution legs
+        env:
+          NATIVE_FS_RESULT: ${{ needs.native-fs-assets.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')"
+
+      - name: Require complete product map controls
+        env:
+          MAP_CONTROLS_RESULT: ${{ needs.map-controls.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.MAP_CONTROLS_RESULT, 'success')"
+
+      - name: Require complete workspace checks
+        env:
+          WORKSPACE_CHECKS_RESULT: ${{ needs.ci-work.result }}
+        run: node -e "require('node:assert/strict').equal(process.env.WORKSPACE_CHECKS_RESULT, 'success')"
+
   # Offline, uncached semantic removal/restoration evidence. Required indirectly through ci.needs.
   # ADR-0105 isolated, current-source removal/restoration evidence, required through ci.needs.
   fs-mutations:
@@ -329,21 +364,23 @@ jobs:
 
   secrets-mutations:
     needs: native-fs-assets
-    name: Wave 2 secrets causal controls (shard ${{ matrix.shard }} of 2)
+    name: Wave 2 secrets causal controls (shard ${{ matrix.shard }} of 3)
     # The historical 35-control, three-phase capture exceeded the former aggregate budget.
     # MVP-3 grows the cohort to 139 controls, including nine startup authority controls.
     # Each scrubber control runs its heavy file in three phases (about 24 s locally). One export
-    # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so two
-    # legs each run and export a disjoint round-robin half (`--shard k/2`) under the
-    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds. A leg took up to 48 minutes
-    # by 2026-11-04 (runner variance, not imbalance), so its allowance is 75 minutes rather than the
-    # filesystem job's 60. This comment does not certify execution.
+    # of the whole cohort no longer fits the unchanged 64-MiB retained-evidence bound, so the
+    # legs each run and export a disjoint round-robin part (`--shard k/3`) under the
+    # unchanged per-phase, case/hook, output, 2,000-file and 64-MiB bounds. The cohort ran as two
+    # halves until 2026-11-17: a half took 41 to 52 minutes, which made it the critical path of the whole
+    # workflow, and three parts take about a third of the cohort each. The allowance stays 75 minutes (a leg
+    # took up to 48 minutes as a half, runner variance, not imbalance) and every bound is unchanged. This
+    # comment does not certify execution.
     timeout-minutes: 75
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -368,12 +405,12 @@ jobs:
       - name: Run secrets removal and restoration controls
         env:
           RELAVIUM_ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/wave2-acceptance
-        run: pnpm check:secrets-mutations --shard ${{ matrix.shard }}/2
+        run: pnpm check:secrets-mutations --shard ${{ matrix.shard }}/3
       - name: Retain bounded secrets control metadata
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: wave2-secrets-${{ matrix.shard }}-of-2-${{ github.run_id }}-${{ github.run_attempt }}
+          name: wave2-secrets-${{ matrix.shard }}-of-3-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/wave2-acceptance/secrets
           if-no-files-found: warn
           retention-days: 7
@@ -497,10 +534,10 @@ jobs:
     # suite without filtering tests, bypassing hooks or changing native/causal bounds.
     timeout-minutes: 45
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
-    # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
+    # runtime Node version, so floor-check (Node 22) and the required workspace job `ci-work` (Node 24) share a hash —
     # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
     # stops floor-check READING the shared cache; blanking the inherited workflow-level tokens here stops it
-    # WRITING into it, so the required `ci` job can never replay a Node-22 result as Node-24-proven.
+    # WRITING into it, so the required workspace job (`ci-work`) can never replay a Node-22 result as Node-24-proven.
     env:
       TURBO_TOKEN: ''
       TURBO_TEAM: ''
@@ -595,7 +632,7 @@ jobs:
         run: node tools/native-fs/artifact.mjs select '${{ runner.temp }}/native-fs-assets' x86_64-unknown-linux-gnu
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # Share the same Turborepo local cache the `ci` job writes, so the build below is a warm cache hit
+      # Share the same Turborepo local cache the `ci-work` job writes, so the build below is a warm cache hit
       # on a same-SHA / recent-ancestor run rather than a cold rebuild.
       - name: Restore Turborepo cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0

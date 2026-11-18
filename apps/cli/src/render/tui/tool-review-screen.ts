@@ -134,6 +134,20 @@ export interface FullStatusInput {
   readonly columns: number;
 }
 
+/** How far down the listing the page reaches, as a whole percent (100 at the end and for an empty listing). */
+function positionPercent(position: { readonly total: number; readonly below: number }): number {
+  if (position.total === 0 || position.below === 0) return 100;
+  return Math.max(1, Math.floor((100 * (position.total - position.below)) / position.total));
+}
+/** The sentence about the changed lines off the page: none known (undefined), none off the page, or the sides that have some. */
+function changesPhrase(
+  off: readonly string[] | undefined,
+  none: string,
+  some: (list: string) => string,
+): string | undefined {
+  if (off === undefined) return undefined;
+  return off.length === 0 ? none : some(off.join(', '));
+}
 /**
  * The status rule under the body: how far down the listing the page reaches, which changed lines are NOT on it (the
  * card's "not shown" count, by side), and the two view modes a person must not forget they are in. One row, whatever it says.
@@ -141,10 +155,7 @@ export interface FullStatusInput {
 export function fullStatusRow(input: FullStatusInput): string {
   const width = usableColumns(input.columns);
   const page = input.page;
-  const percent =
-    page === undefined
-      ? undefined
-      : `${page.position.total === 0 || page.position.below === 0 ? 100 : Math.max(1, Math.floor((100 * (page.position.total - page.position.below)) / page.position.total))}%`;
+  const percent = page === undefined ? undefined : `${positionPercent(page.position)}%`;
   const off =
     page === undefined || (input.document?.changedLines ?? 0) === 0
       ? undefined
@@ -169,18 +180,12 @@ export function fullStatusRow(input: FullStatusInput): string {
     ...(input.revealed ? ['revealed (view only)'] : []),
     ...(input.numeric ? ['code points'] : []),
   ];
-  const longChanges =
-    off === undefined
-      ? undefined
-      : off.length === 0
-        ? 'every changed line is on this page'
-        : `changed lines off this page: ${off.join(', ')}`;
-  const shortChanges =
-    off === undefined
-      ? undefined
-      : off.length === 0
-        ? 'all changes shown'
-        : `changed: ${off.join(', ')}`;
+  const longChanges = changesPhrase(
+    off,
+    'every changed line is on this page',
+    (list) => `changed lines off this page: ${list}`,
+  );
+  const shortChanges = changesPhrase(off, 'all changes shown', (list) => `changed: ${list}`);
   // The row is built to fit, never cut by the renderer: the modes a person must not forget outrank the change counts, which
   // shorten and then give way, and the modes shorten last. (Ink would cut the END of a row that is too wide.)
   const tiers: readonly (readonly [readonly string[], string | undefined])[] = [
@@ -390,7 +395,7 @@ export function escapedFit(
     kept.length > 1 &&
     next !== undefined &&
     displayWidth(next) === 0 &&
-    displayWidth(kept[kept.length - 1] ?? '') > 0
+    displayWidth(kept.at(-1) ?? '') > 0
       ? kept.slice(0, -1)
       : kept;
   const startFit = (budget: number): string => {
@@ -409,12 +414,42 @@ export function escapedFit(
       budget - displayWidth(first),
       (joined) => `${first}…${[...joined].reverse().join('')}`,
     );
-    while (reversed.length > 0 && displayWidth(reversed[reversed.length - 1] ?? '') === 0)
-      reversed.pop();
-    const joined = `${first}…${reversed.reverse().join('')}`;
+    while (reversed.length > 0 && displayWidth(reversed.at(-1) ?? '') === 0) reversed.pop();
+    const joined = `${first}…${reversed.toReversed().join('')}`;
     if (displayWidth(joined) <= width) return joined;
   }
   return `${startFit(width - 1)}…`;
+}
+
+/**
+ * Split a key legend into its `[key]` labels, `Esc` and the words between, in one pass over the row. A label is a `[`, at least one
+ * character and the next `]`; a `[` with no `]` after it is plain text. (The same split a regular expression gave, which backtracked
+ * quadratically on a long run of `[`.)
+ */
+export function keyLabelParts(row: string): readonly string[] {
+  const parts: string[] = [];
+  let plain = 0;
+  let close = row.indexOf(']');
+  let index = 0;
+  while (index < row.length) {
+    let end = -1;
+    if (row[index] === '[' && close !== -1) {
+      if (close <= index) close = row.indexOf(']', index + 1);
+      if (close > index + 1) end = close + 1;
+    } else if (row.startsWith('Esc', index)) {
+      end = index + 3;
+    }
+    if (end === -1) {
+      index++;
+      continue;
+    }
+    if (index > plain) parts.push(row.slice(plain, index));
+    parts.push(row.slice(index, end));
+    index = end;
+    plain = end;
+  }
+  if (plain < row.length) parts.push(row.slice(plain));
+  return parts;
 }
 
 export type CallTone = 'ok' | 'bad' | 'warn' | 'dim';

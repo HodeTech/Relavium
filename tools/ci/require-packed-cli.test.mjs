@@ -552,9 +552,10 @@ for (const [label, alter] of [
 }
 
 function checkRequiredSourceSmokes(workflow) {
-  const job = workflow.jobs.ci;
-  assert.ok(job, 'source smokes must run in the required ci job');
-  assert.equal(job.if, '${{ always() }}');
+  // The smokes run in the workspace job, which the required `ci` context joins and refuses unless it succeeded.
+  const job = workflow.jobs['ci-work'];
+  assert.ok(job, 'source smokes must run in the workspace job the required ci context joins');
+  assert.equal(job.if, undefined);
   assert.equal(job['continue-on-error'], undefined);
   assert.ok(job['timeout-minutes'] > 0 && job['timeout-minutes'] <= 30);
   assert.equal(workflow.defaults?.run?.['working-directory'], undefined);
@@ -642,7 +643,7 @@ for (const command of ['pnpm smoke:cli-bootstrap', 'pnpm smoke:budget-replay']) 
   ]) {
     test(`required source smoke guard rejects ${command}: ${name}`, () => {
       const workflow = readWorkflow('ci');
-      const job = workflow.jobs.ci;
+      const job = workflow.jobs['ci-work'];
       const step = job.steps.find((step) => step.run === command);
       mutate(job, step);
       assert.throws(() => checkRequiredSourceSmokes(workflow));
