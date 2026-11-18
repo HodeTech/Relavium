@@ -2,19 +2,10 @@
 
 > Status: Living
 
-> Last updated: 2026-11-04 — the CLI MVP comes first (maintainer, 2026-10-26; decisions D58–D72 ruled 2026-11-04): Wave 3 is paused after Step 9b.2 and its Steps 9c–19 are pending, not declined; the order is in [current.md](current.md#next-work--the-cli-mvp). Wave 2 is merged in PR #94 and Wave 3 Steps 1–8 in PR #95; PR95, 9a.1, 9a.2a, 9a.2b, NI (its Windows clause closed on 2026-10-26), 9b.1 and 9b.2 are accepted with their recorded findings below and reached `main` with the `development`→`main` checkpoint (PR #96, merged 2026-11-04). The independent PR #95 review's findings keep the maintainer's 2026-10-19 owner rulings, and the masker's edge cases the 2026-10-21 bar and the 2026-10-22 rulings. Existing approved deferrals remain; entries the MVP pulls forward say so.
-> The [merge checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-2-merge-checkpoint--2026-10-15) records completed prerequisites; full M/N lifecycle and other scheduled work remain with their owners.
->
-> Earlier triage: the Phase-2.6 rewrite triaged every open item, the 2026-07-19 full-project
-> review added the deliberately-unscheduled block at the end, Phase 2.6.5's `W1` and `W2` residual
-> sections were appended as those waves closed, and the `W7` document review added three deferrals, re-owned
-> the `memory` policy and the delegate fields, and moved `relavium budget resume` into `W7`.
->
-> **Lifecycle states**, because this file mixes three: `- [ ]` = unscheduled and actionable ·
-> **Scheduled → 2.6.X / → 2.5.5.X** = owned by that workstream, still unchecked until the PR that lands it ·
-> **DONE / DECLINED** = closed history, written as a plain bullet, never a checkbox.
+> Last updated: 2026-11-18 — the register is now three files, every checklist entry carries one of three markers, and a stale-entry sweep reworded or closed the entries listed in [Sweep of 2026-11-18](deferred-tasks-history.md#sweep-of-2026-11-18). PR #99 (MVP-3) is merged to `main`; the CLI MVP still comes first (maintainer, 2026-10-26) and Wave 3 Steps 9c–19 stay pending, not declined. The header text that stood here before is kept in the [closed record](deferred-tasks-history.md#earlier-file-headers-verbatim).
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md)
+- **Register files**: [deferred-tasks-parked.md](deferred-tasks-parked.md) · [deferred-tasks-history.md](deferred-tasks-history.md)
 
 A holding pen so confirmed-but-deferred findings don't get lost. Every item here was
 **adversarially confirmed** by a comprehensive review (the Phase-0 97-agent workflow, or a
@@ -25,28 +16,75 @@ risk/benefit favors waiting. None block a shipped milestone. Pick them up opport
 
 Severity is the review's verified rating. Check an item off in the PR that resolves it.
 
+## How to read the register
 
+The register is split by what a reader needs to do with each entry:
+
+| Marker | Meaning | What to do |
+|--------|---------|------------|
+| `- [ ]` | **Open.** Needs work or a decision, and either has an owner or a deadline (`Scheduled → …`, a pulled-in MVP step, a recorded ruling such as *before v0.2.0*) or has no trigger recorded. | Pick it up, schedule it, or write down the trigger. |
+| `- [~]` | **Parked.** The entry (or the intro of its section) names its own trigger — *approved deferral*, *named limit*, *Trigger*, or *Trigger for every entry: the next change to the file it names*. | Nothing until the trigger fires; then it becomes `- [ ]`. |
+| `- [x]` | **Closed** — done, superseded or declined. Plain `- **DONE …**` / `- **DECLINED …**` bullets mean the same. | Nothing. Closed entries move to the closed record at the next sweep; in the parked file they stay with the round that closed them. |
+
+The marker is the authority; the file is a reading aid. An entry is parked only on the evidence of its own text — no trigger was invented for
+this split, and an entry without one stays `- [ ]`. A bullet with no marker inside a narrative section is a list member, not an entry.
+A step of the paused Wave 3 counts as a **trigger** when the section intro names it as one (for example "Step 9d for the two release entries") and as an **owner** when
+an entry names it only as its destination ("Low, for Step 10a"); owners keep `- [ ]`.
+
+**Changing state.** Mark an entry `- [x]` in the PR that resolves it; the next sweep moves it to the closed record. When a parked entry's trigger fires, change
+`- [~]` to `- [ ]` and name its owner.
+
+**Position words.** Entries written before 2026-11-18 say "above", "below" or "the entry above" about the register as one file. Where the target now
+sits in another file those words are stale: the target's section heading is the same in every file, and the places where an open entry would mislead
+carry a bracketed *[Moved 2026-11-18 …]* pointer. Prose elsewhere that says "recorded in deferred-tasks.md" may mean any of the three files; search all three.
+
+| File | Holds | Entries (`[ ]` / `[~]` / closed) |
+|------|-------|-----------------------------------|
+| **This file** | Decisions needed, the watch list, and the active sections: Phase 1/2 forward-obligations, the Phase 2.6.5 residuals other than the deferrals and `W3`, the PR #95 review, the older per-phase follow-ups, Sonar, carry-forward and the MVP-3 / PR #99 entries. | 177 / 10 / 0 |
+| [deferred-tasks-parked.md](deferred-tasks-parked.md) | Review-round ledgers (Wave 3 Steps 9a/9b, NI, PR #95 masker, PR #96, MVP-1, PR #97), the Phase 2.6.5 deferrals and `W3` residuals, the Windows file-identity limits, and the narrative entry on rename / move / delete for the default chat agent. | 9 / 270 / 24 |
+| [deferred-tasks-history.md](deferred-tasks-history.md) | Sections closed in full, and the closed entries of the active sections kept in the front door (the parked ledgers keep their own). | 0 / 0 / 66 |
+
+Counts are as of 2026-11-18; an entry that bundles several numbered points counts once, so the real number of points is higher.
+
+## Watch list
+
+Entries that matter most whatever file they sit in: every entry rated **High**, every entry a recorded ruling owes **before v0.2.0**, and every other entry still `[ ]` inside the parked file. Compiled from the register on 2026-11-18, not generated on every edit; if it disagrees with an entry, the entry wins. [current.md](current.md#next-work--the-cli-mvp) lists the same v0.2.0 obligations from the roadmap side.
+
+| Rating / state | Entry | Where |
+|----------------|-------|-------|
+| High · open | Bound the host persistence seam, or decide what a run may do when it cannot learn whether its own write… | [Phase 2.6.5 W2 residuals (ADR-0085, 2026-08-25)](deferred-tasks.md#phase-265-w2-residuals-adr-0085-2026-08-25) |
+| High · open | Anthropic redacted_thinking replay | [AgentRunner (1.O) / reasoning-replay follow-ups](deferred-tasks.md#agentrunner-1o--reasoning-replay-follow-ups) |
+| High · open | The MCP schema compiler's denylist silently DROPS unsupported assertions | [Schema / validation hardening](deferred-tasks.md#schema--validation-hardening) |
+| High · open | Carrying tool history into the model's context (CR-70). | [Phase 2.6.5 deferrals — CR-93 and CR-95 (long half), recorded…](deferred-tasks-parked.md#phase-265-deferrals--cr-93-and-cr-95-long-half-recorded-2026-09-06-cr-70-cr-94-remainder-and-the-in-turn-overflow-continuation-recorded-2026-09-14-the-errored-or-aborted-turn-residual-the-pre-upgrade-free-page-bytes-and-the-estimators-calibration-recorded-2026-09-18) |
+| High · parked | Recovering a context overflow that arrives after a tool round (the in-turn continuation). | [Phase 2.6.5 deferrals — CR-93 and CR-95 (long half), recorded…](deferred-tasks-parked.md#phase-265-deferrals--cr-93-and-cr-95-long-half-recorded-2026-09-06-cr-70-cr-94-remainder-and-the-in-turn-overflow-continuation-recorded-2026-09-14-the-errored-or-aborted-turn-residual-the-pre-upgrade-free-page-bytes-and-the-estimators-calibration-recorded-2026-09-18) |
+| High · parked | A mid-tool-loop budget pause replays the whole loop (CR-95, long half). | [Phase 2.6.5 deferrals — CR-93 and CR-95 (long half), recorded…](deferred-tasks-parked.md#phase-265-deferrals--cr-93-and-cr-95-long-half-recorded-2026-09-06-cr-70-cr-94-remainder-and-the-in-turn-overflow-continuation-recorded-2026-09-14-the-errored-or-aborted-turn-residual-the-pre-upgrade-free-page-bytes-and-the-estimators-calibration-recorded-2026-09-18) |
+| Owed before v0.2.0 · open | Chord answer keys: security sitting residuals (2026-11-17; no blocker, high or medium). | [MVP-3b, MVP-3c, MVP-3d and the PR #99 reviews (2026-11-16 to…](deferred-tasks.md#mvp-3b-mvp-3c-mvp-3d-and-the-pr-99-reviews-2026-11-16-to-2026-11-18) |
+| Owed before v0.2.0 · open | A URL password that holds a , or / leaves the whole userinfo public (the PR #96 review's A4). | [PR #96 review — recorded findings and Sonar dispositions…](deferred-tasks-parked.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04) |
+| Owed before v0.2.0 · open | A 0.1.x run still executing when a newer start reconciles is settled as crashed. | [MVP-1 1b — recorded low findings (2026-11-05)](deferred-tasks-parked.md#mvp-1-1b--recorded-low-findings-2026-11-05) |
+| Owed before v0.2.0 · parked | The pre-flight's exit change needs a release note. | [PR #97 review — fixed findings and recorded lows (2026-11-06)](deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06) |
+| Owed before v0.2.0 · open | Answering a stale gate card after another process decided the gate fails a healthy run. | [PR #97 review — fixed findings and recorded lows (2026-11-06)](deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06) |
+| Open · filed in the parked file | --verbose never prints a real stack. | [Wave 3 Step 9a.1 — recorded low findings (2026-10-24)](deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24) |
+| Open · filed in the parked file | Two packs of one source can differ in the packed manifest's key order. | [Wave 3 Step 9a.2a — recorded low findings (2026-10-24)](deferred-tasks-parked.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24) |
+| Open · filed in the parked file | Step 9d handoffs. | [Wave 3 Step 9b.2 — named limits and handoffs (2026-10-25)](deferred-tasks-parked.md#wave-3-step-9b2--named-limits-and-handoffs-2026-10-25) |
+| Open · filed in the parked file | The durable-event bound has no engine-level test. | [Phase 2.6.5 W3 residuals (PR #86, merged 2026-08-30)](deferred-tasks-parked.md#phase-265-w3-residuals-pr-86-merged-2026-08-30) |
+| Open · filed in the parked file | Two reference-doc nits. | [Phase 2.6.5 W3 residuals (PR #86, merged 2026-08-30)](deferred-tasks-parked.md#phase-265-w3-residuals-pr-86-merged-2026-08-30) |
 
 ## Decisions needed (maintainer call)
 
+### Open decisions (collected 2026-11-18)
 
-### Node.js runtime — dev/CI bump + supported-floor bump (the floor is now EOL)
+> Entries whose own text asks for a maintainer decision before any work starts. They were moved here, unchanged apart from the
+> status note on the first, in the 2026-11-18 stale-entry sweep; design questions that sit inside a larger entry stay where they are.
 
-- [x] **⚠ Supported floor (Node 20.12, EOL) → `>=22` — DONE (Phase 2.6.F Step 1, commit `367e4f5`).**
-  Node 20 was EOL (2026-04-30) with no `better-sqlite3` prebuild (forcing a C++ source build). **Both halves
-  shipped together** in Step 1: **(A)** `.nvmrc` 22 → 24 (Active LTS); **(B)** the supported floor 20.12 →
-  `>=22` — a **breaking release** for published `relavium` (pre-1.0 → a **0.x MINOR** bump, e.g. `0.2.0`, at
-  publish — *not* a SemVer-major) that restored `better-sqlite3` prebuild coverage and unlocked ink 7, and
-  superseded [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md) via
-  [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (`better-sqlite3`
-  re-affirmed over node:sqlite). `vitest` 5 / `eslint` 10 remain deferred to their own PRs (see the 2.6.F
-  deferral entries below). Analysis: [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).
-  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md + ci.yml floor leg)*
-
-
-### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
-
-- [ ] **⚠ OpenAI Sora 2 + Videos API DEPRECATED — provider shutdown 2026-09-24 (affects 1.AH A3).** OpenAI
+- [ ] **⚠ OpenAI Sora 2 + Videos API SHUT DOWN 2026-09-24 — the Sora arm is dead code awaiting a maintainer decision (affects 1.AH A3).**
+  *Status 2026-11-18 (stale-entry sweep):* the date below has passed. A web search on 2026-11-18 found OpenAI's model page and several
+  secondary write-ups agreeing that the Sora 2 models and the Videos API were shut down on 2026-09-24 and that OpenAI named **no
+  replacement** (the official deprecations page was not opened directly, so treat this as reported, not verified here). The Sora arm is
+  still in `packages/llm/src/adapters/openai.ts` (the `video` dispatch and `pollMediaJobSora`) and nothing in the repository records a
+  decision. The reason the original entry gives for "no live exposure" (the host `media_surface` wiring was still to come) is out of date — the CLI wired it in
+  PR #52 — but the shipped catalog snapshot (`packages/llm/src/catalog/`) lists no `sora` model, so no shipped model id routes to the arm. **Decision needed (maintainer):** remove the arm now, as the entry below prescribes when no replacement is announced, or
+  keep it until a replacement video API is chosen. The original entry follows.
+  **⚠ OpenAI Sora 2 + Videos API DEPRECATED — provider shutdown 2026-09-24 (affects 1.AH A3).** OpenAI
   announced the Sora 2 video models (`sora-2`, `sora-2-pro`, `sora-2-2025-10-06`, `sora-2-2025-12-08`,
   `sora-2-pro-2025-10-06`) + the `videos.*` API shut down **2026-09-24**. The 1.AH A3 OpenAI/Sora async-video
   adapter targets exactly these (`videos.create`/`retrieve`/`downloadContent` + `pollMediaJobSora`). **Impact is
@@ -57,6 +95,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   replacement video model/API, retarget the A3 arm; otherwise **disable/remove** the Sora arm (the `generateMedia`
   `video` dispatch + `pollMediaJobSora` + their tests) leaving the seam + Veo intact. Low priority until a
   replacement lands or the date nears. *(packages/llm/src/adapters/openai.ts; 1.AH/Phase-2)*
+- [ ] **Gate and CI speed-up left for a decision (2026-11-17) — decided 2026-11-18: C4 and Y2/C3 applied, C5, C6 and C7 dropped, Y4/Y5 stay deferred (see the last paragraph).** (C4) The `push` and `pull_request` runs of one commit are two full CI runs (about 544 job-minutes per commit) and, today, two sets of macOS runner requests that GitHub cancelled for capacity; limiting `push` to `main` would halve it, but a `development` push with no open pull request would get no CI, and the workflow's own concurrency comment records that the two runs are kept apart on purpose (a cancelled required check blocks a merge) — a policy choice for the maintainer. (C5) Build the eight native targets only when native sources change (the macOS arm64 leg is the one GitHub cancels). (C6) A path filter for docs-only pull requests (a skipped required check counts as passing, so it needs its own design). (C7) A shared `pnpm install` cache. (Y2/C3) Scope the enforced coverage run to the packages that have a floor (`llm`, `mcp`): about −10 to −14 minutes, but the other packages' tests may contribute coverage, and it changes what the floor measures, so it needs an experiment first. (Y4/Y5) Share the fixed/restored phases between controls that use the same tests (about half the phases) or cut a phase's fixed cost: the mutation evidence model, a security-owner and ADR decision.
+  **Analysis (2026-11-18, read-only; recommendations, not decisions).** *Facts:* `main` requires exactly three checks — `lint · typecheck · test` (the `ci` aggregate), `engine coverage floor (llm, mcp)` and
+  `windows · db concurrency + filesystem + headless smoke` (`strict: false`, admins not enforced: PR #99 merged while `coverage` was cancelled in both runs); `development` is unprotected.
+  The `ci.yml` comment on separate concurrency groups (lines ~42-48) only keeps a push and its same-SHA PR run from cancelling each other; no test pins `on:` or `concurrency`.
+  Required contexts attach to the head SHA, so a `push` run can satisfy a development→main PR. Native artifacts are own-run only by design (the delivery model refuses a foreign
+  `run-id`; `delivery.test.mjs` mutates it). A complete run costs 250-310 job-minutes; the repository is public, so the cost is wall time and queueing, not money. 22 commits of the
+  last week ran twice, and 27 of 52 `development` pushes had no PR (17 of them quick Windows-native debugging failures). **C4 — do now, low risk:** keep `push` for `main` and `development`
+  (optionally `'**'`), drop `pull_request`, add `workflow_dispatch`, rewrite the comments at lines ~1-2 and ~42-48 and add one pin test for the `on:` keys; it saves one run per
+  commit while a PR is open (the analysis averaged 186 job-minutes per duplicate over 22 pairs, because cancelled runs are cheap; a complete run is 250-310). The price: PRs from forks or from a branch other than `development` get no automatic CI (2 of the last 40 merged PRs did); the alternative (keep
+  `pull_request`, drop the development push) loses CI for pushes without a PR and needs a standing draft PR. **C5 — drop:** about 5% of minutes and 3-5 min of wall time, and it would
+  break the own-run trust model and five pin sets. **C6 — drop:** about one checkpoint PR in six is docs-only, a PR path filter sees the whole accumulated diff, a workflow-level
+  `paths:` filter leaves required checks Pending, and the aggregate redesign touches about 65 `if`/`needs` pins. **C7 — drop:** the setup-node pnpm cache already shares one store per
+  OS per ref and a warm install takes about 2 s (median of 530 samples). **Y2/C3:** verified, about 22-32 min, not 10-14 — see the coverage entry in the PR #99 merge observations.
+  **Y4/Y5:** stay deferred (they change what each causal-control proof means and do not move the critical path). Aside: `pnpm test:acceptance-tools` runs in seven jobs per run (about 10
+  job-minutes); deduplicating it would touch the evidence model. **Maintainer questions:** the trigger set of C4; whether to switch `enforce_admins` on.
+  **Decided (maintainer, 2026-11-18):** C4 as recommended (`push` on `main` and `development` plus `workflow_dispatch`, no `pull_request`; commit `48ea618a`, with a pin test on the
+  trigger set, the group and `cancel-in-progress`); Y2/C3 as the coverage narrowing (commit `63123bd9`); C5, C6 and C7 are dropped, not deferred; Y4/Y5 stay deferred and are the only
+  part of this entry still open. `enforce_admins` was not asked and is unchanged. **Not yet proved:** that a development -> main PR is satisfied by the `push` run alone — it rests on
+  GitHub's rule that required checks attach to the head SHA by name, and the first real PR after this change is the evidence; if the merge box shows the checks as missing, restore
+  `pull_request` and keep the rest. *(low · tools/ci, .github/workflows/ci.yml)*
+
+### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
+
 - [ ] **Host-side SSRF enforcement in `EgressCapability.fetch` (DNS resolve + connect-by-validated-IP + per-hop redirect re-validation)** — the shared SSRF range-primitive (1.AE) covers the **policy** half
   (literal format checks on URLs and hostnames); the **mechanism** half — resolving a hostname to its
   IP, validating the IP against the same range block, pinning the connection to that IP (connect-by-validated-IP),
@@ -65,8 +126,6 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   hook, it must apply these runtime checks. The current `assertHttpsBaseUrl` and `refineInFlightMediaPart`
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **CLI tool** `EgressCapability.fetch` **landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — `apps/cli/src/engine/tool-host/egress.ts` over the shared `connectValidated` connect-by-validated-IP mechanism (`packages/db/src/safe-egress.ts`), with the Host/`:authority`-header strip; the **desktop** surface's fetch hook still lands when the desktop implements it. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; CLI tool → 2.5.E/ADR-0057; desktop → surface fetch hook)*
-- [x] **MCP SDK network transport — upgrade to connect-by-validated-IP ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2).** *Closed in 2.6.5 `W4` Step 2 ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §2–§4). `http`/`sse` take an injected validated `fetch`, so the pin covers the whole session rather than the first dial, and the local opt-in's `host:port` scope is enforced at the dial — which is what `SEC-EGRESS-3` required of any wiring of it. Two clauses of the entry below were NOT met as written and were superseded rather than quietly dropped: a redirect is **refused** instead of re-validated per hop, and `websocket` — whose SDK transport accepts no dialer and parses frames before Relavium sees a byte — is **narrowed to a local endpoint** instead of carrying the floor. The original text is kept below for the record.*  2.R ships **pre-connect host validation** as the floor for the `http` (Streamable HTTP) / `websocket` MCP transports — the `@modelcontextprotocol/sdk` opens its **own** socket, architecturally distinct from the `EgressCapability.fetch` hook above. When the SDK transport exposes an injectable `fetch`/dialer hook, upgrade to **connect-by-validated-IP**: resolve DNS → validate the IP against the shared range-block primitive → connect to that IP, re-validating on each redirect hop — closing the residual DNS-rebind window. **The dialer + redirect re-validation MUST enforce the authored `host:port`** (ADR-0053 §3 / SEC-EGRESS-3), not just the host: an `allow_local_endpoint` server is permitted exactly its declared `host:port`, so a resolved/redirected target on a *different* port of the same permitted-private host (`:6379`/`:5432`/`:22`/the Docker socket) must be re-blocked. (2.R's pre-connect floor is host:port-safe by construction — the SDK dials exactly the one authored url — so this constraint binds the dialer, not the floor.) Each MCP network mechanism gets a dedicated security-review pass when it lands. *(packages/mcp/src; ADR-0053 §2/§3; ADR-0043 mechanism)*
-- [x] **MCP `stdio` spawn — consent before a local spawn ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md), CR-16).** *Closed in 2.6.5 CR-16, and **re-scoped on the way**: the original entry gated only an "untrusted-provenance" import, which drew the line in the wrong place — a `git pull` changes a committed `.relavium.yaml` with no import step, and "my own repo" is a provenance claim about a file, not about the program it names. ADR-0084 gates **every** stdio server on **every** CLI path that can open an MCP-bearing artifact, per machine and per resolved declaration. Resolution happens **before** the decision and the resolved absolute path is what is spawned, so a `PATH` change cannot substitute a binary under an approved fingerprint; the declared-environment denylist is now shared with `run_command`. The desktop's Rust spawner is **outside** this gate and owes the same contract — see [mcp-integration.md](../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract). *(apps/cli/src/engine/mcp-consent\*.ts; packages/shared/src/{canonical,declared-env}.ts; ADR-0084)*
 - [ ] **MCP admission and dialer canonicalize a url differently.** The admission parses the AUTHORED string
   with `extractEgressAuthority`; the dialer parses `new URL(spec.url).href`, i.e. the WHATWG-canonicalized
   form. They diverge on the expanded IPv6 form (`[0:0:0:0:0:0:0:1]` vs `::1`), on IDNA/UTS-46 mappings
@@ -100,9 +159,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   consent gate (ADR-0084 covers `stdio` only). Consider restricting what the opt-in may name to an IP
   literal or `localhost`, or extending consent to a network server. *(medium ·
   packages/shared/src/content.ts, apps/cli/src/engine/mcp-servers.ts; ADR-0088 §4)*
-- [ ] **MCP `stdio` spawn — `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** The **other half** of the entry above, deliberately left open: consent answers *"may this program run?"*, not *"is this program the same code it was yesterday?"* An approved `npx -y @acme/server` re-resolves the package on every spawn, so the registry — not the grant — decides what executes, and the fingerprint cannot see it (the declaration is byte-identical). Pin the package version/integrity for the built-in auto-install servers, and consider surfacing the resolved version at the consent prompt. Unscheduled: it needs a decision on where a lockfile for a *tool the user declared* would live. *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
+- [ ] **MCP `stdio` spawn — `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** *[Moved 2026-11-18: the entry this continues, "MCP `stdio` spawn — consent before a local spawn", is closed and now sits in the [closed record](deferred-tasks-history.md#multimodal-forward-obligations-carry-the-not-yet-coded-pieces--see-adr-0031--closed-entries).]* The **other half** of the entry above, deliberately left open: consent answers *"may this program run?"*, not *"is this program the same code it was yesterday?"* An approved `npx -y @acme/server` re-resolves the package on every spawn, so the registry — not the grant — decides what executes, and the fingerprint cannot see it (the declaration is byte-identical). Pin the package version/integrity for the built-in auto-install servers, and consider surfacing the resolved version at the consent prompt. Unscheduled: it needs a decision on where a lockfile for a *tool the user declared* would live. *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
 - [ ] **MCP lazy connect — connect on first tool call, not at session start ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3).** Every declared MCP server is spawned/connected at session or run **start**, so a session that never calls an MCP tool still paid for every server — and, since [ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md), still asked the user to consent to every local program it never ran. **Blocker:** ADR-0052 §3's registry is **immutable after assembly** — the tool list must be known before the first turn, and that is exactly what discovery connects to obtain. **Unblocker:** the durable cross-invocation **tool-list cache** in the MCP follow-ups entry below — with a cached list, the registry can be assembled without connecting, leaving the connect (and the consent prompt) to the first actual call. Order matters: the cache lands first. ADR-0084 §8 explicitly does **not** decide this, and notes the consent model already fits — a grant is per declaration, so deferring the spawn defers the prompt without changing what is decided. *(packages/mcp/src; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §3; ADR-0084 §8)*
-- [x] **MCP host boundary — strip `McpConnectError.cause` from `--json` / event output (2.R Step 3, [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** *Resolved in the 2.R Step 3 host wiring:* `startMcpClientFailLoud` (apps/cli/src/engine/mcp-servers.ts) wraps an `McpError` into a typed `CliError` whose message is the secret-free MCP summary with **no** `{ cause }` attached, and the top-level `--json` renderer (apps/cli/src/process/render-error.ts) serializes only `{ type, code, message }` — never `cause`. Regression-locked by `run.test.ts` (`expect(err.cause).toBeUndefined()`). *(apps/cli; packages/mcp/src/errors.ts; 2.R Step 3)*
 - [ ] **MCP network transport — header-based auth ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6).** 2.R injects `{{secrets.*}}` only into a **stdio** child's `env`; the network (`http`/`websocket`) specs carry only `{ url }`, so a network server's `env` is **rejected at parse** (fail-closed, never silently dropped). When network MCP servers need credentials, add a host-resolved auth-header field (e.g. `Authorization: 'Bearer {{secrets.<name>}}'`) wired through the SDK transport's `requestInit`/headers, resolved from the same isolated `mcp-secret:*` namespace and never logged/serialized. **Scheduled → 2.6.I.** *(packages/mcp/src/sdk-http.ts; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §6)*
 - [ ] **MCP follow-ups (non-security).** A durable cross-invocation **tool-list cache** (mcp-integration.md ~1h per-`(command,args)`, with a transport-covering key) — 2.R re-runs discovery per process ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3); and a generalized **`SecretResolver`** seam beyond the 2.R `mcp-secret:*` keychain namespace ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6); and reconciling the `types.ts` `ToolId` "register dynamically" comment to "host-side assembled" when 2.R touches `packages/core`; and ~~**mid-call abort propagation**~~ — *closed in 2.6.5 `W4` Step 1 ([ADR-0088](../decisions/0088-the-mcp-boundary-is-hostile.md) §1.2): the engine's `AbortSignalLike` is bridged to a real `AbortSignal` at the SDK fence and threaded through `callTool` and the discovery walk into `RequestOptions.signal`, so a turn cancel now reaches the server rather than only abandoning the caller. The connect is cancellable too. Pulled forward from 2.6.I because the deadline work touched the same call path.* **The tool-list-cache half remains scheduled → 2.6.I** (the rest stays opportunistic). *(packages/mcp/src; packages/core; Phase-3)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
@@ -120,23 +178,6 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Responses API `image_generation` built-in tool — a **separate request surface** the Chat-Completions
   adapter does not call. Wire the Responses-API path (request + `image_generation_call` output-item parse →
   the already-defined providerExecuted media shape) when a Phase-1 model needs it. *(packages/llm/src/adapters/openai.ts; post-1.AG)*
-- [x] **Per-model `media_surface` lookup — wired by the CLI (✅ PR #52, 2.S; verified + checked off 2026-07-08).**
-  Section C added `AgentRunnerDeps.resolveMediaSurface?(model) → MediaSurface` (the inline-vs-generative routing
-  discriminator, default `'chat'`; tests inject it). The production wiring — the host reading
-  `model_catalog.media_surface` and supplying the lookup — landed with 2.S: `media-wiring.ts` supplies
-  `catalog.resolveMediaSurface` (the `model_catalog` projection) and `build-engine.ts` threads it into
-  `AgentRunnerDeps`, so a generative model routes by its catalog surface on the CLI. The sibling D15/D17/D8
-  host-wiring items were checked off at PR #52; this one was missed then. The desktop/VS Code surfaces reuse the
-  same injectable port (Phase-3/Phase-4). *(apps/cli/src/engine/media-wiring.ts + build-engine.ts; PR #52)*
-- [ ] **Verified generative model rates + `MODEL_PRICING` rows (1.AG Section C → 1.AH).** The Section C cost
-  mechanism (pre-egress estimate + the one realized `cost:updated`) reuses `estimateMediaCost`/`mediaCost`, which
-  **degrade to 0 on a missing rate** (H4). No generative model rows were added to `MODEL_PRICING` — fabricating
-  billing rates is a mis-bill risk and the existing rows are all "verified". Add the generative rows (gpt-image-1,
-  Imagen, OpenAI-TTS, Sora, Veo) with **verified** `mediaOutputRates` (image per-image; audio/video per-second) when
-  the catalog/pricing-page values are confirmed; until then a generative call is correctly gated/folded at 0 cost
-  (no mis-bill). **Test follow-up:** the realized-cost vertical (`realizedMediaCost` → a non-zero `cost:updated`)
-  cannot be exercised end-to-end until a generative model carries a rate; the cost MATH is unit-tested via
-  `mediaCost` against a constructed rate, and a non-zero dispatch assertion lands with these rows. *(packages/llm/src/pricing.ts; verified rates → 1.AH)*
 - [ ] **Rate-carrying media representation for raw PCM (1.AH A1 known-limitation).** OpenAI TTS `pcm` is headerless
   16-bit LE PCM at 24 kHz, but the seam's `MediaMimeTypeSchema` forbids MIME parameters, so the bare `audio/L16`
   cannot carry `;rate=24000` (RFC 2586's default is 8 kHz) — a consumer of an `audio/L16` part must assume 24 kHz.
@@ -150,12 +191,6 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   submit) on a retryable timeout. ADR-0045 §3 makes this a **MAY** ("the loop itself never silently re-submits"), so the
   current behavior is conformant; re-dispatching a parked-then-failed media node through the node-retry budget is an
   additive refinement. *(packages/core/src/engine/engine.ts #pollMediaJob; post-1.AG)*
-- [x] **Durable realized cost for a FAILED/CANCELLED paid media job — ✅ Done (PR #52, 2.S Part 3).**
-  `node:failed`, `run:cancelled`, AND `run:failed` now each snapshot `cumulativeCostMicrocents` onto the durable
-  terminal (the `#emitMediaJobCost` fold runs just before the terminal), so a durable-log reader reconstructs a
-  billed-but-failed/cancelled media job's cost from the persisted log, not only the live `cost:updated` stream.
-  The checkpoint fold reads cost only from `node:completed`, so resume is unaffected (ADR-0045 §5).
-  *(packages/core/src/engine/engine.ts; shared/run-event.ts; PR #52)*
 - [ ] **Per-modality pre-egress media cost estimate (A6)** — ADR-0028's governor is token-based and
   cannot price a media-gen call. Add a `[defaults].media_cost_estimate` config default (the media
   analogue of `max_tokens_estimate`, in [config-spec.md](../reference/contracts/config-spec.md)) **and** a
@@ -165,7 +200,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   frozen triad (1.AD) but is **reserved, host-implementation-defined**; the `MediaStore` contract defines
   only `put(completeBytes)`. Specify append-vs-per-delta-put semantics when the surface that renders
   progressive previews lands. *(1.AH / Phase E)*
-- [ ] **`read_media` `workspace` authz scope kind (A8, reserved)** — `read_media` authz is a generic
+- [~] **`read_media` `workspace` authz scope kind (A8, reserved)** — `read_media` authz is a generic
   `handle → allowedScopes: Set<Scope>` with `Scope = { kind:'session', id }` today; the
   `{ kind:'workspace', id }` kind is **reserved (documented, not implemented)** so cross-session /
   shared-asset reads are an additive scope kind, no handle-model migration. Implement only when a
@@ -217,7 +252,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > below remain: `read_media` (D12) was deferred to 2.M, then **split into a dedicated, security-reviewed follow-up**
 > (maintainer-approved, 2026-06-26) — the 2.M chat REPL shipped without it (it is engine/db + cross-surface
 > security-sensitive work usable by both `run` and `chat`, orthogonal to the REPL). **D15/D17/D8 are now wired by the
-> CLI (✅ PR #52, 2026-06-25, checked off below)** — the desktop/VS Code surfaces reuse the same injectable ports
+> CLI (✅ PR #52, 2026-06-25, checked off below [Moved 2026-11-18: those entries now sit in the [closed record](deferred-tasks-history.md#1af-p4-forward-obligations--engine-policy-landed-host-wiring-deferred-review-2026-06-19--closed-entries)])** — the desktop/VS Code surfaces reuse the same injectable ports
 > (Phase-3/Phase-4); the `save_to` multi-feeder semantics remain.)*
 
 - [ ] **`read_media` host `MediaReadAccess` impl + base64 encoder (D12 mechanism)** — there is no host
@@ -232,7 +267,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `read_media` resumes and exports with the attachment recorded on the TOOL row as structure and no `user` row
   inside the turn — the synthesized media message is never persisted, or turn identity by structure breaks.
   *(packages/core engine input-transfer + AgentSession; read_media D12 follow-up)*
-- [ ] **`ctx.mediaRead` / `ctx.requestingScope` — and `ctx.invokeAgent` — not wired into the dispatch context**
+- [~] **`ctx.mediaRead` / `ctx.requestingScope` — and `ctx.invokeAgent` — not wired into the dispatch context**
   — the AgentRunner + AgentSession build `ToolDispatchContext` without them, so `read_media` and `invoke_agent`
   would always throw `ToolUnavailableError` in the engine path (fail-closed, no leak). Since `CR-73`
   (2026-09-06) neither tool is advertised while its delegate is absent, so nothing reaches that backstop.
@@ -242,49 +277,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   [2.6.N](phases/phase-2.6-conversational-authoring.md). **Trigger:** the first host that can actually supply
   one — a media-reference producer for `read_media`, or 2.6.N's sub-agent delegate.
   *(packages/core/src/engine/{agent-runner,agent-session}.ts; read_media D12 follow-up, `CR-73`, 2.6.N)*
-- [x] **`validateWorkflowWithCatalog` (D15) — wired by the CLI loader (✅ PR #52).** `run` and `gate` call it
-  post-parse via `assertWorkflowCatalogValid` (the shared `drive.ts` helper) over the DB `model_catalog`, so an
-  incapable / malformed-generative authored `output_modalities` fails fast at LOAD (exit 2) on a fresh run AND a
-  resume — not only at the runtime FallbackChain pre-skip. The desktop/VS Code loaders reuse the same
-  `WorkflowModelCatalog` projection (phase-3/phase-4). *(apps/cli; PR #52)*
-- [x] **`[defaults].media_cost_estimate` → `AgentRunnerDeps.mediaCostEstimate` (D17) — wired by the CLI (✅ PR #52).**
-  `config/resolve.ts` reads the key and `media-wiring.ts` / `build-engine.ts` thread it into the engine, so the
-  media cost governor uses the configured per-modality estimate (falling back to `DEFAULT_MEDIA_UNIT_ESTIMATE`
-  only when unset). *(apps/cli; PR #52)*
-- [x] **`resolveForEgress` (D8) — wired by the CLI host (✅ PR #52).** `build-engine.ts` injects the
-  `FilesystemMediaStore.resolveForEgress` re-materialization hook, so a durable handle in a transcript message is
-  re-materialized on the failover/egress path rather than sent unchanged. *(apps/cli; PR #52)*
 - [ ] **`save_to` multi-feeder output semantics** — an output node with several feeders captures a record;
   `save_to` requires exactly one media handle across it (0/>1 → node failure). Document the "which handle"
   contract + add a mixed-feeder test. *(low · workflow-yaml-spec.md + packages/core; 1.AH)*
 - [ ] **`save_to` accepts only the `run.id` namespace at LOAD time** — a non-`run.id` ref in `save_to`
   (e.g. `{{ run.outputs[...] }}`) parses, creates a spurious DAG edge, and fails only at runtime. Add a
   load-time check restricting `save_to` to `run.id` so the author gets an immediate error. *(low · packages/core load path)*
-- [x] **CAS-orphan crash window for `save_to` — ✅ Done (PR #52).** The host media GC's CAS-orphan sweep
-  (`runHostMediaGc` step 3, ADR-0042 §4) deletes row-less CAS bytes (a crash between `put` and `recordObject`) —
-  gated on no other active run AND an `orphanMinAgeMs` age-guard so a concurrent writer's fresh blob is never
-  swept. *(apps/cli host GC; PR #52)*
-- [x] **Clean-terminal media-reclaim retry — ✅ Done (PR #52).** The host media GC's clean-terminal reclaim-retry
-  (`runHostMediaGc` step 1) re-attempts `removeRunReferences` for every settled (terminal/gone) run whose inline
-  `#reclaimRunMedia` was dropped by a crash — never the current run (the engine reclaims it inline) and never a
-  paused run (its media must survive a resume). *(apps/cli host GC; PR #52)*
 - [ ] **`save_to` url double-fetch** — a `url`-sourced media part in a save_to output is fetched twice (the
   save_to de-inline + the node:completed emit de-inline; the put dedupes the bytes). Thread one de-inlined
   result into both paths to fetch once. *(low · packages/core/src/engine/engine.ts `#performSaveTo`)*
-- [x] **`save_to` resumer-cwd vs original-run project root — ✅ Done (PR #53).** `run` now persists the run's cwd
-  to `runs.project_root` at run-start (threaded through `openHistoryStore` → `RunHistoryStoreDeps.projectRoot`),
-  and `loadRunSnapshot` returns it; `gate` re-jails `save_to` under that ORIGINAL root (`snapshot.projectRoot ??`
-  the resumer's cwd for a pre-column run), so a run started in dir A and resumed from B writes its deliverables
-  under A. The `realpath`+`commonpath` jail holds under either root. *(apps/cli + @relavium/db; PR #53)*
 - [ ] **Host-GC orchestration is CLI-local (2.S)** — `runHostMediaGc` (the 3 ordered steps: clean-terminal
   reclaim-retry, grace-window byte reclaim, CAS-orphan sweep + the `orphanMinAgeMs` concurrent-writer age-guard)
   is host-agnostic but lives in `apps/cli/src/engine/media-gc.ts`, so the Phase-3 desktop / Phase-6 cloud hosts
   can't reuse it. When a 2nd host wires media GC, promote the pure orchestration to `@relavium/db` (or a shared
   host-helper) and pin the mechanism in a `docs/reference/` home so the hosts can't drift. *(med · apps/cli → @relavium/db; Phase-3+)*
-- [x] **`[defaults].media_gc_grace_days` wired (✅ PR #53).** Added to the config Zod schema; `config/resolve.ts`
-  resolves it (last-writer-wins) and normalizes DAYS → ms (`mediaGcGraceMs`); `run`/`gate` thread it into
-  `sweepHostMediaBestEffort`'s `graceMs`. Absent ⇒ the built-in `DEFAULT_MEDIA_GC_GRACE_MS` (7-day) default
-  (ADR-0042 §4c). *(apps/cli + shared config; PR #53)*
 - [ ] **Keychain no-raw-key IPC test (ADR-0044 §4 acceptance gate)** — ADR-0044 §4 makes "the keychain bridge
   never returns a raw key from an IPC command" an **explicit 1.AF test deliverable**, bundled with the media
   IPC/byte-delivery review surface. That IPC surface is the desktop/Tauri command layer, which is **unbuilt at
@@ -303,21 +309,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 > **2026-06-19 — second (Sonnet) review pass on PR #35.** A full re-review (9 dimensions, double-verified)
 > on top of the first review's fixes confirmed **0 blockers/highs in reachable code**; ~17 small fixes
-> landed in the follow-up commit. The items below are the **deferred** remainder — a read_media *result-shape*
+> landed in the follow-up commit. The items below are the **deferred** remainder *[Moved 2026-11-18: the `read_media` result-shape entry has since closed and now sits in the [closed record](deferred-tasks-history.md#1af-p4-forward-obligations--engine-policy-landed-host-wiring-deferred-review-2026-06-19--closed-entries)]* — a read_media *result-shape*
 > contract that the 1.AH wiring must resolve coherently (it touches the inert read_media path, so fixing it in
 > isolation now risks conflicting with the 1.AH host design), plus one test-injection gap.
 
-- [x] **`read_media` result must be schema-conforming for a multi-turn message (1.AH read_media contract).**
-  ~~`read_media` returns a `{ type:'media', source:{ kind:'base64', data } }` MediaPart placed in
-  `tool_result.result` … the result should carry a **handle**.~~ **Closed 2026-09-02 by `CR-50`**
-  ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §1), and closed differently from what
-  this item proposed: the tool returns **no `MediaPart` at all**. Its result is a short text descriptor and
-  the media travels the media-INPUT rail on a synthesized `user` message, because `tool_result.media` is a
-  position nothing lowers. Sub-item (c) — threading `AbortSignalLike` into `describe` — landed and is
-  pinned by a test. Sub-item (b), narrowing `MediaReadAccess.readRange`, is **superseded**: the engine no
-  longer calls `readRange` at all, so the wide type is no longer reachable from here; it is re-recorded in
-  the `CR-50` residuals above as an arm awaiting its 1.AH desktop caller. *(Marked closed rather than
-  deleted: this item and the `CR-50` residual disagreed with each other in the same file for a day.)*
 - [ ] **Budget-governor media-cost block/warn/fail path has no non-zero-estimate test.** No shipped model
   carries a `mediaOutputRates` row, so `estimateMediaCost` always returns 0 and the governor's media-driven
   `warn`/`fail`/`pause` arm is never exercised end-to-end (the units×rate math IS covered in `mediaCost`/
@@ -329,7 +324,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > A hardening-analysis pass over the seam / fallback / byte-delivery / i18n surfaces (validated against the
 > current ADRs) produced these recorded rulings and deferrals. Each stands on Relavium's own architecture.
 
-- [ ] **Score-threshold / partial-success fallback — DECIDED out-of-scope for Phase 1 (Y2).** `FallbackChain`
+- [~] **Score-threshold / partial-success fallback — DECIDED out-of-scope for Phase 1 (Y2).** `FallbackChain`
   (1.K) routing is **binary** classified-retryable-vs-fatal only ([phase-1](phases/phase-1-engine-and-llm.md)
   1.K acceptance); a cross-provider *quality* judgment is a provider-superior decision that ADR-0011's
   capability-gated **lowest-common-denominator** seam explicitly fences out. Quality/score fallback stays an
@@ -338,7 +333,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   a concrete multi-workflow demand for engine-native quality-fallback appears, and even then it must sit
   **above** the seam, never amend the `LLMProvider` contract. *(in-1.K scope: the fallback trigger is a typed
   `LlmError`/run-event, never a string-sentinel — see phase-1 1.K acceptance.)* *([ADR-0011](../decisions/0011-internal-llm-abstraction.md); 1.K)*
-- [ ] **Per-host/per-provider TLS-verify granularity — DEFERRED draft-proposal (MD-TLS).** The stance today
+- [~] **Per-host/per-provider TLS-verify granularity — DEFERRED draft-proposal (MD-TLS).** The stance today
   is a single global never-disable ([security-review.md](../standards/security-review.md)), which is strictly
   safer. Per-host granular TLS (for a self-signed / private-CA local gateway) reintroduces the MITM surface
   and would need its own ADR + opt-on/opt-out tests. **Decided: keep the global never-disable stance**;
@@ -371,8 +366,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 ## PR #95 independent review — unactioned findings (2026-10-18)
 
 An independent systematic review of [PR #95](https://github.com/HodeTech/Relavium/pull/95) at `19c99968`
-reported no blocker or high finding. Its medium and three of its four low findings were corrected in `a3e164b5`
+reported no blocker or high finding. Its medium and two of its four low findings (`LOW-3`, `LOW-4`) were corrected in `a3e164b5`
 ([disposition table](phases/phase-2.5.5-hardening-and-remediation.md#independent-review-of-the-published-head-and-its-corrections));
+`LOW-2`'s change was reverted in `ebbec1c0` and `LOW-1` and `LOW-2` are the approved deferrals below *(reworded 2026-11-18 in the
+stale-entry sweep: the entry said "three of its four", which the revert contradicted)*;
 what follows was **not** actioned in that pass. **Owner rulings, 2026-10-19:** the maintainer approved an owner for
 every open item ([rulings](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-steps-919-preflight-review-and-maintainer-rulings--2026-10-19)).
 Each `- [ ]` below is now **Scheduled** to a Wave 3 increment (the PR95 increment runs before Step 9a) and stays unchecked until
@@ -380,28 +377,9 @@ that increment lands, except LOW-1 and LOW-2, which are approved deferrals with 
 marked *(reviewer)* are quoted from that review and were not re-verified by the author; items marked *(author)* were
 measured or counted here.
 
-- **DONE 2026-10-19 — SonarCloud's quality gate was red on `main` after every merge.** *(author)* The `main`
-  analysis failed `new_security_rating` (C, required A) against the `previous_version` baseline (2026-06-04) because nine
-  vulnerabilities were open there: seven `githubactions:S6505` ("omitting `--ignore-scripts`") on the
-  `pnpm install --frozen-lockfile` lines in `.github/workflows/ci.yml` (120, 432, 463, 487), `release.yml` (94) and
-  `models-catalog.yml` (51, 95); one `jssecurity:S8707` at `tools/budget-replay-compat/lifecycle-smoke.mjs:47`; one
-  `javascript:S4036` at `tools/cli-package/aggregate.mjs:58`. The gate had failed after the PR #90, #92, #94 and #95
-  merges while the PR-level analyses passed, because SonarCloud statuses are per branch and the existing dispositions lived
-  on PR branches and on other `main` records. SonarCloud is not a required check. At the maintainer's direction the
-  dispositions were applied on `main` through the SonarCloud API after re-verifying each rationale at `6d2a7372`: the seven
-  S6505 and the S8707 as false positives (same reasons as their `main` siblings; the install-script posture comment at the top of
-  `ci.yml` and the Sonar backlog section below), the S4036 accepted as on the PR #95 branch. SonarCloud then reported zero
-  open vulnerabilities and an OK gate for `main`. No rule, threshold or gate was changed; the per-issue record is local
-  and Git-ignored. *(was medium · process)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. An `api-key` header label erases the `Bearer`/`Basic` label that follows it, so the token leaks.** *Low (security).* *(author)* `scrubSecrets('api-key:Bearer abcdefghijkl123456')` returns `api-key:[REDACTED] abcdefghijkl123456` — the `api-key` rule consumes the word `Bearer` as the header's value and the Bearer rule then has no label to anchor on. The pre-PR matcher returned `api-key:Bearer [REDACTED]`. Surfaced by the post-merge security sitting, reproduced independently; it came from the PR's rule order, not from `a3e164b5`, and was not fixed when recorded. A plain `Authorization: Bearer …` was unaffected. **Closed by the PR95 increment:** a header value may begin with up to eight `Bearer`/`Basic` labels, and the example now returns `api-key:Bearer [REDACTED]` (re-checked at `b3cf117e`, 2026-11-04). *(low · packages/llm/src/scrub-secrets.ts)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. URL userinfo containing a raw `?` or `#` before the first `:` (or with no `:`) is not masked.** *Ruled 2026-10-19:* mask unless the text before the `?`/`#` is host-shaped (a dotted hostname, `localhost` or a bracketed IP, with an optional `:port`) **and** an `=` assignment lies between the `?`/`#` and the authority `@`; a plain host-shaped exemption would still leave `https://my.user:1234?TOKEN@h/` open. The same predicate applies to core's twin in `packages/core/src/tools/bounding.ts` (its colonless short-handle rule and `]` delimiter stay, recorded as differences). *Low (security).* *(author, from two independent differential runs)* When recorded, `https://us?er:TOKEN@h/`, `http://#TOKEN@h` and `https://my.user:1234?TOKEN@h/` passed through unchanged; the pre-PR matcher masked all of them. **Closed by the PR95 increment:** all three return masked userinfo (re-checked at `b3cf117e`, 2026-11-04). It follows from the deliberate host-query policy in `maskUrlUserinfo` (a raw `?`/`#` may begin public query text, e.g. `https://host?contact=a@b.c`) and the colon-first cases are pinned by tests; it is identical at `19c99968` and is not introduced by the follow-up. (As recorded, it asked for a maintainer call and proposed the host-shaped exemption the 2026-10-19 ruling above adopted.) *(low · packages/llm/src/scrub-secrets.ts)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Credentials in URLs of other schemes are outside the finite rule.** *Ruled 2026-10-19:* extend the finite list with postgres, postgresql, mysql, mariadb, redis, rediss, mongodb, mongodb+srv, amqp, amqps, ssh, sftp, ldap, ldaps, smtp and smtps, masking only colon-bearing userinfo for the new schemes; malformed `https:/u:p@h`, a raw `/` inside a password and invisible characters inside the scheme stay documented limits. *Low, informational.* When recorded, `postgres://`, `redis://`, `mongodb(+srv)://`, `ssh://` userinfo, malformed `https:/u:p@h`, a raw `/` inside a password, and invisible characters inside the scheme were not masked, identically before and after the follow-up. **Closed by the PR95 increment** as ruled: the listed connection-string schemes mask colon-bearing userinfo (`postgres://u:p@db` → `postgres://[REDACTED]@db`; a bare `ssh://git@host` stays), and the other three stay documented limits (re-checked at `b3cf117e`, 2026-11-04). The file states its shapes are finite; a database connection error is the realistic carrier (as recorded, it asked for the decision the 2026-10-19 ruling above made). *(info · packages/llm/src/scrub-secrets.ts)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The URL rule's split-credential scan costs 2.1–2.5× on letter-heavy input, and nothing times that loop.** *Low / nit.* When recorded, with `NO_BOUNDARY` the scanner tested every ASCII letter start for the URL rule; at 8 MiB the worst case stayed under about 1.1 s and linear (1–16 MiB scaling checked), and the 8 MiB timing case of the time contained no `@`, so it returned before the loop. **Closed by the PR95 increment:** the URL rule's split probe now runs only within 32 characters of a `://` (`anchor: { text: '://', window: URL_SCHEME_WINDOW }`), and `reaches the split URL scan over admitted-size letter-heavy text` drives 8 MiB of letters through it under the case deadline instead of a wall-clock assertion (re-checked at `b3cf117e`, 2026-11-04). *(low · packages/llm/src/scrub-secrets.ts)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. Two latent invariants in `hasSplitCredential` are unchecked.** *Nit.* A boundary-bearing rule with neither `\b` nor a `joinedPattern` makes `scrubSecrets` throw a `SyntaxError` on LF/TAB input no earlier rule has redacted (the suite fails at once, so it is caught, but it would break `makeLlmError`'s no-throw claim); and `wordBlocksStart` tests `boundary.test('a')` as a proxy for "rejects every ASCII word character", true for all current boundaries. An assertion at module load would pin both. **Closed by the PR95 increment:** `splitProbe` checks the scanner's two invariants at module load, so a misconfigured rule fails fast with a typed error (re-checked at `b3cf117e`, 2026-11-04). *(nit · packages/llm/src/scrub-secrets.ts)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. The userinfo control's joined-view half is not separately witnessed.** *Low (coverage).* *(author, from an independent run)* When recorded, mutating only `joinedPattern` of the URL rule left 111/111 tests green, and no causal control pinned the glued-scheme behaviour. **Closed by the PR95 increment:** the `diagnostic-joined-url-userinfo` control replaces the URL rule's `joinedPattern` with a never-matching pattern, and `diagnostic-url-glued-scheme` pins the glued-scheme behaviour (re-checked at `b3cf117e`, 2026-11-04). *(low · tools/secrets-controls/mutations.mjs)*
-- [ ] **Approved deferral (maintainer, 2026-10-19). `LOW-2` (the 1 s default `waitFor` on a real child) was examined and deliberately not changed.** *Low.* The only wait that observes a real child booting is `holdNativeToolProcess`'s marker wait, whose sole caller sits inside `drive-home.test.ts` waits (lines 633 and 637) that use the 1 s default and enclose the boot, so a longer inner bound cannot help; a retune must raise those outer waits together. No failure was reproduced (0 in dozens of loaded runs). `testing.md` also states that no readiness or case deadline is extended to pass the workspace gate. **Trigger: a recorded boot-time failure.** *(low · apps/cli/src/commands/native-forwarding.test-support.ts, apps/cli/src/home/drive-home.test.ts)*
+- [~] **Approved deferral (maintainer, 2026-10-19). `LOW-2` (the 1 s default `waitFor` on a real child) was examined and deliberately not changed.** *Low.* The only wait that observes a real child booting is `holdNativeToolProcess`'s marker wait, whose sole caller sits inside `drive-home.test.ts` waits (lines 633 and 637) that use the 1 s default and enclose the boot, so a longer inner bound cannot help; a retune must raise those outer waits together. No failure was reproduced (0 in dozens of loaded runs). `testing.md` also states that no readiness or case deadline is extended to pass the workspace gate. **Trigger: a recorded boot-time failure.** *(low · apps/cli/src/commands/native-forwarding.test-support.ts, apps/cli/src/home/drive-home.test.ts)*
 - [ ] **Scheduled → Wave 3 17b. Join-table test nits.** *Nit.* The `process-close.test.ts` gate margin is nominally 100 ms but `waitFor`'s 50 ms poll makes it 100–150 ms, so a publication more than about 150 ms late is invisible; the three rejection cases assert the message but not the `ProcessCapabilityError` class; the `mcp-orphan.e2e.test.ts` comment's statement that its cases have only ever run on POSIX is historical and unverifiable; the abort case's `await spawned.promise` is unbounded (a spawn that never happens fails only as the 5 s case timeout), its closed-child `waitFor` carries no tag, and the 100/300/3,000 ms margins are bare literals. *(nit · apps/cli/src/engine/tool-host/process-close.test.ts, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-19). Native-lifetime watchdogs are fixed 5 s bounds inside 10 s cases (`LOW-1`).** *Low.* The watchdogs in
+- [~] **Approved deferral (maintainer, 2026-10-19). Native-lifetime watchdogs are fixed 5 s bounds inside 10 s cases (`LOW-1`).** *Low.* The watchdogs in
   `apps/cli/src/process/native-process-owner.test.ts`, `engine/tool-host/os-native-lifetime.test.ts`,
   `render/editor-native-lifetime.test.ts`, `render/fixtures/native-editor.mjs` and
   `tools/cli-package/smoke/native-process.test.mjs` assert that a slow-but-correct close did not trip them, so a
@@ -410,14 +388,6 @@ measured or counted here.
   does nothing, and three runs of the three vitest files (52 tests) passed at a load average of 80–96 on macOS.
   The reviewer could not observe the Windows root cause either. **Trigger: a Windows trace that names the bound
   that fired**; retune the coupled set together then. *(low · the files above)*
-- **DONE 2026-10-22 — Wave 3 PR95 increment, closed under the maintainer's round cap. `bounds admitted-size failed header and URL preparation` is load-sensitive.** *Low.* *(author)* It allows
-  5 s for two 8 MiB scrubs that take about 0.75 s in total, and it failed twice with the load average near 65 (6.4 s
-  in the run that logged the duration). Measured alternately, the pre-change code and the corrected code take the same
-  time, so the failures were load, not the correction. Two independent reviewers saw it too (5,590 ms and 3,453 ms at load averages near 88–97) and recorded that `tools/secrets-controls/README.md` says the fixture runs without a machine-speed threshold, which this assertion contradicts; six controls run this file, so a loaded runner can turn a fixed phase red. The test
-  guards against a quadratic regression, so any loosening must stay far below minutes. **Closed by the PR95
-  increment:** the eight-MiB cases no longer assert a duration; their bound is the case deadline
-  `ADMITTED_SIZE_CASE_TIMEOUT_MS` (15 s, the largest the secrets causal-control phases admit), far below the minutes a
-  quadratic scan would need (re-checked at `b3cf117e`, 2026-11-04). *(low · packages/llm/src/scrub-secrets.test.ts, `SECRETS_B2_HEADER_PREPARATION`)*
 - [ ] **Scheduled → Wave 3 17a (all four sites together). Raw exit-code literals where `EXIT_CODES` names exist.** *Nit.* *(reviewer)* reported
   `result === 5 || result === 7 || result === 8` in `apps/cli/src/chat/session-surface-lifetime.ts:54`; *(author)*
   the same literals occur in four places: that site, `commands/workflow-lifetime.ts:178`,
@@ -436,1974 +406,9 @@ measured or counted here.
   `apps/cli/src/harness/concurrency.e2e.test.ts:434-441` uses a fixed 100 ms contention margin;
   `tools/cli-package/consumer-lifetime.test.mjs:54-59` pre-marks every synthetic case `passed: true` (by design;
   real detection is the packed-consumer CI). *(nit · the files above)*
-- [ ] **Scheduled → Wave 3: the two tooling nits → 9a.1; the duplicate headings → 19b. Tooling and documentation nits.** *The tooling half is accepted with Wave 3 Step 9a.1 (implemented 2026-10-22, accepted at `cf97b7f1` on 2026-10-24):* the unreachable `TAR_FORMAT` branches are removed, and `installedModulesOwner` (`tools/cli-package/smoke/installation.mjs`) replaces the ancestor loop; the duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Unreachable `TAR_FORMAT` branches at
-  `tools/cli-package/archive.mjs:126,135`; no `break` in the ancestor loop at `tools/cli-package/smoke/worker.mjs:64-65`
-  (the outermost `node_modules` wins); and repeated heading texts in the phase register, whose later occurrences
+- [ ] **Scheduled → Wave 3 19b: the duplicate headings. Tooling and documentation nits (open half).** The duplicate headings stay with 19b. *Nit, (reviewer).* *Premise corrected 2026-10-19:* the repeated headings are the 2.5.5.A–I sub-stream headings and the Wave 2/Wave 3 "Decisions presented together before implementation" pair, not Wave 2 checkpoint sub-headings. Repeated heading texts in the phase register, whose later occurrences
   take a `-1` slug suffix. *(author)* A scan finds repeated H2–H4 headings (the 2.5.5.B–I sub-stream headings and the
   Wave 2 checkpoint's sub-headings among them); no link is broken today. *(nit · the files above)*
-- **No action, recorded 2026-10-19 — informational items kept in view.** No change is proposed for any of them; the `git_commit` approval wording is already covered by Wave 3 Step 5's #308 disposition. *(reviewer)* `packages/mcp/src/manager.ts:228-236` — a comment omits
-  the bare `Error` in the throwing-observer branch (behaviour is canonical); `packages/core/src/tools/bounding.ts` —
-  the removed 4k pre-clip in `makeSummary` is required for correctness (8 MiB takes about 49 ms, about 200 ms with
-  line feeds) and the alias DAG is `2^d` (depth 18 is 786k nodes in 404 ms) for host/embedder graphs only, never model
-  JSON; `packages/core/src/tools/builtins.ts:451-452` — the `git_commit` description promises human-gate approval
-  while no producer sets `gateApproved=true` (not verified by the reviewer); `commands/workflow-lifetime.ts:204`
-  can return a raw signal code above 9 that the physical exit never uses, a note for future embedders. No action
-  is proposed for any of these.
-
-## PR #95 masker edge cases — approved deferrals (2026-10-21 and 2026-10-22)
-
-Under the [masker acceptance bar](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-pr95-increment-implementation-checkpoint-and-review-round-corrections--2026-10-20)
-that the maintainer set on 2026-10-21, a low finding in the open-ended masker work
-(`packages/llm/src/scrub-secrets.ts` and core's twin projection in `packages/core/src/tools/bounding.ts`) is
-recorded here instead of being corrected in the review loop, and under the round cap of the same day so is
-every medium and low finding of round 10, the last round, after which only high findings are corrected. The
-entries up to round 9 are not regressions against base `9902e0a0`; the round-10 entries say when they are, in the
-shapes they name. The maintainer counted round 10's GEN-R10-1 (a `.env` password in a structured result's
-summary) as high on 2026-10-22, so its summary half is corrected and only its journal half is recorded here, and
-approved the two private-key block gaps the author found after round 9. The shapes that neither masker reads by design stay described in
-their canonical homes, [built-in-tools.md](../reference/shared-core/built-in-tools.md) for core and
-[error-handling.md](../standards/error-handling.md) for the scrubber; this list holds the review findings and the
-re-checks they need. **Trigger for every entry:** a real tool result, journal entry or diagnostic that carries the
-shape, or the next change to the rule the entry names. The generative harnesses that found them are not part of
-the repository, so each entry names the input and the property to re-check by hand or in a test.
-
-- [ ] **Approved deferral (maintainer, 2026-10-21). A header label split by a JSON escape is not joined in a
-  summary.** *Low, unchanged from base.* *(author)* `boundForModel({ stdout: 'api-k\tey: <value>' })` shows the
-  value in its summary, while the same text as a string result is `[redacted]`. The summary's second reading
-  (`visitEscapedSeparators`) runs the standalone, scheme-label and split-credential rules, not the split
-  header-label join, which rewrites the text instead of reporting ranges. **Re-check:** whether a real tool output
-  splits a header label across a line break; a fix reports the joined labels as ranges of the escaped view.
-  *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-21). A private-key block split across array elements shows its
-  body in the journal and display projections.** *Low, unchanged from base.* *(author)*
-  `redactSecretShapedValue(['--private-key', '<BEGIN marker>', 'MIIE…', '<END marker>'])` keeps `'MIIE…'` and the
-  END marker, and `{ argv: ['ssh', '-i', '<BEGIN marker>\nMIIE…', '…\n<END marker>'] }` stays whole. Both
-  projections read each string alone; only a summary reads a structured value's JSON as one text. **Re-check:**
-  `redactSecretShapedWalk` under `projectSecretShapedValue` and `redactSecretShapedValue`; a fix changes `v5:`
-  journal digests, so it needs the compatibility review of
-  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
-  *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-21). A summary does not read a key's unquoted value behind an
-  escaped line break and indentation.** *Low, unchanged from base.* *(round 9 critic, CRIT-R9-1)*
-  `boundForModel({ stdout: 'database:\n  password:\n  Qx7vT2mN9pL4kR8s\n  user: app' })` shows the value, while
-  the same text as a string result is masked. The key rule reads a value behind escaped separators only when a
-  quote opens it (`escapedValueStart`), and the summary's escaped-separator view runs no key rule. **Re-check:** a
-  fix lets the summary's key rule read an unquoted value behind escaped separators and spaces, or runs it over
-  `escapedSeparatorView`; the journal is unchanged. *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-21). Core does not read a credential glued to a terminal
-  sequence's final byte.** *Low, unchanged from base.* *(round 9, R9-GEN-4)* `ESC[1msk-<body>` and
-  `ESC[0mBearer <token>` keep the credential: the SGR final byte `m` is a word character, so the standalone and
-  scheme rules see no boundary; built-in-tools.md names the limit. **Re-check:** read those two rules in a view
-  where CSI sequences are filled, as the backstop's normalized probe does. *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-21). The quoted value's later-closing rule has tests but no causal
-  control.** *Low, partial.* *(round 9, TST-R9-2)* The mutations that keep a single reading, drop the kept
-  backslashes or skip the summary's second closer are each killed by
-  `closes a quoted value at the later of its readings with and without the masks`, but no declaration in
-  `tools/secrets-controls/mutations.mjs` targets it. **Re-check:** add a control (for example `keepingEscapes`
-  returning `ranges`) when the secrets family is next extended, with its counts.
-  *(low · tools/secrets-controls/mutations.mjs)*
-- [ ] **Approved deferral (maintainer, 2026-10-22). A private-key block cut off before its END marker is not
-  masked.** *Unchanged from base; found by the author after round 9, outside any review finding.*
-  `redactSecretShapedText('<BEGIN marker>\nMIIE…')` and the summary of the same text keep the whole body, as does
-  a block whose END marker starts more than 20,000 characters after its BEGIN marker (`PEM_BODY_MAX`):
-  `visitPemBlocks` masks only a BEGIN…END pair, and the LLM backstop reads no private-key block. A real tool output
-  can cut a key short (`head -n 5 key.pem`, a tool that clips its own output). built-in-tools.md names the limit.
-  **Re-check:** mask an unclosed BEGIN marker through its base64 body lines in every projection, linear at admitted
-  size; a journal change needs the compatibility review of
-  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
-  *(packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-22). A structured result's summary does not read a private-key
-  marker split by a line break or tab.** *Unchanged from base; found by the author after round 9.*
-  `boundForModel({ a: '<BEGIN marker>\nMIIE…\n-----END RSA PRIVATE\nKEY-----' })` shows the block in its summary,
-  while the same text as a string result is `[redacted]`: JSON escapes the line break or tab, so the wrapped-marker
-  patterns, which read raw whitespace, see none; more than one space still collapses in the summary's one-line
-  pass. built-in-tools.md names the limit. **Re-check:** read the wrapped markers in `escapedSeparatorView` as well
-  (`visitEscapedSeparators`). *(packages/core/src/tools/bounding.ts)*
-- [ ] **Approved deferral (round cap, 2026-10-21). A summary reads a wrapped private-key marker only within its
-  whitespace bounds.** *Medium, regression against base.* *(round 10, R10-SCRUB-1)*
-  `boundForModel('PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\nMIIE…\n-----END PRIVATE\n        KEY-----')` shows the
-  body in its summary, which base masked: the wrapped patterns take one to eight whitespace characters between
-  `PRIVATE` and `KEY` and up to 40 characters of type words, and the key's unquoted value takes the BEGIN marker
-  before the one-line pass can pair the block. A line break with seven or more spaces of indentation in CRLF text,
-  nine tabs and a 31-column hanging indent leak the same way. built-in-tools.md names the bound. **Re-check:** let
-  each whitespace run grow as one simple quantifier (`PRIVATE\s+KEY`, type words separated by `\s+` with a bounded
-  word count) under the admitted-size case deadline, and add summary tests with nine or more whitespace characters
-  behind a key prefix. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`)*
-- [ ] **Approved deferral (round cap, 2026-10-21). A U+E000 in a structured result brings back walk-first masking
-  in its summary.** *Medium, regression against base.* *(round 10, R10-SCRUB-2, INT-R10-1 and PR95-R10-SEC-1)*
-  `boundForModel({ icon: ' ok', private_key: '<BEGIN marker>\nMIIEAAAAfirst', rest: 'MIIEBBBBsecond\n<END marker>' })`
-  shows the second half of the body and the END marker in its summary; `{ argv: ['mysql', "--password='correct",
-  'horse', "battery'"], icon: '' }` shows `horse` and `battery'`. The summary marks each whole-masked value with
-  a U+E000 placeholder and, when the result's JSON already holds that character, falls back to the walk's masks
-  applied before the text rules. A planted character or a glyph (a Nerd Font icon) is enough. built-in-tools.md
-  names the limit. **Re-check:** pick a placeholder that the result's JSON does not hold (an unused private-use code
-  point or a nonce) so that the unwalked reading always runs, and add tests with U+E000 beside a cross-member PEM
-  block and an argv password. *(medium · packages/core/src/tools/bounding.ts `structuredSummaryText`)*
-- [ ] **Approved deferral (round cap, 2026-10-21). A private-key block ends at its first END marker even where
-  another rule's match is glued to it.** *Medium, regression against base since `b89ac62e`.* *(round 10,
-  R10-SCRUB-3)* `redactSecretShapedText("api_key='x Wsecret12 -----BEGIN RSA PRIVATE KEY-----' ?sig=<24 a>-----END RSA PRIVATE KEY-----")`
-  is `api_key='x Wsecret12 [redacted]` (base: `[redacted] ?sig=[redacted] RSA PRIVATE KEY-----`), and
-  `'<BEGIN marker>\n?s=<26 characters><END marker>W<END marker>'` leaves `W<END marker>`, which base masked; base's
-  rules ran in turn, so the glued match erased the marker. built-in-tools.md names the relaxation. **Re-check:** end
-  a block only at an END marker that no other rule's match is glued to, or read a value's closing quote inside a
-  PEM range as closing. *(medium · packages/core/src/tools/bounding.ts `visitPemBlocks`, `visitSecretKeyValues`)*
-- [ ] **Approved deferral (round cap, 2026-10-21). Whitespace inside a wrapped marker's type words has no killing
-  test.** *Medium, test gap.* *(round 10, TST-R10-1)* Changing either wrapped pattern's type class
-  `[A-Z0-9\s]{0,40}` to `[A-Z0-9 ]{0,40}` leaves every bounding case passing, while the summary of
-  `PRIVATE_KEY=-----BEGIN RSA\nPRIVATE KEY-----\nMIIE…\n-----END RSA PRIVATE KEY-----`, or of the same split in the
-  END marker, then shows the body. **Re-check:** add both inputs to `reads a private-key marker that a line break, a
-  tab or a doubled space splits in a summary` and run both class mutants.
-  *(medium · packages/core/src/tools/bounding.test.ts)*
-- [ ] **Approved deferral (round cap, 2026-10-21). The summary's no-throw handling of a whole-masked value with no
-  JSON form has no killing test.** *Low, test gap.* *(round 10, TST-R10-2)* With `jsonValue` reduced to
-  `return JSON.stringify(value);`, `boundForModel({ password: 10n, ok: 1 })` and
-  `boundForModel(['--password', 10n, 'x'])` reject and every test still passes; the existing no-JSON-form test holds
-  no credential key. **Re-check:** add both inputs (summaries `{"[redacted],"ok":1}` and
-  `["--password","[redacted]","x"]`) and run the mutant. *(low · packages/core/src/tools/bounding.test.ts)*
-- [ ] **Approved deferral (maintainer, 2026-10-22). The journal projection of JSON text keeps a value whose escaped
-  opening quote an earlier mask took.** *Unchanged from base; the journal half of GEN-R10-1, whose summary half is
-  corrected.* `redactSecretShapedText(JSON.stringify({ stdout: 'DATABASE_URL=postgres://db.example.com/app?sslmode=require\nPOSTGRES_PASSWORD="<v>"\n' }))`
-  shows `<v>`: the query value runs on through the JSON-escaped line break and the next line's key and takes the
-  backslash of the value's escaped quote. A summary opens such a value where that mask keeps its backslashes; the
-  journal does not, so `v5:` digests do not change, and a test pins that. **Re-check:** drop the `throughCloser`
-  gate of the kept opening in `visitSecretKeyValues`, with the compatibility review of
-  [effect-journal.md](../reference/shared-core/effect-journal.md#11-secrets-what-a-row-may-hold) §11.
-  *(packages/core/src/tools/bounding.ts)*
-
-## Wave 3 Step 9a.1 — recorded low findings (2026-10-24)
-
-The internal rigor pass over Step 9a.1 at `1f247772`, run before its round 13 under the
-[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
-corrected every verified code defect and test gap it could close inside the increment. These low findings are
-recorded instead: each needs a change of scope (a new CI leg, a refactor of a Step 7b script) or concerns a
-local-only path no claim covers. **Trigger for every entry:** the next change to the file it names, or a
-real run that shows the shape.
-
-- [ ] **The local consumer installs under the shared temporary directory.** *Low, unchanged since Step 7b.*
-  *(rigor pass, SEC-1/PLAT-6)* `consume.mjs` installs the packed CLI under `mkdtemp(tmpdir())`, so the
-  installed CLI's optional bare requires (for example `ws`'s `require('bufferutil')`, loaded by the
-  `provider list` smoke case) fall through to `<tmpdir>/node_modules`, which another local user can create on
-  a POSIX host with a shared `/tmp`. CI runners are single-tenant and macOS's per-user temporary directory is
-  not shared; packaging.md names the limit. **Re-check:** install under a per-user parent no other user can
-  write (for example a 0700 directory in the user's cache directory), with a test that plants
-  `<temporary>/node_modules/bufferutil` and shows it never runs, as round 10's corepack test does.
-  *(low · tools/cli-package/consume.mjs)*
-- [ ] **An interrupt during the consumer's publication leaves its receipt.** *Low.* *(rigor pass, PLAT-4)*
-  `publish()` runs inside `completeConsumer`'s interrupt scope, and the interrupt path removes the fixtures,
-  smoke roots and installation but not `installed-consumer.json`, so a consumer interrupted while publishing
-  exits 130 beside a success receipt (the producer empties its artifact directory in the same case). A later
-  local run into the same report directory then fails on the `wx` write; CI uploads only on success.
-  **Re-check:** write the receipt under a temporary name and rename it after the interrupt scope returns, or
-  retract it on the interrupt path, with a test that interrupts during `publish`.
-  *(low · tools/cli-package/consumer-lifetime.mjs)*
-- [ ] **Two producers can share one artifact directory.** *Nit.* *(rigor pass, PLAT-9)* Both pass the
-  emptiness check (`mkdirSync` recursive plus `readdirSync`), so one seal can read the other's tarball. It
-  needs user error: the local check always uses a fresh root. **Re-check:** require that the directory does
-  not exist yet and create it without `recursive`, or take an exclusive lock file first.
-  *(nit · tools/cli-package/produce.mjs)* *Re-checked in Step 9a.2a (2026-10-24), which changed
-  `produce.mjs` to add the symbolication work directory and the producer-Node refusal, which runs before the
-  emptiness check: unchanged, still needs user error.*
-- [ ] **The consumer's and the smoke worker's composition has no node test.** *Low, unchanged since Step 7b.*
-  *(rigor pass, F6 and F7)* `consume.mjs` hands `completeConsumer` the `supportRoot` that
-  `runInstalledSmoke` uses and gives the local source lookup `isolatedGitEnvironment()`, and the worker picks
-  its `node_modules` owner with `installedModulesOwner` and its root with `createInstalledSmokeRoot`; each
-  line can be changed wrongly without a node test failing, and a CI consumer, never interrupted, would not
-  notice a wrong `supportRoot`. The helpers themselves are tested. **Re-check:** export the consumer's
-  composition with ports, as `produce.mjs` is, and assert that one `supportRoot` binding reaches both calls and
-  that the Git call's environment equals `isolatedGitEnvironment()`.
-  *(low · tools/cli-package/consume.mjs, tools/cli-package/smoke/worker.mjs)*
-- [ ] **The Windows interrupt, deadline and mode branches are not exercised.** *Low.* *(rigor pass, F14 and
-  MCG-9)* `stopLiveCommands`' taskkill path, `runCommand`'s ungrouped deadline, `forwardInterrupts`' skip of
-  ungrouped children, `stopBoundedChildren`'s fallback and the inventory's `not-observable-windows` mode
-  evidence run only on Windows, and `pnpm test:acceptance-tools` runs only on Linux; packaging.md says so.
-  **Re-check:** a Windows leg of the interrupt-free lifecycle checks (a stage past its deadline is killed at
-  once with `graceMs > 0`) and of `tools/bundle-closure/closure.test.mjs`.
-  *(low · tools/cli-package/process.mjs, tools/cli-bootstrap/process.mjs, tools/bundle-closure/inventory.mjs)*
-
-Round 13, the acceptance round at `cf97b7f1` (no blocker, high or medium finding; security sitting clean),
-reported ten verified findings, six of them distinct. Under the 2026-10-23 bar they are recorded here; the
-documentation-only ones were also corrected in the acceptance commit, which changes no code.
-
-- [ ] **`forwardInterrupts`' group-wide forwarding has no test.** *Low.* *(round 13, TCA-9A1-R13-1)*
-  `forwardInterrupts` sends the signal to each child's process group (`process.kill(-child.pid, signal)`), as
-  its docblock says, but changing it to `process.kill(child.pid, signal)` passes `process.test.mjs` and
-  `check.test.mjs`: the forwarding test checks only the leader's own marker. Every stage child today is
-  detached into its own group, so the real composition behaves the same. **Re-check:** in the forwarding
-  harness, have the detached child start a non-detached grandchild in its group that writes a marker on
-  SIGINT, and assert both markers. *(low · tools/cli-package/process.mjs)*
-- [x] **The map-source length bound is pinned on its admitted side only.** *Nit; closed in Step 9a.2a (2026-10-24), whose finalizer tests add the 1025-character source.* *(round 13, TCA-9A1-R13-2)*
-  `finalize.test.mjs` admits a 1024-character source and refuses a 1031-character one, so loosening
-  `source.length > 1024` to any bound up to 1030 passes. The source must still resolve to an existing original
-  file, so nothing is exposed. **Re-check:** add a 1025-character source (`../src/${'a/'.repeat(507)}x.ts`)
-  expecting `MAP_SOURCE_PATH`. *(nit · tools/cli-package/finalize.test.mjs)*
-- [ ] **A rule that lowers the exit code would let the guard exit 0.** *Nit, code half.* *(round 13,
-  CRIT-9A1-R13-N1)* `release-guard.mjs` sets `process.exitCode = 1` once, so a rule that set
-  `process.exitCode = 0` or called `process.exit(0)` would make the publish guard exit 0; today's rule always
-  throws, and the guarantee that no way of invoking the guard skips the refusal holds. The wording that said
-  the entry point "exits 1" is corrected. **Re-check:** when Step 9d replaces the rule, re-assert the code before
-  the final line and keep it with an `exit` listener, with a test for each variant.
-  *(nit · tools/cli-package/release-guard.mjs)*
-- [x] **Documentation corrected in the acceptance commit.** *(round 13)* The contract's store-discovery list
-  now names `NPM_CONFIG_STORE_DIR`, which the code forwards (low; PLAN-9A1-R13-1 = INT-9A1-R13-1, also
-  PFC-R13-N1 and TCA-9A1-R13-3); the deadline's group kill is described as happening when the grace ends or as
-  soon as the stage exits (PLAN-9A1-R13-N1); the guard's wording says it sets its exit code to 1 before its rule
-  runs (CRIT-9A1-R13-N1, wording half); and this file's freshness line is current (PLAN-9A1-R13-N2 =
-  INT-9A1-R13-N1). **Re-check:** the contract's list equals `STORE_DISCOVERY_VARIABLES` in
-  `tools/cli-package/candidate.mjs`. *(docs/reference/cli/packaging.md, tools/cli-package/README.md,
-  .github/workflows/release.yml)*
-
-Observed in 9a.1's push CI and its preflight for 9a.2 (2026-10-24):
-
-- [ ] **A migration-running database test lacks the explicit timeout its siblings carry.** *Low.* *(author,
-  push CI run 40050981969)* In `packages/db/src/session-effect-turns.test.ts`, the parametrized case
-  `refuses issuance inside an outer %s transaction before any key can escape a rollback` runs every migration
-  per case under vitest's default 5 s, while its siblings that migrate pass `30_000`; on the advisory Windows
-  runner the `exclusive` case took 7.7 s and failed. 9a.1 changed no database source. The advisory Windows job
-  failed 6 times in the last 40 CI runs, each a default 5 s timeout on a different SQLite- or
-  process-heavy test (`fs-workspace-admission`, `concurrency.e2e`, the runner-abort ownership case and this
-  one); the job was advisory then and every required job passed. **Since 2026-11-04 the Windows job is a required
-  check** (the PR #96 review ruling), so such a timeout now blocks a merge; it has been green for 14 consecutive runs
-  since 2026-10-25 (D64 round 2 on the PR #96 correction). **Re-check:** measure the failure's cause and rate before
-  changing a bound, then give the case its siblings' `30_000` and review the other three tests' bounds against the
-  Windows runner, when the file is next edited or the Windows job next fails on any run. *(low ·
-  packages/db/src/session-effect-turns.test.ts)*
-- [ ] **`--verbose` never prints a real stack.** *Low, for Step 10a.* *(9a.2 preflight)*
-  `apps/cli/src/process/render-user-facing.ts` (`ownErrorStack`) prints a stack only when `stack` is an own
-  data property, but V8 defines a real error's `stack` as an accessor (get/set), so a thrown `Error` prints
-  nothing under `--verbose`; `render-error.test.ts` constructs a data `stack`, so the tests pass. Step 10a
-  replaces this raw-stack branch (row 10a). **Re-check:** the replacement prints a real error's frames, tested
-  with a thrown `Error` rather than a constructed property. *(low · apps/cli/src/process/render-user-facing.ts)*
-
-## Wave 3 Step 9a.2a — recorded low findings (2026-10-24)
-
-The internal rigor pass over Step 9a.2a at `1ab4c134`, run before its first review round under the
-[2026-10-23 acceptance amendment](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a1-implementation-checkpoint--2026-10-22),
-corrected both high findings, every medium one and every low or nit it could close inside the increment
-([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2a-implementation-checkpoint--2026-10-24)).
-These are recorded instead. **Trigger for every entry:** the next change to the file it names, or a real run
-that shows the shape.
-
-- [ ] **The symbolication child is not sandboxed.** *Low; a named limit.* *(rigor pass, SEC-9A2A-2)*
-  `captureFrames` runs the candidate CLI's runtime import closure — packages that before 9a.2a ran only in the
-  consumer jobs — as the producer's user, with network access, in the job whose sibling `staging` directory
-  holds the private maps and manifest. Its isolated environment and owner-only work directory confine it,
-  and, within the capture process only, the refusal of any module outside the candidate and the refused
-  keyring and native addons (added after review round 1); a thread or subprocess the candidate started
-  without the preload (an eval Worker, a `node -e` child) would have none of them, and `relavium import`
-  starts none, though nothing enforces that or that it stays offline. packaging.md names the limit.
-  **Re-check:** when Step 9b designs the custody job, run the capture child and every descendant under an
-  OS sandbox or a separate user that cannot read `staging`. *(low · tools/cli-package/symbolicate.mjs)*
-  *Re-checked after rounds 1 and 2 (2026-10-24): the module confinement narrows the limit; the record and
-  packaging.md now say the refusals are in-process only.* *Re-recorded 2026-10-25 (Step 9b preflight
-  decisions): Step 9b adds a library and synthetic controls and designs no custody job, so the trigger moves
-  to Step 9d, which designs the release job.*
-- [ ] **Two packs of one source can differ in the packed manifest's key order.** *Low, for Step 9c.* *(rigor
-  pass, integration lens)* Two productions of the same tree packed the five `@relavium/*` `devDependencies`,
-  which pnpm rewrites from `workspace:*` to versions at pack time, in different orders (`core, llm, shared,
-  mcp, db` and `core, db, shared, llm, mcp`; the source order is alphabetical). Every other tarball entry was
-  byte-equal and the sorted contents agree, but the two tarballs' SHA-256 differ (`84065f84…` and
-  `d0f5b8da…`). The package-test receipt binds the one tarball it inspected, so nothing is wrong today; a
-  release candidate simply cannot be rebuilt to the same digest. **Re-check:** in Step 9c's no-rebuild rules,
-  never compare a rebuilt digest, or make the published manifest's key order deterministic, with a test that
-  packs twice and compares the digests. *(low · tools/cli-package/prepack.mjs and pnpm's pack step)*
-
-Round 3, the acceptance round at `a92a7602` (no blocker, high or medium finding and no regression; the security
-sitting, plan, correctness and integration lenses and the critic clean), reported three verified findings. The
-wording nit is corrected in the acceptance commit, which changes no code (the PLAT-9 re-check note above now
-names both `produce.mjs` changes, INT-9A2A-R3-1); the two test gaps are recorded here.
-
-- [ ] **Symbolication's three read bounds have no test.** *Low.* *(round 3, TCA-9A2A-R3-1)* `symbolicate.mjs`
-  reads the dirty source copy under 8 MiB (`readSourceRevision`), the staged map under 16 MiB (`mapsOf`) and
-  each re-hashed frame file under 16 MiB; raising all three tenfold leaves `symbolicate.test.mjs` passing. It is
-  defense in depth: the manifest step reads the same maps and sources under the same bounds, and every file is
-  bound by digest. **Re-check:** one case per site, as `manifest.test.mjs`'s bounded reads do — pad the dirty
-  copy, the staged map (re-recording its manifest digest) and a dist chunk (re-sealing) one byte past the bound
-  and expect a refusal before any digest comparison — then rerun the three mutants.
-  *(low · tools/cli-package/symbolicate.mjs, tools/cli-package/symbolicate.test.mjs)*
-- [ ] **No test shows that an injected anchor table is enforced.** *Nit.* *(round 3, TCA-9A2A-R3-2)* A mutant
-  that loops over the module's `ANCHORS` instead of the `anchors` argument survives: the only injected table
-  that reaches mapping, `[...ANCHORS, ANCHORS[0]]`, repeats a reached anchor. Production uses the default.
-  **Re-check:** add an anchor whose source the manifest maps and whose call site resolves in the source revision
-  but that no captured frame reaches, and expect `ANCHOR_UNMAPPED`. *(nit · tools/cli-package/symbolicate.test.mjs)*
-
-## Wave 3 Step 9a.2b — recorded low findings (2026-10-24)
-
-The internal rigor pass over Step 9a.2b at `77ee5d0a`, run before its first review round under the
-2026-10-23 acceptance amendment, corrected its high finding, every medium one and the lows it could close
-inside the increment
-([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9a2b-implementation-checkpoint--2026-10-24)).
-These are recorded instead. **Trigger for every entry:** the next change to the file it names, or Step 9d
-for the two release entries.
-
-- [ ] **The runner's cleanup and its copies' placement have no test.** *Low.* *(rigor pass, F5)* Removing
-  `runMapControls`' removal of its own temporary root, or moving a control's copies out of the staging, passes
-  every test; the real runner shows the placement, but nothing asserts it. **Re-check:** a test that runs the
-  runner's composition with recording ports (as `produce.test.mjs` does) and asserts every `scratch` path lies
-  under the staging and the temporary root is gone afterwards. *(low · tools/cli-package/map-controls-core.mjs)*
-- [ ] **An interrupted runner can leave its own temporary directory.** *Low.* *(rigor pass, PLAT-9A2B-6 =
-  SEC-9a2b-5 = INT-2; round 2, CRIT-9A2B-R2-1)* The producer's interrupt handler empties the artifact directory and
-  exits, so `runMapControls`' `finally` never removes `relavium-map-controls-*/artifact`; and an interrupt after
-  `producePackage` returned, during the final identity check, leaves the baseline public tarball and its
-  `package_test` receipt in it. Nothing private.
-  **Re-check:** remove the runner's root from the interrupt path too (for example with `exitOnInterrupt` around
-  the run), with an interrupt test. *(low · tools/cli-package/map-controls-core.mjs)*
-- [ ] **The runner's own self-check refusals have no test.** *Low.* *(rigor pass, CRIT-9A2B-2)*
-  `PACKED_CLI_MAP_CONTROL_CHECKOUT_CHANGED`, `_RESTORE`, `_NO_ANCHOR_CHUNK`, `_TARGET`, `_KIND` and `_ORIGIN` are
-  checked only by reading and, for the target and kind checks, by a runner mutation run. **Re-check:** unit
-  tests that drive each refusal through the runner's composition with stubbed ports. *(low ·
-  tools/cli-package/map-controls-core.mjs)*
-- [ ] **Release artifacts are not bound to a successful `ci` run at their commit.** *Medium, for Step 9d.*
-  *(rigor pass, PLAT-9A2B-2 = CLM-9A2B-4 = INT-1)* A release dispatch with `allow_off_main`, or of an intermediate
-  commit, writes a `package_test` receipt at a commit no `ci` run (so no map-controls run) ever covered;
-  packaging.md now says the mode is a claim and when it is backed, and the interim guard refuses every such
-  artifact. **Re-check:** Step 9d's release graph or custody validator requires a successful `ci` run (with
-  `map-controls`) at exactly the candidate's commit. *(medium · .github/workflows/release.yml)*
-- [ ] **The release pack job keeps its `pnpm` dependency cache.** *Low, for Step 9d.* *(rigor pass,
-  CLM-9A2B-8)* `release.yml`'s pack job sets `cache: pnpm` while `ci.yml`'s `pack-cli` and `map-controls` refuse
-  it; the store holds only content-addressed public registry packages, which packaging.md permits, so no map
-  can enter it. **Re-check:** when Step 9d rebuilds the release graph, drop the cache or record why the release
-  pack keeps it. *(low · .github/workflows/release.yml)*
-
-Round 2, the acceptance round at `0f73c253` (no blocker, high or medium finding and no regression; the plan and
-correctness lenses clean, the security sitting one low), reported seven verified findings. The plan's increment
-count, the freshness line and the interrupted-runner wording are corrected in the acceptance commit, which changes
-no code (INT-9A2B-R2-1, INT-9A2B-R2-2, CRIT-9A2B-R2-1, the last also amending the entry above); these are recorded.
-
-- [ ] **The workflow-level environment of the map-controls job is not pinned.** *Low.* *(round 2, SEC-9A2B-R2-1 =
-  TCA-9A2B-R2-3)* `checkMapControls` pins the job's own `env` but not ci.yml's top-level `env`, which every job
-  inherits, nor a job `container` or `services` key; a workflow-wide `NODE_OPTIONS` preload or a secret would reach
-  the controls step with every pin passing. **Re-check:** pin `Object.keys(workflow.env)` to the two Turbo keys the
-  job overrides, assert `job.container` and `job.services` are undefined, and add the negative cases.
-  *(low · tools/ci/require-packed-cli.test.mjs)*
-- [ ] **A narrowed set of anchor-bearing chunks goes unnoticed.** *Low.* *(round 2, TCA-9A2B-R2-1)* The verdict
-  derives the per-chunk ids from the runner's own chunk count, required only to be at least one, so a regression
-  that drops a chunk (for example `.slice(0, 1)` on the derivation) leaves the runner green with 21 controls.
-  **Re-check:** derive the expected count independently — every ANCHORS source covered by at least one controlled
-  chunk — or test the composition with recording ports. *(low · tools/cli-package/map-controls-core.mjs)*
-- [ ] **Removing a refused control build's `dist` has no test.** *Low.* *(round 2, TCA-9A2B-R2-2)* Deleting the
-  `rmSync` in `pack()` passes everything; the bundler's maps would stay in the candidate's `dist` (inside the
-  producer's owner-only root) until the next build. **Re-check:** with the composition test of the F5 entry, assert
-  `dist` holds no `.map` file after each refused control build. *(low · tools/cli-package/map-controls-core.mjs)*
-
-## Wave 3 Step 9b.1 — named limits (2026-10-25)
-
-Recorded with the Step 9b.1 implementation
-([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-implementation-checkpoint--2026-10-25)).
-**Trigger for every entry:** the next change to the file it names, or a release producer on that platform.
-
-- [ ] **The custody tests do not run on Windows, and `encryptOnce` refuses there.** *Low; a named limit.*
-  No Windows job runs `test:acceptance-tools`; the `gpg` on the Windows image's PATH is Git for Windows'
-  MSYS2 build in `usr\bin`, and MSYS2's own GnuPG under `C:\msys64` is installed off PATH, neither exercised
-  here, and the tests use POSIX process and permission tools (`ps`,
-  owner-only modes), so `docs/runbooks/local-dev-setup.md` sends Windows developers to WSL. Windows modes
-  say nothing about access and no ACL check exists, so since round 2 (SEC-9B1-R2-2) no private root
-  qualifies there and every encryption refuses `PRIVATE_ROOT` before any GnuPG call. **Re-check:** before
-  a release producer runs on Windows, add an ACL-based owner-only check for the private root and its work
-  directory, then run the custody tests on that runner and record which of the two `gpg.exe` builds `resolveGpg` selects
-  and whether its Windows path handling and gpgconf's line ending pass. *(low ·
-  tools/cli-package/custody.mjs, tools/cli-package/gnupg.mjs)*
-- [ ] **An interrupted custody test run can leave its ephemeral key home.** *Low; test-only.* *(rigor pass,
-  SEC-9B1-PS-2)* `gpg-fixture.mjs` removes the round-trip key's home, its synthetic secret export and its
-  agent in `after()`, which a SIGINT to `node --test` skips: the `rg-*` and `rge-*` directories under the
-  temporary directory and an orphaned `gpg-agent` remain. The key is synthetic and never decrypts a
-  product archive. **Re-check:** stop the agent and remove both directories from a process exit hook as
-  well. *(low · tools/cli-package/gpg-fixture.mjs)*
-- [ ] **The pre-check counts only the keys GnuPG lists.** *Low; fail-closed.* *(rigor pass, SEC-9B1-PS-5)*
-  `--show-keys` omits a key an import would reject, for example one whose user ID packet was removed, so a
-  recipient file holding such a key before the pinned one passes the one-key rule. GnuPG then encrypts to
-  the first key in the file and refuses it, and `KEY_CONSIDERED` and the recipient check refuse any other
-  outcome, so nothing is published. **Re-check:** count primary-key packets independently of import
-  filtering if a recipient file is ever produced by anything but `gpg --export`. *(low ·
-  tools/cli-package/custody.mjs)*
-- [ ] **Secret material GnuPG neither lists nor reads is admitted.** *Low; round 1, R1-COR-2.* A binary
-  secret key appended after the armored public block is ignored by GnuPG's listing and encryption, so the
-  pre-check admits the file and the ciphertext is published. The secret stays in the recipient file and
-  never reaches the ciphertext, the record or a log. **Re-check:** refuse any byte after the armored public
-  block's end line (or any secret-key packet tag in a packet walk) if recipient files are ever produced by
-  anything but `gpg --armor --export`. *(low · tools/cli-package/custody.mjs)*
-- [ ] **The atomic publish has no fault-injection test.** *Low; round 1, T-9B1-R1-3.* `publish` writes a
-  temporary sibling and hard-links it to the final name; writing the final name directly also passes every
-  test, because no test makes the write fail midway. **Re-check:** inject a write failure (a full
-  filesystem or a writer port) and assert no file exists under the final name afterwards. *(low ·
-  tools/cli-package/custody.mjs)*
-- [ ] **The GnuPG 2.2.8 floor is enforced, never exercised.** *Low; a named limit.* The version check
-  refuses an older GnuPG, but the tests ran only on 2.5.21 (local) and 2.4.4 (Ubuntu 24.04), so neither
-  encryption nor the `gpg -d | tar -x` recovery is proven on 2.2.8. **Re-check:** run the custody tests
-  against GnuPG 2.2.8 (for example in a container that ships it) before a recovery runbook names that
-  version. *(low · tools/cli-package/gnupg.mjs)*
-
-## Wave 3 Step 9b.1 — recorded low findings (2026-10-25)
-
-Recorded with the Step 9b.1 acceptance after round 4
-([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b1-acceptance--2026-10-25)).
-**Trigger for every entry:** the next change to the file it names, or Step 9d's release integration.
-
-- [ ] **A temporary sibling that cannot be removed after the link reports `UNEXPECTED`.** *Low; round 4,
-  COR-9B1-R4-1.* `publish` removes its `.partial` sibling in a `finally`. If that removal fails (`EACCES`,
-  `EROFS`, `EIO`) after `linkSync` succeeded, `encryptOnce` refuses `UNEXPECTED` with no record although the
-  ciphertext is published; the sibling, ciphertext only and never plaintext, stays beside it, and a retry
-  refuses `ALREADY_ENCRYPTED`. Example: make the destination 0500 right after the link. **Re-check:** make the
-  removal best-effort once the link succeeded, or refuse with a code that says the ciphertext was published, and
-  inject that failure in a test alongside T-9B1-R1-3's. *(low · tools/cli-package/custody.mjs)*
-- [ ] **No test pins the metafile's 4 MiB bound.** *Low; round 4, T-9B1-R4-1.* The container's record-bound
-  tests pad from `RECORD_BYTES` itself, so changing `'metafile-esm.json'` to 8 MiB passes every test while the
-  contract says 4 MiB; `manifest.test.mjs` pins the other two values. The container and `seal.mjs` share the
-  constant, so every record still stays within its reader's bound. **Re-check:** assert `RECORD_BYTES`'s literal
-  values, or pad the metafile to a literal 4 MiB plus one byte. *(low · tools/cli-package/manifest.mjs)*
-- [ ] **No test builds the container from a real finalizer's staging.** *Low; round 4, INT-9B1-R4-1.* The
-  container requires the finalizer record's exact key sets, but every container and custody test uses
-  `candidate-fixture.mjs`'s hand-written record and a stub metafile. A field added to `finalize.mjs`'s record
-  would pass every gate and refuse `CONTAINER_RECORD` on every real staging. A reviewer's probe built,
-  encrypted, decrypted and extracted a real production's staging at `147c2788` without a refusal. **Re-check:**
-  build and read back the container once from a real production's sealed staging (map-controls' seal port holds
-  one), or pin the record's key set in `finalize.test.mjs`; at the latest in Step 9d. *(low ·
-  tools/cli-package/container.mjs, tools/cli-package/finalize.mjs)*
-- [ ] **The overlap check misses containment through a bind mount.** *Low; round 4, CRIT-9B1-R4-1.* `within`
-  compares device and inode along each path's own ancestors. It catches one directory reached by two spellings
-  (a case-insensitive variant, or a bind mount of exactly that directory), but not a root that is a bind mount
-  of a directory inside the destination, or the reverse: the work directory and its plaintext then sit inside
-  the destination's tree while GnuPG runs. A bind mount needs privileges to set up. The acceptance commit
-  narrows the contract's sentence; `custody.mjs`'s comment still says a bind mount can give one directory two
-  spellings, without the limit. **Re-check:** in Step 9d, create the root and destination as fresh sibling
-  directories of the job, or compare against the mount table, before relying on the refusal; narrow the comment
-  on the next change to `custody.mjs`. *(low · tools/cli-package/custody.mjs)*
-
-## Wave 3 Step 9b.2 — named limits and handoffs (2026-10-25)
-
-Recorded with the Step 9b.2 implementation
-([decisions](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-preflight-decisions--2026-10-25)).
-The release modules are library code with synthetic controls only: nothing outside their tests calls them.
-**Trigger for every entry:** Step 9d's release integration, or the next change to the file it names.
-
-- [ ] **An orphaned ciphertext can never be sealed.** *Low; a named limit.* Only a record the gate returned in
-  the same process seals, so a ciphertext whose seal never succeeds before its process exits — after a crash, or
-  a refusal on an input the gate does not check, such as a malformed origin or an entry added to the
-  destination after encryption — is named by no record. The gate refuses a linked or unresolvable destination,
-  any entry but the tarball and a different tarball before encrypting, which removes the likeliest causes. The candidate then needs manual recovery
-  (packaging.md's missing-asset state); it is never re-encrypted. **Re-check:** in Step 9c's reservation
-  states, classify such a directory as incomplete and route it to manual recovery. *(low ·
-  tools/cli-package/release-custody.mjs)*
-- [ ] **Reuse cannot re-check the ciphertext's recipients.** *Low; a named limit.* `verifyRetainedCandidate`
-  binds each asset's size and SHA-256 to the receipt, and the receipt's recipient to the expected history, but
-  re-reading the ciphertext's public-key packets (`ENC_TO`) needs GnuPG, which reuse never calls. The digest
-  ties the bytes to the ones the sealer re-read after encryption checked their single recipient. **Re-check:**
-  if a retained ciphertext can ever come from anything but the sealer, verify its recipients with the isolated
-  runner before reuse. *(low · tools/cli-package/release-binding.mjs)*
-- [ ] **A sibling left after the receipt's link keeps the candidate from reuse.** *Low; a named limit (rigor
-  pass, SIT-9B2-6).* When the sealer cannot remove its `.partial` sibling after the link, the receipt is
-  published and the seal succeeds, but `verifyRetainedCandidate` admits exactly three entries and refuses
-  `CANDIDATE_ENTRIES` until the sibling is removed by hand; a test pins that state. **Re-check:** in Step 9c's
-  state classification, report such a directory as sealed with a stray sibling. *(low ·
-  tools/cli-package/release-custody.mjs)*
-- [ ] **The fixture denylist covers only the fingerprints the fixtures' pins file lists.** *Low; a named limit
-  (rigor pass, CLAIM-9B2-2).* `two-encryption-subkeys.asc` carries a second encryption subkey,
-  `7BC68AC7D2944C2AB3240A521D784594073951D5`, that `custody-fixtures/pins.json` does not list, so a production
-  history naming it would load. The loader reads no key material (it makes no GnuPG call), and encrypting to it
-  would still need its armored key in the committed recipient file. **Re-check:** list every committed fixture
-  fingerprint in the denylist when the fixtures are next generated. *(low · tools/cli-package/release-recipient.mjs)*
-- [ ] **`encryptOnce` called directly follows a link spelled with a trailing separator.** *Low; a named limit
-  (round 2, COR-R2-2).* 9b.1's `plainDirectory` and `privateDirectory` lstat the path as given, and `lstat('link/')`
-  follows the link, so a direct caller of `encryptOnce` can encrypt into a linked destination or use a linked
-  private root. The release gate requires both paths in normalized absolute form and refuses a link itself, so
-  no release path reaches this; nothing outside the gate and the tests calls `encryptOnce`. **Re-check:** on the
-  next change to `custody.mjs`, require normalized absolute paths there too. *(low · tools/cli-package/custody.mjs)*
-- [ ] **The release entry points accept the test ports.** *Low; a named limit (round 1, SIT-R1-5).*
-  `encryptCandidate` forwards `encryptOnce`'s `run` and `gpg` ports and `sealReleaseBinding` takes a `write`
-  port, in production scope too, so an in-process caller could replace GnuPG and defeat its checks. Like the
-  brand, the ports guard against an honest mistake, not hostile code in the same process. **Re-check:** in Step
-  9d, call both without ports from the release job and add a permanent control that no product call passes
-  them. *(low · tools/cli-package/release-custody.mjs)*
-- [ ] **The release modules do not run on Windows.** *Low; a named limit.* Like the 9b.1 tests, the release
-  tests run only in `test:acceptance-tools`, which no Windows job runs; `encryptCandidate` refuses there
-  through `encryptOnce`'s `PRIVATE_ROOT`, while reuse is platform-neutral but unexercised. **Re-check:** with
-  the 9b.1 Windows limit. *(low · tools/cli-package/release-binding.mjs)*
-- [ ] **Step 9d handoffs.** *Scheduled → Step 9d.* Wire `encryptCandidate` and `sealReleaseBinding` into the
-  originating job, with the origin from `originFromEnvironment`; bind the receipt's `origin` to the trusted run
-  and attempt (on reuse, the original run) and `mapCheck` to a successful `ci` run with the product map
-  controls at `source.commit`; derive release smoke's public inventory and package metadata from the
-  digest-verified tarball with the package-test inspector; check the production recipient before any
-  reservation, so a recipient refusal never leaves an incomplete reservation; if the package-test receipt
-  travels beside the tarball, widen the gate's, the sealer's and reuse's directory admission together, since all
-  three admit exact entries (round 2, CRIT-9B2-R2-1); replace the interim guard; then update
-  `release-scope.test.mjs`'s interim control that no product path or workflow names a release module, keeping
-  its permanent controls (the loader takes no argument and its test seam stays out of product code; only the
-  gate imports `encryptOnce`); and include `tools/cli-package/custody-fixtures/pins.json` in every checkout
-  that loads the production recipient, because the loader reads it as its denylist. The guard test's
-  non-canonical `relavium-0.1.1.tgz.gpg` name is corrected with the guard. *(scheduled ·
-  tools/cli-package/release-custody.mjs, tools/cli-package/release-guard-core.mjs)*
-
-## Wave 3 Step 9b.2 — recorded low findings (2026-10-26)
-
-Recorded with the Step 9b.2 acceptance after round 4
-([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-step-9b2-acceptance--2026-10-26)).
-**Trigger for every entry:** Step 9d's update of `release-scope.test.mjs` and the release modules, or the next change
-to the file it names.
-
-- [ ] **The `custody.mjs` control does not decode identity or legacy octal escapes.** *Low; round 4, PLAN-9B2-R4-1,
-  COR-R4-2.* `namesFile` decodes `\x`, `\u`, `\u{…}` and percent escapes, but a specifier such as
-  `'./custo\dy.mjs'` (an identity escape) or a sloppy-mode octal escape still loads `custody.mjs` unseen. The
-  spelling is deliberate, never an honest mistake. **Re-check:** also match a variant with each stray backslash
-  removed and octal escapes decoded, or refuse any backslash in a specifier. *(low ·
-  tools/cli-package/release-scope.test.mjs)*
-- [ ] **The static controls skip `tools/lint-fixtures/assert-fence.mjs`.** *Low; round 4, PLAN-9B2-R4-2.* The scan
-  treats all of `tools/lint-fixtures/` as test-only, but `assert-fence.mjs` is CI tooling (`pnpm lint:fence-check`), so
-  a `custody.mjs`, fixture or test-seam reference there passes the controls. **Re-check:** exempt only the quarantined
-  `.ts` fixtures and add the script to the scan's own assertion. *(low · tools/cli-package/release-scope.test.mjs)*
-- [ ] **The closure's specifier scan has blind spellings.** *Low; round 4, SIT9B2-R4-L1, COR-R4-3, T-R4-3.* A comment
-  between `from` or `import` and the specifier, a specifier containing the other quote character, and computed member
-  access such as `process['getBuiltin' + 'Module']` each pass the closure control, which proves reuse starts no
-  process. Each spelling is deliberate, and today's closure contains none. **Re-check:** strip comments and tokenize
-  string literals properly before scanning, and refuse computed access on `process` in closure files. *(low ·
-  tools/cli-package/release-scope.test.mjs)*
-- [ ] **The loader reads the root by path after its link check.** *Low; round 4, COR-R4-4.* `lstat` then `readdir`
-  and the two reads leave a window in which a swapped root is read through a link and branded. Only a committed,
-  maintainer-owned directory is read in production. **Re-check:** open the root with `O_DIRECTORY | O_NOFOLLOW` and
-  compare its device and inode before and after the reads, as `readOrdinaryFile` does for files. *(low ·
-  tools/cli-package/release-recipient.mjs)*
-- [ ] **Some exact rules have no isolating test.** *Low; round 4, T-R4-1, T-R4-2, T-R4-4.* No history puts its current
-  entry before a retired one, so choosing the last entry would pass; the toolchain's prerelease suffix (its character
-  set and 64-character bound) and the target's digit count (three admitted, four refused) are unpinned; and a nit:
-  the sealed-link case asserts the first link's target, and the non-POSIX fallback of the linked-tarball case removes
-  the tarball instead. **Re-check:** add those cases on the next change to the release tests. *(low ·
-  tools/cli-package/release-recipient.test.mjs, tools/cli-package/release-binding.test.mjs,
-  tools/cli-package/release-custody.test.mjs)*
-
-## PR #96 review — recorded findings and Sonar dispositions (2026-11-04)
-
-Recorded by the PR #96 review correction. The review's verified high and medium findings and SonarCloud's 27 bugs and
-10 vulnerabilities were fixed in that correction; these are the verified lows and the code smells the maintainer
-ruled on 2026-11-04 to record rather than refactor now. **Trigger for every entry:** the next change to the file it
-names, unless the entry names another.
-
-**Sonar code smells (gate-neutral; maintainability stays A):**
-
-- [ ] **Cognitive complexity (`S3776`) in fifteen functions.** *Low.* `packages/core/src/tools/bounding.ts` (five,
-  18–38), `packages/llm/src/scrub-secrets.ts:411`, `tools/cli-package/source-map.mjs:47` (35), `map-controls-core.mjs`,
-  `release-custody.mjs`, `candidate.mjs`, `release-binding.mjs`, `symbolicate.mjs`, `ustar.mjs`,
-  `tools/bundle-closure/closure.mjs` and `inventory.mjs`. Each is security-critical redaction or release tooling, so a
-  refactor needs its own mutation sweep and review. *(low · the files named)*
-- [ ] **Regex complexity (`S5843`): eight reports on seven patterns.** *Low.* `bounding.ts`'s scheme and key rules
-  (the key rule reported twice) and five `scrub-secrets.ts` rules: their "complexity" is the length of a finite name or shape alternation (as the existing
-  `NOSONAR` notes say), and each is a causal-control anchor. The three `S5869` reports on `scrub-secrets.ts:138` are
-  the `i` flag making `A-Z` and `a-z` overlap, not a duplicate. **Re-check:** split a rule only with its controls.
-  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
-- [ ] **`S1994` on the closing-view loop.** *Low.* `bounding.ts`'s backward scan tests `next` but steps `index`; a
-  `while` rewrite must keep the step that its `continue` skips. *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **`S6582` in `media-store-paths.ts` (three).** *Low.* The optional-chain rewrites are equivalent, but the lines
-  are filesystem causal-control anchors; change them with those controls. *(low · packages/db/src/media-store-paths.ts)*
-- **DECLINED — `S9382` (seven sequential awaits) and `S7758` (five `charCodeAt`).** The awaits are ordered process
-  steps by design (`map-controls-core.mjs`, `pipeline.mjs`, `symbolicate.mjs`), and `source-map.mjs` is a code-unit
-  VLQ parser that advances one code unit at a time, which `codePointAt` would misstate.
-
-**Redaction:**
-
-- [ ] **A URL password that holds a `,` or `/` leaves the whole userinfo public (the PR #96 review's A4).** *Medium as
-  reviewed. Pre-existing against `64fb8772`, but a reversal against `main`, which masks it since `0826f30a`: merging
-  PR #97 returns the URL projection to `64fb8772` (maintainer ruling 2026-11-06).* Core's authority scan ends at
-  either, so `https://user:pa,ss@host` and `https://user:pa/ss@host` leave `user:pa,ss` and `user:pa/ss` visible in
-  `toolInput`, summaries and the journal digest input; the PR #97 review measured about thirty such shapes `main`
-  masks today, among them a comma in a `git clone` URL's password, `mysql://`, `postgres://`, `ftp://` and `redis://`
-  URLs with a `/` in the password, and `x-access-token` URLs. The LLM backstop masks the comma spelling but stops at
-  `/` too. A reading past the delimiter landed with the PR #96 correction and was removed on 2026-11-05 (maintainer:
-  one careful pass, then continue): the projection repeats until stable, so a reading's mask can change the text
-  other rules read in a later pass, and D64 rounds 1, 3 and 4 each found a credential it newly showed. A new reading
-  must keep a port and a path public (`host:8080/a@b`, pinned in `bounding.test.ts`). **Trigger:** before the v0.2.0
-  release, as its own increment (maintainer 2026-11-06): a design that computes the reading's ranges once on the
-  original text and merges them with the base rules' after the fixed point, so it provably only adds masks, with a
-  superset oracle validated against both `64fb8772` and `b3cf117e`. *(medium as reviewed ·
-  packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
-- [ ] **A glued `-pSECRET` (`mysql -uroot -pSecret`) is not masked.** *Low.* A glued `-p` is ambiguous with
-  `cp -pR` and `tar -pxf`, so only the separate and `=` spellings are read. *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **The object-key rule masks count keys such as `max_tokens`.** *Low.* Its plural folding reads `tokens` as
-  `token`, so two calls that differ only in `max_tokens` share a journal identity. The argv rule reads words as written
-  and does not. *(low · packages/core/src/tools/bounding.ts)*
-- [ ] **Zero-width characters break the `sk-` and `Bearer` shapes; header names are matched with hyphens only.**
-  *Low; verified.* *(low · packages/llm/src/scrub-secrets.ts)*
-- [ ] **A model-supplied tool name reaches an error message unmasked and unbounded.** *Low; verified.* *(low ·
-  packages/core/src/tools/errors.ts:21)*
-- [ ] **Two redaction engines and two fixed-point copies; the parity test compares booleans only.** *Low; verified.*
-  *(low · packages/core/src/tools/bounding.ts, packages/llm/src/scrub-secrets.ts)*
-- [ ] **Permanent causal controls for this correction's three mechanisms.** *Low.* The credential-flag words, the
-  `,`/`/` password reading and the omitted-media bytes are pinned by permanent tests and a manual mutation sweep (every
-  mutant killed), not by `check:secrets-mutations` controls. The secrets evidence has about 15 MiB of headroom per
-  shard. *(low · tools/secrets-controls/mutations.mjs)*
-
-**Release, custody and tooling (verified lows):**
-
-- [ ] **`isProductionRecipient` accepts seam values; the distinction rests on a grep control.** *(low ·
-  tools/cli-package/release-recipient.mjs:52)* Trigger: Step 9d or Wave 4b.
-- [ ] **A revocation is visible only in the committed recipient snapshot.** *(low · docs/reference/cli/packaging.md)*
-- [ ] **`resolveGpg` checks `isFile`, not `X_OK`.** *(low · tools/cli-package/gnupg.mjs:33)*
-- [ ] **A developer's own `core.excludesFile` directory can let private untracked files into the candidate.** The
-  public tarball is not affected; an explicit `RELAVIUM_GIT_EXCLUDES_FILE` naming a directory already fails in Git.
-  *(low · tools/cli-package/candidate.mjs)*
-- [ ] **`prepack.mjs` selects the finalizer by environment variable; `symbolicate.mjs` may load TypeScript from a parent
-  directory.** The closure check is equivalent for the first. *(low · tools/cli-package/prepack.mjs:36,
-  tools/cli-package/symbolicate.mjs:306)*
-- [ ] **`runCommand` does not follow detached grandchildren after a successful exit; `causal-controls` starts a
-  detached group without a Ctrl-C handler; the smoke's cleanup can skip its PID kill after a parse error.** *(low ·
-  tools/cli-package/process.mjs, tools/causal-controls/, tools/cli-package/smoke/)*
-- [ ] **`mcp-orphan.e2e` scans the process table by fixture name, which sibling tests share; `vi.waitFor` keeps its
-  1-second default.** *(low · packages/mcp)*
-- [ ] **The case-insensitive custody tests run in no CI job.** *Medium as reviewed, low in practice.* Ubuntu skips
-  them and no macOS or Windows job runs `custody.test.mjs`; the local `pnpm run ci` on macOS runs them. A CI lane
-  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:855, .github/workflows/ci.yml)*
-- [ ] **CI no longer runs the real-GnuPG AEAD refusal.** *Low.* *(2026-11-05)* `ubuntu-latest` moved to ubuntu-26.04,
-  whose GnuPG reports SEIPDv1 for the AEAD-advertising fixture, so the custody test now reads GnuPG's own status line
-  and expects admission there. The real OCB refusal runs only where GnuPG picks OCB (the local `pnpm run ci` on
-  macOS); the synthetic status rewrites still cover the refusal logic on every runner, and the test's diagnostic
-  says which branch ran. The status line is also the only evidence: a GnuPG that wrote AEAD but reported `2 9` would
-  pass both the product and the test. **Re-check:** with the macOS lane above, or a packet-level `gpg
-  --list-packets` check of the ciphertext. *(low · tools/cli-package/custody.test.mjs, tools/cli-package/custody.mjs)*
-- **DECLINED — declaring `RELAVIUM_CLI_CANDIDATE_STAGING` in `turbo.json`.** The candidate build never runs through
-  Turbo (`pnpm exec tsc` and `pnpm pack`), and Turbo 2's strict environment mode withholds an undeclared variable, so
-  a Turbo build is always map-free; declaring it would let one become a candidate build.
-
-**D64 round 1 on this correction (2026-11-04, at `f25fb83d`).** A cumulative round of four scoped reviewers and a
-separate security sitting, with one adversarial verifier per medium-or-higher finding, read the whole correction ([D61
-checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)). Its five
-confirmed medium findings and the lows in the correction's own code and documents were fixed in the follow-up; these
-lows are recorded:
-
-- [ ] **The argv rules are program-agnostic, so a value a boolean flag precedes is masked and calls that differ only
-  there share one journal identity.** `-u`/`--user` masks any colon-bearing value (`docker run -u app:app`, `date -u
-  +%H:%M`, `python -u C:\a.py`), and a boolean flag whose last word names a credential (`--ask-vault-password
-  site.yml`) masks the next argument, and the one after it when that is itself a credential flag (round 3); on a crash-resume where the model changes exactly that element, the slot replays
-  the committed result instead of refusing. Fix ideas: exclude drive paths and `+` formats from the pair shape, or
-  verb-first flags (`ask`, `skip`, `with`, `generate`). Documented in built-in-tools.md and effect-journal.md §11.
-  *(low · packages/core/src/tools/bounding.ts · round-1 F3, SEC-5)*
-- [ ] **Common credential spellings are outside the argv rules:** curl short-option clusters (`-su alice:pw`, `-sSu`,
-  `-kualice:pw`), `-U`/`--proxy-user`, `--oauth2-bearer`, `--pass`, `--proxy-pass`, `--tlspassword`, openssl's
-  `-passin pass:…` and keytool's `-storepass`/`-keypass`. None is a regression; documented as a limit in
-  built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-1 F6, SEC-4)*
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A raw `?` or `#` after a URL password's `,` or `/` keeps the password public** (`https://user:pa,ss?1@host`);
-  the LLM backstop masks the comma spelling. Admitting them needs a public-query test on the tail like
-  `isPublicQueryContact`. Documented in built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-1 F5,
-  DOC-2)*
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **The `,`/`/` reading stops at the first `@`; the main userinfo path masks to the last.**
-  `https://user:pa/ss@word9@host.example/x` keeps `word9` visible. Extend the mask to the last `@` before the next
-  `/`, `?`, `#`, whitespace or quote. *(low · packages/core/src/tools/bounding.ts · round-1 SEC-6)*
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **The `,`/`/` tail scan runs once per scheme occurrence.** On dense `scheme://x:y,` input at the 1 MiB CLI
-  output cap the projection costs about six times more than before (linear: each scan stops at 512 characters, so no
-  ReDoS). Track the next `@` monotonically across matches and pin the cost with an admitted-size case. *(low ·
-  packages/core/src/tools/bounding.ts · round-1 F7)*
-- [ ] **A binary buffer is counted at its `byteLength`, while its JSON form (`{"0":200,…}`) is about nine times
-  larger.** The seam refuses the buffer in `tool_result.result`, so the model never receives it, but one under the
-  ceiling is settled into the journal at the larger size, and an `ArrayBuffer` (JSON `{}`) is previewed needlessly.
-  *(low · packages/core/src/tools/bounding.ts:114 · round-1 F4)*
-- [ ] **A dispatch result that holds inline media under the ceiling fails the next request:** the seam refuses raw
-  media bytes in `tool_result.result` (ADR-0031), and only an over-ceiling result becomes a media-free preview.
-  Pre-existing; builtins use the attachment rail. *(low · packages/core/src/tools/registry.ts · round-1 DOC-3)*
-- [ ] **The approval preview scrubs the joined command with the text rules only,** so an argv-rule credential masked
-  in `toolInput` (`curl -u alice:pw`, `--password pw`) shows verbatim in `agent:approval_requested` and the prompt.
-  Pre-existing for `--password`; the correction widened the gap to `-u` and the last-word flags. Build the process
-  preview from the argv projection; an approval-path change, so it keeps that path's security sitting. *(low ·
-  packages/core/src/tools/registry.ts:963 · round-1 SEC-3)*
-- **DECLINED 2026-11-04 (maintainer) — enabling `enforce_admins` on `main`.** The branch protection does not bind
-  administrators, and the sole maintainer is one; the maintainer keeps the green-CI rule by practice, as
-  code-review.md and current.md state. *(low · repository settings · round-1 DOC-9)*
-
-**D64 round 2 (2026-11-04, at `6155c6dd`).** A new cumulative round of the same shape confirmed one medium finding, a
-boolean flag whose last word names a credential consuming the credential flag after it (`--pass-credentials --password
-<pw>`), and it was fixed with the round's lows but these two recorded limits:
-
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A URL password that begins with its `,` or `/` stays public** (`postgres://app:/Xk9@db`,
-  `https://user:,pw@host`): the port test reads the empty text after the colon as a port. Treating only a non-empty
-  digit run as a port needs the scheme check to cover the authority's trailing colon
-  (`https://xhttps://user:pw@h.example/`). Documented in built-in-tools.md. *(low ·
-  packages/core/src/tools/bounding.ts · round-2 RED-2)*
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A non-numeric port with an `@` in its path reads as a password** (`http://localhost:$PORT/users/@me` →
-  `http://[redacted]@me`), masking benign text and merging the journal identities of calls that differ there. Fix
-  idea: leave a placeholder-shaped port (`$NAME`, `${…}`, `<…>`) after a host-shaped name public. Documented in
-  built-in-tools.md. *(low · packages/core/src/tools/bounding.ts · round-2 RED-3)*
-
-**D64 round 3 (2026-11-04, at `07f653e7`).** One medium finding (round 2's fix let a flag-shaped password show) and a
-second claim downgraded to low were fixed by making both readings add masks only; the round's lows were fixed with
-them but these:
-
-- **DECLINED 2026-11-05 — moot: the `,`/`/` reading was removed (see the A4 entry above).** **A URL password with an `@` before its `,` or `/` keeps its tail after that `@`**
-  (`https://user:p@ss/word@vault/x` → `https://[redacted]@ss/word@vault/x`): the authority scan finds the `@` first,
-  so the `,`/`/` reading never runs. Pre-existing; documented in built-in-tools.md. Fix idea: when the userinfo before
-  the first `@` holds a password and the next delimiter is `,` or `/`, read on through the next `@` with the port
-  guard. *(low · packages/core/src/tools/bounding.ts · round-3 SEC-R3-3)*
-- [ ] **The hash-object answer check `names.length !== batch.paths.length` is equivalent to `<` within one batch:** an
-  extra line is compared with the next batch's first file, so only a crafted answer across batches tells the two
-  apart, and no test builds one. *(low · tools/cli-package/candidate.mjs:353 · round-3 RT3-1)*
-
-**D64 round 4 (2026-11-05, at `7a12ee6f`).** One medium finding (the `,`/`/` reading skipped a nested URL) and a
-downgraded claim (a masked `--flag=value` name shown) were fixed, with the round's lows; recorded with them:
-
-- [ ] **Eleven more test cleanups check a process with `alive()` and then kill it**, the race that failed
-  `consumer-lifetime.test.mjs` once on the Linux CI (ESRCH when the process exits in between; fixed there in
-  `93a8b033`): `tools/cli-bootstrap/witness.test.mjs:488,552`,
-  `tools/cli-package/process.test.mjs:252,409,424,495,523,581`, `produce.test.mjs:593,806` and `check.test.mjs:218`.
-  Replace each with a kill that ignores ESRCH only. *(low · the files named · round-4 CI-R4-1)*
-
-**Resolution (maintainer, 2026-11-05).** No fifth round: one careful pass removed the `,`/`/` URL reading, which could
-not be shown to only add masks under the repeated projection, and showed the argv rules to be a superset of the base
-([D61 checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)). The
-entries about that reading above are closed as moot, and A4 is recorded under **Redaction**.
-
-**The review's unverified first-pass lows, triaged at `f25fb83d` (2026-11-04).** Two agents checked all 86 against the
-merged head: 81 still hold (78 entries below once duplicates merge), R1a-06 was fixed by `e8121aa4`, R1a-04 and R9a-05
-are entries above, and R6-04 and R7-12 were refuted. Line numbers are at `f25fb83d`. The two roadmap lows the review
-named without entries were R12b-03 (DONE entries whose bodies described the open state: four, and three more the D64 round 2 found) and R12b-04 (entries the
-MVP pulled without an annotation); both were fixed on 2026-11-04.
-
-*Release, custody and packaging tooling:*
-
-- [ ] `gnupg.mjs`'s header says no gpg call does key discovery. Only encryptArgs passes `--no-encrypt-to`,
-  `--no-auto-key-locate` and `--no-auto-key-retrieve`. The version, `--show-keys` and recipient-listing calls use
-  `isolated()` without those flags, and `gnupg.test.mjs` asserts the three flags for encryption only. *(low ·
-  tools/cli-package/gnupg.mjs:67 · first-pass R1a-01)*
-- [ ] encryptOnce in `custody.mjs` publishes the bytes from its first read of `ciphertext.gpg`, but GnuPG lists the
-  recipients of the file at that path, and the later byte-equality check cannot prove the listed file was those bytes:
-  a same-user swap restored before the second read passes. Listing a private copy of the verified bytes, as the
-  recipient path does, closes it. *(low · tools/cli-package/custody.mjs:384 · first-pass R1a-03)*
-- [ ] The end-to-end secret-key refusal in `custody.test.mjs` uses an armored secret export, which `custody.mjs`
-  refuses by a byte check before any GnuPG call. The sec/ssb colon branch is tested only with synthetic records, and
-  no test gives real GnuPG a standalone binary secret export. *(low · tools/cli-package/custody.test.mjs:380 ·
-  first-pass R1a-05)*
-- [ ] The production recipient loader in `release-recipient.mjs` reads `recipient.asc` only for size and file kind and
-  discards the bytes, so the loaded recipient is never checked against its pins. It also accepts a history entry whose
-  primary equals its subkey, which encryptOnce refuses later as RECIPIENT_UNUSABLE. Comment the read as shape-only or
-  check the pinned subkey against the key at load. *(low · tools/cli-package/release-recipient.mjs:169 · first-pass
-  R1b-05)*
-- [ ] `release-scope.test.mjs`'s reach controls skip every file named `*.test.*`, `*-fixture.mjs` or under test/,
-  tests/ or `__tests__/`, so a product or tooling file with such a name or location is invisible to them. The register
-  records only the lint-fixtures case (PLAN-9B2-R4-2). *(low · tools/cli-package/release-scope.test.mjs:53 ·
-  first-pass R1b-06)*
-- [ ] `release-recipient.mjs` requires the recipient directory to list exactly `pins.json` and `recipient.asc`. An
-  extra entry such as a Finder .DS_Store refuses with PRODUCTION_RECIPIENT_INVALID, the same code as bad JSON or
-  non-canonical bytes, and no runbook mentions it. Give unexpected entries their own fixed code. *(low ·
-  tools/cli-package/release-recipient.mjs:163 · first-pass R1b-07)*
-- [ ] In `release-scope.test.mjs` only the `custody.mjs` control decodes escapes and ignores case. The release-module,
-  fixture and loader-seam controls match case-sensitive regexes on raw text, so '`./Release-Custody.mjs`' or
-  './release-custody%2Emjs' pass the release-module control. The scan also skips .jsx, .sh, .ps1 and non-package
-  .json, which the test name and `packaging.md` do not say. *(low · tools/cli-package/release-scope.test.mjs:61 ·
-  first-pass R2-03)*
-- [ ] verifyRetainedCandidate in `release-binding.mjs` lists the candidate directory without lstat-ing it, so a
-  symlinked candidate directory is accepted; only its entries are lstat-ed. `packaging.md`'s Reuse paragraph names no
-  linked-directory refusal, though the sealer refuses a linked destination. *(low ·
-  tools/cli-package/release-binding.mjs:339 · first-pass R2-04)*
-- [ ] `release-binding.test.mjs` asserts verifyRetainedCandidate.length === 1 as proof the reuse API takes no GnuPG
-  binary or run port, but function arity does not limit an options object's keys. The closure test in
-  `release-scope.test.mjs` is the real control. Delete the assertion or replace it with a comment that points there.
-  *(low · tools/cli-package/release-binding.test.mjs:955 · first-pass R2-05)*
-- [ ] The v1 release binding receipt carries toolchain, target and inputs, which are checked only for format and never
-  bound, and mapCheck and origin, which are shape-only until Step 9d. These fields freeze when v1 is released.
-  `packaging.md`'s sentence "Every field is a claim until Step 9d binds the last two" also conflicts with its table,
-  which gives Step 9d trust to packageVersion and source as well. *(low · tools/cli-package/release-binding.mjs:4 ·
-  first-pass R2-06)*
-- [ ] `production-failure.mjs`'s filter forwards any printable-ASCII line of up to 240 characters that starts with '✗
-  CLI ' from captured child output. The header's "at most a repository-relative path" is therefore enforced by the
-  producers, not the filter, and the PACKED_CLI_ code tail has no length bound. Reword the header or tighten the
-  pattern. *(low · tools/cli-package/production-failure.mjs:9 · first-pass R2-07)*
-- [ ] `seal.mjs` writes `package-test-receipt.json` in place with the wx flag and no temporary file, fsync or rename.
-  A hard kill mid-write leaves a truncated receipt that fails closed but blocks every re-seal with ALREADY_SEALED.
-  Write a sibling, fsync it and link it to the final name. *(low · tools/cli-package/seal.mjs:187 · first-pass R3-01)*
-- [ ] `container.mjs` checks `finalized.json`'s outputs only by path and SHA-256 and its upstreamMaps only as an
-  integer, so a recovered container can carry different outputs[].bytes or upstreamMaps and still pass. `packaging.md`
-  already states that the metafile has no digest but does not mention these `finalized.json` fields. *(low ·
-  tools/cli-package/container.mjs:104 · first-pass R3-02)*
-- [ ] buildPrivateContainer in `container.mjs` reads every staged record and map into memory, up to 16 MiB each for up
-  to 256 maps, before it checks the 128 MiB total. `packaging.md` says the total is "refused before the archive is
-  assembled", which is true for the archive but not for the reads. Sum the lstat sizes before reading. *(low ·
-  tools/cli-package/container.mjs:189 · first-pass R3-03)*
-- [ ] Five negative cases in `seal.test.mjs` pass undefined as the expected refusal: the empty graph, a missing chunk,
-  a missing hash record, a missing metafile and a missing public document. assert.throws then accepts any exception,
-  including a TypeError from a broken fixture. Assert ENOENT at minimum, or give a missing expected file a fixed
-  PACKED_CLI_ code. *(low · tools/cli-package/seal.test.mjs:127 · first-pass R3-04)*
-- [ ] No test pins finalizeCandidate's behavior on a re-run or after a crash. By reading it fails closed, because the
-  first run unlinks `dist/metafile-esm.json` and a half-replaced dist is refused, but a reordering could let a re-run
-  succeed on mixed state without a test failing. Add a second-finalize test and a half-replaced-candidate test. *(low
-  · tools/cli-package/finalize.mjs:527 · first-pass R3-05)*
-- [ ] `seal.mjs`'s `finalizedPublicFiles` turns backslashes in metafile output keys into slashes, while `finalize.mjs`
-  refuses any key that is not exactly `dist/<name>.js`. The two sides can therefore accept different keys. Drop the
-  `replaceAll` and add a `dist\index.js` case to `seal.test.mjs`. *(low · tools/cli-package/seal.mjs:66 · first-pass
-  R3-06)*
-- [ ] The same size and count bounds are written as separate literals in `finalize.mjs`, `seal.mjs`, `manifest.mjs`,
-  `container.mjs` and `symbolicate.mjs`: 256 outputs, 8 MiB JS, 16 MiB map, 4 MiB metafile, 1 MiB `finalized.json` and
-  128 KiB documents. A change to one copy does not reach the others. Export one frozen limits object and import it
-  everywhere. *(low · tools/cli-package/seal.mjs:68 · first-pass R3-07)*
-- [ ] ustarEntry in `ustar.mjs` silently truncates a path longer than 100 bytes and would write a size of 8 GiB or
-  more past its 12-byte field. The container's read-back catches the bad header only as CONTAINER_PATH or
-  CONTAINER_UTF8. Refuse both cases in the writer and add negative writer tests. *(low ·
-  tools/cli-package/ustar.mjs:37 · first-pass R4a-02)*
-- [ ] The USTAR reader is tested only against archives from the repository's own writer (`ustar.mjs`, also used by
-  `ustar-fixture.mjs`). The one platform-tar test runs in the other direction: it extracts the writer's output with
-  tar. A symmetric error in field offsets or the checksum would pass. Feed a platform `tar --format=ustar -c` archive
-  through readUstar and inspectPackageArchive. *(low · tools/cli-package/ustar.test.mjs:65 · first-pass R4a-03)*
-- [ ] `archive.mjs`'s gzip check validates only ID1, ID2, CM and FLG, so MTIME, XFL and the OS byte vary by host and
-  are bound into the receipt's sha256. The comment suggests a canonical header that the code does not enforce. Reword
-  the comment, or pin MTIME and document the OS byte. *(low · tools/cli-package/archive.mjs:54 · first-pass R4a-04)*
-- [ ] The public package mode rule (`dist/index.js` 0755, every other file 0644) is written twice: once in
-  `archive.mjs`'s inspector and once in `ustar-fixture.mjs`. The fixture claims to produce the exact shape the
-  inspector accepts, so the two copies can drift without a test failing. Export one function and import it in the
-  fixture. *(low · tools/cli-package/archive.mjs:199 · first-pass R4a-05)*
-- [ ] On failure or interrupt, `produce.mjs`'s emptyArtifact removes every entry in the caller's artifact directory,
-  not only the ones the producer created, so a file another process writes there during the build is deleted. This is
-  related to the recorded PLAT-9 entry "Two producers can share one artifact directory". Remove only what the producer
-  created. *(low · tools/cli-package/produce.mjs:94 · first-pass R4a-06)*
-- [ ] When the local package check in `check.mjs` fails, the developer sees Node's uncaught-error dump of the whole
-  runCommand result, including unbounded child stdout and stderr, not the fixed '✗ CLI' lines `production-failure.mjs`
-  prints. `check.test.mjs` asserts only the exit code. Print only the fixed lines and rethrow a fixed code. *(low ·
-  tools/cli-package/check.mjs:61 · first-pass R4b-03)*
-- [ ] `process.test.mjs`'s grace-validation test passes String(graceMs) as the second argument to assert.throws, which
-  makes it the failure message, not a matcher. Any synchronous throw passes, including an unrelated TypeError. Match
-  the AssertionError code instead. *(low · tools/cli-package/process.test.mjs:569 · first-pass R4b-04)*
-- [ ] The case-insensitive placement assertions in `paths.test.mjs` run only if an uppercased path happens to exist,
-  so on case-sensitive Linux CI they are skipped silently and no skip is reported. Probe case sensitivity explicitly
-  and call t.skip with a reason. *(low · tools/cli-package/paths.test.mjs:35 · first-pass R4b-05)*
-- [ ] resolvePnpm's comment in `process.mjs` says it resolves the action's standalone executable, but only Windows
-  accepts a .exe. On POSIX, a non-JS pnpm binary is skipped and PINNED_PNPM_NOT_FOUND is thrown. The function also
-  reads the whole target file only to check a 128-byte prefix. *(low · tools/cli-package/process.mjs:78 · first-pass
-  R4b-06)*
-- [ ] In `check.mjs`'s finally block, rmSync runs before `interrupts.dispose()`. If the removal throws after an
-  interrupt, dispose is skipped and the process exits 1 instead of 128 plus the signal number. Nest the removal in its
-  own try/finally. *(low · tools/cli-package/check.mjs:64 · first-pass R4b-07)*
-- [ ] The consumer's cold-store `pnpm add` in `consume.mjs`, which builds better-sqlite3 and esbuild, depends on
-  runCommand's implicit 300-second default timeout. The bound is not named, justified or tied to `check.mjs`'s
-  deadline. Pass an explicit, named timeoutMs. *(low · tools/cli-package/consume.mjs:88 · first-pass R4b-08)*
-- [ ] publicPackage in `binding.mjs` admits any scripts object in the public manifest, including preinstall, install,
-  postinstall and prepare, which npm runs on users' machines. The current apps/cli scripts are benign. Refuse the
-  install-lifecycle keys. *(low · tools/cli-package/binding.mjs:201 · first-pass R4b-09)*
-- [ ] `prepack.test.mjs`'s 'tsup: false' case expects an exact MODULE_NOT_FOUND, but its fixture symlinks the real
-  root node_modules, so the result depends on tsup not being hoisted there. If it ever were, the test would fail
-  loudly rather than pass vacuously. Give the fixture an isolated empty node_modules. *(low ·
-  tools/cli-package/prepack.test.mjs:181 · first-pass R4b-10)*
-- [ ] decodeMappings in `source-map.mjs` accepts non-canonical VLQ. 'B' (negative zero) and zero-padded continuation
-  digits ('gA', up to seven digits) decode to the same value as 'A', so two byte strings for one map both pass, and
-  `source-map.test.mjs` pins the padded form as accepted. Refuse them, or document that canonical form is not
-  enforced. *(low · tools/cli-package/source-map.mjs:120 · first-pass R5b-02)*
-- [ ] decodeMappings in `source-map.mjs` bounds memory only by the 16 MiB input size, not by line, segment or field
-  count. Every ';' allocates an array: a probe measured 87 MiB of retained heap for 2 MiB of ';', so roughly 700 MiB
-  at the bound. A run of digits grows the field array until a separator. Refuse more than five fields inside the loop
-  and cap lines at the generated line count. *(low · tools/cli-package/source-map.mjs:97 · first-pass R5b-03)*
-- [ ] mapsOf in `symbolicate.mjs` maps only SourceMapError and SyntaxError to MAP_DECODE. A staged map that lacks
-  sources or names, or is null, throws a raw TypeError, which is printed as UNEXPECTED. mapsOf also never runs the
-  generated or original range checks itself. Validate the map shape and run both range assertions inside the try.
-  *(low · tools/cli-package/symbolicate.mjs:332 · first-pass R5b-04)*
-- [ ] `symbolicate.test.mjs` asserts that the host Node has module.registerHooks. The root `package.json` admits Node
-  22.13, and `packaging.md` says the producer needs 22.15, so the file fails on 22.13 and 22.14 instead of skipping.
-  CI uses Node 24 and is unaffected. Skip the capture cases without registerHooks, or state the 22.15 floor for the
-  tools tests. *(low · tools/cli-package/symbolicate.test.mjs:991 · first-pass R5b-05)*
-- [ ] `source-map.test.mjs` and `symbolicate.test.mjs` run only in Ubuntu jobs. The now-required Windows job runs
-  neither, so `symbolicate.mjs`'s realpath dirname containment is not exercised against file:///C:/ URLs or native
-  path casing. A mismatch fails closed as a spurious refusal. Run both files on windows-latest, or unit-test the
-  frame-to-dist mapping with win32 paths. *(low · tools/cli-package/symbolicate.mjs:348 · first-pass R5b-06)*
-- [ ] The symbolication frame record is produced inside the candidate's own process, and `frame-capture.mjs` calls the
-  global Error.captureStackTrace, so code the candidate loads first could forge call sites. The anchors show that the
-  runtime agrees with the maps, not that the runtime is honest. `packaging.md`'s Symbolication paragraph should say
-  the record is self-reported. *(low · tools/cli-package/frame-capture.mjs:46 · first-pass R5b-07)*
-
-*Engine and redaction:*
-
-- [ ] projectInput in `registry.ts` falls back to the unprojected arguments when the projection is not a plain record.
-  On the journal path, that is the value the journal identity must never see. It is unreachable today because the walk
-  preserves plain objects, but it fails open. Fail closed on the journal path. *(low ·
-  packages/core/src/tools/registry.ts:1137 · first-pass R8-06)*
-- [ ] makeSummary in `bounding.ts` cuts the one-line summary at 500 UTF-16 code units, so it can leave a lone high
-  surrogate in outputSummary. The byte preview is code-point safe and the summary is not. Cut on a code-point
-  boundary. *(low · packages/core/src/tools/bounding.ts:1717 · first-pass R8-07)*
-- [ ] Review history is written into code and test names, for example 'PR95 review round N' describe titles,
-  SECRETS_B7/B8 labels and 'a review caught…' or 'A PR #96 review found…' comments, in `bounding.ts`, its tests,
-  `registry.test.ts` and `archive.mjs`. The PR #96 correction added more. Name tests by the property they assert and
-  keep the history in the register; the labels are mutation-control ids, so rename them together with their controls.
-  *(low · packages/core/src/tools/bounding.test.ts:1453 · first-pass R8-08)*
-- [ ] ToolResultLimits are never validated at the engine boundary. A NaN maxBytes makes every result count as
-  truncated, while `bounding.ts`'s byte slicers never stop, so the preview is the whole text, head and tail both,
-  bounded only by lines. Only the default limits are wired today. Validate the limits as finite non-negative integers
-  at dispatch, or fall back to the default. *(low · packages/core/src/tools/bounding.ts:1818 · first-pass R8-09)*
-- [ ] The LLM diagnostic backstop in `scrub-secrets.ts` does not recognize JSON-escaped URL slashes
-  (`https:\/\/user:pass@host`) or percent-encoded separators (`Bearer%20TOKEN`, `https%3A%2F%2F…`), so those
-  credentials pass unmasked. The new `diagnostic-secret-backstop.md` Limits bullet does not list these forms. Accept
-  `\/` as a separator or document the limit. *(low · packages/llm/src/scrub-secrets.ts:82 · first-pass R9a-03)*
-- [ ] The Bearer/Basic label fragment with its LF/TAB tolerance and the label-repeat groups are hand-copied into three
-  regexes in `scrub-secrets.ts`: the header, standalone-label and label-run rules. A policy change must be repeated in
-  each copy, and the comments do not name the others. Compose the fragments from named strings, as `terminal-safe.ts`
-  does, and move the secrets mutation anchors along with them. *(low · packages/llm/src/scrub-secrets.ts:140 ·
-  first-pass R9a-06)*
-
-*Test and control harnesses:*
-
-- [ ] `tools/causal-controls/provenance.mjs`'s `exactReplacement` applies a control's `after` text with a string
-  replacement, so a future `after` containing a `$` replacement pattern (`$&`, `$$`, `$n`, or a dollar sign followed
-  by a backtick or quote) would be written as different bytes than declared. No anchor uses those sequences today; the
-  fix is a replacer function (`text.replace(control.before, () => control.after)`) plus a `run.test.mjs` case. R7-10
-  reports the same defect. *(low · tools/causal-controls/provenance.mjs:195 · first-pass R6-02)*
-- [ ] `tools/fs-policy-controls/mutations.mjs` sets each control's expectedTests from a file-keyed nested ternary
-  whose final default is 19, so a new control on an unlisted file silently receives 19. A wrong guess still fails
-  loudly as declared-workload drift. Make `control()` require expectedTests, as mediaControl already does, and drop
-  the table. *(low · tools/fs-policy-controls/mutations.mjs:248 · first-pass R6-03)*
-- [ ] The `tools/overflow-capture/check.mjs` header claims the real stdin/file/signal boundary, but caller-abort emits
-  a synthetic SIGTERM. Only the POSIX 'hang' mode sends a real signal, and cleanup-race cannot reach its race branch
-  today, so it passes either way. State in the header that cleanup-race is a future-regression guard, or drive
-  caller-abort with a real child.kill('SIGTERM'). *(low · tools/overflow-capture/check.mjs:1 · first-pass R6-05)*
-- [ ] `tools/fs-policy-controls/README.md:144` says 'The complete 19-case temporary regression' in the present tense.
-  That control (MEDIA_TEMP_NATIVE_IDENTITY_PRECISION) now declares 23 cases, and line 5 says the temporary suite grew
-  to 23. Change it to 23-case, or mark the paragraph as history. *(low · tools/fs-policy-controls/README.md:144 ·
-  first-pass R6-06)*
-- [ ] `tools/secrets-controls/mutations.mjs` pins whole-file case counts by hand (CORE_PROJECTION_CASES,
-  REGISTRY_CASES, LLM_SCRUB_CASES), so any new test in `bounding.test.ts` breaks every coreProjectionControl phase
-  until someone edits the number. Add a helper that prints the current per-file counts from the harness's own
-  collection, and document a refresh step in the README. *(low · tools/secrets-controls/mutations.mjs:339 · first-pass
-  R6-07)*
-- [ ] `tools/secrets-controls/README.md` (581 lines, one heading) is a per-round changelog that names retired control
-  IDs inline, so finding the current inventory means reading the whole file. Keep one current table (id, path,
-  workload, witness count), move round history to a dated section, and list retired IDs once. *(low ·
-  tools/secrets-controls/README.md:327 · first-pass R6-08)*
-- [ ] The `tools/secrets-controls/mutations.mjs` header still says 'Steps 3–5 and 7', although the file also declares
-  the PR95 and Wave 2 controls. `README.md:556` names `deferred-tasks.md` as plain text, not as a relative link.
-  Update the header and link `../../docs/roadmap/deferred-tasks.md`. *(low · tools/secrets-controls/mutations.mjs:1 ·
-  first-pass R6-09)*
-- [ ] Two negative-control loops accept any refusal: `tools/bundle-closure/closure.test.mjs`'s escaping-specifier loop
-  accepts any BundleClosureError, and `tools/cli-package/smoke/native-process.test.mjs`'s observed-group loop accepts
-  any thrown error. A mutation can therefore pass for the wrong reason. Use the existing refuses(value, code) helper,
-  and assert AssertionError or a message for the native vectors. *(low · tools/bundle-closure/closure.test.mjs:230 ·
-  first-pass R7-04)*
-- [ ] The test 'output cap counts UTF-8 bytes' in `tools/cli-bootstrap/witness.test.mjs` cannot tell bytes from UTF-16
-  units, because its emoji payload exceeds the 4,096 cap either way. A probe showed that a units-counting mutant of
-  `process.mjs:65` still passes, and that 'é'.repeat(3000) separates the two. Switch to that payload. *(low ·
-  tools/cli-bootstrap/witness.test.mjs:407 · first-pass R7-05)*
-- [ ] `tools/bundle-closure/closure.mjs` refuses loader and code-generation capabilities only by identifier name or
-  string-literal element access. Computed forms such as globalThis['req'+'uire'], a template-literal key, or
-  ({}).constructor.constructor pass, although the comment claims it refuses 'acquisition/aliasing'. Document the guard
-  as best-effort drift detection, or refuse computed access on globals and .constructor chains. *(low ·
-  tools/bundle-closure/closure.mjs:202 · first-pass R7-06)*
-- [ ] `tools/bundle-closure/check.mjs` reports every non-BundleClosureError failure, including a TypeError or EACCES,
-  as 'cannot read valid build inventory — build the CLI first', with no message, which hides the real cause. Print
-  error.code or error.message for non-closure errors, and keep the build hint for ENOENT. `prepack.test.mjs:164`
-  matches the prefix. *(low · tools/bundle-closure/check.mjs:30 · first-pass R7-07)*
-- [ ] `tools/budget-replay-compat/system-tools.mjs` hard-codes C:`/Windows/System32/tar.exe` and C:/Program Files/Git
-  for Windows, while `tools/cli-package/process.mjs` derives taskkill from SystemRoot. A Windows install on another
-  drive fails with a generic assertion. Derive the paths from SystemRoot and ProgramFiles, and name the variable in
-  the error. *(low · tools/budget-replay-compat/system-tools.mjs:9 · first-pass R7-08)*
-- [ ] On Windows, the timeout kill in `tools/causal-controls/process.mjs` and `tools/cli-bootstrap/process.mjs`
-  reaches only the direct child, and both resolve only on 'close'. A grandchild holding the pipe can therefore leave
-  the join unsettled after the timeout. Use taskkill /T on win32, or resolve on 'exit' after a bounded drain. CI runs
-  these families on Ubuntu only, and the README admits descendant ownership is not asserted. *(low ·
-  tools/causal-controls/process.mjs:20 · first-pass R7-09)*
-- [ ] `tools/causal-controls/provenance.mjs` gives filesystem phases the operator's whole environment, with the real
-  HOME and TMPDIR. Secrets phases keep TMPDIR and redirect only HOME, and the bootstrap harness redirects TMP, TEMP
-  and TMPDIR. The README says only that the filesystem environment is 'byte-for-byte equivalent to its predecessor'.
-  Either redirect `TMP*` (and HOME for filesystem), or state the isolation choice per family in the causal README.
-  *(low · tools/causal-controls/provenance.mjs:174 · first-pass R7-11)*
-- [ ] `tools/cli-package/smoke/README.md:101` says 'Step 8d adds an eighth required case', but 4b1f6f6b later inserted
-  two cases before it, and REQUIRED_SMOKE_CASES now lists actual-native-bootstrap-lifecycle as the tenth. Name the
-  case IDs instead of ordinals. *(low · tools/cli-package/smoke/README.md:101 · first-pass R7-13)*
-- [ ] The `provenance.test.mjs` test titled 'owned helpers and redirected root directories cannot be symlinked'
-  symlinks only a helper file, so root-directory refusal in captureOwnedTools is untested. In
-  `native-process.test.mjs` the sentinel loop's `mode` variable is unused. Add a root-directory symlink case and drop
-  or use `mode`. *(low · tools/causal-controls/provenance.test.mjs:67 · first-pass R7-14)*
-- [ ] `tools/fs-policy-controls/outcome.test.mjs` and `process.test.mjs` are dead re-export shims that no script runs.
-  The `require-packed-cli.test.mjs` listing guard covers only five tools directories, so a new unlisted test elsewhere
-  would never run. Delete the shims and extend the guard to every `tools/*` directory with `*.test.mjs`, exempting
-  db-sync. This consolidates R6-10 and R7-01. Nits: `ci.yml:250-251` repeats the same job heading twice. (Consolidates
-  R6-10 and R7-01.) *(low · tools/ci/require-packed-cli.test.mjs:606 · first-pass R13-08)*
-
-*Documentation and roadmap (trigger: Gate 0's stale-entry sweep, or the next change to the file):*
-
-- [ ] The rule that refuses an unsettled or member-collapsing journal projection is still stated in three reference
-  docs: `built-in-tools.md:212-218`, `tool-registry.md:258-264` and `effect-journal.md:409-418`. Commit 0826f30a had
-  to add the member-name clause to all three. Make `tool-registry.md` the one home and have the other two link to it.
-  The `error-handling.md` half of the finding was fixed by 964994c7, which moved the backstop's shape list to
-  `diagnostic-secret-backstop.md`. *(low · docs/reference/shared-core/effect-journal.md:409 · first-pass R10-03)*
-- [ ] `docs/reference/cli/packaging.md` keeps a 905-character status line and per-step 'implementation boundary — Step
-  7a…9b.2' sections. `effect-journal.md:389` ('PR95 increment tightened') and `built-in-tools.md:257` ('a documented
-  relaxation') also carry history in contract text. Keep one status line per reference doc, write the contract in the
-  present tense, and move step history to the phase register. *(low · docs/reference/cli/packaging.md:3 · first-pass
-  R10-06)*
-- [ ] Commit 964994c7 put only the 2026-10-25 corrections of ADR-0105 and ADR-0106 into the dated '> Amended' form,
-  and those still sit under their old ### headings. ADR-0106 keeps 21 other dated ### correction sections and ADR-0105
-  keeps 14, none in the blockquote form that `documentation-style.md` requires. ADR-0106's Decision also repeats 256
-  KiB, 25 MiB and the 24-hour age that it says have canonical homes elsewhere. Convert them or document the
-  correction-section convention. The D64 round 1 on the correction (DOC-10) found the same: either convert the
-  sections or accept a dated `### <title> — YYYY-MM-DD` correction section in documentation-style.md §7. *(low ·
-  docs/decisions/0106-media-publication-requires-bounded-verified-bytes.md:220 · first-pass R10-07)*
-- [ ] The Step 9b preflight ruling in `phase-2.5.5-hardening-and-remediation.md:10105` still says 'Windows has no
-  GnuPG on its image'. Lines 10179-10181 and 10346-10347 record that the image ships Git for Windows' MSYS2 gpg. Add a
-  dated note to the ruling pointing to the correction. *(low ·
-  docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:10105 · first-pass R12a-02)*
-- [ ] The NI row of the phase 2.5.5 increment table (line 3707) still says its Windows clause 'closes after three
-  green advisory Windows runs', although the clause closed on 2026-10-26 (run 3 of 3 at line 10068, restated at
-  10696). Add the closure to the row. *(low · docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:3707 ·
-  first-pass R12a-03)*
-- [ ] `phase-2.5.5-hardening-and-remediation.md:9274` says the merged PR95 head moved the scrub-secrets pin 89→103,
-  and :9374 says the follow-up moved it 89→111. Git history settles it: a3e164b5 set the pin to 103 but left the
-  README at 89, and c64f3c39 moved the pin 103→111 and the README 89→111. Line 9374 should say 'pin 103→111, README
-  89→111'. *(low · docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:9374 · first-pass R12a-04)*
-- [ ] `phase-2.5.5-hardening-and-remediation.md:9435` labels correction commits '(round N)', meaning the correction
-  made after round N, while the round table at :9454 lists the same commit as round N+1's reviewed head. Add '(the
-  correction after round N)' so readers do not match the label to the wrong round. *(low ·
-  docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:9435 · first-pass R12a-05)*
-- [ ] The entries in `docs/roadmap/deferred-tasks.md` carry only round-review tags (R10-SCRUB-1, TCA-9A1-R13-1,
-  SEC-9B1-PS-2, COR-R4-2), and the detailed reports they come from are Git-ignored, so the tags cannot be resolved
-  from the repository. Give entries a stable register ID and keep the round tag as provenance. *(low ·
-  docs/roadmap/deferred-tasks.md:521 · first-pass R12b-07)*
-- [ ] `docs/roadmap/deferred-tasks.md:374` says the PR95 independent review's medium and 'three of its four' lows were
-  corrected in a3e164b5. LOW-2's change was reverted in ebbec1c0, and the same paragraph lists LOW-1 and LOW-2 as
-  approved deferrals, so the net is two of four (LOW-3, LOW-4). Reword it. *(low · docs/roadmap/deferred-tasks.md:374
-  · first-pass R12b-08)*
-- [ ] In `docs/roadmap/deferred-tasks.md`, the CR-70 entry is 'Scheduled (D67): v0.2.1' with 'the trigger above is
-  unchanged', but the trigger needs ADR-0096's recovery observed in a release that is not yet published. State the
-  observation the schedule waits for. `phase-2.6-conversational-authoring.md:353` still says 'three already-live bugs
-  gate it', which is stale since W7/CR-98, and links `deferred-tasks.md` without an anchor; point it at the CR-70
-  entry. *(low · docs/roadmap/deferred-tasks.md:1143 · first-pass R12b-09)*
-- [ ] `phase-2.6-conversational-authoring.md:8` says 'The phase scope, exit criteria and milestones are unchanged'
-  right after introducing the CLI MVP additions table, which adds MVP-A items. The M2.6-1 row and Required-ADR rows 9
-  and 11 were also edited. Reword to 'the scope lines and exit criteria are unchanged; the CLI MVP additions table
-  adds items'. *(low · docs/roadmap/phases/phase-2.6-conversational-authoring.md:8 · first-pass R12b-10)*
-- [ ] `phase-2.6-conversational-authoring.md:357` still lists 'The CLI e2e suite migrates the developer's real
-  ~/.relavium/history.db' as an open obligation tracked in `deferred-tasks.md`, but `deferred-tasks.md:2572` marks it
-  DONE 2026-07-13 (PR #76 review fold). Mark it closed in the phase record. *(low ·
-  docs/roadmap/phases/phase-2.6-conversational-authoring.md:357 · first-pass R12b-11)*
-- [ ] The 'CLI render-layer (ink component) test harness' entry in `docs/roadmap/deferred-tasks.md` is still '[ ]
-  Scheduled → 2.6.F', although 2.6.F is done and apps/cli now uses ink-testing-library; close it or re-point it. The
-  '[ ]' tooling-nits entry at :437 records its accepted tooling half inline but stays open for 19b's headings; split
-  it into a closed and an open half. *(low · docs/roadmap/deferred-tasks.md:2552 · first-pass R12b-12)*
-- [ ] `docs/roadmap/current.md:34` dates Phase 1's M2 to 2026-06-21, but `phase-1-engine-and-llm.md:795` records M2 as
-  reached on 2026-06-16 (PR #27). 2026-06-21 is the last workstream merge. Write 'Complete (M2 2026-06-16; last
-  workstream 2026-06-21)'. *(low · docs/roadmap/current.md:34 · first-pass R11-03)*
-- [ ] `docs/roadmap/current.md:69-74` states D64's security-tier bar without 'and no regression', which the register's
-  D64 amendment includes. `current.md:365` lists D65 as six splits plus #61 and omits G30's rows 13a–13c, although
-  `current.md:207-209` and the register's split table include them. The register's own summary at :10660 repeats 'six
-  recorded splits plus #61'. Copy the register's D64 wording and count seven splits. *(low ·
-  docs/roadmap/current.md:69 · first-pass R11-04)*
-- [ ] `docs/roadmap/current.md` still carries history that D66 says belongs to the registers: the D8 row's 'Recorded
-  here because the shipped state contradicted this table for four days', the D3 row's execution detail, the Wave 2
-  merged block with commit SHA, and the Departures section's 'Discharged 2026-07-26; kept here because…'. Keep one
-  status line per closed decision with a register link. *(low · docs/roadmap/current.md:338 · first-pass R11-05)*
-- **DONE 2026-11-04 (D64 round 3 follow-up).** Four in-page links in the record 964994c7 moved into the phase 2.5.5
-  register pointed at `current.md`'s live sections instead of their moved copies: 'Execution order — Phase 2.5.5 +
-  Phase 2.6 … below', two 'Active now' links and the 'Wave 3 queue' link. They now point in-page
-  (`#execution-order--phase-255--phase-26-temporary`, `#what-is-active-now`, `#wave-3--clear-the-ground`). *(low ·
-  docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md · first-pass R11-06, round-3 DOC-R3-4)*
-- [ ] The repository has no mechanical check behind its 'moved verbatim' claims, such as the one in
-  `phase-2.5.5-hardening-and-remediation.md`'s 'Moved by the PR #96 review correction' note. The earlier D66 move
-  silently dropped 983 lines. Add a small tools/ script that normalizes link text and whitespace and requires every
-  moved line to appear in the destination. *(low · docs/roadmap/phases/phase-2.5.5-hardening-and-remediation.md:11125
-  · first-pass R11-07)*
-
-## MVP-1 1b — recorded low findings (2026-11-05)
-
-D64 rounds 1 (at `5f2a0eb8`), 2 (at `60bc9727`), 3 (at `224b8f69`) and 4 (at `b70f9def`) of MVP-1's security
-increment found nine, two, two and one medium findings, all fixed before the next round, and the lows below that
-were not fixed with them. Round 5 (at `df685a52`) found no blocker, high or medium finding; its nine lows are the
-next group below, and the separate security sitting's two lows (at `ab5e46e1`) are the last.
-**Trigger for every entry:** the next change to the file it names.
-
-- [ ] **On the checkpoint path the engine checks a gate decision's fit only after passive admission.** *Low.*
-  *(round 1, gate-2)* A direct engine caller (the coming desktop and VS Code `resume_run`, or any embedder of
-  `@relavium/core`) that sends `input_provided` to an approval gate while a `context:` source is briefly missing, or
-  an unresolved effect row blocks the resume, gets the run written `run:failed` instead of `invalid_decision` with
-  the run left parked. The CLI refuses a misfit before any engine work, so it is not affected. **Re-check:** do the
-  fit check in `#prepareCheckpointGate` right after the pending gate is found, before `prepareResumeAdmission`, and
-  add a core test with a failing context. *(low · packages/core/src/engine/engine.ts)*
-- [ ] **A long output value row soft-wraps to column 0.** *Low.* *(round 1, outputs-5)* Hard line breaks in an
-  output value are indented under its key, but a single row wider than the terminal wraps to column 0 of the next
-  visual row, where padded text can look like a summary row. The comment now says so. **Re-check:** wrap value rows
-  at the terminal width with the continuation indented (the TUI path knows the column count), or bound a row's
-  width. *(low · apps/cli/src/render/run-outputs.ts)*
-- [ ] **One damaged row in any non-terminal run stops every reconcile and outbox drain.** *Low.* *(round 1,
-  liveness-2)* `listInterruptedRuns` throws `CorruptRunEventError` for the whole listing, so `reconcile()` rejects,
-  and the CLI's best-effort catch hides it: a crashed run stays `running` on every Home open and `run`/`gate` start,
-  and a held terminal is never drained. `status` already isolates per run (`readPerRunOrDegrade`). The dependency
-  predates 1b; 1b's liveness now relies on it. **Re-check:** isolate failures per run in the interruption listing
-  and name an unreadable run once. *(low · packages/db/src/run-history-store.ts)*
-- [ ] **The compiled-CLI MCP orphan probe reads the developer's real keychain.** *Low; test-side.* *(round 1,
-  keys-6)* Since the key pre-flight, `agent run` in `tools/cli-smoke/check.mjs` asks the keychain before the env
-  var, so a stored Relavium Anthropic key shadows the synthetic one, and on macOS a keychain prompt could hold the
-  probe until its step timeout. Nothing is sent: consent refuses the first call and the server never answers the
-  second. **Re-check:** run the probe's bundle under the keyring-denied module guard the package smoke uses, so the
-  synthetic env key is the only one resolved. *(low · tools/cli-smoke/check.mjs)*
-- [ ] **Under the home directory, `/export` with no project writes into the global `~/.relavium/workflows/`.**
-  *Low.* *(round 1, export-6)* Project discovery walks up to the first `.relavium/`, and under `$HOME` that is the
-  global data directory, so the scaffold and its transcript land there and appear as a project workflow from every
-  other non-project directory under home. The reference now states this. **Re-check:** exclude the global
-  configuration directory from project discovery for `/export` (writing `<cwd>/.relavium/workflows/` instead), or
-  ask before writing there. *(low · apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
-
-- [ ] **A `/clear` after a `/models` rescue rebuilds on the agent the session left.** *Low.* *(round 2, keys-1)* A
-  `chat-resume` deferred for a missing key, rescued with `/models`, then `/clear`ed, rebuilds on the resumed
-  snapshot's agent: the `/clear` rebuild closure captures `built.agent` once, and a reseat does not update it. The new
-  pre-flight then ends the REPL with a refusal naming the abandoned provider. Nothing is lost; the printed
-  `chat-resume` reopens on the rescued provider. The root cause predates 1b: ADR-0059's ADR-0112 amendment rules that
-  an explicit model choice survives a rebuild, and that is not implemented yet. **Re-check:** with ADR-0112's rebuild
-  rule, have the `/clear` rebuild take the agent of the session being cleared. *(low · apps/cli/src/commands/chat.ts)*
-- [ ] **A direct engine caller can send a payload with `approved` or `rejected`.** *Low.* *(round 2, gate-1)* The fit
-  check reads the decision kind only, and the gate's output is `decision.payload ?? { decision }`, so an embedder that
-  approves an approval gate with `payload: { decision: 'rejected' }` routes downstream on the payload. The CLI cannot
-  send one (only `--input` carries a payload), and the spec now says the check reads the kind only. **Re-check:**
-  refuse a payload on an `approved`/`rejected` human-gate decision in `#assertDecisionFitsGate`, as budget gates
-  already do. *(low · packages/core/src/engine/engine.ts)*
-- [ ] **Run outputs no longer join a query name split by whitespace.** *Low.* *(round 2, outputs-3)* Dropping the CLI's
-  diagnostics-only residual (round 1, outputs-2) also dropped its split-query-name probe, so an output holding
-  `?access_ token=<value>` (a hard-wrapped URL, say) prints the value; round 1's head masked it. The shared scrubber
-  does not join query names by design, and its query rule is private, so a per-leaf probe would be a second copy of a
-  security rule. commands.md states the limit. **Re-check:** export a query-only probe from the shared scrubber and
-  apply it per leaf. *(low · apps/cli/src/render/run-outputs.ts, packages/llm/src/scrub-secrets.ts)*
-- [x] **On a resumed run the outputs note names `<runId>`.** *Low; cosmetic.* *(round 2, outputs-5)* **Fixed
-  2026-11-06** (the MVP-1 1a milestone review, runid-2): the run view takes the run id from a resumed stream's first
-  event, so the footer, the summary's id line and this note all name it. The original entry follows. The TUI final
-  summary passes `state.runId`, which only `run:started` sets, so after `relavium gate` or `budget resume` a shortened
-  or masked block says `relavium logs <runId> --json`; the plain renderer names the id. **Re-check:** fold the
-  terminal's `runId` into the view state (or carry it on the summary) and pass that. *(low ·
-  apps/cli/src/render/tui/final-summary.ts, apps/cli/src/render/tui/run-view-model.ts)*
-
-- [ ] **A held terminal the log has already moved past is never written, and its run is never settled.** *Low.*
-  *(round 3, liveness-1)* The drain retries an outbox entry whose sequence number is at or below the run's durable
-  last one, the store's append guard refuses it every time, and the run counts as held, so the repair skips it on
-  every start. It takes three rare events in a row: a held terminal from a gate deadline, a drain that cannot land
-  it during the next `relavium gate`, and that resume then dying after writing past it. The run stays `running`, and
-  `status` keeps calling it held. **Re-check:** in `#drainTerminalOutbox`, drop an entry whose sequence number is at
-  or below the log's last one (it can never land) instead of holding its run, and add a CLI reconcile test. *(low ·
-  packages/core/src/engine/engine.ts)*
-- [ ] **Only `relavium status` says the terminal outbox cannot be read.** *Low.* *(round 3, liveness-2)* An outbox
-  that exists but cannot be read (root-owned after a `sudo` run, a directory at its path) holds every run, so no
-  start or Home open settles anything until it can be read. Holding is the safe choice, and the reference now says
-  so, but `run`, `gate`, `budget resume` and the Home swallow the reconcile result and print nothing. **Re-check:**
-  have `reconcile()` report an unreadable outbox, and print one fixed line on stderr and in the Home naming the
-  file. *(low · packages/core/src/engine/engine.ts, apps/cli/src/history/reconcile.ts)*
-- [ ] **An export larger than the parser accepts is never recognized as the session's own.** *Low.* *(round 3,
-  export-2)* Past the parser's 2,097,152-character bound, a later `/export` of the same session writes another
-  file (`<slug>-2`, …) rather than rewriting the first, and the run hint it prints names a file `relavium run`
-  refuses. It needs a session whose attachments or shell output reach that size. **Re-check:** refuse to write a
-  scaffold over the bound, pointing at `relavium chat-export <sessionId> --out <path>`. *(low ·
-  apps/cli/src/chat/export.ts)*
-- [ ] **An `/export` before the first completed exchange is not found by a later one.** *Low.* *(round 3,
-  export-4)* With no title yet, the export's id is `exported-session-<sessionId>`; once a title exists, a later
-  `/export` searches only the title's slug, so it writes a second file and the empty first one stays in the catalog.
-  **Re-check:** also search the fallback id for the session's own export (renaming it on rewrite), or refuse
-  `/export` while there is nothing to export. *(low · apps/cli/src/chat/export.ts)*
-
-- [ ] **A 0.1.x run still executing when a newer start reconciles is settled as crashed.** *Low.* *(round 4,
-  liveness-1)* `relavium@0.1.1` takes no run lease, so a run it is still executing has no lease row, and the first
-  `run`, `gate`, `budget resume` or Home open of a version with 2.6.G reconcile claims it at once and writes
-  `run:failed{internal}`. The 0.1.1 process then hits the sequence it expected, aborts, and its own `run:failed`
-  lands behind the first, because 0.1.1's store has no terminal refusal. It needs an older executable still
-  running on the upgraded `~/.relavium`, which [database-schema.md](../reference/shared-core/database-schema.md)
-  calls unsupported ("active downgrade execution"). **Narrowed 2026-11-06 (maintainer ruling, PR #97 review):**
-  reconcile now leaves a run younger than one lease TTL alone (ADR-0079 §3's 2026-11-06 note), so a 0.1.x run is
-  safe for its first minute; one still executing after that is settled as before. **Re-check before the v0.2.0
-  release:** the release notes tell users to finish or cancel 0.1.x runs before upgrading. *(low ·
-  packages/core/src/engine/engine.ts)*
-- [ ] **A project config key with a line break can fake a line under an `/export` refusal.** *Low.* *(round 4,
-  export-1)* A config error names the keys it refused, and a REPL command's output keeps its line breaks (only
-  terminal controls are stripped), so a quoted `project.toml` key holding a newline and a made-up `exported session
-  to …` line prints that line under `export failed:`. It needs a hostile config swapped in after the chat started.
-  `doctor` and the top-level error renderer already print such a message on one line. **Re-check:** print the
-  refusal through `sanitizeInline`, or name a config error by its code only, and check the other REPL commands
-  that show config text. *(low · apps/cli/src/commands/chat.ts)*
-- [ ] **Two kinds of output name the name probe does not read as an API-key header.** *Low.* *(round 4,
-  outputs-2)* The probe reads a name as serialized JSON, where a tab or line break inside the key becomes `\t` or
-  `\n`: the escape's letter hides the header name's boundary, so an opaque value under `"\nx-api-key"` or
-  `"x-api-key\t"` is shown (it was before round 4 too). And a name the scrubber masks up to its end is not a label
-  by design, so an opaque value under `Bearer x-api-key` is shown, as it was before the member view. Both need a
-  key no real header block produces cleanly. **Re-check:** turn control characters in the key into spaces before
-  the probe, and pin both escapes. *(low · apps/cli/src/render/run-outputs.ts)*
-- [ ] **The VS Code gate event cannot tell an input gate from an approval gate.** *Low; reference only.* *(round 4,
-  gate-1)* `relavium.onHumanGatePending` carries `{ runId, nodeId, promptText, timeoutMs }`: no `gateType` to
-  choose between Approve and an input field, and no `gateId` to resume a run with more than one gate pending.
-  Nothing implements it yet. **Re-check:** add both when the VS Code surface is built. *(low ·
-  docs/reference/vscode/extension-api.md)*
-
-- [ ] **The exit-code table says every exit 5 is retried, but the next start drops a raced one.** *Low; reference
-  only.* *(round 5, liveness-1)* The table row and the note on what 5 and 6 mean say a held terminal is retried on
-  the next start. When a concurrent reconcile has already written the run's terminal, the next start's drain finds
-  the run closed and drops the entry instead. The exit-5 note in the same section states this, and the remedy the
-  two lines give (re-check after the next invocation) still gives the right answer. **Re-check:** qualify both
-  lines ("…or drops it when the log already ends in a terminal"). *(low · docs/reference/cli/commands.md)*
-- [ ] **The `reconcile()` docstring leaves out two kinds of run it does not settle.** *Low; comment only.* *(round
-  5, liveness-2)* A run whose repair write throws is skipped and retried on the next reconcile, and a run parked on
-  a media job is resumable and left alone like one parked at a gate. The docstring names neither; nothing it states
-  is false. **Re-check:** add "a run whose repair write failed" to the runs left for a later reconcile, and say
-  "parked at a gate or on a media job". *(low · packages/core/src/engine/engine.ts)*
-- [ ] **Before a `/models` rescue, `/clear` in a resumed session without a key ends the REPL.** *Low.* *(round 5,
-  keys-1)* A message and `/compact` consult the send guard and are refused with a pointer to `/models`; `/clear`
-  does not, so it rebuilds on the resumed session's keyless agent, the key pre-flight refuses that, and the REPL
-  ends with a remedy naming only the missing key and the same `chat-resume`. Nothing is sent or lost, and
-  chat-session.md says a `/clear` whose build fails ends the REPL. Round 2's keys-1 is the same `/clear` after the
-  rescue. **Re-check:** in `clearSession`, check the send guard first, as `compactHistory` does. *(low ·
-  apps/cli/src/commands/chat.ts)*
-- [ ] **The desktop gate overlay reference gives an input gate no Reject.** *Low; reference only.* *(round 5,
-  gate-1)* routes-and-screens.md gives an `input` gate an input field only, while the engine accepts `rejected` there
-  and the VS Code reference and `relavium gate --reject` offer it. `apps/desktop` holds only a README. **Re-check:**
-  with round 4's gate-1, when the desktop surface is built: "an input field and Reject for an `input` gate". *(low ·
-  docs/reference/desktop/routes-and-screens.md)*
-- [ ] **An output name that is a secret shape still masks its value when a delimiter or control character follows
-  the shape.** *Low; fails closed.* *(round 5, outputs-1)* Round 4's check keeps the value only when the name's own
-  scrub ends in `[REDACTED]`. The scrubber's Basic/Bearer token cannot end on `,` `;` `}` `"` `'` or `\`, and a
-  trailing tab or line break is written as `\t` or `\n` in the serialized view, so a value under `Basic plan,`,
-  `"Basic auth"` or `Basic plan\r` (the last header of a naively split CRLF file) is masked whole, with the masked
-  note. **Re-check:** strip trailing delimiters and control characters from the name's own scrub before the end
-  check, rerun the round-4 oracle with these names, and pin `Basic plan,` and `Basic plan\n`. *(low ·
-  apps/cli/src/render/run-outputs.ts)*
-- [ ] **An output name that already ends in `[REDACTED]` masks its value, through an unpinned clause.** *Low; fails
-  closed.* *(round 5, outputs-2)* The `own !== key` clause in `namesCredential` makes `Bearer [REDACTED]` or
-  `…?token=[REDACTED]` (an already-redacted log line used as a key) a label, while `Bearer token` keeps its value.
-  Dropping the clause passes every test. **Re-check:** decide what the clause is for, and pin the choice with a
-  `{ v: { 'Bearer [REDACTED]': 'x' } }` case. *(low · apps/cli/src/render/run-outputs.ts)*
-- [ ] **Two output names that mask to the same text show only the later value.** *Low.* *(round 5, docs-1; extends
-  round 2's key collision)* Since round 4 a name that is a secret shape keeps its value, so `Basic plan` and `Basic
-  support` in one object both become `Basic [REDACTED]` and only `Basic support`'s value is shown, in the first
-  member's position; commands.md says such a name's value is kept. The masked note points at the full record.
-  **Re-check:** suffix a colliding name (`Basic [REDACTED] (2)`, as core's bounding walk reports collisions) or mask
-  every colliding value, and pin a `Basic plan` + `Basic support` case. *(low · apps/cli/src/render/run-outputs.ts,
-  docs/reference/cli/commands.md)*
-- [x] **`relavium list` prints a workflow's name without stripping terminal controls, and `/export` now feeds it
-  session titles.** *Low for 1b.* *(round 5, export-1)* **Fixed 2026-11-06** (maintainer: fix it before the
-  MVP-1 milestone review): `list` passes every catalog field it prints (slug, name, tag; the parse reason already
-  did) through `sanitizeUntrustedInline`, pinned by a test whose name, tag, file-name slug and agent name carry
-  `ESC ] … BEL`, `ESC [2J` and U+202E. The original entry follows. The scaffold's `name` is the raw session title (only its
-  whitespace is collapsed, so ESC and BEL survive), and since MVP-A3 `/export` writes into `.relavium/workflows/`,
-  which `list` scans and prints raw; a piped first message holding an OSC or CSI sequence then reaches the terminal
-  on `relavium list`. The sink predates 1b: any committed workflow name, a tag and an invalid file's stem print raw
-  the same way, and a cloned repository reaches it more easily. **Re-check:** pass `entry.name`, each tag and an
-  invalid entry's slug through `sanitizeUntrustedInline`, as `list.ts` already does for `entry.error`, and pin it
-  with an `ESC ] … BEL` name. *(low · apps/cli/src/commands/list.ts)*
-- [ ] **The canonical export mapping still says the export file is named by session id and that ids are not
-  unique.** *Low; reference only.* *(round 5, export-2)* The live `/export` names its file after the first free
-  `<slug>`, `<slug>-2`, … and writes that id into the file, and commands.md's chat-export section now links to this
-  mapping. chat-session.md's `/export` row states the live behaviour correctly. **Re-check:** qualify the sentence:
-  `relavium chat-export`'s default filename uses the session id; the live `/export` names its file after the id it
-  takes. *(low · docs/reference/contracts/agent-session-spec.md)*
-
-- [ ] **A live run whose process is stopped for longer than the lease TTL is settled by the next start.** *Low;
-  liveness only.* *(security sitting, sec-1)* A run whose owner is suspended for more than 60 seconds (SIGSTOP, or
-  Ctrl+Z on the plain driver) has an expired lease, so the next `run`, `gate`, `budget resume` or Home open takes
-  it over and writes `run:failed{internal}`. On Linux, timers do not count suspend, so after a laptop resume the
-  owner's heartbeat can lag by up to 20 seconds, and a scheduled run that starts at wake can be the trigger. On
-  macOS the monotonic clock counts sleep, so an overdue heartbeat fires on wake. Integrity holds: the takeover
-  bumps the generation, so the woken owner is fenced (exit 6) and there is one terminal; a tool call between wake
-  and the fence is the window ADR-0079 §6 accepts. **Re-check:** store the owner's pid and boot id on the lease row
-  and skip a same-host takeover while that pid is alive, as an ADR-0079 amendment. *(low ·
-  packages/core/src/engine/engine.ts, packages/db)*
-- [ ] **A `.relavium` that is a symlink sends the `/export` transcript to the link's target.** *Low.* *(security
-  sitting, sec-2; extends round 1's export-6)* Project discovery follows the link, and the catalog's containment
-  check compares against the link's own target, so `/export` creates `<target>/workflows/<slug>.relavium.yaml` with
-  the full transcript, `@`-file and `!`-shell bodies included. A cloned repository whose `.relavium` points at a
-  world-writable directory another local account prepared would receive it. Nothing is overwritten: a new file is
-  written exclusively, and the rewrite replaces only a regular file carrying this session's marker. The same
-  discovered directory already receives `create`'s writes. **Re-check:** refuse a project config directory whose
-  real path is outside the directory that contains it, or ask before writing through a linked `.relavium`. *(low ·
-  apps/cli/src/chat/export.ts, apps/cli/src/config/paths.ts)*
-
-## MVP-1 1a milestone review — recorded low findings (2026-11-06)
-
-The milestone review of MVP-1's UX increment 1a (at `624bb2e7`, the `relavium list` sink fix included) found four
-medium findings, all fixed: a budget pause's summary pointed at `relavium gate`, `status <runId>` showed a finished
-run's open gate as pending, the run-path tool pre-flight grew with nodes times grant length before the node ceiling,
-and the chat's catalog-ceiling output cap ran into ADR-0082's 120-second absolute deadline. Round 2 (at `d8762a23`)
-found one more medium, also fixed: the round-1 run-id latch let a resumed run's summary point a gate restored from its
-checkpoint at `relavium gate`, although such a gate can be a budget gate `gate` declines. Round 2's wording and
-`status` test lows (history-9/docs-3, history-10 in part, history-11, security-2/docs-4) were fixed with it, except
-that the pending gate's node-id sanitizer stayed unpinned. Round 3 (at `32d1a8a7`) found one more medium, also fixed:
-round 2's fix sent such a gate to `relavium status` for the command that continues it, which `status` printed only for
-a budget gate; it now prints one for every pending human gate too, and the node-id sanitizer is pinned with it
-(history-14, docs-2, security-1). Round 4 (at `8e7f41f2`) found one more medium, also fixed: `status <runId>` printed
-an approved gate's step as `stopped` under its completed run, because no `node:completed` closes a gate's step row;
-it now reads the decision from the log and prints `completed`. Round 5 (at `3354dda1`) found no blocker, high or
-medium finding, so 1a is accepted; its docs-1 low, two entries below that still called `status`'s commands complete,
-is fixed in this register. The lows below were not fixed. **Trigger for every entry:** the next change to the file it
-names.
-
-- [ ] **A fenced run's summary can still point at `relavium gate`.** *Low.* *(runid-3)* When an inline gate prompt
-  delivers a stale `run:paused` after the run was fenced (exit `6`), the TUI summary takes the paused branch while
-  stderr says another process owns the run. Following either is harmless (`gate` is idempotent or refused).
-  **Re-check:** pass the exit disposition to the summary and point a fenced run at `relavium logs`. *(low ·
-  apps/cli/src/render/tui/final-summary.ts)*
-- [ ] **`list --runs` loads every column of every run.** *Low.* *(history-2)* The listing reads full run rows,
-  inputs and outputs included, to print five fields, and offers no bound; `| head` instead exits `9` under
-  `pipefail`. **Re-check:** a projection-only recency query, and a `--limit N` option. *(low ·
-  apps/cli/src/commands/list.ts, packages/db)*
-- [ ] **No dispatch-level test passes `--runs` or a `<runId>` through.** *Low; test-side.* *(history-6)* A refactor
-  that dropped either argument in `dispatch.ts` would turn `status <runId>` back into the active listing, or
-  `list --runs` into the catalog, with every test green. **Re-check:** one `executeCommand` case per argument.
-  *(low · apps/cli/src/commands/dispatch.ts)*
-- [ ] **Commit `e4783366` credits the 85th `run.test.ts` case to the run-id test.** *Low; history only.*
-  *(docs-2)* The case that moved the secrets workload from 84 to 85 is the 2.6.A pre-flight test from `97714f9d`.
-  Commits are immutable; the pins themselves are right. **Re-check:** if the workload pins gain a provenance note,
-  credit `97714f9d`. *(low · tools/secrets-controls/mutations.mjs)*
-- [ ] **`mcp_call` with no declared server passes the run-path pre-flight.** *Low.* *(preflight-2)* `relavium run`
-  wires the MCP arm only when an inline agent declares `mcp_servers`, so an agent granting `mcp_call` without one
-  passes and fails with `tool_unavailable` at its first call. built-in-tools.md now says so. **Re-check:** give the
-  pre-flight a conditional `mcp` arm and refuse `mcp_call` when no server is declared. *(low ·
-  packages/core/src/validate-catalog.ts, apps/cli/src/commands/run.ts)*
-- [ ] **`gate` and `budget resume` do not re-run the tool pre-flight.** *Low.* *(preflight-3)* Only a run started
-  before 1a, by `relavium@0.1.x`, can carry a grant the pre-flight would refuse; resuming it fails with
-  `tool_unavailable` at the tool's first call, after the user decided the gate. built-in-tools.md now says so.
-  **Re-check:** call the pre-flight beside the catalog check in `gate.ts`, before the MCP connect and the engine
-  build. *(low · apps/cli/src/commands/gate.ts)*
-- [ ] **`/export`'s run hint names a scaffold the pre-flight refuses.** *Low.* *(preflight-6)* A chat that used an
-  egress or os tool exports a workflow granting it, and the printed `relavium run <id>` exits `2` naming the tool.
-  **Re-check:** check the exported workflow against the run profile and replace the hint with a note naming the
-  tools, or say so in chat-session.md's `/export` row. *(low · apps/cli/src/commands/chat.ts)*
-- [ ] **The larger chat cap moves auto-compaction earlier and grows budget-shaped thinking.** *Low; recorded in
-  ADR-0101's 2026-11-06 note.* *(budget-3, budget-4)* Pre-send compaction reserves the effective cap, so on a
-  200k-window model with a 64,000-token ceiling it starts at about 68% of the window instead of 80%; and on a model
-  whose effort tiers are budget-shaped, the thinking budgets derive from the effective cap and grow about 8–16× on the
-  64,000-ceiling models from low to max (51,200 tokens at max), less on `claude-opus-4-1`.
-  **Re-check:** reserve the configured estimate rather than the inserted default for the compaction decision, and
-  derive budget-shaped tiers from a fixed reference cap. *(low · packages/core/src/engine/agent-session.ts,
-  packages/llm/src/adapters/anthropic.ts)*
-
-- [ ] **The summary's budget command has no decision flag.** *Low.* *(runid-6)* The TUI summary prints
-  `relavium budget resume <runId> --gate <gateId>`, and copied as printed it exits `2` asking for `--approve-amount`
-  or `--abort`. The plain renderer and `status` print a command for each decision (history-16 covers the `secret`
-  input case). **Re-check:** keep the allowance context on
-  the view's budget notice and print `budgetResumeHints`. *(low · apps/cli/src/render/tui/final-summary.ts)*
-- [ ] **The summary embeds a run id in a command without the shell-inert check.** *Low.* *(security-3)* Only the
-  budget command is checked; the `logs`, `gate` and `status` lines put the sanitized id in backticks, so a non-UUID id
-  from a tampered `history.db`, resumed by quoting it, prints a command that differs from the id or parses as a flag.
-  **Re-check:** apply `resumeCommandBase`'s test to the run id and fall back to display text. *(low ·
-  apps/cli/src/render/tui/final-summary.ts)*
-- [ ] **A run whose terminal is held still lists its open gates.** *Low.* *(history-8)* The finished-run guard reads
-  the projection, so a run held at exit `5` while paused shows the FINISHED banner beside a pending gate and a
-  copyable `budget resume`, and `--json` pairs `terminalHeld: true` with non-empty gates. Acting on them answers
-  `nothing to resume`. **Re-check:** treat `terminalHeld` as finished for the gate guard and the `stopped` mapping.
-  *(low · apps/cli/src/commands/status.ts)*
-- [x] **Run and step status strings print raw.** *Low.* *(history-12, security-1)* `status` and `list --runs`
-  sanitize every history identifier but not the status column; only the SQLite CHECK keeps it clean, and a file
-  written with `ignore_check_constraints` gets past it. **Fixed in the PR #97 review correction (2026-11-06):** the
-  run and step status in `status`, the `--runs` row and the catalog line's `[last: …]` in `list`, and the run id and
-  status in `logs`'s header now get the one-line floor, each pinned by a forged-status or forged-id test. *(low ·
-  apps/cli/src/commands/status.ts, apps/cli/src/commands/list.ts, apps/cli/src/commands/logs.ts)*
-- [ ] **`status`'s own `completed` terminal entry is unpinned.** *Low; test-side.* *(history-10, remainder)* Removing
-  `'completed'` from `TERMINAL_STATUSES` in `status.ts` passes every test, while a completed run with a stale outbox
-  entry would then read held. **Re-check:** a completed run with a stale outbox entry expecting `terminalHeld: false`.
-  *(low · apps/cli/src/commands/status.test.ts)*
-- [ ] **The CLI's issue count stops at ten.** *Low.* *(preflight-10)* The pre-flight reports ten nodes and one summary
-  issue, and the CLI prints the first issue with `(and 10 more issues)`, so the summary holding the real count never
-  shows. **Re-check:** render the summary issue, or put the total in the first message. *(low ·
-  apps/cli/src/commands/drive.ts, packages/core/src/validate-catalog.ts)*
-- [ ] **The pre-flight still scans the agent list once per node.** *Low.* *(preflight-11)* The per-grant memo is
-  consulted after `inlineAgent`'s linear find, so an adversarial 2 MiB file with tens of thousands of agents and nodes
-  stalls about 2.3 s before the node ceiling, roughly doubling the time to its exit-`2` refusal. **Re-check:** build an
-  agent map once per call. *(low · packages/core/src/validate-catalog.ts)*
-- [ ] **The pre-flight's bounded test passes without the memo.** *Low; test-side.* *(preflight-12)* Dropping the
-  per-grant memo keeps every test green while round 1's 944 KB file then takes about 3 s in the pre-flight.
-  **Re-check:** count iterations of a grant across many nodes rather than measuring output. *(low ·
-  packages/core/src/validate-catalog.test.ts)*
-- [ ] **Nothing pins `agent run`'s `oneShot`.** *Low; test-side.* *(budget-6)* Deleting `oneShot: true` from
-  `agent-run.ts`, or the builder's guard on the deadline, keeps every test green, though a one-shot would then send
-  the catalog ceiling with a long deadline. **Re-check:** an `agent run` case asserting no cap on the wire and the
-  default deadline, and a builder case with `oneShot` and an authored `max_tokens`. *(low ·
-  apps/cli/src/commands/agent-run.test.ts, apps/cli/src/chat/session-host.test.ts)*
-- [ ] **`officialEndpointOf` is untested.** *Low; test-side.* *(budget-7, docs-2; round-1 budget-5's other half)*
-  Making it report a custom endpoint, or a throwing resolver, as official keeps every test green; unreachable for
-  Anthropic today, which refuses a custom base URL. **Re-check:** the two `buildChatSession` cases expecting no cap
-  on the wire. *(low · apps/cli/src/chat/session-host.test.ts)*
-- [ ] **A chat reply longer than 30 minutes still times out.** *Low.* *(budget-8)* The 30-minute cap is below 25
-  tokens per second for every ceiling above 45,000, so a healthy reply that streams past it fails as a billed,
-  rolled-back timeout; ADR-0101's 2026-11-06 note states both bounds without the trade. **Re-check:** state the
-  residual, or cap the chat's `max_tokens` at what the deadline can stream so the reply ends as `length`. *(low ·
-  apps/cli/src/chat/session-host.ts, docs/decisions/0101-configured-output-estimates-apply-only-when-the-wire-is-uncapped.md)*
-- [ ] **The scaled deadline also bounds a stall, and the stall is retried.** *Low.* *(budget-9, security-4)* A
-  pre-content timeout is retryable and the session primary gets two attempts, so a piped `chat --json` on an endpoint
-  that keeps the stream open without content waits about 60 minutes per call (each fallback entry adds its own), instead
-  of about 4. Each attempt stays bounded and SIGINT cancels it. **Re-check:** keep the default deadline until
-  the first content chunk, or for non-interactive drivers, and say so in the note. *(low ·
-  apps/cli/src/chat/session-host.ts, apps/cli/src/commands/chat.ts)*
-- [ ] **The deadline is sized from the requested cap, not the effective one.** *Low.* *(budget-11)*
-  `chatAttemptDeadline` reads `agent.max_tokens` before the wire clamp, so `claude-opus-4-1` with a configured
-  128,000 gets 30 minutes for a 32,000-token wire, and a cost-capped chat sending the implicit 4,096 keeps 120 s
-  although 4,096 at 25 tokens per second needs 164 s. The note says "effective cap". **Re-check:** size it from the
-  planned wire cap, or reword the note and config-spec. *(low · apps/cli/src/chat/session-host.ts)*
-
-- [ ] **The summary's `relavium gate <runId>` asks for `--gate` when two human gates wait.** *Low.* *(runid-8,
-  docs-3)* A fan-out paused with no inline prompter (a piped stdin, `--secret-inputs-stdin`) announces both gates, and
-  the summary prints one `relavium gate <runId>` with no `--gate`; copied as printed it exits `2` naming the pending
-  gates. The same holds beside a gate restored from the checkpoint that is a human one. `relavium status <runId>`
-  prints a command for each gate. **Re-check:** print one `relavium gate <runId> --gate <gateId>` per gate through
-  `resumeCommandBase`, or point at `status` when more than one human gate may be pending. *(low ·
-  apps/cli/src/render/tui/final-summary.ts)*
-- [ ] **`list --runs --json`'s record shape is only partly pinned.** *Low; test-side.* *(history-15)* Dropping
-  `workflowId`, or replacing the documented `null` for a deleted workflow's slug or a missing start time with a
-  fallback, keeps every test green. **Re-check:** assert one whole record with `toEqual`, plus a soft-deleted
-  workflow's run and a never-started run. *(low · apps/cli/src/commands/list.test.ts)*
-- [ ] **The 30-minute chat cap and the `max_cost_microcents = 0` mapping are unpinned.** *Low; test-side.*
-  *(budget-12)* The deadline tests read `MAX_CHAT_ATTEMPT_TIMEOUT_MS` rather than its value, so 10 or 60 minutes
-  passes; and treating any defined `max_cost_microcents` as a cap, the documented unbounded `0` included, would
-  restore the 4,096-token default with every test green. **Re-check:** assert the cap by value, and a
-  `buildChatSession` case with `maxCostMicrocents: 0` expecting the catalog ceiling on the wire. *(low ·
-  apps/cli/src/chat/session-host.test.ts)*
-
-- [ ] **The summary's human-gate line has no decision flag.** *Low.* *(runid-10)* The human-gate twin of runid-6:
-  `relavium gate <runId>` copied as printed exits `2` asking for `--approve`, `--reject` or `--input`. `status` prints
-  a command for each decision (history-16 covers the `secret` input case). **Re-check:** keep the gate type on the view's human-gate entry and print
-  `humanGateResumeHints`, together with runid-6 and runid-8. *(low · apps/cli/src/render/tui/final-summary.ts)*
-- [ ] **`status`'s gate commands omit `--secret-stdin` for a run with a `secret` input.** *Low.* *(history-16,
-  docs-1)* `gate` and `budget resume` refuse such a run without `--secret-stdin`, so the `approve:` and `reject:`
-  lines `status` prints exit `2` as printed; the refusal names the full remedy. **Re-check:** read the masked secret
-  names from `run:started` and print the piped `--secret-stdin` form `gate.ts`'s `secretPipeHint` builds, for human
-  and budget hints alike. *(low · apps/cli/src/commands/status.ts, apps/cli/src/gate/pending.ts)*
-- [ ] **A run id of `list` turns a printed `gate` command into `gate list`.** *Low.* *(security-1)* `list` passes
-  `resumeCommandBase`'s shell-inert check, so `status` prints `relavium gate list --gate <id> --approve`, which runs
-  the listing and exits `0` with nothing resolved. Engine run ids are UUIDs; only a crafted `history.db` holds this.
-  **Re-check:** refuse a run id that names a `gate` subcommand in `resumeCommandBase`, and make `gate list` reject
-  decision flags. *(low · apps/cli/src/gate/budget.ts, apps/cli/src/commands/descriptors.ts)*
-- [ ] **No test has a shell-inert run id beside a hostile gate id at the `status` call site.** *Low; test-side.*
-  *(docs-2)* The identifier test makes both ids hostile, so a call site that sanitized one of them before building
-  the command would keep every test green and print an invented gate id. **Re-check:** a case per id, each expecting
-  the flags-only sentence. *(low · apps/cli/src/commands/status.test.ts)*
-- [ ] **No pre-flight test has two inline agents.** *Low; test-side.* *(preflight-13)* A lookup that ignores
-  `agent_ref`, or reads the first agent's grant for every node, passes every test. **Re-check:** two agents, one
-  granting `web_search` and one `read_file`, a node bound to each, in both list orders; land it with preflight-11's
-  agent map. *(low · packages/core/src/validate-catalog.test.ts)*
-- [ ] **A reply that fills a 200k window fails where the 4,096 cap ended it as `length`.** *Low.* *(budget-13)* On a
-  64,000-ceiling model with a 200k window, a first message of about 180k tokens with nothing foldable skips
-  compaction, suppresses overflow recovery and is sent with the catalog ceiling; the provider stops with
-  `model_context_window_exceeded`, which fails and rolls back the exchange. **Re-check:** cap the default at the room
-  the window leaves, or map that stop with committed content to `length`; or record it in ADR-0101's note beside
-  budget-3 and budget-8. *(low · apps/cli/src/chat/session-host.ts, packages/llm/src/adapters/anthropic.ts)*
-
-- [ ] **The decided-gate relabel is tested only on a finished run with an approval.** *Low; test-side.* *(runid-11,
-  history-17, docs-2)* Every `status` test that decides a gate seeds `decideAfterPause`, which approves and then
-  completes the run, and the paused-run test checks the substring `g [human_in_the_loop]`, not its `running` label.
-  Limiting the relabel to finished runs, recording only approvals in `decidedGateNodes`, or relabelling a still-pending
-  gate's step under a paused run as `completed` each keeps every test that calls `statusCommand` green. The code at
-  `3354dda1` is correct; real-engine probes print `completed` for a decided gate and `running` for the waiting one
-  under a paused run, and `completed` after a rejection. **Re-check:** a paused two-gate case, one gate decided and one
-  pending, expecting `completed` and `running` plus the pending gate's hints; a rejected-decision case through a
-  decision option on `decideAfterPause`; and the paused-run test asserting `  running   g [human_in_the_loop]\n`.
-  *(low · apps/cli/src/commands/status.test.ts, apps/cli/src/test-support.ts)*
-- [ ] **An approved budget gate lists its agent node twice, each row with the node's full cost.** *Low;
-  pre-existing.* *(runid-12)* A budget approval re-dispatches the node at attempt 1, so a second `node:started`
-  inserts a second step row, and the one `node:completed` closes both, since `stepMatch` matches on run, node and
-  attempt 1, with the settled cost on each. `status <runId>` prints `completed agent [agent]` twice, and a `--json` consumer that sums
-  step costs gets twice the run's spend. The projection predates 1a; `status <runId>` now shows it for finished runs
-  too. **Re-check:** close the gated attempt's row when its budget gate resolves, or give the re-dispatch its own
-  attempt number. *(low · packages/db/src/run-history-store.ts)*
-- [ ] **An empty `fallback_chain: []` misses the chat's catalog-ceiling default.** *Low.* *(budget-14)*
-  `withChatOutputDefault` checks whether the key is present, not whether the chain has entries, and the schema
-  accepts an empty chain. An Anthropic chat agent that authors `fallback_chain: []` keeps the adapter's 4,096-token
-  cap and the 120-second deadline instead of the ceiling and the scaled deadline that config-spec.md and ADR-0101's
-  notes promise. No Relavium generator writes an empty chain; removing the key or setting `[chat].max_tokens` works
-  around it. **Re-check:** treat an empty chain as no chain, with a unit case expecting the ceiling; land it with
-  budget-6 and budget-7. *(low · apps/cli/src/chat/session-host.ts)*
-- [ ] **Two comments overstate since round 4.** *Low; comment-only.* *(docs-3)* `ActiveRunStatus.gatesUnavailable`'s
-  comment says it is `true` whenever the run's log could not be read, but a finished run's damaged log leaves it
-  unset. `decidedGateNodes`'s comment says the projection never closes a human gate's step row, but a gate that times
-  out without approval is settled with `node:failed`, which closes it. **Re-check:** say "an active run's" in the
-  first and "a decided human gate's step row" in the second. *(low · apps/cli/src/commands/status.ts,
-  apps/cli/src/gate/pending.ts)*
-- [ ] **A gate message can soft-wrap into a fake command row above `status`'s real ones.** *Low.* *(security-1)*
-  `sanitizeInline` collapses tabs and line feeds but keeps runs of spaces, and the gate message has no length bound.
-  A message padded to a guessed terminal width can place a row that looks like `    approve: relavium gate …` with an
-  attacker-chosen suffix directly above the real `approve:` and `reject:` lines round 3 added. It needs a guessed
-  width, leaves a stray `"` row visible, and a gate message can already carry a plain-prose instruction; the same
-  class as round 1's outputs-5 in 1b's register. **Re-check:** bound the printed message's width, wrap it with an
-  indented continuation, or put a fixed label row between it and the commands; land it with outputs-5. *(low ·
-  apps/cli/src/commands/status.ts)*
-
-## PR #97 review — fixed findings and recorded lows (2026-11-06)
-
-Four reviews of the `development` → `main` checkpoint PR #97 (at `077650a8`) reported about sixty findings, several
-rated high. Six verification agents checked each against the code at that commit, with probes, and none held as
-high: the gate-type bypass is unreachable from the CLI, the live-run start race was recorded and fails closed, and
-the `/export` race needs a concurrent writer. Eight held as medium. By the maintainer's rulings of 2026-11-06 six are
-fixed before the PR merges and two are resolved in the record, so the correction owes a D64 rigor pass, a new complete
-round and a separate security sitting. The verified register is `docs/analysis/private/2026-11-06-pr97-review-triage.md`
-(not tracked).
-
-**Fixed (medium):** reconcile's repair could relabel a completed run failed when its owner held its terminal in
-the outbox meanwhile (it now reads the outbox again under its claim); a bare Enter on an approval, review or
-budget-amount card approved; a card whose gate a deadline decided stayed open and dropped the later answer silently;
-the Windows readiness budget; the ADR-0119 and ADR-0120 drafts. **Resolved in the record (medium):** the URL-password
-reversal against `main` is stated (the PR #96 review's A4, above); the ReDoS entry names the cloned-repository vector
-and stays open (M8). **Fixed (low):** the drain now reads the outbox before the open runs (A2); reconcile leaves a run
-younger than one lease TTL alone, which narrows 1b's liveness-1 (A1); a crashed run with an unresolved external effect
-is settled as `effect_needs_attention` (A4); Esc at the rejection reason cancelled the run (Ctrl-C there still
-cancels it: the card watches its input for the key, since Clack reports both as one cancel); the card promised
-`auto-reject` where the run fails; `/export`'s own-export rewrite re-checks the file before it replaces it; the
-ADR-0118 draft (HMAC grants); history-12; the doc and comment items. The register's plan also listed B3's `?? []` and
-B2's missing-vertex fail-closed as one-line fixes; they were recorded below instead. The lows below were not fixed.
-**Trigger for every entry:** the next change to the file it names.
-
-- [ ] **A corrupt or schema-mismatched outbox line lets reconcile settle its run failed.** *Low.* *(A3)* The
-  outbox skips a line it cannot parse, so its run holds no terminal and the repair settles it. A truncated line
-  is ADR-0078's accepted floor; a complete line a newer binary wrote is not. **Re-check:** a JSON object with a
-  string `runId` that fails the schema holds its run; count unreadable lines and print one fixed diagnostic; never
-  hold every run on one bad line, since the file is never compacted. *(low · apps/cli/src/engine/terminal-outbox.ts,
-  packages/core/src/engine/engine.ts)*
-- [ ] **Isolating an unreadable run would drop its outbox entry.** *Low.* *(A5)* The round-1 liveness-2 fix must also
-  make the listing report the unreadable run and the drain hold its entry; a run simply left out of the list has its
-  entry dropped as already landed. *(low · packages/db/src/run-history-store.ts, packages/core/src/engine/engine.ts)*
-- [ ] **Reconcile's result is discarded.** *Low.* *(A6)* `reconcileInterruptedRuns` and the `run`/`gate` calls
-  swallow everything, which hides A3, A5 and a wiring regression. **Re-check:** return a structured outcome and print
-  one fixed, secret-free line. *(low · apps/cli/src/history/reconcile.ts)*
-- [ ] **The run-terminal type set is repeated across packages.** *Low; nit.* *(A8)* **Re-check:** one exported set in
-  `@relavium/shared`. *(low · packages/core, packages/db)*
-- [ ] **The gate-type fit checks skip a missing or non-gate node.** *Low.* *(B1, B2, B3)* Unreachable from the CLI
-  (the snapshot schema and the gate producers rule it out), but an embedder's executor can pause an `agent` vertex as
-  an approval gate and resume it with `input_provided`; a missing vertex may stall `#resume`; an unknown `gateType`
-  throws a `TypeError`. **Re-check:** carry `gateType` on the pending gate and check against it, throw
-  `invalid_decision` for a missing vertex, and treat an unknown type as accepting nothing. *(low ·
-  packages/core/src/engine/engine.ts, packages/core/src/engine/gate-decision-fit.ts, apps/cli/src/gate/decision.ts)*
-- [ ] **An input gate records an empty value on a bare Enter and offers no Reject.** *Low; product call.* *(B8)*
-  *(low · apps/cli/src/gate/clack-prompter.ts)*
-- [ ] **`gate list` hides the gates of a run a crash left `running`.** *Low.* *(B9)* `status` and `gate` still reach
-  them, against commands.md's "the listing and the resume can never disagree". **Re-check:** read every non-terminal
-  run. *(low · apps/cli/src/commands/gate-list.ts)*
-- [ ] **`chat-export --force` writes through a link at `--out`.** *Low; pre-existing.* *(C2)* **Re-check:** under
-  `--force`, write a temp and rename it over the target. *(low · apps/cli/src/process/owned-storage.ts)*
-- [ ] **The own-export rewrite does not fsync the directory.** *Low.* *(C3)* A power loss can bring the old version
-  back; the old-or-new promise holds. *(low · apps/cli/src/process/owned-storage.ts)*
-- [ ] **A locked keychain reads as "no API key".** *Low.* *(C6)* MVP-A4 shows it before the first turn now, with a
-  "store one" remedy. **Re-check:** a tri-state key status and an "unlock the keychain" wording. *(low ·
-  apps/cli/src/engine/providers.ts, apps/cli/src/chat/session-host.ts)*
-- [ ] **The chat output default looks the catalog up by model id alone.** *Low.* *(C7)* An Anthropic agent with an
-  OpenAI model id gets that model's ceiling; harmless, since Anthropic refuses the id. **Re-check:** require the
-  entry's provider to match. *(low · apps/cli/src/chat/session-host.ts)*
-- [ ] **The session builders fall back to an env-only key resolver.** *Low; latent.* *(C5)* Every production caller
-  passes a keychain-aware one. **Re-check:** make `providers` required. *(low · apps/cli/src/chat/session-host.ts)*
-- [ ] **Run outputs show a credential nested under a credential's name.** *Low.* *(D3)* An object or array under
-  `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under such a name
-  prints `[REDACTED]`, and a value that cannot be represented prints no note. **Re-check:** mask any non-null value
-  under a name the scrubber reads as a credential, keep `null`, carry `masked` out of the catch. *(low ·
-  apps/cli/src/render/run-outputs.ts)*
-- [ ] **The secret walk and the media walk have no depth bound.** *Low; fails closed.* *(D5)* About 3,000 levels
-  make the summary `[unserializable]`. **Re-check:** a depth cap with a fixed marker. *(low ·
-  packages/core/src/tools/bounding.ts)*
-- [ ] **The `run_command` allowlist compares the space-joined argv.** *Low; pre-existing.* *(D11)* `["cat a b"]`
-  admits `["cat", "a b"]` and `["cat a", "b"]`. ADR-0118's remembered grants match element-wise; this must be fixed
-  before that ships. **Re-check:** compare tokenized entries element by element. *(low ·
-  packages/core/src/tools/registry.ts, packages/core/src/tools/builtins.ts)*
-- [ ] **The release tooling refuses semver build metadata and some legal package names.** *Low; fails closed.*
-  *(F3)* *(low · tools/cli-package/archive.mjs)*
-- [ ] **The MCP-orphan guarantee is not tested on Windows.** *Low.* *(F6)* `check.mjs` uses `/bin/ps` and the e2e
-  suite skips win32. *(low · tools/cli-smoke/check.mjs, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
-- [ ] **The "required checks cannot be skipped" test pins 7 of the `ci` job's 29 steps.** *Low.* *(F7)* A
-  `continue-on-error` on Format check passes it; `f213d2a8`'s subject overstates it. **Re-check:** assert no
-  `continue-on-error` on any `ci` step, with the two known `if`/`shell` exceptions. *(low ·
-  tools/ci/workspace-scheduling.test.mjs)*
-- [ ] **A workflow input's `min` or `max` of `.inf` makes its run unresumable.** *Low; pre-existing.* *(F8)* JSON
-  turns it into `null` in the snapshot, which the snapshot schema refuses. **Re-check:** `.finite()`, with a
-  round-trip test. `[chat].max_tokens` is unbounded too, though capped downstream. *(low ·
-  packages/shared/src/workflow.ts, packages/shared/src/config.ts)*
-- [ ] **Five more Windows tests sit on Vitest's 5 s default.** *Low.* *(F1)* `concurrency.e2e` (twice),
-  `fs-workspace-admission` (twice) and `session-effect-turns` timed out in the same slow-runner cohort over 58 runs.
-  **Re-check:** watch at least 20 Windows runs after the readiness budget, then give these their own budget if they
-  recur. *(low · packages/db, apps/cli)*
-- [ ] **The pre-flight's exit change needs a release note.** *Low.* *(E8)* `relavium run` now refuses (exit `2`) a
-  workflow granting `http_request`, `web_search`, `read_clipboard` or `notify`; before, it ran and failed (exit `1`)
-  at the first such call, or completed if none was made. **Trigger:** the v0.2.0 CHANGELOG (MVP-A23). *(low ·
-  CHANGELOG.md)*
-
-**D64 round 1 of the correction (2026-11-06, at `13979d60`)** found one medium, ADR-0118's grant label storing
-`argv[0]` verbatim, and fixed it with the lows below it in the correction's own records and tests (the own-run
-guard pinned again, the TTL rule bounded on both sides, the event contract's reconcile codes, a logs run-id test,
-an own-export identity that also compares `size`, `mtime` and the bytes' SHA-256, so a same-length rewrite inside one
-tick of a coarse filesystem clock is caught and its tests no longer depend on the clock, ADR-0118's Session answer and its
-"what a grant does not bind" limit, ADR-0120's escape order). These were recorded:
-
-- [ ] **A late answer can still be dropped without a notice.** *Low.* *(gates-2, security-7)* The card closes
-  when the deadline's `human_gate:resumed` reaches the run view. An answer that lands after the deadline claimed
-  the gate but before that event arrives — the timer's few milliseconds, or seconds while the deadline's write
-  waits on a busy `history.db` — reaches `engine.resume`, which ignores a decided gate in silence. **Re-check:** keep
-  the card registered until its gate's `human_gate:resumed` is seen, or have `resume` report whether it applied the
-  decision. *(low · apps/cli/src/commands/drive.ts, packages/core/src/engine/engine.ts)*
-- [x] **The notice says "your answer" when no card was drawn.** *Low; cosmetic.* *(gates-3)* A deadline that fires
-  while the view unmounts for the card prints it anyway; so does an idle card a deadline closes (round 2's gates-3).
-  **Fixed 2026-11-06 (D64 round 2):** the notice now says no answer from this terminal was recorded, which holds in
-  every case. *(low · apps/cli/src/commands/drive.ts)*
-- [ ] **A paste or a hotkey can still answer a gate card.** *Low; pre-existing.* *(security-2)* Clack's confirm
-  takes `y`/`n` and `h`/`j`/`k`/`l`/space as answers, so a stray paste such as "The deploy looks wrong" approves an
-  approval or budget-amount card; only a bare Enter is now safe. The MCP consent prompt shares it. The chat
-  approvals have a paste floor (ADR-0057); the gate card has none. **Re-check:** filter the card's input to one
-  unmodified keypress and drop bracketed paste, with a real-Clack paste test. *(low ·
-  apps/cli/src/gate/clack-prompter.ts, apps/cli/src/mcp/consent-prompt.ts)*
-- [ ] **A raced own-export rewrite can leave two exports of one session.** *Low.* *(export-2)* When the file
-  changed but still names this session (a second terminal's `/export`, an editor's atomic save), the export
-  moves to the next id, and later `/export`s update the lower one. **Re-check:** prevent the duplicate without
-  writing over the changed file: an editor's save keeps the session's marker, so a file that changed after it was
-  recognized stays as it is, as the changed-file contract says. *(low · apps/cli/src/chat/export.ts)*
-- [ ] **No Windows job runs the own-export identity tests.** *Low.* *(export-3)* **Re-check:** add
-  `owned-storage-replace.test.ts` and `export-project.test.ts` to the Windows filesystem step. *(low ·
-  .github/workflows/ci.yml)*
-- [ ] **The Home and `chat list` print `history.db` status and slugs raw.** *Low.* *(sinks-2)* history-12's class on
-  surfaces its fix did not cover. **Re-check:** `sanitizeInline` in `home-projection.ts`'s labels and
-  `chat-list.ts`'s rows, with forged-status tests. *(low · apps/cli/src/render/tui/home-projection.ts,
-  apps/cli/src/commands/chat-list.ts)*
-- [ ] **The reconcile guard against an in-flight resume, and the drain's own-run guard, are unpinned.** *Low;
-  test-side; pre-existing.* *(reconcile-1)* The own-run test now pins `#runs` again; the `#resumingRuns` half and the
-  drain's claim never had a test. *(low · packages/core/src/engine/run-lease.test.ts)*
-
-**D64 round 2 of the correction (2026-11-06, at `82db354e`)** found two mediums, both in Proposed drafts. ADR-0118's
-label took `argv[0]`'s base name before the grammar check, so the secret last segment of a webhook URL passed whole
-as `command`, or the tail of an assigned secret, could become the label; the label now names only an `argv[0]` that
-is a bare name resolving on the `PATH`. ADR-0120's approval escape covered only controls and bidi characters, so a
-zero-width or tag-character run could hide content in an approved diff; it now covers every default-ignorable and
-format code point. Fixed with them: the stale gate contracts in `drive.ts` and `prompter.ts`, the decided-elsewhere
-notice (above), the hollow directory test and the forged-hash test, the own-export re-check reading the file before
-comparing its stat fields (it now reads only the same regular file, no-follow and non-blocking, as `/export`'s own
-read does, so a FIFO swapped in no longer blocks and a permission change moves the export on), the `logs`
-skipped-row note printing `history.db`'s `seq` raw, and three doc sentences (D3's credential names, the ReDoS
-entry's commands, the glossary's and the vision's auto-reject timeout). Recorded:
-
-- [ ] **A Reject chosen before an approve deadline still loses to it while the optional reason is typed.** *Low;
-  pre-existing.* *(gates-2)* The rejection reaches the engine only when the reason prompt settles, so an `approve`
-  deadline that elapses meanwhile approves the gate and the card closes with the notice. **Re-check:** on a card with
-  an approve deadline, submit the rejection as soon as Reject is chosen, or show the time left at the reason prompt.
-  *(low · apps/cli/src/gate/clack-prompter.ts)*
-
-**D64 round 3 of the correction (2026-11-07, at `4f259890`)** found two mediums. Closing a card when a deadline
-decided its gate opened the run's next card at once, so the keys the user was still typing for the closed card
-answered it (Clack's `y` approves); after such a close the run's later gates are now left for the command its
-summary names. The card also tells its own decision by what it returned, no longer by a `decidedBy` of `cli`, which
-every CLI decision shares. ADR-0120's escape still let U+2028 and U+2029 through, which JavaScript reads as line breaks and a
-terminal draws as nothing; the escape is now a closed set (every `\p{C}` code point, every separator but the ASCII
-space, every default-ignorable code point and U+2800, with TAB shown as a tab mark). Fixed with them: tests for the
-reconcile re-read's per-run check and its claim release, for a deadline deciding another gate while a card is open
-and for the legacy budget card's Enter; tests for a swap between the own-export check's last `lstat` and its open;
-`gate list`'s ids and `status`'s attempt number on one line; the card-close comments; and ADR-0118's masked spans and
-Positive consequence, and ADR-0120's plain drawing, against ADR-0114 §5. Recorded:
-
-- [ ] **No test drives a FIFO swapped in between the own-export check's `lstat` and its open.** *Low; test gap.*
-  *(export-1)* `O_NONBLOCK` is what keeps that open from blocking; a test would hang its worker on a regression
-  rather than fail. **Re-check:** run the case in a child process with a `spawnSync` timeout. *(low ·
-  apps/cli/src/process/owned-storage.ts)*
-- [ ] **The MCP consent card's argument display passes U+2028 and U+2029.** *Low; pre-existing.* *(security-1's
-  sibling)* `safe()` in the consent gate strips controls and zero-width characters but not the line separators, so a
-  repository-declared server's argument can look like a comment. **Re-check:** apply ADR-0120's approval escape when
-  it lands. *(low · apps/cli/src/engine/mcp-consent-gate.ts)*
-
-**D64 round 4 of the correction (2026-11-07, at `2d7f0714`)** found two mediums. Round 3's own fix left the pause
-that parked a gate in place after the gate resumed, so once a card closed under the user every later event attempted a
-departure and re-mounted the live view, which then stacked one frame per event and drew no streamed text; a resumed
-gate now clears it. ADR-0120's closed escape still drew a trailing ASCII space as nothing and dropped a line's
-ending from the comparison; whitespace at a line's end now shows a mark per character, and a changed or mixed line
-ending shows as `<CR LF>` or `<LF>`, so a whitespace-only or ending-only change never renders as an unchanged line.
-Fixed with them: a test that the TTL check runs before the claim, tests that something already at the own export's
-path is refused before it is opened, a test for a legitimate attempt number, `gate list`'s empty-result line and
-`gate`'s two idempotent notices on one line, ADR-0120's blank-drawing list (U+16FE4, U+1D159) and its plain drawing,
-ADR-0118's card and Positive wording, and three comments. Recorded:
-
-- [ ] **Keys typed into a card closed under the user reach the shell when the CLI exits.** *Low.* *(security-3)*
-  Nothing reads the input once the card closes, so the cooked line discipline keeps the rest of a typed reason, and
-  the shell reads it when the run parks and the CLI exits `3`. **Re-check:** keep a raw-mode reader that discards
-  input until the view re-mounts, or drain pending input before exit. *(low · apps/cli/src/commands/drive.ts)*
-
-**D64 round 5 of the correction (2026-11-07, at `882a2ff8`)** found no medium in the code; reconcile came back clean.
-It found two in ADR-0120. A new file written entirely in CR LF still looked like its LF twin, since only a differing
-or mixed ending was marked; the card now states each side's endings whenever they are not all LF. And secret masking
-could hide code a model chose: `Bearer $(curl …|sh)` is masked like `Bearer sk-…`. A masked span holding anything but
-credential characters is now flagged, and approving waits until the user reveals it with a deliberate key. Fixed with
-them: the escape notation escapes a literal `<U+`, visible right-to-left text and the hand-kept blank list are stated,
-ADR-0118 draws each argument on its own line, a test that a chmod after recognition is refused, a test for `gate`'s
-resolved-id notice, `/export`'s "next free id" wording, and the card-ownership comments and test names. Recorded:
-
-- [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
-  paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
-  closed handle. *(low · apps/cli/src/commands/gate.ts)*
-- [x] **ADR-0120's approval escape completeness — closed in MVP-3 on development (2026-11-12).**
-  *Maintainer ruling 2026-11-07.* Rounds 2 to 5 each found a further way an approval preview could hide content
-  (zero-width and tag runs, U+2028 and U+2029, line-end whitespace and endings, code inside a mask), each rated medium
-  against the draft's claim that a preview never hides what it approves. The draft now states its rules as a starting
-  set and claims only them; the mandatory security review confirms or extends them before the card is built, and the
-  correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
-  card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
-  **Closure:** the pre-build design sitting and independent implementation/security
-  reviews verify the escaped, masked, inspectable approval projection. The
-  [MVP-3 checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
-  owns actual execution evidence and remaining PR CI/maintainer review.
-
-**D64 round 6 of the correction (2026-11-07, at `2cc865c7`)** found one medium in the correction: commands.md still
-said a losing rejection does not stop later gates, which cbe39064 changed; it now says the run parks on them. It also
-found a medium that predates the correction (`d5ed56f4`, already on `main`): the whole gate card ran under the 250 ms
-cleanup timer, so every card a person took longer than that to answer printed a false "Run cleanup is still pending"
-under it and threw off its redraws. By the maintainer's ruling it is fixed here: the card's timer starts only when the
-card is aborted. Fixed with them: the own export's stat fields pinned one at a time, independent of the filesystem
-clock (round 5's chmod test needed a fine-grained ctime), the export docblock's wording, the reconcile comment that
-called the drain order the protection, the race test's name, and ADR-0118's and ADR-0120's wording after the
-narrowing. Recorded:
-
-- [ ] **Two CR-92 "not relabelled failed" tests now pass because of the TTL rule.** *Low; test erosion.*
-  *(reconcile-1)* They reconcile a run younger than one lease TTL, so the repair never reaches it; the property stays
-  pinned by engine.test.ts and history/reconcile.test.ts. **Re-check:** reconcile on a host clock past start + TTL.
-  *(low · packages/core/src/engine/m2-e2e-harness.e2e.test.ts, apps/cli/src/harness/durability.e2e.test.ts)*
-- [ ] **A deadline that fires while the live view unmounts stops later inline prompts though no card was drawn.**
-  *Low.* *(gates-3)* The notice prints and the run parks on its next gate. **Re-check:** set the refusal only when a
-  card was drawn. *(low · apps/cli/src/commands/drive.ts)*
-- [ ] **No test pins that `/export` moves past a changed own export to another of the session's own exports.**
-  *Low; test gap.* *(export-2)* **Re-check:** two own exports, the first changed during the replace. *(low ·
-  apps/cli/src/chat/export.ts)*
-
-**D64 round 7 of the correction (2026-11-07, at `72dee66a`)** found one medium in the correction: round 6's
-commands.md sentence said a decision from another process closes an open card, but another process's decision never
-reaches the run view; it now says only a deadline does, and what happens otherwise. It found a second medium that
-predates the correction, recorded below by the maintainer's ruling. **The maintainer merged PR #97 at `72dee66a`
-(merge commit `c04e6c13`, 2026-11-07), before a round came back clean and before the correction's separate security
-sitting was held.** Round 7's medium and its lows (the reconcile comments, the TTL rule's either-way clock, two test
-comments and a test name) were fixed on `development` after the merge. Recorded:
-
-- [ ] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
-  pre-existing (on `main` before the correction); must be fixed before v0.2.0 (maintainer ruling 2026-11-07).*
-  *(security-2)* When terminal B decides gate g with `relavium gate` and releases its lease, terminal A's open card for
-  g still takes an answer. A's resume reclaims the lease under a fresh fence, its guarded append is refused on its
-  stale head, and since only a fence refusal counts as losing ownership, A writes `run:failed{internal}` at a sequence
-  B already used. SQLite refuses it, the outbox holds it for good (A exits `5`, and `relavium status` says the run
-  FINISHED while it is paused at its next gate), and the held entry keeps every later reconcile from repairing that
-  run if it crashes. The in-memory store, with no `(runId, seq)` uniqueness, lands the bogus terminal instead. Ctrl-C
-  at the stale card writes a held `run:cancelled` the same way. **Re-check:** treat a guarded-append refusal after a
-  reclaim as ownership loss (no terminal, no outbox entry, the re-acquired row released, exit `6`), or have
-  `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
-  `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
-  *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
-- [ ] **No test pins the own-export read's size-plus-one bound.** *Low; test gap.* *(export-1)* A file that grows
-  between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
-  `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*
-
-## MVP-2 planning — the global `~/.relavium` is found as a project folder (2026-11-08)
-
-> **Closed on development by MVP-2 step 3 (2026-11-10, `ee49871d`):** the
-> shared discovery/authoring guard and `init` now exclude global state and its
-> aliases. Existing artifacts stay in place; catalog `list` and `/doctor` name the
-> [move/import remedy](../reference/cli/commands.md#relavium-init). Three cumulative
-> reviews and the separate filesystem sitting passed; the
-> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
-> records the actual-target corrections and verification.
-
-> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
-> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
-
-Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
-directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
-directory is `~/.relavium/`, and it always exists after a first run. From any directory under the home folder that has
-no project `.relavium/` of its own, the search therefore returns the global folder.
-
-Verified on 2026-11-08 by calling the function with a fake home: from `<home>/projects/foo` with no project folder it
-returned `<home>/.relavium`.
-
-- `relavium create` and `import` (through `resolveProjectConfigDir`) and the chat's `/export` (through the loaded
-  `projectConfigDir`) write workflow and agent YAML into `~/.relavium/workflows/` and `~/.relavium/agents/`.
-- `relavium list` and `relavium run <id>` then find those files from every such directory, so authored workflows
-  leak across unrelated projects.
-- A `workspace.toml` or `project.toml` placed in `~/.relavium/` would load as project configuration for every
-  directory under the home folder. Relavium does not create those files.
-
-**Fix:** the search stops before the global configuration directory, which is never a project folder. Existing files
-already written into `~/.relavium/workflows/` are left in place; slice 2b decides how an affected user is told.
-
-## Wave 3 NI — recorded low findings (2026-10-25)
-
-Round 1 of the native-identity increment at `fc5af701` accepted it with these lows
-([acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)). **Trigger for
-every entry:** the next change to the file it names.
-
-- [ ] **The lifecycle smoke's precondition reads can revert to numbers unnoticed.** *Low; test-side.* *(round 1,
-  PLAN-NI-R1-1)* Restoring `fs.lstatSync(candidate.owned).ino` at `tools/budget-replay-compat/lifecycle-smoke.mjs`
-  lines 325 and 369 still passes `pnpm smoke:budget-replay`: in the collision mode a bigint and a Number never
-  compare strictly equal, and in the other modes the real inodes differ. Production's retention identity is
-  witnessed separately. **Re-check:** assert both values are bigints before the comparison; reverting either read
-  must then fail the smoke. *(low · tools/budget-replay-compat/lifecycle-smoke.mjs)*
-- [ ] **Nothing tests the projection's `mtimeMs` formula.** *Low.* *(round 1, NI-T-1)* Replacing it in
-  `packages/db/src/media-store-paths.ts` `exactStats` with whole milliseconds (`Number(info.mtimeNs / 1_000_000n)`)
-  or whole seconds passes every media-store test. The bit-identical claim rests on an author probe of 307 files, and
-  a silent change could shift `listHandles()`'s `mtimeMs` and the sweep's age inputs by up to a second.
-  **Re-check:** a case that sets a fractional and a negative fractional mtime and asserts the projection is
-  `Object.is`-equal to `lstatSync(path).mtimeMs`; both mutants must fail. *(low ·
-  packages/db/src/media-store-paths.ts)*
-- [ ] **The catalog's dense-multibyte case catches only a byte bound below 1.5 times the character cap.** *Low.*
-  *(round 1, NI-T-2)* `apps/cli/src/workflows/catalog.test.ts` writes three-byte characters to about
-  1.5 × `MAX_SOURCE_CHARS` bytes, so `BigInt(MAX_SOURCE_CHARS * 3)`, `* 2` or a `>=` boundary in `catalog.ts`'s
-  precheck still pass, although a file of four-byte characters just under the character cap would then be refused.
-  **Re-check:** use four-byte characters to within one character of 4 × `MAX_SOURCE_CHARS` bytes; the 3×, 2× and
-  `>=` mutants must fail. *(low · apps/cli/src/workflows/catalog.test.ts)*
-
-## Native file identity on Windows — approved increment (2026-10-24)
-
-Found by Step 9a.2a's push CI (the advisory Windows job of run 40105286543). The maintainer approved a separate
-increment, after 9a.2b and before 9b (register row NI), rather than a deferral; this entry tracks it until then.
-NI is independently accepted on `development` at `fc5af701` (2026-10-25,
-[acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the item stays
-open until the Windows clause below closes it after three consecutive green advisory Windows runs on pushed heads.
-**Closed 2026-10-26:** the third consecutive green advisory Windows run (push CI run 40276471445 at `5a328bca`, probe
-`0 of 200`) closed the Windows clause ([NI acceptance](phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-acceptance--2026-10-25)); the scoped limits below stay open.
-
-- [x] **Identity checks compare `ino` as a JavaScript number, which Windows file IDs overflow.** *High; security,
-  Windows.* `statSync`, `lstatSync`, `fstatSync` and `FileHandle.stat` without `{ bigint: true }` return `ino` as a
-  number, but on Windows `ino` is the volume's 64-bit file ID; above 2^53 neighbouring IDs round to the same value,
-  so a replaced file or directory can compare as the original. `apps/cli/src/engine/tool-host/fs-policy.test.ts`,
-  "revokes a selected subdirectory replacement even when its enclosing grant is unchanged", read the replacement on
-  the Windows runner (its first failure in sixty runs). Sites: `apps/cli/src/engine/tool-host/fs-policy.ts`
-  (`pinDirectory`/`validatePin`), `apps/cli/src/workflows/catalog.ts` (the open check), and
-  `packages/db/src/media-store-paths.ts` (directory pins and `assertOwnedFile`), `media-store-read.ts` (the
-  read's before/after check) and `media-store-temporaries.ts` (`same` and the `Number(...)` comparison in
-  `nativeFile`). **Re-check:** every identity is read with `{ bigint: true }` and compared as `bigint` (or its exact
-  string), with a replacement test per site that fails when the comparison goes back to a number; the Windows job
-  passes the fs-policy test repeatedly. *(high · the five files above)*
-
-Scoped limits recorded with NI (2026-10-25):
-
-- [ ] **ReFS, Dev Drive, FAT and exFAT do not give unique, stable 64-bit file IDs.** *Low; Windows ReFS/Dev
-  Drive and FAT/exFAT volumes.* Microsoft documents that the 64-bit identifier "is not guaranteed to be unique on
-  ReFS", and that a FAT file ID is derived from the position of the file's directory entry, which renaming a file
-  to a longer name moves. NI makes every comparison exact, so the claim is exact identity on filesystems whose
-  64-bit file IDs are unique, such as NTFS, ext4 and APFS. On ReFS two files could share an index; on FAT or exFAT
-  a replacement created in a freed directory entry could inherit the pinned ID, so a check would admit it (fail
-  open), whatever the comparison's precision. Minimal example: a pinned directory `selected` on a FAT volume is
-  renamed to `selected-old` and a new `selected` is created in the freed entry. **Re-check:** if ReFS, Dev Drive,
-  FAT or exFAT workspaces become a supported target, read the 128-bit `FILE_ID_INFO` identity, pair the identity
-  with a second discriminator such as creation time, or refuse such volumes; native code or a dependency needs an
-  ADR. *(low · `apps/cli/src/engine/tool-host/fs-policy.ts`, `packages/db/src/media-store-paths.ts`)*
-- [ ] **The causal-control source graph's hard-link check still compares `ino` as a number.** *Low; tooling,
-  fail-closed.* `tools/usage-coverage-controls/source-graph.mjs` asserts that each copied source file's `ino`
-  differs from its original's, so a collision can only refuse a copy falsely; four causal families share the
-  file, and NI left it unchanged rather than perturb them. **Re-check:** switch both reads to `{ bigint: true }`
-  the next time that file changes. *(low · `tools/usage-coverage-controls/source-graph.mjs`)*
-
-## Phase 2.6.5 deferrals — `CR-93` and `CR-95` (long half), recorded 2026-09-06; `CR-70`, `CR-94` (remainder) and the in-turn overflow continuation, recorded 2026-09-14; the errored-or-aborted turn residual, the pre-upgrade free-page bytes and the estimator's calibration, recorded 2026-09-18
-
-**Phase closure — 2026-10-11:** W8 merged to `main` in PR #92 and Phase 2.6.5 is complete
-with approved deferrals, 49/51 items closed. The
-[merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
-joins all seven exit criteria. CR-70/93 and every scoped residual below retain their
-existing severity, trigger and narrowed claim; none is marked implemented by phase closure.
-CR-70's measurement/recovery prerequisite has merged, but its trigger also requires release
-observation and a surface needing carrying. CR-93 remains due before the first multi-tenant
-surface ships. CR-95's long continuation and the exact-capacity residual remain separate.
-
-> Written to satisfy [exit criterion 2](phases/phase-2.6.5-core-reliability-remediation.md): a deferral carries
-> its **severity**, its **trigger**, and — the part usually skipped — **the product claim it narrows**. The decisions are recorded in the phase register or, for the in-turn continuation, in ADR-0096 §5; only the WORK is deferred.
->
-> **A third item, `CR-94`, was not deferred here, and is now decided (2026-09-13).** This note once said no
-> maintainer call had been made. One has since been made, in
-> [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md): the minimum correct allowance
-> is built in `W7`, and only the lease's model binding and expiry are deferred. That deferral is recorded below,
-> together with the other deferrals the `W7` ADRs made.
-
-- [ ] **Carrying tool history into the model's context (`CR-70`).** *High (product).* **Decided and deferred on
-      2026-09-13** by the maintainer, in
-      [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. `W7` implements a session that persists the *structure* of its tool history (ADR-0095 §1). It carries no prior turn's tool rounds into the next request, so a coding agent re-reads a file it read the turn before.
-      - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md) had implied
-        that the transcript carries tool messages across turns. It now says they are not carried.
-      - **Trigger.** [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md)'s measurement and
-        recovery have shipped and been observed in a release, and a surface needs carrying. The coding-assistant
-        surface is the named candidate.
-      - **Constraints the future design inherits** (ADR-0095 §2): in-process only; never across a reseat; a pure
-        request projection with a per-turn byte ceiling; no synthesized `read_media` message; engine notes behind
-        ADR-0081's role boundary; ids unique per session; validity proven by the live conformance suite; a
-        user-scoped `[preferences]` toggle.
-      *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
-      **Scheduled 2026-11-04 (D67):** v0.2.1, right after the CLI MVP's v0.2.0, designed together with ADR-0096 §5's
-      in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
-      **Investigation note 2026-11-15:** the maintainer retained that schedule.
-      [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
-      (Accepted 2026-11-15) adds only bounded content-free call/outcome receipts; it
-      neither implements raw carrying nor closes this item, and this item's trigger and
-      constraints are unchanged. Reuse the
-      [ADR-0128 acceptance cases](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md#acceptance-and-landing-obligations)
-      when designing the separate full-content projection.
-
-- [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
-      [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
-      correct allowance in `W7`: dispatch-owned, shown, and durable. The lease's two remaining properties are
-      deferred.
-      - **The claim it narrows.** An approved amount is quoted at one catalog price. **Restated 2026-09-18:** the
-        amount is frozen and never recomputed, so if the model's price rises between the quote and the re-run, the
-        approved step's first call can exceed it and the step **fails closed** — an approval that kills the step it
-        was meant to authorise. That is the failure mode, stated plainly rather than as "is honoured even if the
-        price changes".
-      - **Trigger.** The first surface on which an approval can be exercised after the quoted model or its price has
-        changed — for example an approval queue that outlives a catalog refresh. **`W7` builds the first such
-        surface** (`relavium budget resume`, moved here from 2.6.K), and mitigates it rather than inheriting it: the
-        command REFUSES a quote whose price no longer matches, telling the user to reject and re-run. Binding the
-        allowance to the model it was quoted for, and expiring it, stay deferred behind that refusal.
-      *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
-
-- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* **NARROWED
-      2026-11-16 by [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c, implemented,
-      acceptance pending): a turn the provider accepted that ends by the abort or a classified error is now persisted as the
-      user's message, its structural pairs and one interruption row; what still persists nothing is listed in that ADR's
-      implementation note and the session spec's *Not retained* list — read the paragraph below as the pre-ADR-0119
-      record.** Recorded
-      2026-09-18, because [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md)'s Negative
-      section calls it "recorded as a residual" and no record existed. The engine rolls the user message back and
-      the persister writes no row, so a turn that dispatched a tool and then failed leaves no transcript trace at
-      all — only its effect row, which ADR-0098 discloses on the next resume.
-      - **The claim it narrows.** [agent-session-spec.md](../reference/contracts/agent-session-spec.md)'s durable
-        transcript is "completed exchanges only"; under `W7` it carries the STRUCTURE of every completed turn, and
-        still nothing of a turn that failed or was aborted.
-      - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
-        assistant replaying a half-finished edit, or an audit view over a session's tool use.
-      *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
-      **Pulled into the CLI MVP 2026-11-04 (D67) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
-      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment. **Moved 2026-11-16 out of MVP-4 into MVP-3c;** ADR-0119 Accepted, ADR-0095 amended.
-
-- [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
-      upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
-      maintainer probe on this tree found a planted token absent from `history.db` and present in `history.db-wal`.
-      `W7` opens the connection with `PRAGMA secure_delete = ON` and checkpoints the WAL with `TRUNCATE` after the
-      legacy clear and after each session-scope sweep, which is what makes the guarantee true — in WAL mode the
-      zeroing write is a new frame while the old page image waits in the `-wal` file for a checkpoint.
-      - **Residual 1: a checkpoint that cannot run.** A concurrent reader (another `relavium` process holding the
-        database open) makes `wal_checkpoint(TRUNCATE)` return a busy result, and old bytes can remain in the
-        main database and WAL until the next successful checkpoint. Logical clearing/deletion still commits;
-        physical erasure is deferred, not claimed complete. Every later open and session sweep retries the
-        checkpoint, including an empty sweep.
-      - **Residual 2: pages freed before the upgrade.** `secure_delete` is not retroactive, and `chat-resume` has
-        been sweeping committed session rows — which held `result_json` — since long before this change. Only a
-        `VACUUM` reclaims those pages, which decision 15 did not take: it needs an exclusive lock other processes
-        may contend for.
-      - **The claim it narrows.** [ADR-0098](../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s
-        "no tool result at rest" and [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md)'s scoped note
-        hold **after a successful checkpoint**, for bytes freed from the upgrade onward — not for a database's
-        whole history, and not while a checkpoint is blocked.
-      - **Trigger.** A threat model where the file itself is the adversary's prize — a shared or backed-up
-        `history.db`, or a move off the single-user local posture ADR-0050 assumes.
-      *(low · packages/db/src/client.ts, apps/cli/src/db/open.ts, apps/cli/src/engine/effect-retention.ts;
-      ADR-0098, ADR-0050)*
-
-- [ ] **The token estimate is not calibrated against real usage.** *Low.* Decided 2026-09-18: `W7` ships the
-      heuristic alone. [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) §2 invariant 4
-      binds any calibration that is added later — same-shape requests only, gross input including cached tokens,
-      reset on a model or provider change — and nothing is built now.
-      - **The claim it narrows.** None that ships: ADR-0096 §1 already states that the estimate is a heuristic and
-        does not bound the real token count. What it costs is precision — a cache-heavy or tool-heavy session can
-        compact slightly earlier or later than a calibrated estimate would.
-      - **Trigger.** Measured evidence that the heuristic's error is causing needless compaction or missed
-        overflows, which the classified `context_overflow` kind makes observable for the first time.
-      *(low · packages/llm/src/adapters/shared.ts, packages/core/src/engine/agent-session.ts; ADR-0096 §2)*
-
-- [ ] **Recovering a context overflow that arrives after a tool round (the in-turn continuation).** *High.*
-      [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) §5 recovers an overflow only before
-      any tool round runs, because re-running the turn would fire its tools again. An overflow at round one or later
-      fails the turn, and says that tools had already run.
-      - **The claim it narrows.** Overflow recovery covers only a turn that has not yet dispatched a tool.
-      - **Trigger.** The first user whose tool-heavy turn dies at round one or later.
-      - **Shape.** Compact the prior history, keep this turn's tool pairs, and re-issue only the failed round's call.
-        That is the same durable-continuation family as `CR-95`'s long half, and it should be designed with it.
-      *(high · packages/core/src/engine/agent-session.ts, agent-turn.ts; ADR-0096 §5)*
-
-- [ ] **Process-global catalog and parameter-learning state is not tenant-safe (`CR-93`).** *Medium today,
-      High for cloud.* The model catalog and the learned-parameter state live in process-global mutable
-      structures. For one local user that is correct and cheap. For a multi-tenant process it means one
-      tenant's learning steers another tenant's requests, and one tenant's catalog refresh is visible to all.
-      **The claim it narrows:** nothing in a shipped Phase-1/2.6 document — the surfaces that exist today are
-      single-user by construction ([ADR-0008](../decisions/0008-local-first-phase-1-cloud-phase-2.md), and
-      [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) for the CLI's single-user at-rest posture), so no current
-      guarantee is wider than the code. What it narrows is a FUTURE claim: the cloud and managed execution
-      modes ([ADR-0012](../decisions/0012-managed-inference-dual-mode.md)–[ADR-0015](../decisions/0015-managed-mode-data-handling-and-compliance.md))
-      cannot be described as tenant-isolated while this stands. **Trigger:** the first multi-tenant surface —
-      `apps/api`, or any managed-mode gateway that serves more than one account from one process. It must be
-      scoped per run/session/tenant BEFORE that ships, not after.
-      *(medium · packages/llm/src/catalog/, packages/llm/src/model-catalog.ts; `CR-93`)*
-
-- [ ] **A mid-tool-loop budget pause replays the whole loop (`CR-95`, long half).** *High.* The
-      **short-term half is closed and shipped** ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)
-      §10, 2026-08-18): `agent-turn.ts`'s `turnCommitted = toolTurn > 0` guard refuses a `BudgetPauseError`
-      once the turn has dispatched tools, so the replay cannot happen. What is deferred is making the pause
-      WORK: checkpointing the continuation — provider messages, tool call/result pairs, round index — so an
-      approved mid-loop pause resumes from where it stopped instead of re-running paid provider calls and
-      re-performing tool mutations. **The claim it narrows:** `pause_for_approval` in
-      [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) reads as a general "suspend and
-      continue" for any node; for a tool-using agent turn it is a **refusal**, not a suspension, and the
-      refusal is disruptive by design. **Trigger:** any surface that pauses a tool-using turn on budget and
-      expects it to continue — a desktop approval prompt mid-turn, or a cloud run that pauses for a quota
-      top-up. Until then the fail-closed refusal is the honest answer.
-      *(high · packages/core/src/engine/agent-turn.ts; `CR-95`, ADR-0080 §10)*
 
 ## Phase 2.6.5 `W5` residuals — `CR-55` ([ADR-0089](../decisions/0089-media-correctness-four-boundaries.md) §4, 2026-09-02)
 
@@ -2720,119 +725,6 @@ here so the residue sits on a backlog rather than only inside an ADR's Negative 
       path still pays ~2× peak. Either collapse it or amend §2.
       *(low · packages/db/src/safe-egress.ts; ADR-0089 §2)*
 
-## Phase 2.6.5 `W3` residuals (PR #86, merged 2026-08-30)
-
-The PR #86 review returned 18 findings; an independent verification round reproduced or refuted each. Seven
-were fixed before the merge. **These ten went in open**; the first was a blocker and is now closed by W8/PR #92. The original findings are recorded here with the
-severity, the trigger and the product claim each narrows, per exit criterion 2.
-
-- [x] **An un-pulled stream DROPS the terminal event ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)).** *CLOSED on `main` in PR #92, 2026-10-11.*
-  *Former blocker; the following defect describes the pre-W8 tree.* A `BoundedEventStream` at capacity 2 given three pushes and a `close()`
-  delivers a clean EOF and never the terminal, with no `sequenceNumber` gap to signal it. **The claim it
-  narrows:** ADR-0036 promises a gap-free, no-drop canonical stream, and `run-handle.ts` repeats it — neither
-  held for an un-pulled stream at that checkpoint. **Trigger:** any consumer that attaches after `capacity` events,
-  which on the session path is every consumer. The fix is
-  [ADR-0087](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md) §1 — a handle declares
-  whether its stream is consumed. That ADR was Accepted on 2026-09-04 before §1 was implemented.
-  **Current checkpoint — 2026-10-10:** [W8 Step 1](phases/phase-2.6.5-core-reliability-remediation.md#w8-step-1-consumption-modes--2026-10-10)
-  implements the immutable mode through both standalone session handles and workflow
-  start/checkpoint resume. Iterated streams retain every publication before first pull;
-  subscribe-only streams retain no primary buffer and refuse iteration with a typed error.
-  CLI builders select their actual consumption mode. Three NEW cumulative review rounds
-  verify runtime and living-document corrections, with the final round clean in both
-  dimensions. The linked register records exact heads, causal controls and scoped acceptance.
-  **Merged to `main` — 2026-10-11:** PR #92 completes publication; the
-  [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)
-  joins final checks and maintainer acceptance. The separate exact-capacity residual below is unchanged.
-  *(packages/core/src/engine/event-stream.ts, run-handle.ts, session-handle.ts)*
-
-- [x] **Media is measured as a handle but RETAINED as base64.** *Medium — CLOSED 2026-09-04, fixed in `W5`.*
-  `state.output`, the completed state and every downstream template held the raw bytes while the durable event
-  held the handle. **The claim it narrowed:**
-  [ADR-0042](../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md)'s "the engine
-  references media by handle", and CR-32's own memory bound — a 1 MiB image passed a 256 KiB node-output limit
-  and was then held in full. **Closed by `CR-54`**, not by a `W3` follow-up: `#pinMediaOutput` runs at the
-  dispatch boundary, `#settleCompleted` writes the pinned value into `#states`, the async media-job path
-  re-enters through the same pin, and `deInlineMedia` rewrites a `base64` source into a handle exactly as it
-  does a `url` — so ADR-0087 §3 is implemented. It stayed open here for two waves because it was fixed under a
-  different item number, and a stale comment in `size-bounds.ts` ("`state.output` keeps the raw form") kept
-  saying otherwise; a 2026-09-04 review read that comment and concluded §3 was unimplemented, which is the cost
-  of a comment outliving its code. *(packages/core/src/engine/engine.ts, size-bounds.ts)*
-
-- [ ] **`whenDrained()` does not atomically reserve the slot it grants.** *Medium.* Several producers each get
-  a resolved promise for the same free slot; measured peak `capacity + N − 1` (11 against a ceiling of 4 with
-  8 producers). **The claim it narrows:** "a hard per-consumer ceiling". **Trigger:** concurrent producers,
-  i.e. any `max_parallel` above 1. **Do not apply the obvious fix:** a permit with a consume/release lifecycle
-  was prototyped and measured to REINTRODUCE the freeze — `agent-turn.ts` awaits readiness before `foldChunk`,
-  and `tool_call_*`, `reasoning_start/end`, `stop`, `media_*` and `tool_result` emit nothing, so every such
-  chunk leaks a permit. The correct shape moves the await to the emit site, which revises CR-30's producer-await
-  and therefore wants an ADR. **ADR-0087 is Accepted with this explicitly OUT of scope** (its Correction 2), so
-  its §1 "bounded per consumer" must not be read as a guarantee that holds today. **Corrected 2026-10-10:**
-  neither the un-parked fast path nor `#wakeDrainWaiters` reserves outstanding grants. At capacity 2,
-  six parked producers and two immediate pulls before their continuations can wake three producers
-  and reach depth 3. This is a second schedule of the same residual, not a new deferral; the dated
-  [ADR correction](../decisions/0087-consumed-streams-size-bounds-and-run-retention.md#w8-preflight-correction--2026-10-10)
-  preserves the original claim and its correction. *(packages/core/src/engine/event-stream.ts)*
-
-- [ ] **Dispatch headroom is computed but not reserved.** *Medium.* Retry timers can dispatch from the same
-  headroom during a batch's durable `node:started` awaits, so a pre-selected batch still starts.
-  **The claim it narrows:** ADR-0086 §4's 500-dispatch cap as an exact bound. **Trigger:** a retrying node
-  concurrent with a wide ready batch near the cap. *(packages/core/src/engine/engine.ts)*
-
-- [ ] **A redundant `conditionId:handle` edge counts toward fan-out.** *Medium.* The handle is stripped and the
-  edge counted as ordinary width, so the same semantic workflow is admitted written one documented way and
-  refused written the other. **The claim it narrows:** the spec's statement that a condition's branches are
-  alternatives and do not count toward width. **Trigger:** an author who writes the redundant explicit edge
-  form the spec documents. *(packages/core/src/limits.ts)*
-
-- [ ] **A human-gate payload skips the CR-32 bounds.** *Medium.* `measureNodeOutput` is called and its breach
-  discarded, and no aggregate state check runs there. **The claim it narrows:** the 256 KiB per-node and 4 MiB
-  accumulated-state contracts. **Trigger:** a gate whose decision carries a payload — the one node output a
-  user supplies directly. **Narrowed 2026-09-04:** the discard is deliberate and now documented (ADR-0087
-  Correction 5 + the canonical spec) — the gate is already resolved and its vertex already marked completed, so
-  refusing there would strand a resumed run with no terminal. What remains open is the residual that leaves: the
-  run-level total catches an abusive payload only *at the next node that adds to it*, so a gate that is the
-  run's LAST node is never checked at all. *(packages/core/src/engine/engine.ts)*
-
-- [ ] **`JSON.stringify` is used as a size measure and validates nothing.** *Medium.* Nested functions and
-  symbols vanish, `Map`/`Set` become `{}`, array holes become `null`, and a custom `toJSON` changes the value —
-  so a live run and a resumed one can see different data. **The claim it narrows:** that checkpoint/resume
-  replays the same state. **Trigger:** any node output holding a non-JSON value.
-  *(packages/core/src/engine/size-bounds.ts)*
-
-- [ ] **The durable-event bound has no engine-level test.** *Medium.* `measureDraft` is unit-tested; nothing
-  proves an oversized non-terminal event is refused on the real `#emitDurable` path. **The claim it narrows:**
-  the phase's own acceptance rule that a test fails when its production change is reverted.
-  *(packages/core/src/engine/engine.test.ts)*
-
-- [ ] **A terminal event has no size bound in either direction.** *Low.* `measureDraft` returns before it
-  measures, so the "measured and never refused" wording in ADR-0087 §2, `size-bounds.ts` and the workflow spec
-  described an intention no code held; all three now say **exempt** (ADR-0087 Correction 4). The decision not to
-  refuse a terminal is correct and unchanged — what is open is that its `outputs`, `partialOutputs` and
-  `error.message` have no transitive cap of their own, so the ADR's "events are bounded by size" is narrower
-  than its title. **The claim it narrows:** that title. **Trigger:** a run whose final outputs are large.
-  Adding a cap would be a NEW bound and wants its own decision. *(packages/core/src/engine/size-bounds.ts)*
-
-- [ ] **`retainedSettledRuns` lives in `ADMISSION_CEILINGS`, which is the wrong home.** *Low.* Nothing about it
-  is checked at admission — it is a runtime retention limit (ADR-0087 §4), grouped with ceilings that refuse a
-  file before it runs. **The claim it narrows:** none directly; it misfiles a constant and quietly enrols it in
-  ADR-0086 §9.3's (also unimplemented) host-override promise. **Trigger:** a reader or a host looking for it.
-  Not moved here because removing a member from an exported const is a public-API change.
-  *(packages/core/src/limits.ts)*
-
-- [ ] **ADR-0086 §9.3's host override does not exist.** *Medium.* The ADR promises ceilings "resolve from named
-  constants that a host may override" so an operator "does not fork the engine". There is no such seam.
-  **The claim it narrows:** the migration story ADR-0086 offers for a previously-valid workflow. **Trigger:** a
-  legitimate outlier above any ceiling. Either build the seam or supersede that clause. *(packages/core/src/limits.ts)*
-
-- [ ] **Two reference-doc nits.** *Low.* `agent-yaml-spec.md`'s field table lists `tools` twice; `run-plan.md`'s
-  ceiling bullet omits condition targets and data-reference edges from its list of authored edge sources.
-  *(docs/reference/)*
-
-**One finding was REFUTED and is recorded so it is not re-raised**: "resume seed accepts oversized or invalid
-outputs". `CheckpointState` is derived by replaying the durable log, never stored, so a checkpoint carrying
-state the current bounds would refuse cannot exist in the shape the finding describes.
-
 ## Phase 2.6.5 `W2` residuals ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md), 2026-08-25)
 
 The first two are **named by ADR-0085 itself** — §7 and §6 each accept a risk rather than close it, and an
@@ -2840,7 +732,7 @@ accepted risk with no tracked home is indistinguishable from one nobody noticed.
 recording, and a Sonnet review round caught that §7 already claimed it in the present tense while the file
 had never been touched.
 
-- [ ] **Executor quarantine, and the trigger that would make it necessary
+- [~] **Executor quarantine, and the trigger that would make it necessary
   ([ADR-0085](../decisions/0085-the-node-executor-owes-liveness-and-the-engine-enforces-it.md) §7).**
   ADR-0085 declines quarantine and records the reasoning: on the only host that exists, the CLI runs one
   workflow per process and exits, so an abandoned dispatch outlives the run by at most the process. But
@@ -2990,18 +882,6 @@ so directly: these "should remain visible rather than disappear behind the green
   replay needs the canonical reasoning `ContentPart` to carry an opaque continuation payload; until then a
   `redacted` part is carried as-is and not replayed, and redacted-thinking continuations are out of 1.O scope.
   *(high · packages/llm/src/adapters/anthropic.ts:126-127, packages/shared/src/content.ts:447-450; ADR-0030 follow-up)*
-- [x] **Gemini part-level `thoughtSignature` replay** — ✅ closed 2026-09-02 by `CR-52`. Gemini carries the
-  continuity signature on any `Part`, and the adapter dropped it on a `functionCall` while `toGeminiParts`
-  dropped every `reasoning` part outright — so the token was captured and then discarded one function away.
-  Both halves now round-trip:
-  [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md) put an optional
-  `signature` on the canonical `tool_call` part and on the streamed `tool_call_end`, with
-  `DurableContentPartSchema` forking a signature-less arm so "never persists" is structural; and a SIGNED
-  reasoning part is now lowered back as a `thought` part carrying its token. ADR-0089 §3's sidecar was
-  unbuildable — capture and replay straddle two adapter calls on a stateless adapter. The sibling
-  **`redacted_thinking` opaque `data`** deferral is untouched and still open, as is the text/`inlineData`
-  half recorded immediately below.
-  *(was high · packages/llm/src/adapters/gemini.ts; ADR-0030 follow-up)*
 - [ ] **Gemini `thoughtSignature` on a TEXT or `inlineData` part** — a named deferral of
   [ADR-0090](../decisions/0090-a-continuation-token-rides-the-part-it-belongs-to.md), which scopes itself to
   the FUNCTION-CALL signature (the half that can 400). Google attaches the token to any `Part`, including a
@@ -3022,18 +902,6 @@ so directly: these "should remain visible rather than disappear behind the green
   replay one model's signed thinking to another. Pre-existing, out of `CR-52`'s scope, and narrowing an
   Accepted decision belongs in its own ADR rather than a fold.
   *(low · packages/llm/src/fallback-chain.ts; ADR-0039)*
-- [x] **`output_schema` deep JSON-Schema conformance** — ✅ **DONE (2026-09-03, `CR-61`,
-  [ADR-0092](../decisions/0092-output-schema-is-validated-by-the-compiler-we-already-own.md)).** An
-  `agent` node's `output_schema` was validated **parse-as-JSON only**, so `{"wrong":true}` passed for a
-  `{ n: number }` schema; `transform` shared the gap and did not check its schema at all. Both now compile
-  the schema at PARSE in `strict` mode and enforce conformance at run time, a miss failing `validation`
-  (`retryable: false`).
-  **The premise this entry rested on was false, and that is the part worth keeping:** it said deep
-  conformance "needs a JSON-Schema validator … a new runtime dependency requiring an ADR". The project
-  already owned a dependency-free JSON-Schema→Zod compiler at the MCP boundary, one package away. The
-  deferral outlived its own reason by three phases because nobody re-checked the sentence that created it.
-  *(packages/core/src/engine/agent-runner.ts, packages/core/src/engine/node-handlers/transform.ts,
-  packages/shared/src/json-schema-compiler.ts; docs/reference/shared-core/json-schema-subset.md)*
 - [ ] **Per-attempt model attribution for `agent:token` / `agent:reasoning`** — `cost:updated` is always
   per-attempt-accurate, but the two mid-stream events `agent:token.model` and `agent:reasoning.model` (EA6, 2.5.H)
   use `activeModel` (updated from the *succeeding* attempt record, which fires after the stream), so a
@@ -3074,7 +942,7 @@ so directly: these "should remain visible rather than disappear behind the green
 > `secretInputNames` onto `NodeExecContext` and masking in the input handler + the expression scope). The
 > items below are the deliberately-deferred forward work (maintainer-approved), recorded so they aren't lost.
 
-- [ ] **True `wait_first` early-cancellation of losing branches** — `merge_strategy: first` is implemented
+- [~] **True `wait_first` early-cancellation of losing branches** — `merge_strategy: first` is implemented
   executor-only: the engine still waits for all branches to settle, then the `fan_in` handler takes the first
   by `branchNodeIds` order. Genuine early-cancel (abort the still-running sibling branches the moment the
   first settles) needs an **engine-owned per-branch cancellation primitive** — the current single run-wide
@@ -3105,24 +973,6 @@ so directly: these "should remain visible rather than disappear behind the green
   merge that combines nothing is an authoring mistake in every case anyone has been able to name, and
   refusing it is exactly the "found before money is spent" property `W6` exists for. Needs a maintainer
   ruling, not more analysis. *(S · packages/core/src/dag.ts, docs/reference/shared-core/node-types.md)*
-- [x] **`secret`-typed input flowing into an agent prompt (1.O parallel to the 1.P fix)** — the AgentRunner
-  resolves `{{ inputs.<name> }}` in a `prompt_template` against the **raw** `RunScope` (agent-runner.ts), so a
-  `secret`-typed input interpolates raw into a USER message sent to the provider. This is provider **egress**
-  the author opted into (not an event-payload leak, so it does not violate the events rule the 1.P fix
-  enforces), but whether a `secret`-typed input should be silently interpolated into a prompt — vs masked /
-  rejected at parse — is a policy call. **Decided (2026-06-21, maintainer): REJECT AT PARSE** — a
-  `{{ inputs.<secret_name> }}` reference inside a `prompt_template` is a parse-time error with a clear
-  message (secure-by-default; surfaces author intent explicitly rather than silently egressing or silently
-  masking). **Resolved — verified already-satisfied during 2.D (2026-06-22).** The decided policy was
-  already enforced by the 1.L2 parse-layer taint analysis: `collectReferences` covers the agent node's
-  `prompt_template` (`collect.ts`), `analyzeSecretTaint` flags any tainted reference reaching model-visible
-  text, and `parseWorkflow` turns a non-empty result into a `WorkflowSecretLeakError` (`secret_interpolation`)
-  before a `WorkflowDefinition` is ever produced — so a run never starts on such a file. Covered by tests for
-  the direct case (`analyze.test.ts` "rejects a secret-typed input interpolated directly into a prompt"), the
-  transitive-via-`context` case, and `$ref`/registry agents (`analyzeResolvedAgentTaint`). 2.D made
-  `relavium run` the first live `prompt_template` consumer and confirmed the guard holds end-to-end; no new
-  code was required. *(low → 2.D · packages/core/src/interpolation/analyze.ts + collect.ts + parser.ts;
-  security-review.md)*
 
 ## Node retry (1.S) follow-ups
 
@@ -3147,17 +997,6 @@ so directly: these "should remain visible rather than disappear behind the green
 > the deliberately-deferred forward work — each is a **Phase-2** concern that needs real persistence and/or
 > a store-level guarantee the in-memory reference cannot provide, recorded so it isn't lost.
 
-- [x] **Re-arm a still-pending gate's timeout on cross-process rehydration — ✅ Done (Phase 2.6.5 `CR-22`, 2026-08-27).**
-  Closed exactly as this note predicted: no backfill was needed, because `timeoutAction` + `expiresAt` were
-  already durable on `human_gate:paused`. The gap was one layer up — `reconstructCheckpointState`'s fold
-  dropped both fields, so `#seedFromCheckpoint` had nothing to re-arm from. The fold now keeps them and
-  rehydration arms at `expiresAt − now`; a past deadline arms at zero so it travels the same
-  `#onGateTimeout` path as a live expiry. The original entry follows.
-- [ ] ~~**Re-arm a still-pending gate's timeout on cross-process rehydration**~~ — `resumeFromCheckpoint` applies
-  the target gate's decision immediately, but a *remaining* pending gate (multi-gate run, crash-while-paused)
-  is rehydrated without re-arming its timer, so its deadline is lost until the next restart. The data needed
-  (`timeoutAction` + `expiresAt`) is now persisted on `human_gate:paused` (PR #22), so no backfill — Phase-2
-  crash-reconciliation re-arms from the log against a real clock. **Scheduled → 2.6.K.** *(low · packages/core/src/engine/engine.ts `#seedFromCheckpoint`; Phase-2)*
 - [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
   `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
   edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
@@ -3169,122 +1008,9 @@ so directly: these "should remain visible rather than disappear behind the green
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
   `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. **Scheduled → 2.6.H.** *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
-## `chat-resume` opens on an empty viewport (2.6.C spin-off, 2026-07-12)
-
-> **Closed on development — MVP-2 step 4, 2026-11-10 (`cecb6191`).**
-> Both renderers restore safe visible history, with explicit legacy placeholders,
-> archive/memory notices and initial entry budgets. The
-> [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
-> owns the evidence. The description and scheduling discussion below are historical.
-
-> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
-> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
-
-> **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
-> OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
->
-> **Scheduled 2026-11-04:** the CLI MVP's MVP-2 repaints a resumed session's transcript
-> ([current.md](current.md#next-work--the-cli-mvp)); close this entry when that lands.
-
-`relavium chat-resume <sessionId>` restores the model's context from `history.db`, but opens on an **empty
-viewport** — the prior conversation is never repainted. This is **not** the 2.6.F regression F1 is: it has been
-true in *every* mode and *every* version, because **nothing anywhere projects `session_messages` into rendered
-`TranscriptEntry`s** — that projection has simply never been written. Inline and alt-screen behave identically.
-
-It shares F1's *root* (`SessionViewSeed.transcript`, now the seam 2.6.C adds) but not its *cause*, and fixing it
-needs machinery F1 does not:
-
-- a DB → `TranscriptEntry` projection (`session_messages` rows → the `{role, text}` / `{role:'assistant', text,
-  summary}` union), including what to do with rows a `/compact` or `/trim` dropped;
-- a decision on whether the **inline** renderer should repaint history on resume too — which would be a genuine
-  behaviour *change*, not a regression fix (today it prints nothing, and that is consistent).
-
-Why it was not folded into 2.6.C: F1 is a regression on the just-shipped default surface and ships as a hotfix; this
-is a long-standing UX gap that would have added a DB read path and an inline behaviour change to a view-only fix.
-The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
-so the remaining work is the projection and the inline decision.
-
-**Original schedule → 2.6.G** (the `/agents > Sessions` browser owned resume-in-place).
-MVP-2's closure above supersedes that schedule. The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
-
-## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
-
-> **Status, 2026-09-14: decided, and this entry is superseded by three records.**
->
-> - **The three prerequisite defects** it names are decided in
->   [ADR-0096](../decisions/0096-a-request-is-measured-before-it-is-sent.md) and scheduled into `W7`, tracked
->   since 2026-09-18 as register item `CR-98`:
->   - no measurement of a request before it is sent;
->   - an overflow that kills the turn;
->   - a budget estimate that ignores input.
-> - **Carrying itself is deferred** in
->   [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2. Its deferral record is in the
->   Phase 2.6.5 deferrals above. The default-off toggle idea survives there as a user-scoped `[preferences]` key,
->   not a `[chat]` key.
-> - **Some analysis below is out of date.** It was written before `W1`–`W6`, and its line numbers no longer match.
->   It is kept as the record of the original analysis.
-
-> Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). The investigation's
-> findings are restated in full below — every claim carries its own `file:line`, so this entry stands alone.
-> Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
-
-The premise behind the original report is wrong: the engine drops `tool_use`/`tool_result` pairs at **every**
-turn boundary, model switch or not — a deliberate design cut (ADR-0062 §6, deferred to Phase 3 by ADR-0059).
-This is the same gap already tracked below as **"Faithful cross-turn transcript (tool + reasoning history)"**
-in the AgentSession (1.V) follow-ups section. This entry adds one new idea surfaced during the analysis —
-gating the eventual fix behind a default-off config toggle — plus the risks that come with it.
-
-**The idea:** ship cross-turn tool-call carry behind a **default-off** `[chat]` config toggle (e.g.
-`carry_tool_history`), the same opt-in-then-flip pattern ADR-0068 already established for the mouse-wheel
-default. Note the toggle really only has **one** meaningful axis, not several: reasoning/`signature` can never
-be carried regardless of any toggle (ADR-0030 — a structural, cryptographic replay boundary, not a
-preference), and `@`-mention file content already carries correctly today (fixed in `8ba7737`). So "which
-data types carry across a model switch" reduces to a single boolean, not a multi-way settings panel.
-
-**What the toggle would gate (confirmed touchpoints — no schema migration needed):**
-- `DurableContentPart` (`packages/shared/src/content.ts:626-660`) already has `tool_call`/`tool_result` arms;
-  `session_messages.content_parts` (`packages/db/src/schema.ts:475`) already round-trips them. The
-  `tool_calls`/`tool_call_id` columns are write-only denormalized metadata never read back
-  (`packages/db/src/session-store.ts` `fromSessionMessageRow`) — not a blocker.
-- The persister (`apps/cli/src/chat/persister.ts` `appendText`, lines 118-131) writes **text only**; it never
-  touches `agent:tool_call`/`agent:tool_result` events.
-- `reconstructSessionState` (`packages/core/src/engine/session-resume.ts:110-141`, `textOf` 43-48) flattens
-  every non-text part to text on replay — would need to splice paired assistant/tool `LlmMessage`s back in
-  instead.
-- `agent-session.ts` builds `#messages` text-only today (declaration :363, pushes at :548/:575-576) with an
-  explicit deferral comment at :567-574 — this is the actual splice point.
-
-**Why the toggle doesn't remove the prerequisite risk.** The three 🔴 gaps the analysis found are independent,
-**already-live** bugs today, not side effects of tool-carry:
-1. No pre-egress context-window check — `#maybeAutoCompact` (`agent-session.ts:619`) runs after the request
-   already went out; nothing checks the outbound request against the window before sending.
-2. Overflow kills the turn outright — a 400 (`bad_request`, `packages/llm/src/llm-error.ts:43`) isn't in
-   `RETRYABLE_KINDS` (`:15-20`), so FallbackChain never engages; there's no `context_overflow` kind to catch it.
-3. The budget gate only prices output tokens — `estimateMaxNextCost` (`packages/llm/src/budget-estimator.ts:16-26`)
-   ignores a growing input history entirely.
-
-A default-off toggle narrows **who** hits these (opt-in users only), not **whether** they're real. And the
-opt-in population — power users, and especially the future VS Code coding-assistant surface where remembering
-a file a tool read 3 turns back is the actual point — is exactly the segment most likely to run long sessions,
-and therefore most likely to hit an overflow. Shipping the toggle before the three fixes trades a vague "model
-forgot" complaint for a harder "turn died mid-conversation with no recovery" complaint, for the very users who
-opted in.
-
-**Sequencing implication:** fix the three prerequisite bugs first (independent value regardless of tool-carry);
-design tool-carry from the start behind the default-off toggle so it can follow immediately after, rather than
-waiting for a strictly separate later window. A new ADR is required either way — one that **supersedes**
-ADR-0062 §6 (ADR-0059 needs no change; it already says "deferred to Phase 3").
-
-**Also open:** the toggle's discoverability depends on a `/settings` surface, which doesn't exist yet (no
-workstream scaffolds it today). Don't advertise "change this in `/settings`" in the model-switch notice
-(`apps/cli/src/chat/repl-info.ts` `modelSwitchNotice`, lines 171-177) until that surface is real — pending a
-maintainer call on whether to point at a `config.toml` key in the interim, or say nothing until `/settings`
-ships.
-
-**Home:** Phase 3 (or a later Phase-2.6 workstream) — natural sibling to the AgentSession (1.V) "Faithful
-cross-turn transcript" item just below; whichever lands first should absorb the other.
-
 ## Home's chat has no way to view or pick the bound agent (found 2026-07-14)
+
+- [ ] **Open — a narrative entry, owned by 2.6.G (the text below is the entry; marker added 2026-11-18).**
 
 > Raised while answering a question about editing the agent used by a Home-opened chat. The headline gap is
 > **already tracked** at [phase-2.6-conversational-authoring.md §2.6.G](phases/phase-2.6-conversational-authoring.md)
@@ -3338,16 +1064,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > cost-event persistence (below) — those are workstreams, tracked in
 > [phase-1-engine-and-llm.md](phases/phase-1-engine-and-llm.md), not deferred items.
 
-- [x] **Structural transcript/export implemented in W7; carrying stays separately deferred (`CR-70`).** **Superseded 2026-09-14:** persistence and
-  export are decided by [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1 and §3
-  (`CR-71`, implemented in `W7`), and carrying is deferred under the `CR-70` record in the Phase 2.6.5 deferrals section.
-  Reasoning is never carried (ADR-0030). The original note follows. 1.V appends only the final
-  assistant **text** across turns: the turn core keeps the within-turn `tool_use`/`tool_result` pairs internal
-  (so the transcript carries no orphaned `tool_use` and stays protocol-valid), and reasoning is dropped (a
-  `signature` is a within-turn same-provider replay token — ADR-0030/0039 — that must not span turns). Carrying
-  the full per-turn tool/reasoning history needs the turn core to **expose its intermediate messages**
-  (`runAgentTurn` copies its input and returns only final content) — revisit when 1.X persistence / 1.Z export
-  needs faithful turns, once `agent-turn.ts` is settled. *(medium · packages/core/src/engine/agent-session.ts + agent-turn.ts; 1.X/1.Z)*
 - [ ] **Session budget pause/resume (1.V × 1.AC).** `AgentSession` threads the ADR-0028 `preEgress` hook as a
   pass-through but has no pause/resume gate machinery: a `BudgetPauseError` settles the turn LOUDLY as
   `budget_exceeded` (`#settleTurnError`) and is not re-raised — corrected 2026-09-18; the earlier wording here
@@ -3359,10 +1075,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
   narrow when a surface needs to restrict a session's tools below the agent's grant.
   *(low · packages/core/src/engine/agent-session.ts; ADR-0029)*
-- [x] **`[chat].max_turns` surface wiring — RESOLVED in 2.5.G S11 (PR #66).** The hard turn cap is an
-  **engine-API** knob in 1.V (`SessionDeps.maxTurns`, finite default 50); the CLI now maps the `[chat].max_turns`
-  config default onto `SessionDeps.maxTurns` (`config/resolve.ts` `max_turns`→`maxTurns`, threaded through
-  `session-host.ts`, enforced by a `session-host.test.ts` pin). *(config-spec.md + surfaces)*
 - [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
   structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
   validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
@@ -3390,22 +1102,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > untrusted injection) shipped. These bounded pieces were deliberately deferred (each is additive; the
 > confidentiality floor + jail + injection framing hold without them):
 
-- [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E; PR #69).** A
-  dependency-free, ReDoS-safe in-house matcher ([gitignore.ts](../../apps/cli/src/render/tui/gitignore.ts)) folds
-  the workspace-root `.gitignore` + `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!`
-  negation, dir-only `/`, anchoring, `*`/`**`/`?` globs; a LINEAR two-pointer glob matcher — no regex, so no
-  backtracking/ReDoS on a crafted pattern), complementing the fixed `NOISE_DIRS` set. A
-  UX/privacy nicety, NOT a security control — the confidentiality floor + listing-gate remain the authoritative
-  fs-capability enforcement. Documented subset limits: nested per-dir ignore files + `[a-z]` char classes deferred
-  (they only UNDER-hide, never a security gap). *(apps/cli/src/render/tui/gitignore.ts + mention.ts; ADR-0061)*
 - [ ] **`@`-glob / directory expansion.** Single-file injection ships; `@src/**/*.ts` glob / whole-directory
   expansion is deferred (ADR-0061). **Scheduled → 2.6.E.** *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
   a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
-- [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5; PR #69).** The
-  shared `stripTerminalControls` (chat-projection.ts) now strips the Trojan-Source reordering family (U+202A–202E,
-  U+2066–2069, LRM/RLM/ALM) at every display boundary; ZWJ/ZWNJ preserved; the source uses `\u` escapes (no literal
-  bidi bytes). *(apps/cli/src/render/tui/chat-projection.ts)*
 
 ## Phase 2.5.E (chat modes + per-tool approval) follow-ups
 
@@ -3413,38 +1113,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > reseat-less mode system + per-tool approval + mid-turn abort + the host arms shipped. These bounded pieces
 > were deliberately deferred (each is additive, none blocks the mode system's security guarantees):
 
-- [x] **`[c]` reject-with-typed-reason approval prompt — DONE (2.5-close Step 14, D-1; PR #69).** A `[c]` at the approval
-  prompt opens a keyboard-owning reason-input sub-mode (both `relavium chat` + the Home); on submit it rejects with
-  the sanitized + 300-char-bounded reason via the existing `ToolApprovalDecision.reject.reason` seam. The floor is
-  unchanged. *(apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
-- [x] **Conversationally recover from a SCOPE denial in chat — DONE (2.5-close Step 14, D-3; PR #69).** The `recoverable`
-  flag moved to the base `ToolDispatchError`; exactly two `tool_denied`s opt in — `ToolPolicyError('media_scope_denied')`
-  and the fs **pure scope-tier escape** (`FsScopeDeniedError` from `assertInScope`) — so on the `recoverToolFailures`
-  surfaces the model is fed the denial and adapts to an in-bounds path. The confidentiality / protected-path / symlink
-  / SSRF / user / guardrail denials stay FATAL. *(packages/core/src/tools/errors.ts; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
-- [x] **Plain / non-TTY non-interactive approval policy — DONE (2.5.E "High 9" + consolidated in 2.5-close Step 14,
-  D-2; PR #69).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
-  `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
-  *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
-- [x] **Approval-consent-line zero-width hardening — closed in MVP-3 on development (2026-11-12).** The shared render
-  floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
-  highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
-  passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
-  already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
-  a CVE gap (those chars cannot reorder a command to masquerade). **2026-11-06:** they can still hide content in an
-  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (accepted 2026-11-11, implementation pending) makes the
-  approval preview escape every default-ignorable and format code point, which covers this target when it lands.
-  **Scheduled → 2.6.M** (with tool-render v2). **2026-11-11 preflight correction:** the
-  earlier 2026-11-04 exclusion is superseded by ADR-0120's mandatory approval-preview
-  escaping in MVP-3; see the [accepted plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
-  Design acceptance is complete; implementation remains pending and this item is not closed by design approval.
-  **Implementation closure 2026-11-12:** the mandatory ADR-0120 projection escapes
-  default-ignorable/format and other hidden source code points in targets and
-  review fields, with actual inspection/visibility guards on both hosts. The
-  [Step 2 acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
-  records implementation tests and separate security sittings; earlier pending
-  wording above is historical. Shared `[c]` extraction below remains separate.
-  *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
   primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
@@ -3459,18 +1127,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
   session-budget follow-up above. **Scheduled → 2.6.K.** *(medium · apps/cli/src/chat + agent-session.ts)*
-- [x] **`relavium budget resume` CLI command — accepted in W7 Step 11, 2026-10-04.**
-  The maintainer deferred this security-sensitive cross-process surface on 2026-07-08 and moved it to
-  W7 on 2026-09-18. It now shares the resume core in `commands/gate.ts`; the manifest and dispatch expose
-  `relavium budget resume <runId> [--gate <gateId>] --approve-amount <microcents> | --abort` without a
-  second command core. The amount must exactly match the recorded frozen allowance, and engine admission
-  remains authoritative. See the [canonical command](../reference/cli/commands.md#relavium-budget-resume),
-  [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) and the
-  [W7 execution plan](phases/phase-2.6.5-core-reliability-remediation.md#w7-pre-implementation-review-and-proposed-execution-plan--2026-10-02).
-  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete
-  path after the two corrective rounds; this closes the moved command follow-up, not the W7 register.
-  *(low · apps/cli/src/commands/gate.ts + manifest.ts + dispatch.ts; ADR-0028, ADR-0097)*
-- [x] **`project`-tier invocation roots/selectors (carried from 2.5.A; accepted 2026-10-12).** Independently accepted in [Wave 2 Step 2](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12), including platform gates. Explicit invocation grants provide authority; strict project/workspace selectors only narrow it. Full Phase 2.6.M remains open.
 
 - [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
   The hard-link aliasing READ guard (`st.nlink > 1` ⇒ refused) is disabled ONLY for pnpm's `node_modules/.pnpm/…`
@@ -3489,7 +1145,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   surface the MCP server/tool in `ToolActionPreview` (today `mcp_call`/`web_search` return a BLANK preview, so
   F3 correctly forbids caching their `always`) — a structured `{mcpServer,mcpTool}` preview would turn the
   blank-check downgrade into a real, reviewable, cacheable per-server grant. **Scheduled → 2.6.M.** *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
-- [x] **Exact host-issued scratch floor prerequisite (L605; accepted 2026-10-12).** Independently accepted in [Wave 2 Step 2](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12), including platform gates. This replaces the historical inert `tmpDir` prerequisite with a host-only exact private descriptor/factory, lexical/canonical containment, identity checks, POSIX private-directory checks and retained nested floors. Automatic global tmp provisioning is removed without deleting existing directories. Windows retains the owner-controlled profile/ACL assumption. Ordinary chat has no production allocator; production provisioning/isolation/join/cleanup/recovery remains 2.6.N.
 
 ## Phase-2 CLI (2.D) follow-ups
 
@@ -3505,7 +1160,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   2.D originally built the tool registry with an empty `ToolHost` (`createToolRegistry({ tools: BUILTIN_TOOLS,
   host: {} })`). For the CLI this is now **closed**: 2.5.A wired the `fs` + `process` arms and 2.5.E wired the
   `egress` + `os` arms via `assembleToolEnv`, all behind the fail-closed approval floor (see the **RESOLVED**
-  block below, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) +
+  block below *[Moved 2026-11-18: the RESOLVED entries now sit in the [closed record](deferred-tasks-history.md#phase-25a-tool-environment-factory-follow-ups--closed-entries)]*, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) +
   [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)). What remains: the **desktop/Tauri**
   surface has no tool host wired yet (Phase 3), and its host-side `EgressCapability.fetch` SSRF hardening tracks
   with the SSRF item above. Until the desktop host is wired, a desktop workflow calling a capability-backed
@@ -3543,22 +1198,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
   decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
   **Scheduled → 2.6.K.** *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
-- **`relavium budget resume` workstream — single tracking point.** The former unnumbered Phase-2
-  follow-up was moved to W7 on 2026-09-18 and is implemented under Step 11. Its acceptance state is tracked
-  only in the Batch-E entry above; the [canonical command](../reference/cli/commands.md#relavium-budget-resume)
-  describes the actual flags and frozen-allowance boundary. *(ADR-0028, ADR-0097)*
-- [x] **Re-provide `secret`-typed inputs on cross-process resume — shared path accepted, 2026-10-04.**
-  The 2026-07-08 deferral required stdin rather than argv and an independent security review. The ordinary
-  human-gate path already implements ADR-0083 §6: `--secret-stdin` reads `name=value` lines, requires every
-  masked slot and refuses unknown, missing or empty values without echoing secret values. Without the flag,
-  a secret-bearing resume still fails closed with exit `2`. W7 Step 11 reuses that implementation for budget
-  resume and verifies secret admission alongside frozen amount, ownership and MCP consent. Drained stdin
-  disables a later interactive gate prompt. See the [canonical stdin contract](../reference/cli/commands.md#relavium-gate)
-  and [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md).
-  [Step 11 round 3](https://github.com/HodeTech/Relavium/blob/f267bb0d4e9a4b4e2b51cb2c44ff744284d5228a/docs/reviews/2026-10-04T01-17-23-w7-step-11-round-3-review.md) accepts the complete shared
-  path. The inherited secret-stdin interval before the connect/build signal guard remains qualified
-  in the canonical command; this does not introduce a whole-stdin signal-handling promise.
-  *(medium · apps/cli/src/commands/gate.ts; ADR-0006, ADR-0083)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 
@@ -3566,20 +1205,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > catalog special-file guard + the doc/contract corrections) and the cheap test/code nits landed in the PR.
 > The items below were verified-real but graded **fix-followup** — none blocks merge.
 
-- [x] **History-read query indexes — DONE (2.5.B, migration 0005).** The `(created_at DESC, id DESC) WHERE
-  deleted_at IS NULL` partial index landed on **both** `runs` (`idx_runs_created`) and `agent_sessions`
-  (`idx_agent_sessions_updated`), so `listRuns`/`listActiveRuns`/`listSessions` order off the index instead of a
-  `USE TEMP B-TREE` filesort, and the 2.5.B Home reads bound to an indexed top-N (`{ limit }` on
-  `listRuns`/`listSessions`). **Still open (cloud-scale only):** offset/cursor **pagination** for the read
-  *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
-  single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
-  *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
-- [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`; PR #69).** `agentSyntaxErrorFrom` (the
-  agent sibling of parser.ts's `syntaxErrorFrom`) now threads `LineCounter` positions into a positioned
-  `YAMLParseError`: optional 1-based `line`/`column` fields (parity with `WorkflowSyntaxError`) plus a folded
-  `(source — line L, column C)` locator in the message so the position reaches every `.message`-surfacing
-  consumer. The echoed YAML rule is secret-free (`prettyErrors: false`; verified across a 14-case + 12-case
-  adversarial sweep — no authored key/value ever rides the message). *(packages/core/src/agent-parser.ts)*
 - [ ] **`AgentParseError` diagnostics are invisible on the `chat --agent` / `agent run` surfaces** (surfaced by
   the 2.5-close Step 13 Sonnet review, 2026-07-08). `resolveChatAgent` (agent-source.ts) deliberately surfaces
   the RAW `AgentParseError` — pinned by `agent-source.test.ts` "surfaces an invalid .agent.yaml as a field-named
@@ -3606,6 +1231,11 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   but the two Mermaid graphs and the from-scratch wave/dependency tables describe the original plan node and
   were left unchanged (they are the plan, not a live tracker). Fold `gate list` in if those diagrams are ever
   regenerated. *(nit · docs/roadmap/phases/phase-2-cli.md)*
+- [~] **Offset/cursor pagination for the history read commands (cloud-scale only).** Split out on 2026-11-18 from the closed entry
+  [History-read query indexes](deferred-tasks-history.md#2i-read-command-follow-ups-pr-48-multi-agent-review-2026-06-24--closed-entries), which keeps only the index work
+  (migration 0005, `{ limit }` top-N on the Home reads). Still open: `listRuns` and `listSessions` take only `{ limit }` (no offset or cursor), and `relavium list` and
+  `loadLatestRunPerWorkflow` still return the full set. Genuinely unneeded at single-user CLI scale. **Trigger:** add a cursor API before the desktop or cloud surfaces drive these
+  reads at volume. *(low → scale · packages/db/src/run-history-store.ts, packages/db/src/session-store.ts; database-schema.md)*
 
 ## Phase 2.5.A (tool-environment factory) follow-ups
 
@@ -3615,18 +1245,9 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 > (EA1) fail-closed backstop, and real failed-turn usage (EA2). This directly advanced the 2.D *"CLI `ToolHost`
 > is fail-closed"* item above. The `fs`/`process` halves were wired + security-reviewed in 2.5.A; the **`egress`
 > and `os` halves + the write-capable chat tier landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
-> behind the per-tool approval floor (see the resolved items below + the *Phase 2.5.E follow-ups* section). The
+> behind the per-tool approval floor (see the resolved items below *[Moved 2026-11-18: now in the [closed record](deferred-tasks-history.md#phase-25a-tool-environment-factory-follow-ups--closed-entries)]* + the *Phase 2.5.E follow-ups* section). The
 > 2.5.A items were confirmed by the PR #60 review passes and deliberately **not** taken in-PR — none blocked the milestone.
 
-- [x] **`egress` + `os` host arms wired (governed) — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* `apps/cli/src/engine/tool-host/egress.ts` (over the shared `connectValidated` connect-by-validated-IP mechanism, Host/`:authority`-header-strip) + `os.ts`, wired by the `chat-read-write` factory profile as **governed** classes on the fail-closed approval floor (denied in `ask`, prompt in `accept-edits`). *(apps/cli/src/engine/tool-host/; security-review.md)*
-- [x] **Project-tier path-allowlist (`extraRoots`) — historical 2.5.A carry.** The invocation-grant/selector prerequisite is accepted in [Wave 2 Step 2](phases/phase-2.5.5-hardening-and-remediation.md#step-2-acceptance--2026-10-12) and the Phase 2.5.E entry above. This reconciles the duplicate pointer; full M/N workstreams and production child/scratch lifecycle remain open.
-
-- [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
-- [x] **Profile-unaware advertise-filter — DONE (2.5-close Step 15, Batch E; PR #69).** `wiredToolIds` now takes a
-  `{ readOnly }` option: on a read-only host a WRITE-class (`fsWrite`) tool is no longer advertised (its `fs` arm is
-  wired but always denies the write — an always-denied advertisement), the advertise-side complement to the
-  read-only fs arm's dispatch refusal. The default (read-write) is unchanged, so the live `chat-read-write` session
-  host is inert. *(apps/cli/src/engine/tool-host/assemble.ts)*
 - [ ] **Residual fs TOCTOU on the PARENT directory (no `openat` in Node).** The read path (`readJailedFile`)
   and the write paths (append + temp/rename) all open the FINAL component with `O_NOFOLLOW`, so a final-component
   symlink swapped in after the jail's `realpath` fails closed. The unclosable residual is a swap of a PARENT
@@ -3647,12 +1268,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   would need `toolName` threading for marginal gain (write-only messages *are* prefixed); (c) the generic
   `guarded()` catch-all stays **reason-only** (the I3 boundary). Re-open only if a concrete need appears.
   *(nit · apps/cli/src/engine/tool-host/)*
-- [x] **Two transitively-covered test gaps — DONE (2.5-close Step 11, Batch A; PR #69).** Both now have an
-  explicit pin: the chat-session-dispatches-`git_status` e2e was ADDED this round (session-host.test.ts —
-  "dispatches git_status through the process arm end-to-end", asserting the tool_result folded back with a clean
-  `{"exitCode":0}`); the failed-turn **real**-token persister fold was CONFIRMED already explicitly pinned
-  (persister.test.ts — "flushes the running cost on a failed turn so a resumed budget governor sees the true
-  spend"). *(apps/cli/src/chat/session-host.test.ts + persister.test.ts; testing.md)*
 
 ## Schema / validation hardening
 
@@ -3725,70 +1340,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   (e.g. a minimum-release-age setting) when the toolchain moves to a pnpm major that has one.
   *(policy now, tooling later · pnpm-workspace.yaml, architectural-principles.md)*
 
-## Phase 2.5.H (reasoning rendering + live-turn feedback) follow-ups
-
-> **2026-07-07 2.5.H (EA6 + live-turn feedback).** The reasoning-event emit + the TUI reasoning/latency render
-> shipped. The bounded pieces below were deliberately deferred (each additive, none blocks the feature):
-
-- [ ] **CLI render-layer (ink component) test harness.** The CLI has **no** component-render test (no
-  `ink-testing-library` / `react-test-renderer`) by design — all logic lives in pure reducers/formatters that ARE
-  unit-tested. But this leaves the React **prop-plumbing / render-cadence** layer untestable: the 2.5.H Home
-  live-timer fix (threading the clock as a `now: () => number` FUNCTION so the per-frame `ChatRegion` re-reads it,
-  vs a frozen number captured at the parent `RootApp`'s render) is verified only by tracing + the type-shape guard,
-  not by a regression test. Adding a harness is a first-of-its-kind test-architecture decision for `apps/cli`
-  (a new devDependency; possibly an ADR) — track it, then a smoke test could tick a fake clock across two
-  `store.tick()`-driven renders and assert the displayed elapsed advances. **Scheduled → 2.6.F** (behind the
-  full-screen renderer + harness ADR). *(low · apps/cli/src/render/tui/home-app.tsx
-  + chat-ink.tsx; testing.md "every bug fix lands with a regression test")*
-- [x] **Compact abort hint during token streaming — DONE (2.5-close Step 12, Batch B; PR #69).** A pure
-  `streamingAbortHint(busy)` renders a compact dim `Esc to stop` line beneath the streaming CONTENT (a STATUS line
-  already carries its inline hint), so the abort affordance persists for the whole turn (EA7). *(apps/cli/src/render/tui/chat-projection.ts + chat-ink.tsx)*
-- [x] **Bound the EXPANDED reasoning panel by rendered LINES, not just chars — DONE (2.5-close Step 12, Batch B; PR #69).**
-  `formatReasoningPanel` now tails the expanded body to the last `MAX_REASONING_PANEL_LINES` (12) RENDERED rows
-  (each logical line counts as `ceil(len/columns)` wrapped rows; a single over-budget line is head-sliced), so a
-  full 4000-char buffer cannot wrap into a flickering, screen-filling panel on a short terminal. The live width is
-  threaded via a `columns` prop (ChatApp reads `process.stdout?.columns`; the Home passes its resize-tracked
-  `size.cols`). *(apps/cli/src/render/tui/chat-projection.ts + chat-ink.tsx + home-app.tsx)*
-- [x] **Allow `Ctrl+T` / `/thinking` during a pending approval — DONE (2.5-close Step 14, D-4; PR #69).**
-  `reduceApprovalKey` whitelists exactly the view-only reasoning toggle (Ctrl-without-meta `t` → `toggle-reasoning`,
-  a pure store repaint with zero session/approval/decision effect) through the fail-closed swallow, so a user can
-  expand the thinking to inform the decision; every other key (mode cycle, edits, the most-permissive approve/reject
-  chord) stays swallowed. *(apps/cli/src/render/tui/chat-input.ts)*
-
-## The CLI e2e suite opens and MIGRATES the developer's real `~/.relavium/history.db` (2.6.C spin-off, 2026-07-13)
-
-> **DONE 2026-07-13 (PR #76 review fold).** `regression.e2e.test.ts` now redirects `HOME`/`USERPROFILE` to a
-> fresh `mkdtempSync` dir in a suite-wide `beforeEach` (restored + removed in `afterEach`), so the full-shell
-> `run(argv)` case migrates a throwaway db, never the developer's real history. A guard in the same hook refuses
-> to proceed if the redirect fails to take (`resolveHomeDir({}) === realHome`), so a future test cannot silently
-> re-acquire the default path. The evidence and rationale below are kept for the record.
-
-> Found while diagnosing a red CI run during 2.6.C (PR #75). Verified, not inferred — see the evidence below.
-
-`apps/cli/src/harness/regression.e2e.test.ts` drives the real CLI shell (`run(argv('run', …, '--json'), io)`)
-without pointing it at a database, so the run resolves the **default** path and opens
-`~/.relavium/history.db` — the developer's actual chat history. It does not merely read it: it **runs
-migrations against it**.
-
-**Evidence.** Executing that one test file with `HOME` pointed at an empty directory creates
-`$HOME/.relavium/history.db` with all 11 migrations applied. Under a real `HOME` those migrations land on
-real data. (The sibling test at `:315` does this correctly — `mkdtempSync` + an explicit `dbPath` — so the
-isolation exists; this path just does not use it.)
-
-**Why this is worth fixing rather than tolerating.** It is not a hypothetical: during 2.6.C the coupling
-actively **hid a bug from CI and converted it into damage to real data instead**. A migration was re-cut
-while in development, which changes its journal timestamp; drizzle replays such a migration, so
-`CREATE TABLE session_costs` ran a second time against the table it had itself created. On CI this is
-invisible — a fresh runner has no `~/.relavium/history.db`, so nothing had been applied and nothing could
-conflict. The failure surfaced only on the maintainer's machine, against a 3.3 MB database of real
-sessions. A test suite that writes to real user data both damages it and blinds CI to the damage.
-
-**Fix:** give the failing path the same isolation the sibling already has — a temp dir + an explicit db
-path — and, as a floor, make the e2e harness refuse to run against the default history path at all, so a
-future test cannot silently re-acquire it.
-
-**Home:** a `chore` pass, or whichever workstream next touches the CLI harness.
-
 ## Sonar code-quality backlog
 
 > **2026-06-14 (PR #18 review).** Verified Sonar findings in **already-merged** code (1.L/1.L2/1.T/0.x),
@@ -3844,39 +1395,6 @@ future test cannot silently re-acquire it.
 > pinned tests. `type ToolId = string` is a deliberate **semantic domain alias** for readability, not a
 > redundant alias.
 
-## The default chat agent cannot rename, move, copy or delete a file (found 2026-11-15)
-
-> **Found in use:** after attaching a file, the user asked the agent to rename it. The agent has no rename tool, so
-> it says so, offers to create a new file under the new name with the same content, and states that it cannot delete
-> the original. That is the grant working as designed and the model describing it truthfully; the gap is the
-> capability, not the wording.
-
-**What is true today.** The built-in agent holds seven tools ([ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)):
-`read_file`, `list_directory`, `git_status`, `search_files`, `find_files`, `write_file`, `edit_file`. None can rename,
-move, copy or delete, and no accepted or proposed ADR adds such a tool. The nearest thing the model can do is read the
-old file and `write_file` the same bytes elsewhere, which is a copy, not a rename; it cannot remove the original.
-Observed 2026-11-15: the model already discloses exactly that, so no prompt change was made. (A first reading
-assumed it presented the copy as a rename; the user's transcript showed otherwise, and a prompt sentence added on
-that assumption was reverted before it was committed.)
-
-**What is planned, and what is not.**
-
-- **Planned, as a command, not a tool.** MVP-4 ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md),
-  D63) gives the default agent `run_command` behind a typed argv/cwd approval card, so `mv a b` and `rm a` become
-  possible there as ordinary approved commands (`shell: false`, executable plus argv, no globbing). Until then the
-  only route is the user's own `!mv a b`, which is disabled unless `[chat].allowed_commands` names that exact string.
-- **Not planned: a dedicated `move_file` / `delete_file` tool.** It would be a new filesystem write path (jail and
-  protected-path checks on both ends, symlink and cross-device cases, native metadata preservation per
-  [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), an approval
-  preview that shows source and destination, and an effect-journal identity), so it needs its own ADR, a rigor pass
-  and a separate security sitting under the D64 bar.
-
-**Decision needed from the maintainer, after MVP-4 has been used:** whether a command card for `mv`/`rm` is good
-enough (the card shows the argv but not the files' content or metadata, and a command is not `fsWrite`-governed), or
-whether rename/move earns a typed tool. **Trigger to revisit:** MVP-4 observed in use, or a second report of a
-rename/move/delete request. **MVP-4 acceptance should include** a rename through the approved command path and a
-refusal when the command is declined. *(medium · apps/cli/src/chat/default-agent.ts; ADR-0116, ADR-0118)*
-
 ## Phase-2.6 out-of-scope carry-forward
 
 > Items explicitly marked out-of-scope in
@@ -3910,7 +1428,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   ([ADR-0007](../decisions/0007-desktop-is-not-an-ide.md) — the CLI is not an IDE shell). The
   desktop app ([Phase 3](../roadmap/phases/phase-3-desktop.md)) owns the visual multi-pane
   experience; the CLI stays single-viewport. *(medium · apps/desktop)*
-- [ ] **`plugin` ToolSource loader.** The `ToolSource` type already defines `'builtin' | 'mcp' |
+- [~] **`plugin` ToolSource loader.** The `ToolSource` type already defines `'builtin' | 'mcp' |
   'plugin'` (`packages/core/src/tools/types.ts`), but the `plugin` variant has no loader, no
   resolver, and no runtime wiring. Plugins loaded from npm packages or user-supplied JS/TS files
   need a sandboxed execution environment and an installation/security model distinct from both
@@ -3946,11 +1464,6 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   fixed line (the compose prompt) silently vanishes — the alt buffer has no scrollback to reach the lost content.
   Long-term give the live region its own bounded/scrollable box or guarantee the viewport a minimum height.
   *(low · apps/cli/src/render/tui/chat-ink.tsx ChatView layout)*
-- [x] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware) — DONE (Step 4b-2).**
-  `displayWidth` + `wrapLogicalLine` now segment with `Intl.Segmenter` (Node 22, ADR-0067) + measure per grapheme
-  cluster: a VS16 `❤️` / enclosing keycap `1️⃣` counts 2 (was 1 — the dangerous under-count), a ZWJ family counts 2 (was
-  4), a flag/skin-tone counts 2, and a cluster is never split mid-glyph — so the 1-DisplayLine-==-1-real-row invariant
-  holds under the persisted-offset scroll. Pinned in viewport.test.ts.
 - [ ] **`isWide` still under-counts a few non-emoji EAW=Wide BMP punctuation code points (Step-4b-2 Sonnet review, NIT).**
   The per-code-point `isWide` table misses a handful of East-Asian-Width=Wide BMP points immediately adjacent to ranges
   it already handles: U+2329/232A angle brackets, U+268A–268F (Yijing monogram/digram symbols), and the U+4DC0–4DFF
@@ -3958,30 +1471,6 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   UNDER-count class the emoji-presentation fix closed, only for rare glyphs no chat realistically emits. Safe-direction
   bias means over-counting is fine, so this is cosmetic. Fold the missing ranges into the deferred `Intl.Segmenter`/EAW
   wrap-cache hardening below rather than a one-off patch. *(low · apps/cli/src/render/tui/viewport.ts)*
-- [x] **Step 4b-3: memoize the transcript wrap so an append/resize doesn't re-segment all of history — DONE (Step 4b-3).**
-  `wrapTranscript` (`chat-projection.ts`) memoizes per ENTRY in a `WeakMap<TranscriptEntry, { cols, lines }>` keyed on
-  the immutable, append-only entry object: an append is O(history) map lookups + ONE `wrapEntry` (the new entry), a
-  resize replaces each entry's single cached wrap, and it NEVER thrashes (holds exactly the live entries, GC-reclaimable)
-  — `viewport.ts` `wrapText` is pure again. (The first cut was a fixed-size per-line LRU; the Step-4b-3 Opus review
-  showed it thrashed to a 0% hit rate once a session exceeded the cache size, so it was replaced.) Pinned in
-  chat-projection.test.ts (incremental append + same-object-on-hit + a >8192-entry repeatability case).
-- [x] **Step 4b-3: route mid-session raw-`io` notices through the CURRENT session's view store so they survive alt mode
-  — DONE (Step-4b-3 Sonnet fold).** The budget-cap **`onBudgetWarning`** (fires mid-turn) and the `/clear`/reseat
-  **MCP-skipped** diagnostic were writing via raw `io.writeErr` WHILE the hoisted alt buffer was entered, so ink's next
-  frame overwrote them → LOST on the default full-screen path. Fixed with a file-private `liveSessionNotice` pointer
-  that `driveOneSession` sets to the live session's `store.notice` for its lifetime (a REPL runs one session at a time)
-  and clears in its finally: all four `onBudgetWarning` wiring sites now route through it (falling back to raw `io` only
-  when no session is live), so the warning renders as a transcript notice. The re-drive MCP-skipped diagnostic (which
-  fires between sessions, before the sink is live) routes to the fresh session's `store.notice` directly via the new
-  `mcpSkippedLines` helper. Pinned by a live-routing test (break-verified) + the fallback test + a `mcpSkippedLines` unit test.
-- [x] **Step 4b-3: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker) — DONE (Step 4b-3).**
-  Fixed by the HOIST (chosen over DEC-2026, which cannot span a primary↔alt switch): `driveInk` now passes the ink
-  render option `alternateScreen:false` (ink toggles the buffer no more — it still full-screen-renders via log-update),
-  and the hoisted `runReplLoop` (`withHoistedAltScreen`) enters DECSET-1049 ONCE above the per-session loop, clears
-  between re-drives, and exits ONCE, so a `/clear` / reseat no longer flips the terminal. Exit-safety net (ink's own
-  1049-exit is now inert): idempotent `restore()` on the finally + a `process.on('exit')` net (the second-SIGINT force
-  quit) + explicit SIGTERM/SIGHUP/SIGQUIT handlers. Verified against ink 7.1.0's compiled build; unit-tested
-  (`withHoistedAltScreen`, 10 cases); real-TTY signal validation (double-Ctrl-C, `kill -TERM`) is a manual PR-time check.
 - [ ] **Step 4b-3: on an EXTERNAL SIGTERM/SIGHUP/SIGQUIT, unmount the live ink instance BEFORE the alt-exit (avoid the
   final-frame dump on the primary buffer).** With the ink render option `alternateScreen:false` (Step 4b-3), the hoist's
   signal handler `alt.restore()`s (DECRST-1049 → primary) then `process.exit(128+signo)`; `process.exit` is intercepted
@@ -4008,7 +1497,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   unmount cleanup uniformly. Low; deferred to ride Step 4's `writeControl` rework rather than churn it twice.
   *(low · apps/cli/src/home/drive-home.tsx + render/tui/home-input.ts; Step 2.6.F-4)*
 
-- **The Anthropic adapter's non-streaming `generate()` cannot carry a large `max_tokens`.** The SDK refuses a
+- [ ] **The Anthropic adapter's non-streaming `generate()` cannot carry a large `max_tokens`.** The SDK refuses a
   non-streaming request whose cap implies a >10-minute generation (empirically: `claude-opus-4-5` is accepted at
   ~21 000 and refused at ~24 000), and **every** Anthropic row in the catalog has a `maxOutputTokens` of 32 000 or
   more. So the ADR-0071 §7 clamp — which holds the cap AT the ceiling — cannot bring a large authored cap back
@@ -4019,7 +1508,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   `bad_request` naming `stream()` rather than surfacing an SDK string.
   *(medium · packages/llm/src/adapters/anthropic.ts; found by the 2.6.Q Step-5 Opus review)*
 
-- **Cache WRITES are billed at the flat rate, never a context tier's.** `ratesFor` (`packages/llm/src/cost-tracker.ts`)
+- [ ] **Cache WRITES are billed at the flat rate, never a context tier's.** `ratesFor` (`packages/llm/src/cost-tracker.ts`)
   moves input, output and cache-read onto the tier a prompt lands in (ADR-0071 §11), but cache-write stays on the flat
   `cacheWritePerMtokMicrocents` — because models.dev's tier schema publishes `input`, `output` and `cache_read` and
   **no `cache_write`**, so a per-tier write rate is not a number we have. Scaling one from the input tier's multiple
@@ -4029,7 +1518,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   by asking upstream to.
   *(medium · packages/llm/src/cost-tracker.ts + catalog/models-dev-schema.ts; found by the 2.6.Q Step-6 Sonnet review)*
 
-- **Auto-open a PR for additive catalog drift.** ADR-0071 §9 wants new models to "merge automatically" while a
+- [ ] **Auto-open a PR for additive catalog drift.** ADR-0071 §9 wants new models to "merge automatically" while a
   moved shipped-model price stays a red human-reviewed check. The red check ships (`.github/workflows/models-catalog.yml`
   `weekly-catalog-check` runs `pnpm sync:models`, red ONLY on a moved/vanished shipped-model price; additive drift is green). The *automatic*
   half — a bot PR that runs `pnpm sync:models` and commits the additive diff — is deferred because it needs a
@@ -4039,8 +1528,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   `--accept-price-changes` human decision on a moved price, exactly as §9 intends.
   *(low · .github/workflows/models-catalog.yml; ADR-0071 §9)*
 
-
-- **Per-model capability gating: `tool_call`/`attachment` + a withheld-parameter notice.** The 2.6.Q capability
+- [ ] **Per-model capability gating: `tool_call`/`attachment` + a withheld-parameter notice.** The 2.6.Q capability
   gating (ADR-0071 §12) carries all four per-model `requestCapabilities` in the catalog and WITHHOLDS the two safe
   silent param-drops — `temperature` and `structured_output` — at the adapters. `tool_call` and `attachment` change
   request MEANING (dropping tools leaves the agent unable to act; dropping an image input changes what the model
@@ -4050,7 +1538,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   out loud*, §6's standard) is a follow-up — the correctness fix (no 400) shipped first.
   *(low · packages/llm/src/adapters/* + a gate-level check; ADR-0071 §12; found by the 2.6.Q capability review)*
 
-- **Surface a user↔catalog price DIVERGENCE on the ongoing surfaces, not only at set-time.** ADR-0071 §5 promises a
+- [ ] **Surface a user↔catalog price DIVERGENCE on the ongoing surfaces, not only at set-time.** ADR-0071 §5 promises a
   user price that diverges from the catalog is surfaced in the `/models` picker and `/cost`, not just echoed by
   `models pricing` when it is set. Today only the set-time echo is wired: the picker and `/cost` show the effective
   (user) price without flagging that it OVERRIDES a different catalog price. Add a divergence marker to both so a
@@ -4096,45 +1584,9 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   (`packages/mcp`, `packages/core`, and the trigger schema all exist today) and simply has no home.
   *(medium · packages/mcp, packages/core, docs/reference/shared-core/mcp-integration.md; #141)*
 
-- [x] **Agent memory policy (`memory: none|window|summary`) implemented in W7 (`CR-72`).**
-  The shared projection consumes frozen authored memory before folding, including empty completed turns
-  and restored summary exclusion. The same policy controls after-turn, pre-send and overflow recovery.
-  Workflow nodes have no cross-turn session memory. See the
-  [canonical memory contract](../reference/contracts/agent-session-spec.md#request-projection-and-history-operations)
-  and [W7 closing review](phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
-  This closes the old ownership/implementation follow-up; tool-history carrying remains CR-70.
+## Native file identity on Windows — approved increment (2026-10-24)
 
-### Declined findings (closed — recorded for the record, never actionable)
-
-- **Sandbox `Math.random` fallback re-check narrowness — DECLINED, accepted residual.**
-  `packages/core/src/expression/sandbox.ts:219-225` re-checks `typeof Math.random === 'function'` after the
-  neutralizing `delete`, not the wider "is not undefined"; a hypothetical future QuickJS variant that left
-  `Math.random` as some non-function, non-undefined value after a failed delete would slip past this
-  narrower guard. **Declined:** `Object.freeze(Math)` two lines later is the real backstop regardless of
-  what value `Math.random` holds, the currently-pinned QuickJS variant is fully covered by
-  `sandbox.test.ts` (lines 112-116, 533-545), and the finding's own analysis concludes no action is needed
-  until the QuickJS variant changes. *(polish · packages/core/src/expression/sandbox.ts:219; #84)*
-
-- **Alt-screen `restore()`'s idempotent latch-after-success design — DECLINED, verified strength, not a
-  defect.** `apps/cli/src/render/alt-screen.ts:88-109` sets its idempotence latch only AFTER the
-  terminal-restore write succeeds, so a transient EIO/EPIPE on a half-dead TTY during one teardown net
-  (finally / `process.on('exit')` / a signal handler) leaves the terminal recoverable by the NEXT net rather
-  than being permanently marked "restored" after a failed write. **Declined:** the review confirmed this is
-  the correct pattern, not a bug — recorded here as the bar (`suspend.ts`'s `suspendFullScreen` already
-  matches it) the rest of the codebase should be held to, not as an item to fix.
-  *(polish · apps/cli/src/render/alt-screen.ts:88; #67)*
-
-- **Full-repo `knip` dead-export inventory — DECLINED, no further action beyond its two spin-offs.** A
-  full-repo `knip` pass surfaced 3 unused-file hits (2 false positives — ESLint fixture configs consumed via
-  ESLint's file-path API, not a TS import), 7 "unused dependency" hits in `apps/cli/package.json` (all false
-  positives — declared for ADR-0051's tsup bundle closure, not directly imported), 39 "unused" function/const
-  exports, and 112 "unused" exported types. Manual verification of all 39 function/const exports found every
-  one but `isDispatchableId` is used internally within its own declaring file (an unnecessary `export`, not
-  dead code); the 112 types are near-entirely `...Deps`/`...Options`/`...Args` DI interfaces exported for
-  documentation, a standard low-cost pattern here. **Declined:** the finding's own conclusion is no action
-  beyond the two genuine hits it already spun off (`isDispatchableId`, the `@relavium/llm/adapters` subpath
-  export) — already tracked under the quality dead-code cleanup work; the remaining ~150 hits are confirmed
-  false positives, not deferred work. *(polish · packages/db/src/media-write.ts; #245)*
+*[Moved 2026-11-18: this section, with its scoped Windows file-identity limits, now sits in [deferred-tasks-parked.md](deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24). This heading stays here only so links written before the register split (for example [ADR-0105](../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md)) still reach it.]*
 
 ## Wave 3 approved later-wave ownership — 2026-10-16
 
@@ -4160,33 +1612,11 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [x] **Closed on `main` — MVP-2 step 1: alt-screen word wrapping (#61).**
-  Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
-  tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
-  see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
-  Merged 2026-11-11 through PR #98 (`0db4c940`); the
-  [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
-  closes its combined verification and maintainer gate.
-  **Historical scheduling:** the maintainer
-  approved retaining character-wrap replacement with render-v2/D18 and picker
-  positioning #60, so that renderer restructuring and the palette sweep occur
-  once. Wave 3 still owns grapheme/tab/resize/cache/editor bounds; this disposition
-  does not waive Phase 2.5.5.I's eventual word-wrap/full acceptance. The
-  [approved execution plan](phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments)
-  and [Wave 5a owner](current.md#wave-5a--paint-before-you-build) retain the split; close only
-  after actual word-wrap implementation and regression evidence land.
-  **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
-  ownership ends, and the close condition above stands.
+### MVP-3b, MVP-3c, MVP-3d and the PR #99 reviews (2026-11-16 to 2026-11-18)
 
-- [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (MVP-3c, ahead of MVP-4).**
-  **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); **implemented on
-  `development` the same day** (shared field and event, migration `0021`, turn-core history channel, `AgentSession`
-  retention, persister, restored transcript, export, effect-journal disclosure); the author's chosen mutants are all killed (see the register's "Mutation evidence" — not an exhaustive sweep).
-  **Rounds 1–3 with their separate security sittings, the gates (before the final fixes) and a two-provider real sample have run** (see the
-  phase register; `smoke:cli-package` and `check:map-controls` are owned by the platform CI legs). **Still owed (D64):** the
-  accepting round (no blocker/high/medium finding) and a re-run of the gates after the fixes. Work list in the
-  [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16).
-  *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
+> Subheading added in the 2026-11-18 stale-entry sweep: these entries were filed under the 2026-10-16 Wave 3 ownership heading above
+> because that was the last section of the file when they were written. Their text is unchanged.
+
 - [ ] **ADR-0119 — an Esc at an approval card is recorded `cancelled` although the tool never ran.** The registry throws
   `ToolCancelledError` from several points before `def.dispatch`, and the engine cannot tell them from a call that executed, so
   the next request says "one marked cancelled has an unknown outcome" and the model may spend a call re-verifying a file that
@@ -4202,10 +1632,9 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   the residual recorded in the security-review sitting stands. Needs: `/rewind` or "discard the last interrupted turn", and
   a decision whether Esc should keep the turn when the user's message carried `@`/`!` content. *(medium · privacy ·
   docs/standards/security-review.md, apps/cli/src/chat/persister.ts)*
-- [ ] **`ask_user` — a structured mid-turn question (MVP-3d; ADR-0132 Accepted, implemented on `development`).** Built with
-  multi-select, free text, a docked card in the chat and the Home, and no timeout. Still owed before it counts as done: the accepting
-  D64 round (a new complete round with no blocker, high or medium finding), the full gate and a real-provider sample, and the
-  maintainer's acceptance. Follow-ups recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
+- [ ] **`ask_user` — follow-ups of a structured mid-turn question (MVP-3d; ADR-0132 Accepted, merged in PR #99 on 2026-11-18).** Built with
+  multi-select, free text, a docked card in the chat and the Home, and no timeout. Its D64 round, separate security sittings, the full gate and the maintainer's merge of PR #99 (2026-11-18) have all happened; a real-provider
+  sample of `ask_user` is not recorded in these notes. Still open, recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
   like `invoke_agent`); `Esc` at a card when a driver wires no `onAbort`; letting `Ctrl+T` pass through an open card.
   *(The stored question/answer form this item once listed is done: [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), no migration — its D64 round, separate security sitting and a focused corrective sitting have run (2026-11-16); the named residual is model-authored question text in a user-role block.)* *(medium · product · docs/decisions/0132-…)*
 - [ ] **Resume audit lows (2026-11-16, from the `chat resume` report).** None blocks a resume; each is a wording or small-state gap. (1) On a resumed
@@ -4286,15 +1715,6 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   Sonar-only increment** — the cognitive-complexity refactors reach `persister.ts`, `turn-receipts.ts`, `ask-user.ts` and `agent-session.ts`,
   paths the security sittings reviewed, so changing them re-opens the full gate and the review rounds. Each issue needs a source action or a
   verified remote disposition; setting a remote status needs a maintainer token. *(low · apps/cli, packages/core)*
-- [x] **MVP-3b D64 round and separate security sitting (approval card, modes, denial text — ADR-0129/0130/0131).** Recorded as owed in ADR-0129 and
-  ADR-0130, the phase register and `current.md`, but until the PR #99 independent review (2026-11-17) there was no entry here. **Decision (maintainer,
-  2026-11-17): run one combined round and a separate security sitting over MVP-3b and that day's consent-path corrections** (a repository config layer can
-  no longer choose `accept-edits`; the review card's target projection now reserves the verb prefix so a long path cannot hide its end behind an unlocked
-  Allow; the "Allow stays locked" sentence only before inspection; `[n]` accepted while the card is not visible; `agent run` no longer offers governed
-  tools). **Done 2026-11-17** — one four-reviewer D64 round (one high, three mediums, all fixed), a separate security sitting (one high, two mediums, one low) and two further
-  sittings (a medium and two lows; a medium and three lows) ran; every finding is fixed, the lows and residuals are in the entries below, and the 21-step gate passes on the final source
-  (the [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)). The last medium's fix (the Enter-confirmed `[a]`) was verified
-  by the third sitting's own reproductions, not by a fourth sitting; the maintainer decides whether D64 needs one. The maintainer's acceptance is owed. *(high · process · apps/cli/src/render/tui, apps/cli/src/chat)*
 - [ ] **PR #99 independent review (2026-11-17): verified findings left open.** Six read-only verifiers re-derived each claim; about a third were refuted
   or are accepted ADR behaviour (for the record: the `#foldableEvidence` trim offset, retention rules #1/#2, #5, #7, #8, #10, #11, #14, #15, #16, U-5, U-8,
   U-9, #17). Verified and **not** fixed in that round, low unless noted. (1) DB-2: `media-write.ts` leaves a 0-byte `.save-to.<uuid>.tmp` when
@@ -4315,7 +1735,7 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
   the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
   check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
-- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17).** Measured on the built addon
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 (four independent review rounds, the fourth without blocker or high; the maintainer's reading of ADR-0135, a security sitting on the last delta and the eight-target CI are owed); Inc 2 and Inc 3 open.** Measured on the built addon
   (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
   and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
   the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
@@ -4327,7 +1747,111 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   lack `nNumberOfLinks == 1`; N-5: Linux and Windows do not re-prove the staged payload before publish (macOS checks length only); N-6: the Linux private
   file create skips the parent policy check; N-7: `pin_empty` unlinks `.reserved` without identity revalidation. (g) No `SAFETY:` comments exist (ADR-0125
   does not require them; a `clippy::undocumented_unsafe_blocks` gate is a quality choice). Needs a native rebuild, the source-binding pins, a security
-  sitting and the eight-target CI legs; Linux and Windows behaviour is verifiable only in CI. *(medium · apps/cli/native/fs-metadata)*
+  sitting and the eight-target CI legs; Linux and Windows behaviour is verifiable only in CI.
+  **Work breakdown (2026-11-18, read-only analysis; the lock sites, the `open_nofollow` sites and the `unsafe` counts below were spot-checked against the code, the other anchors were not).**
+  Every finding is Rust-side except one found later by an external review: the TypeScript inventory reader (`fs-stage-inventory.ts`) has the same two vanishing-entry windows and was fixed in Inc 1; the thin TypeScript binding (`fs-native-*.ts`) and `fs.ts` needed nothing, so the work does not overlap the approval path. The stage drops come from
+  `stage_index.rs`: `allocation_lock_checked` (~532, called by reserve at ~626) and `cleanup()` (~887) take one nonblocking try and every errno maps to `Changed`, and the host turns
+  any native stage failure into a non-retryable `effect_needs_attention` (`fs-native-write.ts` ~92-150). `recover` has a third one-shot allocation-lock site (~1196) that the text above
+  does not name; retrying it too is a maintainer decision. How much of the 27 of 60 belongs to the lock and how much to N-1 is not separated, and the probes (`n3.cjs` K writers,
+  `n1.cjs` churner) exist only in the session scratchpad and were not re-run. Corrections to the text above: N-3's bound is at most 384 entries counted by `recover` (385
+  includes the permanent lock, which `entries` skips); Linux can be exercised locally through the Dockerfiles by hand (smoke only, not acceptance evidence); there are 257 `unsafe`
+  lines and no `SAFETY` comment. **Proposed split.** *Inc 1 (M-L), concurrency liveness:* a NEW bounded-retry lock function (keep `lock()` one-shot, its tests assert it errors),
+  N-1 (an `open` variant that exposes NotFound; `.record` stays strict), N-2, N-7, N-3 (doc-only, may ship earlier), a deterministic test in the cross-platform `custody_tests` as
+  the CI gate (the statistical probe would be flaky on slow arm64 runners), the contract text (`native-filesystem-metadata.md` ~452-461, ~503, ~630-631) and a dated ADR-0126 note;
+  "concurrent processes are supported" is recorded only in the register and the phase doc, so a short ADR is recommended. *Inc 2 (M), Linux and Windows parity:* H2 (`linux.rs`
+  ~658, mirror `macos.rs` ~884) before N-6 (Linux parent check, ~727-770), N-4 (`windows.rs` ~1328 and the publish paths), N-5 (the length re-proof is macOS-only in `common.rs`;
+  a content re-read is a design change and needs an ADR). *Inc 3 (S), SAFETY comments,* last, because a comment edit changes the source binding and re-triggers the rebuild and
+  the eight legs. **Constraint:** `recover`'s per-record claim (~1208) must stay one-shot: a writer holds its record claim while it waits for the allocation lock, so a retrying
+  claim would make a wait cycle. **Mechanics.** `node tools/native-fs/build.mjs` (cargo +1.98.0, release, locked) writes the git-ignored `runtime/`; copy `runtime/` aside first to
+  keep the "before" binary. Each new Rust test must join the exact-name set in `tools/native-fs/profile-catalog.mjs`, a new checkpoint joins `CHECKPOINTS` (`common.rs` ~2000) and
+  `profile.test.mjs`, a new lifecycle case joins `NODE_LIFECYCLE_CASES`. `NATIVE_BUILD_INPUTS` includes `native-fs.yml` and four `tool-host` TypeScript files, so editing them
+  shifts the build binding; the only committed source pin is the loader hash. `native-fs.yml` has no `workflow_dispatch`, so Linux and Windows evidence needs a push and a whole
+  `ci.yml` run (each push costs one). D64 applies (writes, lease and resume paths): one rigor round plus a separate security sitting per increment.
+  **Inc 1 — status (2026-11-18; the maintainer chose it before MVP-4).** [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)
+  records the decision, the measurements and the limits. *Done:* the allocation claim is waited for (a 2 ms poll) at the four claim sites: reserving and recovery inside the operation's deadline and cancellation
+  flag; cleanup after a publication and cleanup before a pin under a fresh budget, ignoring cancellation, and beyond the waiter limit with a 500 ms grace instead of 100 ms (a cleanup cannot be retried, but must not park the pool for two seconds); work under a claim, at every site,
+  measures its budget from the instant the claim was acquired (`AllocationClaim.held_since`); the lock file is re-opened by name after the wait and must be the locked file; at most pool size minus one threads per
+  process wait (the pool size read the way libuv reads `UV_THREADPOOL_SIZE`), a reservation beyond that polls for 100 ms and is then refused with `changed`, and cancellation is checked first; only contention is
+  repeated; the per-record and marker claims stay single attempts (no wait cycle). The Rust scan **and the TypeScript inventory reader** skip an uncommitted `.reserved` or `.prepare` that vanishes before it is opened,
+  **after** (the unlinked file reads link count zero and its identity differs, so it was `Unsupported`, not `Changed`) or whose `lstat` already reads link count zero; the Rust scan treats a held file at link count zero as gone even while the name still resolves (Linux lowers the count before the name leaves the directory cache; a name-only check failed 25 of 60 local arm64 gnu churn runs and the `aarch64-unknown-linux-gnu` leg of PR #100), otherwise the name must really be absent; the reader runs the
+  whole scan again (up to eight whole scans) for a committed `.record` that vanishes in any of those ways; a skipped entry still counts toward the nonce bound and both scans accept every nonce count the directory-entry bound holds (384; a fixed slack of eight was an assumption) while `reserve` refuses at 128; N-2
+  (`encode` shares `decode`'s validators; the locator in normalized form like the reader's `resolve(stage) === stage`), N-7 (a pin removes only the reservation it created) and N-3 (the contract bound is 384).
+  *Measured* on the rebuilt addon (macOS, in-process writers; the same probes as before): two writers 60/60 clean (before 30/60 clean, 28 failed at stage and 2 wrote the target but ended uncertain), four 120/120,
+  eight 240/240, two writers plus a recovery loop 60/60 with 2,288/2,288 recoveries, the churn probe 200/200 (before 98/200); no leftover entries; behind a claim held by another process `fs.stat`, `dns.lookup` and
+  `crypto.randomBytes` took 0 ms with up to four writers, about 0.1 s with six and about 0.3 s with eight (about 0.1 s per caller beyond the limit, the price of the grace; 1.8 s and 3.8 s before the limit).
+  *Proof kept in the repo:* 21 cross-platform and 9 POSIX-only Rust custody tests pinned in `tools/native-fs/profile-catalog.mjs` (Windows population 26 → 47, macOS 54 → 84, Linux 21 → 51; the darwin catalog equals
+  the binary's own list, 89 of 89), TypeScript inventory tests for each vanishing window, the entry-bound overshoot, a replaced name and a denied lookup, `fs-native-concurrency.test.ts` (three concurrent writers through the real host
+  path, which fails with `NativeWriteNeedsAttentionError` when the claim is one nonblocking attempt again; skipped on Windows so that the required `windows-concurrency` job does not run an unverified platform), and the
+  three probes in `tools/native-fs/concurrency-probes/` (writers, recovery under churn, worker-pool stall; run against the pre-change binary they show 21 stage failures and 9 uncertain outcomes in 60 writes and 48 of 100
+  failed recovery passes); a 46-mutant Rust sweep killed 45 (the survivor is equivalent: the private-mode check of the file under the name is implied by the identity comparison with the already-checked reservation
+  handle) and the seven TypeScript mutants are killed; the Windows type check passes (a deliberate error in the Windows-only code is caught, so it does check it); `build.mjs --verify-profile` passes. One rebuild failed once with `ENOTEMPTY` while replacing
+  `runtime/` and passed on the immediate retry; not reproduced.
+  *Review rounds.* **Round 1** (two independent read-only reviewers, conclusions withheld): no blocker or high; mediums: pool starvation (every native call is an `AsyncTask` on Node's shared four-thread pool; with four
+  and eight writers behind a held claim `fs.stat`, `dns.lookup` and `crypto.randomBytes` stalled 1.8 s and 3.8 s; fixed by a waiter limit), a pin-level proof that was missing, the pre-pin cleanup budget started before
+  the wait; lows: a skipped entry was not counted (fixed), tests that slept for their assertions (hook-driven now), POSIX-only gating. **Round 2:** no blocker or high; mediums: the limit refused a fourth caller even
+  behind a holder that was merely busy in another process (fixed with a pool-derived limit and a 100 ms grace), the budget-origin property was unpinned (typed claim); lows: the lock-file inode window (closed),
+  unpinned behaviours. **Four external document reviews** (written without the process): the TypeScript reader had the same vanishing windows (fixed, tested), cancellation had to outrank the waiter limit (fixed),
+  the ADR misdescribed the cleanup wait, the measurement wording, the locator claim, the status line, and the lack of a repo-reproducible end-to-end proof (all corrected or added). **Round 3** (two new, cumulative; the
+  second also ran real OS processes: 2, 3 and 6 processes completed every write, the claim forced back to one attempt completed 30 of 60 and 30 of 90, twelve cold starts of six processes on a fresh home completed
+  72 of 72): no blocker or high; mediums: the encode test left the length and nonce invariants unpinned (self-consistent cases now, the dead `CurDir` arm removed), the budget origin was pinned at the claim but not where it
+  is used (three tests with a shortened budget and slow work under the claim now cover reserve, pre-pin cleanup and recovery, and the mutants that restore the old origin are killed), and the required Windows job would
+  have run the new end-to-end test (skipped on Windows); lows: the remaining TypeScript windows (`lstat` at link count zero, a record unlinked between the stats; ~0.02% of scans in the reviewer's churn; fixed), the
+  scan slack mirrored in the reader, `reserve` measuring its work from before the wait (fixed), a post-publication cleanup beyond the limit refused after the grace (6 `changed` and 1 uncertain in 240 writes; cleanups
+  were exempted in round 3, and given a longer grace instead in round 4 because the exemption let four cleanups park the pool for 1.8 s), the pool-size parse (`2x`, garbage, negative values now follow `atoi`), and wording (status, "both readers", "until recovery drains them", the cleanup and recovery counts).
+  **Round 4** (two new, cumulative; no blocker or high): the security sitting: the cleanup exemption let cleanups park the whole pool (fixed, see above), a refused pre-pin cleanup after a two-second wait leaks one slot and a junk
+  stage directory (added to the leak entry below), the TypeScript `lstat` link-count-zero skip does not require the name to be absent because the name is still there for a moment in about half of those cases (documented), a skipped
+  `.prepare` that was just renamed to `.record` is missing from that snapshot (the point-in-time design, as before); the review: the budget origin was unpinned at the post-publication cleanup and at the post-claim recheck, the
+  waiter limit, the cleanup grace and recovery's cancellation were proven on the helpers but not at their call sites (five wiring mutants survived; seven new tests and eight new mutants now drive `reserve`, `recover` and both cleanups), and the reader
+  still refused tool calls when a record vanished in three scans in a row under churn with 100 leftover entries and 8 to 12 concurrent writers (up to 9 of 64 refused; the retry cap is eight now); lows: the register heading,
+  "its identity no longer matches" (it is the same inode, only the link count reads zero), `lstat` attributed to the Rust scan, the measurements not reproducible from the repo (the probes are kept now). One test failed once in
+  12 parallel runs of one reviewer and passed in 117 further runs; hooks are per thread and the contending tests are serialised, so it was not reproduced (the older macOS tests do fsynced work without sharing the fixture lock
+  the new tests could also take).
+  **PR #100 (2026-11-18, the first push run and an automated review; dispositions checked against the code).** The first Linux execution of the POSIX-only churn test failed the
+  `aarch64-unknown-linux-gnu` leg: `unlink` lowers a file's link count before the name leaves the directory cache, so the name-only proof of a vanished entry lied (25 of 60 runs in a local arm64 gnu container,
+  reproduced with the OrbStack image; fixed in the Rust scan by the held file's link count, and the TypeScript reader has the same rule now; the CI log keeps no panic text, which is why a local Linux run was needed).
+  Review findings, fixed: the fixed slack of eight past 128 nonces was an assumption (both scans now accept the 384 the entry bound holds, with tests that fill to that bound independently of the constant); an opened file
+  of a different identity stays fatal even when the name is then absent, and a committed record whose name belongs to a different file at link count zero is fatal instead of rerunning the scan; the pool-size parse
+  skipped Unicode spaces where `atoi` does not; a test built a `File` from an unopened descriptor; the probes (flags among numeric arguments, a churn handshake, a rejected publication counted as success, an unawaited
+  async call); the concurrency test waited with `Promise.all`; ADR-0126's amendment still said cleanups are never refused beyond the waiter limit; ADR-0135's wording of the cap and its Related field; docs (the merge
+  checkpoint's two CI observations, the CI provenance paragraph, the coverage prose, the moved register entries and one stale status). SonarCloud's gate failed on one condition, `new_security_rating` B, from
+  S4036 (`spawn('perl')` resolved through `PATH` in a probe; now `/usr/bin/perl`); its remaining new items are minor: `await` in loops (S9382) is the sequential protocol of the probes and is left, and
+  `inspectOpened`'s cognitive complexity (S3776, 21 of 15) now has its checks in two small pure functions (SonarCloud re-scores it on the next push; not claimed until then). *Left, with reasons:* none of the review findings was rejected outright; the reviewers' multi-process probe
+  and the Windows execution stay below.
+  **PR #100, second push run (2026-11-18, found by the CI run, not by review).** The concurrent-writers end-to-end test failed once on Linux at *prepare*, not at the allocation claim: the Linux
+  parent snapshot compared the destination directory's ctime across its policy reads, and a directory's ctime also moves when another writer creates, renames or removes an entry in it, so writers
+  publishing into the same directory made snapshots fail (about 1 write in 120 with four writers on the arm64 gnu container, `prepare:changed:not_needed`; nearly every snapshot under a tight
+  churn). macOS and Windows have their own snapshots and never compared it. It is a defect independent of ADR-0135's claim, in the supported mode of several processes writing in one project
+  directory; the snapshot now reads the policy twice and compares the values (a change of mode, owner, flags, ACL or attributes still differs), with a Linux test that fails under the old check
+  (100 of 100 pass, 20 of 20 fail with it restored) and 8 writers x 40 writes completing 320 of 320 on the container. Windows and the other Linux targets are covered only by the eight-target CI. **Owed:** a separate security sitting on this change (it touches the filesystem-write path; D64), not held yet.
+  *Left, low (checked by mutation 2026-11-18, not introduced by the S3776 extraction of `inspectOpened`):* no test kills two defensive byte checks of the TypeScript reader, the committed record's read bound
+  (bytes read over the record bound, the scan total, or a read that differs from the stat size) and the per-entry bound of an uncommitted entry; the earlier `lstat` size bound already refuses an oversized entry,
+  so they matter only if a file grows between the `lstat` and the read.
+  **CI failure review (2026-11-19, after repeated red runs on PR #100).** Of the 14 red `ci` runs between 2026-11-12 and 2026-11-18, at least seven were a failed native leg whose guard then failed or skipped every
+  downstream job (the native code was being developed, and the guard shows one layer per push: native legs, then the workspace and Windows jobs, then the causal shards), one was the merge run's 10-second timeout, one was a lone aggregate whose
+  identical commit passed as a pull-request run, one failed with no failed job, and four (installed-CLI consumers and causal shards, 2026-11-15 and 2026-11-16) were not re-investigated here. The two failures of this
+  pull request after the claim fix were found by the first full downstream run: a Linux-only `ctime` comparison (fixed above) and a Windows case timeout. The timeout is a budget, not a race: the case `counts the final recovery cleanup winner
+  when its peer loses at rmdir` holds three cold starts of a TypeScript fork, takes 4.5 to 10.3 s on Windows (file 53 to 98 s, 104 s in the failing run) and had a 15 s ceiling, which the causal-controls fence
+  (`tools/causal-controls/timeout-setup.mjs`) enforces on the Linux physical phases. Windows is not in those phases, so only Windows now gets 45 s for that case and for the sibling
+  `media-reference-store-process.e2e.test.ts` (9.5 s of 15 s); the per-stage deadlines still bound a hang, and the fence is checked to still reject a wide budget off Windows. The merge run's 10-second `native-process` test (typically 0.2 to 1.4 s, 13.97 s
+  once, because it copies the Node executable twice) has 30 s. Measured headroom (worst observed over three green runs against the configured timeout) leaves these on the watch list, **not changed**, because the five-second default is deliberate and none has failed:
+  `saved-snapshot-resource.test.ts` and `inline-text.test.ts` (3.9 s of 5 s on the workspace job), `run-media-prune.test.ts` (3.2 s of 5 s), `question-card-host.test.tsx` and `suspended-owner-resource.test.ts` (3.0 s of 5 s), `run-snapshot-notice.test.ts` (17.7 s of 30 s)
+  and `question-card.test.ts` (30.8 s of 60 s); a slow-runner failure there should raise that test's own budget with its measured worst case, not the default. The earlier instrumented figures (4.1 s of 5 s) came from the coverage job, which no longer runs the apps tests.
+  A developer aid now documents how to reproduce a Linux leg locally ([tools/native-fs/README.md](../../tools/native-fs/README.md#reproducing-a-linux-leg-on-a-macos-or-windows-machine)); run a changed or racy native test there before pushing.
+  *Unproven or left open, recorded:* a multi-process probe kept in the repository (the reviewer's scripts were throwaway); Linux and Windows execution (only the eight-target CI shows it), including a Windows scan
+  meeting a delete-pending entry, `LockFile` behaviour beyond the type check and the Windows e2e test; network homes that emulate `flock`; the cold-start race (twelve independent cold starts completed 72 of 72, which is
+  evidence, not a proof); a reservation beyond the grace behind a holder in another process is still refused as before (a distinct "busy" result retried by the host without holding a thread stays an option);
+  closing the producer's reservation handle after the pin removes it (a possible Windows hardening); the exported `recoverMetadataStaging` has no product caller although every native stage runs a recovery pass
+  first; sibling `open_nofollow(&entry.path())` sites in cleanup paths were reviewed and left alone; the retired-index check is made once per operation. *Owed:* the maintainer's reading of ADR-0135, a separate
+  security sitting on the delta since round 3 and all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata, apps/cli/src/engine/tool-host/fs-stage-inventory.ts)*
+- [ ] **Entries leaked by a crashed producer are never reclaimed, so repeated crashes can fill the 128 inventory slots and refuse every native write (found 2026-11-18 by a security sitting; pre-existing, not changed by Inc 1).**
+  An independent run of 40 SIGKILLs of a three-writer process left 84 retained entries (28 `.prepare`, 50 `.reserved`, 6 `.record`) and three recovery passes removed none; a rerun with 15 kills left 39 and removed 1.
+  Recovery retains every `.reserved` and `.prepare` and every `.record` whose stage it cannot prove; some retained `.record`s belong to dead producers whose stage directory is already gone (killed between the
+  directory removal and the marker removal), so `cleanup_record` returns `Changed` (`open_parent(&record.stage)`) and recovery retains them. At 128 entries every native write is refused (`changed:not_needed`, reported as
+  `effect_needs_attention`) and the contract forbids removing entries by hand. The design is conservative on purpose (never delete evidence that cannot be proven) but nothing bounds the leak. **Open design question
+  (needs an ADR):** a supported removal of a dead producer's `.record` whose stage is proven absent (identity-checked, claim the marker, remove only the marker) and, separately, of a dead producer's `.reserved` or
+  `.prepare` that is proven empty. Candidate for Inc 2 or its own increment. A refused pre-pin cleanup leaks the same way: after a stuck holder made it wait two seconds (a security sitting broke the source recheck
+  and grabbed the claim right after `reserve` released it) stage failed `changed:uncertain` and left the `.reserved` plus an empty `.relavium-fs-stage-v1.<pid>.<nonce>/payload` directory in the project, and a recovery
+  pass retained the `.reserved`. *(medium · apps/cli/native/fs-metadata)*
 - [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
   per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
   needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads
@@ -4356,7 +1880,20 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   `GH_CONFIG_DIR` outside `gh` and Windows `%APPDATA%\gnupg` are not covered; glob headers are not counted in `sizeBytes` and the escape can expand a name up to
   6×; `hasSegmentRun` leaves `..` segments alone on purpose. *(low · apps/cli)*
 - [ ] **Chord answer keys: security sitting residuals (2026-11-17; no blocker, high or medium).** (1) `Ctrl+G` is the abort reflex of Emacs, readline, zsh and fzf, and here it starts the most permissive answer: a person who presses it to "cancel" and then Enter 0.8–5 s later grants the session-wide permission (it only asks first; the rows say "Press Enter to allow all … · Any other key cancels"). The sitting judged a different key only marginally safer (every chord has a reflex) and advised keeping it unless a manual test shows the reflex; optionally put the scope first in the confirm row. Test it in the real terminals (VS Code's integrated terminal, tmux, Windows Terminal) before 0.2.0. (2) A terminal left in xterm `modifyOtherKeys` mode (a crashed app can leave it set) sends Ctrl+letter as `ESC[27;5;121~`, which Ink does not read as a chord: every answer chord is ignored and only Esc answers (fail-closed, and a regression from bare letters, which were immune); parse `CSI 27;m;c ~` in the host or reset `CSI > 4;0 m` on mount, and document the Esc fallback. Some hosts may also swallow Ctrl+G/Ctrl+Y/Ctrl+N/Ctrl+R (an Emacs terminal mode, VS Code's `commandsToSkipShell`): unverified here. (3) The `ask_user` refusal of key tokens (`APPROVAL_KEY_TOKEN`) catches the exact `[Ctrl+Y]`-style forms but not look-alikes (full-width brackets or letters, Cyrillic `С`, `<Ctrl+Y>`, `[Ctrl + Y]`, unbracketed `Ctrl+Y Allow`); harmless today because a question card answers no approval, and prose cannot be filtered. (4) A held chord's refusal note reads "Keys were typed just before this answer" although nothing was typed (wording predates the chords); `Ctrl+R` (the reverse-search reflex) opens the reason box, which can be left only by Enter (a denial with the typed text as its reason) or Esc (stops the turn). (5) With no paste listener Ink delivers a pasted 0x19 as Ctrl+Y; the product always mounts one on both surfaces, but a terminal that does not strip `ESC[201~` from pasted content lets a clipboard break out of bracketed paste (the old breakout plus a bare `y` did the same). *(low · apps/cli/src/render/tui, packages/core)*
-- [ ] **Delete the dead legacy approval prompt (found 2026-11-17, with the chord change).** The store opens a card for EVERY approval (`requestApproval` builds a fallback review when the call has no preview), and `handleReviewInput` answers `handled` for every key while one is open, so the older prompt is never reached: the `approval={review === undefined ? approval : undefined}` block in `chat-ink.tsx` / `home-app.tsx` (its hint text is kept truthful meanwhile), the `reasonDraft`/`applyReasonDraft` capture and its React state, `reduceApprovalKey` in `chat-input.ts`, and the `approve`/`reject`/`reject-with-reason` members of `ChatKeyAction` that nothing produces any more. Delete them together with their tests; it touches the approval path, so it takes a review round. Other bare-letter confirms in the CLI (the native prompt host's `y/N`, MCP consent, the workflow gate prompt) are line prompts that a running turn cannot be typed over, a separate surface and not part of this. *(low · apps/cli/src/render/tui)*
+- [ ] **Delete the dead legacy approval prompt (found 2026-11-17, with the chord change).** The store opens a card for EVERY approval (`requestApproval` builds a fallback review when the call has no preview), and `handleReviewInput` answers `handled` for every key while one is open, so the older prompt is never reached: the `approval={review === undefined ? approval : undefined}` block in `chat-ink.tsx` / `home-app.tsx` (its hint text is kept truthful meanwhile), the `reasonDraft`/`applyReasonDraft` capture and its React state, `reduceApprovalKey` in `chat-input.ts`, and the `approve`/`reject`/`reject-with-reason` members of `ChatKeyAction` that nothing produces any more. Delete them together with their tests; it touches the approval path, so it takes a review round. Other bare-letter confirms in the CLI (the native prompt host's `y/N`, MCP consent, the workflow gate prompt) are line prompts that a running turn cannot be typed over, a separate surface and not part of this.
+  **Analysis (2026-11-18, read-only; the always-`undefined` prop and the abort route were re-checked against the code).** Correction: `reduceApprovalKey`'s Esc is **not** dead.
+  `home-app.tsx` ~683-688 forwards a card `abort` as a synthesized Esc into `home-controller.ts` ~1789, then `reduceChatKey(approvalPending)` and `reduceApprovalKey`; it goes
+  with ADR-0115's keymap work (or the synthesized Esc becomes a direct abort), not before. Proof by reading that the block never renders: `approval` is assigned only at
+  `chat-store.ts` ~863 and `review` at ~871 in the same synchronous executor before the only `flush()` (~877), so `approval={review === undefined ? approval : undefined}`
+  (`chat-ink.tsx` ~1822, `home-app.tsx` ~215) is always `undefined`, and the three action kinds are produced by nothing, so `reasonDraft` is never set. Not proved: a
+  synchronous throw between the two assignments would leave an approval with no card (none found by reading); add a store property test, `approval !== undefined` implies
+  `review !== undefined`. **Delete (about 200 production and 200 test lines):** the `approval` and `reasonDraft` props and block, `applyReasonDraft`, `reasonCaptureOpen` and
+  its capture handler in `chat-ink.tsx`; the matching lines in `home-app.tsx` and in `home-controller.ts` (`reasonDraft` state, `routeReasonKey`); the three action kinds and
+  `reasonCaptureOpen` in `chat-input.ts`; `formatApprovalTarget` (`chat-projection.ts` ~757) with its tests. **Keep** `answerApproval`, `requestApproval`, `PendingApproval`,
+  `snapshot.approval` (the card host reads it), `denialReasonDisclosure`, `sanitizeApprovalReason` and the `approvalPending` gates. **Tests to adapt:** `chat-input.test.ts` ~173-309
+  and ~596-604, `readable-feedback.test.tsx` ~28-62 (the disclosure stays pinned in `tool-review-host.test.tsx` and `chat-app.test.tsx`), the `reasonDraft` assertions in
+  `home-controller.test.ts`. Recommended order: the first steps of MVP-4 (see the S3776 entry below), so one cumulative D64 round and one sitting cover it; a stand-alone
+  increment would need two rounds and would refactor code the keymap rewrites anyway. *(low · apps/cli/src/render/tui)*
 - [ ] **PR #99 separate security sitting (2026-11-17): residuals after the fixes.** The sitting found one high, two mediums and one low; all four are fixed (the approval
   keys now need a 400 ms dwell and a 300 ms quiet gap; `[a]` only on a page that shows everything it grants; the card names the canonical path when parents are created;
   `list_directory` no longer resolves a link target). Left open, all low: (1) **Closed 2026-11-17:** a `y` that was the first key after 1.5 s with no other key, and a lone `a` followed by Enter, could not be told from a deliberate press; the maintainer
@@ -4368,6 +1905,58 @@ refusal when the command is declined. *(medium · apps/cli/src/chat/default-agen
   `TURBO_TOKEN`/`TURBO_TEAM` environment applies to every job in `ci.yml` (it predates this change). (5) A shortened target on a call without a diff is not treated as a
   clipped body for `[a]`; the target already has its own mandatory-inspection lock. *(low · apps/cli, .github)*
 - [ ] **Full view and tool details: left out of ADR-0134 on purpose (2026-11-17).** (1) A readable leading-tab glyph: a tab is `<TAB>` per character, so every indent of a Go or Makefile source reads `<TAB><TAB>func …`; drawing a leading run differently would change a safety notation and needs its own decision. (2) Syntax highlighting (a new dependency: ADR), word-level highlight inside changed lines, and a side-by-side layout on wide terminals. (3) Mouse-wheel scrolling in the full view (the alternate screen reports the wheel; the full view ignores it). (4) `End` on a document whose last line is longer than a page lands at that line's start, not its tail (`PgDn` walks through it, every page reachable). (5) `Tab`/`Shift+Tab` is listed even when the only change is already on screen. (6) The call list drops its right-hand text (`+a −r`, the outcome word) when it cannot fit — never at the 80-column floor — and its tool column follows the visible window, so it can shift while scrolling. (7) The nav legend says `[p] Unicode codes` and the status rule `Unicode code points`: one concept, two words. (7b) Found by the second security sitting, outside this change: a space at a row's cut is drawn raw at the end of the row (a `run_command` target `rm -rf …ddddd /` reads `Run rm -rf …ddddd` with a lone `/` on the next row), so the separating space is invisible and `[p]` does not mark it either; it comes from the ADR-0120 projection and affects the card's title and body rows alike. (7c) A terminal that draws a cluster wider than `string-width` counts (a conjunct chain, a keycap plus mark) is invisible to the measured acknowledgement — the standing ADR-0069 assumption. (7d) Rows and cut targets can be SHORTER than the room allows for text whose clusters the width estimate over-counts (decomposed Hangul, skin-tone emoji, a keycap followed by a modifier): a row ends at about two thirds of the page, a cut target keeps fewer characters than fit. Wasted columns only — never wider than the page, no byte lost; an upward probe after the downward halving would fix it (found by the ADR-0134 tests, accepted). (8) Found by the ADR-0134 review, not in its diff: searching again with the same query (`/` then Enter) finds the same occurrence, because a search starts at the cursor's own offset inclusive (`findLineMatch`), so "No later visible match" is never reached by repeating it. (9) The call list shows `ToolDisplay.target` — sanitised and bounded, but not secret-masked, exactly as the transcript's `→ target` row already does (a `run_command` target is the whole command); the review document masks it. Nothing new is exposed, but one masking policy for both would be cleaner. *(low · apps/cli/src/render/tui)*
-- [ ] **Full view and tool details: seven SonarCloud cognitive-complexity findings left open (PR #99, 2026-11-17).** After PR #99's push, SonarCloud's gate was OK (all four new-code ratings 1, duplication 0.8%) and 98 non-gating `CODE_SMELL`s were open; 43 were new from the ADR-0134 commit and 36 of them were fixed in source (the `KeyRow` splitter is now a linear single pass, `keyLabelParts`, after Sonar's S8786 showed its regular expression backtracked quadratically — 5,000 `[` took 10 ms, 100,000 took 3.4 s — though a row is bounded by the terminal's width, so it was not exploitable; nested ternaries became helpers or statements, `.at()`/`toReversed()`, row keys that do not depend on position, `toHaveLength`). The maintainer chose to leave the seven S3776 findings open rather than refactor consent-path code without a new D64 round: `reduceFullReviewKey` (`tool-review-model.ts`, complexity 38 of 15), `projectReviewRow` (`tool-review-projection.ts`, 27) and `projectReviewPage` (17), the full view's chrome and status builders (`tool-review-screen.ts`, 21 and 21), and `tool-review-scroll.ts` (20 and 18). Splitting them is behaviour-preserving work that the 1,320 tests of the eight review files can check, but it touches the approval and inspection path, so it needs the tiered bar's new complete round and a separate security sitting. The other 40 open findings are the older non-gating set and are unchanged. *(low · apps/cli/src/render/tui)*
-- [x] **DONE 2026-11-17 — the full gate and the required CI check were shortened without weakening a control (maintainer authorised the actions after the private analysis of 2026-11-17).** *(author, reviewed by an independent read-only reviewer)* (1) **`pnpm gate`** ([tools/ci/local-gate.mjs](../../tools/ci/local-gate.mjs)): the local gate in parallel. It reads the steps from the root `ci` script (no second list), runs the ordinary steps serially, the wire/usage/filesystem/secrets causal controls as parallel lanes cut into the same `--shard i/n` counts CI runs, then the enforced coverage run alone, adds the workspace tests under the CI environment (`CI=true GITHUB_ACTIONS=true`, `--concurrency=1 --force`), and fingerprints the working tree before and after. 24 tests; thirteen mutations of the runner were each killed by them. (2) **C1**: the required context `ci` (job id and name `lint · typecheck · test` unchanged) is now a thin `if: always()` aggregate; the 14.8-minute lint/typecheck/test/build/smoke work moved to a new job `ci-work` (`needs: native-fs-assets` only) that runs beside the long control jobs, and the aggregate asserts its result like the others. The pins moved with it: `tools/ci/workspace-scheduling.test.mjs` pins the join (15 mutation cases), every `ci-work` step (10 mutation cases; the old pins never covered a `continue-on-error`, a conditional or an echo on most of its steps, and the review found the aggregate's own `continue-on-error` unpinned after the split), `require-w8-acceptance`, `require-packed-cli` and `native-fs/delivery`. (3) **C2**: the secrets causal controls run in three shards instead of two (47/46/46 of 139 controls; a half took 41–52 minutes on CI and was the critical path), under every unchanged bound. *Evidence:* the prototype of the runner measured **44 minutes** twice (against 94); the Node runner's first full run passed every step except five mutation lanes that failed together at one minute with "missing completed report" — every causal phase has a 90-second deadline, and one-minute load had spiked machine-wide (the first coverage run on 2026-11-17 failed the same way at a load of 56, unexplained) — and the same five lanes passed when re-run alone through the same runner (17 minutes, peak load 18); so no single end-to-end green run of the Node runner exists, only the prototype's two and this pair. The runner now logs the load while the lanes run. The unit pins pass (1,180 acceptance-tool cases), `actionlint` is clean. **Not verified:** a real CI run of the split workflow (the first push is its test), GitHub's concurrent-job limit (the workflow now peaks at about 15 jobs per run, two runs per push), Windows (the runner stops only a step's own process there, not its process group). *Follow-up 2026-11-18 (after the push `2ca08aec`):* SonarCloud's gate on PR #99 failed on the new reliability rating (C) and the new security rating (B), both from this runner and nothing else. S3403 (`result.code === 0` in `runGate`, a bug): the TypeScript checker inferred the elements of the untyped `results` array as `code: undefined`, so the comparison looked always false although `code` is a number at run time; the array now carries a JSDoc type (`number | undefined`), checked with the compiler's own API. S4036 (a vulnerability): `treeFingerprint` ran a bare `git`, and pnpm puts every `node_modules/.bin` of the workspace first on the PATH of the scripts it runs, so a dependency could have installed a `git` there. `resolveGit` now takes the first `git` on the PATH that is not inside the repository (empty and relative entries and links into the repository are refused; no git outside it is an error, never a fallback). Two tests were added (1,182 acceptance-tool cases); seven mutations of `resolveGit` and its use are each killed. The eight S4036 findings accepted earlier on this PR were for fixed-argument calls in tools the maintainer reviewed; this one was fixed in source instead, so no disposition needs a token.
-- [ ] **Gate and CI speed-up left for a decision (2026-11-17).** (C4) The `push` and `pull_request` runs of one commit are two full CI runs (about 544 job-minutes per commit) and, today, two sets of macOS runner requests that GitHub cancelled for capacity; limiting `push` to `main` would halve it, but a `development` push with no open pull request would get no CI, and the workflow's own concurrency comment records that the two runs are kept apart on purpose (a cancelled required check blocks a merge) — a policy choice for the maintainer. (C5) Build the eight native targets only when native sources change (the macOS arm64 leg is the one GitHub cancels). (C6) A path filter for docs-only pull requests (a skipped required check counts as passing, so it needs its own design). (C7) A shared `pnpm install` cache. (Y2/C3) Scope the enforced coverage run to the packages that have a floor (`llm`, `mcp`): about −10 to −14 minutes, but the other packages' tests may contribute coverage, and it changes what the floor measures, so it needs an experiment first. (Y4/Y5) Share the fixed/restored phases between controls that use the same tests (about half the phases) or cut a phase's fixed cost: the mutation evidence model, a security-owner and ADR decision. *(low · tools/ci, .github/workflows/ci.yml)*
+- [ ] **Full view and tool details: seven SonarCloud cognitive-complexity findings left open (PR #99, 2026-11-17).** After PR #99's push, SonarCloud's gate was OK (all four new-code ratings 1, duplication 0.8%) and 98 non-gating `CODE_SMELL`s were open; 43 were new from the ADR-0134 commit and 36 of them were fixed in source (the `KeyRow` splitter is now a linear single pass, `keyLabelParts`, after Sonar's S8786 showed its regular expression backtracked quadratically — 5,000 `[` took 10 ms, 100,000 took 3.4 s — though a row is bounded by the terminal's width, so it was not exploitable; nested ternaries became helpers or statements, `.at()`/`toReversed()`, row keys that do not depend on position, `toHaveLength`). The maintainer chose to leave the seven S3776 findings open rather than refactor consent-path code without a new D64 round: `reduceFullReviewKey` (`tool-review-model.ts`, complexity 38 of 15), `projectReviewRow` (`tool-review-projection.ts`, 27) and `projectReviewPage` (17), the full view's chrome and status builders (`tool-review-screen.ts`, 21 and 21), and `tool-review-scroll.ts` (20 and 18). Splitting them is behaviour-preserving work that the 1,320 tests of the eight review files can check, but it touches the approval and inspection path, so it needs the tiered bar's new complete round and a separate security sitting. The other 40 open findings are the older non-gating set and are unchanged.
+  **Analysis (2026-11-18, read-only; counts from SonarCloud's public API for `main` at `002dda58`, project `HodeTech_Relavium`; the open-finding total of 233 was confirmed live).**
+  Sonar lists **11** open S3776 findings in the six review files, not seven, plus two in neighbouring files that MVP-4 rewrites anyway (`chat-store.ts` ~521 `handleReviewInput`
+  at 45 and the `chat-ink.tsx` ~1385 `useInput` at 102); the repository has 233 open S3776 findings in all, so this entry's scope is the approval path only. The 11:
+  `reduceFullReviewKey` (`tool-review-model.ts` ~658, 29 — the 38 above predates the nested-ternary fixes), `reduceToolReviewKey` (~357, 27), `toolReviewPage` (~516, 16),
+  `projectReviewRow` (`tool-review-projection.ts` ~590, 27), `projectReviewPage` (~367, 18), `cardStartLine` (~338, 17), `fullWarnings` (`tool-review-screen.ts` ~98, 21),
+  `keyLabelParts` (~429, 16), `contextStartLine` (`tool-review-scroll.ts` ~203, 20), `changeJump` (~255, 18) and `cardWarnings` (`tool-review-card.ts` ~167, 26). The "chrome and
+  status builders (21 and 21)" and "`projectReviewPage` (17)" above do not map one-to-one onto this list. `reduceToolReviewKey`, `cardWarnings` and perhaps `toolReviewPage` are
+  likely to be rewritten by MVP-4's chord and card work; `projectReviewRow` is defect-dense (ADR-0134 found a high and quadratic mediums there), so refactor it only behind a
+  differential fuzz, or leave it. **Recommendation:** fold the refactors into MVP-4 as a droppable ride-along after the keymap and card work, behind test-only commits that need no
+  round: golden characterization of `reduceFullReviewKey` driven through `reduceToolReviewKey` (key probes, a state grid, the `b`/`r`/`/`/`c` pins), a vendored pre-refactor
+  baseline with seeded differential sweeps for the pure functions, and a store property test. One cumulative D64 round and one sitting then cover everything; a stand-alone
+  increment costs two rounds and discards about four of the refactors. A mutation sweep over the five pure files is practical (about 11 s per run). There is no local sonarjs
+  lint, so the counts are confirmable only by a fresh Sonar analysis. *(low · apps/cli/src/render/tui)*
+
+### PR #99 merge CI observations (2026-11-18)
+
+- [ ] **The required `coverage` job stopped at its 45-minute limit on PR #99's final head, in both runs (2026-11-18) — analysed the same day; the narrowing is applied and awaits its first CI run.** The `pull_request`
+  run `44222406356` (job started 02:58:01) and the `push` run `44222399222` (started 02:54:03) each ended exactly 45 minutes after their own start, with the annotation
+  "The job has exceeded the maximum execution time of 45m0s" and the step "Engine coverage floor" cancelled. It was not a hang (the log shows test files completing
+  normally seconds before the stop) and not a manual cancel (the two stops are four minutes apart, each at its start plus 45:00). The job took 26 to 38 minutes in
+  six earlier completed runs (`de0573b1`, `a15c8f8e`, `13a79431`), 29 and 38 at `13a79431`; since then only seven `apps/cli/src/render/tui/tool-review-*` files changed in
+  product code (the Sonar fixes, which the full local gate verified with the enforced coverage run: 917 files, 20,745 tests, 20,720 passed and 25 skips). The limit was 30 until
+  2026-11-04, when the job took 15 to 27 minutes, and is 45 now. The merge commit's run `44232410834` passed it in 41 min 10 s (the same tree as `bb6f1671`).
+  **Analysis (2026-11-18, read-only, 57 completed runs with logs): both slower and larger.** Runner speed varies 1.9× on identical code (the same tree took 29.4, 38.2 and
+  41.2 min, and needed more than 45.3 on `bb6f1671`); the two runs of a same-SHA push/PR pair are independent draws (correlation 0.04 over 19 pairs, and lone runs are not faster),
+  so the double trigger does not make them contend. The workload also grew: between `de0573b1` and `13a79431`, on equally fast runners, test time rose 1,048 → 1,199 s, 75% of
+  it `tool-review-host.test.tsx` (36 s → 119 s, 144 → 266 tests). The step is 99% of the job and runs **all 917 test files** (20,745 tests) at `--maxWorkers=1`, although
+  thresholds exist only for `packages/llm` and `packages/mcp`: apps/cli is about 74% of the test time, `packages/db` 17%, core 4.7%, llm and mcp 3.5%. The six per-test 5 s
+  timeouts since 11-11 were all apps/cli CPU-bound tests running under coverage on a slow runner; a higher job limit would not fix them. **Remedy verified locally (2026-11-18):**
+  `vitest run --coverage --maxWorkers=1 --dir packages` under `CI=true GITHUB_ACTIONS=true RELAVIUM_COVERAGE_ENFORCED_ONLY=1` passed 407 files in 4 min 44 s (at machine load
+  about 13), and every enforced or reported line and branch figure equals the CI run of `002dda58` to two decimals (llm 97.80 / 95.72, mcp 96.56 / 91.30, core 96.83 / 91.59,
+  db 97.85 / 93.21; only `shared` lines differ, 96.62 against 96.72, and it has no floor), so narrowing the instrumented run does not change what the floor measures; the apps
+  tests still run in `ci-work`. Expected saving about 22-32 min per run. A change touches `tools/coverage-gate/run.mjs`, the pins in `tools/ci/workspace-scheduling.test.mjs`
+  (run args ~line 47, timeout ~195-196) and `tools/ci/local-gate.test.mjs` ~99-122 (the local `pnpm gate` coverage lane shares the script), and a note in
+  `docs/standards/testing.md`. Raising the limit to 60 saves nothing and only postpones this; sharding the run would move the thresholds into a merge job and rewrite many
+  pins, which the narrowing makes unnecessary; do not remove `--maxWorkers=1` (commit `122e8189` made it on purpose, "retaining every case, threshold and native concurrency assertion"; its footer cites ADR-0111, whose title is about the lazy packaged runtime, so the commit message is the only recorded reason). Hot spots if more is needed
+  later: `tool-review-host.test.tsx` (about 120 s on every runner) and `packages/db/src/session-usage-scale.test.ts` (one test, 91-215 s). It matters because a required check
+  that cannot finish blocks every PR, and since the speed-up it is the longest job. **Applied (maintainer chose it 2026-11-18; commit `63123bd9`):** `tools/coverage-gate/run.mjs` passes `--dir packages`, the pin test expects it (mutation-checked) and the real
+  `pnpm coverage:enforced` entry passed under the CI environment (407 files, 4 min 50 s, same figures). **Open:** close this entry when the first CI run on `development` shows the
+  job's own duration and a green result. *(medium · .github/workflows/ci.yml,
+  tools/coverage-gate)*
+- [ ] **One secrets-control shard's verify step hit a 10-second test limit on `main`'s merge run (2026-11-18); rate measured at about 1 in 27 job runs.** In the `push` run `44232410834` of the merge
+  commit `002dda58` (its tree is identical to `bb6f1671`'s), `Wave 2 secrets causal controls (shard 1 of 3)` failed about two minutes in, at step "Verify causal outcome and worker
+  lifecycle guards": `tools/cli-package/smoke/native-process.test.mjs:189`, "two same-directory copied Nodes share verified runtime support and acknowledge the actual descendant",
+  took 13,966 ms against its 10,000 ms limit. The same step passed in the two final-head runs of the identical tree (that shard took 27 and 33 minutes there). One occurrence, so
+  it is neither called flaky nor dismissed. **Measured (2026-11-18):** the same test took 0.2 to 1.5 s in 26 other secrets-shard job runs (11 workflow runs from `43709041301` to
+  `44222406356`; the filesystem shards were not read), and 13.97 s in the failing one, about ten times the largest of the others; the neighbouring tests of that run were normal (a 1,004 ms case that is a 1 s
+  watchdog by design), so one test's copy-and-start phase stalled. The test copies the Node binary twice (`copyFixtureNode`, `copyFileSync`) inside a 10 s case bound, and its
+  inner 4 s readiness poll and 5 s watchdog start only after the copy, so a slow disk on a fresh runner can exhaust the case bound before either inner bound can fire; which phase
+  stalled was not recorded. One failure in 27 is about 3.7% per job run (a small sample), and the test runs in every secrets shard, so a commit whose pipeline runs twice has roughly a 10-20% chance of one red `ci`, which a re-run clears.
+  The case sits under the approved `LOW-1` deferral above (fixed 5 s bounds inside 10 s cases; "a loaded runner produces red without a defect"); its trigger, a recorded failure that names the bound that fired, is now met for the 10 s case bound on Linux. The retune is the coupled set
+  (case bound, readiness poll, watchdog), so raise the outer case bound together with a measurement of which phase stalled, not alone. **Re-run (2026-11-18):** attempt 2 of the failed job
+  passed (started 15:45 UTC, 35 min 49 s), the `ci` aggregate followed (16:21 UTC) and the run's conclusion is `success`, so `main`'s three required checks are green again.
+  Second occurrence is the trigger to retune; until then the entry stays open as a measured low. *(low · tools/cli-package/smoke)*

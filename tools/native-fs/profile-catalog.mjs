@@ -75,6 +75,7 @@ const LINUX = [
   'linux_new_file_racer_is_never_clobbered',
   'linux_actual_nontruncating_access_denial_preserves_source',
   'linux_stage_alias_and_privilege_bits_refuse_without_publication',
+  'linux_parent_snapshot_survives_entries_churning_in_the_parent',
 ].map((name) => `linux::tests::${name}`);
 // Diagnostic measurement only; this case does not certify a publication primitive.
 export const WINDOWS_RENAME_PROBE_CASE = 'aaa_windows_rename_parameter_probe';
@@ -191,6 +192,49 @@ export function rustPopulation(platform) {
         : []),
       'stage_index::custody_tests::claim_survives_duplicates_but_not_child_exec',
       'stage_index::custody_tests::native_producer_claim_noninheritance_and_independent_reader',
+      // Concurrent processes on one operator home (ADR-0135): the allocation claim is waited for inside the
+      // operation's deadline (all but one pool thread may wait, a caller beyond that gets a short grace,
+      // cancellation comes first), only contention is retried, a claim on a replaced lock file is refused,
+      // a producer's vanishing uncommitted entry is skipped by a scan but still counted toward the bound,
+      // a pin removes only its own reservation, and `encode` enforces what `decode` requires.
+      'stage_index::custody_tests::a_caller_beyond_the_limit_still_gets_through_a_busy_holder',
+      'stage_index::custody_tests::a_cancelled_caller_beyond_the_limit_is_cancelled_not_changed',
+      'stage_index::custody_tests::a_vanished_entry_is_counted_against_the_scan_bound',
+      'stage_index::custody_tests::a_vanished_entry_still_counts_toward_the_bound_and_a_scan_tolerates_every_overshoot_the_entry_bound_holds',
+      'stage_index::custody_tests::allocation_claim_wait_honours_cancellation',
+      'stage_index::custody_tests::a_cancelled_recovery_behind_a_holder_is_cancelled',
+      'stage_index::custody_tests::a_cleanup_beyond_the_limit_is_bounded_by_its_grace_not_the_deadline',
+      'stage_index::custody_tests::a_cleanup_beyond_the_waiter_limit_gets_a_longer_grace_than_a_reservation',
+      'stage_index::custody_tests::a_reservation_and_a_recovery_beyond_the_limit_get_only_the_short_grace',
+      'stage_index::custody_tests::a_wait_that_used_up_the_budget_still_yields_a_usable_claim',
+      'stage_index::custody_tests::allocation_claim_waits_for_a_holder_and_fails_closed_after_the_budget',
+      'stage_index::custody_tests::only_contention_is_waited_out_as_a_claim_failure',
+      'stage_index::custody_tests::pin_refuses_a_reservation_it_did_not_create',
+      'stage_index::custody_tests::pin_removes_only_the_reservation_it_created',
+      'stage_index::custody_tests::record_encode_enforces_the_decode_invariants',
+      'stage_index::custody_tests::recovery_measures_its_pass_from_the_claim',
+      'stage_index::custody_tests::recovery_waits_for_an_allocation_holder',
+      'stage_index::custody_tests::reserve_measures_its_work_under_the_claim_from_the_claim',
+      'stage_index::custody_tests::the_pool_size_is_read_the_way_libuv_reads_it',
+      'stage_index::custody_tests::scan_skips_a_vanished_uncommitted_entry_but_not_a_committed_one',
+      'stage_index::custody_tests::waiters_park_up_to_the_limit_and_the_next_one_gets_only_a_short_grace',
+      // POSIX only, each for its own reason: a Windows scan can meet a delete-pending entry, replacing a lock
+      // file that another handle holds open and removing files that are still held open by name are POSIX
+      // idioms whose Windows behaviour is unverified, and a link count of zero is a POSIX notion; only the
+      // eight-target CI could observe those.
+      ...(platform === 'win32'
+        ? []
+        : [
+            'stage_index::custody_tests::a_claim_error_that_is_not_contention_fails_at_once',
+            'stage_index::custody_tests::a_claim_on_a_replaced_lock_file_is_refused',
+            'stage_index::custody_tests::an_entry_unlinked_after_it_was_opened_still_counts_toward_the_bound',
+            'stage_index::custody_tests::pre_pin_cleanup_measures_its_destructive_work_from_the_claim',
+            'stage_index::custody_tests::post_publication_cleanup_measures_its_work_from_the_claim_and_gets_the_cleanup_grace',
+            'stage_index::custody_tests::pre_pin_cleanup_gets_the_cleanup_grace',
+            'stage_index::custody_tests::recovery_refuses_a_claim_on_a_replaced_lock_file',
+            'stage_index::custody_tests::scan_skips_an_uncommitted_entry_unlinked_after_it_was_opened',
+            'stage_index::custody_tests::scan_survives_concurrent_promotion_churn',
+          ]),
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
       'test_hooks::first_failure_preserves_primary_and_evaluates_once',
       ...(platform === 'win32'

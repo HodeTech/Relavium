@@ -320,8 +320,9 @@ the index child. Keep the previous index namespace protected as described below.
 Reuse that one captured boundary through lazy root creation and publication;
 protecting only payload identities does not protect the ownership evidence.
 
-Bound the inventory to 128 records, each at most 16 KiB, and a recovery pass to
-128 records/2 MiB of record data, eight immediate children per stage and no
+Bound the inventory to 128 records (a scan accepts every nonce count the entry
+bound holds, 384, see the allocation lock below), each at most 16 KiB, and a recovery pass to 128
+records/2 MiB of record data, eight immediate children per stage and no
 recursive descent. Check cancellation/yield and a two-second cooperative scan
 budget between OS operations, except the explicitly bounded cleanup completion
 section below; retain/join an actual native producer that has
@@ -450,13 +451,27 @@ v1 automatic deletion authority. Unknown/mismatched pairs, reserved bytes,
 malformed lengths/UTF-8/owners/locators/identities or unreadable committed
 records fail the entire trusted inventory closed; they are never skipped. A
 committed record that vanishes mid-scan (a concurrent write completing removes
-it) makes the whole scan run again — at most three attempts inside the same
+it) makes the whole scan run again — at most eight attempts inside the same
 two-second deadline, so a snapshot never mixes two states — and an inventory
 whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
-`.prepare` (for example a producer's `.prepare` to `.record` promotion) is
-skipped without a retry: a point-in-time inventory cannot be exact for an
-uncommitted artifact, and the path-based stage-directory floor does not depend
-on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
+`.prepare` (for example a producer's `.prepare` to `.record` promotion, or its
+`.reserved` removal) is skipped without a retry, whether it is gone before the
+scan opens it or is unlinked after the scan opened it (the held file is then
+the same inode but its link count reads zero; the entry only counts as
+vanished when the held file already reads link count zero or its name is really
+absent: `unlink` lowers the count before the name leaves the directory cache, so on
+Linux the name can still resolve for an instant, and a file that is still linked
+and fails a check stays fatal; Windows keeps the name-only proof). The TypeScript
+reader applies the same rule and, for an
+entry whose `lstat` already reads link count zero (it can still succeed while an
+entry is being unlinked, with the name still there for a moment), does not require the
+name to be absent; it also runs the whole scan again for a
+committed `.record` that vanishes in any of those ways (the Rust scan holds the
+allocation claim, so a `.record` or the lock file never vanishes under it). A skipped entry still counts toward the
+nonce bound and is listed, and a recovery pass reports it as retained, since a
+listing can omit an entry renamed while it runs: a point-in-time inventory
+cannot be exact for an uncommitted artifact, and the path-based stage-directory
+floor does not depend on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
 uncommitted meanings. Physical v1 directory/stage names are namespace names,
 not evidence of the record protocol. No mutable flag upgrades an old record.
 
@@ -468,8 +483,9 @@ old automatic recovery safe. No local PID scan is claimed to prove all old
 processes are gone across namespaces. Old readers may safely refuse new records;
 this is not a supported mixed-version operating mode.
 
-Allocation and recovery count at most 128 distinct nonces and 385 directory
-entries (three transition entries per nonce plus the allocation lock), at most
+Allocation refuses at 128 distinct nonces and a scan counts at most 385 directory
+entries (three transition entries per nonce plus the allocation lock, which a scan
+does not report, so a recovery report's `removed + retained` is at most 384), at most
 16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
 eight immediate stage children and never descends recursively. Cancellation
 and the two-second cooperative budget are checked between operations, except
@@ -500,8 +516,36 @@ If directory creation succeeds but no handle or identity can be established,
 the empty directory and reservation are preserved as unproven, never deleted by
 name alone.
 
-Allocation holds an exclusive nonblocking kernel lock on `inventory.lock`;
-the v2 producer also claims its original prepared-record handle before record
+Allocation holds an exclusive kernel lock on `inventory.lock`, taken by a
+nonblocking attempt that is repeated about every two milliseconds while another
+handle holds it ([ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)):
+concurrent writers, cleanups and a recovery pass queue behind each other
+instead of failing the write. Reserving and a recovery pass wait inside the
+operation's own two-second deadline and cancellation flag; cleanup after a
+publication and cleanup before a pin wait under a fresh two-second budget,
+ignore cancellation (cleanup completion suppresses cancellation) and get a
+longer grace (500 ms) beyond the waiter limit below, so each claim site has its own
+budget and one write (a recovery pass, a reservation, a cleanup) can wait
+several times two seconds in the worst case. Work done under a claim, at every
+site, measures its budget from the instant the claim was acquired, and the lock
+file is opened by name again after the wait and must be the file that was
+locked. Only contention is repeated
+(`EWOULDBLOCK`/`EAGAIN`/`EINTR`, `ERROR_LOCK_VIOLATION`); any other error fails at
+once, and an exhausted deadline is the same `changed` refusal as before. The
+per-record claim below stays a single attempt: a held record claim means a live
+producer, and waiting on both claims would make a cycle (a writer holds its
+record claim while it waits for the allocation claim, and recovery holds the
+allocation claim while it tries a record claim). At most the Node worker pool
+size minus one threads per process wait at once (three by default; the pool is
+shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it, read the
+way libuv reads it); a reservation or recovery beyond that polls for a 100 ms
+grace (a cleanup, 500 ms) and is then refused with `changed`, and cancellation
+and the deadline are checked before the limit. Allocation refuses at 128 distinct nonces; both scans
+accept up to 384 (the 385-name entry bound, lock file included, holds no more),
+because a lockless pin can let an allocation overshoot by the pins in flight
+during one listing, a number that cannot be bounded smaller, so that a recovery
+pass can still run and an overshoot is transient.
+The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling
 reuse it, without reacquiring/unlocking via a clone. Recovery opens a separate
@@ -635,7 +679,7 @@ try {
     if (
       !Number.isInteger(report.removed) || report.removed < 0 ||
       !Number.isInteger(report.retained) || report.retained < 0 ||
-      report.removed + report.retained > 128
+      report.removed + report.retained > 384
     ) throw new Error('invalid maintenance result');
     console.log(JSON.stringify({ removed: report.removed, retained: report.retained }));
   } finally {
@@ -1218,7 +1262,13 @@ the complete producer, recovery, Node ABI or CLI artifact.
 
 - Preserve uid/gid, ordinary mode bits, kernel POSIX access ACL bytes,
   `security.selinux` and opaque `user.*` attributes. Parent policy also captures
-  the kernel default ACL and setgid/group state. Special/privilege-bearing
+  the kernel default ACL and setgid/group state. The parent snapshot proves its
+  policy stable by reading it twice and comparing the values, never by comparing
+  the directory's ctime: that also moves whenever an entry is created, renamed
+  or removed in the directory, so another writer publishing into the same
+  directory would fail the snapshot (a concurrency defect found on the first
+  Linux run of the concurrent-writers test, [ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)).
+  Special/privilege-bearing
   regular-file mode bits and all other observed attribute namespaces refuse.
   `security.capability`, `security.ima` and `security.evm` are explicit refusal
   cases. Inaccessible privileged attributes are not claimed absent.

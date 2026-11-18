@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-16
+> Last updated: 2026-11-18
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -36,28 +36,49 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1 and MVP-2 are complete on `main`** (PR #97 and PR #98). **MVP-3 is implemented on `development` for checkpoint review**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). **MVP-4 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `0db4c940`: the third `development`→`main` checkpoint, [PR #98](https://github.com/HodeTech/Relavium/pull/98), merged 2026-11-11 after MVP-2. `development` was fast-forwarded to that merge and now carries the reviewed MVP-3 implementation for its next checkpoint. The [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11) records closure; the earlier PR #97 and PR #96 records remain under [History](#history). |
+| Branches | `main` is at `002dda58`: the fourth `development`→`main` checkpoint, [PR #99](https://github.com/HodeTech/Relavium/pull/99), merged 2026-11-18 after MVP-3, MVP-3b, MVP-3c and MVP-3d. Its tree is identical to `development`'s head `bb6f1671`, which is one merge commit behind. The [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records closure and its two CI observations (the final head's `coverage` job hit its 45-minute limit; one acceptance-tool test timed out once in the merge commit's push run, which a re-run cleared); the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
+| Open CI observations | The required `coverage` job did not complete on PR #99's final head (stopped at its 45-minute limit in both runs; it took 26–38 minutes before), and one acceptance-tool test timed out once in a secrets-control shard on `main`'s merge run. Both are open items in [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); neither is classified as flaky without a measured rate |
 
 ### What a CLI user meets today
 
 The published npm package remains `0.1.1`; the following describes the current
-`main` checkout after PR #98. MVP-1 supplies visible run outputs, run ids, liveness
+`main` checkout after PR #99. MVP-1 supplies visible run outputs, run ids, liveness
 and useful missing-key handling. MVP-2 adds readable Markdown and wrapping, native
 provider setup and key management, safe project initialization, and searchable
-session discovery/resume with visible history.
+session discovery/resume with visible history. MVP-3 makes the chat agent able to edit.
 
-The built-in chat agent still starts in `ask` with read-only tools. Editing,
-searching and trustworthy write previews are MVP-3; non-allowlisted command
-approval, the interrupt keymap and turn ceilings are MVP-4 (the failed-turn marker landed in MVP-3c). The Home now covers first-run,
-project and session journeys. Full workflow/run/gate management is MVP-8, and
-broader provider/MCP management is MVP-9. The
+The built-in chat agent starts in `ask`: it asks before an effect, `plan` only reads,
+`accept-edits` accepts file edits and `auto` is unchanged
+([ADR-0130](../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)).
+It reads, searches, edits and writes files under a docked approval card; the card's
+full view (`[v]`) and `/details` show the change on one scrollable screen
+([ADR-0129](../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md),
+[ADR-0134](../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)),
+every approval answer is a Ctrl chord, and file writes keep their security metadata.
+It can ask you a structured question (`ask_user`), and a refused or failed turn stays
+in the session as a content-free marker. Non-allowlisted command approval, the interrupt
+keymap and turn ceilings are MVP-4. The Home covers first-run, project and session
+journeys. Full workflow/run/gate management is MVP-8, and broader provider/MCP
+management is MVP-9. The
+[MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
+owns delivered scope and acceptance evidence; the
 [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
-owns delivered scope and acceptance evidence.
+owns MVP-2's.
 
 ## Next work — the CLI MVP
+
+**PR #99 merged (2026-11-18): MVP-3, MVP-3b, MVP-3c and MVP-3d are complete on `main`.** The
+[merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records what the PR carried, its
+final-head evidence and its two CI observations: the required `coverage` job stopped at GitHub's 45-minute limit in both
+final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed; the merge commit's identical
+tree passed `coverage` in 41 min 10 s); and one acceptance-tool test hit its 10-second limit in the first attempt of the merge
+commit's push run, which a re-run cleared. SonarCloud's gate is OK on the PR and on `main`. The dated blocks below keep the wording they had when written; where they say
+final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 is next**, and
+[ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
+[ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) must be accepted before it starts.
 
 **Manual-test correction (2026-11-15): implementation and local review complete.**
 The reported pre-correction code rejected the observed project parent's
@@ -129,7 +150,7 @@ unlisted metadata remain explicit unsupported cases under the accepted design;
 no attribute deletion, broad OS permission change, in-place write or automatic
 retry is part of the correction.
 
-**Checkpoint: MVP-3 is implemented on `development`; MVP-3b/3c/3d are placed ahead of MVP-4.**
+**Checkpoint: MVP-3 was implemented on `development` (merged 2026-11-18, PR #99); MVP-3b/3c/3d were placed ahead of MVP-4.**
 MVP-1 and MVP-2 are complete on `main`. The
 [MVP-3 implementation checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
 closes all three development steps and their review/security corrections;
@@ -221,10 +242,13 @@ first run exposed; the chord change was verified afterwards (19,945 tests: 19,92
 25 skips, the affected gate steps re-run) and by a further separate security sitting with no
 blocker, high or medium finding. The [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)
 owns the details and what is not claimed. The native adapter findings are their own
-increment after this round; final-head platform, scanner and PR checks and the
-maintainer's acceptance are owed.
+increment after this round (its first part, concurrent processes on one operator home, was
+done on 2026-11-18 ahead of MVP-4 under
+[ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md);
+the [register](deferred-tasks.md) owns the evidence and what is still owed); the PR's final-head checks and the maintainer's acceptance
+are recorded in the merge checkpoint.
 
-**The full view and the tool details (2026-11-17): implemented on `development`, uncommitted.**
+**The full view and the tool details (2026-11-17): implemented on `development`; merged in PR #99 (2026-11-18).**
 [ADR-0134](../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)
 (Accepted 2026-11-17) rebuilt the approval card's `[v]` full view and `/details` as one readable
 screen: it opens on the first change, lists each unchanged line once, scrolls by line and page,
@@ -237,7 +261,7 @@ not a fifth round. The
 [record](phases/phase-2.6-conversational-authoring.md#the-full-view-and-the-tool-details--adr-0134-2026-11-17)
 owns the details and what is not claimed. The full gate on the final source passes (20,740 tests:
 20,715 passed, 25 skips; 1,129 acceptance-tool cases; the mutation controls; the enforced coverage run
-after one environment-caused retry the record names). Final-head CI and the maintainer's acceptance are owed.
+after one environment-caused retry the record names). Merged with PR #99 on 2026-11-18; the merge checkpoint records the final-head evidence.
 
 **Step 2 metadata design accepted:** source review and reproducible macOS
 OS/algorithm probes established the mode/uid/gid-only replacement hazard.
@@ -332,10 +356,10 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    retain the decisions; the [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
    closes cumulative reviews, separate security sittings, final source-bound CI
    and maintainer acceptance. No verified MVP-2 finding is deferred.
-3. **MVP-3 — The agent can edit — implemented on development.**
+3. **MVP-3 — The agent can edit — complete on `main` (PR #99, 2026-11-18).**
    All three steps and their independent review/security gates are complete;
-   the [implementation checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
-   records remaining PR/CI merge gates. Delivered scope: ADR row 9; 2.6.M · **`edit_file`**,
+   the [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
+   records the merge gates and the final-head evidence. Delivered scope: ADR row 9; 2.6.M · **`edit_file`**,
    **`search_files`**, **`find_files`** (with `list_directory`'s silent 200-entry cap made visible); `read_file`
    ranges and the spill store (MVP-A9); 2.6.M · `write_file`'s approval diff (#305) and **Tool-call rendering
    v2** (sanitized target kept after the turn; assistant text between tool calls kept); 2.6.M · **Default chat
@@ -367,7 +391,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    transcript, export and real-SQLite parity tests. D64 rounds 1–4 and four separate security sittings found no
    blocker/high finding and their fixes are in; the gates pass on the final source (`56c63ab0`; the two
    platform-owned steps stay `INCOMPLETE` locally). **The maintainer's acceptance is owed** — no fifth round was run on
-   round 4's fixes — see the phase register. ADR-0115 is not a
+   round 4's fixes — see the phase register. *(Merged with PR #99, 2026-11-18.)* ADR-0115 is not a
    dependency. Session-ending cancellation and process death keep today's rollback (ADR-0098's disclosure at resume).
    **MVP-3d — `ask_user` (2026-11-16, after MVP-3c, ahead of MVP-4).** Decided by the maintainer: the model's
    structured mid-turn question moves up from "after v0.2.1" into its own increment. It starts with an ADR that
@@ -389,7 +413,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    `ebe8b361` plus the corrections committed as `a15c8f8e`: 21 steps, 19,365 tests plus 25 skipped, 1,129 acceptance-tool cases, the 487-case usage cohort,
    the fs/secrets/wire mutation controls and the enforced coverage run). No fresh general round ran on the last fixes, and the installed-CLI
    smoke and the map-controls check are CI-owned; whether the corrective sitting and these gates satisfy D64's "one new complete round", and
-   the final-head platform checks, are the maintainer's call. The maintainer's acceptance is owed
+   the final-head platform checks, are the maintainer's call; the maintainer merged PR #99 on 2026-11-18. The acceptance wording above is historical
    (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
 4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
    (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
@@ -435,8 +459,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
 
 **Execution order (D75, 2026-11-08):** MVP-1, MVP-2, MVP-3, MVP-4, **MVP-8**, MVP-5, MVP-6, MVP-7, MVP-9,
 MVP-10. The milestones keep their numbers, which are cited across the documents.
-MVP-1 and MVP-2 are complete on `main`; MVP-3 implementation is complete on
-`development` for checkpoint review. The next implementation queue is
+MVP-1, MVP-2 and MVP-3 (with MVP-3b/3c/3d) are complete on `main`. The next implementation queue is
 **MVP-4 → MVP-8 → MVP-5 → MVP-6 → MVP-7 → MVP-9 → MVP-10**.
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
@@ -745,11 +768,13 @@ Finished work is recorded in its register; this page no longer restates it.
   [workstream sections](phases/phase-2.6-conversational-authoring.md).
 - **The CLI MVP** — MVP-1's acceptance in [Next work](#next-work--the-cli-mvp) item 1, and the PR #97 checkpoint
   (merged 2026-11-07) with its review correction in
-  [deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06). On 2026-11-08
+  [deferred-tasks-parked.md](deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06). On 2026-11-08
   the maintainer set the Home-first direction (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)),
   and MVP-2 was re-planned around it after the [UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md). MVP-2
   merged 2026-11-11 in PR #98; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
-  closes the four-step implementation and correction records.
+  closes the four-step implementation and correction records. MVP-3, with MVP-3b, MVP-3c and MVP-3d, merged
+  2026-11-18 in PR #99; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
+  closes the implementation, review, security and maintainer gates and records its two CI observations.
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and
   [phase 2.5](phases/phase-2.5-cli-consolidation.md).
 - **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):** the

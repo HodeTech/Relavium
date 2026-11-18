@@ -1,4 +1,5 @@
-# Relavium CI — the green gate every push and PR must pass (Phase 0 · 0.G).
+# Relavium CI — the green gate every push to `main` and `development` must pass, and the one a
+# development -> main pull request is judged by (Phase 0 · 0.G).
 #
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
@@ -35,19 +36,24 @@
 name: CI
 
 on:
+  # One run per commit. A development -> main pull request is satisfied by the `push` run on its head
+  # commit: required status checks attach to the head SHA by name, whichever event produced them. So
+  # `pull_request` is deliberately NOT a trigger; with it, every commit on a branch with an open PR ran the
+  # whole pipeline twice (about 190-310 job-minutes extra, and twice the runner requests GitHub queues or
+  # cancels at capacity). Consequence, accepted by the maintainer (2026-11-18): a PR from a fork, or from a
+  # branch other than `main`/`development`, gets no automatic CI — start it with `workflow_dispatch` on that
+  # branch. `tools/ci/workspace-scheduling.test.mjs` pins this trigger set so the duplicate cannot return silently.
   push:
     branches: [main, development]
-  pull_request:
+  workflow_dispatch:
 
 # Cancel superseded runs so CI tracks the latest push — but never cancel a run on `main` (its
-# history is the merge record and must complete). The group key: a PR run is keyed by its PR
-# number (`github.event.number` — so two PRs open from the SAME head branch stay independent and
-# can't cancel each other), a push run by its short branch (`ref_name`, e.g. `development`).
-# `event_name` keeps a push and its same-SHA PR in separate groups (otherwise one run cancels the
-# other and a cancelled required check can block merge): `ci-CI-push-development` vs
-# `ci-CI-pull_request-10`.
+# history is the merge record and must complete). The group key is the short branch (`ref_name`, e.g.
+# `development`); `event_name` keeps a manual `workflow_dispatch` run on a branch from cancelling that
+# branch's push run and the other way round (a cancelled required check can block a merge):
+# `ci-CI-push-development` vs `ci-CI-workflow_dispatch-development`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -597,7 +603,10 @@ jobs:
   # `engine coverage floor (llm, mcp)` — kept as a SEPARATE job from `ci` so a coverage regression is
   # legible on its own line rather than buried in a 12-step job. It is a repo-ROOT vitest run, which is what
   # makes the root-relative per-glob thresholds authoritative (vitest.config.ts). `packages/core` is measured
-  # but not enforced here; see the header for the ruling and its promotion trigger.
+  # but not enforced here; see the header for the ruling and its promotion trigger. The run instruments
+  # only the `packages/` tests (`tools/coverage-gate/run.mjs` records the measurement): the apps tests add
+  # nothing to an enforced figure and were about three quarters of a run that took 29 to 45+ minutes on
+  # identical code; they still run in `ci-work`.
   coverage:
     needs: native-fs-assets
     if: ${{ always() }}
@@ -606,7 +615,9 @@ jobs:
     # One file worker isolates unchanged admitted-size case budgets from instrumentation
     # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
     # reserve finite whole-suite headroom without changing case bounds or coverage thresholds. By
-    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45.
+    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45. Since the run
+    # covers only the package tests it is expected to take well under 15 minutes (4 min 44 s measured locally);
+    # the allowance is kept as headroom, and changing it also changes two pinned lines.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1

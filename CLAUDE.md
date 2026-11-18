@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-13): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-18): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -53,42 +53,28 @@ Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6
 MVP-2 is complete and on `main` through PR #98 (`0db4c940`, merged 2026-11-11), including all four steps,
 review corrections, separate security sittings and passing combined CI.**
 See the [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
-MVP-3's three steps are implemented and independently accepted on `development`:
-editing/search tools, trustworthy approval previews and tool-call rendering v2,
-native metadata preservation, the built-in editing grant and startup-mode settings.
-The PR #99 correction source through `e61ae0fa` passes 18,651 workspace tests
-and 1,129 acceptance-tool cases. Verified general-review findings are fixed;
-fresh cumulative reviews and separate final-source security sittings are clean.
-All 207 baseline Sonar reports and 45 correction follow-ups have individual
-source actions or verified remote dispositions, including reviewed rescan follow-ups.
-Final-head scanner/platform
-checks and maintainer review govern PR #99's merge.
-The [implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
-owns exact evidence and limits. MVP-3b, MVP-3c and MVP-3d are placed ahead
-of MVP-4; MVP-4 follows, with its pending ADR approvals required. No merge or
-npm publication is claimed.
-**PR #99 review follow-up (2026-11-13): implementation and local review complete.**
-The [final development source checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#correction-final-development-source-acceptance-2026-11-13)
-records runtime/UX, native lifetime, delivery and scanner corrections and their
-independent review/security receipts. Current PR checks own final CI/scanner acceptance.
-[ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)
-is Accepted after the supplied design reviews and maintainer approval; its
-source-admission/recovery implementation is complete. Earlier receipts retain
-their scoped historical meaning and do not replace current-head checks.
-The subsequent [ADR-0127 manual-test correction](docs/roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
-is implemented and locally accepted on `development` after two review rounds
-and a separate security sitting; final-head platform/consumer/PR gates remain.
-On 2026-11-16 three increments were placed ahead of MVP-4: MVP-3b (the docked approval card, honest chat modes,
-refusals that return to the model — committed on `development`; on 2026-11-17 an external-review correction round, a D64 round and four separate security sittings followed — the last one after every approval answer key became a Ctrl chord (`Ctrl+Y`/`Ctrl+G`+Enter/`Ctrl+N`/`Ctrl+R`) — and the gates pass on the final source; the
-final-head platform checks and the maintainer's acceptance are owed), **MVP-3c** (an interrupted turn stays in the
-session as a content-free marker, [ADR-0119](docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
-implemented locally; D64 rounds 1–4 and four security sittings found no blocker/high, their fixes are in, the gates pass on the final source, and the maintainer's acceptance is owed) and MVP-3d (`ask_user`;
-[ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) is Accepted and implemented on `development`; [ADR-0133](docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) (2026-11-16) stores the question and the answer with the session so later turns and `chat resume` see them; ADR-0132's own design/implementation reviews and security sitting are recorded in it, and ADR-0133's D64 cumulative round, separate security sitting (one medium, fixed) and focused corrective sitting (no blocker, high or medium) ran on 2026-11-16 with their fixes on `development`, and the full gate passes on the final source — the final-head platform checks and the maintainer's acceptance are owed). Their exact status
-lives in [current.md](docs/roadmap/current.md).
-On 2026-11-17 the maintainer kept the Ctrl-chord approval keys and had the approval card's full view (`[v]`) and `/details`
-rebuilt as one readable screen ([ADR-0134](docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md);
-implemented on `development`, four review rounds and four separate security sittings recorded in the phase register; the
-final-source gate passes; final-head CI and the maintainer's acceptance are owed).
+**MVP-3, with MVP-3b, MVP-3c and MVP-3d, is complete and on `main` through PR #99 (`002dda58`, merged
+2026-11-18):** editing and search tools, trustworthy approval previews and tool-call rendering v2, native metadata
+preservation, the built-in editing grant and startup-mode settings (MVP-3's three steps); the docked approval card,
+honest chat modes and refusals that return to the model (MVP-3b: [ADR-0129](docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md),
+[ADR-0130](docs/decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md), [ADR-0131](docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md),
+[ADR-0117](docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md)); an interrupted turn that stays as a content-free marker (MVP-3c,
+[ADR-0119](docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)); `ask_user`, whose question and answer are kept with the
+session (MVP-3d, [ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md) and
+[ADR-0133](docs/decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)); the native write-admission proof
+([ADR-0126](docs/decisions/0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md)), the macOS write-metadata correction
+([ADR-0127](docs/decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)) and the content-free tool receipts
+([ADR-0128](docs/decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)); every approval answer key as a Ctrl chord
+(`Ctrl+Y`/`Ctrl+G`+Enter/`Ctrl+N`/`Ctrl+R`); and the approval card's full view (`[v]`) and `/details` rebuilt as one readable
+screen ([ADR-0134](docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)). The independent reviews and separate
+security sittings are recorded in the phase register. The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its two CI
+observations: the required `coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head
+coverage run exists (the merge commit's identical tree passed it in 41 min 10 s); and one acceptance-tool test hit its 10-second
+limit in the first attempt of the merge commit's push run, which a re-run (attempt 2, success) cleared. SonarCloud's gate is OK on
+the PR and on `main`. **MVP-4 is next**, with
+[ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
+[ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) still to be accepted. npm still
+serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

@@ -8,11 +8,25 @@ import { HostDeniedError, throwIfAborted } from './errors.js';
 import { foldPathComponent } from './fs-path-component.js';
 
 const MAX_RECORDS = 128;
+/**
+ * The nonce count a scan accepts: all that the entry bound (`MAX_RECORDS * 3 + 1` names, the lock file included)
+ * can hold, one name per nonce; the native scan does the same. A producer pins without any claim, so a native
+ * reservation can overshoot `MAX_RECORDS` by the pins that were in flight during one listing, a number with no
+ * bound of its own that could be proven. Refusing at the first overshoot beyond a guessed slack would fail every
+ * filesystem tool call with nothing supported to clear it; the entry bound is the limit that already exists.
+ */
+const MAX_SCAN_NONCES = MAX_RECORDS * 3;
 const MAX_RECORD_BYTES = 16 * 1024;
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const SCAN_MS = 2000;
 /** Whole-scan attempts when a committed record vanishes mid-scan; the one SCAN_MS deadline bounds them all. */
-const SCAN_ATTEMPTS = 3;
+/**
+ * Whole scans a vanishing committed record may cost: the first plus the retries, all inside the same deadline.
+ * Under heavy churn (many concurrent writers completing, each removing its record) a record can vanish in
+ * several scans in a row; eight keeps that from refusing a tool call, and a record that keeps vanishing still
+ * ends as the same fatal error.
+ */
+const SCAN_ATTEMPTS = 8;
 const STAGE_PREFIX = '.relavium-fs-stage-v1.';
 export const FS_PRIVATE_INDEX_PARENT = '.relavium-fs-private-v1';
 const recordName = /^([a-f0-9]{32})\.(record|reserved|prepare)$/;
@@ -107,8 +121,83 @@ function tick(start: number, signal: AbortSignalLike | undefined): void {
   throwIfAborted(signal, 'filesystem staging inventory scan was aborted');
   if (performance.now() - start > SCAN_MS) throw new FsStageInventoryError();
 }
+async function nameIsAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return code(error) === 'ENOENT';
+  }
+}
 function same(a: Identity, b: Identity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** An uncommitted entry (or the lock) over its bytes bound; only a `.prepare` may hold bytes, and only up to it. */
+function uncommittedOverBound(size: bigint, total: number, prepare: boolean): boolean {
+  return size > BigInt(MAX_RECORD_BYTES) || total > MAX_SCAN_BYTES || (!prepare && size !== 0n);
+}
+/** A committed record whose read ended over its bounds or short of its stat size. */
+function readOverBound(bytesRead: number, total: number, size: bigint): boolean {
+  return bytesRead > MAX_RECORD_BYTES || total > MAX_SCAN_BYTES || BigInt(bytesRead) !== size;
+}
+/** The identities a committed record pins; nothing for any other entry. */
+function recordedIdentities(
+  match: RegExpExecArray | null,
+  bytes: Buffer,
+  uid: bigint | undefined,
+): readonly Identity[] {
+  return match?.[2] === 'record' && match[1] ? parseRecord(bytes, match[1], uid) : [];
+}
+
+type OpenedVerdict = 'intact' | 'unlinked' | 'suspect' | 'changed';
+/**
+ * Judge a freshly opened entry against the `lstat` that selected it. A different file than the one looked at is a
+ * changed index, whatever the name says afterwards. The same file at link count zero was unlinked under the scan:
+ * the held file's link count only goes down, so it is exact proof, and unlike a lookup of the name it also holds in
+ * the instant where `unlink` has lowered the count but the name still resolves (seen on Linux). Anything else that
+ * fails the checks is `suspect`: it counts as vanished only when the name is really absent now.
+ */
+function judgeOpened(
+  observed: BigIntStats,
+  before: BigIntStats,
+  transient: boolean,
+  privateOwner: boolean,
+): OpenedVerdict {
+  if (!same(observed, before)) return 'changed';
+  if (before.nlink === 0n) return 'unlinked';
+  const intact =
+    before.isFile() &&
+    before.nlink === 1n &&
+    privateOwner &&
+    (transient || observed.ctimeNs === before.ctimeNs);
+  return intact ? 'intact' : 'suspect';
+}
+/**
+ * Judge a committed record after it was read: still the same private file, or being unlinked (the whole scan runs
+ * again), or changed. A record unlinked between the two stats and the final `lstat` reads link count zero on one
+ * of them; the name then has to still be the same file, because a different file under it is a changed index, not
+ * a record that vanished.
+ */
+function judgeRead(
+  before: BigIntStats,
+  after: BigIntStats,
+  current: BigIntStats,
+  privateOwner: boolean,
+): 'intact' | 'unlinked' | 'changed' {
+  if (after.nlink === 0n || current.nlink === 0n)
+    return same(before, current) ? 'unlinked' : 'changed';
+  const unchanged =
+    same(before, after) &&
+    same(before, current) &&
+    after.nlink === 1n &&
+    current.nlink === 1n &&
+    privateOwner &&
+    before.ctimeNs === current.ctimeNs &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs;
+  return unchanged ? 'intact' : 'changed';
 }
 
 async function requireLegacyAbsent(
@@ -294,8 +383,9 @@ export async function captureFsStageInventory(
           (entry.name !== 'inventory.lock' && !match)
         )
           throw new FsStageInventoryError();
+        const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
         if (match?.[1]) nonces.add(match[1]);
-        if (nonces.size > MAX_RECORDS) throw new FsStageInventoryError();
+        if (nonces.size > MAX_SCAN_NONCES) throw new FsStageInventoryError();
         const path = join(index, entry.name);
         let observed;
         try {
@@ -310,6 +400,12 @@ export async function captureFsStageInventory(
           if (code(error) === 'ENOENT' && match?.[2] === 'record') throw new RecordVanished();
           throw error;
         }
+        if (observed.nlink === 0n) {
+          // `lstat` can still succeed for an entry in the middle of being unlinked (seen on macOS): its link
+          // count is already zero. That is a vanished entry, not a changed index.
+          if (transient) return;
+          if (match?.[2] === 'record') throw new RecordVanished();
+        }
         if (
           !observed.isFile() ||
           observed.isSymbolicLink() ||
@@ -318,7 +414,6 @@ export async function captureFsStageInventory(
           observed.size > BigInt(MAX_RECORD_BYTES)
         )
           throw new FsStageInventoryError();
-        const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
         let handle;
         try {
           tick(start, signal);
@@ -337,22 +432,23 @@ export async function captureFsStageInventory(
         ): Promise<void> {
           tick(start, signal);
           const before = await opened.stat({ bigint: true });
-          if (
-            !same(observedEntry, before) ||
-            !before.isFile() ||
-            before.nlink !== 1n ||
-            !privatePolicy(before) ||
-            (!transient && observedEntry.ctimeNs !== before.ctimeNs)
-          )
+          const verdict = judgeOpened(observedEntry, before, transient, privatePolicy(before));
+          // A producer's pin removes its `.reserved` and renames its `.prepare` without any claim this
+          // reader could hold, and a completing write removes its `.record`: the file we just opened can
+          // be unlinked under us, which reads like a changed index (see `judgeOpened`). An uncommitted entry
+          // that is gone is skipped (as one that vanished before the open), a committed record runs the whole
+          // scan again, and a file that is still there and fails a check stays fatal.
+          if (verdict === 'changed' || (verdict === 'suspect' && !(await nameIsAbsent(path))))
             throw new FsStageInventoryError();
+          if (verdict !== 'intact') {
+            if (transient) return;
+            if (match?.[2] === 'record') throw new RecordVanished();
+            throw new FsStageInventoryError();
+          }
           protectIdentity(before);
           if (transient || entry.name === 'inventory.lock') {
             total += Number(before.size);
-            if (
-              before.size > BigInt(MAX_RECORD_BYTES) ||
-              total > MAX_SCAN_BYTES ||
-              (match?.[2] !== 'prepare' && before.size !== 0n)
-            )
+            if (uncommittedOverBound(before.size, total, match?.[2] === 'prepare'))
               throw new FsStageInventoryError();
             return;
           }
@@ -361,12 +457,7 @@ export async function captureFsStageInventory(
           tick(start, signal);
           const { bytesRead } = await opened.read(bytes, 0, bytes.length, 0);
           total += bytesRead;
-          if (
-            bytesRead > MAX_RECORD_BYTES ||
-            total > MAX_SCAN_BYTES ||
-            BigInt(bytesRead) !== before.size
-          )
-            throw new FsStageInventoryError();
+          if (readOverBound(bytesRead, total, before.size)) throw new FsStageInventoryError();
           tick(start, signal);
           const after = await opened.stat({ bigint: true });
           tick(start, signal);
@@ -374,22 +465,11 @@ export async function captureFsStageInventory(
             // Only a committed `.record` reaches this point (reservations/prepares/the lock returned above).
             throw code(error) === 'ENOENT' ? new RecordVanished() : error;
           });
-          if (
-            !same(before, after) ||
-            !same(before, current) ||
-            after.nlink !== 1n ||
-            current.nlink !== 1n ||
-            !privatePolicy(current) ||
-            before.ctimeNs !== current.ctimeNs ||
-            before.size !== after.size ||
-            before.mtimeNs !== after.mtimeNs ||
-            before.ctimeNs !== after.ctimeNs
-          )
-            throw new FsStageInventoryError();
-          if (match?.[2] === 'record' && match[1]) {
-            for (const pinned of parseRecord(bytes.subarray(0, bytesRead), match[1], uid))
-              protectIdentity(pinned);
-          }
+          const read = judgeRead(before, after, current, privatePolicy(current));
+          if (read === 'unlinked') throw new RecordVanished();
+          if (read === 'changed') throw new FsStageInventoryError();
+          for (const pinned of recordedIdentities(match, bytes.subarray(0, bytesRead), uid))
+            protectIdentity(pinned);
           // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
         }
         try {

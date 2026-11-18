@@ -3704,7 +3704,7 @@ No credential values or request captures belong in tracked evidence.
 | 9a.2 | **Recorded split — manifest, symbolication and package-test receipt:** the private map manifest keyed by `dist/<chunk>.js`, actual packed CLI and engine frame symbolication against the matching source revision, wrong JS/map/source and missing/malformed-upstream negative controls (product copies via `check:map-controls`, also a required uncached CI job), and the atomic `package_test` receipt flip across seal, binding, consumers, aggregate and both workflows. *Split on 2026-10-24 (maintainer-approved; ID coverage #46/ADR-0111 unchanged) into 9a.2a and 9a.2b below, which replace it as increments ([preflight decisions](#wave-3-step-9a2-preflight-decisions--2026-10-24)).* |
 | 9a.2a | **Recorded split, 2026-10-24 (maintainer-approved) — decoder, private manifest and symbolication:** an in-house strict source-map decoder; strict mapping and range validation of upstream and final maps in the finalizer; the private map manifest (`staging/manifest.json`, keyed by `dist/<chunk>.js`, with a per-source digest inventory and the commit's tree), sealed after the archive inspection; real packed CLI and `@relavium/core` frame capture through a tooling-only preload during an offline `relavium import`, run on the finalized `dist` that the inspection proves byte-equal to the tarball; symbolication of those frames against the matching source revision (clean: the checkout's Git objects; dirty, local only: the candidate copy), wired into the seal before the receipt is written. The receipt stays `compiled_package_test`. Security sitting. *Independently accepted on `development` at `a92a7602` on 2026-10-24 ([checkpoint](#wave-3-step-9a2a-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)).* |
 | 9a.2b | **Recorded split, 2026-10-24 (maintainer-approved) — product map controls and the package-test receipt:** `check:map-controls` over product copies (wrong JS by line and column, wrong map, permuted sources, wrong source, missing, malformed and truncated upstream maps, a shifted valid upstream map, and the package-test producer's post-receipt rebuild refusals that ADR-0111 lists), run in `pnpm run ci` and as a required uncached CI job inside `ci`'s needs (the required contexts stay `ci` and `coverage`); then the atomic `package_test` flip across seal, binding, consumers, aggregate and both workflows, version 1 kept. Security sitting.  *Preflight decisions approved on 2026-10-24 ([decisions](#wave-3-step-9a2b-preflight-decisions--2026-10-24)); independently accepted on `development` at `0f73c253` on 2026-10-24 ([checkpoint](#wave-3-step-9a2b-implementation-checkpoint--2026-10-24), [acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)).* |
-| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
+| NI | **Native file identity on Windows (maintainer-approved 2026-10-24; after 9a.2b, before 9b):** every file and directory identity check compares `dev`/`ino` read with `{ bigint: true }` — the filesystem policy's pinned roots, the workflow catalog's open check and the media store's pins, read check and temporary claims — so a replaced file or directory can never compare equal on Windows, where `ino` is a 64-bit NTFS file ID that a JavaScript number cannot hold exactly; a replacement test per site. Found by 9a.2a's push CI ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); recorded in [deferred-tasks-parked.md](../deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24). Security sitting. *Preflight decisions approved on 2026-10-25 ([decisions](#wave-3-ni-preflight-decisions--2026-10-25)); independently accepted on `development` at `fc5af701` on 2026-10-25 ([checkpoint](#wave-3-ni-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-ni-acceptance--2026-10-25)); its Windows clause closes after three green advisory Windows runs on pushed heads.* |
 | 9b | **Recorded split — recipient custody:** synthetic-only isolated GnuPG controls (public-only home/keyring, pinned primary and encryption-subkey fingerprints, machine-readable refusal of missing, expired, revoked or unusable recipients), encrypt once and reuse the original ciphertext. Explicit crypto/custody security sitting. Fixture proof never claims production recipient or custody configuration. *Split on 2026-10-25 (maintainer-approved, L8) into 9b.1 and 9b.2 below, which replace it as increments ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)).* |
 | 9b.1 | **Recorded split, 2026-10-25 (maintainer-approved) — container, isolated GnuPG runner and encrypt-once:** the strict USTAR dialect extracted from the archive reader with its writer promoted; the private container built from the sealed staging in a staging-relative layout, each map's digest checked against the private manifest and its size against the finalizer's record, which must name exactly the manifest's outputs and maps (the metafile must be a JSON object); an isolated public-only GnuPG runner (GnuPG ≥ 2.2.8; `--recipient-file` with no keyring or agent, and no trustdb but the empty one GnuPG may create in the listing home); a colon-listing pre-check that refuses missing, expired, revoked, unusable (v4 with cv25519 or RSA ≥ 3072 only) or unexpected recipients and secret material; `encryptOnce` (SEIPDv1 with MDC and AES-256, exactly one `ENC_TO` for the pinned subkey, the exact produced asset, a no-clobber publish, plaintext cleanup on every path); committed synthetic public fixtures, an ephemeral round-trip key, and the GnuPG prerequisite documented. Library and synthetic controls only: product paths and workflows stay unchanged. Crypto/custody security sitting. *Independently accepted on `development` at `147c2788` (2026-10-25) ([decisions](#wave-3-step-9b-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b1-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b1-acceptance--2026-10-25)).* |
 | 9b.2 | **Recorded split, 2026-10-25 (maintainer-approved) — reuse, binding receipt and scope separation:** retained-ciphertext reuse without re-encryption (digest and size verified, zero GnuPG calls); the release binding receipt's schema v1, its validator and a sealer that writes only after the ciphertext exists (9d adds the origin, map-check and `ci`-run binding); the production recipient loader, absent in Wave 3; synthetic and production scope separation. Crypto/custody security sitting. *Independently accepted on `development` at `563402e6` (2026-10-26) ([decisions](#wave-3-step-9b2-preflight-decisions--2026-10-25), [checkpoint](#wave-3-step-9b2-implementation-checkpoint--2026-10-25), [acceptance](#wave-3-step-9b2-acceptance--2026-10-26)).* |
@@ -9480,7 +9480,7 @@ cannot be complete, and each aggressive round found another corner case while St
 is clean for this increment when it reports no high or medium finding and no regression against base
 `9902e0a0` (text that base masked and the reviewed head shows, or a guarantee base kept, such as no
 throw, linear time at admitted size or a settled projection, that the reviewed head no longer keeps). Each low finding is recorded in
-[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22)
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22)
 with its file, a minimal example and where to re-check it, instead of being corrected in the loop.
 The increment was to close with the sixth internal pre-review and one external round (round 9) under
 that bar; the round cap below superseded that. The ruling covers only the open-ended masker work: `packages/llm/src/scrub-secrets.ts`, core's
@@ -9514,7 +9514,7 @@ regression against base or `59c64498` in the generators or in an exhaustive run 
 **Closure, 2026-10-22.** The increment closes under the round cap with the round-10 correction. It is
 not independently accepted in the sense of the approved bar: round 10 was NONCLEAN, and its correction
 was verified by the author alone, as the round cap provides; every finding it did not correct is in
-[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22).
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22).
 `development` is pushed and its CI observed, and the PR95 items in
 [deferred-tasks.md](../deferred-tasks.md#pr-95-independent-review--unactioned-findings-2026-10-18) are
 closed. Step 9a.1 follows.
@@ -9633,7 +9633,7 @@ temporary directory, and a deadline interrupt that reaches every member of the p
 leader). One of those runs left a test's detached build stand-in behind under a mutant that hung the test,
 so every wait for a spawned tool's exit in the interrupt tests is now bounded and a regressed tool fails its
 test instead. Five low findings that need a change of scope are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
 
 **Remaining gates.** None for acceptance: see the acceptance record below. `development` is pushed and
 its CI observed after the acceptance commit.
@@ -9647,7 +9647,7 @@ high or medium finding and no regression, and its separate security sitting, run
 own reviewer and report, was clean. The plan reviewer ran the real producer at the reviewed head: it exited
 0 with a `compiled_package_test` receipt, and the tarball held no map, map link or `sourcesContent`. The
 round's ten verified findings (three low, seven nits; six distinct) are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). Those that
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). Those that
 concern documentation only — the contract's store-discovery list, the deadline's group-kill wording, the
 guard's exit-code wording and deferred-tasks.md's freshness line — are corrected in the acceptance commit,
 which changes no code; the two test gaps stay open there. The PR #95 tooling nits owned by 9a.1 (the
@@ -9662,7 +9662,7 @@ originating pack, the four same-tarball installed-CLI consumers (current Linux, 
 22.0.0 Linux) and their aggregate, lint, typecheck and test, the engine coverage floor and the causal-control
 families. The advisory Windows job failed: one `packages/db` test timed out at vitest's default 5 s on that
 runner (7.7 s). 9a.1 changed no database or CLI source; the cause and the runner's history are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24).
 
 ### Wave 3 Step 9a.2 preflight decisions — 2026-10-24
 
@@ -9721,7 +9721,7 @@ digit now refuses; and many claimed guarantees had no killing test (a new `manif
 extended decoder, finalizer, seal and candidate tests). Lows corrected include a native-addon refusal in the
 preload beside the keyring stand-in, which now exports every export the package declares, owners without a body
 no longer counted as anchor owners, and the Git, re-hash, README and status wording. Two lows are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24): the capture child is not
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24): the capture child is not
 sandboxed (also a named limit in the contract), and two packs of one source can order the packed manifest's
 `@relavium/*` dependencies differently, so their digests differ (for Step 9c). All 554 mutants of the three sweeps
 and of the corrections were then run against the corrected tests: 509 are killed, 4 targeted code the pass
@@ -9774,7 +9774,7 @@ the reviewed head: it exited 0 with a `compiled_package_test` receipt and `dirty
 were unchanged, neither the receipt nor the tarball held a map, the manifest, a frame, the per-source inventory or
 a host path, and the sealed manifest (25 outputs, 404 sources) and the symbolication of all five anchors (about a
 second) matched this checkpoint. The round's three verified findings (one low, two nits) are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24); the wording nit is
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24); the wording nit is
 corrected in the acceptance commit, which changes no code, and the two test gaps stay open there. The receipt
 stays `compiled_package_test`; Step 9a.2b is next.
 
@@ -9789,7 +9789,7 @@ directory by `dev` and `ino` read without `{ bigint: true }`, and on Windows `in
 JavaScript number above 2^53 cannot hold exactly, so a directory created next to the renamed original can round to
 the same identity. Four other identity checks share the pattern. The maintainer approved a separate increment for
 them on 2026-10-24, after 9a.2b and before 9b (row NI;
-[deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24)).
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24)).
 
 ### Wave 3 Step 9a.2b preflight decisions — 2026-10-24
 
@@ -9855,7 +9855,7 @@ for every dispatch — corrected in the contract and the workflow comments, with
 environment, removing a refused control build's `dist`, tests of the already-sealed refusal's order, of a failed
 receipt write, of the version's start anchor and of `verifySealedDist`'s every output and read bounds, and the
 summary, checkout and already-sealed wording. Four lows, and one medium for Step 9d, are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24). The five mutants the
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24). The five mutants the
 corrections target now fail the real runner, each on its own control or self-check.
 
 **Author evidence at `3e6ae33c`.** The full `pnpm run ci` (exit 0, about 73 minutes, with `check:map-controls`
@@ -9888,7 +9888,7 @@ correctness lenses were clean. The plan reviewer checked the commit order (the f
 the controls, the required job and its guard before it), ran the real runner at the reviewed head (25 of 25
 expected controls on a clean tree) and showed that removing the artifact half of `PACKED_CLI_ALREADY_SEALED` fails
 both re-seal controls. The round's seven verified findings (five low, two nits) are recorded in
-[deferred-tasks.md](../deferred-tasks.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24) or corrected in the
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9a2b--recorded-low-findings-2026-10-24) or corrected in the
 acceptance commit, which changes no code: the plan's increment count now includes NI, deferred-tasks.md's freshness
 line names it, and the contract and the interrupted-runner record say that directory can still hold the baseline
 public tarball and receipt. The receipt now records `package_test`; the native-identity increment NI is next, then
@@ -9968,7 +9968,7 @@ Engineering defaults recorded with the rulings:
 6. **Documents.** The policy and physical storage paragraphs of the
    [built-in tools reference](../../reference/shared-core/built-in-tools.md#physical-media-storage-and-limits),
    dated corrections to ADR-0105 and ADR-0106, the NI entry and two scoped limits in
-   [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24), and
+   [deferred-tasks-parked.md](../deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24), and
    the status lines.
 
 No runtime dependency or ADR is added, and no persisted format changes.
@@ -10039,7 +10039,7 @@ five control removals, and each failed its named witness.
 
 The round's verified findings were four lows and four nits:
 - Three lows are recorded in
-  [deferred-tasks.md](../deferred-tasks.md#wave-3-ni--recorded-low-findings-2026-10-25): the lifecycle smoke's
+  [deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-ni--recorded-low-findings-2026-10-25): the lifecycle smoke's
   precondition reads can revert unnoticed; nothing tests the projection's `mtimeMs` formula; the catalog's
   dense-multibyte case catches only a byte bound below 1.5 times the character cap.
 - The fourth low is corrected in the acceptance commit, which changes no code: the fs-policy-controls README's
@@ -10069,7 +10069,7 @@ negative`, and the repeated replacement tests passed.
 [run 40276471445](https://github.com/HodeTech/Relavium/actions/runs/40276471445) at `5a328bca` passed all eighteen
 jobs, the advisory Windows job among them. Its probe logged `0 of 200 replacement pairs collide as Numbers; 0 read
 negative`, and the repeated replacement tests passed. With three consecutive green advisory Windows runs on pushed
-heads, the Windows clause and the NI entry in [deferred-tasks.md](../deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24)
+heads, the Windows clause and the NI entry in [deferred-tasks-parked.md](../deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24)
 are closed; NI's scoped limits stay recorded there.
 
 ### Wave 3 Step 9b preflight decisions — 2026-10-25
@@ -10337,7 +10337,7 @@ skipped.
 
 The round's verified findings were five lows:
 - Four are recorded in
-  [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b1--recorded-low-findings-2026-10-25):
+  [deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9b1--recorded-low-findings-2026-10-25):
   - a temporary sibling that cannot be removed after a successful link reports `UNEXPECTED`, although the ciphertext
     is published;
   - no test pins the metafile's 4 MiB value;
@@ -10621,7 +10621,7 @@ The round's verified findings were twelve lows and one nit:
   (PLAN-9B2-R4-3, SIT9B2-R4-L2, COR-R4-1). The `custody.mjs` control's claim now names the escapes it decodes
   (PLAN-9B2-R4-1, COR-R4-2).
 - The rest are recorded in
-  [deferred-tasks.md](../deferred-tasks.md#wave-3-step-9b2--recorded-low-findings-2026-10-26), each with its example
+  [deferred-tasks-parked.md](../deferred-tasks-parked.md#wave-3-step-9b2--recorded-low-findings-2026-10-26), each with its example
   and re-check.
 
 Step 9c was next; Wave 3 was paused on 2026-10-26 behind the CLI MVP ([MVP priority reset](#mvp-priority-reset--2026-11-04)).
@@ -10734,7 +10734,7 @@ publish job naming the `release` environment, skipped provider lanes reported), 
 restored, [moved here](#moved-by-the-pr-96-review-correction--2026-11-04) and to the other phase files), `eb2cce48`
 (MVP-A23's publish-credential prerequisite), and `062564f0`/`f25fb83d` (complexity). The lows and the Sonar smells
 the maintainer chose to record are in
-[deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04).
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04).
 
 **Evidence.** Local `pnpm run ci` passed at `964994c7`, three commits before the merged head (secrets controls
 130/130, acceptance tools 1,027/1,027), and `pnpm coverage:enforced` passed there (753 files, 16,244 tests; 94.75%
@@ -10769,7 +10769,7 @@ The fixes are `5a1006ea` (core), `3cb9712c` (tooling and CI) and the documentati
 prerelease grammar and tests, a stranded JSDoc, the fixture generator's temporary home, the Windows job's comment and
 a pin that no required job can be skipped, stale pointers, move notes, empty links, the argv rule's scope, the 2.6.Q
 item narrowed to what W8 left); the rest are in
-[deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04), with the
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04), with the
 review's 86 unverified first-pass lows triaged against `f25fb83d`. **After round 1 D64's bar was not met:** it found
 medium findings, so acceptance needs one NEW complete cumulative round over the corrected head with no blocker, high
 or medium finding.
@@ -10827,7 +10827,7 @@ a `--flag=value` or glued `-u` spelling keeps text only where the text rules kee
 be shown so, because the projection repeats until stable and a reading's masks can change the text other rules read in
 a later pass, so it was removed: the text projection is again the base's (no difference over 200,000 generated texts),
 and the review's A4 is a recorded limit again
-([deferred-tasks.md](../deferred-tasks.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04)). Both
+([deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-96-review--recorded-findings-and-sonar-dispositions-2026-11-04)). Both
 superset oracles find no violation at the resulting head. D64's bar of a clean NEW round is waived for this correction
 by that ruling, a recorded deviation.
 
@@ -11501,7 +11501,7 @@ bar and round cap, as its
 medium findings through round 9 are corrected, and after round 10, the last round, only GEN-R10-1, which the
 maintainer counted as high on 2026-10-22, is corrected (in the summary, by the author alone). Its other findings
 are recorded in
-[deferred-tasks.md](../deferred-tasks.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is independently accepted on `development` at `cf97b7f1` (2026-10-24): its round 13 reported no blocker, high or medium finding and its security sitting was clean, and the round's low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)); Step 9a.2 is split into 9a.2a and 9a.2b, and Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24) after three rounds, the third with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24) after two rounds, the second with no blocker, high or medium finding and no regression ([acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)), and the native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25) after one round with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-ni-acceptance--2026-10-25)), its Windows clause open until three green advisory Windows runs; Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)), and Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` ([acceptance](#wave-3-step-9b1-acceptance--2026-10-25)), and Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the absent production recipient loader and scope separation) is independently accepted on `development` at `563402e6` ([acceptance](#wave-3-step-9b2-acceptance--2026-10-26)), with Step 9c next; the substrate's
+[deferred-tasks-parked.md](../deferred-tasks-parked.md#pr-95-masker-edge-cases--approved-deferrals-2026-10-21-and-2026-10-22). **Step 9a.1**, the first increment of the release map/custody substrate (#46, ADR-0111), is independently accepted on `development` at `cf97b7f1` (2026-10-24): its round 13 reported no blocker, high or medium finding and its security sitting was clean, and the round's low findings are recorded in deferred-tasks.md ([acceptance](#wave-3-step-9a1-acceptance--2026-10-24)); Step 9a.2 is split into 9a.2a and 9a.2b, and Step 9a.2a (the strict decoder, private manifest and packed-frame symbolication) is independently accepted on `development` at `a92a7602` (2026-10-24) after three rounds, the third with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-step-9a2a-acceptance--2026-10-24)); Step 9a.2b (the product map controls, the post-receipt rebuild refusals and the `package_test` receipt) is independently accepted on `development` at `0f73c253` (2026-10-24) after two rounds, the second with no blocker, high or medium finding and no regression ([acceptance](#wave-3-step-9a2b-acceptance--2026-10-24)), and the native-identity increment NI (a file-identity security fix the maintainer approved on 2026-10-24, register row NI, before Step 9b) is independently accepted on `development` at `fc5af701` (2026-10-25) after one round with no blocker, high or medium finding and no regression and a clean security sitting ([acceptance](#wave-3-ni-acceptance--2026-10-25)), its Windows clause open until three green advisory Windows runs; Step 9b is split into 9b.1 and 9b.2 ([preflight decisions](#wave-3-step-9b-preflight-decisions--2026-10-25)), and Step 9b.1 (the private container, isolated GnuPG runner and encrypt-once library, synthetic recipients only) is independently accepted on `development` at `147c2788` ([acceptance](#wave-3-step-9b1-acceptance--2026-10-25)), and Step 9b.2 (the release binding receipt v1, verified ciphertext reuse, the absent production recipient loader and scope separation) is independently accepted on `development` at `563402e6` ([acceptance](#wave-3-step-9b2-acceptance--2026-10-26)), with Step 9c next; the substrate's
 9a.1–9d increments carry a dedicated archive/crypto security sitting. Steps 10–19 follow the
 [increment table](#proposed-implementation-increments) and end with
 whole-wave acceptance at Step 19. `development` is pushed after each accepted increment; PR #95 no longer bounds the

@@ -19,7 +19,7 @@ const root = new URL('../../', import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
 const command = packageJson.scripts['ci:workspaces'];
 
-test('actual enforced coverage entry keeps all cases in one file worker and propagates failure', () => {
+test('actual enforced coverage entry runs the package cases in one file worker and propagates failure', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relavium-coverage-scheduling-'));
   try {
     const entry = join(directory, 'tools', 'coverage-gate', 'run.mjs');
@@ -44,12 +44,34 @@ test('actual enforced coverage entry keeps all cases in one file worker and prop
     assert.equal(result.status, 37);
     assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), {
-      args: ['run', '--coverage', '--maxWorkers=1'],
+      // `--dir packages`: the enforced floor covers packages/llm and packages/mcp only, so the coverage job runs
+      // the package tests alone and the apps tests do not run in it (the package figures were measured
+      // unchanged on 2026-11-18; see docs/standards/testing.md before widening this).
+      args: ['run', '--coverage', '--maxWorkers=1', '--dir', 'packages'],
       enforced: '1',
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('CI runs once per commit: push on main and development plus a manual dispatch, never pull_request', () => {
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  // `on` stays a string key here: the `yaml` package parses YAML 1.2, where `on` is not a boolean.
+  // A `pull_request` trigger next to `push` ran the whole pipeline twice for every commit on a branch with
+  // an open PR; a development -> main PR is satisfied by the push run on its head commit instead.
+  assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
+  assert.deepEqual(workflow.on.push, { branches: ['main', 'development'] });
+  assert.equal(
+    workflow.concurrency.group,
+    'ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref_name }}',
+  );
+  assert.equal(
+    workflow.concurrency['cancel-in-progress'],
+    "${{ github.ref != 'refs/heads/main' }}",
+  );
 });
 
 for (const [lintCode, testCode, expectedCode, calls] of [

@@ -402,7 +402,7 @@ installs the CLI under the temporary directory, so on a host whose temporary dir
 local users can write to (a shared `/tmp`), a module another user plants in its `node_modules`
 could satisfy an optional `require` of the installed CLI; CI runners are single-tenant and macOS's
 per-user temporary directory is not shared. This is a named limit of the local consumer, owned
-by [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). "Owner-only" in this
+by [deferred-tasks-parked.md](../../roadmap/deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24). "Owner-only" in this
 section means mode 0700 for directories and 0600 for staged files, set — and for the staging
 directory verified together with this process's uid — where POSIX modes are observable. On Windows
 no mode evidence is claimed: the candidate root and staging inherit the temporary directory's ACL,
@@ -493,7 +493,7 @@ environment, its owner-only work directory and, within the capture process only,
 module outside the candidate and the refused keyring and native modules. `relavium
 import` makes no network request, but nothing enforces that. This is a named limit of the
 package-test producer, owned by
-[deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).
+[deferred-tasks-parked.md](../../roadmap/deferred-tasks-parked.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24).
 
 ### Product map controls and the package-test receipt — Step 9a.2b
 
@@ -539,7 +539,7 @@ package-test producer, adds the product map controls and only then flips the rec
     which the finalizer accepts and symbolication refuses.
 
   A restoration production must then seal again; its tarball digest is not compared with the
-  baseline's (see deferred-tasks.md, "Two packs of one source"). Staging copies stay under the private
+  baseline's (see deferred-tasks-parked.md, "Two packs of one source"). Staging copies stay under the private
   staging, which the producer removes first on success, failure and interrupt; a refused control
   build's `dist`, which holds the bundler's maps, is removed at once. The developer's checkout is read,
   never written (Git may refresh its own index's stat cache), and its identity must be unchanged
@@ -559,8 +559,10 @@ package-test producer, adds the product map controls and only then flips the rec
   validator. The mode is a claim, not evidence of the map checks. The `ci` workflow at a commit
   requires the controls, but a given artifact is backed only where a successful `ci` run exists at
   exactly its commit: `pack-cli` uploads its artifact whatever the same run's `map-controls` job
-  concludes, a pull request's `ci` runs at its merge commit, not its head, and a release dispatch with
-  `allow_off_main` or of an intermediate commit has no `ci` run at all; a local dirty production writes
+  concludes; `ci` runs on pushes to `main` and `development` and by manual dispatch (it has no
+  `pull_request` trigger), so the run to verify is the push or dispatch run whose commit is the
+  artifact's; and a release dispatch with `allow_off_main` or of an intermediate commit has no `ci`
+  run at all; a local dirty production writes
   `package_test` too. Steps 9c and 9d must therefore never read the mode as proof. `release.yml` runs
   no map controls of its own and its pack job keeps its `pnpm` dependency cache (public registry
   packages only) until Step 9d rebuilds that graph, and the interim guard refuses every
@@ -569,7 +571,7 @@ package-test producer, adds the product map controls and only then flips the rec
 The runner keeps private maps and manifests longer than the producer does, always inside the
 producer's owner-only root; a runner killed outright can leave that root behind, the producer's
 existing named limit, and an interrupted runner can leave its own temporary directory, which may still
-hold the baseline public tarball and its receipt (see deferred-tasks.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
+hold the baseline public tarball and its receipt (see deferred-tasks-parked.md). The CI job runs on Linux only; a local run on Windows claims no POSIX mode-bit
 evidence, as above.
 
 ## Recipient custody
@@ -644,7 +646,7 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   material GnuPG lists refuses as secret, and a file GnuPG cannot list refuses as unreadable.
   Secret material GnuPG neither lists nor reads, such as binary secret packets after the
   armored block, is admitted and never reaches the ciphertext, the record or a log (a named
-  limit in [deferred-tasks.md](../../roadmap/deferred-tasks.md#wave-3-step-9b1--named-limits-2026-10-25)).
+  limit in [deferred-tasks-parked.md](../../roadmap/deferred-tasks-parked.md#wave-3-step-9b1--named-limits-2026-10-25)).
   The colon listing then refuses,
   in this order: secret material, a missing pinned primary, more than one listed key, a missing
   pinned subkey, revocation, expiry at the current time, unusability (invalid or disabled, no
@@ -659,7 +661,7 @@ recorded in the [Wave 3 register](../../roadmap/phases/phase-2.5.5-hardening-and
   private root overlap (compared by device and inode, so one directory reached by a second
   spelling, such as a case-insensitive variant or a bind mount of that directory, does not hide
   the overlap; containment through a bind mount of a directory inside the other is not detected,
-  a [recorded limit](../../roadmap/deferred-tasks.md#wave-3-step-9b1--recorded-low-findings-2026-10-25)), or when either is missing or the root is not an owner-only
+  a [recorded limit](../../roadmap/deferred-tasks-parked.md#wave-3-step-9b1--recorded-low-findings-2026-10-25)), or when either is missing or the root is not an owner-only
   directory of this user. No root qualifies on Windows, where modes say nothing about access
   and no ACL check exists. Success requires exit 0, exactly one
   `KEY_CONSIDERED` for the pinned primary, one `BEGIN_ENCRYPTION 2 9` (SEIPDv1 with MDC and

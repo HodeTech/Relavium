@@ -102,3 +102,41 @@ binary bytes as TypeScript source. A mutation to a native input refuses old asse
 changes cannot populate the isolated graph. The final original-input check still rejects a moving
 developer capture. This mechanism never builds or eagerly loads the addon for a metadata-independent
 control. Final frozen-source coordinator and target/profile execution remain separate gates.
+
+## Reproducing a Linux leg on a macOS or Windows machine
+
+CI hides the panic text of a failed native test (the `NATIVE_FS_PROFILE_COMMAND` diagnostic keeps only the
+file, the line and the kind of assertion), and a Linux filesystem race rarely shows on macOS: the PR #100
+churn test failed 25 of 60 runs on Linux and none on macOS, and a destination-directory `ctime` comparison
+failed Linux alone. So run a changed native test or a racy one on a native Linux kernel before pushing. A
+Docker host with a Linux VM of the host's own architecture (OrbStack, Docker Desktop) is enough, and there is
+no emulation:
+
+1. Build the same pinned baseline image the CI leg uses: copy the `docker build` arguments of
+   [`ci-build.mjs`](ci-build.mjs) (`--file tools/native-fs/gnu.Dockerfile`, the digest-pinned `BASE_IMAGE`,
+   `NODE_ARCH`, `NODE_SHA256`, and your own `FIXTURE_UID` and `FIXTURE_GID`) and tag it.
+2. Mount a **copy** of the crate read-only and a scratch directory as the cargo target, so the repository and
+   its macOS-built `runtime/` are never touched, and the probe scripts read-only so step 4 can run inside the
+   same container:
+   `docker run --rm --user "$(id -u):$(id -g)" --cap-drop=ALL --security-opt=no-new-privileges
+   -v <crate copy>:/crate:ro -v <scratch>:/target
+   -v <repository>/tools/native-fs/concurrency-probes:/probes:ro
+   -e CARGO_TARGET_DIR=/target -e CARGO_HOME=/target/cargohome -e HOME=/target/home
+   <image> cargo test --release --locked --manifest-path /crate/Cargo.toml --
+   --test-threads=1 [<test name filter>]`
+3. For a race, build once with `cargo test --no-run`, then run the test executable in a shell loop inside the
+   one container (60 to 200 iterations take seconds). Put temporary `eprintln!` diagnostics in the copy, never
+   in the repository, and remove the fix in the copy to prove the test fails without it.
+4. To drive the built addon with concurrent writers, build it with `cargo build --release` in the same
+   container, write a one-line loader that `process.dlopen`s the `.so` and exports `loadFsMetadataAddon`
+   (for example `module.exports={loadFsMetadataAddon:()=>{const m={exports:{}};process.dlopen(m,'<the .so>');return m.exports;}};`
+   in a file under the scratch directory), set `RELAVIUM_NATIVE_LOADER` to that file (see
+   [`concurrency-probes/`](concurrency-probes/README.md)) and run `node /probes/writers.mjs` there. This is an
+   **addon probe**: `writers.mjs` calls the addon's prepare, stage, publish and release functions directly, so it
+   shows the allocation claim and the staging index under contention but does not exercise the production host,
+   the registry or the CLI write path. Those are covered by the Vitest suites (for example
+   `apps/cli/src/engine/tool-host/fs-native-concurrency.test.ts`) and the installed-CLI smoke in CI, and a
+   whole-host reproduction on Linux is not documented here.
+
+This is a developer aid, not CI evidence: only the eight-target CI shows Linux (musl and gnu, x86_64 and
+aarch64) and Windows execution. Windows has no local equivalent.

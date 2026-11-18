@@ -178,6 +178,7 @@ flowchart TD
 | 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted | 2026-11-16 |
 | 0133 | [An `ask_user` question and its answer are kept with the session](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) | Accepted | 2026-11-16 |
 | 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
+| 0135 | [Concurrent processes on one operator home wait for the allocation claim](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md) | Accepted | 2026-11-18 |
 
 ## Creating a new ADR
 

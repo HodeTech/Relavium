@@ -349,7 +349,7 @@ step's central change — had **zero test coverage** at any layer. All folded, e
 
 - **`chat-resume` opens on an empty viewport** — it has never repainted prior turns, in any mode or version (nothing
   projects `session_messages` into rendered entries). Not a 2.6.F regression; tracked in
-  [deferred-tasks.md](../deferred-tasks.md).
+  [deferred-tasks-history.md](../deferred-tasks-history.md#chat-resume-opens-on-an-empty-viewport-26c-spin-off-2026-07-12) (closed by MVP-2 step 4).
 - **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
   ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
   a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3) as its
@@ -357,9 +357,9 @@ step's central change — had **zero test coverage** at any layer. All folded, e
 - **Cross-turn tool-call memory** — a "the reseat forgets tool calls" report turned out to be an *engine* property,
   not a reseat one: tool pairs never cross **any** turn boundary (ADR-0062 §6). Deferred behind a default-off toggle,
   but **three already-live bugs gate it** (no pre-egress context-window check; overflow is a fatal, non-retryable
-  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks.md](../deferred-tasks.md).
+  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks-history.md](../deferred-tasks-history.md#cross-turn-tool-call-memory-as-a-default-off-toggle-26c-spin-off-2026-07-12) (superseded by ADR-0095 and ADR-0096).
 - **The CLI e2e suite migrates the developer's real `~/.relavium/history.db`** — verified, and it is what let a
-  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks.md](../deferred-tasks.md).
+  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks-history.md](../deferred-tasks-history.md#the-cli-e2e-suite-opens-and-migrates-the-developers-real-relaviumhistorydb-26c-spin-off-2026-07-13) (done 2026-07-13).
 
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 
@@ -5434,7 +5434,7 @@ advancing MVP-4/5. This register records follow-ups, not implementation acceptan
 |---|---|---|
 | MVP-4 / MVP-A15 / ADR-0118 | Distinguish executable-plus-argv execution (`shell: false`) from explicit interpreter execution. An installed executable is not a grant; file-tool roots do not isolate a subprocess. Inspect the full admitted command/cwd and settle any shell-interpreter policy in its own approved design. | Controlled command fixtures; Once/Session/Remember and revocation; headless refusal; cancellation/output bounds/producer join. Never imply pipes or redirection work as shell syntax by default. |
 | MVP-3b/MVP-3c/MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers (MVP-3c) are separate from successful-turn historical receipts but render through the same block. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
-| MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
+| MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks-parked.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
 | MVP-5 / MVP-A16 | Typed execution-host OS/architecture, project/cwd, actual runner kind, observed shell, IANA timezone, date/offset and current capabilities/mode. Unknown facts stay unknown; remote/container/WSL execution can differ from the client. Do not infer location/language from timezone. | Platform and timezone transitions; no wholesale environment, credentials or unrelated machine inventory in prompts. Host observations and repository instructions retain their separate provenance. |
 | MVP-5 / prompt caching | Keep stable instructions/tool schemas separate from changing time observations. Measure cache hit/miss and prefix invalidation under equivalent tasks rather than promising a latency reduction from aggregate usage. | Token classes when actually reported; identical correctness/approval behavior; no silent effort/model changes or raw-content diagnostic capture. |
 | CR-70 / v0.2.1 | Full raw tool-content carrying and in-turn overflow continuation retain their existing trigger and schedule. The historical facts in the proposed receipt correction are not a full-content archive. | Future design still resolves bounds/toggle, live handoff, provider signatures/conformance and restart/storage privacy. Do not mark CR-70 complete from receipts. |
@@ -5823,3 +5823,150 @@ amendment 9 and the [deferred-tasks entry](../deferred-tasks.md)); the seven cog
 **Not claimed.** No fifth complete review round and no sitting after the final round's fixes (see above). The width model follows `string-width`, which is what Ink measures; what a real terminal draws for a cluster `string-width` counts differently is the standing
 ADR-0069 assumption the measured acknowledgement cannot see, so a manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) is owed for `v`, `/details`, `p` and the chords.
 Low items are in [deferred-tasks.md](../deferred-tasks.md). Final-head CI and the maintainer's acceptance are owed.
+
+### MVP-3 merge checkpoint (2026-11-18)
+
+**Complete and merged to `main`.** The maintainer merged [PR #99](https://github.com/HodeTech/Relavium/pull/99)
+("feat(cli): complete mvp-3 editing and reviewable file writes") on 2026-11-18 at 03:43:29Z as
+`002dda58fcc28a8ba42bc5592e8b947b0adccaab` (parents `0db4c940`, the PR #98 merge, and `bb6f1671`). Its Git tree,
+`c5fcd9c85b61179178cc480d3a111fb85415da99`, is identical to head `bb6f1671`'s. `development` is at `bb6f1671`, one merge commit behind `main` with
+identical content. npm still serves `0.1.1`; the D59 release guard is unchanged.
+
+What the PR carried, each with its own record:
+
+- [x] MVP-3 [Step 1](#mvp-3-step-1-local-acceptance-2026-11-12), [Step 2](#mvp-3-step-2-acceptance-2026-11-12) and [Step 3](#mvp-3-step-3-acceptance-2026-11-12):
+  ranged reads and bounded search, exact `edit_file`, reviewable write approvals and tool details, preserved filesystem security metadata through the native
+  adapter, the seven-tool default grant and configurable startup modes.
+- [x] The [2026-11-12 SonarCloud follow-up](#mvp-3-sonarcloud-follow-up-2026-11-12) and the [2026-11-13 correction](#correction-final-development-source-acceptance-2026-11-13)
+  (ADR-0126's native write admission and recovery).
+- [x] The [ADR-0127 macOS write-metadata correction](#adr-0127-final-local-source-acceptance-2026-11-15) and the
+  [ADR-0128 content-free receipts](#adr-0128-implementation-checkpoint--2026-11-15).
+- [x] [MVP-3b](#mvp-3b--approval-card-v2-honest-modes-and-refusals-that-return-2026-11-16) (ADR-0129, ADR-0130, ADR-0131, ADR-0117),
+  [MVP-3c](#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16) (ADR-0119) and MVP-3d (`ask_user`, ADR-0132, ADR-0133, same section).
+- [x] The [2026-11-17 independent-review corrections](#pr-99-independent-review-corrections-2026-11-17) (every approval answer key is a Ctrl chord) and
+  [ADR-0134](#the-full-view-and-the-tool-details--adr-0134-2026-11-17) (the full view and the tool details as one inspection screen).
+- [x] The gate and CI speed-up ([deferred-tasks.md](../deferred-tasks.md)): `pnpm gate`, the required `ci` context split into a thin aggregate plus the `ci-work` job,
+  and the secrets causal controls in three shards. Its first real CI run was the final-head run below.
+- [x] The two SonarCloud findings that failed the PR's quality gate on `2ca08aec`, both in `tools/ci/local-gate.mjs` and fixed in `bb6f1671`:
+  S3403 (a type-inference false alarm on `result.code === 0`, now typed) and S4036 (a bare `git` resolved through a PATH that pnpm fronts with every `node_modules/.bin`;
+  `resolveGit` takes a `git` outside the repository).
+
+**Final-head evidence, and what it does not show.**
+
+- The final head `bb6f1671` ran twice, as the `pull_request` run `44222406356` and the `push` run `44222399222`. Each ran 29 jobs and **28 succeeded in each** —
+  including the required `lint · typecheck · test` aggregate, the Windows job, the native-metadata legs, the installed-CLI legs, the wire, usage, filesystem and
+  secrets causal controls and the packed-CLI and map controls. **The required `engine coverage floor (llm, mcp)` job did not complete in either:** GitHub stopped both
+  at its 45-minute limit (annotation "The job has exceeded the maximum execution time of 45m0s"; they started 02:54:03 and 02:58:01 and ended 45 minutes later). The log
+  shows tests still completing normally when it was stopped, so it was not a hang. The same job passed at `13a79431` (29 minutes in the `pull_request` run, 38 in the
+  `push` run) and its earlier runs took 26 to 38 minutes; after `13a79431` only seven `apps/cli/src/render/tui/tool-review-*` files changed in product code (the 36
+  Sonar fixes, which the full local gate verified: 917 files, 20,745 tests, 20,720 passed and 25 conditional skips, with the enforced coverage run). **No green
+  final-head coverage run exists.** The merge went ahead with that required check cancelled; this checkpoint does not turn that into a pass. The cause is an open
+  item in [deferred-tasks.md](../deferred-tasks.md).
+- SonarCloud's quality gate is OK on the PR head (all five conditions) and on `main` after the merge (no bugs, no vulnerabilities, no hotspots; 989 baseline code
+  smells, including the seven cognitive-complexity findings the maintainer left open).
+- The merge commit's own `push` run (`44232410834`) was still in progress when this was written, so this checkpoint records no result for it. Its first completed
+  failure is noted in deferred-tasks.md: one acceptance-tool test hit its 10-second limit (13.97 s) in a secrets-control shard's verify step, on a tree identical to the
+  one whose two earlier runs passed that step.
+  **Update (2026-11-18, later):** run `44232410834` is complete. Attempt 1 failed (the secrets shard 1 test timeout above, then the `ci` aggregate), and its `engine coverage floor
+  (llm, mcp)` job passed in 41 min 10 s on the tree identical to `bb6f1671`'s; attempt 2 re-ran the failed shard and the aggregate and concluded `success`. This does not
+  create a green coverage run on the final head `bb6f1671` itself, and the test timeout stays an open low item in deferred-tasks.md.
+
+**Still not claimed.** A manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) for `v`, `/details`, `p` and the answer chords (the ADR-0069 width
+assumption); a fifth review round on ADR-0134's last fixes (the maintainer chose the reviewers' own reproductions); the native adapter findings of the 2026-11-17 review,
+which are their own increment; and the seven open cognitive-complexity findings. The remaining low items are in [deferred-tasks.md](../deferred-tasks.md).
+
+This checkpoint closes MVP-3, MVP-3b, MVP-3c and MVP-3d's implementation, review, security and maintainer gates, except for the coverage evidence above. Pending-gate
+wording ("final-head CI, scanner or maintainer acceptance is owed") in the dated records above is historical and is superseded by this checkpoint.
+
+**MVP-4 is next** under [the existing execution order](../current.md#next-work--the-cli-mvp); [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)
+and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) are still Proposed and need the maintainer's acceptance before it starts.
+Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.
+
+### MVP-4 preparation — read-only analyses and the decisions they need (2026-11-18)
+
+Two read-only analyses of MVP-4's planned work (the tools backend; the keymap and the command card) and two of the open items next to it (the approval-path refactors; the
+deferred CI decisions) were run on `development` after `origin/main` was merged (tree of `002dda58`). **No code changed and no test was run.** Anchors are read from the code
+as of that date; what is marked unverified was not checked. The recommendations below are not decisions. The findings on the items outside MVP-4 (native adapter, legacy approval
+prompt, cognitive complexity, the `coverage` job, the CI decisions) are in [deferred-tasks.md](../deferred-tasks.md).
+
+**What the analyses found that changes the plan**
+
+1. **Ctrl-C at an approval card is not swallowed today:** it stops the turn exactly as Esc does (`tool-review-model.ts` ~366-367; the Home forwards a synthesized Esc,
+   `home-app.tsx` ~685-688). [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)'s context and §2 ("does nothing", "only unmodified keys answer") describe the
+   retired bare-letter prompt, and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1 repeats it; since the chord change
+   ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) note 12) every answer is a Ctrl chord. Both ADRs are Proposed and may be revised
+   before acceptance, so they need a factual re-basing, not a superseding ADR. ADR-0115 also says Esc "keeps aborting" and that both keys take the same reject-then-abort path in
+   one passage; the accepted [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) (~line 158) says ADR-0115 will not change Ctrl-C at a card; and Windows
+   raw-mode Ctrl-C appears only under Consequences, with no acceptance criterion.
+2. **ADR-0118's mode table is stale against the Accepted [ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md):** it says `ask` and `plan` are
+   "denied" and headless "stays fail-closed", while `ask` is a card on every governed call, `plan` is a mode refusal returned to the model, and headless hides governed tools. Its
+   "Session like ADR-0057's `[a]`" is false: that cache is keyed per tool id (`apps/cli/src/chat/chat-mode.ts` ~132-141, ~291), so once `run_command` is granted one answer would
+   approve every later command; `run_command` needs an exact-argv session grant.
+3. **ADR-0118 §2 stores grants in the global config through the [ADR-0063](../../decisions/0063-cli-config-write-contract.md) primitive,** which is read-modify-write, last writer wins,
+   with no lock: a concurrent `relavium` process can silently restore a revoked grant (fail-open), and a malformed grants section would break every command's config load.
+   [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) §5 solved this for MCP consent with an append-only NDJSON log with tombstones
+   (`apps/cli/src/engine/mcp-consent.ts`, `~/.relavium/mcp-consent.ndjson`, mode 0600, an unparseable line means "no grants") and rejects "a config layer".
+4. **The allowlist defect is real.** `packages/core/src/tools/builtins.ts` ~750 builds `policyTarget` as `[command, ...args].join(' ')` and `registry.ts` ~825-836
+   (`commandAllowed`) compares that string, so an exact entry `cat a b` admits `["cat","a b"]` and `["cat a","b"]`, and `./s/build.sh --release` admits a file literally named
+   `build.sh --release`; an entry typed with quotes never matches the tokenised `!` line. The `!` deny hint (`shell.ts` ~95-106) tells the user to add the quote-stripped line, which an
+   element-wise compare would no longer match. Register: `deferred-tasks-parked.md` ~1537.
+5. **[ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md) status.** Done in MVP-3b: the user rejection with its typed reason, the mode refusal, the headless
+   `unavailable`, the repeat refusal, the budget draw ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)) and the recoverable scope-tier escape.
+   Missing: the protected-path refusal (a fatal `FsScopeDeniedError`, `fs.ts` ~936-943), the allowlist miss (a fatal `ToolPolicyError('command_not_allowed')`) and Ctrl-C rejection
+   (the keymap).
+6. **No HMAC code exists** in `apps/` or `packages/`; the grants store is its first use (`node:crypto`; `packages/core` must not import it, so the HMAC and the matching live in the CLI
+   host).
+7. **The plans disagree about who owns the grant list/revoke screen.** Phase 2.6.G "Permission management" (~lines 620-632 above) writes project grants to
+   `.relavium/project.toml` and lists allowlists, domains, MCP servers and egress endpoints under `/permissions`; D63 and ADR-0118 §2 keep grants only in operator config keyed by
+   project root, Session memory-only, and say the UI "belongs to that workstream"; `current.md` ~414 says "ruled by D63" without saying whether the screen is in MVP-4; MVP-8's 2.6.G
+   list omits `/permissions` and MVP-9 has only `/providers` and `/mcp`.
+8. **ADR number 0135 was claimed twice** (the UI/UX common-language plan, a private note, and the turn-ceilings analysis, which proposes an ADR that amends
+   [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) **and is now taken by the native adapter's
+   [ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)** (written 2026-11-18, the first of the three to be needed). The UI/UX and
+   the ceilings ADRs take the next free numbers when they are written; their plans' "0135" is a placeholder.
+
+**Decisions needed before the steps they gate (recommendation first)**
+
+| # | Question | Recommendation | Gates |
+|---|---|---|---|
+| K1 | Does Esc at a card reject first, as Ctrl-C will? (D68 decided only Ctrl-C) | Yes: one path, the call is recorded as rejected | ADR-0115 §2, keymap |
+| K2 (D4) | Esc inside the card's text boxes (reason, full-view search, the `ask_user` own answer) | Keep today's behaviour (stops the turn) and say so in the hint; "Esc leaves the box" is a small separate increment. The accepted ADR-0129 (note 8), ADR-0132 (§3) and [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) (§5) are not rewritten: each gets a dated amendment note appended, and wherever the change reverses a decision (ADR-0132 records "Esc stops the turn everywhere" as a maintainer ruling) the increment writes a superseding ADR instead | keymap |
+| K3 | Command-card Session and Remember answers | MVP-4 ships Once / Session (exact argv) / Deny; Remember arrives with the in-app revoke surface, the keychain HMAC and its own chord (`Ctrl+K` is only a candidate; a clash in VS Code or tmux was not checked) | card |
+| K4 | Does the first Ctrl-C at a card also start the exit window? | Yes (one rule), with a "refines ADR-0132 §3" note | ADR-0115 |
+| K7 | ADR-0118's `ask` column | Follows ADR-0130: a pre-approved command is a plain approval card, a session-approved one runs | ADR-0118 |
+| Q1 | Where grants live | An ADR-0084-style append-only NDJSON file, not `config.toml`; revise ADR-0118 §2 and add an ADR-0063 note | B4 |
+| Q3 | Grammar of exact allowlist entries | A quote-aware tokenizer shared with `!`; the hint emits a re-parseable quoted line; globs stay string-level | B1 |
+| Q4 | Protected-path scope | Only the lexical directory/rc arm returns to the model; credential-store and post-resolution refusals stay fatal | B2 |
+| Q5, Q6 | Ceiling keys, defaults, caps | `[chat].max_tool_turns` and `max_tool_corrections`, defaults 16 and 3 (and 50 for `max_turns`), caps 64, 10 and 1,000 (the caps are the analysis's suggestion, not documented); project and workspace layers may raise up to the cap | B3 |
+| Q7 | Grant details | HMAC over the root and a version tag, bounds 64 per root and 1,024 in total, no cwd or env binding | B4 |
+| Q8 | Owner of list/revoke | The backend and a small scripting command in MVP-4, the Home screen with MVP-8's 2.6.G; amend the 2.6.G bullet | B7 |
+
+Not blocking acceptance: D2, D3 (only the strings MVP-4 rewrites need one spelling) and the arming-window value (suggest 2 s as one named constant). D12 and the UI/UX plan's §5
+disagree on whether A3 precedes MVP-4; the recommendation is that A3 waits and MVP-4 writes its own Ctrl-C strings.
+
+**Step plan** (ADR work first: revise and accept ADR-0115 and ADR-0118, add dated amendment notes to ADR-0061, 0132, 0122 §7.4, 0057, 0117 and 0029, and write the turn-ceilings ADR)
+
+| Step | What | Gate | Size | Tier |
+|---|---|---|---|---|
+| I1 | Delete the legacy approval prompt, keeping `reduceApprovalKey`; characterization tests first | none | M | rigor (folds into the final round) |
+| B1 | Element-wise exact allowlist: `PolicyTarget.argv`, `commandAllowed`, a shared `command-line.ts` tokenizer and quoter, the `!` hint | none (defect fix); Q3 | M | rigor |
+| B2 | The protected-path refusal returns to the model (lexical stage only) | ADR-0117 Accepted; Q4 | M | rigor |
+| B3 | Turn ceilings, one shared validator, rejection never clamp | the ceilings ADR; Q5 | M | self-review and one scoped round; not a D64 path (no approval, key, write or terminal-sink change), with the caveat that ADR-0117 and `agent-turn.ts` call `maxToolTurns` the "egress ceiling", so a literal D64 reading would move it up a tier |
+| B4 | Grants store `~/.relavium/command-grants.ndjson`, an HMAC-SHA256 key in the keychain (`KeychainStore`, its own account), `timingSafeEqual`, bounds, failure modes | revised ADR-0118; Q1, Q7 | L | rigor |
+| I2 | Keymap per ADR-0115: a pure `interrupt-keymap.ts`, reject-first (`chat-store.ts` ~668), a direct interrupt replacing the synthesized Esc, delete `reduceApprovalKey`, wire Ctrl-C, strings | ADR-0115 Accepted; K1, K2, K4 | L | rigor and a security sitting |
+| B5 | Engine seam: `ToolApprovalRequest` carries the in-process argv, an interactive allowlist miss asks, the mode table, an exact-argv session cache | ADR-0118; after B1 | L | rigor |
+| I3 | Command card UI: argv rows with visible delimiters, the new inspection lock, answers, capability flags | ADR-0118; I2 landed; B4, B5 | L-XL | rigor and a security sitting |
+| B6 | Host wiring and the default agent's `run_command` (grants; `!` opens the card instead of the hint) | B4, B5, I3 | L | rigor and a security sitting |
+| B7 | Grant list/revoke backend (a tombstone) | B4; Q8 | S-M | rigor |
+| I4 | Windows Terminal and conhost: a raw-mode Ctrl-C arrives as a key, rejects and arms. CI cannot cover it (the required Windows job is headless; a ConPTY harness would be a new dependency and needs an ADR) | I2 | S plus a Windows machine | evidence before the final round |
+
+**Conflicts.** B1 to B4 are disjoint in source files and could proceed in parallel; B1 precedes B5 (both touch `registry.ts` and `types.ts`); B3 edits the config schema and
+`config/resolve.ts`, so it precedes anything else that edits them (with the NDJSON store B4 does not). I1 to I4 live in `render/tui/**`, `process/signals.ts`, `commands/chat.ts` and the
+Home; B1 and B6 touch `shell.ts` and `chat-mode.ts`, which I3 also needs (`ApprovalCache`, `ApprovalAnswer`), and `packages/core/src/tools/ask-user.ts` must refuse any new chord token
+(`APPROVAL_KEY_TOKEN`). The docs overlap on `built-in-tools.md` and `config-spec.md`: edit separate sections. After the engine and keymap steps run `pnpm turbo run build` (the
+maintainer runs the minified bundle).
+
+**Not determined.** No test or terminal was run. Unverified: whether the plain and `--json` first SIGINT already aborts the in-flight turn (it looks so; no test pins it); whether
+`session.abort()` stops a `!` child; Windows raw-mode Ctrl-C and Ctrl-Break; whether the "Waiting for your answer" line is right for an approval opened by `!` with no turn running;
+a clash of `Ctrl+K`; what the headless path does with an allowlisted command (ADR-0130 §4 hides governed tools); whether the displayed argv would cross `agent:approval_requested`
+(`run-event.ts` is strict); the keychain prompt on first macOS access; the cost of a D64 round (not recorded in the docs read).

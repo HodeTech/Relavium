@@ -13,7 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -30,7 +30,18 @@ import { prepareGlobalPreferences } from '../../config/write.js';
 // A committed record can vanish between the directory read and the lstat/open/re-lstat of it (a concurrent write
 // completing removes its record). The window is microseconds wide, so the tests open it deterministically through the
 // real calls: `decide` may delete the file just before the real call ('unlink') or fail it outright ('vanish').
-type Decision = 'pass' | 'unlink' | 'vanish';
+type Decision =
+  | 'pass'
+  | 'unlink'
+  | 'vanish'
+  | 'unlinkAfter'
+  | 'unlinkRecreate'
+  | 'replace'
+  | 'replaceVanish'
+  | 'replaceNlink0'
+  | 'widen'
+  | 'nlink0'
+  | 'denied';
 const seam = vi.hoisted(() => ({
   decide: undefined as undefined | ((op: 'lstat' | 'open', name: string, call: number) => Decision),
   calls: new Map<string, number>(),
@@ -38,8 +49,8 @@ const seam = vi.hoisted(() => ({
 }));
 vi.mock('node:fs/promises', async (original) => {
   const native = await original<typeof import('node:fs/promises')>();
-  const intercept = async (op: 'lstat' | 'open', target: unknown): Promise<void> => {
-    if (typeof target !== 'string' || !target.includes('fs-staging-v1')) return;
+  const intercept = async (op: 'lstat' | 'open', target: unknown): Promise<Decision> => {
+    if (typeof target !== 'string' || !target.includes('fs-staging-v1')) return 'pass';
     const name = target.slice(target.lastIndexOf('/') + 1);
     const call = (seam.calls.get(`${op}:${name}`) ?? 0) + 1;
     seam.calls.set(`${op}:${name}`, call);
@@ -49,18 +60,80 @@ vi.mock('node:fs/promises', async (original) => {
       await native.unlink(target);
       seam.log.push(`unlink:${name}`);
     }
+    if (decision === 'replace' || decision === 'replaceVanish') {
+      // The name stays, but another file (a new inode) takes it between the lstat and the open. The old
+      // inode is kept alive by a hard link outside the scanned directory, so that it cannot be reused.
+      await native.link(target, join(dirname(dirname(target)), `keeper-${name}`));
+      await native.unlink(target);
+      await native.writeFile(target, '', { mode: 0o600 });
+      seam.log.push(`replace:${name}`);
+    }
     if (decision === 'vanish')
       throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    if (decision === 'denied')
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+    return decision;
   };
   return {
     ...native,
     lstat: async (...args: Parameters<typeof native.lstat>) => {
-      await intercept('lstat', args[0]);
-      return native.lstat(...args);
+      const decision = await intercept('lstat', args[0]);
+      const stats = await native.lstat(...args);
+      if (decision === 'widen' && typeof args[0] === 'string') {
+        // The file stops being private between the lstat that selected it and the open that follows.
+        await native.chmod(args[0], 0o644);
+        seam.log.push(`widen:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+        return stats;
+      }
+      if (decision === 'replaceNlink0' && typeof args[0] === 'string') {
+        // The name now belongs to a DIFFERENT file whose link count already reads zero. The old inode is kept
+        // alive by a link outside the scanned directory so that it cannot be reused.
+        const name = args[0].slice(args[0].lastIndexOf('/') + 1);
+        await native.link(args[0], join(dirname(dirname(args[0])), `keeper-${name}`));
+        await native.unlink(args[0]);
+        await native.writeFile(args[0], 'not a record', { mode: 0o600 });
+        seam.log.push(`replaceNlink0:${name}`);
+        const fresh = await native.lstat(...args);
+        return Object.assign(
+          Object.create(Object.getPrototypeOf(fresh) as object) as typeof fresh,
+          fresh,
+          { nlink: 0n },
+        );
+      }
+      if (decision !== 'nlink0' || typeof args[0] !== 'string') return stats;
+      // The entry is in the middle of being unlinked: `lstat` succeeds with a link count of zero (macOS), and
+      // the file is gone by the time anything looks again.
+      await native.unlink(args[0]);
+      seam.log.push(`nlink0:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      return Object.assign(
+        Object.create(Object.getPrototypeOf(stats) as object) as typeof stats,
+        stats,
+        {
+          nlink: 0n,
+        },
+      );
     },
     open: async (...args: Parameters<typeof native.open>) => {
-      await intercept('open', args[0]);
-      return native.open(...args);
+      const decision = await intercept('open', args[0]);
+      const handle = await native.open(...args);
+      if (decision === 'unlinkAfter' && typeof args[0] === 'string') {
+        // The entry disappears AFTER the real open succeeded: the reader now holds an unlinked file.
+        await native.unlink(args[0]);
+        seam.log.push(`unlinkAfter:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      }
+      if (decision === 'unlinkRecreate' && typeof args[0] === 'string') {
+        // The held file is unlinked and a fresh one already stands under the name, which is how Linux can look
+        // in the instant after `unlink` lowered the link count: the name still resolves.
+        await native.unlink(args[0]);
+        await native.writeFile(args[0], '', { mode: 0o600 });
+        seam.log.push(`unlinkRecreate:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      }
+      if (decision === 'replaceVanish' && typeof args[0] === 'string') {
+        // The reader holds the replacement, which is then unlinked: the name is absent again.
+        await native.unlink(args[0]);
+        seam.log.push(`replaceVanish:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      }
+      return handle;
     },
     opendir: async (...args: Parameters<typeof native.opendir>) => {
       if (typeof args[0] === 'string' && args[0].endsWith('fs-staging-v1'))
@@ -391,8 +464,14 @@ it.skipIf(process.platform === 'win32')(
       await writeFile(join(index, `${nonce}.prepare`), Buffer.alloc(16 * 1024), { mode: 0o600 });
     }
     await expect(captureFsStageInventory(home)).resolves.toBeDefined();
-    await writeFile(join(index, `${'f'.repeat(32)}.reserved`), '', { mode: 0o600 });
-    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    // Past the 128 a reservation may reach (a lockless pin can overshoot) the native scan and this reader keep
+    // accepting reservations up to the entry bound: 128 transition pairs are 256 names, so 120 more fit before
+    // the 385-name bound (the lock file is not in this index). The bytes stay at their bound throughout.
+    for (let value = 128; value < 248; value++) {
+      const nonce = value.toString(16).padStart(32, '0');
+      await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    }
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
   },
 );
 
@@ -566,8 +645,8 @@ describe.skipIf(process.platform === 'win32')('a committed record that vanishes 
       expect(failure).toMatchObject({
         message: 'filesystem staging inventory is unavailable or unsafe',
       });
-      // Exactly SCAN_ATTEMPTS (3) whole scans: the first plus two retries, then the error stands.
-      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(3);
+      // Exactly SCAN_ATTEMPTS (8) whole scans: the first plus seven retries, then the error stands.
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(8);
     },
   );
 });
@@ -584,6 +663,187 @@ it.skipIf(process.platform === 'win32')(
     // Both injected unlinks really fired (so the tolerance below was exercised), and neither caused a second scan.
     expect(seam.log).toContain(`unlink:${nonce}.reserved`);
     expect(seam.log).toContain(`unlink:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates a reservation or prepare file that is unlinked after it was opened, without a retry',
+  async () => {
+    const nonce = 'c'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'open' && (name.endsWith('.reserved') || name.endsWith('.prepare'))
+        ? 'unlinkAfter'
+        : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    // Both unlinks really happened after the open (so the reader held a link-count-zero file), and
+    // neither made a second scan or a failure.
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.reserved`);
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'runs the whole scan again for a committed record that is unlinked after it was opened',
+  async () => {
+    const nonce = 'd'.repeat(32);
+    await writeFile(join(index, `${nonce}.record`), 'not a record', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'open' && name === `${nonce}.record` && !seam.log.includes(`unlinkAfter:${name}`)
+        ? 'unlinkAfter'
+        : 'pass';
+    // The first scan loses the record under it and runs again; the second scan no longer lists it.
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.record`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'still refuses a reservation whose name is now held by another file, because the name is not absent',
+  async () => {
+    const nonce = 'e'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    seam.decide = (op, name) => (op === 'open' && name.endsWith('.reserved') ? 'replace' : 'pass');
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    expect(seam.log).toContain(`replace:${nonce}.reserved`);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates a reservation or prepare file whose lstat already reads link count zero, without a retry',
+  async () => {
+    const nonce = 'f'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'lstat' && (name.endsWith('.reserved') || name.endsWith('.prepare'))
+        ? 'nlink0'
+        : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`nlink0:${nonce}.reserved`);
+    expect(seam.log).toContain(`nlink0:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'runs the whole scan again for a committed record whose lstat reads link count zero, at either lstat',
+  async () => {
+    for (const which of [1, 2]) {
+      const nonce = which === 1 ? 'a'.repeat(32) : 'b'.repeat(32);
+      seam.calls.clear();
+      seam.log.length = 0;
+      await writeFile(join(index, `${nonce}.record`), 'not a record', { mode: 0o600 });
+      // Call 1 is the lstat before the open; call 2 is the final lstat after the read.
+      seam.decide = (op, name, call) =>
+        op === 'lstat' && name === `${nonce}.record` && call === which ? 'nlink0' : 'pass';
+      await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+      expect(seam.log).toContain(`nlink0:${nonce}.record`);
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+    }
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates every nonce overshoot the entry bound holds, as the native scan does, and refuses the next one',
+  async () => {
+    const create = async (n: number): Promise<void> => {
+      await writeFile(join(index, `${n.toString(16).padStart(32, '0')}.reserved`), '', {
+        mode: 0o600,
+      });
+    };
+    // 384 nonces (three times the 128 a reservation may reach) are accepted: far beyond the old slack of 8.
+    for (let n = 0; n < 384; n++) await create(n);
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    await create(384);
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'skips a reservation unlinked after it was opened by the link count of the file it holds, without looking the name up',
+  async () => {
+    const nonce = '9'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    // The held file reads link count zero. Any lookup of the name is denied here, and it must not matter:
+    // the held file's link count, not the name, is the proof (the name check is the one that can lie).
+    seam.decide = (op, name) => {
+      if (!name.endsWith('.reserved')) return 'pass';
+      if (op === 'open') return 'unlinkAfter';
+      return 'pass';
+    };
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.reserved`);
+    expect(seam.calls.get(`lstat:${nonce}.reserved`)).toBe(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'skips an entry whose file was unlinked while the name still resolves, and scans once',
+  async () => {
+    const nonce = '8'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    // Linux lowers the link count before the name leaves the directory cache: the reader holds a dead file
+    // and a lookup of the name still finds a file (a fresh one stands for it).
+    seam.decide = (op, name) =>
+      op === 'open' && (name.endsWith('.reserved') || name.endsWith('.prepare'))
+        ? 'unlinkRecreate'
+        : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`unlinkRecreate:${nonce}.reserved`);
+    expect(seam.log).toContain(`unlinkRecreate:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'does not treat a failed lookup that is not "no such file" as proof that an entry vanished',
+  async () => {
+    const nonce = '7'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    // The file stops being private between the lstat and the open (not unlinked: its link count stays 1), and
+    // the lookup that would show whether the name is still there is denied, which proves nothing about it.
+    seam.decide = (op, name, call) => {
+      if (!name.endsWith('.reserved')) return 'pass';
+      if (op === 'lstat' && call === 1) return 'widen';
+      return op === 'lstat' && call === 2 ? 'denied' : 'pass';
+    };
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    expect(seam.log).toContain(`widen:${nonce}.reserved`);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'refuses a reservation that is replaced by another file even when the replacement then vanishes',
+  async () => {
+    const nonce = '6'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    // A different file than the one looked at was opened, and the name is absent again afterwards: a changed
+    // index, not an entry that vanished, so the absent name must not excuse it.
+    seam.decide = (op, name) =>
+      op === 'open' && name.endsWith('.reserved') ? 'replaceVanish' : 'pass';
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    expect(seam.log).toContain(`replace:${nonce}.reserved`);
+    expect(seam.log).toContain(`replaceVanish:${nonce}.reserved`);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'refuses a committed record whose name belongs to a different file at link count zero, instead of scanning again',
+  async () => {
+    const nonce = '5'.repeat(32);
+    await writeFile(join(index, `${nonce}.record`), 'not a record', { mode: 0o600 });
+    // The final lstat finds another inode under the record's name. The same record being unlinked would run the
+    // whole scan again (see the test above); a different file under the name is a changed index.
+    seam.decide = (op, name, call) =>
+      op === 'lstat' && name === `${nonce}.record` && call === 2 ? 'replaceNlink0' : 'pass';
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    expect(seam.log).toContain(`replaceNlink0:${nonce}.record`);
     expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
   },
 );

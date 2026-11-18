@@ -29,12 +29,29 @@ try {
 }
 
 // Coverage instrumentation and unrelated file workers must not compete for the admitted-size
-// controls' unchanged case budgets. All files, thresholds and explicit native concurrency remain.
-const result = spawnSync(process.execPath, [vitestEntry, 'run', '--coverage', '--maxWorkers=1'], {
-  cwd: repoRoot,
-  stdio: 'inherit',
-  env: { ...process.env, RELAVIUM_COVERAGE_ENFORCED_ONLY: '1' },
-});
+// controls' unchanged case budgets. Every package file, threshold and explicit native concurrency remain.
+//
+// Only the `packages/` tests run here (`--dir packages`), so the `apps/` tests (about three quarters of
+// the run time, 917 files in all) do not run in the coverage job at all; they still run, uninstrumented,
+// in the workspace tests (`ci-work`, `pnpm gate`). The floor is enforced on `packages/llm` and
+// `packages/mcp` only. `vitest.config.ts` excludes `apps/**` from the coverage report, but that removes
+// app SOURCE files only: it does not stop an app test that imports `@relavium/llm` or `@relavium/mcp`
+// from covering lines of those packages, so the exclude alone does not prove the app tests add nothing.
+// The figures were unchanged for this tree because they were MEASURED: on 2026-11-18 the 407 package
+// files passed in 4 min 44 s and every line and branch figure for llm, mcp, core and db equalled the full
+// 917-file run of the same tree to two decimals (only `shared`, which has no floor, moved: lines 96.72 ->
+// 96.62). The directory is relative to `cwd`, the repository root, so the root-relative thresholds stay
+// authoritative. Do not widen this back without re-measuring: the full run took 29 to 45+ minutes on
+// identical code, depending on the runner.
+const result = spawnSync(
+  process.execPath,
+  [vitestEntry, 'run', '--coverage', '--maxWorkers=1', '--dir', 'packages'],
+  {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: { ...process.env, RELAVIUM_COVERAGE_ENFORCED_ONLY: '1' },
+  },
+);
 
 if (result.error) {
   console.error(`✗ could not start vitest: ${result.error.message}`);
