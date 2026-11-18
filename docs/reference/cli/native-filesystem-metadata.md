@@ -453,8 +453,11 @@ committed record that vanishes mid-scan (a concurrent write completing removes
 it) makes the whole scan run again — at most three attempts inside the same
 two-second deadline, so a snapshot never mixes two states — and an inventory
 whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
-`.prepare` (for example a producer's `.prepare` to `.record` promotion) is
-skipped without a retry: a point-in-time inventory cannot be exact for an
+`.prepare` (for example a producer's `.prepare` to `.record` promotion, or its
+`.reserved` removal) is skipped without a retry, whether it is gone before the
+scan opens it or is unlinked after the scan opened it (the held file then has a
+link count of zero and the private-file check refuses it; the entry only counts
+as vanished when its name is really absent): a point-in-time inventory cannot be exact for an
 uncommitted artifact, and the path-based stage-directory floor does not depend
 on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
 uncommitted meanings. Physical v1 directory/stage names are namespace names,
@@ -469,7 +472,8 @@ processes are gone across namespaces. Old readers may safely refuse new records;
 this is not a supported mixed-version operating mode.
 
 Allocation and recovery count at most 128 distinct nonces and 385 directory
-entries (three transition entries per nonce plus the allocation lock), at most
+entries (three transition entries per nonce plus the allocation lock, which a scan
+does not report, so a recovery report's `removed + retained` is at most 384), at most
 16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
 eight immediate stage children and never descends recursively. Cancellation
 and the two-second cooperative budget are checked between operations, except
@@ -500,8 +504,19 @@ If directory creation succeeds but no handle or identity can be established,
 the empty directory and reservation are preserved as unproven, never deleted by
 name alone.
 
-Allocation holds an exclusive nonblocking kernel lock on `inventory.lock`;
-the v2 producer also claims its original prepared-record handle before record
+Allocation holds an exclusive kernel lock on `inventory.lock`, taken by a
+nonblocking attempt that is repeated about every two milliseconds while another
+handle holds it, inside the operation's own two-second deadline and its
+cancellation flag ([ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)):
+concurrent writers, a post-publication cleanup and a recovery pass queue behind
+each other instead of failing the write. Only contention is repeated
+(`EWOULDBLOCK`/`EAGAIN`/`EINTR`, `ERROR_LOCK_VIOLATION`); any other error fails at
+once, and an exhausted deadline is the same `changed` refusal as before. The
+per-record claim below stays a single attempt: a held record claim means a live
+producer, and waiting on both claims would make a cycle (a writer holds its
+record claim while it waits for the allocation claim, and recovery holds the
+allocation claim while it tries a record claim).
+The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling
 reuse it, without reacquiring/unlocking via a clone. Recovery opens a separate
@@ -635,7 +650,7 @@ try {
     if (
       !Number.isInteger(report.removed) || report.removed < 0 ||
       !Number.isInteger(report.retained) || report.retained < 0 ||
-      report.removed + report.retained > 128
+      report.removed + report.retained > 384
     ) throw new Error('invalid maintenance result');
     console.log(JSON.stringify({ removed: report.removed, retained: report.retained }));
   } finally {

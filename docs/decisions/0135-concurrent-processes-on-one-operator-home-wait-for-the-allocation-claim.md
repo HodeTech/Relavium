@@ -1,0 +1,44 @@
+# ADR-0135: Concurrent processes on one operator home wait for the allocation claim
+
+- **Status**: Accepted — 2026-11-18, by the maintainer. The maintainer ruled on 2026-11-17 that several `relavium` processes on one operator home are a supported mode and chose on 2026-11-18 to fix the native adapter before MVP-4. The implementation's independent review round, separate security sitting and eight-target CI are tracked in the phase register, not claimed here.
+- **Date**: 2026-11-18
+- **Amends**: [ADR-0126](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md) (the allocation claim and the inventory scan)
+- **Related**: [ADR-0125](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), [ADR-0127](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md), [native-filesystem-metadata.md](../reference/cli/native-filesystem-metadata.md)
+
+## Context
+
+The native adapter keeps a private, bounded ownership inventory under the operator's home (`.relavium-fs-private-v1/fs-staging-v1`). Allocating a reservation, cleaning up after a publication and a recovery pass each take an exclusive kernel claim on `inventory.lock`, **with one nonblocking attempt**: any failure, including "another process holds it", was returned as the `changed` refusal. The TypeScript host turns any native stage failure into a non-retryable `effect_needs_attention`.
+
+Two processes on one home (two terminals, a terminal and an editor extension) are now a supported way to work, and the measurements on the built addon (macOS, 2026-11-17 and again on 2026-11-18) show what the single attempt does to them:
+
+| Probe (before) | Result |
+|---|---|
+| Two concurrent writers, 30 writes each | 28 of 60 failed at stage with `changed:not_needed`; 2 ended `possibly_published:uncertain` with the target already written (the post-publication cleanup could not take the claim, so the outcome could not be settled) |
+| 200 recovery passes while a lock-less churner created and removed `.reserved` entries (what a producer's pin does) | 102 failed with `changed`; the same probe with no churn: 0 of 200 |
+
+The second row is a separate defect: a scan lists an entry, then finds it gone, and calls the whole index changed. A harmless race surfaces as a hard error the user cannot act on.
+
+## Decision
+
+1. **The allocation claim is waited for.** The nonblocking attempt is repeated about every two milliseconds while another handle holds the claim, inside the operation's own existing two-second deadline and its cancellation flag. This applies to the reservation, to the cleanup after a publication, and to a recovery pass's own claim on the allocation lock. The holders always release within one native call, so waiting is bounded by their critical section and, in the worst case, by the deadline; an exhausted deadline is the same `changed` refusal as before and a raised cancellation flag is `cancelled`.
+2. **Only contention is repeated.** `EWOULDBLOCK`, `EAGAIN` and `EINTR` for `flock`, `ERROR_LOCK_VIOLATION` for `LockFile`. A bad descriptor, a full lock table or any other error fails at once: retrying cannot fix it and must not be mistaken for a holder that will go away.
+3. **The per-record claim stays a single attempt.** A held record claim means a live producer owns that record (recovery retains it). A writer holds its own record claim while it waits for the allocation claim, and recovery holds the allocation claim while it tries a record claim, so waiting on both would make a wait cycle.
+4. **A scan skips an uncommitted entry that vanishes.** A producer pins without the allocation claim: it renames `.prepare` to `.record` and removes `.reserved`. A scan that meets such an entry gone, either before it opens it or after (the unlinked file the scan holds has a link count of zero and the private-file check refuses it), skips it, as the TypeScript reader already does. After a refusal the entry only counts as vanished when its name is really absent. A committed `.record` and the lock file are removed only by holders of the allocation claim, which the scan also holds, so their absence stays a changed index.
+5. **Two small hardenings in the same code.** `Record::encode` enforces every invariant `Record::decode` requires (a positive `i32` producer id, an absolute locator named exactly `<prefix><pid>.<nonce>`, no `.` or `..` component), through shared validators, so a record that can be written can always be read back; and a pin removes its `.reserved` only after re-proving that the file under the name is the one it created, as `cleanup` already does.
+
+Considered: **a blocking lock call** with no polling (rejected: it cannot honour the deadline or the cancellation flag, it parks a worker thread without bound, and `flock`, `LockFileEx` and the Windows byte-range lock differ in what interrupts them); **retrying in the TypeScript host** on `changed:not_needed` (rejected: the host cannot tell contention from a real change, cannot retry a `possibly_published` cleanup because the producer has already handed the stage over, and a retry there touches the effect journal's semantics); **serialising writers inside one process only** (rejected: the supported case is several processes); **a PID or lease file in front of the claim** (rejected: new stale-state failure modes where the kernel claim is already released on process death); **raising the nonblocking attempt count with no sleep** (rejected: it burns a core and still ends at an arbitrary count).
+
+## Consequences
+
+### Positive
+
+- Concurrent writers queue instead of dropping. Measured on the rebuilt addon (macOS, in-process writers on separate descriptors, which conflict under `flock` exactly as separate processes do): two writers, 30 writes each, 60 of 60 succeeded (before: 32 of 60); four writers 120 of 120; eight writers 240 of 240; two writers with a recovery loop running at the same time, 60 of 60 writes and 1,832 of 1,832 recoveries; the churn probe 200 of 200 (before: 98 of 200). No leftover inventory entries after any run.
+- The host needs no change, and a harmless collision no longer reaches the user as an effect that needs attention.
+- A record can no longer be written that a later scan cannot read.
+
+### Negative
+
+- A waiting writer occupies a native worker thread for up to two seconds, and the claim is not fair (`flock` and `LockFile` give no ordering). The two-second deadline bounds both; under sustained contention a writer can still be refused as before, only later.
+- A recovery pass that holds the claim for a long scan can make a writer miss its own two-second budget; the refusal is the existing one.
+- Windows is verified only by the eight-target CI. In particular a Windows scan can meet an entry in a delete-pending state (an access-denied or sharing-violation error instead of "not found"); this ADR does not claim that case, and the churn stress test is POSIX-only for that reason.
+- Two cases remain outside this change: a cold-start race when two processes create the index hierarchy on a fresh home at the same moment, and the Linux and Windows parity findings (a setgid parent directory, the link-count check on Windows, the Linux private-file parent check, the staged-payload re-proof). They are separate increments in the register.

@@ -268,3 +268,7 @@ security sitting before maintainer merge review.
   pending OS call. Producer joining and explicit limits remain mandatory.
 - Old or crash-ambiguous evidence can still require operator recovery. Do not
   erase it to free slots or claim universal automatic cleanup.
+
+## Amendment — 2026-11-18 ([ADR-0135](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md))
+
+The allocation claim is no longer a single nonblocking attempt: it is waited for inside the operation's own two-second deadline and cancellation flag (the per-record claim stays a single attempt), and an inventory scan skips an uncommitted `.reserved` or `.prepare` entry that vanishes, before or after it is opened. ADR-0135 records the measurements and the limits.
