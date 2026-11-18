@@ -19,7 +19,7 @@ const root = new URL('../../', import.meta.url);
 const packageJson = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
 const command = packageJson.scripts['ci:workspaces'];
 
-test('actual enforced coverage entry keeps all cases in one file worker and propagates failure', () => {
+test('actual enforced coverage entry runs the package cases in one file worker and propagates failure', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relavium-coverage-scheduling-'));
   try {
     const entry = join(directory, 'tools', 'coverage-gate', 'run.mjs');
@@ -44,7 +44,9 @@ test('actual enforced coverage entry keeps all cases in one file worker and prop
     assert.equal(result.status, 37);
     assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), {
-      args: ['run', '--coverage', '--maxWorkers=1'],
+      // `--dir packages`: the enforced floor covers packages/llm and packages/mcp only, and the apps tests
+      // add nothing to any enforced figure (measured 2026-11-18), so only the package tests are instrumented.
+      args: ['run', '--coverage', '--maxWorkers=1', '--dir', 'packages'],
       enforced: '1',
     });
   } finally {

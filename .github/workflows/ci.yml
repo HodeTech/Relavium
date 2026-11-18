@@ -597,7 +597,10 @@ jobs:
   # `engine coverage floor (llm, mcp)` — kept as a SEPARATE job from `ci` so a coverage regression is
   # legible on its own line rather than buried in a 12-step job. It is a repo-ROOT vitest run, which is what
   # makes the root-relative per-glob thresholds authoritative (vitest.config.ts). `packages/core` is measured
-  # but not enforced here; see the header for the ruling and its promotion trigger.
+  # but not enforced here; see the header for the ruling and its promotion trigger. The run instruments
+  # only the `packages/` tests (`tools/coverage-gate/run.mjs` records the measurement): the apps tests add
+  # nothing to an enforced figure and were about three quarters of a run that took 29 to 45+ minutes on
+  # identical code; they still run in `ci-work`.
   coverage:
     needs: native-fs-assets
     if: ${{ always() }}
@@ -606,7 +609,9 @@ jobs:
     # One file worker isolates unchanged admitted-size case budgets from instrumentation
     # contention. A measured 1,481-second complete run plus setup exhausted 25 minutes;
     # reserve finite whole-suite headroom without changing case bounds or coverage thresholds. By
-    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45.
+    # 2026-11-04 the job took 15-27 minutes, up to 91% of the former 30, so the allowance is 45. Since the run
+    # covers only the package tests it is expected to take well under 15 minutes (4 min 44 s measured locally);
+    # the allowance is kept as headroom, and changing it also changes two pinned lines.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
