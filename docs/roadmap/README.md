@@ -22,6 +22,12 @@ critical path, and the cross-phase invariants that hold across every phase.
   work with an H1, a `> Status:` line, a goal, scope (in / explicitly out), an
   ordered work breakdown with per-workstream acceptance, in-phase milestones,
   dependencies, an exit gate, and risks.
+- **[deferred-tasks.md](deferred-tasks.md)** — the register of confirmed-but-deferred
+  findings: the decisions needed, a watch list of the highest-severity entries, and the
+  open entries. Its two companions are
+  [deferred-tasks-parked.md](deferred-tasks-parked.md) (review-round ledgers whose entries
+  wait for a trigger) and [deferred-tasks-history.md](deferred-tasks-history.md) (the closed
+  record). Read its "How to read the register" section for the `[ ]` / `[~]` / `[x]` markers.
 
 ## How this roadmap is organized
 

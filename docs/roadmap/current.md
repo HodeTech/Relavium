@@ -764,7 +764,7 @@ Finished work is recorded in its register; this page no longer restates it.
   [workstream sections](phases/phase-2.6-conversational-authoring.md).
 - **The CLI MVP** — MVP-1's acceptance in [Next work](#next-work--the-cli-mvp) item 1, and the PR #97 checkpoint
   (merged 2026-11-07) with its review correction in
-  [deferred-tasks.md](deferred-tasks.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06). On 2026-11-08
+  [deferred-tasks-parked.md](deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06). On 2026-11-08
   the maintainer set the Home-first direction (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)),
   and MVP-2 was re-planned around it after the [UX benchmark](../analysis/cli-ux-benchmark-2026-11-08.md). MVP-2
   merged 2026-11-11 in PR #98; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)

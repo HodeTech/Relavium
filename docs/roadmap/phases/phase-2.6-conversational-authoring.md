@@ -349,7 +349,7 @@ step's central change — had **zero test coverage** at any layer. All folded, e
 
 - **`chat-resume` opens on an empty viewport** — it has never repainted prior turns, in any mode or version (nothing
   projects `session_messages` into rendered entries). Not a 2.6.F regression; tracked in
-  [deferred-tasks.md](../deferred-tasks.md).
+  [deferred-tasks-history.md](../deferred-tasks-history.md#chat-resume-opens-on-an-empty-viewport-26c-spin-off-2026-07-12) (closed by MVP-2 step 4).
 - **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
   ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
   a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3) as its
@@ -357,9 +357,9 @@ step's central change — had **zero test coverage** at any layer. All folded, e
 - **Cross-turn tool-call memory** — a "the reseat forgets tool calls" report turned out to be an *engine* property,
   not a reseat one: tool pairs never cross **any** turn boundary (ADR-0062 §6). Deferred behind a default-off toggle,
   but **three already-live bugs gate it** (no pre-egress context-window check; overflow is a fatal, non-retryable
-  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks.md](../deferred-tasks.md).
+  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks-history.md](../deferred-tasks-history.md#cross-turn-tool-call-memory-as-a-default-off-toggle-26c-spin-off-2026-07-12) (superseded by ADR-0095 and ADR-0096).
 - **The CLI e2e suite migrates the developer's real `~/.relavium/history.db`** — verified, and it is what let a
-  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks.md](../deferred-tasks.md).
+  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks-history.md](../deferred-tasks-history.md#the-cli-e2e-suite-opens-and-migrates-the-developers-real-relaviumhistorydb-26c-spin-off-2026-07-13) (done 2026-07-13).
 
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 
@@ -5434,7 +5434,7 @@ advancing MVP-4/5. This register records follow-ups, not implementation acceptan
 |---|---|---|
 | MVP-4 / MVP-A15 / ADR-0118 | Distinguish executable-plus-argv execution (`shell: false`) from explicit interpreter execution. An installed executable is not a grant; file-tool roots do not isolate a subprocess. Inspect the full admitted command/cwd and settle any shell-interpreter policy in its own approved design. | Controlled command fixtures; Once/Session/Remember and revocation; headless refusal; cancellation/output bounds/producer join. Never imply pipes or redirection work as shell syntax by default. |
 | MVP-3b/MVP-3c/MVP-4 / MVP-A10/A12 / ADR-0117/0119 | Keep user denial final and describe recorded outcomes accurately. Failed/aborted turn markers (MVP-3c) are separate from successful-turn historical receipts but render through the same block. | Pre-dispatch refusal is not execution; partial effects and interruption remain truthful; no unsupported success claims or automatic approval. |
-| MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
+| MVP-4 / ADR-0118 / file rename, move, delete | The default agent has no rename/move/delete tool and none is planned; the planned route is an approved `run_command` (`mv`, `rm`); the model already says it cannot rename and offers a copy (observed 2026-11-15). A dedicated typed tool needs its own ADR and security sitting. See the [register entry](../deferred-tasks-parked.md#the-default-chat-agent-cannot-rename-move-copy-or-delete-a-file-found-2026-11-15). | A rename through the approved command path and a refusal when the card is declined; a copy is still never described as a rename. |
 | MVP-5 / MVP-A16 | Typed execution-host OS/architecture, project/cwd, actual runner kind, observed shell, IANA timezone, date/offset and current capabilities/mode. Unknown facts stay unknown; remote/container/WSL execution can differ from the client. Do not infer location/language from timezone. | Platform and timezone transitions; no wholesale environment, credentials or unrelated machine inventory in prompts. Host observations and repository instructions retain their separate provenance. |
 | MVP-5 / prompt caching | Keep stable instructions/tool schemas separate from changing time observations. Measure cache hit/miss and prefix invalidation under equivalent tasks rather than promising a latency reduction from aggregate usage. | Token classes when actually reported; identical correctness/approval behavior; no silent effort/model changes or raw-content diagnostic capture. |
 | CR-70 / v0.2.1 | Full raw tool-content carrying and in-turn overflow continuation retain their existing trigger and schedule. The historical facts in the proposed receipt correction are not a full-content archive. | Future design still resolves bounds/toggle, live handoff, provider signatures/conformance and restart/storage privacy. Do not mark CR-70 complete from receipts. |
