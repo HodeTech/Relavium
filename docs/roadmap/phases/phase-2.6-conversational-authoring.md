@@ -5878,3 +5878,90 @@ wording ("final-head CI, scanner or maintainer acceptance is owed") in the dated
 **MVP-4 is next** under [the existing execution order](../current.md#next-work--the-cli-mvp); [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)
 and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) are still Proposed and need the maintainer's acceptance before it starts.
 Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.
+
+### MVP-4 preparation — read-only analyses and the decisions they need (2026-11-18)
+
+Two read-only analyses of MVP-4's planned work (the tools backend; the keymap and the command card) and two of the open items next to it (the approval-path refactors; the
+deferred CI decisions) were run on `development` after `origin/main` was merged (tree of `002dda58`). **No code changed and no test was run.** Anchors are read from the code
+as of that date; what is marked unverified was not checked. The recommendations below are not decisions. The findings on the items outside MVP-4 (native adapter, legacy approval
+prompt, cognitive complexity, the `coverage` job, the CI decisions) are in [deferred-tasks.md](../deferred-tasks.md).
+
+**What the analyses found that changes the plan**
+
+1. **Ctrl-C at an approval card is not swallowed today:** it stops the turn exactly as Esc does (`tool-review-model.ts` ~366-367; the Home forwards a synthesized Esc,
+   `home-app.tsx` ~685-688). [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)'s context and §2 ("does nothing", "only unmodified keys answer") describe the
+   retired bare-letter prompt, and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1 repeats it; since the chord change
+   ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) note 12) every answer is a Ctrl chord. Both ADRs are Proposed and may be revised
+   before acceptance, so they need a factual re-basing, not a superseding ADR. ADR-0115 also says Esc "keeps aborting" and that both keys take the same reject-then-abort path in
+   one passage; the accepted [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) (~line 158) says ADR-0115 will not change Ctrl-C at a card; and Windows
+   raw-mode Ctrl-C appears only under Consequences, with no acceptance criterion.
+2. **ADR-0118's mode table is stale against the Accepted [ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md):** it says `ask` and `plan` are
+   "denied" and headless "stays fail-closed", while `ask` is a card on every governed call, `plan` is a mode refusal returned to the model, and headless hides governed tools. Its
+   "Session like ADR-0057's `[a]`" is false: that cache is keyed per tool id (`apps/cli/src/chat/chat-mode.ts` ~132-141, ~291), so once `run_command` is granted one answer would
+   approve every later command; `run_command` needs an exact-argv session grant.
+3. **ADR-0118 §2 stores grants in the global config through the [ADR-0063](../../decisions/0063-cli-config-write-contract.md) primitive,** which is read-modify-write, last writer wins,
+   with no lock: a concurrent `relavium` process can silently restore a revoked grant (fail-open), and a malformed grants section would break every command's config load.
+   [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) §5 solved this for MCP consent with an append-only NDJSON log with tombstones
+   (`apps/cli/src/engine/mcp-consent.ts`, `~/.relavium/mcp-consent.ndjson`, mode 0600, an unparseable line means "no grants") and rejects "a config layer".
+4. **The allowlist defect is real.** `packages/core/src/tools/builtins.ts` ~750 builds `policyTarget` as `[command, ...args].join(' ')` and `registry.ts` ~825-836
+   (`commandAllowed`) compares that string, so an exact entry `cat a b` admits `["cat","a b"]` and `["cat a","b"]`, and `./s/build.sh --release` admits a file literally named
+   `build.sh --release`; an entry typed with quotes never matches the tokenised `!` line. The `!` deny hint (`shell.ts` ~95-106) tells the user to add the quote-stripped line, which an
+   element-wise compare would no longer match. Register: `deferred-tasks-parked.md` ~1537.
+5. **[ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md) status.** Done in MVP-3b: the user rejection with its typed reason, the mode refusal, the headless
+   `unavailable`, the repeat refusal, the budget draw ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)) and the recoverable scope-tier escape.
+   Missing: the protected-path refusal (a fatal `FsScopeDeniedError`, `fs.ts` ~936-943), the allowlist miss (a fatal `ToolPolicyError('command_not_allowed')`) and Ctrl-C rejection
+   (the keymap).
+6. **No HMAC code exists** in `apps/` or `packages/`; the grants store is its first use (`node:crypto`; `packages/core` must not import it, so the HMAC and the matching live in the CLI
+   host).
+7. **The plans disagree about who owns the grant list/revoke screen.** Phase 2.6.G "Permission management" (~lines 620-632 above) writes project grants to
+   `.relavium/project.toml` and lists allowlists, domains, MCP servers and egress endpoints under `/permissions`; D63 and ADR-0118 §2 keep grants only in operator config keyed by
+   project root, Session memory-only, and say the UI "belongs to that workstream"; `current.md` ~414 says "ruled by D63" without saying whether the screen is in MVP-4; MVP-8's 2.6.G
+   list omits `/permissions` and MVP-9 has only `/providers` and `/mcp`.
+8. **ADR number 0135 is claimed twice:** the UI/UX common-language plan reserves it, and the turn-ceilings analysis proposes it for an ADR that amends
+   [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md). Reserve it explicitly before either is written.
+
+**Decisions needed before the steps they gate (recommendation first)**
+
+| # | Question | Recommendation | Gates |
+|---|---|---|---|
+| K1 | Does Esc at a card reject first, as Ctrl-C will? (D68 decided only Ctrl-C) | Yes: one path, the call is recorded as rejected | ADR-0115 §2, keymap |
+| K2 (D4) | Esc inside the card's text boxes (reason, full-view search, the `ask_user` own answer) | Keep today's behaviour (stops the turn) and say so in the hint; "Esc leaves the box" is a small separate increment that rewrites ADR-0129 note 8, ADR-0132 §3 and [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) §5 | keymap |
+| K3 | Command-card Session and Remember answers | MVP-4 ships Once / Session (exact argv) / Deny; Remember arrives with the in-app revoke surface, the keychain HMAC and its own chord (`Ctrl+K` is only a candidate; a clash in VS Code or tmux was not checked) | card |
+| K4 | Does the first Ctrl-C at a card also start the exit window? | Yes (one rule), with a "refines ADR-0132 §3" note | ADR-0115 |
+| K7 | ADR-0118's `ask` column | Follows ADR-0130: a pre-approved command is a plain approval card, a session-approved one runs | ADR-0118 |
+| Q1 | Where grants live | An ADR-0084-style append-only NDJSON file, not `config.toml`; revise ADR-0118 §2 and add an ADR-0063 note | B4 |
+| Q3 | Grammar of exact allowlist entries | A quote-aware tokenizer shared with `!`; the hint emits a re-parseable quoted line; globs stay string-level | B1 |
+| Q4 | Protected-path scope | Only the lexical directory/rc arm returns to the model; credential-store and post-resolution refusals stay fatal | B2 |
+| Q5, Q6 | Ceiling keys, defaults, caps | `[chat].max_tool_turns` and `max_tool_corrections`, defaults 16 and 3 (and 50 for `max_turns`), caps 64, 10 and 1,000 (the caps are the analysis's suggestion, not documented); project and workspace layers may raise up to the cap | B3 |
+| Q7 | Grant details | HMAC over the root and a version tag, bounds 64 per root and 1,024 in total, no cwd or env binding | B4 |
+| Q8 | Owner of list/revoke | The backend and a small scripting command in MVP-4, the Home screen with MVP-8's 2.6.G; amend the 2.6.G bullet | B7 |
+
+Not blocking acceptance: D2, D3 (only the strings MVP-4 rewrites need one spelling) and the arming-window value (suggest 2 s as one named constant). D12 and the UI/UX plan's §5
+disagree on whether A3 precedes MVP-4; the recommendation is that A3 waits and MVP-4 writes its own Ctrl-C strings.
+
+**Step plan** (ADR work first: revise and accept ADR-0115 and ADR-0118, add dated amendment notes to ADR-0061, 0132, 0122 §7.4, 0057, 0117 and 0029, and write the turn-ceilings ADR)
+
+| Step | What | Gate | Size | Tier |
+|---|---|---|---|---|
+| I1 | Delete the legacy approval prompt, keeping `reduceApprovalKey`; characterization tests first | none | M | rigor (folds into the final round) |
+| B1 | Element-wise exact allowlist: `PolicyTarget.argv`, `commandAllowed`, a shared `command-line.ts` tokenizer and quoter, the `!` hint | none (defect fix); Q3 | M | rigor |
+| B2 | The protected-path refusal returns to the model (lexical stage only) | ADR-0117 Accepted; Q4 | M | rigor |
+| B3 | Turn ceilings, one shared validator, rejection never clamp | the ceilings ADR; Q5 | M | self-review and one scoped round; not a D64 path (no approval, key, write or terminal-sink change), with the caveat that ADR-0117 and `agent-turn.ts` call `maxToolTurns` the "egress ceiling", so a literal D64 reading would move it up a tier |
+| B4 | Grants store `~/.relavium/command-grants.ndjson`, an HMAC-SHA256 key in the keychain (`KeychainStore`, its own account), `timingSafeEqual`, bounds, failure modes | revised ADR-0118; Q1, Q7 | L | rigor |
+| I2 | Keymap per ADR-0115: a pure `interrupt-keymap.ts`, reject-first (`chat-store.ts` ~668), a direct interrupt replacing the synthesized Esc, delete `reduceApprovalKey`, wire Ctrl-C, strings | ADR-0115 Accepted; K1, K2, K4 | L | rigor and a security sitting |
+| B5 | Engine seam: `ToolApprovalRequest` carries the in-process argv, an interactive allowlist miss asks, the mode table, an exact-argv session cache | ADR-0118; after B1 | L | rigor |
+| I3 | Command card UI: argv rows with visible delimiters, the new inspection lock, answers, capability flags | ADR-0118; I2 landed; B4, B5 | L-XL | rigor and a security sitting |
+| B6 | Host wiring and the default agent's `run_command` (grants; `!` opens the card instead of the hint) | B4, B5, I3 | L | rigor and a security sitting |
+| B7 | Grant list/revoke backend (a tombstone) | B4; Q8 | S-M | rigor |
+| I4 | Windows Terminal and conhost: a raw-mode Ctrl-C arrives as a key, rejects and arms. CI cannot cover it (the required Windows job is headless; a ConPTY harness would be a new dependency and needs an ADR) | I2 | S plus a Windows machine | evidence before the final round |
+
+**Conflicts.** B1 to B4 are disjoint in source files and could proceed in parallel; B1 precedes B5 (both touch `registry.ts` and `types.ts`); B3 edits the config schema and
+`config/resolve.ts`, so it precedes anything else that edits them (with the NDJSON store B4 does not). I1 to I4 live in `render/tui/**`, `process/signals.ts`, `commands/chat.ts` and the
+Home; B1 and B6 touch `shell.ts` and `chat-mode.ts`, which I3 also needs (`ApprovalCache`, `ApprovalAnswer`), and `packages/core/src/tools/ask-user.ts` must refuse any new chord token
+(`APPROVAL_KEY_TOKEN`). The docs overlap on `built-in-tools.md` and `config-spec.md`: edit separate sections. After the engine and keymap steps run `pnpm turbo run build` (the
+maintainer runs the minified bundle).
+
+**Not determined.** No test or terminal was run. Unverified: whether the plain and `--json` first SIGINT already aborts the in-flight turn (it looks so; no test pins it); whether
+`session.abort()` stops a `!` child; Windows raw-mode Ctrl-C and Ctrl-Break; whether the "Waiting for your answer" line is right for an approval opened by `!` with no turn running;
+a clash of `Ctrl+K`; what the headless path does with an allowlisted command (ADR-0130 §4 hides governed tools); whether the displayed argv would cross `agent:approval_requested`
+(`run-event.ts` is strict); the keychain prompt on first macOS access; the cost of a D64 round (not recorded in the docs read).
