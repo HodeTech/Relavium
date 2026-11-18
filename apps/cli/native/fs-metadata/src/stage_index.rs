@@ -68,6 +68,24 @@ fn record_name(name: &str) -> Option<&str> {
         None
     }
 }
+/// A recorded producer id is a positive `i32`, the range the liveness probe can represent.
+fn valid_pid(pid: u32) -> bool {
+    pid != 0 && pid <= i32::MAX as u32
+}
+/// The only locator a record may carry: an absolute stage path whose last name is exactly
+/// `PREFIX{pid}.{nonce}` and which holds no `.` or `..` component. `Record::encode` and
+/// `Record::decode` share it, so a record that can be written can always be read back (a locator
+/// that encoded but could not decode would make every later scan of the index fail closed).
+fn valid_locator(stage: &Path, pid: u32, nonce: &str) -> bool {
+    stage.is_absolute()
+        && stage.file_name() == Some(OsStr::new(&format!("{PREFIX}{pid}.{nonce}")))
+        && !stage.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecordVersion {
@@ -99,6 +117,8 @@ impl Record {
             || stage.is_empty()
             || stage.len() > 4096
             || !valid_nonce(&self.nonce)
+            || !valid_pid(self.pid)
+            || !valid_locator(&self.stage, self.pid, &self.nonce)
         {
             return refused();
         }
@@ -156,8 +176,7 @@ impl Record {
                 .try_into()
                 .map_err(|_| NativeFailure::Changed)?,
         ));
-        if pid == 0
-            || pid > i32::MAX as u32
+        if !valid_pid(pid)
             || owner_len == 0
             || owner_len > 184
             || path_len == 0
@@ -174,16 +193,7 @@ impl Record {
         let nonce = text(24..56)?;
         let owner = text(56..56 + owner_len)?;
         let stage = PathBuf::from(text(56 + owner_len..56 + owner_len + path_len)?);
-        if !valid_nonce(&nonce)
-            || !stage.is_absolute()
-            || stage.file_name() != Some(OsStr::new(&format!("{PREFIX}{pid}.{nonce}")))
-            || stage.components().any(|c| {
-                matches!(
-                    c,
-                    std::path::Component::ParentDir | std::path::Component::CurDir
-                )
-            })
-        {
+        if !valid_nonce(&nonce) || !valid_locator(&stage, pid, &nonce) {
             return refused();
         }
         let mut offset = 56 + owner_len + path_len;
@@ -450,10 +460,16 @@ impl<P: Profile> Index<P> {
                 .into_string()
                 .map_err(|_| NativeFailure::Changed)?;
             tick(start, cancelled)?;
-            let file = open_nofollow(&entry.path())?;
+            let Some(file) = open_scanned(&name, &entry.path())? else {
+                // A producer finished with this uncommitted entry between the listing and the open.
+                // It was already counted against the entry bound above.
+                continue;
+            };
             tick(start, cancelled)?;
-            P::verify_private_file(&file)?;
-            let size = io(file.metadata())?.len();
+            let Some(size) = verified_entry_size::<P>(&name, &entry.path(), &file)? else {
+                // Removed after the open: see `verified_entry_size`.
+                continue;
+            };
             total += size;
             if size > MAX_RECORD_BYTES as u64 || total > MAX_SCAN_BYTES as u64 {
                 return refused();
@@ -529,7 +545,9 @@ impl<P: Profile> Index<P> {
         tick(start, cancelled)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-acquire");
-        trace_failure!("first-lock-acquire", lock(&file))?;
+        // Wait out another writer, cleanup or recovery pass that holds the allocation claim (concurrent
+        // processes on one operator home are supported), inside this operation's deadline and flag.
+        trace_failure!("first-lock-acquire", lock_within(&file, start, cancelled))?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-recheck");
         trace_failure!("first-lock-recheck", self.recheck_checked(start, cancelled))?;
@@ -862,9 +880,7 @@ impl<P: Profile> OwnedStage<P> {
         )?;
         trace_failure!(
             "first-pin-reservation-remove",
-            io(fs::remove_file(
-                self.index.path.join(format!("{}.reserved", self.nonce)),
-            ))
+            self.remove_own_reservation()
         )?;
         trace_failure!(
             "first-pin-context-after-remove",
@@ -873,6 +889,21 @@ impl<P: Profile> OwnedStage<P> {
         tick(start, cancelled)?;
         trace_failure!("first-pin-final-flush", io(self.index.directory.sync_all()))?;
         Ok(())
+    }
+    /// Remove this producer's own empty reservation, but only the exact file it created: the name
+    /// alone is not authority. `cleanup` and `cleanup_empty_reservation` re-prove the same identity
+    /// before they unlink; the pin must not be the one place that deletes whatever holds the name.
+    fn remove_own_reservation(&self) -> Result<(), NativeFailure> {
+        let path = self.index.path.join(format!("{}.reserved", self.nonce));
+        let current = open_nofollow(&path)?;
+        P::verify_private_file(&self.reservation)?;
+        P::verify_private_file(&current)?;
+        if P::identity(&current)? != P::identity(&self.reservation)?
+            || io(current.metadata())?.len() != 0
+        {
+            return refused();
+        }
+        io(fs::remove_file(path))
     }
     pub(crate) fn cleanup(&mut self) -> Result<(), NativeFailure> {
         #[cfg(test)]
@@ -1193,7 +1224,8 @@ pub(crate) fn recover_with_cancel<P: Profile>(
         return refused();
     }
     tick(start, cancelled)?;
-    lock(&allocation)?;
+    // A recovery pass queues behind a writer's short allocation instead of failing the whole pass.
+    lock_within(&allocation, start, cancelled)?;
     index.recheck_checked(start, cancelled)?;
     let entries = index.entries(start, cancelled)?;
     let mut summary = RecoverySummary::default();
@@ -1434,36 +1466,110 @@ fn cleanup_record<P: Profile>(
     .map_err(|_| NativeFailure::CleanupUncertain)
 }
 #[cfg(unix)]
-fn open_nofollow(path: &Path) -> Result<File, NativeFailure> {
+fn open_nofollow_raw(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    io(OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path))
+        .open(path)
 }
 #[cfg(windows)]
-fn open_nofollow(path: &Path) -> Result<File, NativeFailure> {
+fn open_nofollow_raw(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-    io(OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path))
+        .open(path)
 }
-#[cfg(unix)]
-fn lock(file: &File) -> Result<(), NativeFailure> {
-    use std::os::fd::AsRawFd;
-    // Nonblocking, descriptor-bound kernel claim; process death releases it.
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-        Ok(())
+fn open_nofollow(path: &Path) -> Result<File, NativeFailure> {
+    io(open_nofollow_raw(path))
+}
+/// An entry that may legitimately disappear while the index is scanned: a producer's `.prepare`
+/// is renamed to `.record` and its `.reserved` removed WITHOUT the allocation claim, so the scan can
+/// list them and then find them gone. A committed `.record` and the lock file are only ever removed
+/// by a holder of the allocation claim, which the scanner also holds, so those never vanish.
+fn may_vanish_during_scan(name: &str) -> bool {
+    record_name(name).is_some() && (name.ends_with(".reserved") || name.ends_with(".prepare"))
+}
+/// Open one inventory entry for the scan. `None` means an uncommitted entry that is gone (skip it,
+/// as the TypeScript reader does: a point-in-time scan cannot be exact for an uncommitted artifact);
+/// every other failure, and the absence of any other entry, is a changed index and stays fatal.
+fn open_scanned(name: &str, path: &Path) -> Result<Option<File>, NativeFailure> {
+    match open_nofollow_raw(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound && may_vanish_during_scan(name) =>
+        {
+            Ok(None)
+        }
+        Err(_) => refused(),
+    }
+}
+fn is_absent(path: &Path) -> bool {
+    matches!(
+        fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+/// Verify one opened inventory entry and return its size. `None` means an uncommitted entry that was
+/// removed AFTER it was opened: the producer unlinked the very file the scan holds, so its link count
+/// reads zero and the private-file check refuses it. Skip it like one that was already gone. The
+/// refusal only counts as a vanished entry when the name is really absent now; a file that is still
+/// there and fails the check is a changed index and stays fatal.
+fn verified_entry_size<P: Profile>(
+    name: &str,
+    path: &Path,
+    file: &File,
+) -> Result<Option<u64>, NativeFailure> {
+    let verified =
+        P::verify_private_file(file).and_then(|()| io(file.metadata()).map(|info| info.len()));
+    match verified {
+        Ok(size) => Ok(Some(size)),
+        Err(_) if may_vanish_during_scan(name) && is_absent(path) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+/// Result of one nonblocking claim attempt. Only `Contended` (another handle holds the claim, or the
+/// attempt was interrupted) can ever be waited out; every other failure is returned as an error.
+enum Claim {
+    Held,
+    Contended,
+}
+/// Classify a failed claim attempt from its OS error code. Contention is "somebody else holds it":
+/// `EWOULDBLOCK`/`EAGAIN` (and a signal-interrupted attempt) for `flock`, `ERROR_LOCK_VIOLATION`
+/// for `LockFile`. A bad descriptor, a lock table that is full or any other code is a real failure
+/// that retrying cannot fix, so it must never be mistaken for a holder that will go away.
+fn claim_outcome(raw_os_error: Option<i32>) -> Result<Claim, NativeFailure> {
+    #[cfg(unix)]
+    let contended = matches!(
+        raw_os_error,
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN || code == libc::EINTR
+    );
+    #[cfg(windows)]
+    let contended = matches!(
+        raw_os_error,
+        Some(code) if code as u32 == windows_sys::Win32::Foundation::ERROR_LOCK_VIOLATION
+    );
+    if contended {
+        Ok(Claim::Contended)
     } else {
         refused()
     }
 }
+#[cfg(unix)]
+fn try_lock(file: &File) -> Result<Claim, NativeFailure> {
+    use std::os::fd::AsRawFd;
+    // Nonblocking, descriptor-bound kernel claim; process death releases it.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        return Ok(Claim::Held);
+    }
+    claim_outcome(std::io::Error::last_os_error().raw_os_error())
+}
 #[cfg(windows)]
-fn lock(file: &File) -> Result<(), NativeFailure> {
+fn try_lock(file: &File) -> Result<Claim, NativeFailure> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::LockFile;
     // LockFile is nonblocking. The kernel releases this exclusive claim on handle close/death.
@@ -1477,9 +1583,43 @@ fn lock(file: &File) -> Result<(), NativeFailure> {
         )
     } != 0
     {
-        Ok(())
-    } else {
-        refused()
+        return Ok(Claim::Held);
+    }
+    claim_outcome(std::io::Error::last_os_error().raw_os_error())
+}
+/// One attempt, no waiting. A held claim is a refusal: the per-record claim in `recover` and the
+/// producer's own marker claim mean "a live producer owns this", never "try again".
+fn lock(file: &File) -> Result<(), NativeFailure> {
+    match try_lock(file)? {
+        Claim::Held => Ok(()),
+        Claim::Contended => refused(),
+    }
+}
+/// How long to sleep between attempts while another process holds the allocation claim. That
+/// holder's critical section is a few synchronous flushes, so a short poll keeps a writer behind it
+/// from being noticeably delayed; the operation's own two-second deadline bounds the whole wait.
+const CLAIM_POLL: Duration = Duration::from_millis(2);
+/// Wait for a claim another handle holds, inside the operation's own deadline and cancellation
+/// flag. Used only for the allocation claim (`inventory.lock`), whose holders always release within
+/// one native call, so concurrent writers and a recovery pass queue instead of failing the write.
+/// Not for the per-record claim: a writer holds its record claim while it waits for the allocation
+/// claim and `recover` holds the allocation claim while it tries a record claim, so waiting on both
+/// would make a wait cycle.
+fn lock_within(
+    file: &File,
+    start: Instant,
+    cancelled: Option<&AtomicBool>,
+) -> Result<(), NativeFailure> {
+    loop {
+        match try_lock(file)? {
+            Claim::Held => return Ok(()),
+            Claim::Contended => {
+                // Cancellation and the deadline are checked between attempts, so a waiter leaves
+                // within one poll of either.
+                tick(start, cancelled)?;
+                std::thread::sleep(CLAIM_POLL);
+            }
+        }
     }
 }
 #[cfg(unix)]
@@ -2309,5 +2449,387 @@ mod custody_tests {
         child.wait().expect("join child");
         drop(reader);
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    fn fixture_home(label: &str) -> (PathBuf, File) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("relavium-{label}-{}-{stamp}", std::process::id()));
+        let home = TestProfile::create_private_directory(&root).expect("private home");
+        (fs::canonicalize(root).expect("home path"), home)
+    }
+
+    /// A second handle on `inventory.lock` that holds the allocation claim, as another process would.
+    fn hold_allocation_claim(index: &Index<TestProfile>) -> File {
+        let holder = open_nofollow(&index.path.join("inventory.lock")).expect("holder handle");
+        lock(&holder).expect("holder claim");
+        holder
+    }
+
+    #[test]
+    fn allocation_claim_waits_for_a_short_holder_and_fails_closed_after_the_budget() {
+        let (root, home) = fixture_home("claim-wait");
+        let index = Index::<TestProfile>::open(&root, true).expect("index");
+        drop(
+            index
+                .allocation_lock()
+                .expect("the first claim creates the lock file"),
+        );
+
+        // A holder that lets go inside the budget: the writer queues behind it instead of failing.
+        let holder = hold_allocation_claim(&index);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(holder);
+        });
+        let began = Instant::now();
+        drop(
+            index
+                .allocation_lock()
+                .expect("waits for a short holder instead of failing the write"),
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(100),
+            "the claim was free immediately, so this proved nothing about waiting"
+        );
+        release.join().expect("holder thread");
+
+        // A holder that outlasts the operation's deadline: fail closed at the deadline, not at the holder.
+        // The operation started 1.9 s ago, so about 100 ms of its two seconds remain.
+        let holder = hold_allocation_claim(&index);
+        let started = Instant::now()
+            .checked_sub(Duration::from_millis(1900))
+            .expect("monotonic clock is more than two seconds past its origin");
+        let began = Instant::now();
+        assert!(matches!(
+            index.allocation_lock_checked(started, None),
+            Err(NativeFailure::Changed)
+        ));
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "gave up late: it waited for the holder instead of the deadline"
+        );
+        drop(holder);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn allocation_claim_wait_honours_cancellation() {
+        let (root, home) = fixture_home("claim-cancel");
+        let index = Index::<TestProfile>::open(&root, true).expect("index");
+        drop(
+            index
+                .allocation_lock()
+                .expect("the first claim creates the lock file"),
+        );
+        let holder = hold_allocation_claim(&index);
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let raise = {
+            let flag = std::sync::Arc::clone(&flag);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                flag.store(true, Ordering::Release);
+            })
+        };
+        let began = Instant::now();
+        assert!(matches!(
+            index.allocation_lock_checked(Instant::now(), Some(flag.as_ref())),
+            Err(NativeFailure::Cancelled)
+        ));
+        assert!(
+            began.elapsed() < Duration::from_secs(1),
+            "cancellation did not interrupt the wait"
+        );
+        raise.join().expect("cancel thread");
+        drop(holder);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn recovery_waits_for_a_short_allocation_holder() {
+        let (root, home) = fixture_home("recover-wait");
+        let index = Index::<TestProfile>::open(&root, true).expect("index");
+        drop(
+            index
+                .allocation_lock()
+                .expect("the first claim creates the lock file"),
+        );
+        let holder = hold_allocation_claim(&index);
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            drop(holder);
+        });
+        let summary = recover::<TestProfile>(&root)
+            .expect("recovery queues behind a writer's allocation instead of failing the pass");
+        assert_eq!((summary.removed, summary.retained), (0, 0));
+        release.join().expect("holder thread");
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn only_contention_is_waited_out_as_a_claim_failure() {
+        #[cfg(unix)]
+        {
+            for code in [libc::EWOULDBLOCK, libc::EAGAIN, libc::EINTR] {
+                assert!(matches!(claim_outcome(Some(code)), Ok(Claim::Contended)));
+            }
+            // A bad descriptor, an exhausted lock table or an invalid request will not go away.
+            for code in [libc::EBADF, libc::EINVAL, libc::ENOLCK] {
+                assert!(matches!(
+                    claim_outcome(Some(code)),
+                    Err(NativeFailure::Changed)
+                ));
+            }
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{
+                ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, ERROR_LOCK_VIOLATION,
+            };
+            assert!(matches!(
+                claim_outcome(Some(ERROR_LOCK_VIOLATION as i32)),
+                Ok(Claim::Contended)
+            ));
+            for code in [ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE] {
+                assert!(matches!(
+                    claim_outcome(Some(code as i32)),
+                    Err(NativeFailure::Changed)
+                ));
+            }
+        }
+        assert!(matches!(claim_outcome(None), Err(NativeFailure::Changed)));
+    }
+
+    #[test]
+    fn scan_skips_a_vanished_uncommitted_entry_but_not_a_committed_one() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("relavium-scan-open-{}-{stamp}", std::process::id()));
+        fs::create_dir(&dir).expect("fixture");
+        let nonce = "c".repeat(32);
+        let reserved = format!("{nonce}.reserved");
+        let prepare = format!("{nonce}.prepare");
+        let record = format!("{nonce}.record");
+        // A producer's `.reserved` and `.prepare` can be gone between the listing and the open.
+        assert!(matches!(
+            open_scanned(&reserved, &dir.join(&reserved)),
+            Ok(None)
+        ));
+        assert!(matches!(
+            open_scanned(&prepare, &dir.join(&prepare)),
+            Ok(None)
+        ));
+        // A committed record, the lock and a malformed name are never removed under the scan's own
+        // claim, so their absence is a changed index.
+        for name in [record.as_str(), "inventory.lock", "not-a-nonce.reserved"] {
+            assert!(
+                matches!(
+                    open_scanned(name, &dir.join(name)),
+                    Err(NativeFailure::Changed)
+                ),
+                "{name}"
+            );
+        }
+        // Anything that is there is opened as before.
+        fs::write(dir.join(&reserved), b"").expect("entry");
+        assert!(matches!(
+            open_scanned(&reserved, &dir.join(&reserved)),
+            Ok(Some(_))
+        ));
+        fs::remove_dir_all(dir).expect("remove fixture");
+    }
+
+    #[test]
+    fn scan_skips_an_uncommitted_entry_unlinked_after_it_was_opened() {
+        // POSIX: the producer's unlink leaves the scan holding a file whose link count is zero, which
+        // the private-file check refuses. Windows keeps a deleted-but-open file in a delete-pending
+        // state that only CI can observe, so this proof is POSIX-only and the Windows leg is not
+        // asserted here.
+        #[cfg(unix)]
+        {
+            let (root, home) = fixture_home("scan-unlinked");
+            let index = Index::<TestProfile>::open(&root, true).expect("index");
+            let nonce = "d".repeat(32);
+            for (suffix, skipped) in [("reserved", true), ("prepare", true), ("record", false)] {
+                let name = format!("{nonce}.{suffix}");
+                let path = index.path.join(&name);
+                drop(
+                    TestProfile::create_private_file(&index.directory, OsStr::new(&name))
+                        .expect("entry"),
+                );
+                let file = open_scanned(&name, &path)
+                    .expect("open")
+                    .expect("the entry is there");
+                fs::remove_file(&path).expect("unlinked under the scan");
+                let outcome = verified_entry_size::<TestProfile>(&name, &path, &file);
+                if skipped {
+                    assert!(matches!(outcome, Ok(None)), "{suffix} is skipped");
+                } else {
+                    assert!(outcome.is_err(), "a committed record stays fatal");
+                }
+            }
+            // A file that is still there and fails the private-file check is not a vanished entry.
+            let name = format!("{nonce}.reserved");
+            let path = index.path.join(&name);
+            drop(
+                TestProfile::create_private_file(&index.directory, OsStr::new(&name))
+                    .expect("entry"),
+            );
+            let file = open_scanned(&name, &path)
+                .expect("open")
+                .expect("the entry is there");
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("widen mode");
+            }
+            assert!(matches!(
+                verified_entry_size::<TestProfile>(&name, &path, &file),
+                Err(_)
+            ));
+            drop(file);
+            drop(index);
+            drop(home);
+            fs::remove_dir_all(root).expect("remove fixture");
+        }
+    }
+
+    // POSIX only: a Windows scan can meet a delete-pending entry (access denied or a sharing
+    // violation instead of not-found), which only the eight-target CI can observe.
+    #[cfg(unix)]
+    #[test]
+    fn scan_survives_concurrent_promotion_churn() {
+        // A producer pins WITHOUT the allocation claim: it creates `.reserved`, renames `.prepare`
+        // to `.record` and removes `.reserved`. A scan that lists such an entry and then finds it
+        // gone must skip it, not call the whole index changed (78 to 102 of 200 recoveries failed
+        // under this churn before the fix).
+        let (root, home) = fixture_home("scan-churn");
+        let index = Index::<TestProfile>::open(&root, true).expect("index");
+        drop(
+            index
+                .allocation_lock()
+                .expect("the first claim creates the lock file"),
+        );
+        let directory = index.directory.try_clone().expect("directory handle");
+        let path = index.path.clone();
+        let stop = AtomicBool::new(false);
+        // A failing scan must end the test, never hang it: record the first failure and let the
+        // churner stop before the scope joins it.
+        let mut failure = None;
+        std::thread::scope(|scope| {
+            let churn = scope.spawn(|| {
+                let mut counter = 0_u128;
+                while !stop.load(Ordering::Acquire) {
+                    counter += 1;
+                    let name = format!("{counter:032x}.reserved");
+                    let file = TestProfile::create_private_file(&directory, OsStr::new(&name))
+                        .expect("churn create");
+                    drop(file);
+                    fs::remove_file(path.join(&name)).expect("churn remove");
+                }
+                counter
+            });
+            for round in 0..300 {
+                if let Err(error) = index.entries(Instant::now(), None) {
+                    failure = Some(format!("scan {round}: {error:?}"));
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Release);
+            assert!(churn.join().expect("churn thread") > 0);
+        });
+        assert_eq!(failure, None, "a scan failed while entries churned");
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn pin_removes_only_the_reservation_it_created() {
+        let (root, home) = fixture_home("pin-reservation");
+        let mut owned = OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"8".repeat(32))
+            .expect("reserve");
+        let reserved = owned.index.path.join(format!("{}.reserved", owned.nonce));
+        // The name now belongs to a file this producer did not create: its held handle is another file.
+        let other = TestProfile::create_private_file(&owned.index.directory, OsStr::new("other"))
+            .expect("another empty private file");
+        let original = std::mem::replace(&mut owned.reservation, other);
+        assert!(matches!(
+            owned.remove_own_reservation(),
+            Err(NativeFailure::Changed)
+        ));
+        assert!(reserved.exists(), "the file under the name must stay");
+        // With its own handle back, the same call removes exactly that file.
+        owned.reservation = original;
+        owned.remove_own_reservation().expect("own reservation");
+        assert!(!reserved.exists());
+        drop(owned);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn record_encode_enforces_the_decode_invariants() {
+        let id = NativeIdentity {
+            volume: 1,
+            object: 2,
+            node_dev: 3,
+            node_ino: 4,
+        };
+        let nonce = "b".repeat(32);
+        let base = if cfg!(windows) {
+            "C:\\relavium"
+        } else {
+            "/relavium"
+        };
+        let locator = |pid: u32| PathBuf::from(base).join(format!("{PREFIX}{pid}.{nonce}"));
+        let record = |pid: u32, stage: PathBuf| Record {
+            version: RecordVersion::V2,
+            pid,
+            nonce: nonce.clone(),
+            owner: "owner".to_owned(),
+            stage,
+            parent: id,
+            directory: id,
+            payload: id,
+        };
+        let good = record(7, locator(7));
+        let decoded = Record::decode(&good.encode().expect("a well-formed record encodes"))
+            .expect("and decodes");
+        assert_eq!((decoded.pid, &decoded.stage), (7, &good.stage));
+        // Everything `decode` refuses must already be refused by `encode`: a record that could be
+        // written but not read back would make every later scan of the index fail closed.
+        let too_big = i32::MAX as u32 + 1;
+        assert!(record(0, locator(0)).encode().is_err(), "pid 0");
+        assert!(
+            record(too_big, locator(too_big)).encode().is_err(),
+            "pid beyond i32"
+        );
+        assert!(
+            record(7, PathBuf::from(format!("relavium/{PREFIX}7.{nonce}")))
+                .encode()
+                .is_err(),
+            "relative locator"
+        );
+        assert!(
+            record(7, locator(8)).encode().is_err(),
+            "locator names another pid"
+        );
+        let climbing = PathBuf::from(base)
+            .join("..")
+            .join("relavium")
+            .join(format!("{PREFIX}7.{nonce}"));
+        assert!(record(7, climbing).encode().is_err(), "`..` component");
     }
 }
