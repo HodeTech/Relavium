@@ -18,7 +18,13 @@ const MAX_RECORD_BYTES = 16 * 1024;
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const SCAN_MS = 2000;
 /** Whole-scan attempts when a committed record vanishes mid-scan; the one SCAN_MS deadline bounds them all. */
-const SCAN_ATTEMPTS = 3;
+/**
+ * Whole scans a vanishing committed record may cost: the first plus the retries, all inside the same deadline.
+ * Under heavy churn (many concurrent writers completing, each removing its record) a record can vanish in
+ * several scans in a row; eight keeps that from refusing a tool call, and a record that keeps vanishing still
+ * ends as the same fatal error.
+ */
+const SCAN_ATTEMPTS = 8;
 const STAGE_PREFIX = '.relavium-fs-stage-v1.';
 export const FS_PRIVATE_INDEX_PARENT = '.relavium-fs-private-v1';
 const recordName = /^([a-f0-9]{32})\.(record|reserved|prepare)$/;
@@ -366,8 +372,9 @@ export async function captureFsStageInventory(
           ) {
             // A producer's pin removes its `.reserved` and renames its `.prepare` without any claim this
             // reader could hold, and a completing write removes its `.record`: the file we just opened can
-            // be unlinked under us. Its link count then reads zero and its identity no longer matches, which
-            // looks exactly like a changed index. Only when the name is really absent now is it neither: an
+            // be unlinked under us. Its link count then reads zero (it is the same inode, so `same` still holds
+            // but `nlink !== 1n` does not), which looks exactly like a changed index. Only when the name is
+            // really absent now is it neither: an
             // uncommitted entry is skipped (as one that vanished before the open), a committed record
             // runs the whole scan again. A file that is still there and fails the check stays fatal.
             if (await nameIsAbsent(path)) {

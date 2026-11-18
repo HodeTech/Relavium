@@ -30,7 +30,7 @@ import { prepareGlobalPreferences } from '../../config/write.js';
 // A committed record can vanish between the directory read and the lstat/open/re-lstat of it (a concurrent write
 // completing removes its record). The window is microseconds wide, so the tests open it deterministically through the
 // real calls: `decide` may delete the file just before the real call ('unlink') or fail it outright ('vanish').
-type Decision = 'pass' | 'unlink' | 'vanish' | 'unlinkAfter' | 'replace' | 'nlink0';
+type Decision = 'pass' | 'unlink' | 'vanish' | 'unlinkAfter' | 'replace' | 'nlink0' | 'denied';
 const seam = vi.hoisted(() => ({
   decide: undefined as undefined | ((op: 'lstat' | 'open', name: string, call: number) => Decision),
   calls: new Map<string, number>(),
@@ -59,6 +59,8 @@ vi.mock('node:fs/promises', async (original) => {
     }
     if (decision === 'vanish')
       throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    if (decision === 'denied')
+      throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
     return decision;
   };
   return {
@@ -600,8 +602,8 @@ describe.skipIf(process.platform === 'win32')('a committed record that vanishes 
       expect(failure).toMatchObject({
         message: 'filesystem staging inventory is unavailable or unsafe',
       });
-      // Exactly SCAN_ATTEMPTS (3) whole scans: the first plus two retries, then the error stands.
-      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(3);
+      // Exactly SCAN_ATTEMPTS (8) whole scans: the first plus seven retries, then the error stands.
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(8);
     },
   );
 });
@@ -714,6 +716,22 @@ it.skipIf(process.platform === 'win32')(
     for (let n = 0; n < 136; n++) await create(n);
     await expect(captureFsStageInventory(home)).resolves.toBeDefined();
     await create(136);
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'does not treat a failed lookup that is not "no such file" as proof that an entry vanished',
+  async () => {
+    const nonce = '9'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    // The file is unlinked after it was opened, so the first check fails; the lookup that would show
+    // whether the name is still there is denied, which proves nothing about the name.
+    seam.decide = (op, name, call) => {
+      if (!name.endsWith('.reserved')) return 'pass';
+      if (op === 'open') return 'unlinkAfter';
+      return op === 'lstat' && call === 2 ? 'denied' : 'pass';
+    };
     await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
   },
 );
