@@ -541,11 +541,13 @@ impl<P: Profile> Index<P> {
         self.recheck_checked(start, cancelled)?;
         Ok(entries)
     }
-    /// The claim for a CLEANUP: it waits under a fresh budget, ignores cancellation (cleanup completion
-    /// suppresses it) and is never refused for being beyond the waiter limit (it cannot be retried: a
-    /// refused cleanup after a publication is an uncertain write, one before a pin leaks a slot).
+    /// The claim for a CLEANUP: it waits under a fresh budget and ignores cancellation (cleanup completion
+    /// suppresses it). A cleanup cannot be retried (a refused one after a publication is an uncertain
+    /// write, one before a pin leaks a slot), so beyond the waiter limit it gets the longer
+    /// `CLEANUP_GRACE`; it is not exempt, because cleanups parked behind a stuck holder would stall the
+    /// whole worker pool for the full two seconds.
     fn allocation_lock(&self) -> Result<AllocationClaim, NativeFailure> {
-        self.allocation_claim(Instant::now(), None, false)
+        self.allocation_claim(Instant::now(), None, CLEANUP_GRACE)
     }
     /// The claim for a reservation: it waits inside the operation's own deadline and cancellation flag,
     /// and a caller beyond the waiter limit gets only the short grace.
@@ -554,13 +556,13 @@ impl<P: Profile> Index<P> {
         start: Instant,
         cancelled: Option<&AtomicBool>,
     ) -> Result<AllocationClaim, NativeFailure> {
-        self.allocation_claim(start, cancelled, true)
+        self.allocation_claim(start, cancelled, OVER_LIMIT_GRACE)
     }
     fn allocation_claim(
         &self,
         start: Instant,
         cancelled: Option<&AtomicBool>,
-        limited: bool,
+        grace: Duration,
     ) -> Result<AllocationClaim, NativeFailure> {
         tick(start, cancelled)?;
         let path = self.path.join("inventory.lock");
@@ -595,7 +597,7 @@ impl<P: Profile> Index<P> {
         // processes on one operator home are supported), inside this operation's deadline and flag.
         let held_since = trace_failure!(
             "first-lock-acquire",
-            lock_within(&file, start, cancelled, limited)
+            lock_within(&file, start, cancelled, grace)
         )?;
         // The wait can outlast the lock file's name: another process may have unlinked and recreated it,
         // and a claim on the orphaned inode would split the exclusion domain.
@@ -1307,7 +1309,7 @@ pub(crate) fn recover_with_cancel<P: Profile>(
     }
     tick(start, cancelled)?;
     // A recovery pass queues behind a writer's short allocation instead of failing the whole pass.
-    let start = lock_within(&allocation, start, cancelled, true)?;
+    let start = lock_within(&allocation, start, cancelled, OVER_LIMIT_GRACE)?;
     require_same_lock::<P>(&lock_path, &allocation)?;
     #[cfg(test)]
     under_claim_hook();
@@ -1719,7 +1721,7 @@ fn lock_within(
     file: &File,
     start: Instant,
     cancelled: Option<&AtomicBool>,
-    limited: bool,
+    grace: Duration,
 ) -> Result<Instant, NativeFailure> {
     let mut waiter = None;
     let mut grace_until = None;
@@ -1731,19 +1733,13 @@ fn lock_within(
                 // `changed` whatever the waiter limit says.
                 tick(start, cancelled)?;
                 if waiter.is_none() {
-                    // A cleanup always waits (and still counts toward the limit for the others).
-                    waiter = if limited {
-                        ClaimWaiter::enter()
-                    } else {
-                        Some(ClaimWaiter::enter_always())
-                    };
+                    waiter = ClaimWaiter::enter();
                 }
                 if waiter.is_none() {
                     // Over the process-wide limit: only a short grace, so a holder that is merely busy
                     // (the usual case) still lets this caller through while a stuck one cannot park the
                     // whole worker pool. Past the grace this is the single-attempt refusal of old.
-                    let until =
-                        *grace_until.get_or_insert_with(|| Instant::now() + OVER_LIMIT_GRACE);
+                    let until = *grace_until.get_or_insert_with(|| Instant::now() + grace);
                     if Instant::now() >= until {
                         return refused();
                     }
@@ -1802,13 +1798,14 @@ fn max_claim_waiters() -> usize {
 /// synchronous flushes, so this lets a fourth concurrent caller behind a busy holder through, and it
 /// bounds what a stuck holder can cost the one pool thread that is never parked for long.
 const OVER_LIMIT_GRACE: Duration = Duration::from_millis(100);
+/// The grace of a cleanup beyond the limit: longer than a reservation's, because a refused cleanup cannot
+/// be retried and is worse than a refused reservation (an uncertain write, or a leaked slot), yet still
+/// bounded, so that cleanups behind a stuck holder park a pool thread for half a second at most per
+/// caller instead of two seconds.
+const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 static CLAIM_WAITERS: AtomicUsize = AtomicUsize::new(0);
 struct ClaimWaiter;
 impl ClaimWaiter {
-    fn enter_always() -> Self {
-        CLAIM_WAITERS.fetch_add(1, Ordering::AcqRel);
-        Self
-    }
     fn enter() -> Option<Self> {
         let limit = max_claim_waiters();
         CLAIM_WAITERS
@@ -2866,7 +2863,7 @@ mod custody_tests {
                 .into_iter()
                 .map(|file| {
                     scope.spawn(move || {
-                        let outcome = lock_within(&file, Instant::now(), None, true);
+                        let outcome = lock_within(&file, Instant::now(), None, OVER_LIMIT_GRACE);
                         drop(file);
                         outcome
                     })
@@ -2884,12 +2881,13 @@ mod custody_tests {
             // (that would take the whole two seconds) nor is refused before the grace is over.
             let refused_at = Instant::now();
             assert!(matches!(
-                lock_within(&extra, Instant::now(), None, true),
+                lock_within(&extra, Instant::now(), None, OVER_LIMIT_GRACE),
                 Err(NativeFailure::Changed)
             ));
             let refused_after = refused_at.elapsed();
             assert!(
-                refused_after >= OVER_LIMIT_GRACE && refused_after < Duration::from_secs(1),
+                refused_after >= OVER_LIMIT_GRACE
+                    && refused_after < OVER_LIMIT_GRACE + Duration::from_millis(400),
                 "the extra caller waited {refused_after:?}"
             );
             drop(holder);
@@ -3024,21 +3022,13 @@ mod custody_tests {
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
-    #[test]
-    fn a_cleanup_beyond_the_waiter_limit_still_waits_for_the_claim() {
-        // Cleanup cannot be retried (a refused cleanup after a publication is an uncertain write), so it
-        // is never refused for being beyond the waiter limit, however long the grace is over.
-        let limit = max_claim_waiters();
-        let _serial = claim_tests_serial();
-        let (root, home, index) = fixture_index("cleanup-limit");
-        let _reset = WaitersReset;
-        CLAIM_WAITERS.store(limit, Ordering::Release);
-        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+    /// The waiter count is at its limit and the holder lets go only at the SECOND contended attempt, after
+    /// a pause longer than a reservation's grace and shorter than a cleanup's: a cleanup gets through, a
+    /// reservation or recovery does not.
+    fn grace_gap_scenario(holder: File) {
+        let holder = std::cell::Cell::new(Some(holder));
         let attempts = std::cell::Cell::new(0_u32);
         on_contended(move || {
-            // The holder lets go only at the SECOND contended attempt, which comes after the grace a
-            // reservation beyond the limit would get: a cleanup subject to the grace would be refused
-            // before reaching it.
             attempts.set(attempts.get() + 1);
             if attempts.get() == 1 {
                 std::thread::sleep(OVER_LIMIT_GRACE + Duration::from_millis(150));
@@ -3046,13 +3036,208 @@ mod custody_tests {
                 drop(holder.take());
             }
         });
+    }
+
+    #[test]
+    fn a_cleanup_beyond_the_waiter_limit_gets_a_longer_grace_than_a_reservation() {
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("cleanup-grace");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        grace_gap_scenario(hold_allocation_claim(&index));
         drop(
             index
                 .allocation_lock()
-                .expect("a cleanup waits for the claim however many are waiting"),
+                .expect("a cleanup beyond the limit waits out a holder that is busy for a while"),
         );
         clear_hooks();
+        // The same holder, the same pause: a reservation beyond the limit is refused.
+        grace_gap_scenario(hold_allocation_claim(&index));
+        assert!(matches!(
+            index.allocation_lock_checked(Instant::now(), None),
+            Err(NativeFailure::Changed)
+        ));
+        clear_hooks();
         drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_cleanup_beyond_the_limit_is_bounded_by_its_grace_not_the_deadline() {
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("cleanup-bound");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        let holder = hold_allocation_claim(&index);
+        on_contended(|| {});
+        let began = Instant::now();
+        assert!(matches!(
+            index.allocation_lock(),
+            Err(NativeFailure::Changed)
+        ));
+        let waited = began.elapsed();
+        assert!(
+            waited >= CLEANUP_GRACE && waited < CLEANUP_GRACE + Duration::from_millis(400),
+            "the cleanup waited {waited:?}"
+        );
+        clear_hooks();
+        drop(holder);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_reservation_and_a_recovery_beyond_the_limit_get_only_the_short_grace() {
+        // Through the real entry points, not only the helper: a mutant that gave either of them the
+        // cleanup grace, or none, would be caught here.
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("limit-wiring");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        let holder = hold_allocation_claim(&index);
+        on_contended(|| {});
+        let within = |waited: Duration| {
+            waited >= OVER_LIMIT_GRACE && waited < OVER_LIMIT_GRACE + Duration::from_millis(300)
+        };
+        let began = Instant::now();
+        assert!(OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"3".repeat(32)).is_err());
+        let reserved = began.elapsed();
+        assert!(within(reserved), "reserve waited {reserved:?}");
+        let began = Instant::now();
+        assert!(matches!(
+            recover::<TestProfile>(&root),
+            Err(NativeFailure::Changed)
+        ));
+        let recovered = began.elapsed();
+        assert!(within(recovered), "recovery waited {recovered:?}");
+        clear_hooks();
+        drop(holder);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_cancelled_recovery_behind_a_holder_is_cancelled() {
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("recover-cancel");
+        let holder = hold_allocation_claim(&index);
+        let flag = std::rc::Rc::new(AtomicBool::new(false));
+        {
+            let raise = std::rc::Rc::clone(&flag);
+            on_contended(move || raise.store(true, Ordering::Release));
+        }
+        assert!(matches!(
+            recover_with_cancel::<TestProfile>(&root, flag.as_ref()),
+            Err(NativeFailure::Cancelled)
+        ));
+        clear_hooks();
+        drop(holder);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_wait_that_used_up_the_budget_still_yields_a_usable_claim() {
+        // The claim is acquired after the operation's budget is gone; its post-claim recheck must run on
+        // a budget that starts at the acquisition, or a claim just obtained would be refused at once.
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("budget-spent");
+        OPERATION_BUDGET.with(|budget| budget.set(Duration::from_millis(1000)));
+        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+        on_contended(move || {
+            std::thread::sleep(Duration::from_millis(1050));
+            drop(holder.take());
+        });
+        let claim = index
+            .allocation_lock_checked(Instant::now(), None)
+            .expect("a claim obtained after the budget is gone must still be usable");
+        drop(claim);
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// A reserved, pinned stage, as a producer that has handed the stage over would hold it.
+    #[cfg(unix)]
+    fn pinned_stage(
+        root: &Path,
+        home: &File,
+        nonce: &str,
+    ) -> (OwnedStage<TestProfile>, File, File) {
+        let mut owned =
+            OwnedStage::<TestProfile>::reserve(root, home, root, nonce).expect("reserve");
+        let stage = TestProfile::create_private_directory(owned.stage_path()).expect("stage");
+        let payload =
+            TestProfile::create_private_file(&stage, OsStr::new("payload")).expect("payload");
+        let stage_path = owned.stage_path().to_owned();
+        owned.pin_empty(&stage, &payload, &stage_path).expect("pin");
+        (owned, stage, payload)
+    }
+
+    // POSIX only: the cleanup removes files that this process still holds open by name.
+    #[cfg(unix)]
+    #[test]
+    fn post_publication_cleanup_measures_its_work_from_the_claim_and_gets_the_cleanup_grace() {
+        let _serial = claim_tests_serial();
+        let (root, home) = fixture_home("cleanup-after-pin");
+        let (mut owned, stage, payload) = pinned_stage(&root, &home, &"4".repeat(32));
+        let record = owned.index.path.join(format!("{}.record", owned.nonce));
+        assert!(record.exists());
+        // The budget origin: 400 ms of waiting and 700 ms of slow work under the claim, with a one second
+        // budget, only complete if the cleanup measures from the acquisition.
+        slow_claim_scenario(hold_allocation_claim(&owned.index));
+        owned
+            .cleanup()
+            .expect("a cleanup after the pin measures its work from the claim");
+        clear_hooks();
+        assert!(!record.exists(), "the record must be gone");
+        drop(payload);
+        drop(stage);
+        drop(owned);
+        // The grace: beyond the limit, a pinned stage's cleanup waits out a holder that is busy for a while.
+        let limit = max_claim_waiters();
+        let _reset = WaitersReset;
+        let (mut owned, stage, payload) = pinned_stage(&root, &home, &"5".repeat(32));
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        grace_gap_scenario(hold_allocation_claim(&owned.index));
+        owned
+            .cleanup()
+            .expect("a cleanup after the pin gets the cleanup grace, not the reservation's");
+        clear_hooks();
+        drop(payload);
+        drop(stage);
+        drop(owned);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    // POSIX only: see `post_publication_cleanup_measures_its_work_from_the_claim_and_gets_the_cleanup_grace`.
+    #[cfg(unix)]
+    #[test]
+    fn pre_pin_cleanup_gets_the_cleanup_grace() {
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home) = fixture_home("cleanup-before-pin");
+        let _reset = WaitersReset;
+        let mut owned = OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"6".repeat(32))
+            .expect("reserve");
+        let reserved = owned.index.path.join(format!("{}.reserved", owned.nonce));
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        grace_gap_scenario(hold_allocation_claim(&owned.index));
+        owned
+            .cleanup()
+            .expect("a cleanup before the pin gets the cleanup grace, not the reservation's");
+        clear_hooks();
+        assert!(!reserved.exists());
+        drop(owned);
         drop(home);
         fs::remove_dir_all(root).expect("remove fixture");
     }
@@ -3515,7 +3700,7 @@ mod custody_tests {
         let bogus = unsafe { File::from_raw_fd(1_000_000) };
         let began = Instant::now();
         assert!(matches!(
-            lock_within(&bogus, Instant::now(), None, true),
+            lock_within(&bogus, Instant::now(), None, OVER_LIMIT_GRACE),
             Err(NativeFailure::Changed)
         ));
         assert!(
