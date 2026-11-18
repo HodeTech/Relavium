@@ -133,6 +133,23 @@ function same(a: Identity, b: Identity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
 
+/** An uncommitted entry (or the lock) over its bytes bound; only a `.prepare` may hold bytes, and only up to it. */
+function uncommittedOverBound(size: bigint, total: number, prepare: boolean): boolean {
+  return size > BigInt(MAX_RECORD_BYTES) || total > MAX_SCAN_BYTES || (!prepare && size !== 0n);
+}
+/** A committed record whose read ended over its bounds or short of its stat size. */
+function readOverBound(bytesRead: number, total: number, size: bigint): boolean {
+  return bytesRead > MAX_RECORD_BYTES || total > MAX_SCAN_BYTES || BigInt(bytesRead) !== size;
+}
+/** The identities a committed record pins; nothing for any other entry. */
+function recordedIdentities(
+  match: RegExpExecArray | null,
+  bytes: Buffer,
+  uid: bigint | undefined,
+): readonly Identity[] {
+  return match?.[2] === 'record' && match[1] ? parseRecord(bytes, match[1], uid) : [];
+}
+
 type OpenedVerdict = 'intact' | 'unlinked' | 'suspect' | 'changed';
 /**
  * Judge a freshly opened entry against the `lstat` that selected it. A different file than the one looked at is a
@@ -431,11 +448,7 @@ export async function captureFsStageInventory(
           protectIdentity(before);
           if (transient || entry.name === 'inventory.lock') {
             total += Number(before.size);
-            if (
-              before.size > BigInt(MAX_RECORD_BYTES) ||
-              total > MAX_SCAN_BYTES ||
-              (match?.[2] !== 'prepare' && before.size !== 0n)
-            )
+            if (uncommittedOverBound(before.size, total, match?.[2] === 'prepare'))
               throw new FsStageInventoryError();
             return;
           }
@@ -444,12 +457,7 @@ export async function captureFsStageInventory(
           tick(start, signal);
           const { bytesRead } = await opened.read(bytes, 0, bytes.length, 0);
           total += bytesRead;
-          if (
-            bytesRead > MAX_RECORD_BYTES ||
-            total > MAX_SCAN_BYTES ||
-            BigInt(bytesRead) !== before.size
-          )
-            throw new FsStageInventoryError();
+          if (readOverBound(bytesRead, total, before.size)) throw new FsStageInventoryError();
           tick(start, signal);
           const after = await opened.stat({ bigint: true });
           tick(start, signal);
@@ -460,10 +468,8 @@ export async function captureFsStageInventory(
           const read = judgeRead(before, after, current, privatePolicy(current));
           if (read === 'unlinked') throw new RecordVanished();
           if (read === 'changed') throw new FsStageInventoryError();
-          if (match?.[2] === 'record' && match[1]) {
-            for (const pinned of parseRecord(bytes.subarray(0, bytesRead), match[1], uid))
-              protectIdentity(pinned);
-          }
+          for (const pinned of recordedIdentities(match, bytes.subarray(0, bytesRead), uid))
+            protectIdentity(pinned);
           // .prepare is a bounded private, uncommitted record. Its producer cannot write payload yet.
         }
         try {

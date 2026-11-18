@@ -1823,6 +1823,9 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   churn). macOS and Windows have their own snapshots and never compared it. It is a defect independent of ADR-0135's claim, in the supported mode of several processes writing in one project
   directory; the snapshot now reads the policy twice and compares the values (a change of mode, owner, flags, ACL or attributes still differs), with a Linux test that fails under the old check
   (100 of 100 pass, 20 of 20 fail with it restored) and 8 writers x 40 writes completing 320 of 320 on the container. Windows and the other Linux targets are covered only by the eight-target CI. **Owed:** a separate security sitting on this change (it touches the filesystem-write path; D64), not held yet.
+  *Left, low (checked by mutation 2026-11-18, not introduced by the S3776 extraction of `inspectOpened`):* no test kills two defensive byte checks of the TypeScript reader, the committed record's read bound
+  (bytes read over the record bound, the scan total, or a read that differs from the stat size) and the per-entry bound of an uncommitted entry; the earlier `lstat` size bound already refuses an oversized entry,
+  so they matter only if a file grows between the `lstat` and the read.
   *Unproven or left open, recorded:* a multi-process probe kept in the repository (the reviewer's scripts were throwaway); Linux and Windows execution (only the eight-target CI shows it), including a Windows scan
   meeting a delete-pending entry, `LockFile` behaviour beyond the type check and the Windows e2e test; network homes that emulate `flock`; the cold-start race (twelve independent cold starts completed 72 of 72, which is
   evidence, not a proof); a reservation beyond the grace behind a holder in another process is still refused as before (a distinct "busy" result retried by the host without holding a thread stays an option);
