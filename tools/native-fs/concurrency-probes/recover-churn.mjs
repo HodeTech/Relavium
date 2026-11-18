@@ -10,7 +10,8 @@ import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
 import { closeSync, openSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { Worker, isMainThread, workerData } from 'node:worker_threads';
+import { once } from 'node:events';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { integerArgument, loadAddon, scratchHome } from './addon.mjs';
 
@@ -18,10 +19,16 @@ const reservation = () => `${randomBytes(16).toString('hex')}.reserved`;
 
 if (!isMainThread) {
   const end = Date.now() + workerData.ms;
+  let announced = false;
   while (Date.now() < end) {
     const path = join(workerData.index, reservation());
     closeSync(openSync(path, 'wx', 0o600));
     unlinkSync(path);
+    if (!announced) {
+      // The first completed create and remove: from here on the index really is churning.
+      parentPort.postMessage('churning');
+      announced = true;
+    }
   }
   process.exit(0);
 }
@@ -51,6 +58,8 @@ const worker = churn
       workerData: { index: scratch.index, ms: 60_000 },
     })
   : undefined;
+// Worker start-up takes time: do not count recovery passes that ran before the churn began.
+if (worker) await once(worker, 'message');
 let ok = 0;
 let fail = 0;
 const messages = new Map();

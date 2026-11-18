@@ -20,9 +20,10 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-// Windows is proven only by the eight-target native CI (ADR-0135): this test runs in the required Windows job
-// (`windows-concurrency` selects every file whose name contains "concurrency"), and what a Windows scan does
-// with a delete-pending entry is not claimed, so it must not turn an unverified platform into a failed check.
+// Windows is proven only by the eight-target native CI (ADR-0135). The required Windows job
+// (`windows-concurrency` selects every file whose name contains "concurrency") selects this file, but the test is
+// skipped there, so Windows does not exercise these assertions: what a Windows scan does with a delete-pending
+// entry is not claimed, and an unverified platform must not turn into a failed required check.
 it.skipIf(process.platform === 'win32')(
   'lets several concurrent writers on one operator home all succeed with their exact bytes',
   async () => {
@@ -35,7 +36,9 @@ it.skipIf(process.platform === 'win32')(
     const writers = 3;
     const rounds = 8;
     const names: string[] = [];
-    await Promise.all(
+    // Every writer settles before anything is reported: a writer that rejects must not leave the others writing
+    // into a directory the cleanup is about to remove.
+    const settled = await Promise.allSettled(
       Array.from({ length: writers }, async (_, writer) => {
         for (let round = 0; round < rounds; round++) {
           const name = `writer-${writer}-round-${round}`;
@@ -53,6 +56,9 @@ it.skipIf(process.platform === 'win32')(
         }
       }),
     );
+    expect(
+      settled.flatMap((outcome) => (outcome.status === 'rejected' ? [String(outcome.reason)] : [])),
+    ).toEqual([]);
     expect(names).toHaveLength(writers * rounds);
     const written = (await readdir(root)).filter((entry) => entry.startsWith('writer-'));
     expect(written.sort()).toEqual([...names].sort());

@@ -44,8 +44,9 @@ test('actual enforced coverage entry runs the package cases in one file worker a
     assert.equal(result.status, 37);
     assert.equal(result.stderr, '');
     assert.deepEqual(JSON.parse(result.stdout), {
-      // `--dir packages`: the enforced floor covers packages/llm and packages/mcp only, and the apps tests
-      // add nothing to any enforced figure (measured 2026-11-18), so only the package tests are instrumented.
+      // `--dir packages`: the enforced floor covers packages/llm and packages/mcp only, so the coverage job runs
+      // the package tests alone and the apps tests do not run in it (the package figures were measured
+      // unchanged on 2026-11-18; see docs/standards/testing.md before widening this).
       args: ['run', '--coverage', '--maxWorkers=1', '--dir', 'packages'],
       enforced: '1',
     });

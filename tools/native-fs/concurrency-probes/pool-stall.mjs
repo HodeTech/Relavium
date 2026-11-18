@@ -37,11 +37,12 @@ async function oneWrite(name) {
   await addon.releaseMetadataStage(stage);
 }
 
+// An absolute path, so that the holder never depends on what the PATH variable resolves to.
+const PERL = '/usr/bin/perl';
 function holdClaim(lockPath) {
-  const program =
-    'use Fcntl ":flock"; open(F,"+<",$ARGV[0]) or die; flock(F,LOCK_EX) or die; $|=1; print "HELD\\n"; sleep(120);';
+  const program = String.raw`use Fcntl ":flock"; open(F,"+<",$ARGV[0]) or die; flock(F,LOCK_EX) or die; $|=1; print "HELD\n"; sleep(120);`;
   return new Promise((resolve, reject) => {
-    const child = spawn('perl', ['-e', program, lockPath], {
+    const child = spawn(PERL, ['-e', program, lockPath], {
       stdio: ['ignore', 'pipe', 'inherit'],
     });
     child.stdout.once('data', () => resolve(child));

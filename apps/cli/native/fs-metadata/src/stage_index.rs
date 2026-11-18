@@ -11,12 +11,16 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const MAX_RECORDS: usize = 128;
-/// How far a SCAN tolerates the nonce count past `MAX_RECORDS`. `reserve` still refuses to allocate at
-/// `MAX_RECORDS`, but a producer pins without the allocation claim, so a directory listing can omit an
-/// entry that was renamed while it ran and `reserve` can then allocate one past the bound. Without the
-/// slack every later scan, recovery included, would fail closed at the first overshoot and nothing
-/// supported could clear it; with it the overshoot is transient.
-const SCAN_SLACK: usize = 8;
+/// The nonce count a SCAN accepts: all that the directory-entry bound (`MAX_RECORDS * 3 + 1` names, the
+/// lock file included) can hold, one name per nonce. `reserve` still refuses to allocate at `MAX_RECORDS`,
+/// but a producer pins without the allocation claim, so a directory listing can omit an entry that was
+/// renamed while it ran and `reserve` can then allocate past the bound. Every allocation happens with
+/// fewer than `MAX_RECORDS` nonces SEEN, so the live count never exceeds `MAX_RECORDS` plus the entries
+/// that one listing missed, that is, the pins in flight at that moment. That number has no bound of its
+/// own that this code could prove, so a smaller fixed slack would be an assumption, and every scan,
+/// recovery included, would fail closed at the first overshoot beyond it with nothing supported able
+/// to clear it. The entry bound is the limit that already exists; a scan fails closed only there.
+const MAX_SCAN_NONCES: usize = MAX_RECORDS * 3;
 const MAX_RECORD_BYTES: usize = 16 * 1024;
 const MAX_SCAN_BYTES: usize = 2 * 1024 * 1024;
 const PREFIX: &str = ".relavium-fs-stage-v1.";
@@ -534,7 +538,7 @@ impl<P: Profile> Index<P> {
             }
             nonces.insert(nonce.clone());
             entries.push((name, nonce));
-            if nonces.len() > MAX_RECORDS + SCAN_SLACK {
+            if nonces.len() > MAX_SCAN_NONCES {
                 return refused();
             }
         }
@@ -1611,7 +1615,7 @@ fn note_vanished(
     let nonce = record_name(name).ok_or(NativeFailure::Changed)?.to_owned();
     nonces.insert(nonce.clone());
     entries.push((name.to_owned(), nonce));
-    if nonces.len() > MAX_RECORDS + SCAN_SLACK {
+    if nonces.len() > MAX_SCAN_NONCES {
         return refused();
     }
     Ok(())
@@ -1742,10 +1746,20 @@ fn lock_within(
     cancelled: Option<&AtomicBool>,
     grace: Duration,
 ) -> Result<Instant, NativeFailure> {
+    wait_for_claim(|| try_lock(file), start, cancelled, grace)
+}
+/// The wait itself, over one nonblocking attempt (`try_lock` on the lock file in production), so a test
+/// can supply the attempt's outcome without a real descriptor.
+fn wait_for_claim(
+    mut attempt: impl FnMut() -> Result<Claim, NativeFailure>,
+    start: Instant,
+    cancelled: Option<&AtomicBool>,
+    grace: Duration,
+) -> Result<Instant, NativeFailure> {
     let mut waiter = None;
     let mut grace_until = None;
     loop {
-        match try_lock(file)? {
+        match attempt()? {
             Claim::Held => return Ok(Instant::now()),
             Claim::Contended => {
                 // Cancellation and the deadline come first, so a cancelled caller is `cancelled` and not
@@ -1781,14 +1795,16 @@ fn worker_pool_size() -> usize {
     static SIZE: OnceLock<usize> = OnceLock::new();
     *SIZE.get_or_init(|| pool_size_from(std::env::var("UV_THREADPOOL_SIZE").ok().as_deref()))
 }
-/// libuv's rule for `UV_THREADPOOL_SIZE`: `atoi` (leading white space, an optional sign, then digits; a
-/// value with nothing numeric is 0), 0 becomes 1, a negative value wraps to a huge unsigned number, and
-/// anything above 1,024 is 1,024; unset is four.
+/// libuv's rule for `UV_THREADPOOL_SIZE`: `atoi` (leading C-locale white space, an optional sign, then
+/// digits; a value with nothing numeric is 0), 0 becomes 1, a negative value wraps to a huge unsigned
+/// number, and anything above 1,024 is 1,024; unset is four.
 fn pool_size_from(value: Option<&str>) -> usize {
     let Some(text) = value else {
         return 4;
     };
-    let text = text.trim_start();
+    // `atoi` skips only the six C-locale white-space bytes (space, \t, \n, vertical tab, form feed, \r);
+    // `str::trim_start` would also skip Unicode spaces such as U+00A0 that make libuv read 0.
+    let text = text.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
     let (negative, digits) = match text.as_bytes().first() {
         Some(b'-') => (true, &text[1..]),
         Some(b'+') => (false, &text[1..]),
@@ -3267,6 +3283,10 @@ mod custody_tests {
             (None, 4),
             (Some("8"), 8),
             (Some("  8"), 8),
+            (Some("\t\n\x0b\x0c\r 8"), 8),
+            // `atoi` does not skip a Unicode space: libuv reads nothing numeric, so 0, so 1.
+            (Some("\u{a0}8"), 1),
+            (Some("\u{2003}8"), 1),
             (Some("+6"), 6),
             (Some("2x"), 2),
             (Some("x2"), 1),
@@ -3581,7 +3601,8 @@ mod custody_tests {
     }
 
     #[test]
-    fn a_vanished_entry_still_counts_toward_the_bound_and_the_scan_has_slack() {
+    fn a_vanished_entry_still_counts_toward_the_bound_and_a_scan_tolerates_every_overshoot_the_entry_bound_holds(
+    ) {
         let (root, home) = fixture_home("scan-bound");
         let index = Index::<TestProfile>::open(&root, true).expect("index");
         let name = |n: usize| format!("{n:032x}.reserved");
@@ -3606,21 +3627,33 @@ mod custody_tests {
         let listed = index.entries(Instant::now(), None).expect("scan");
         clear_hooks();
         assert_eq!(listed.len(), MAX_RECORDS);
-        // Past the bound `reserve` refuses, but a scan (and so a recovery pass) tolerates a small
-        // overshoot instead of failing closed with nothing supported to clear it.
+        // Past the bound `reserve` refuses, but a scan (and so a recovery pass) tolerates the overshoot
+        // instead of failing closed with nothing supported to clear it: not a guessed handful but every
+        // nonce the directory-entry bound holds, because the number of pins in flight during one listing
+        // has no bound that is provable here.
         (MAX_RECORDS..MAX_RECORDS + 2).for_each(&create);
         assert!(OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"e".repeat(32)).is_err());
         assert!(index.entries(Instant::now(), None).is_ok());
-        // The vanished entry is gone from disk, so 127 + 2 are there now; fill up to exactly the slack.
-        (MAX_RECORDS + 2..MAX_RECORDS + SCAN_SLACK + 1).for_each(&create);
+        // The vanished entry is gone from disk, so 127 + 2 are there now; fill up to the entry bound (written
+        // out here, not read from the constant under test: three names per record slot).
+        (MAX_RECORDS + 2..MAX_RECORDS * 3 + 1).for_each(&create);
         assert_eq!(
             index
                 .entries(Instant::now(), None)
-                .expect("at the slack")
+                .expect("at the scan limit")
                 .len(),
-            MAX_RECORDS + SCAN_SLACK
+            MAX_RECORDS * 3
         );
-        create(MAX_RECORDS + SCAN_SLACK + 1);
+        // A recovery pass clears nothing here (every entry is an unproven reservation, so it retains
+        // them) but it runs: the overshoot is never a state that nothing can be done in. POSIX only: what
+        // a Windows recovery pass does over this many entries is verified only by the eight-target CI.
+        #[cfg(unix)]
+        {
+            let summary = recover::<TestProfile>(&root).expect("recovery runs at the scan limit");
+            assert_eq!(summary.removed, 0);
+            assert_eq!(summary.retained, MAX_RECORDS * 3);
+        }
+        create(MAX_RECORDS * 3 + 1);
         assert!(index.entries(Instant::now(), None).is_err());
         drop(index);
         drop(home);
@@ -3632,12 +3665,12 @@ mod custody_tests {
         let name = |n: usize| format!("{n:032x}.reserved");
         let mut nonces = BTreeSet::new();
         let mut entries = Vec::new();
-        for n in 0..MAX_RECORDS + SCAN_SLACK {
+        for n in 0..MAX_RECORDS * 3 {
             note_vanished(&name(n), &mut nonces, &mut entries).expect("within the scan bound");
         }
-        assert_eq!(entries.len(), MAX_RECORDS + SCAN_SLACK);
+        assert_eq!(entries.len(), MAX_RECORDS * 3);
         assert!(matches!(
-            note_vanished(&name(MAX_RECORDS + SCAN_SLACK), &mut nonces, &mut entries),
+            note_vanished(&name(MAX_RECORDS * 3), &mut nonces, &mut entries),
             Err(NativeFailure::Changed)
         ));
         // Only an uncommitted entry can be a vanished one.
@@ -3743,25 +3776,32 @@ mod custody_tests {
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
-    // POSIX only: a descriptor that is not open stands for an error that is not contention.
+    // POSIX only: the outcome of a failed attempt that is not contention (a bad descriptor) is an error,
+    // never a holder that will go away.
     #[cfg(unix)]
     #[test]
     fn a_claim_error_that_is_not_contention_fails_at_once() {
-        use std::os::fd::FromRawFd;
         let _serial = claim_tests_serial();
-        let bogus = unsafe { File::from_raw_fd(1_000_000) };
+        let mut attempts = 0_u32;
         let began = Instant::now();
         assert!(matches!(
-            lock_within(&bogus, Instant::now(), None, OVER_LIMIT_GRACE),
+            wait_for_claim(
+                || {
+                    attempts += 1;
+                    claim_outcome(Some(libc::EBADF))
+                },
+                Instant::now(),
+                None,
+                OVER_LIMIT_GRACE,
+            ),
             Err(NativeFailure::Changed)
         ));
+        assert_eq!(attempts, 1, "a non-contention error is not retried");
         assert!(
             began.elapsed() < Duration::from_millis(500),
             "a non-contention error must not be waited out"
         );
         assert_eq!(CLAIM_WAITERS.load(Ordering::Acquire), 0);
-        // It was never a valid descriptor: closing it again would be the only thing that could go wrong.
-        std::mem::forget(bogus);
     }
 
     #[test]

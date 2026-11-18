@@ -66,14 +66,17 @@ async function writer(index) {
       note('stage', error);
       continue;
     }
+    let published = false;
     try {
       await addon.publishMetadata(stage, undefined, cancellation);
+      published = true;
     } catch (error) {
       note('publish', error);
     }
     try {
       await addon.releaseMetadataStage(stage);
-      if (existsSync(target)) phases.ok++;
+      // A rejected publication may still have written the target; it is not a success.
+      if (published && existsSync(target)) phases.ok++;
     } catch (error) {
       note('release', error);
     }
@@ -81,10 +84,12 @@ async function writer(index) {
 }
 
 const started = Date.now();
-const recovering = withRecover ? recoveryLoop() : Promise.resolve();
-await Promise.all(Array.from({ length: writers }, (_, index) => writer(index)));
-stopRecovery = true;
-await recovering;
+const writersDone = Promise.all(
+  Array.from({ length: writers }, (_, index) => writer(index)),
+).finally(() => {
+  stopRecovery = true;
+});
+await Promise.all([withRecover ? recoveryLoop() : undefined, writersDone]);
 const leftover = existsSync(scratch.index) ? readdirSync(scratch.index).length - 1 : 0;
 console.log(
   JSON.stringify({

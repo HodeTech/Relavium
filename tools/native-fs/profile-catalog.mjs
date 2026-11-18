@@ -199,7 +199,7 @@ export function rustPopulation(platform) {
       'stage_index::custody_tests::a_caller_beyond_the_limit_still_gets_through_a_busy_holder',
       'stage_index::custody_tests::a_cancelled_caller_beyond_the_limit_is_cancelled_not_changed',
       'stage_index::custody_tests::a_vanished_entry_is_counted_against_the_scan_bound',
-      'stage_index::custody_tests::a_vanished_entry_still_counts_toward_the_bound_and_the_scan_has_slack',
+      'stage_index::custody_tests::a_vanished_entry_still_counts_toward_the_bound_and_a_scan_tolerates_every_overshoot_the_entry_bound_holds',
       'stage_index::custody_tests::allocation_claim_wait_honours_cancellation',
       'stage_index::custody_tests::a_cancelled_recovery_behind_a_holder_is_cancelled',
       'stage_index::custody_tests::a_cleanup_beyond_the_limit_is_bounded_by_its_grace_not_the_deadline',

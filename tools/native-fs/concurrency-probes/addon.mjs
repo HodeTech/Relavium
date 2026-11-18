@@ -31,8 +31,14 @@ export function scratchHome() {
   };
 }
 
+/**
+ * The positive integer at `position` (2 is the first, as in `process.argv`) among the arguments that are not
+ * `--flags`, or `fallback` when it is omitted. Flags may stand anywhere, so `writers.mjs --recover` and
+ * `writers.mjs 4 --recover` both work.
+ */
 export function integerArgument(position, fallback) {
-  const value = Number(process.argv[position] ?? fallback);
+  const positional = process.argv.slice(2).filter((argument) => !argument.startsWith('--'));
+  const value = Number(positional[position - 2] ?? fallback);
   if (!Number.isSafeInteger(value) || value < 1)
     throw new Error(`argument ${position} must be a positive integer`);
   return value;
