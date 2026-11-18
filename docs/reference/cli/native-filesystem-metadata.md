@@ -457,7 +457,9 @@ whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
 `.reserved` removal) is skipped without a retry, whether it is gone before the
 scan opens it or is unlinked after the scan opened it (the held file then has a
 link count of zero and the private-file check refuses it; the entry only counts
-as vanished when its name is really absent): a point-in-time inventory cannot be exact for an
+as vanished when its name is really absent), but it still counts toward the
+nonce bound and is listed, since a listing can omit an entry renamed while it
+runs: a point-in-time inventory cannot be exact for an
 uncommitted artifact, and the path-based stage-directory floor does not depend
 on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
 uncommitted meanings. Physical v1 directory/stage names are namespace names,
@@ -471,7 +473,9 @@ old automatic recovery safe. No local PID scan is claimed to prove all old
 processes are gone across namespaces. Old readers may safely refuse new records;
 this is not a supported mixed-version operating mode.
 
-Allocation and recovery count at most 128 distinct nonces and 385 directory
+Allocation refuses at 128 distinct nonces (a scan tolerates eight more, because a
+lockless pin can let an allocation overshoot, instead of failing closed with no
+supported way out) and counts at most 385 directory
 entries (three transition entries per nonce plus the allocation lock, which a scan
 does not report, so a recovery report's `removed + retained` is at most 384), at most
 16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
@@ -515,7 +519,9 @@ once, and an exhausted deadline is the same `changed` refusal as before. The
 per-record claim below stays a single attempt: a held record claim means a live
 producer, and waiting on both claims would make a cycle (a writer holds its
 record claim while it waits for the allocation claim, and recovery holds the
-allocation claim while it tries a record claim).
+allocation claim while it tries a record claim). At most three threads per
+process wait at once, because every native call shares Node's four-thread worker
+pool with `fs`, `dns` and `crypto`; a fourth caller gets the immediate refusal.
 The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling

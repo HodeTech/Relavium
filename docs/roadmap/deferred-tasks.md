@@ -1772,8 +1772,29 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   delete-pending entry (access denied or a sharing violation instead of not-found) — the churn test is POSIX-only for that reason; the cold-start race when two processes create the index
   hierarchy on a fresh home at the same moment (not probed); a probe with two real OS processes (the in-process writers conflict under `flock` the same way, but it is not the same
   experiment). *Sibling search:* every `lock(` and `lock_within(` site was reviewed (the two other `open_nofollow(&entry.path())` sites sit in cleanup paths over this producer's own
-  artifacts and were left alone). *Owed:* one NEW complete cumulative D64 round with no blocker, high or medium and a separate security sitting (does skipping a vanished entry ever drop
-  exclusion or capacity evidence; does the wait widen any authority window; is the N-7 check TOCTOU-equivalent to its siblings), then all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata)*
+  artifacts and were left alone). **Round 1 (2026-11-18, two independent read-only reviewers, the author's conclusions withheld):** no blocker or high in either. *Correctness review* (2 medium, 4 low, 3 nits) and *security
+  sitting* (1 medium, 4 low, 2 notes). Dispositions, all in the follow-up commit: (1) **medium, pool starvation** — every native call is an `AsyncTask` on Node's shared four-thread
+  worker pool, so a stuck holder parked up to all of it for up to two seconds each (reproduced: with 4 and 8 writers behind a held claim `fs.stat`, `dns.lookup` and `crypto.randomBytes`
+  stalled 1.8 s and 3.8 s); fixed by a process-wide limit of three waiters (a fourth gets the old immediate refusal, one pool thread is never parked), re-measured at 0 ms, and ordinary
+  in-process concurrency is unchanged (the pool already allows one holder and three waiters; eight writers still 240/240); the alternative of returning a distinct "busy" outcome and
+  retrying from the TypeScript host without holding a thread stays an option if the limit proves too tight. (2) **medium, pin-level proof missing** — a mutant that restored the old
+  by-name `remove_file` in the pin survived, because the only test called the helper; a pin-level test was added and kills it. (3) **medium/low, pre-pin cleanup budget** — `start` was taken before the
+  claim, so a wait near two seconds left the destructive steps half done (payload removed, stage directory and `.reserved` left, a leaked slot); fixed (the budget starts after the
+  claim); a mutant that restores the old order survives because only a wait of about 1.99 s observes it, so it has no deterministic test and the code comment is the guard. (4) **low,
+  capacity** — a skipped entry was not counted, so `reserve` could allocate the 129th nonce and every later scan failed closed (reproduced: undercounts in 587 of 1,500 scans, an allocation at true
+  capacity in 51 of 400; the unchanged tree already did it 11 of 400 times because a listing can omit a renamed entry); fixed by counting and listing the skipped nonce and letting a scan
+  tolerate eight more nonces while `reserve` still refuses at 128; a recovery pass now reports such an entry as retained (the probe's `retained` reads 121 instead of 120). (5) **low/nit, test
+  flakiness and a possible hang** — two assertions depended on a holder thread's sleep, and a regression of the deadline would have hung CI; replaced by a per-thread hook that releases
+  the holder, or raises the cancel flag, at the first contended attempt and fails the test after 2,000 attempts, so no test sleeps for its assertion. (6) **nit** — the POSIX-only test was gated inside its
+  body and listed for Windows as an empty pass; it is gated as a function and excluded for `win32`. *Left open, recorded:* the lock file's inode is checked before the wait but not
+  after (a user deleting `inventory.lock` inside the index during a wait splits the exclusion domain for up to two seconds; benign, same-user, no new capability); Windows delete-pending
+  entries and `LockFile` behaviour beyond the type check; closing the producer's reservation handle after the pin removes it (a possible Windows hardening); `recoverMetadataStaging` is
+  not wired into product code. Worst case per write is still several two-second waits (recovery, reserve, error-path cleanup, post-publication cleanup each have their own budget).
+  *Re-verified after the fixes:* 30 stage-index tests (11 cross-platform custody tests among them), an 18-mutant sweep (17 killed, the one survivor named above), the darwin test catalog equals the
+  binary's own list (71 of 71), the Windows type check passes (a deliberate error in the Windows-only code is caught, so it does check it), `build.mjs --verify-profile` passes, probes: 60/60,
+  120/120, 240/240, 60/60 with 2,182/2,182 recoveries, 200/200. A first rebuild attempt failed once with `ENOTEMPTY` while replacing `runtime/` (the log also said it was waiting for the build directory lock);
+  the immediate retry passed and the cause was not reproduced. *Owed:* one NEW complete cumulative D64 round on the final head with no blocker, high or medium, a separate security sitting on the
+  delta, then all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata)*
 - [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
   per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
   needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads
