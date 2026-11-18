@@ -201,16 +201,21 @@ export function rustPopulation(platform) {
       'stage_index::custody_tests::a_vanished_entry_is_counted_against_the_scan_bound',
       'stage_index::custody_tests::a_vanished_entry_still_counts_toward_the_bound_and_the_scan_has_slack',
       'stage_index::custody_tests::allocation_claim_wait_honours_cancellation',
+      'stage_index::custody_tests::a_cleanup_beyond_the_waiter_limit_still_waits_for_the_claim',
       'stage_index::custody_tests::allocation_claim_waits_for_a_holder_and_fails_closed_after_the_budget',
       'stage_index::custody_tests::only_contention_is_waited_out_as_a_claim_failure',
       'stage_index::custody_tests::pin_refuses_a_reservation_it_did_not_create',
       'stage_index::custody_tests::pin_removes_only_the_reservation_it_created',
       'stage_index::custody_tests::record_encode_enforces_the_decode_invariants',
+      'stage_index::custody_tests::recovery_measures_its_pass_from_the_claim',
       'stage_index::custody_tests::recovery_waits_for_an_allocation_holder',
+      'stage_index::custody_tests::reserve_measures_its_work_under_the_claim_from_the_claim',
+      'stage_index::custody_tests::the_pool_size_is_read_the_way_libuv_reads_it',
       'stage_index::custody_tests::scan_skips_a_vanished_uncommitted_entry_but_not_a_committed_one',
       'stage_index::custody_tests::waiters_park_up_to_the_limit_and_the_next_one_gets_only_a_short_grace',
-      // POSIX only: a Windows scan can meet a delete-pending entry, a Windows lock file cannot be replaced
-      // while another handle holds it open, and a link count of zero is a POSIX notion; only the
+      // POSIX only, each for its own reason: a Windows scan can meet a delete-pending entry, replacing a lock
+      // file that another handle holds open and removing files that are still held open by name are POSIX
+      // idioms whose Windows behaviour is unverified, and a link count of zero is a POSIX notion; only the
       // eight-target CI could observe those.
       ...(platform === 'win32'
         ? []
@@ -218,6 +223,7 @@ export function rustPopulation(platform) {
             'stage_index::custody_tests::a_claim_error_that_is_not_contention_fails_at_once',
             'stage_index::custody_tests::a_claim_on_a_replaced_lock_file_is_refused',
             'stage_index::custody_tests::an_entry_unlinked_after_it_was_opened_still_counts_toward_the_bound',
+            'stage_index::custody_tests::pre_pin_cleanup_measures_its_destructive_work_from_the_claim',
             'stage_index::custody_tests::recovery_refuses_a_claim_on_a_replaced_lock_file',
             'stage_index::custody_tests::scan_skips_an_uncommitted_entry_unlinked_after_it_was_opened',
             'stage_index::custody_tests::scan_survives_concurrent_promotion_churn',

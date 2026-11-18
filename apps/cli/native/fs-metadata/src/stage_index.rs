@@ -55,10 +55,22 @@ fn tick(start: Instant, cancelled: Option<&AtomicBool>) -> Result<(), NativeFail
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
         return Err(NativeFailure::Cancelled);
     }
-    if start.elapsed() > Duration::from_secs(2) {
+    if start.elapsed() > operation_budget() {
         refused()
     } else {
         Ok(())
+    }
+}
+/// The cooperative budget of one native operation: two seconds. Tests shorten it so that the budget
+/// origin of work done under a claim can be proven without waiting for two real seconds.
+fn operation_budget() -> Duration {
+    #[cfg(test)]
+    {
+        OPERATION_BUDGET.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        Duration::from_secs(2)
     }
 }
 fn valid_nonce(nonce: &str) -> bool {
@@ -90,12 +102,9 @@ fn valid_locator(stage: &Path, pid: u32, nonce: &str) -> bool {
     stage.is_absolute()
         && stage.as_os_str() == stage.components().collect::<PathBuf>().as_os_str()
         && stage.file_name() == Some(OsStr::new(&format!("{PREFIX}{pid}.{nonce}")))
-        && !stage.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::ParentDir | std::path::Component::CurDir
-            )
-        })
+        && !stage
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -532,13 +541,26 @@ impl<P: Profile> Index<P> {
         self.recheck_checked(start, cancelled)?;
         Ok(entries)
     }
+    /// The claim for a CLEANUP: it waits under a fresh budget, ignores cancellation (cleanup completion
+    /// suppresses it) and is never refused for being beyond the waiter limit (it cannot be retried: a
+    /// refused cleanup after a publication is an uncertain write, one before a pin leaks a slot).
     fn allocation_lock(&self) -> Result<AllocationClaim, NativeFailure> {
-        self.allocation_lock_checked(Instant::now(), None)
+        self.allocation_claim(Instant::now(), None, false)
     }
+    /// The claim for a reservation: it waits inside the operation's own deadline and cancellation flag,
+    /// and a caller beyond the waiter limit gets only the short grace.
     fn allocation_lock_checked(
         &self,
         start: Instant,
         cancelled: Option<&AtomicBool>,
+    ) -> Result<AllocationClaim, NativeFailure> {
+        self.allocation_claim(start, cancelled, true)
+    }
+    fn allocation_claim(
+        &self,
+        start: Instant,
+        cancelled: Option<&AtomicBool>,
+        limited: bool,
     ) -> Result<AllocationClaim, NativeFailure> {
         tick(start, cancelled)?;
         let path = self.path.join("inventory.lock");
@@ -571,8 +593,10 @@ impl<P: Profile> Index<P> {
         crate::test_hooks::checkpoint("lock-acquire");
         // Wait out another writer, cleanup or recovery pass that holds the allocation claim (concurrent
         // processes on one operator home are supported), inside this operation's deadline and flag.
-        let held_since =
-            trace_failure!("first-lock-acquire", lock_within(&file, start, cancelled))?;
+        let held_since = trace_failure!(
+            "first-lock-acquire",
+            lock_within(&file, start, cancelled, limited)
+        )?;
         // The wait can outlast the lock file's name: another process may have unlinked and recreated it,
         // and a claim on the orphaned inode would split the exclusion domain.
         require_same_lock::<P>(&path, &file)?;
@@ -584,6 +608,8 @@ impl<P: Profile> Index<P> {
             "first-lock-recheck",
             self.recheck_checked(held_since, cancelled)
         )?;
+        #[cfg(test)]
+        under_claim_hook();
         Ok(AllocationClaim {
             _file: file,
             held_since,
@@ -688,10 +714,14 @@ impl<P: Profile> OwnedStage<P> {
         )?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("reserve-lock");
-        let _claim = trace_failure!(
+        let claim = trace_failure!(
             "first-reserve-lock",
             index.allocation_lock_checked(start, cancelled)
         )?;
+        // The wait ran inside the operation's deadline; the work under the claim measures its own budget
+        // from the instant the claim was acquired, so a wait that used the deadline up cannot make a claim
+        // that was just obtained fail on its first step.
+        let start = claim.held_since;
         #[cfg(test)]
         crate::test_hooks::checkpoint("reserve-entries");
         let entries = trace_failure!("first-reserve-entries", index.entries(start, cancelled))?;
@@ -964,7 +994,7 @@ impl<P: Profile> OwnedStage<P> {
         }
         let record = self.record.as_ref().ok_or(NativeFailure::Changed)?;
         let file = &self.pinned_file.as_ref().ok_or(NativeFailure::Changed)?.0;
-        let _allocation = self.index.allocation_lock()?;
+        let claim = self.index.allocation_lock()?;
         // The producer retains its original claim; never relock it.
         // Cancellation after the pinned rename may leave our zero-byte reservation.
         // Remove it only while the pinned record still protects all artifact aliases.
@@ -987,7 +1017,7 @@ impl<P: Profile> OwnedStage<P> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => return refused(),
         }
-        cleanup_record::<P>(&self.index, record, file, Instant::now(), false, None)?;
+        cleanup_record::<P>(&self.index, record, file, claim.held_since, false, None)?;
         self.record = None;
         self.pinned_file = None;
         Ok(())
@@ -1277,8 +1307,10 @@ pub(crate) fn recover_with_cancel<P: Profile>(
     }
     tick(start, cancelled)?;
     // A recovery pass queues behind a writer's short allocation instead of failing the whole pass.
-    let start = lock_within(&allocation, start, cancelled)?;
+    let start = lock_within(&allocation, start, cancelled, true)?;
     require_same_lock::<P>(&lock_path, &allocation)?;
+    #[cfg(test)]
+    under_claim_hook();
     index.recheck_checked(start, cancelled)?;
     let entries = index.entries(start, cancelled)?;
     let mut summary = RecoverySummary::default();
@@ -1687,6 +1719,7 @@ fn lock_within(
     file: &File,
     start: Instant,
     cancelled: Option<&AtomicBool>,
+    limited: bool,
 ) -> Result<Instant, NativeFailure> {
     let mut waiter = None;
     let mut grace_until = None;
@@ -1698,7 +1731,12 @@ fn lock_within(
                 // `changed` whatever the waiter limit says.
                 tick(start, cancelled)?;
                 if waiter.is_none() {
-                    waiter = ClaimWaiter::enter();
+                    // A cleanup always waits (and still counts toward the limit for the others).
+                    waiter = if limited {
+                        ClaimWaiter::enter()
+                    } else {
+                        Some(ClaimWaiter::enter_always())
+                    };
                 }
                 if waiter.is_none() {
                     // Over the process-wide limit: only a short grace, so a holder that is merely busy
@@ -1722,17 +1760,35 @@ fn lock_within(
         }
     }
 }
-/// The size of Node's worker pool, read the way libuv reads it: `UV_THREADPOOL_SIZE`, one to 1,024
-/// threads, four when unset. Every native call runs on that pool, which also serves `fs`, `dns` and
-/// `crypto`.
+/// The size of Node's worker pool, read the way libuv reads it (`pool_size_from`). Every native call
+/// runs on that pool, which also serves `fs`, `dns` and `crypto`.
 fn worker_pool_size() -> usize {
     static SIZE: OnceLock<usize> = OnceLock::new();
-    *SIZE.get_or_init(|| {
-        std::env::var("UV_THREADPOOL_SIZE")
-            .ok()
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .map_or(4, |size| size.clamp(1, 1024))
-    })
+    *SIZE.get_or_init(|| pool_size_from(std::env::var("UV_THREADPOOL_SIZE").ok().as_deref()))
+}
+/// libuv's rule for `UV_THREADPOOL_SIZE`: `atoi` (leading white space, an optional sign, then digits; a
+/// value with nothing numeric is 0), 0 becomes 1, a negative value wraps to a huge unsigned number, and
+/// anything above 1,024 is 1,024; unset is four.
+fn pool_size_from(value: Option<&str>) -> usize {
+    let Some(text) = value else {
+        return 4;
+    };
+    let text = text.trim_start();
+    let (negative, digits) = match text.as_bytes().first() {
+        Some(b'-') => (true, &text[1..]),
+        Some(b'+') => (false, &text[1..]),
+        _ => (false, text),
+    };
+    let mut parsed = 0_u64;
+    for byte in digits.bytes().take_while(u8::is_ascii_digit) {
+        parsed = parsed
+            .saturating_mul(10)
+            .saturating_add(u64::from(byte - b'0'));
+    }
+    if negative && parsed != 0 {
+        return 1024;
+    }
+    usize::try_from(parsed).unwrap_or(1024).clamp(1, 1024)
 }
 /// Threads that may be parked waiting for the allocation claim at once, process-wide: all but one of
 /// the pool's. Parking every thread behind a stuck holder (a process stopped inside its critical
@@ -1749,6 +1805,10 @@ const OVER_LIMIT_GRACE: Duration = Duration::from_millis(100);
 static CLAIM_WAITERS: AtomicUsize = AtomicUsize::new(0);
 struct ClaimWaiter;
 impl ClaimWaiter {
+    fn enter_always() -> Self {
+        CLAIM_WAITERS.fetch_add(1, Ordering::AcqRel);
+        Self
+    }
     fn enter() -> Option<Self> {
         let limit = max_claim_waiters();
         CLAIM_WAITERS
@@ -1765,6 +1825,14 @@ impl Drop for ClaimWaiter {
     }
 }
 #[cfg(test)]
+fn under_claim_hook() {
+    ON_CLAIMED.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+#[cfg(test)]
 thread_local! {
     /// Test hook, called on the waiting thread after every contended attempt: lets a test release a
     /// holder at the moment a waiter is proven to be waiting, and turn a wait that should have ended
@@ -1774,6 +1842,13 @@ thread_local! {
     /// Test hook, called with each entry name just before the scan opens it: lets a test make an
     /// entry vanish at exactly that moment.
     static ON_ENTRY: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Test override of the two-second operation budget (see `operation_budget`).
+    static OPERATION_BUDGET: std::cell::Cell<Duration> =
+        const { std::cell::Cell::new(Duration::from_secs(2)) };
+    /// Test hook, called once a claim is held and its post-claim checks are done: lets a test spend time
+    /// under the claim, as slow work would.
+    static ON_CLAIMED: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
         const { std::cell::RefCell::new(None) };
     /// Test hook, called with each entry name right after the scan opened it and before it verifies it:
     /// lets a test unlink the file the scan is holding.
@@ -2645,6 +2720,8 @@ mod custody_tests {
         ON_CONTENDED.with(|slot| *slot.borrow_mut() = None);
         ON_ENTRY.with(|slot| *slot.borrow_mut() = None);
         ON_OPENED.with(|slot| *slot.borrow_mut() = None);
+        ON_CLAIMED.with(|slot| *slot.borrow_mut() = None);
+        OPERATION_BUDGET.with(|budget| budget.set(Duration::from_secs(2)));
     }
 
     /// A second handle on `inventory.lock` that holds the allocation claim, as another process would.
@@ -2789,7 +2866,7 @@ mod custody_tests {
                 .into_iter()
                 .map(|file| {
                     scope.spawn(move || {
-                        let outcome = lock_within(&file, Instant::now(), None);
+                        let outcome = lock_within(&file, Instant::now(), None, true);
                         drop(file);
                         outcome
                     })
@@ -2807,7 +2884,7 @@ mod custody_tests {
             // (that would take the whole two seconds) nor is refused before the grace is over.
             let refused_at = Instant::now();
             assert!(matches!(
-                lock_within(&extra, Instant::now(), None),
+                lock_within(&extra, Instant::now(), None, true),
                 Err(NativeFailure::Changed)
             ));
             let refused_after = refused_at.elapsed();
@@ -2842,7 +2919,7 @@ mod custody_tests {
         on_contended(move || drop(holder.take()));
         drop(
             index
-                .allocation_lock()
+                .allocation_lock_checked(Instant::now(), None)
                 .expect("a caller beyond the limit waits out a holder that is merely busy"),
         );
         clear_hooks();
@@ -2879,6 +2956,126 @@ mod custody_tests {
         drop(index);
         drop(home);
         fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// A one-second budget, a wait of 400 ms for the claim and 700 ms of slow work under it: 1.1 s in all,
+    /// over the budget, so only work that measures its budget from the claim's acquisition (700 ms)
+    /// completes. The hooks put the numbers in place; the caller runs the operation.
+    fn slow_claim_scenario(holder: File) {
+        OPERATION_BUDGET.with(|budget| budget.set(Duration::from_millis(1000)));
+        let holder = std::cell::Cell::new(Some(holder));
+        on_contended(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            drop(holder.take());
+        });
+        ON_CLAIMED.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(|| std::thread::sleep(Duration::from_millis(700))));
+        });
+    }
+
+    #[test]
+    fn reserve_measures_its_work_under_the_claim_from_the_claim() {
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("budget-reserve");
+        slow_claim_scenario(hold_allocation_claim(&index));
+        let owned = OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"1".repeat(32))
+            .expect(
+                "a wait that used up the budget must not fail work under a claim just obtained",
+            );
+        clear_hooks();
+        drop(owned);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    // POSIX only: the cleanup removes files that this process still holds open by name; what Windows does
+    // with a delete-pending file is only observable in the eight-target CI.
+    #[cfg(unix)]
+    #[test]
+    fn pre_pin_cleanup_measures_its_destructive_work_from_the_claim() {
+        let _serial = claim_tests_serial();
+        let (root, home) = fixture_home("budget-cleanup");
+        let mut owned = OwnedStage::<TestProfile>::reserve(&root, &home, &root, &"2".repeat(32))
+            .expect("reserve");
+        let reserved = owned.index.path.join(format!("{}.reserved", owned.nonce));
+        assert!(reserved.exists());
+        slow_claim_scenario(hold_allocation_claim(&owned.index));
+        owned
+            .cleanup()
+            .expect("the destructive steps are checked against a budget that starts at the claim");
+        clear_hooks();
+        assert!(!reserved.exists(), "the reservation must be gone");
+        drop(owned);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn recovery_measures_its_pass_from_the_claim() {
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("budget-recover");
+        slow_claim_scenario(hold_allocation_claim(&index));
+        recover::<TestProfile>(&root)
+            .expect("a wait that used up the budget must not fail the pass under the claim");
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_cleanup_beyond_the_waiter_limit_still_waits_for_the_claim() {
+        // Cleanup cannot be retried (a refused cleanup after a publication is an uncertain write), so it
+        // is never refused for being beyond the waiter limit, however long the grace is over.
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("cleanup-limit");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+        let attempts = std::cell::Cell::new(0_u32);
+        on_contended(move || {
+            // The holder lets go only at the SECOND contended attempt, which comes after the grace a
+            // reservation beyond the limit would get: a cleanup subject to the grace would be refused
+            // before reaching it.
+            attempts.set(attempts.get() + 1);
+            if attempts.get() == 1 {
+                std::thread::sleep(OVER_LIMIT_GRACE + Duration::from_millis(150));
+            } else {
+                drop(holder.take());
+            }
+        });
+        drop(
+            index
+                .allocation_lock()
+                .expect("a cleanup waits for the claim however many are waiting"),
+        );
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn the_pool_size_is_read_the_way_libuv_reads_it() {
+        for (value, size) in [
+            (None, 4),
+            (Some("8"), 8),
+            (Some("  8"), 8),
+            (Some("+6"), 6),
+            (Some("2x"), 2),
+            (Some("x2"), 1),
+            (Some(""), 1),
+            (Some("0"), 1),
+            (Some("-0"), 1),
+            (Some("-5"), 1024),
+            (Some("5000"), 1024),
+            (Some("99999999999999999999999"), 1024),
+            (Some("1"), 1),
+        ] {
+            assert_eq!(pool_size_from(value), size, "{value:?}");
+        }
     }
 
     #[test]
@@ -3318,7 +3515,7 @@ mod custody_tests {
         let bogus = unsafe { File::from_raw_fd(1_000_000) };
         let began = Instant::now();
         assert!(matches!(
-            lock_within(&bogus, Instant::now(), None),
+            lock_within(&bogus, Instant::now(), None, true),
             Err(NativeFailure::Changed)
         ));
         assert!(
@@ -3402,13 +3599,24 @@ mod custody_tests {
         let mut empty_owner = record(7, locator(7));
         empty_owner.owner = String::new();
         assert!(empty_owner.encode().is_err(), "empty owner");
-        let mut bad_nonce = record(7, locator(7));
-        bad_nonce.nonce = "b".repeat(31);
+        // Self-consistent locators, so that only the length check and only the nonce check can refuse them.
+        let short_nonce = "b".repeat(31);
+        let mut bad_nonce = record(
+            7,
+            PathBuf::from(base).join(format!("{PREFIX}7.{short_nonce}")),
+        );
+        bad_nonce.nonce = short_nonce;
         assert!(
             bad_nonce.encode().is_err(),
             "nonce that is not 32 hex digits"
         );
-        let too_long = PathBuf::from(base).join("a".repeat(4100));
+        let too_long = PathBuf::from(base)
+            .join("a".repeat(4100))
+            .join(format!("{PREFIX}7.{nonce}"));
+        assert!(
+            valid_locator(&too_long, 7, &nonce),
+            "only the length can refuse it"
+        );
         assert!(
             record(7, too_long).encode().is_err(),
             "locator longer than 4096 bytes"
