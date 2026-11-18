@@ -451,17 +451,18 @@ v1 automatic deletion authority. Unknown/mismatched pairs, reserved bytes,
 malformed lengths/UTF-8/owners/locators/identities or unreadable committed
 records fail the entire trusted inventory closed; they are never skipped. A
 committed record that vanishes mid-scan (a concurrent write completing removes
-it) makes the whole scan run again — at most three attempts inside the same
+it) makes the whole scan run again — at most eight attempts inside the same
 two-second deadline, so a snapshot never mixes two states — and an inventory
 whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
 `.prepare` (for example a producer's `.prepare` to `.record` promotion, or its
 `.reserved` removal) is skipped without a retry, whether it is gone before the
-scan opens it or is unlinked after the scan opened it (the held file then has a
-link count of zero and its identity no longer matches; the entry only counts as
+scan opens it or is unlinked after the scan opened it (the held file is then
+the same inode but its link count reads zero; the entry only counts as
 vanished when its name is really absent, and a file that is still there and fails
-a check stays fatal). The TypeScript reader applies the same rule, also for an
+a check stays fatal). The TypeScript reader applies the same rule and, for an
 entry whose `lstat` already reads link count zero (it can still succeed while an
-entry is being unlinked), and in addition runs the whole scan again for a
+entry is being unlinked, with the name still there for a moment), does not require the
+name to be absent; it also runs the whole scan again for a
 committed `.record` that vanishes in any of those ways (the Rust scan holds the
 allocation claim, so a `.record` or the lock file never vanishes under it). A skipped entry still counts toward the
 nonce bound and is listed, and a recovery pass reports it as retained, since a
@@ -519,8 +520,8 @@ concurrent writers, cleanups and a recovery pass queue behind each other
 instead of failing the write. Reserving and a recovery pass wait inside the
 operation's own two-second deadline and cancellation flag; cleanup after a
 publication and cleanup before a pin wait under a fresh two-second budget,
-ignore cancellation (cleanup completion suppresses cancellation) and are never
-refused for being beyond the waiter limit below, so each claim site has its own
+ignore cancellation (cleanup completion suppresses cancellation) and get a
+longer grace (500 ms) beyond the waiter limit below, so each claim site has its own
 budget and one write (a recovery pass, a reservation, a cleanup) can wait
 several times two seconds in the worst case. Work done under a claim, at every
 site, measures its budget from the instant the claim was acquired, and the lock
@@ -535,8 +536,8 @@ allocation claim while it tries a record claim). At most the Node worker pool
 size minus one threads per process wait at once (three by default; the pool is
 shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it, read the
 way libuv reads it); a reservation or recovery beyond that polls for a 100 ms
-grace and is then refused with `changed`, and cancellation and the deadline are
-checked before the limit. Allocation refuses at 128 distinct nonces; both scans
+grace (a cleanup, 500 ms) and is then refused with `changed`, and cancellation
+and the deadline are checked before the limit. Allocation refuses at 128 distinct nonces; both scans
 tolerate eight more, because a lockless pin can let an allocation overshoot, so
 that an operator recovery pass can still run and an overshoot is transient.
 The v2 producer also claims its original prepared-record handle before record
