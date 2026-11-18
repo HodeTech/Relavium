@@ -5917,8 +5917,10 @@ prompt, cognitive complexity, the `coverage` job, the CI decisions) are in [defe
    `.relavium/project.toml` and lists allowlists, domains, MCP servers and egress endpoints under `/permissions`; D63 and ADR-0118 §2 keep grants only in operator config keyed by
    project root, Session memory-only, and say the UI "belongs to that workstream"; `current.md` ~414 says "ruled by D63" without saying whether the screen is in MVP-4; MVP-8's 2.6.G
    list omits `/permissions` and MVP-9 has only `/providers` and `/mcp`.
-8. **ADR number 0135 is claimed twice:** the UI/UX common-language plan reserves it, and the turn-ceilings analysis proposes it for an ADR that amends
-   [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md). Reserve it explicitly before either is written.
+8. **ADR number 0135 was claimed twice** (the UI/UX common-language plan, a private note, and the turn-ceilings analysis, which proposes an ADR that amends
+   [ADR-0086](../../decisions/0086-absolute-admission-ceilings-on-authored-values.md)) **and is now taken by the native adapter's
+   [ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)** (written 2026-11-18, the first of the three to be needed). The UI/UX and
+   the ceilings ADRs take the next free numbers when they are written; their plans' "0135" is a placeholder.
 
 **Decisions needed before the steps they gate (recommendation first)**
 

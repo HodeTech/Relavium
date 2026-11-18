@@ -1727,7 +1727,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
   the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
   check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
-- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17).** Measured on the built addon
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 (commits `c211b21f`, `2a70db08`; review round, security sitting and eight-target CI owed); Inc 2 and Inc 3 open.** Measured on the built addon
   (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
   and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
   the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
@@ -1758,7 +1758,22 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   keep the "before" binary. Each new Rust test must join the exact-name set in `tools/native-fs/profile-catalog.mjs`, a new checkpoint joins `CHECKPOINTS` (`common.rs` ~2000) and
   `profile.test.mjs`, a new lifecycle case joins `NODE_LIFECYCLE_CASES`. `NATIVE_BUILD_INPUTS` includes `native-fs.yml` and four `tool-host` TypeScript files, so editing them
   shifts the build binding; the only committed source pin is the loader hash. `native-fs.yml` has no `workflow_dispatch`, so Linux and Windows evidence needs a push and a whole
-  `ci.yml` run (each push costs one). D64 applies (writes, lease and resume paths): one rigor round plus a separate security sitting per increment. *(medium · apps/cli/native/fs-metadata)*
+  `ci.yml` run (each push costs one). D64 applies (writes, lease and resume paths): one rigor round plus a separate security sitting per increment.
+  **Inc 1 implemented (2026-11-18, author checkpoint; maintainer chose it before MVP-4).** [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)
+  records it. *Done:* the allocation claim is waited for inside the operation's deadline and cancellation flag at all three sites (reserve, post-publication cleanup, recovery's own claim; the
+  per-record claim and the marker claim stay single attempts); only contention is repeated; a scan skips an uncommitted `.reserved`/`.prepare` that vanishes before it is opened
+  **or after** (a second window the first analysis missed: the unlinked file the scan holds reads link count zero and the private-file check refuses it as `Unsupported`, not `Changed`);
+  N-2 (`encode` shares `decode`'s validators), N-7 (a pin removes only the reservation it created), N-3 (the contract bound is 384). *Measured* on the rebuilt addon with the same probes
+  (macOS): two writers 60/60 (before 32/60: 28 stage failures, 2 `possibly_published:uncertain`), four 120/120, eight 240/240, two writers plus a recovery loop 60/60 and 1,832/1,832
+  recoveries, the churn probe 200/200 (before 98/200); no leftover entries. Eight cross-platform custody tests plus a POSIX-only churn stress test are pinned in
+  `tools/native-fs/profile-catalog.mjs` (Windows population 26 → 34, macOS 54 → 63, Linux 21 → 30); an 11-mutant sweep killed every mutant (a mutant that removes the deadline is killed by a
+  hang, so the wait tests carry no timeout of their own); `node tools/native-fs/build.mjs --verify-profile` passed locally (source binding `94afadd2…` → `92af84bb…`), 153 native tool
+  tests and the 29 addon-backed TypeScript tests pass. *Not proved, owed to CI or a later increment:* Linux and Windows execution (only the eight-target CI shows it); a Windows scan meeting a
+  delete-pending entry (access denied or a sharing violation instead of not-found) — the churn test is POSIX-only for that reason; the cold-start race when two processes create the index
+  hierarchy on a fresh home at the same moment (not probed); a probe with two real OS processes (the in-process writers conflict under `flock` the same way, but it is not the same
+  experiment). *Sibling search:* every `lock(` and `lock_within(` site was reviewed (the two other `open_nofollow(&entry.path())` sites sit in cleanup paths over this producer's own
+  artifacts and were left alone). *Owed:* one NEW complete cumulative D64 round with no blocker, high or medium and a separate security sitting (does skipping a vanished entry ever drop
+  exclusion or capacity evidence; does the wait widen any authority window; is the N-7 check TOCTOU-equivalent to its siblings), then all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata)*
 - [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
   per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
   needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads
