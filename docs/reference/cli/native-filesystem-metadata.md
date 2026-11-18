@@ -459,10 +459,11 @@ whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
 scan opens it or is unlinked after the scan opened it (the held file then has a
 link count of zero and its identity no longer matches; the entry only counts as
 vanished when its name is really absent, and a file that is still there and fails
-a check stays fatal). The TypeScript reader applies the same rule and, in
-addition, runs the whole scan again for a committed `.record` that is unlinked
-after it was opened (the Rust scan holds the allocation claim, so a `.record` or
-the lock file never vanishes under it). A skipped entry still counts toward the
+a check stays fatal). The TypeScript reader applies the same rule, also for an
+entry whose `lstat` already reads link count zero (it can still succeed while an
+entry is being unlinked), and in addition runs the whole scan again for a
+committed `.record` that vanishes in any of those ways (the Rust scan holds the
+allocation claim, so a `.record` or the lock file never vanishes under it). A skipped entry still counts toward the
 nonce bound and is listed, and a recovery pass reports it as retained, since a
 listing can omit an entry renamed while it runs: a point-in-time inventory
 cannot be exact for an uncommitted artifact, and the path-based stage-directory
@@ -517,12 +518,14 @@ handle holds it ([ADR-0135](../../decisions/0135-concurrent-processes-on-one-ope
 concurrent writers, cleanups and a recovery pass queue behind each other
 instead of failing the write. Reserving and a recovery pass wait inside the
 operation's own two-second deadline and cancellation flag; cleanup after a
-publication and pre-pin cleanup wait under a fresh two-second budget and ignore
-cancellation (cleanup completion suppresses cancellation), so each claim site
-has its own budget and one write can wait several times two seconds in the worst
-case. Work done under a claim measures its budget from when the claim was
-acquired, and the lock file is opened by name again after the wait and must be
-the file that was locked. Only contention is repeated
+publication and cleanup before a pin wait under a fresh two-second budget,
+ignore cancellation (cleanup completion suppresses cancellation) and are never
+refused for being beyond the waiter limit below, so each claim site has its own
+budget and one write (a recovery pass, a reservation, a cleanup) can wait
+several times two seconds in the worst case. Work done under a claim, at every
+site, measures its budget from the instant the claim was acquired, and the lock
+file is opened by name again after the wait and must be the file that was
+locked. Only contention is repeated
 (`EWOULDBLOCK`/`EAGAIN`/`EINTR`, `ERROR_LOCK_VIOLATION`); any other error fails at
 once, and an exhausted deadline is the same `changed` refusal as before. The
 per-record claim below stays a single attempt: a held record claim means a live
@@ -530,13 +533,12 @@ producer, and waiting on both claims would make a cycle (a writer holds its
 record claim while it waits for the allocation claim, and recovery holds the
 allocation claim while it tries a record claim). At most the Node worker pool
 size minus one threads per process wait at once (three by default; the pool is
-shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it); a
-caller beyond that polls for a 100 ms grace and is then refused with `changed`,
-and cancellation and the deadline are checked before the limit. Allocation
-refuses at 128 distinct nonces; a scan tolerates eight more, because a lockless
-pin can let an allocation overshoot, so that an operator recovery pass can still
-run (the TypeScript reader keeps the strict bound of 128 and fails closed in the
-meantime).
+shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it, read the
+way libuv reads it); a reservation or recovery beyond that polls for a 100 ms
+grace and is then refused with `changed`, and cancellation and the deadline are
+checked before the limit. Allocation refuses at 128 distinct nonces; both scans
+tolerate eight more, because a lockless pin can let an allocation overshoot, so
+that an operator recovery pass can still run and an overshoot is transient.
 The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling
