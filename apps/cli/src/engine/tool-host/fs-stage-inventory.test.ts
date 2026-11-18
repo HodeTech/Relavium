@@ -13,7 +13,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -30,7 +30,7 @@ import { prepareGlobalPreferences } from '../../config/write.js';
 // A committed record can vanish between the directory read and the lstat/open/re-lstat of it (a concurrent write
 // completing removes its record). The window is microseconds wide, so the tests open it deterministically through the
 // real calls: `decide` may delete the file just before the real call ('unlink') or fail it outright ('vanish').
-type Decision = 'pass' | 'unlink' | 'vanish' | 'unlinkAfter' | 'replace';
+type Decision = 'pass' | 'unlink' | 'vanish' | 'unlinkAfter' | 'replace' | 'nlink0';
 const seam = vi.hoisted(() => ({
   decide: undefined as undefined | ((op: 'lstat' | 'open', name: string, call: number) => Decision),
   calls: new Map<string, number>(),
@@ -50,7 +50,9 @@ vi.mock('node:fs/promises', async (original) => {
       seam.log.push(`unlink:${name}`);
     }
     if (decision === 'replace') {
-      // The name stays, but another file (a new inode) takes it between the lstat and the open.
+      // The name stays, but another file (a new inode) takes it between the lstat and the open. The old
+      // inode is kept alive by a hard link outside the scanned directory, so that it cannot be reused.
+      await native.link(target, join(dirname(dirname(target)), `keeper-${name}`));
       await native.unlink(target);
       await native.writeFile(target, '', { mode: 0o600 });
       seam.log.push(`replace:${name}`);
@@ -62,8 +64,20 @@ vi.mock('node:fs/promises', async (original) => {
   return {
     ...native,
     lstat: async (...args: Parameters<typeof native.lstat>) => {
-      await intercept('lstat', args[0]);
-      return native.lstat(...args);
+      const decision = await intercept('lstat', args[0]);
+      const stats = await native.lstat(...args);
+      if (decision !== 'nlink0' || typeof args[0] !== 'string') return stats;
+      // The entry is in the middle of being unlinked: `lstat` succeeds with a link count of zero (macOS), and
+      // the file is gone by the time anything looks again.
+      await native.unlink(args[0]);
+      seam.log.push(`nlink0:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      return Object.assign(
+        Object.create(Object.getPrototypeOf(stats) as object) as typeof stats,
+        stats,
+        {
+          nlink: 0n,
+        },
+      );
     },
     open: async (...args: Parameters<typeof native.open>) => {
       const decision = await intercept('open', args[0]);
@@ -404,6 +418,13 @@ it.skipIf(process.platform === 'win32')(
       await writeFile(join(index, `${nonce}.prepare`), Buffer.alloc(16 * 1024), { mode: 0o600 });
     }
     await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    // The native scan tolerates eight more nonces than the 128 a reservation may reach (a lockless pin can
+    // overshoot), and so does this reader; the ninth is refused. The bytes stay at their bound throughout.
+    for (let value = 128; value < 136; value++) {
+      const nonce = value.toString(16).padStart(32, '0');
+      await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    }
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
     await writeFile(join(index, `${'f'.repeat(32)}.reserved`), '', { mode: 0o600 });
     await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
   },
@@ -644,5 +665,55 @@ it.skipIf(process.platform === 'win32')(
     seam.decide = (op, name) => (op === 'open' && name.endsWith('.reserved') ? 'replace' : 'pass');
     await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
     expect(seam.log).toContain(`replace:${nonce}.reserved`);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates a reservation or prepare file whose lstat already reads link count zero, without a retry',
+  async () => {
+    const nonce = 'f'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'lstat' && (name.endsWith('.reserved') || name.endsWith('.prepare'))
+        ? 'nlink0'
+        : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`nlink0:${nonce}.reserved`);
+    expect(seam.log).toContain(`nlink0:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'runs the whole scan again for a committed record whose lstat reads link count zero, at either lstat',
+  async () => {
+    for (const which of [1, 2]) {
+      const nonce = which === 1 ? 'a'.repeat(32) : 'b'.repeat(32);
+      seam.calls.clear();
+      seam.log.length = 0;
+      await writeFile(join(index, `${nonce}.record`), 'not a record', { mode: 0o600 });
+      // Call 1 is the lstat before the open; call 2 is the final lstat after the read.
+      seam.decide = (op, name, call) =>
+        op === 'lstat' && name === `${nonce}.record` && call === which ? 'nlink0' : 'pass';
+      await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+      expect(seam.log).toContain(`nlink0:${nonce}.record`);
+      expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+    }
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates a small overshoot of the nonce bound that the native scan tolerates, and refuses a larger one',
+  async () => {
+    const create = async (n: number): Promise<void> => {
+      await writeFile(join(index, `${n.toString(16).padStart(32, '0')}.reserved`), '', {
+        mode: 0o600,
+      });
+    };
+    for (let n = 0; n < 136; n++) await create(n);
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    await create(136);
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
   },
 );

@@ -8,6 +8,12 @@ import { HostDeniedError, throwIfAborted } from './errors.js';
 import { foldPathComponent } from './fs-path-component.js';
 
 const MAX_RECORDS = 128;
+/**
+ * How far a scan tolerates the nonce count past `MAX_RECORDS`: the native scan does the same, because a producer
+ * pins without any claim and a native reservation can overshoot the bound by the pins that were in flight.
+ * Refusing at the first overshoot would fail every filesystem tool call with nothing supported to clear it.
+ */
+const SCAN_SLACK = 8;
 const MAX_RECORD_BYTES = 16 * 1024;
 const MAX_SCAN_BYTES = 2 * 1024 * 1024;
 const SCAN_MS = 2000;
@@ -302,8 +308,9 @@ export async function captureFsStageInventory(
           (entry.name !== 'inventory.lock' && !match)
         )
           throw new FsStageInventoryError();
+        const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
         if (match?.[1]) nonces.add(match[1]);
-        if (nonces.size > MAX_RECORDS) throw new FsStageInventoryError();
+        if (nonces.size > MAX_RECORDS + SCAN_SLACK) throw new FsStageInventoryError();
         const path = join(index, entry.name);
         let observed;
         try {
@@ -318,6 +325,12 @@ export async function captureFsStageInventory(
           if (code(error) === 'ENOENT' && match?.[2] === 'record') throw new RecordVanished();
           throw error;
         }
+        if (observed.nlink === 0n) {
+          // `lstat` can still succeed for an entry in the middle of being unlinked (seen on macOS): its link
+          // count is already zero. That is a vanished entry, not a changed index.
+          if (transient) return;
+          if (match?.[2] === 'record') throw new RecordVanished();
+        }
         if (
           !observed.isFile() ||
           observed.isSymbolicLink() ||
@@ -326,7 +339,6 @@ export async function captureFsStageInventory(
           observed.size > BigInt(MAX_RECORD_BYTES)
         )
           throw new FsStageInventoryError();
-        const transient = match?.[2] === 'reserved' || match?.[2] === 'prepare';
         let handle;
         try {
           tick(start, signal);
@@ -393,6 +405,8 @@ export async function captureFsStageInventory(
             // Only a committed `.record` reaches this point (reservations/prepares/the lock returned above).
             throw code(error) === 'ENOENT' ? new RecordVanished() : error;
           });
+          // A record unlinked between the two stats and the final lstat reads link count zero on one of them.
+          if (after.nlink === 0n || current.nlink === 0n) throw new RecordVanished();
           if (
             !same(before, after) ||
             !same(before, current) ||
