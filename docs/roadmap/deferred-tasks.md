@@ -96,7 +96,7 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
   replacement video model/API, retarget the A3 arm; otherwise **disable/remove** the Sora arm (the `generateMedia`
   `video` dispatch + `pollMediaJobSora` + their tests) leaving the seam + Veo intact. Low priority until a
   replacement lands or the date nears. *(packages/llm/src/adapters/openai.ts; 1.AH/Phase-2)*
-- [ ] **Gate and CI speed-up left for a decision (2026-11-17).** (C4) The `push` and `pull_request` runs of one commit are two full CI runs (about 544 job-minutes per commit) and, today, two sets of macOS runner requests that GitHub cancelled for capacity; limiting `push` to `main` would halve it, but a `development` push with no open pull request would get no CI, and the workflow's own concurrency comment records that the two runs are kept apart on purpose (a cancelled required check blocks a merge) — a policy choice for the maintainer. (C5) Build the eight native targets only when native sources change (the macOS arm64 leg is the one GitHub cancels). (C6) A path filter for docs-only pull requests (a skipped required check counts as passing, so it needs its own design). (C7) A shared `pnpm install` cache. (Y2/C3) Scope the enforced coverage run to the packages that have a floor (`llm`, `mcp`): about −10 to −14 minutes, but the other packages' tests may contribute coverage, and it changes what the floor measures, so it needs an experiment first. (Y4/Y5) Share the fixed/restored phases between controls that use the same tests (about half the phases) or cut a phase's fixed cost: the mutation evidence model, a security-owner and ADR decision.
+- [ ] **Gate and CI speed-up left for a decision (2026-11-17) — decided 2026-11-18: C4 and Y2/C3 applied, C5, C6 and C7 dropped, Y4/Y5 stay deferred (see the last paragraph).** (C4) The `push` and `pull_request` runs of one commit are two full CI runs (about 544 job-minutes per commit) and, today, two sets of macOS runner requests that GitHub cancelled for capacity; limiting `push` to `main` would halve it, but a `development` push with no open pull request would get no CI, and the workflow's own concurrency comment records that the two runs are kept apart on purpose (a cancelled required check blocks a merge) — a policy choice for the maintainer. (C5) Build the eight native targets only when native sources change (the macOS arm64 leg is the one GitHub cancels). (C6) A path filter for docs-only pull requests (a skipped required check counts as passing, so it needs its own design). (C7) A shared `pnpm install` cache. (Y2/C3) Scope the enforced coverage run to the packages that have a floor (`llm`, `mcp`): about −10 to −14 minutes, but the other packages' tests may contribute coverage, and it changes what the floor measures, so it needs an experiment first. (Y4/Y5) Share the fixed/restored phases between controls that use the same tests (about half the phases) or cut a phase's fixed cost: the mutation evidence model, a security-owner and ADR decision.
   **Analysis (2026-11-18, read-only; recommendations, not decisions).** *Facts:* `main` requires exactly three checks — `lint · typecheck · test` (the `ci` aggregate), `engine coverage floor (llm, mcp)` and
   `windows · db concurrency + filesystem + headless smoke` (`strict: false`, admins not enforced: PR #99 merged while `coverage` was cancelled in both runs); `development` is unprotected.
   The `ci.yml` comment on separate concurrency groups (lines ~42-48) only keeps a push and its same-SHA PR run from cancelling each other; no test pins `on:` or `concurrency`.
@@ -110,7 +110,12 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
   `paths:` filter leaves required checks Pending, and the aggregate redesign touches about 65 `if`/`needs` pins. **C7 — drop:** the setup-node pnpm cache already shares one store per
   OS per ref and a warm install takes about 2 s (median of 530 samples). **Y2/C3:** verified, about 22-32 min, not 10-14 — see the coverage entry in the PR #99 merge observations.
   **Y4/Y5:** stay deferred (they change what each causal-control proof means and do not move the critical path). Aside: `pnpm test:acceptance-tools` runs in seven jobs per run (about 10
-  job-minutes); deduplicating it would touch the evidence model. **Maintainer questions:** the trigger set of C4; whether to switch `enforce_admins` on. *(low · tools/ci, .github/workflows/ci.yml)*
+  job-minutes); deduplicating it would touch the evidence model. **Maintainer questions:** the trigger set of C4; whether to switch `enforce_admins` on.
+  **Decided (maintainer, 2026-11-18):** C4 as recommended (`push` on `main` and `development` plus `workflow_dispatch`, no `pull_request`; commit `48ea618a`, with a pin test on the
+  trigger set, the group and `cancel-in-progress`); Y2/C3 as the coverage narrowing (commit `63123bd9`); C5, C6 and C7 are dropped, not deferred; Y4/Y5 stay deferred and are the only
+  part of this entry still open. `enforce_admins` was not asked and is unchanged. **Not yet proved:** that a development -> main PR is satisfied by the `push` run alone — it rests on
+  GitHub's rule that required checks attach to the head SHA by name, and the first real PR after this change is the evidence; if the merge box shows the checks as missing, restore
+  `pull_request` and keep the rest. *(low · tools/ci, .github/workflows/ci.yml)*
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
@@ -1824,7 +1829,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 
 ### PR #99 merge CI observations (2026-11-18)
 
-- [ ] **The required `coverage` job stopped at its 45-minute limit on PR #99's final head, in both runs (2026-11-18) — analysed the same day; narrowing proposed, decision pending.** The `pull_request`
+- [ ] **The required `coverage` job stopped at its 45-minute limit on PR #99's final head, in both runs (2026-11-18) — analysed the same day; the narrowing is applied and awaits its first CI run.** The `pull_request`
   run `44222406356` (job started 02:58:01) and the `push` run `44222399222` (started 02:54:03) each ended exactly 45 minutes after their own start, with the annotation
   "The job has exceeded the maximum execution time of 45m0s" and the step "Engine coverage floor" cancelled. It was not a hang (the log shows test files completing
   normally seconds before the stop) and not a manual cancel (the two stops are four minutes apart, each at its start plus 45:00). The job took 26 to 38 minutes in
@@ -1845,7 +1850,9 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   `docs/standards/testing.md`. Raising the limit to 60 saves nothing and only postpones this; sharding the run would move the thresholds into a merge job and rewrite many
   pins, which the narrowing makes unnecessary; do not remove `--maxWorkers=1` (commit `122e8189` made it on purpose, "retaining every case, threshold and native concurrency assertion"; its footer cites ADR-0111, whose title is about the lazy packaged runtime, so the commit message is the only recorded reason). Hot spots if more is needed
   later: `tool-review-host.test.tsx` (about 120 s on every runner) and `packages/db/src/session-usage-scale.test.ts` (one test, 91-215 s). It matters because a required check
-  that cannot finish blocks every PR, and since the speed-up it is the longest job. **Decision pending (maintainer):** apply the narrowing. *(medium · .github/workflows/ci.yml,
+  that cannot finish blocks every PR, and since the speed-up it is the longest job. **Applied (maintainer chose it 2026-11-18; commit `63123bd9`):** `tools/coverage-gate/run.mjs` passes `--dir packages`, the pin test expects it (mutation-checked) and the real
+  `pnpm coverage:enforced` entry passed under the CI environment (407 files, 4 min 50 s, same figures). **Open:** close this entry when the first CI run on `development` shows the
+  job's own duration and a green result. *(medium · .github/workflows/ci.yml,
   tools/coverage-gate)*
 - [ ] **One secrets-control shard's verify step hit a 10-second test limit on `main`'s merge run (2026-11-18); rate measured at about 1 in 27 job runs.** In the `push` run `44232410834` of the merge
   commit `002dda58` (its tree is identical to `bb6f1671`'s), `Wave 2 secrets causal controls (shard 1 of 3)` failed about two minutes in, at step "Verify causal outcome and worker
@@ -1857,5 +1864,6 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   inner 4 s readiness poll and 5 s watchdog start only after the copy, so a slow disk on a fresh runner can exhaust the case bound before either inner bound can fire; which phase
   stalled was not recorded. One failure in 27 is about 3.7% per job run (a small sample), and the test runs in every secrets shard, so a commit whose pipeline runs twice has roughly a 10-20% chance of one red `ci`, which a re-run clears.
   The case sits under the approved `LOW-1` deferral above (fixed 5 s bounds inside 10 s cases; "a loaded runner produces red without a defect"); its trigger, a recorded failure that names the bound that fired, is now met for the 10 s case bound on Linux. The retune is the coupled set
-  (case bound, readiness poll, watchdog), so raise the outer case bound together with a measurement of which phase stalled, not alone. **Re-run:** attempt 2 of the failed job
-  was started the same day (15:45 UTC) and had not finished when this was written; record its result here. *(low · tools/cli-package/smoke)*
+  (case bound, readiness poll, watchdog), so raise the outer case bound together with a measurement of which phase stalled, not alone. **Re-run (2026-11-18):** attempt 2 of the failed job
+  passed (started 15:45 UTC, 35 min 49 s), the `ci` aggregate followed (16:21 UTC) and the run's conclusion is `success`, so `main`'s three required checks are green again.
+  Second occurrence is the trigger to retune; until then the entry stays open as a measured low. *(low · tools/cli-package/smoke)*
