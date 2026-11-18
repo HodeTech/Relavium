@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, isAbsolute, join, relative } from 'node:path';
 import test from 'node:test';
 import {
   CI_ENV,
   CI_OWNED,
   LANES,
   planGate,
+  resolveGit,
   resolvePnpmEntry,
   runGate,
   selectSteps,
@@ -455,6 +465,108 @@ test(
     }
   },
 );
+
+// A fake `git` is a plain executable file; resolveGit only looks at where it is, so its content does not matter.
+const gitName = process.platform === 'win32' ? 'git.exe' : 'git';
+function fakeGit(directory) {
+  mkdirSync(directory, { recursive: true });
+  const file = join(directory, gitName);
+  writeFileSync(file, '');
+  chmodSync(file, 0o755);
+  return file;
+}
+
+test('git is taken from the PATH, never from inside the repository, a relative entry or a link into it', () => {
+  const base = mkdtempSync(join(tmpdir(), 'relavium-gate-test-'));
+  try {
+    const repository = join(base, 'repository');
+    const outside = join(base, 'outside');
+    const later = join(base, 'later');
+    const inRepository = fakeGit(join(repository, 'node_modules', '.bin'));
+    const outsideGit = fakeGit(outside);
+    const laterGit = fakeGit(later);
+    const path = (...entries) => ({ PATH: entries.join(delimiter) });
+    // pnpm puts the repository's `.bin` first: the git beside it is skipped, the first one outside is taken.
+    assert.equal(
+      resolveGit(path(join(repository, 'node_modules', '.bin'), outside, later), repository),
+      outsideGit,
+    );
+    assert.equal(resolveGit(path(outside, later), repository), outsideGit);
+    // An empty or relative entry means the current directory; a directory without a git is passed over.
+    assert.equal(
+      resolveGit(path('', 'node_modules/.bin', '.', join(base, 'none'), later), repository),
+      laterGit,
+    );
+    // A relative entry that really leads to a git is still refused: it means "wherever the gate happens to run".
+    const relativeEntry = relative(process.cwd(), join(base, 'relative'));
+    fakeGit(join(base, 'relative'));
+    if (!isAbsolute(relativeEntry)) {
+      assert.equal(resolveGit(path(relativeEntry, later), repository), laterGit);
+      assert.throws(
+        () => resolveGit(path(relativeEntry), repository),
+        /not found on the PATH outside/u,
+      );
+    }
+    // Only the repository's own binaries, or nothing at all: refused, not run.
+    assert.throws(
+      () => resolveGit(path(join(repository, 'node_modules', '.bin')), repository),
+      /not found on the PATH outside/u,
+    );
+    assert.throws(
+      () => resolveGit(path('', 'relative'), repository),
+      /not found on the PATH outside/u,
+    );
+    assert.throws(() => resolveGit({}, repository), /not found on the PATH outside/u);
+    assert.ok(inRepository);
+    if (process.platform !== 'win32') {
+      // A directory outside the repository whose `git` is a link into it is the repository's binary.
+      const linked = join(base, 'linked');
+      mkdirSync(linked);
+      symlinkSync(inRepository, join(linked, gitName));
+      assert.equal(resolveGit(path(linked, later), repository), laterGit);
+      assert.throws(() => resolveGit(path(linked), repository), /not found on the PATH outside/u);
+      // A `git` that is not executable, or is a directory, is not a program.
+      const plain = join(base, 'plain');
+      mkdirSync(plain);
+      writeFileSync(join(plain, gitName), '');
+      chmodSync(join(plain, gitName), 0o644);
+      const folder = join(base, 'folder');
+      mkdirSync(join(folder, gitName), { recursive: true });
+      assert.equal(resolveGit(path(plain, folder, later), repository), laterGit);
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('the tree fingerprint runs the git resolveGit found, and refuses when there is none', () => {
+  const base = mkdtempSync(join(tmpdir(), 'relavium-gate-test-'));
+  const saved = process.env.PATH;
+  try {
+    process.env.PATH = '';
+    assert.throws(() => treeFingerprint(base), /not found on the PATH outside/u);
+    if (process.platform !== 'win32') {
+      // A stand-in git on the PATH records how it was called and answers every question with nothing.
+      const bin = join(base, 'bin');
+      mkdirSync(bin);
+      const record = join(base, 'calls.txt');
+      writeFileSync(join(bin, 'git'), `#!/bin/sh\necho "$@" >> '${record}'\n`);
+      chmodSync(join(bin, 'git'), 0o755);
+      process.env.PATH = bin;
+      assert.match(treeFingerprint(base), /^[0-9a-f]{16}$/u);
+      const calls = readFileSync(record, 'utf8').trim().split('\n');
+      assert.deepEqual(calls.slice(0, 4), [
+        'rev-parse HEAD',
+        'status --porcelain=v1 -z',
+        'diff --binary',
+        'diff --cached --binary',
+      ]);
+    }
+  } finally {
+    process.env.PATH = saved;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 test('the tree fingerprint refuses to answer when git cannot, instead of returning one constant', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relavium-gate-test-'));

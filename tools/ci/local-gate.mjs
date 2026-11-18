@@ -25,21 +25,25 @@
 // same controls in the same shards but does not export their evidence.
 //
 // pnpm and its scripts are started through the interpreter that is running this file and pnpm's own entry point
-// (`npm_execpath`), never through a shell or a PATH search — which is why it must be started as `pnpm gate`.
+// (`npm_execpath`), never through a shell or a PATH search — which is why it must be started as `pnpm gate`. git is the one
+// program found on the PATH, and only outside the repository (see `resolveGit`).
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  accessSync,
   appendFileSync,
   closeSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { loadavg, tmpdir } from 'node:os';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { clearInterval, clearTimeout, setInterval, setTimeout } from 'node:timers';
 
@@ -152,11 +156,38 @@ export function resolvePnpmEntry(env = process.env) {
   return entry;
 }
 
+/**
+ * The git executable: the first one on the PATH that is NOT inside `repository`. pnpm puts every `node_modules/.bin` of the
+ * workspace at the front of the PATH of the scripts it runs, so a bare `git` could be a binary a dependency installed there; a
+ * relative or empty entry (the current directory) is refused for the same reason, and a link that leads into the repository
+ * counts as being in it. The program is returned as the PATH entry spells it: only the test for "inside" follows links.
+ */
+export function resolveGit(env = process.env, repository = root) {
+  const inside = realpathSync(repository);
+  for (const entry of (env.PATH ?? env.Path ?? '').split(delimiter)) {
+    if (!isAbsolute(entry)) continue;
+    const candidate = join(entry, process.platform === 'win32' ? 'git.exe' : 'git');
+    try {
+      const real = realpathSync(candidate);
+      if (real === inside || real.startsWith(`${inside}${sep}`)) continue;
+      if (!statSync(real).isFile()) continue;
+      accessSync(real, constants.X_OK);
+    } catch {
+      continue;
+    }
+    return candidate;
+  }
+  throw new Error(
+    'git was not found on the PATH outside the repository, so the tree cannot be fingerprinted (the gate refuses a git installed under node_modules/.bin or the current directory).',
+  );
+}
+
 /** A short digest of everything that makes up the working tree: HEAD, the index, the diff and every untracked file. */
 export function treeFingerprint(cwd) {
+  const executable = resolveGit();
   // A git that cannot answer would give the same digest before and after, and the check would pass over any change: refuse.
   const git = (args) => {
-    const result = spawnSync('git', args, { cwd, maxBuffer: 1 << 30 });
+    const result = spawnSync(executable, args, { cwd, maxBuffer: 1 << 30 });
     if (result.error !== undefined || result.status !== 0) {
       const reason = result.error?.message ?? String(result.stderr ?? '').trim();
       throw new Error(
@@ -261,6 +292,7 @@ export async function runGate(
   plan,
   { execute, outDir, log = () => {}, keepGoing = false, sampleMs = 60_000 },
 ) {
+  /** @type {{ name: string, code: number | undefined, seconds: number }[]} */
   const results = [];
   const run = async (step) => {
     const result = { name: step.name, ...(await execute(step, join(outDir, `${step.name}.log`))) };
