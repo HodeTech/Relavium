@@ -7,6 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const MAX_RECORDS: usize = 128;
@@ -78,12 +79,16 @@ fn record_name(name: &str) -> Option<&str> {
 fn valid_pid(pid: u32) -> bool {
     pid != 0 && pid <= i32::MAX as u32
 }
-/// The only locator a record may carry: an absolute stage path whose last name is exactly
-/// `PREFIX{pid}.{nonce}` and which holds no `.` or `..` component. `Record::encode` and
-/// `Record::decode` share it, so a record that can be written can always be read back (a locator
-/// that encoded but could not decode would make every later scan of the index fail closed).
+/// The only locator a record may carry: an absolute, normalized stage path (no `.` or `..` component, no
+/// repeated or trailing separator: written exactly as `Path::components` would write it back, the same
+/// rule the TypeScript reader applies as `resolve(stage) === stage`) whose last name is exactly
+/// `PREFIX{pid}.{nonce}`. `Record::encode` and `Record::decode` share it, so a record that can be written
+/// can always be read back by either reader (a locator that encoded but could not decode would make every
+/// later scan of the index fail closed). `Path::components` drops a `.` or an empty component in the
+/// MIDDLE of a path without a trace, so the string comparison is what rejects those.
 fn valid_locator(stage: &Path, pid: u32, nonce: &str) -> bool {
     stage.is_absolute()
+        && stage.as_os_str() == stage.components().collect::<PathBuf>().as_os_str()
         && stage.file_name() == Some(OsStr::new(&format!("{PREFIX}{pid}.{nonce}")))
         && !stage.components().any(|component| {
             matches!(
@@ -477,6 +482,12 @@ impl<P: Profile> Index<P> {
                 note_vanished(&name, &mut nonces, &mut entries)?;
                 continue;
             };
+            #[cfg(test)]
+            ON_OPENED.with(|hook| {
+                if let Some(hook) = hook.borrow_mut().as_mut() {
+                    hook(&name);
+                }
+            });
             tick(start, cancelled)?;
             let Some(size) = verified_entry_size::<P>(&name, &entry.path(), &file)? else {
                 // Removed after the open: see `verified_entry_size`.
@@ -521,14 +532,14 @@ impl<P: Profile> Index<P> {
         self.recheck_checked(start, cancelled)?;
         Ok(entries)
     }
-    fn allocation_lock(&self) -> Result<File, NativeFailure> {
+    fn allocation_lock(&self) -> Result<AllocationClaim, NativeFailure> {
         self.allocation_lock_checked(Instant::now(), None)
     }
     fn allocation_lock_checked(
         &self,
         start: Instant,
         cancelled: Option<&AtomicBool>,
-    ) -> Result<File, NativeFailure> {
+    ) -> Result<AllocationClaim, NativeFailure> {
         tick(start, cancelled)?;
         let path = self.path.join("inventory.lock");
         #[cfg(test)]
@@ -560,12 +571,37 @@ impl<P: Profile> Index<P> {
         crate::test_hooks::checkpoint("lock-acquire");
         // Wait out another writer, cleanup or recovery pass that holds the allocation claim (concurrent
         // processes on one operator home are supported), inside this operation's deadline and flag.
-        trace_failure!("first-lock-acquire", lock_within(&file, start, cancelled))?;
+        let held_since =
+            trace_failure!("first-lock-acquire", lock_within(&file, start, cancelled))?;
+        // The wait can outlast the lock file's name: another process may have unlinked and recreated it,
+        // and a claim on the orphaned inode would split the exclusion domain.
+        require_same_lock::<P>(&path, &file)?;
         #[cfg(test)]
         crate::test_hooks::checkpoint("lock-recheck");
-        trace_failure!("first-lock-recheck", self.recheck_checked(start, cancelled))?;
-        Ok(file)
+        // Checked against a budget that starts once the claim is held: a wait that used up the
+        // operation's budget must not turn a claim that was just obtained into a refusal here.
+        trace_failure!(
+            "first-lock-recheck",
+            self.recheck_checked(held_since, cancelled)
+        )?;
+        Ok(AllocationClaim {
+            _file: file,
+            held_since,
+        })
     }
+}
+/// The held allocation claim (released when dropped). `held_since` is the instant it was acquired: work
+/// done under the claim measures its own budget from there, never from before the wait for it.
+struct AllocationClaim {
+    _file: File,
+    held_since: Instant,
+}
+/// The lock file the claim was taken on must still be the file the name points at.
+fn require_same_lock<P: Profile>(path: &Path, held: &File) -> Result<(), NativeFailure> {
+    if P::identity(&open_nofollow(path)?)? != P::identity(held)? {
+        return refused();
+    }
+    Ok(())
 }
 fn private_dir<P: Profile>(path: &Path, create: bool) -> Result<File, NativeFailure> {
     let file = if create {
@@ -960,8 +996,8 @@ impl<P: Profile> OwnedStage<P> {
         // The claim is waited for under its own two-second budget; the destructive steps below are
         // checked against a budget that starts only once it is held, so a long wait cannot leave them
         // half done (payload removed, stage directory and reservation left behind).
-        let _allocation = self.index.allocation_lock()?;
-        let start = Instant::now();
+        let claim = self.index.allocation_lock()?;
+        let start = claim.held_since;
         self.index.recheck()?;
         let reservation_path = self.index.path.join(format!("{}.reserved", self.nonce));
         let reservation = open_nofollow(&reservation_path)?;
@@ -1241,7 +1277,8 @@ pub(crate) fn recover_with_cancel<P: Profile>(
     }
     tick(start, cancelled)?;
     // A recovery pass queues behind a writer's short allocation instead of failing the whole pass.
-    lock_within(&allocation, start, cancelled)?;
+    let start = lock_within(&allocation, start, cancelled)?;
+    require_same_lock::<P>(&lock_path, &allocation)?;
     index.recheck_checked(start, cancelled)?;
     let entries = index.entries(start, cancelled)?;
     let mut summary = RecoverySummary::default();
@@ -1533,6 +1570,10 @@ fn note_vanished(
     nonces: &mut BTreeSet<String>,
     entries: &mut Vec<(String, String)>,
 ) -> Result<(), NativeFailure> {
+    // Only an uncommitted entry can have vanished; anything else reaching here is a changed index.
+    if !may_vanish_during_scan(name) {
+        return refused();
+    }
     let nonce = record_name(name).ok_or(NativeFailure::Changed)?.to_owned();
     nonces.insert(nonce.clone());
     entries.push((name.to_owned(), nonce));
@@ -1628,13 +1669,17 @@ fn lock(file: &File) -> Result<(), NativeFailure> {
         Claim::Contended => refused(),
     }
 }
-/// How long to sleep between attempts while another process holds the allocation claim. That
-/// holder's critical section is a few synchronous flushes, so a short poll keeps a writer behind it
-/// from being noticeably delayed; the operation's own two-second deadline bounds the whole wait.
+/// How long to sleep between attempts while another process holds the allocation claim. A writer's or a
+/// cleanup's critical section is a few synchronous flushes (a recovery pass holds the claim for a whole
+/// scan, up to its own deadline), so a short poll keeps a waiter from being noticeably delayed; the
+/// operation's own two-second deadline bounds the whole wait.
 const CLAIM_POLL: Duration = Duration::from_millis(2);
 /// Wait for a claim another handle holds, inside the operation's own deadline and cancellation
-/// flag. Used only for the allocation claim (`inventory.lock`), whose holders always release within
-/// one native call, so concurrent writers and a recovery pass queue instead of failing the write.
+/// flag. Used only for the allocation claim (`inventory.lock`), whose holders always release when their
+/// native call returns, so concurrent writers, cleanups and a recovery pass queue instead of failing the
+/// write; the wait is bounded by the holder's call (a recovery scan can take up to its own deadline) and,
+/// at the latest, by this operation's deadline. Cleanup after a publication and pre-pin cleanup call it
+/// with a fresh deadline and no cancellation flag on purpose: cleanup completion suppresses cancellation.
 /// Not for the per-record claim: a writer holds its record claim while it waits for the allocation
 /// claim and `recover` holds the allocation claim while it tries a record claim, so waiting on both
 /// would make a wait cycle.
@@ -1642,15 +1687,28 @@ fn lock_within(
     file: &File,
     start: Instant,
     cancelled: Option<&AtomicBool>,
-) -> Result<(), NativeFailure> {
+) -> Result<Instant, NativeFailure> {
     let mut waiter = None;
+    let mut grace_until = None;
     loop {
         match try_lock(file)? {
-            Claim::Held => return Ok(()),
+            Claim::Held => return Ok(Instant::now()),
             Claim::Contended => {
+                // Cancellation and the deadline come first, so a cancelled caller is `cancelled` and not
+                // `changed` whatever the waiter limit says.
+                tick(start, cancelled)?;
                 if waiter.is_none() {
-                    // Beyond the process-wide limit this is the single-attempt refusal of old.
-                    waiter = Some(ClaimWaiter::enter().ok_or(NativeFailure::Changed)?);
+                    waiter = ClaimWaiter::enter();
+                }
+                if waiter.is_none() {
+                    // Over the process-wide limit: only a short grace, so a holder that is merely busy
+                    // (the usual case) still lets this caller through while a stuck one cannot park the
+                    // whole worker pool. Past the grace this is the single-attempt refusal of old.
+                    let until =
+                        *grace_until.get_or_insert_with(|| Instant::now() + OVER_LIMIT_GRACE);
+                    if Instant::now() >= until {
+                        return refused();
+                    }
                 }
                 #[cfg(test)]
                 ON_CONTENDED.with(|hook| {
@@ -1658,29 +1716,44 @@ fn lock_within(
                         hook();
                     }
                 });
-                // Cancellation and the deadline are checked between attempts, so a waiter leaves
-                // within one poll of either.
-                tick(start, cancelled)?;
+                // They are checked between attempts, so a waiter leaves within one poll of either.
                 std::thread::sleep(CLAIM_POLL);
             }
         }
     }
 }
-/// Threads that may be parked waiting for the allocation claim at once, process-wide. Every native call
-/// runs on Node's shared worker pool, which has four threads unless `UV_THREADPOOL_SIZE` is raised and
-/// also serves `fs`, `dns` and `crypto`: parking all of them behind a stuck holder (a process stopped
-/// inside its critical section, a slow network home) stalls every other async call in the CLI,
-/// provider connections included. With a limit of three, one pool thread is never parked by a wait; the
-/// pool itself already caps in-process contention at one holder and three waiters, so ordinary
-/// concurrency is unaffected. A caller that would be the fourth waiter gets the old immediate refusal.
-const MAX_CLAIM_WAITERS: usize = 3;
+/// The size of Node's worker pool, read the way libuv reads it: `UV_THREADPOOL_SIZE`, one to 1,024
+/// threads, four when unset. Every native call runs on that pool, which also serves `fs`, `dns` and
+/// `crypto`.
+fn worker_pool_size() -> usize {
+    static SIZE: OnceLock<usize> = OnceLock::new();
+    *SIZE.get_or_init(|| {
+        std::env::var("UV_THREADPOOL_SIZE")
+            .ok()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .map_or(4, |size| size.clamp(1, 1024))
+    })
+}
+/// Threads that may be parked waiting for the allocation claim at once, process-wide: all but one of
+/// the pool's. Parking every thread behind a stuck holder (a process stopped inside its critical
+/// section, a slow network home) would stall every other async call in the CLI, provider connections
+/// included. With the default pool of four that is three; the pool itself already allows one in-process
+/// holder and three in-process waiters. A caller beyond the limit gets only `OVER_LIMIT_GRACE`.
+fn max_claim_waiters() -> usize {
+    worker_pool_size().saturating_sub(1)
+}
+/// How long a caller beyond the waiter limit may still poll. A holder's critical section is a few
+/// synchronous flushes, so this lets a fourth concurrent caller behind a busy holder through, and it
+/// bounds what a stuck holder can cost the one pool thread that is never parked for long.
+const OVER_LIMIT_GRACE: Duration = Duration::from_millis(100);
 static CLAIM_WAITERS: AtomicUsize = AtomicUsize::new(0);
 struct ClaimWaiter;
 impl ClaimWaiter {
     fn enter() -> Option<Self> {
+        let limit = max_claim_waiters();
         CLAIM_WAITERS
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |waiting| {
-                (waiting < MAX_CLAIM_WAITERS).then_some(waiting + 1)
+                (waiting < limit).then_some(waiting + 1)
             })
             .ok()
             .map(|_| Self)
@@ -1701,6 +1774,10 @@ thread_local! {
     /// Test hook, called with each entry name just before the scan opens it: lets a test make an
     /// entry vanish at exactly that moment.
     static ON_ENTRY: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Test hook, called with each entry name right after the scan opened it and before it verifies it:
+    /// lets a test unlink the file the scan is holding.
+    static ON_OPENED: std::cell::RefCell<Option<Box<dyn FnMut(&str)>>> =
         const { std::cell::RefCell::new(None) };
 }
 #[cfg(unix)]
@@ -2567,6 +2644,7 @@ mod custody_tests {
     fn clear_hooks() {
         ON_CONTENDED.with(|slot| *slot.borrow_mut() = None);
         ON_ENTRY.with(|slot| *slot.borrow_mut() = None);
+        ON_OPENED.with(|slot| *slot.borrow_mut() = None);
     }
 
     /// A second handle on `inventory.lock` that holds the allocation claim, as another process would.
@@ -2593,23 +2671,29 @@ mod custody_tests {
         let _serial = claim_tests_serial();
         let (root, home, index) = fixture_index("claim-wait");
 
-        // The holder lets go at the first moment the writer is proven to be waiting: the writer queues
-        // behind it instead of failing the write, and met the holder exactly once.
+        // The holder lets go after a long enough wait to tell when the claim's own budget starts: the
+        // writer queues behind it instead of failing the write, met the holder exactly once, and the
+        // claim reports the instant it was ACQUIRED, not the one the wait began at (pre-pin cleanup
+        // and recovery measure their destructive work from it).
         let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
         let met = std::rc::Rc::new(std::cell::Cell::new(0_u32));
         {
             let met = std::rc::Rc::clone(&met);
             on_contended(move || {
                 met.set(met.get() + 1);
+                std::thread::sleep(Duration::from_millis(400));
                 drop(holder.take());
             });
         }
-        drop(
-            index
-                .allocation_lock()
-                .expect("waits for the holder instead of failing the write"),
-        );
+        let claim = index
+            .allocation_lock()
+            .expect("waits for the holder instead of failing the write");
         assert_eq!(met.get(), 1);
+        assert!(
+            claim.held_since.elapsed() < Duration::from_millis(200),
+            "the claim's budget must start when it was acquired, after the 400 ms wait"
+        );
+        drop(claim);
         clear_hooks();
 
         // A holder that outlasts the operation's deadline: fail closed at the deadline, not at the
@@ -2673,19 +2757,30 @@ mod custody_tests {
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
+    /// Puts the process-wide waiter count back to zero even if a test panics while it is raised.
+    struct WaitersReset;
+    impl Drop for WaitersReset {
+        fn drop(&mut self) {
+            CLAIM_WAITERS.store(0, Ordering::Release);
+        }
+    }
+
     #[test]
-    fn only_three_waiters_park_and_a_fourth_is_refused_at_once() {
-        // Every native call runs on Node's four-thread worker pool, which also serves fs, dns and
-        // crypto: a stuck holder must never be able to park all of it. Three waiters leave one thread.
-        assert_eq!(
-            MAX_CLAIM_WAITERS, 3,
-            "pool size 4 minus one thread that is never parked"
-        );
+    fn waiters_park_up_to_the_limit_and_the_next_one_gets_only_a_short_grace() {
+        // Every native call runs on Node's worker pool, which also serves fs, dns and crypto: a stuck
+        // holder must never be able to park all of it. All but one thread may wait.
+        let limit = max_claim_waiters();
+        if std::env::var_os("UV_THREADPOOL_SIZE").is_none() {
+            assert_eq!(limit, 3, "the default pool of four, minus one thread");
+        }
+        if limit == 0 {
+            return;
+        }
         let _serial = claim_tests_serial();
         let (root, home, index) = fixture_index("claim-cap");
         let holder = hold_allocation_claim(&index);
         let lock_path = index.path.join("inventory.lock");
-        let mut handles: Vec<File> = (0..=MAX_CLAIM_WAITERS)
+        let mut handles: Vec<File> = (0..=limit)
             .map(|_| open_nofollow(&lock_path).expect("waiter handle"))
             .collect();
         let extra = handles.pop().expect("one handle beyond the limit");
@@ -2701,21 +2796,24 @@ mod custody_tests {
                 })
                 .collect();
             let began = Instant::now();
-            while CLAIM_WAITERS.load(Ordering::Acquire) < MAX_CLAIM_WAITERS {
+            while CLAIM_WAITERS.load(Ordering::Acquire) < limit {
                 assert!(
                     began.elapsed() < Duration::from_secs(10),
                     "the waiters never parked"
                 );
                 std::thread::sleep(Duration::from_millis(2));
             }
+            // The next caller polls for the grace and no longer: it neither parks like the waiters
+            // (that would take the whole two seconds) nor is refused before the grace is over.
             let refused_at = Instant::now();
             assert!(matches!(
                 lock_within(&extra, Instant::now(), None),
                 Err(NativeFailure::Changed)
             ));
+            let refused_after = refused_at.elapsed();
             assert!(
-                refused_at.elapsed() < Duration::from_secs(1),
-                "the extra waiter parked instead of being refused"
+                refused_after >= OVER_LIMIT_GRACE && refused_after < Duration::from_secs(1),
+                "the extra caller waited {refused_after:?}"
             );
             drop(holder);
             for waiter in waiters {
@@ -2726,6 +2824,58 @@ mod custody_tests {
             }
         });
         assert_eq!(CLAIM_WAITERS.load(Ordering::Acquire), 0);
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_caller_beyond_the_limit_still_gets_through_a_busy_holder() {
+        // Four concurrent callers behind a holder in ANOTHER process are the supported case, and the
+        // holder is usually just busy: the caller beyond the limit must be able to wait out a short hold.
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("claim-grace");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+        on_contended(move || drop(holder.take()));
+        drop(
+            index
+                .allocation_lock()
+                .expect("a caller beyond the limit waits out a holder that is merely busy"),
+        );
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn a_cancelled_caller_beyond_the_limit_is_cancelled_not_changed() {
+        // Cancellation comes before the waiter limit and its grace: when the grace is over in the very
+        // same attempt in which the flag is seen, the answer is `cancelled`.
+        let limit = max_claim_waiters();
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("claim-cancel-over");
+        let _reset = WaitersReset;
+        CLAIM_WAITERS.store(limit, Ordering::Release);
+        let holder = hold_allocation_claim(&index);
+        let flag = std::rc::Rc::new(AtomicBool::new(false));
+        {
+            let raise = std::rc::Rc::clone(&flag);
+            on_contended(move || {
+                // The grace is over by the time this returns, and only then is the flag raised.
+                std::thread::sleep(OVER_LIMIT_GRACE + Duration::from_millis(50));
+                raise.store(true, Ordering::Release);
+            });
+        }
+        assert!(matches!(
+            index.allocation_lock_checked(Instant::now(), Some(flag.as_ref())),
+            Err(NativeFailure::Cancelled)
+        ));
+        clear_hooks();
+        drop(holder);
         drop(index);
         drop(home);
         fs::remove_dir_all(root).expect("remove fixture");
@@ -2865,10 +3015,11 @@ mod custody_tests {
     #[cfg(unix)]
     #[test]
     fn scan_survives_concurrent_promotion_churn() {
-        // A producer pins WITHOUT the allocation claim: it creates `.reserved`, renames `.prepare`
-        // to `.record` and removes `.reserved`. A scan that lists such an entry and then finds it
-        // gone must skip it, not call the whole index changed (78 to 102 of 200 recoveries failed
-        // under this churn before the fix).
+        // A producer pins WITHOUT the allocation claim: it renames `.prepare` to `.record` and removes
+        // `.reserved`. This stress test only creates and removes `.reserved` entries (the removal half
+        // of a pin; the rename half has its own deterministic tests): a scan that lists such an entry and
+        // then finds it gone must skip it, not call the whole index changed (78 and 102 of 200 recovery
+        // passes failed under this churn before the fix, in two runs).
         let (root, home) = fixture_home("scan-churn");
         let index = Index::<TestProfile>::open(&root, true).expect("index");
         drop(
@@ -2927,6 +3078,33 @@ mod custody_tests {
         assert!(reserved.exists(), "the file under the name must stay");
         // With its own handle back, the same call removes exactly that file.
         owned.reservation = original;
+        // The file under the name is the producer's own, but not empty: it is not the reservation it made.
+        {
+            let mut writer = OpenOptions::new()
+                .write(true)
+                .open(&reserved)
+                .expect("a second handle");
+            writer.write_all(b"x").expect("bytes");
+        }
+        assert!(matches!(
+            owned.remove_own_reservation(),
+            Err(NativeFailure::Changed)
+        ));
+        assert!(reserved.exists(), "a nonempty reservation stays");
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&reserved)
+            .expect("truncate");
+        // POSIX only: a mode wider than private is refused as well.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&reserved, fs::Permissions::from_mode(0o644)).expect("widen");
+            assert!(owned.remove_own_reservation().is_err());
+            assert!(reserved.exists(), "a widened reservation stays");
+            fs::set_permissions(&reserved, fs::Permissions::from_mode(0o600)).expect("restore");
+        }
         owned.remove_own_reservation().expect("own reservation");
         assert!(!reserved.exists());
         drop(owned);
@@ -3016,6 +3194,143 @@ mod custody_tests {
     }
 
     #[test]
+    fn a_vanished_entry_is_counted_against_the_scan_bound() {
+        let name = |n: usize| format!("{n:032x}.reserved");
+        let mut nonces = BTreeSet::new();
+        let mut entries = Vec::new();
+        for n in 0..MAX_RECORDS + SCAN_SLACK {
+            note_vanished(&name(n), &mut nonces, &mut entries).expect("within the scan bound");
+        }
+        assert_eq!(entries.len(), MAX_RECORDS + SCAN_SLACK);
+        assert!(matches!(
+            note_vanished(&name(MAX_RECORDS + SCAN_SLACK), &mut nonces, &mut entries),
+            Err(NativeFailure::Changed)
+        ));
+        // Only an uncommitted entry can be a vanished one.
+        assert!(matches!(
+            note_vanished(
+                &format!("{:032x}.record", 1_u8),
+                &mut BTreeSet::new(),
+                &mut Vec::new()
+            ),
+            Err(NativeFailure::Changed)
+        ));
+    }
+
+    // POSIX only: an unlinked-but-open file has a link count of zero there.
+    #[cfg(unix)]
+    #[test]
+    fn an_entry_unlinked_after_it_was_opened_still_counts_toward_the_bound() {
+        let (root, home) = fixture_home("scan-opened");
+        let index = Index::<TestProfile>::open(&root, true).expect("index");
+        let name = |n: usize| format!("{n:032x}.reserved");
+        for n in 0..MAX_RECORDS {
+            drop(
+                TestProfile::create_private_file(&index.directory, OsStr::new(&name(n)))
+                    .expect("reservation"),
+            );
+        }
+        let ghost = name(MAX_RECORDS - 1);
+        let ghost_path = index.path.join(&ghost);
+        ON_OPENED.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |entry: &str| {
+                if entry == ghost {
+                    fs::remove_file(&ghost_path).expect("the producer finished");
+                }
+            }));
+        });
+        let listed = index.entries(Instant::now(), None).expect("scan");
+        clear_hooks();
+        assert_eq!(
+            listed.len(),
+            MAX_RECORDS,
+            "the unlinked entry must stay counted"
+        );
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    // POSIX only: replacing a lock file that another process holds open is done with unlink and create.
+    #[cfg(unix)]
+    #[test]
+    fn a_claim_on_a_replaced_lock_file_is_refused() {
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("claim-replaced");
+        let lock_path = index.path.join("inventory.lock");
+        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+        let directory = index.directory.try_clone().expect("directory handle");
+        {
+            let lock_path = lock_path.clone();
+            // While the writer waits on the old file, it is unlinked and a new one takes the name.
+            on_contended(move || {
+                fs::remove_file(&lock_path).expect("unlink");
+                drop(
+                    TestProfile::create_private_file(&directory, OsStr::new("inventory.lock"))
+                        .expect("a new lock file"),
+                );
+                drop(holder.take());
+            });
+        }
+        assert!(
+            matches!(index.allocation_lock(), Err(NativeFailure::Changed)),
+            "a claim on an orphaned inode would split the exclusion domain"
+        );
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    // POSIX only: see `a_claim_on_a_replaced_lock_file_is_refused`.
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_a_claim_on_a_replaced_lock_file() {
+        let _serial = claim_tests_serial();
+        let (root, home, index) = fixture_index("recover-replaced");
+        let lock_path = index.path.join("inventory.lock");
+        let holder = std::cell::Cell::new(Some(hold_allocation_claim(&index)));
+        let directory = index.directory.try_clone().expect("directory handle");
+        on_contended(move || {
+            fs::remove_file(&lock_path).expect("unlink");
+            drop(
+                TestProfile::create_private_file(&directory, OsStr::new("inventory.lock"))
+                    .expect("a new lock file"),
+            );
+            drop(holder.take());
+        });
+        assert!(
+            matches!(recover::<TestProfile>(&root), Err(NativeFailure::Changed)),
+            "recovery must not run on an orphaned lock inode"
+        );
+        clear_hooks();
+        drop(index);
+        drop(home);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    // POSIX only: a descriptor that is not open stands for an error that is not contention.
+    #[cfg(unix)]
+    #[test]
+    fn a_claim_error_that_is_not_contention_fails_at_once() {
+        use std::os::fd::FromRawFd;
+        let _serial = claim_tests_serial();
+        let bogus = unsafe { File::from_raw_fd(1_000_000) };
+        let began = Instant::now();
+        assert!(matches!(
+            lock_within(&bogus, Instant::now(), None),
+            Err(NativeFailure::Changed)
+        ));
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "a non-contention error must not be waited out"
+        );
+        assert_eq!(CLAIM_WAITERS.load(Ordering::Acquire), 0);
+        // It was never a valid descriptor: closing it again would be the only thing that could go wrong.
+        std::mem::forget(bogus);
+    }
+
+    #[test]
     fn record_encode_enforces_the_decode_invariants() {
         let id = NativeIdentity {
             volume: 1,
@@ -3067,5 +3382,36 @@ mod custody_tests {
             .join("relavium")
             .join(format!("{PREFIX}7.{nonce}"));
         assert!(record(7, climbing).encode().is_err(), "`..` component");
+        // The TypeScript reader requires `resolve(stage) === stage`: a locator that is not in normalized
+        // form (a `.` in the middle, a repeated or a trailing separator) must be refused here as well.
+        // `Path::components` drops those silently, so only the string comparison can see them.
+        let sep = std::path::MAIN_SEPARATOR;
+        let name = format!("{PREFIX}7.{nonce}");
+        for (what, text) in [
+            ("a `.` in the middle", format!("{base}{sep}.{sep}{name}")),
+            ("a repeated separator", format!("{base}{sep}{sep}{name}")),
+            ("a trailing separator", format!("{base}{sep}{name}{sep}")),
+        ] {
+            let locator = PathBuf::from(text);
+            assert!(record(7, locator).encode().is_err(), "{what}");
+        }
+        // The other fields the decoder bounds.
+        let mut long_owner = record(7, locator(7));
+        long_owner.owner = "o".repeat(185);
+        assert!(long_owner.encode().is_err(), "owner longer than 184 bytes");
+        let mut empty_owner = record(7, locator(7));
+        empty_owner.owner = String::new();
+        assert!(empty_owner.encode().is_err(), "empty owner");
+        let mut bad_nonce = record(7, locator(7));
+        bad_nonce.nonce = "b".repeat(31);
+        assert!(
+            bad_nonce.encode().is_err(),
+            "nonce that is not 32 hex digits"
+        );
+        let too_long = PathBuf::from(base).join("a".repeat(4100));
+        assert!(
+            record(7, too_long).encode().is_err(),
+            "locator longer than 4096 bytes"
+        );
     }
 }
