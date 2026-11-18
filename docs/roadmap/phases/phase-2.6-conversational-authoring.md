@@ -5823,3 +5823,58 @@ amendment 9 and the [deferred-tasks entry](../deferred-tasks.md)); the seven cog
 **Not claimed.** No fifth complete review round and no sitting after the final round's fixes (see above). The width model follows `string-width`, which is what Ink measures; what a real terminal draws for a cluster `string-width` counts differently is the standing
 ADR-0069 assumption the measured acknowledgement cannot see, so a manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) is owed for `v`, `/details`, `p` and the chords.
 Low items are in [deferred-tasks.md](../deferred-tasks.md). Final-head CI and the maintainer's acceptance are owed.
+
+### MVP-3 merge checkpoint (2026-11-18)
+
+**Complete and merged to `main`.** The maintainer merged [PR #99](https://github.com/HodeTech/Relavium/pull/99)
+("feat(cli): complete mvp-3 editing and reviewable file writes") on 2026-11-18 at 03:43:29Z as
+`002dda58fcc28a8ba42bc5592e8b947b0adccaab` (parents `0db4c940`, the PR #98 merge, and `bb6f1671`). Its Git tree,
+`c5fcd9c85b61179178cc480d3a111fb85415da99`, is identical to head `bb6f1671`'s. `development` is at `bb6f1671`, one merge commit behind `main` with
+identical content. npm still serves `0.1.1`; the D59 release guard is unchanged.
+
+What the PR carried, each with its own record:
+
+- [x] MVP-3 [Step 1](#mvp-3-step-1-local-acceptance-2026-11-12), [Step 2](#mvp-3-step-2-acceptance-2026-11-12) and [Step 3](#mvp-3-step-3-acceptance-2026-11-12):
+  ranged reads and bounded search, exact `edit_file`, reviewable write approvals and tool details, preserved filesystem security metadata through the native
+  adapter, the seven-tool default grant and configurable startup modes.
+- [x] The [2026-11-12 SonarCloud follow-up](#mvp-3-sonarcloud-follow-up-2026-11-12) and the [2026-11-13 correction](#correction-final-development-source-acceptance-2026-11-13)
+  (ADR-0126's native write admission and recovery).
+- [x] The [ADR-0127 macOS write-metadata correction](#adr-0127-final-local-source-acceptance-2026-11-15) and the
+  [ADR-0128 content-free receipts](#adr-0128-implementation-checkpoint--2026-11-15).
+- [x] [MVP-3b](#mvp-3b--approval-card-v2-honest-modes-and-refusals-that-return-2026-11-16) (ADR-0129, ADR-0130, ADR-0131, ADR-0117),
+  [MVP-3c](#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16) (ADR-0119) and MVP-3d (`ask_user`, ADR-0132, ADR-0133, same section).
+- [x] The [2026-11-17 independent-review corrections](#pr-99-independent-review-corrections-2026-11-17) (every approval answer key is a Ctrl chord) and
+  [ADR-0134](#the-full-view-and-the-tool-details--adr-0134-2026-11-17) (the full view and the tool details as one inspection screen).
+- [x] The gate and CI speed-up ([deferred-tasks.md](../deferred-tasks.md)): `pnpm gate`, the required `ci` context split into a thin aggregate plus the `ci-work` job,
+  and the secrets causal controls in three shards. Its first real CI run was the final-head run below.
+- [x] The two SonarCloud findings that failed the PR's quality gate on `2ca08aec`, both in `tools/ci/local-gate.mjs` and fixed in `bb6f1671`:
+  S3403 (a type-inference false alarm on `result.code === 0`, now typed) and S4036 (a bare `git` resolved through a PATH that pnpm fronts with every `node_modules/.bin`;
+  `resolveGit` takes a `git` outside the repository).
+
+**Final-head evidence, and what it does not show.**
+
+- The final head `bb6f1671` ran twice, as the `pull_request` run `44222406356` and the `push` run `44222399222`. Each ran 29 jobs and **28 succeeded in each** —
+  including the required `lint · typecheck · test` aggregate, the Windows job, the native-metadata legs, the installed-CLI legs, the wire, usage, filesystem and
+  secrets causal controls and the packed-CLI and map controls. **The required `engine coverage floor (llm, mcp)` job did not complete in either:** GitHub stopped both
+  at its 45-minute limit (annotation "The job has exceeded the maximum execution time of 45m0s"; they started 02:54:03 and 02:58:01 and ended 45 minutes later). The log
+  shows tests still completing normally when it was stopped, so it was not a hang. The same job passed at `13a79431` (29 minutes in the `pull_request` run, 38 in the
+  `push` run) and its earlier runs took 26 to 38 minutes; after `13a79431` only seven `apps/cli/src/render/tui/tool-review-*` files changed in product code (the 36
+  Sonar fixes, which the full local gate verified: 917 files, 20,745 tests, 20,720 passed and 25 conditional skips, with the enforced coverage run). **No green
+  final-head coverage run exists.** The merge went ahead with that required check cancelled; this checkpoint does not turn that into a pass. The cause is an open
+  item in [deferred-tasks.md](../deferred-tasks.md).
+- SonarCloud's quality gate is OK on the PR head (all five conditions) and on `main` after the merge (no bugs, no vulnerabilities, no hotspots; 989 baseline code
+  smells, including the seven cognitive-complexity findings the maintainer left open).
+- The merge commit's own `push` run (`44232410834`) was still in progress when this was written, so this checkpoint records no result for it. Its first completed
+  failure is noted in deferred-tasks.md: one acceptance-tool test hit its 10-second limit (13.97 s) in a secrets-control shard's verify step, on a tree identical to the
+  one whose two earlier runs passed that step.
+
+**Still not claimed.** A manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) for `v`, `/details`, `p` and the answer chords (the ADR-0069 width
+assumption); a fifth review round on ADR-0134's last fixes (the maintainer chose the reviewers' own reproductions); the native adapter findings of the 2026-11-17 review,
+which are their own increment; and the seven open cognitive-complexity findings. The remaining low items are in [deferred-tasks.md](../deferred-tasks.md).
+
+This checkpoint closes MVP-3, MVP-3b, MVP-3c and MVP-3d's implementation, review, security and maintainer gates, except for the coverage evidence above. Pending-gate
+wording ("final-head CI, scanner or maintainer acceptance is owed") in the dated records above is historical and is superseded by this checkpoint.
+
+**MVP-4 is next** under [the existing execution order](../current.md#next-work--the-cli-mvp); [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)
+and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) are still Proposed and need the maintainer's acceptance before it starts.
+Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.
