@@ -320,8 +320,8 @@ the index child. Keep the previous index namespace protected as described below.
 Reuse that one captured boundary through lazy root creation and publication;
 protecting only payload identities does not protect the ownership evidence.
 
-Bound the inventory to 128 records (a scan tolerates eight more, see the
-allocation lock below), each at most 16 KiB, and a recovery pass to 128
+Bound the inventory to 128 records (a scan accepts every nonce count the entry
+bound holds, 384, see the allocation lock below), each at most 16 KiB, and a recovery pass to 128
 records/2 MiB of record data, eight immediate children per stage and no
 recursive descent. Check cancellation/yield and a two-second cooperative scan
 budget between OS operations, except the explicitly bounded cleanup completion
@@ -541,8 +541,10 @@ shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it, read the
 way libuv reads it); a reservation or recovery beyond that polls for a 100 ms
 grace (a cleanup, 500 ms) and is then refused with `changed`, and cancellation
 and the deadline are checked before the limit. Allocation refuses at 128 distinct nonces; both scans
-tolerate eight more, because a lockless pin can let an allocation overshoot, so
-that an operator recovery pass can still run and an overshoot is transient.
+accept up to 384 (the 385-name entry bound, lock file included, holds no more),
+because a lockless pin can let an allocation overshoot by the pins in flight
+during one listing, a number that cannot be bounded smaller, so that a recovery
+pass can still run and an overshoot is transient.
 The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling

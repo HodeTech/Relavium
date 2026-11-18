@@ -36,8 +36,9 @@ review corrections, separate security sittings and passing combined CI
 MVP-3, with MVP-3b, MVP-3c and MVP-3d, is complete and on `main` through PR #99 (`002dda58`, merged 2026-11-18):
 editing and search tools, reviewable file writes that keep their security metadata, the docked approval card and honest chat
 modes, an interrupted turn that stays as a marker, `ask_user`, Ctrl-chord approval answers and the full-view/details screen.
-The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its one gap: the required
-`coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head coverage run exists.
+The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its two CI observations: the required
+`coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head coverage run exists (the merge
+commit's identical tree passed it); and one acceptance-tool test timed out in the first attempt of the merge commit's push run, which a re-run cleared.
 MVP-4 is next, with ADR-0115 and ADR-0118 still to be accepted. CLAUDE.md carries the full summary.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and

@@ -39,7 +39,7 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). **MVP-4 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `002dda58`: the fourth `development`→`main` checkpoint, [PR #99](https://github.com/HodeTech/Relavium/pull/99), merged 2026-11-18 after MVP-3, MVP-3b, MVP-3c and MVP-3d. Its tree is identical to `development`'s head `bb6f1671`, which is one merge commit behind. The [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records closure and its one gap (the final head's `coverage` job hit its 45-minute limit); the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
+| Branches | `main` is at `002dda58`: the fourth `development`→`main` checkpoint, [PR #99](https://github.com/HodeTech/Relavium/pull/99), merged 2026-11-18 after MVP-3, MVP-3b, MVP-3c and MVP-3d. Its tree is identical to `development`'s head `bb6f1671`, which is one merge commit behind. The [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records closure and its two CI observations (the final head's `coverage` job hit its 45-minute limit; one acceptance-tool test timed out once in the merge commit's push run, which a re-run cleared); the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
 | Open CI observations | The required `coverage` job did not complete on PR #99's final head (stopped at its 45-minute limit in both runs; it took 26–38 minutes before), and one acceptance-tool test timed out once in a secrets-control shard on `main`'s merge run. Both are open items in [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); neither is classified as flaky without a measured rate |
 
 ### What a CLI user meets today
@@ -72,9 +72,10 @@ owns MVP-2's.
 
 **PR #99 merged (2026-11-18): MVP-3, MVP-3b, MVP-3c and MVP-3d are complete on `main`.** The
 [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records what the PR carried, its
-final-head evidence and its one gap: the required `coverage` job stopped at GitHub's 45-minute limit in both
-final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed, and SonarCloud's
-gate is OK on the PR and on `main`). The dated blocks below keep the wording they had when written; where they say
+final-head evidence and its two CI observations: the required `coverage` job stopped at GitHub's 45-minute limit in both
+final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed; the merge commit's identical
+tree passed `coverage` in 41 min 10 s); and one acceptance-tool test hit its 10-second limit in the first attempt of the merge
+commit's push run, which a re-run cleared. SonarCloud's gate is OK on the PR and on `main`. The dated blocks below keep the wording they had when written; where they say
 final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 is next**, and
 [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
 [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) must be accepted before it starts.
@@ -773,7 +774,7 @@ Finished work is recorded in its register; this page no longer restates it.
   merged 2026-11-11 in PR #98; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
   closes the four-step implementation and correction records. MVP-3, with MVP-3b, MVP-3c and MVP-3d, merged
   2026-11-18 in PR #99; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
-  closes the implementation, review, security and maintainer gates and records the one open CI gap.
+  closes the implementation, review, security and maintainer gates and records its two CI observations.
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and
   [phase 2.5](phases/phase-2.5-cli-consolidation.md).
 - **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):** the

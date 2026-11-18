@@ -341,7 +341,7 @@ future feature, deferral or claim of merge-commit execution.
 > guard, since `O_NOFOLLOW` is undefined there. The decision is unchanged: this restores the
 > identity the pins already claimed, and permanent causal controls substitute identities that
 > differ only beyond a Number's precision. ReFS's 64-bit file IDs are not guaranteed unique;
-> that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24).
+> that limit is recorded in [deferred-tasks.md](../roadmap/deferred-tasks.md#native-file-identity-on-windows--approved-increment-2026-10-24).
 > The [NI checkpoint](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#wave-3-ni-implementation-checkpoint--2026-10-25)
 > owns review and acceptance; this note claims neither.
 

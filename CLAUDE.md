@@ -67,9 +67,11 @@ session (MVP-3d, [ADR-0132](docs/decisions/0132-the-model-can-ask-the-user-a-str
 ([ADR-0128](docs/decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)); every approval answer key as a Ctrl chord
 (`Ctrl+Y`/`Ctrl+G`+Enter/`Ctrl+N`/`Ctrl+R`); and the approval card's full view (`[v]`) and `/details` rebuilt as one readable
 screen ([ADR-0134](docs/decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md)). The independent reviews and separate
-security sittings are recorded in the phase register. The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its one
-gap: the required `coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head
-coverage run exists (SonarCloud's gate is OK on the PR and on `main`). **MVP-4 is next**, with
+security sittings are recorded in the phase register. The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its two CI
+observations: the required `coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head
+coverage run exists (the merge commit's identical tree passed it in 41 min 10 s); and one acceptance-tool test hit its 10-second
+limit in the first attempt of the merge commit's push run, which a re-run (attempt 2, success) cleared. SonarCloud's gate is OK on
+the PR and on `main`. **MVP-4 is next**, with
 [ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
 [ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) still to be accepted. npm still
 serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).

@@ -177,7 +177,8 @@ records completed review and verification. MVP-3 is complete and merged to `main
 and search, exact edits, inspectable file writes that keep their security metadata, the docked approval card and honest chat
 modes, an interrupted turn that stays as a marker, and `ask_user` with its question and answer kept with the session. The
 [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records the review and
-verification and its one open CI item (the final head's coverage job hit its time limit). MVP-4
+verification and its two open CI observations (the final head's coverage job hit its time limit, and one acceptance-tool test
+timed out once in the merge commit's push run, which a re-run cleared). MVP-4
 (command permissions, the interrupt keymap and turn ceilings) follows; the
 published npm version remains `0.1.1`.
 

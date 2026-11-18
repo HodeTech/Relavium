@@ -40,8 +40,8 @@ carry a bracketed *[Moved 2026-11-18 …]* pointer. Prose elsewhere that says "r
 
 | File | Holds | Entries (`[ ]` / `[~]` / closed) |
 |------|-------|-----------------------------------|
-| **This file** | Decisions needed, the watch list, and the active sections: Phase 1/2 forward-obligations, the Phase 2.6.5 residuals other than the deferrals and `W3`, the PR #95 review, the older per-phase follow-ups, Sonar, carry-forward and the MVP-3 / PR #99 entries. | 177 / 9 / 0 |
-| [deferred-tasks-parked.md](deferred-tasks-parked.md) | Review-round ledgers (Wave 3 Steps 9a/9b, NI, PR #95 masker, PR #96, MVP-1, PR #97), the Phase 2.6.5 deferrals and `W3` residuals, the Windows file-identity limits, and the narrative entry on rename / move / delete for the default chat agent. | 10 / 270 / 22 |
+| **This file** | Decisions needed, the watch list, and the active sections: Phase 1/2 forward-obligations, the Phase 2.6.5 residuals other than the deferrals and `W3`, the PR #95 review, the older per-phase follow-ups, Sonar, carry-forward and the MVP-3 / PR #99 entries. | 177 / 10 / 0 |
+| [deferred-tasks-parked.md](deferred-tasks-parked.md) | Review-round ledgers (Wave 3 Steps 9a/9b, NI, PR #95 masker, PR #96, MVP-1, PR #97), the Phase 2.6.5 deferrals and `W3` residuals, the Windows file-identity limits, and the narrative entry on rename / move / delete for the default chat agent. | 9 / 270 / 24 |
 | [deferred-tasks-history.md](deferred-tasks-history.md) | Sections closed in full, and the closed entries of the active sections kept in the front door (the parked ledgers keep their own). | 0 / 0 / 66 |
 
 Counts are as of 2026-11-18; an entry that bundles several numbered points counts once, so the real number of points is higher.
@@ -66,7 +66,6 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
 | Open · filed in the parked file | --verbose never prints a real stack. | [Wave 3 Step 9a.1 — recorded low findings (2026-10-24)](deferred-tasks-parked.md#wave-3-step-9a1--recorded-low-findings-2026-10-24) |
 | Open · filed in the parked file | Two packs of one source can differ in the packed manifest's key order. | [Wave 3 Step 9a.2a — recorded low findings (2026-10-24)](deferred-tasks-parked.md#wave-3-step-9a2a--recorded-low-findings-2026-10-24) |
 | Open · filed in the parked file | Step 9d handoffs. | [Wave 3 Step 9b.2 — named limits and handoffs (2026-10-25)](deferred-tasks-parked.md#wave-3-step-9b2--named-limits-and-handoffs-2026-10-25) |
-| Open · filed in the parked file | An errored or aborted turn persists nothing, including one whose tools already ran. | [Phase 2.6.5 deferrals — CR-93 and CR-95 (long half), recorded…](deferred-tasks-parked.md#phase-265-deferrals--cr-93-and-cr-95-long-half-recorded-2026-09-06-cr-70-cr-94-remainder-and-the-in-turn-overflow-continuation-recorded-2026-09-14-the-errored-or-aborted-turn-residual-the-pre-upgrade-free-page-bytes-and-the-estimators-calibration-recorded-2026-09-18) |
 | Open · filed in the parked file | The durable-event bound has no engine-level test. | [Phase 2.6.5 W3 residuals (PR #86, merged 2026-08-30)](deferred-tasks-parked.md#phase-265-w3-residuals-pr-86-merged-2026-08-30) |
 | Open · filed in the parked file | Two reference-doc nits. | [Phase 2.6.5 W3 residuals (PR #86, merged 2026-08-30)](deferred-tasks-parked.md#phase-265-w3-residuals-pr-86-merged-2026-08-30) |
 
@@ -1232,6 +1231,11 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   but the two Mermaid graphs and the from-scratch wave/dependency tables describe the original plan node and
   were left unchanged (they are the plan, not a live tracker). Fold `gate list` in if those diagrams are ever
   regenerated. *(nit · docs/roadmap/phases/phase-2-cli.md)*
+- [~] **Offset/cursor pagination for the history read commands (cloud-scale only).** Split out on 2026-11-18 from the closed entry
+  [History-read query indexes](deferred-tasks-history.md#2i-read-command-follow-ups-pr-48-multi-agent-review-2026-06-24--closed-entries), which keeps only the index work
+  (migration 0005, `{ limit }` top-N on the Home reads). Still open: `listRuns` and `listSessions` take only `{ limit }` (no offset or cursor), and `relavium list` and
+  `loadLatestRunPerWorkflow` still return the full set. Genuinely unneeded at single-user CLI scale. **Trigger:** add a cursor API before the desktop or cloud surfaces drive these
+  reads at volume. *(low → scale · packages/db/src/run-history-store.ts, packages/db/src/session-store.ts; database-schema.md)*
 
 ## Phase 2.5.A (tool-environment factory) follow-ups
 
@@ -1580,6 +1584,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   (`packages/mcp`, `packages/core`, and the trigger schema all exist today) and simply has no home.
   *(medium · packages/mcp, packages/core, docs/reference/shared-core/mcp-integration.md; #141)*
 
+## Native file identity on Windows — approved increment (2026-10-24)
+
+*[Moved 2026-11-18: this section, with its scoped Windows file-identity limits, now sits in [deferred-tasks-parked.md](deferred-tasks-parked.md#native-file-identity-on-windows--approved-increment-2026-10-24). This heading stays here only so links written before the register split (for example [ADR-0105](../decisions/0105-filesystem-roots-are-invocation-grants-not-project-authority.md)) still reach it.]*
+
 ## Wave 3 approved later-wave ownership — 2026-10-16
 
 - [ ] **Scheduled → Wave 4b: production recipient key constraints.** Approved with the Wave 3
@@ -1766,13 +1774,13 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   process wait (the pool size read the way libuv reads `UV_THREADPOOL_SIZE`), a reservation beyond that polls for 100 ms and is then refused with `changed`, and cancellation is checked first; only contention is
   repeated; the per-record and marker claims stay single attempts (no wait cycle). The Rust scan **and the TypeScript inventory reader** skip an uncommitted `.reserved` or `.prepare` that vanishes before it is opened,
   **after** (the unlinked file reads link count zero and its identity differs, so it was `Unsupported`, not `Changed`) or whose `lstat` already reads link count zero; the Rust scan treats a held file at link count zero as gone even while the name still resolves (Linux lowers the count before the name leaves the directory cache; a name-only check failed 25 of 60 local arm64 gnu churn runs and the `aarch64-unknown-linux-gnu` leg of PR #100), otherwise the name must really be absent; the reader runs the
-  whole scan again (up to eight whole scans) for a committed `.record` that vanishes in any of those ways; a skipped entry still counts toward the nonce bound and both scans tolerate eight more nonces while `reserve` refuses at 128; N-2
+  whole scan again (up to eight whole scans) for a committed `.record` that vanishes in any of those ways; a skipped entry still counts toward the nonce bound and both scans accept every nonce count the directory-entry bound holds (384; a fixed slack of eight was an assumption) while `reserve` refuses at 128; N-2
   (`encode` shares `decode`'s validators; the locator in normalized form like the reader's `resolve(stage) === stage`), N-7 (a pin removes only the reservation it created) and N-3 (the contract bound is 384).
   *Measured* on the rebuilt addon (macOS, in-process writers; the same probes as before): two writers 60/60 clean (before 30/60 clean, 28 failed at stage and 2 wrote the target but ended uncertain), four 120/120,
   eight 240/240, two writers plus a recovery loop 60/60 with 2,288/2,288 recoveries, the churn probe 200/200 (before 98/200); no leftover entries; behind a claim held by another process `fs.stat`, `dns.lookup` and
   `crypto.randomBytes` took 0 ms with up to four writers, about 0.1 s with six and about 0.3 s with eight (about 0.1 s per caller beyond the limit, the price of the grace; 1.8 s and 3.8 s before the limit).
   *Proof kept in the repo:* 21 cross-platform and 9 POSIX-only Rust custody tests pinned in `tools/native-fs/profile-catalog.mjs` (Windows population 26 → 47, macOS 54 → 84, Linux 21 → 51; the darwin catalog equals
-  the binary's own list, 89 of 89), TypeScript inventory tests for each vanishing window, the slack, a replaced name and a denied lookup, `fs-native-concurrency.test.ts` (three concurrent writers through the real host
+  the binary's own list, 89 of 89), TypeScript inventory tests for each vanishing window, the entry-bound overshoot, a replaced name and a denied lookup, `fs-native-concurrency.test.ts` (three concurrent writers through the real host
   path, which fails with `NativeWriteNeedsAttentionError` when the claim is one nonblocking attempt again; skipped on Windows so that the required `windows-concurrency` job does not run an unverified platform), and the
   three probes in `tools/native-fs/concurrency-probes/` (writers, recovery under churn, worker-pool stall; run against the pre-change binary they show 21 stage failures and 9 uncertain outcomes in 60 writes and 48 of 100
   failed recovery passes); a 46-mutant Rust sweep killed 45 (the survivor is equivalent: the private-mode check of the file under the name is implied by the identity comparison with the already-checked reservation
@@ -1798,6 +1806,17 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   "its identity no longer matches" (it is the same inode, only the link count reads zero), `lstat` attributed to the Rust scan, the measurements not reproducible from the repo (the probes are kept now). One test failed once in
   12 parallel runs of one reviewer and passed in 117 further runs; hooks are per thread and the contending tests are serialised, so it was not reproduced (the older macOS tests do fsynced work without sharing the fixture lock
   the new tests could also take).
+  **PR #100 (2026-11-18, the first push run and an automated review; dispositions checked against the code).** The first Linux execution of the POSIX-only churn test failed the
+  `aarch64-unknown-linux-gnu` leg: `unlink` lowers a file's link count before the name leaves the directory cache, so the name-only proof of a vanished entry lied (25 of 60 runs in a local arm64 gnu container,
+  reproduced with the OrbStack image; fixed in the Rust scan by the held file's link count, and the TypeScript reader has the same rule now; the CI log keeps no panic text, which is why a local Linux run was needed).
+  Review findings, fixed: the fixed slack of eight past 128 nonces was an assumption (both scans now accept the 384 the entry bound holds, with tests that fill to that bound independently of the constant); an opened file
+  of a different identity stays fatal even when the name is then absent, and a committed record whose name belongs to a different file at link count zero is fatal instead of rerunning the scan; the pool-size parse
+  skipped Unicode spaces where `atoi` does not; a test built a `File` from an unopened descriptor; the probes (flags among numeric arguments, a churn handshake, a rejected publication counted as success, an unawaited
+  async call); the concurrency test waited with `Promise.all`; ADR-0126's amendment still said cleanups are never refused beyond the waiter limit; ADR-0135's wording of the cap and its Related field; docs (the merge
+  checkpoint's two CI observations, the CI provenance paragraph, the coverage prose, the moved register entries and one stale status). SonarCloud's gate failed on one condition, `new_security_rating` B, from
+  S4036 (`spawn('perl')` resolved through `PATH` in a probe; now `/usr/bin/perl`); its remaining new items are minor: `await` in loops (S9382) is the sequential protocol of the probes and is left, and
+  `inspectOpened`'s cognitive complexity (S3776, 21 of 15) now has its checks in two small pure functions (SonarCloud re-scores it on the next push; not claimed until then). *Left, with reasons:* none of the review findings was rejected outright; the reviewers' multi-process probe
+  and the Windows execution stay below.
   *Unproven or left open, recorded:* a multi-process probe kept in the repository (the reviewer's scripts were throwaway); Linux and Windows execution (only the eight-target CI shows it), including a Windows scan
   meeting a delete-pending entry, `LockFile` behaviour beyond the type check and the Windows e2e test; network homes that emulate `flock`; the cold-start race (twelve independent cold starts completed 72 of 72, which is
   evidence, not a proof); a reservation beyond the grace behind a holder in another process is still refused as before (a distinct "busy" result retried by the host without holding a thread stays an option);

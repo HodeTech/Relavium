@@ -612,7 +612,9 @@ names, unless the entry names another.
   1-second default.** *(low · packages/mcp)*
 - [~] **The case-insensitive custody tests run in no CI job.** *Medium as reviewed, low in practice.* Ubuntu skips
   them and no macOS or Windows job runs `custody.test.mjs`; the local `pnpm run ci` on macOS runs them. A CI lane
-  needs a macOS job inside `ci`'s success aggregation. *(low · tools/cli-package/custody.test.mjs:855, .github/workflows/ci.yml)*
+  needs a macOS job inside `ci`'s success aggregation. *Re-checked 2026-11-18, still open:* `ci.yml` gained one macOS job
+  (`macos-native-metadata`, advisory), but it runs only `fs-macos-metadata.test.ts`; no macOS or Windows job runs `custody.test.mjs`. *(low ·
+  tools/cli-package/custody.test.mjs:855, .github/workflows/ci.yml)*
 - [~] **CI no longer runs the real-GnuPG AEAD refusal.** *Low.* *(2026-11-05)* `ubuntu-latest` moved to ubuntu-26.04,
   whose GnuPG reports SEIPDv1 for the AEAD-advertising fixture, so the custody test now reads GnuPG's own status line
   and expects admission there. The real OCB refusal runs only where GnuPG picks OCB (the local `pnpm run ci` on
@@ -1542,9 +1544,12 @@ B2's missing-vertex fail-closed as one-line fixes; they were recorded below inst
   *(F3)* *(low · tools/cli-package/archive.mjs)*
 - [~] **The MCP-orphan guarantee is not tested on Windows.** *Low.* *(F6)* `check.mjs` uses `/bin/ps` and the e2e
   suite skips win32. *(low · tools/cli-smoke/check.mjs, apps/cli/src/harness/mcp-orphan.e2e.test.ts)*
-- [~] **The "required checks cannot be skipped" test pins 7 of the `ci` job's 29 steps.** *Low.* *(F7)* A
+- [x] **The "required checks cannot be skipped" test pins 7 of the `ci` job's 29 steps.** *Low; closed (2026-11-18).* *(F7)* A
   `continue-on-error` on Format check passes it; `f213d2a8`'s subject overstates it. **Re-check:** assert no
-  `continue-on-error` on any `ci` step, with the two known `if`/`shell` exceptions. *(low ·
+  `continue-on-error` on any `ci` step, with the two known `if`/`shell` exceptions. **Closed:** the `ci` job is now a thin
+  aggregate and its checks run in `ci-work`; `checkWorkspaceSteps` asserts that every `ci-work` step has no `continue-on-error` and no
+  `working-directory`, an `if` only on the diagnostics upload and a `shell` only on the replay fetch, and the case "a check tolerating
+  failure" (`continue-on-error` on `format:check`) must be refused. `node --test tools/ci/workspace-scheduling.test.mjs` passes (36 tests). *(low ·
   tools/ci/workspace-scheduling.test.mjs)*
 - [~] **A workflow input's `min` or `max` of `.inf` makes its run unresumable.** *Low; pre-existing.* *(F8)* JSON
   turns it into `null` in the snapshot, which the snapshot schema refuses. **Re-check:** `.finite()`, with a
@@ -1854,9 +1859,9 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
         allowance to the model it was quoted for, and expiring it, stay deferred behind that refusal.
       *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
 
-- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* **NARROWED
-      2026-11-16 by [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c, implemented,
-      acceptance pending): a turn the provider accepted that ends by the abort or a classified error is now persisted as the
+- [x] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium; closed 2026-11-18 (MVP-3c).* **NARROWED
+      2026-11-16 by [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c, implemented;
+      accepted and on `main` through PR #99, 2026-11-18): a turn the provider accepted that ends by the abort or a classified error is now persisted as the
       user's message, its structural pairs and one interruption row; what still persists nothing is listed in that ADR's
       implementation note and the session spec's *Not retained* list — read the paragraph below as the pre-ADR-0119
       record.** Recorded
@@ -1872,6 +1877,15 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
       **Pulled into the CLI MVP 2026-11-04 (D67) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
       content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment. **Moved 2026-11-16 out of MVP-4 into MVP-3c;** ADR-0119 Accepted, ADR-0095 amended.
+      **Closed 2026-11-18:** MVP-3c is complete and merged to `main` with [PR #99](https://github.com/HodeTech/Relavium/pull/99); the
+      [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records its review, security and maintainer gates as closed.
+      The cases ADR-0119 deliberately leaves unretained are the next entry.
+- [~] **Interruption cases ADR-0119 does not retain.** *Medium as first recorded in the closed entry above; not re-rated.* Split out on 2026-11-18. The
+      [spec's *Not retained* text](../reference/contracts/agent-session-spec.md#interrupted-turns--adr-0119) is canonical (session-ending cancellation, process death, an
+      unclassified throw, a refusal before the message was accepted, a turn in which no provider engaged, and the other cases it lists); there today's rollback
+      stays, and a tool that ran in such a turn is disclosed only by [ADR-0098](../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)'s effect row at the next resume.
+      **Trigger.** The first surface that needs to show, or resume from, what a failed turn did in one of these cases — a coding assistant replaying a half-finished edit,
+      or an audit view over a session's tool use. *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; ADR-0119, ADR-0098)*
 
 - [~] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
       upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a

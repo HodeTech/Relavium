@@ -601,6 +601,7 @@ future test cannot silently re-acquire it.
   `listRuns`/`listSessions`). **Still open (cloud-scale only):** offset/cursor **pagination** for the read
   *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
   single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
+  *[Moved 2026-11-18: the still-open pagination follow-up is no longer closed work. It is its own parked entry in the active register's [2.I read-command follow-ups](deferred-tasks.md#2i-read-command-follow-ups-pr-48-multi-agent-review-2026-06-24); this entry closes only the index work.]*
   *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
 - [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`; PR #69).** `agentSyntaxErrorFrom` (the
   agent sibling of parser.ts's `syntaxErrorFrom`) now threads `LineCounter` positions into a positioned

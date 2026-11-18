@@ -559,8 +559,10 @@ package-test producer, adds the product map controls and only then flips the rec
   validator. The mode is a claim, not evidence of the map checks. The `ci` workflow at a commit
   requires the controls, but a given artifact is backed only where a successful `ci` run exists at
   exactly its commit: `pack-cli` uploads its artifact whatever the same run's `map-controls` job
-  concludes, a pull request's `ci` runs at its merge commit, not its head, and a release dispatch with
-  `allow_off_main` or of an intermediate commit has no `ci` run at all; a local dirty production writes
+  concludes; `ci` runs on pushes to `main` and `development` and by manual dispatch (it has no
+  `pull_request` trigger), so the run to verify is the push or dispatch run whose commit is the
+  artifact's; and a release dispatch with `allow_off_main` or of an intermediate commit has no `ci`
+  run at all; a local dirty production writes
   `package_test` too. Steps 9c and 9d must therefore never read the mode as proof. `release.yml` runs
   no map controls of its own and its pack job keeps its `pnpm` dependency cache (public registry
   packages only) until Step 9d rebuilds that graph, and the interim guard refuses every

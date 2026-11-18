@@ -161,10 +161,13 @@ journeys, not exhaustive logic — exhaustive logic belongs in engine unit tests
     Stating this here rather than only in `ci.yml` is the point: the standard previously claimed an
     enforcement the pipeline did not perform.
   - **What the enforced run executes:** only the `packages/` tests (`pnpm coverage:enforced` passes
-    `--dir packages`). `apps/**` is outside the coverage denominator, so its tests add nothing to any
-    enforced figure; they run uninstrumented in the workspace tests. Measured 2026-11-18: the 407 package
-    files gave the same line and branch figures for `llm`, `mcp`, `core` and `db` as the full 917-file run of
-    the same tree (to two decimals), in 4 min 44 s instead of 29 to 45+ minutes. Re-measure before widening it.
+    `--dir packages`), so `apps/**` tests do not run in the coverage job at all; they run uninstrumented in
+    the workspace tests. `coverage.exclude` removes `apps/**` *source files* from the report, but it does not
+    stop an app test that imports `@relavium/llm` or `@relavium/mcp` from covering lines of those packages,
+    so the exclude alone does not show that dropping the app tests leaves the package figures unchanged. They
+    were unchanged for this tree because they were measured: on 2026-11-18 the 407 package files gave the
+    same line and branch figures for `llm`, `mcp`, `core` and `db` as the full 917-file run of the same tree
+    (to two decimals), in 4 min 44 s instead of 29 to 45+ minutes. Re-measure before widening it.
 - Every bug fix lands with a regression test that fails before the fix.
 - Surfaces (`apps/*`, `packages/ui`): smoke + critical-journey coverage; deep logic is
   pushed down into the engine and tested there.

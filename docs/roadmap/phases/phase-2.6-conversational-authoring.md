@@ -5867,6 +5867,9 @@ What the PR carried, each with its own record:
 - The merge commit's own `push` run (`44232410834`) was still in progress when this was written, so this checkpoint records no result for it. Its first completed
   failure is noted in deferred-tasks.md: one acceptance-tool test hit its 10-second limit (13.97 s) in a secrets-control shard's verify step, on a tree identical to the
   one whose two earlier runs passed that step.
+  **Update (2026-11-18, later):** run `44232410834` is complete. Attempt 1 failed (the secrets shard 1 test timeout above, then the `ci` aggregate), and its `engine coverage floor
+  (llm, mcp)` job passed in 41 min 10 s on the tree identical to `bb6f1671`'s; attempt 2 re-ran the failed shard and the aggregate and concluded `success`. This does not
+  create a green coverage run on the final head `bb6f1671` itself, and the test timeout stays an open low item in deferred-tasks.md.
 
 **Still not claimed.** A manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) for `v`, `/details`, `p` and the answer chords (the ADR-0069 width
 assumption); a fifth review round on ADR-0134's last fixes (the maintainer chose the reviewers' own reproductions); the native adapter findings of the 2026-11-17 review,
@@ -5927,7 +5930,7 @@ prompt, cognitive complexity, the `coverage` job, the CI decisions) are in [defe
 | # | Question | Recommendation | Gates |
 |---|---|---|---|
 | K1 | Does Esc at a card reject first, as Ctrl-C will? (D68 decided only Ctrl-C) | Yes: one path, the call is recorded as rejected | ADR-0115 §2, keymap |
-| K2 (D4) | Esc inside the card's text boxes (reason, full-view search, the `ask_user` own answer) | Keep today's behaviour (stops the turn) and say so in the hint; "Esc leaves the box" is a small separate increment that rewrites ADR-0129 note 8, ADR-0132 §3 and [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) §5 | keymap |
+| K2 (D4) | Esc inside the card's text boxes (reason, full-view search, the `ask_user` own answer) | Keep today's behaviour (stops the turn) and say so in the hint; "Esc leaves the box" is a small separate increment. The accepted ADR-0129 (note 8), ADR-0132 (§3) and [ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) (§5) are not rewritten: each gets a dated amendment note appended, and wherever the change reverses a decision (ADR-0132 records "Esc stops the turn everywhere" as a maintainer ruling) the increment writes a superseding ADR instead | keymap |
 | K3 | Command-card Session and Remember answers | MVP-4 ships Once / Session (exact argv) / Deny; Remember arrives with the in-app revoke surface, the keychain HMAC and its own chord (`Ctrl+K` is only a candidate; a clash in VS Code or tmux was not checked) | card |
 | K4 | Does the first Ctrl-C at a card also start the exit window? | Yes (one rule), with a "refines ADR-0132 §3" note | ADR-0115 |
 | K7 | ADR-0118's `ask` column | Follows ADR-0130: a pre-approved command is a plain approval card, a session-approved one runs | ADR-0118 |

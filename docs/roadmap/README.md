@@ -26,8 +26,10 @@ critical path, and the cross-phase invariants that hold across every phase.
   findings: the decisions needed, a watch list of the highest-severity entries, and the
   open entries. Its two companions are
   [deferred-tasks-parked.md](deferred-tasks-parked.md) (review-round ledgers whose entries
-  wait for a trigger) and [deferred-tasks-history.md](deferred-tasks-history.md) (the closed
-  record). Read its "How to read the register" section for the `[ ]` / `[~]` / `[x]` markers.
+  mostly wait for a trigger; a few have an owner or a deadline instead) and
+  [deferred-tasks-history.md](deferred-tasks-history.md) (the closed record). Read its
+  "How to read the register" section for the `[ ]` / `[~]` / `[x]` markers; each entry's
+  marker, not the file it sits in, is authoritative for its status and timing.
 
 ## How this roadmap is organized
 
