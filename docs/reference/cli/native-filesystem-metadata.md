@@ -1262,7 +1262,13 @@ the complete producer, recovery, Node ABI or CLI artifact.
 
 - Preserve uid/gid, ordinary mode bits, kernel POSIX access ACL bytes,
   `security.selinux` and opaque `user.*` attributes. Parent policy also captures
-  the kernel default ACL and setgid/group state. Special/privilege-bearing
+  the kernel default ACL and setgid/group state. The parent snapshot proves its
+  policy stable by reading it twice and comparing the values, never by comparing
+  the directory's ctime: that also moves whenever an entry is created, renamed
+  or removed in the directory, so another writer publishing into the same
+  directory would fail the snapshot (a concurrency defect found on the first
+  Linux run of the concurrent-writers test, [ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)).
+  Special/privilege-bearing
   regular-file mode bits and all other observed attribute namespaces refuse.
   `security.capability`, `security.ima` and `security.evm` are explicit refusal
   cases. Inaccessible privileged attributes are not claimed absent.

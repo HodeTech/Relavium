@@ -75,6 +75,7 @@ const LINUX = [
   'linux_new_file_racer_is_never_clobbered',
   'linux_actual_nontruncating_access_denial_preserves_source',
   'linux_stage_alias_and_privilege_bits_refuse_without_publication',
+  'linux_parent_snapshot_survives_entries_churning_in_the_parent',
 ].map((name) => `linux::tests::${name}`);
 // Diagnostic measurement only; this case does not certify a publication primitive.
 export const WINDOWS_RENAME_PROBE_CASE = 'aaa_windows_rename_parameter_probe';

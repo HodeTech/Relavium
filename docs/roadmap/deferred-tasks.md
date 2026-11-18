@@ -1817,6 +1817,12 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   S4036 (`spawn('perl')` resolved through `PATH` in a probe; now `/usr/bin/perl`); its remaining new items are minor: `await` in loops (S9382) is the sequential protocol of the probes and is left, and
   `inspectOpened`'s cognitive complexity (S3776, 21 of 15) now has its checks in two small pure functions (SonarCloud re-scores it on the next push; not claimed until then). *Left, with reasons:* none of the review findings was rejected outright; the reviewers' multi-process probe
   and the Windows execution stay below.
+  **PR #100, second push run (2026-11-18, found by the CI run, not by review).** The concurrent-writers end-to-end test failed once on Linux at *prepare*, not at the allocation claim: the Linux
+  parent snapshot compared the destination directory's ctime across its policy reads, and a directory's ctime also moves when another writer creates, renames or removes an entry in it, so writers
+  publishing into the same directory made snapshots fail (about 1 write in 120 with four writers on the arm64 gnu container, `prepare:changed:not_needed`; nearly every snapshot under a tight
+  churn). macOS and Windows have their own snapshots and never compared it. It is a defect independent of ADR-0135's claim, in the supported mode of several processes writing in one project
+  directory; the snapshot now reads the policy twice and compares the values (a change of mode, owner, flags, ACL or attributes still differs), with a Linux test that fails under the old check
+  (100 of 100 pass, 20 of 20 fail with it restored) and 8 writers x 40 writes completing 320 of 320 on the container. Windows and the other Linux targets are covered only by the eight-target CI. **Owed:** a separate security sitting on this change (it touches the filesystem-write path; D64), not held yet.
   *Unproven or left open, recorded:* a multi-process probe kept in the repository (the reviewer's scripts were throwaway); Linux and Windows execution (only the eight-target CI shows it), including a Windows scan
   meeting a delete-pending entry, `LockFile` behaviour beyond the type check and the Windows e2e test; network homes that emulate `flock`; the cold-start race (twelve independent cold starts completed 72 of 72, which is
   evidence, not a proof); a reservation beyond the grace behind a holder in another process is still refused as before (a distinct "busy" result retried by the host without holding a thread stays an option);

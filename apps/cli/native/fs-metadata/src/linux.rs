@@ -801,10 +801,13 @@ impl Profile for LinuxProfile {
             return Err(NativeFailure::Unsupported);
         }
         let after = metadata(parent)?;
+        // The policy is read again and compared, not the directory's ctime: a directory's ctime also moves
+        // whenever an entry is created, renamed or removed in it, so another writer publishing into the same
+        // directory made almost every snapshot fail under a tight churn (the concurrent-writers test, on its
+        // first Linux run). A change of mode, owner, flags, ACL or attributes in between still differs.
         if info.dev() != after.dev()
             || info.ino() != after.ino()
-            || info.ctime() != after.ctime()
-            || info.ctime_nsec() != after.ctime_nsec()
+            || policy != self::policy(parent, true)?
         {
             return Err(NativeFailure::Changed);
         }
@@ -1329,6 +1332,38 @@ mod tests {
             std::fs::read(fixture.0.join("source")).expect("unchanged bytes"),
             b"old\n"
         );
+    }
+
+    // Entries created and removed in the parent (another writer publishing into the same directory) move the
+    // directory's ctime without changing its policy; a snapshot that compared ctime failed on nearly every
+    // attempt under this churn.
+    #[test]
+    fn linux_parent_snapshot_survives_entries_churning_in_the_parent() {
+        let fixture = Fixture::new();
+        let parent = LinuxProfile::open_parent(&fixture.0).expect("parent");
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut failure = None;
+        std::thread::scope(|scope| {
+            let churn = scope.spawn(|| {
+                let mut counter = 0_u64;
+                while !stop.load(Ordering::Acquire) {
+                    counter += 1;
+                    let path = fixture.0.join(format!("churn-{counter}"));
+                    std::fs::write(&path, b"x").expect("churn create");
+                    std::fs::remove_file(&path).expect("churn remove");
+                }
+                counter
+            });
+            for round in 0..300 {
+                if let Err(error) = LinuxProfile::capture_parent(&parent, None) {
+                    failure = Some(format!("snapshot {round}: {error:?}"));
+                    break;
+                }
+            }
+            stop.store(true, Ordering::Release);
+            assert!(churn.join().expect("churn thread") > 0);
+        });
+        assert_eq!(failure, None, "a snapshot failed while entries churned");
     }
 
     #[test]
