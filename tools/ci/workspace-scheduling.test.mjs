@@ -54,6 +54,25 @@ test('actual enforced coverage entry runs the package cases in one file worker a
   }
 });
 
+test('CI runs once per commit: push on main and development plus a manual dispatch, never pull_request', () => {
+  const require = createRequire(new URL('apps/cli/package.json', root));
+  const { parse } = require('yaml');
+  const workflow = parse(readFileSync(new URL('.github/workflows/ci.yml', root), 'utf8'));
+  // `on` stays a string key here: the `yaml` package parses YAML 1.2, where `on` is not a boolean.
+  // A `pull_request` trigger next to `push` ran the whole pipeline twice for every commit on a branch with
+  // an open PR; a development -> main PR is satisfied by the push run on its head commit instead.
+  assert.deepEqual(Object.keys(workflow.on).sort(), ['push', 'workflow_dispatch']);
+  assert.deepEqual(workflow.on.push, { branches: ['main', 'development'] });
+  assert.equal(
+    workflow.concurrency.group,
+    'ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref_name }}',
+  );
+  assert.equal(
+    workflow.concurrency['cancel-in-progress'],
+    "${{ github.ref != 'refs/heads/main' }}",
+  );
+});
+
 for (const [lintCode, testCode, expectedCode, calls] of [
   [0, 0, 0, ['lint typecheck', 'test --concurrency=1']],
   [31, 0, 31, ['lint typecheck']],

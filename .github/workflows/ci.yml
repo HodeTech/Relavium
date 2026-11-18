@@ -1,4 +1,5 @@
-# Relavium CI — the green gate every push and PR must pass (Phase 0 · 0.G).
+# Relavium CI — the green gate every push to `main` and `development` must pass, and the one a
+# development -> main pull request is judged by (Phase 0 · 0.G).
 #
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
@@ -35,19 +36,24 @@
 name: CI
 
 on:
+  # One run per commit. A development -> main pull request is satisfied by the `push` run on its head
+  # commit: required status checks attach to the head SHA by name, whichever event produced them. So
+  # `pull_request` is deliberately NOT a trigger; with it, every commit on a branch with an open PR ran the
+  # whole pipeline twice (about 190-310 job-minutes extra, and twice the runner requests GitHub queues or
+  # cancels at capacity). Consequence, accepted by the maintainer (2026-11-18): a PR from a fork, or from a
+  # branch other than `main`/`development`, gets no automatic CI — start it with `workflow_dispatch` on that
+  # branch. `tools/ci/workspace-scheduling.test.mjs` pins this trigger set so the duplicate cannot return silently.
   push:
     branches: [main, development]
-  pull_request:
+  workflow_dispatch:
 
 # Cancel superseded runs so CI tracks the latest push — but never cancel a run on `main` (its
-# history is the merge record and must complete). The group key: a PR run is keyed by its PR
-# number (`github.event.number` — so two PRs open from the SAME head branch stay independent and
-# can't cancel each other), a push run by its short branch (`ref_name`, e.g. `development`).
-# `event_name` keeps a push and its same-SHA PR in separate groups (otherwise one run cancels the
-# other and a cancelled required check can block merge): `ci-CI-push-development` vs
-# `ci-CI-pull_request-10`.
+# history is the merge record and must complete). The group key is the short branch (`ref_name`, e.g.
+# `development`); `event_name` keeps a manual `workflow_dispatch` run on a branch from cancelling that
+# branch's push run and the other way round (a cancelled required check can block a merge):
+# `ci-CI-push-development` vs `ci-CI-workflow_dispatch-development`.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.number || github.ref_name }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
