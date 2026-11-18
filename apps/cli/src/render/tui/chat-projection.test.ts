@@ -14,6 +14,8 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  projectDenialExplanation,
+  denialReasonDisclosure,
   liveScrollGeometry,
   MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
@@ -34,6 +36,17 @@ import {
 } from './session-view-model.js';
 
 describe('chat-projection', () => {
+  it.each([20, 32, 78, 80])(
+    'preserves the complete denial privacy disclosure at %s columns',
+    (columns) => {
+      const lines = denialReasonDisclosure(columns);
+      expect(lines.join('').replace(/\s+/gu, ' ')).toBe(
+        'Your reason may appear in session and redirected output. This is not a private note.',
+      );
+      expect(lines.every((line) => line.length <= columns)).toBe(true);
+    },
+  );
+
   describe('formatTurnSummary', () => {
     it('renders the stop reason, the token counts, and the duration for a successful turn', () => {
       const line = formatTurnSummary({
@@ -154,6 +167,61 @@ describe('chat-projection', () => {
       expect(line).not.toContain('model/MCP-derived context'); // the raw message is NOT echoed (F4 constraint)
     });
 
+    it('names the tools whose calls failed, with counts, sanitized and bounded (ADR-0131 §3)', () => {
+      const ESC = String.fromCharCode(0x1b);
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        errorMessage: 'must not be shown',
+        failedTools: [
+          { toolId: 'read_file', count: 2 },
+          { toolId: 'search_files', count: 1 },
+          { toolId: `${ESC}]0;pwn\u0007${'x'.repeat(80)}`, count: 1 },
+        ],
+      });
+      expect(line).toContain('failed calls ended the turn: read_file \u00d72, search_files, ');
+      expect(line).not.toContain('must not be shown');
+      // eslint-disable-next-line no-control-regex -- asserting NO control byte survives the sanitizer
+      expect(/[\u0000-\u001f\u007f]/.test(line)).toBe(false);
+      expect(line).toContain("outside this session's workspace");
+      // A hostile tool name is cut to 40 code points, never echoed whole.
+      expect(line).not.toContain('x'.repeat(41));
+    });
+
+    it('falls back to the generic hint when no failed tool is known (a restored or legacy summary)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'error',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'tool_failed',
+        failedTools: [],
+      });
+      expect(line).toContain('a tool call failed (');
+      expect(line).not.toContain('failed calls ended the turn');
+    });
+
+    it('shows the time the system took and, separately, the time spent waiting for the person', () => {
+      const line = formatTurnSummary({
+        stopReason: 'stop',
+        tokensUsed: { input: 10, output: 20 },
+        durationMs: 298_000,
+        waitedMs: 236_000,
+      });
+      expect(line).toContain('1m02s'); // 298s − 236s of active time
+      expect(line).toContain('3m56s waiting for you');
+      expect(line).not.toContain('4m58s');
+    });
+
+    it('shows no wait part when the turn never waited', () => {
+      const line = formatTurnSummary({
+        stopReason: 'stop',
+        tokensUsed: { input: 10, output: 20 },
+        durationMs: 61_000,
+      });
+      expect(line).toContain('1m01s');
+      expect(line).not.toContain('waiting for you');
+    });
+
     it('terminal-sanitizes the rendered reason (strips ANSI/OSC/control bytes) and omits an empty reason', () => {
       const ESC = String.fromCharCode(0x1b);
       const BEL = String.fromCharCode(0x07);
@@ -269,7 +337,7 @@ describe('chat-projection', () => {
         '→ read_file …',
       );
       expect(formatToolCall({ id: 'tc-1', toolId: 'read_file', resolved: true })).toBe(
-        '→ read_file ✓',
+        '→ read_file ? outcome unknown',
       );
     });
 
@@ -292,6 +360,20 @@ describe('chat-projection', () => {
       liveTokens: '',
       liveTokensTruncated: false,
     } as const;
+
+    it('says the turn is waiting for the person — not "Working…" — while an approval card is open', () => {
+      const line = formatBusyLine({
+        ...base,
+        liveTokens: 'streamed text that must not hide the wait',
+        elapsedMs: 5_000,
+        awaitingApprovalMs: 83_000,
+      });
+      expect(line.dim).toBe(true);
+      expect(line.text).toBe('⠋ Waiting for your answer 1m23s · Esc stops the turn');
+      expect(line.text).not.toContain('Working');
+      // Without a card the pre-token status is unchanged.
+      expect(formatBusyLine({ ...base, elapsedMs: 5_000 }).text).toContain('Working… 5s');
+    });
 
     it('renders the compaction moment first (dim, ADR-0062 §7), winning over every other state', () => {
       const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });
@@ -736,7 +818,19 @@ describe('chat-projection', () => {
     });
   });
 
-  describe('sanitizeApprovalReason ([c] typed denial reason, Step 14)', () => {
+  describe('sanitizeApprovalReason ([Ctrl+R] typed denial reason, Step 14)', () => {
+    it('redacts the original diagnostic before the producer cap and existing JSON/error copies', () => {
+      const credential = `sk-${'A'.repeat(60)}`;
+      const reason = sanitizeApprovalReason(`${'x '.repeat(140)}${credential}`);
+      expect(reason).toContain('[REDACTED]');
+      expect(reason).not.toContain('sk-');
+      expect(
+        JSON.stringify({ error: { code: 'tool_denied', message: `tool denied: ${reason}` } }),
+      ).not.toContain(credential);
+      expect(sanitizeApprovalReason('x'.repeat(4097))).toBe(
+        'denial explanation omitted (too long)',
+      );
+    });
     it('returns undefined for an empty / whitespace-only reason (degrades to a plain reject)', () => {
       expect(sanitizeApprovalReason('')).toBeUndefined();
       expect(sanitizeApprovalReason('   \t  ')).toBeUndefined();
@@ -770,6 +864,46 @@ describe('chat-projection', () => {
       expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
       // No unpaired surrogate survived (each code unit is a full BMP code point).
       for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
+    });
+  });
+
+  describe('bounded mixed-origin denial diagnostics (ADR-0127)', () => {
+    it.each([
+      'filesystem metadata preparation refused; permissions or unsupported filesystem metadata may prevent this write',
+      'writes are not allowed in ask mode',
+      'tool denied by the user: use a different approach',
+      'refusing to write inside a protected directory',
+    ])('keeps the explanation and exact neutral hint for %s', (message) => {
+      expect(
+        formatTurnSummary({
+          stopReason: 'error',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: 'tool_denied',
+          errorMessage: message,
+        }),
+      ).toContain(message);
+      expect(errorRecoveryHint('tool_denied', message)).toBe(
+        "The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.",
+      );
+      expect(errorRecoveryHint('tool_denied', message)).not.toContain('/mode');
+    });
+
+    it('scrubs credentials and controls before display truncation and omits oversize messages', () => {
+      const credential = `sk-${'B'.repeat(60)}`;
+      const input = `${'x '.repeat(490)}api-key: ${credential}; after`;
+      const projected = projectDenialExplanation(input);
+      expect(projected).not.toContain('sk-');
+      expect(projected.length).toBeLessThanOrEqual(1024);
+      const controlled = projectDenialExplanation(
+        `\u001b]0;title\u0007no\u202e\nAuthorization: Bearer synthetic-credential`,
+      );
+      for (const forbidden of ['synthetic-credential', '\u001b', '\u0007', '\u202e'])
+        expect(controlled).not.toContain(forbidden);
+      expect(projectDenialExplanation(`${credential}${'x'.repeat(4097)}`)).toBe(
+        'denial explanation omitted (too long)',
+      );
+      const split = projectDenialExplanation(`${'x'.repeat(1022)}🙂tail`);
+      expect(split).toBe(`${'x'.repeat(1022)}…`);
     });
   });
 

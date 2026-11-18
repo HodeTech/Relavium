@@ -32,6 +32,36 @@ export function scrubSecrets(text: string): string {
   return toFixedPoint(scrubOnce, text, MASKED);
 }
 
+/** Original UTF-16 source coordinates, before replacement or display normalization. */
+export interface SecretMaskRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * A display may label/reveal original spans, but cannot recover their coordinates from replacement text.
+ * Reuse the diagnostic rule authority and conservatively mask the whole original when normalization,
+ * residual probes or a subsequent fixed-point pass cannot be represented by the first source ranges.
+ * This never weakens `scrubSecrets`; callers must retain their own additional diagnostic floors.
+ */
+export function secretMaskRanges(text: string): readonly SecretMaskRange[] {
+  const masked = scrubSecrets(text);
+  if (masked === text) return Object.freeze([]);
+  const ranges = SECRET_RULES.flatMap((rule) => ruleRanges(text, rule)).sort(
+    (left, right) => left.start - right.start || left.end - right.end,
+  );
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    const last = merged.at(-1);
+    if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ ...range });
+  }
+  const exact = maskRanges(text, merged) === masked;
+  return Object.freeze(
+    (exact ? merged : [{ start: 0, end: text.length }]).map((range) => Object.freeze(range)),
+  );
+}
+
 /** A range of the original diagnostic that one rule masks with `[REDACTED]`. */
 interface MaskRange {
   readonly start: number;

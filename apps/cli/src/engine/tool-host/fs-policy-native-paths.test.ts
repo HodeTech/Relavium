@@ -36,6 +36,7 @@ it('FS_CAUSAL_NATIVE_CANONICAL_ROOT preserves native file access when the legacy
   // native canonicalization and all subsequent filesystem operations untouched.
   vi.mocked(realpathSync).mockReturnValue(alias);
   const fs = createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'sandboxed',
     workspaceDir: alias,
     pathPolicy: createFsPathPolicy({ workspaceDir: alias }),

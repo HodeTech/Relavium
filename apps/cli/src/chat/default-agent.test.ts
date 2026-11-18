@@ -39,21 +39,40 @@ describe('inferProviderFromModel', () => {
 });
 
 describe('buildDefaultChatAgent', () => {
-  it('builds a valid default agent over a known model, with the read-only tool grant', () => {
+  it('builds a valid default agent over a known model, with the approved editing/search grant', () => {
     const agent = buildDefaultChatAgent(DEFAULT_CHAT_MODEL);
     expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
     expect(agent.provider).toBe('anthropic');
     expect(agent.model).toBe(DEFAULT_CHAT_MODEL);
     expect(agent.system_prompt.length).toBeGreaterThan(0);
     expect(agent.tools).toEqual([...DEFAULT_CHAT_TOOLS]);
-    // Secure-by-default: no write / exec / commit / egress tool in the default grant.
-    for (const dangerous of [
+    expect(agent.tools).toEqual([
+      'read_file',
+      'list_directory',
+      'git_status',
+      'search_files',
+      'find_files',
       'write_file',
+      'edit_file',
+      'ask_user',
+    ]);
+    expect(agent.system_prompt).toContain('same turn');
+    // ADR-0132: the prompt prefers the question tool only where it exists, and never promises it.
+    expect(agent.system_prompt).toContain('use the ask_user tool if it is available');
+    expect(agent.system_prompt).toContain(
+      'otherwise ask a brief clarifying question in plain text',
+    );
+    expect(agent.system_prompt).toContain('In ask mode each write needs the user');
+    expect(agent.system_prompt).toContain('plan mode is read-only');
+    // No command / commit / egress / ambient OS grant.
+    for (const dangerous of [
       'run_command',
       'git_commit',
       'http_request',
       'web_search',
       'mcp_call',
+      'read_clipboard',
+      'notify',
     ]) {
       expect(agent.tools).not.toContain(dangerous);
     }

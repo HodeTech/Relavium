@@ -85,6 +85,7 @@ const REPLACEMENT_REPEATS = { repeats: 20 };
 
 function capability(policy: FsPathPolicy, tier: FsScopeTier = 'project') {
   return createNodeFsCapability({
+    operatorHomeDir: base,
     tier,
     workspaceDir: workspace,
     readOnly: false,
@@ -103,6 +104,7 @@ describe('invocation authority and owned native identities', () => {
       undefined,
     );
     const fs = createNodeFsCapability({
+      operatorHomeDir: base,
       tier: 'project',
       workspaceDir: lexicalWorkspace,
       readOnly: false,
@@ -192,6 +194,7 @@ describe('invocation authority and owned native identities', () => {
       const roots = [grant];
       const input = {
         tier: 'project' as const,
+        operatorHomeDir: base,
         workspaceDir: workspace,
         readOnly: true,
         extraRoots: roots,
@@ -324,8 +327,13 @@ describe.each([
 
       const listing = await fs.listDirectory(anchor, { recursive: true });
       const names = listing.entries.map((entry) => entry.name);
-      for (const refused of [name, 'ordinary-link.txt', `aliases/${name}`])
-        expect(names).not.toContain(refused);
+      // An entry is hidden by its OWN path and name only. A link is listed from its own directory entry whatever it
+      // points at, so the listing never answers whether a credential store sits behind a link the model can plant;
+      // every read and write through that link is refused above.
+      for (const refused of [name, `aliases/${name}`]) expect(names).not.toContain(refused);
+      expect(listing.entries.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe(
+        'symlink',
+      );
       expect(names).toEqual(expect.arrayContaining(benign));
       expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(name);
       expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
@@ -387,19 +395,16 @@ describe.each([
       );
     }
     expect(observed.open).not.toHaveBeenCalled();
-    const names = (await fs.listDirectory(anchor, { recursive: true })).entries.map(
-      (entry) => entry.name,
-    );
-    for (const path of [
-      '.git/worktrees/linked/config.worktree',
-      'ordinary-link.txt',
-      '.git/config.worktree',
-    ])
+    const listed = (await fs.listDirectory(anchor, { recursive: true })).entries;
+    const names = listed.map((entry) => entry.name);
+    // Hidden by their own path only; a link is listed as a link and its target never decides (every read through it
+    // is refused above).
+    for (const path of ['.git/worktrees/linked/config.worktree', '.git/config.worktree'])
       expect(names).not.toContain(path);
     expect(names).toContain('config.worktree');
-    expect((await mention.list(anchor)).map((entry) => entry.name)).not.toContain(
-      'ordinary-link.txt',
-    );
+    expect(listed.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe('symlink');
+    const offered = await mention.list(anchor);
+    expect(offered.find((entry) => entry.name === 'ordinary-link.txt')?.type).toBe('file');
     expect((await fs.readFile(join(anchor, '**', '*'), { glob: true })).content).not.toContain(
       'synthetic-worktree-credential',
     );
@@ -431,6 +436,7 @@ describe('exact private host scratch descriptors (no production allocator)', () 
       const descriptor = issueHostScratchRoot({ homeDir: home, rootDir: scratch });
       for (const tier of ['sandboxed', 'project'] as const) {
         const fs = assembleToolEnv({
+          operatorHomeDir: home,
           profile: 'chat-read-write',
           fsScopeTier: tier,
           workspaceDir: workspace,
@@ -507,6 +513,8 @@ it.each(['workspace', 'grant', 'selector'] as const)(
       kind === 'workspace' ? '.relavium' : kind === 'grant' ? '.azure' : '.kube',
     );
     symlinkSync(grant, alias, 'junction');
+    const operatorHome = join(base, 'operator-home');
+    mkdirSync(operatorHome);
     const policy =
       kind === 'workspace'
         ? createFsPathPolicy({ workspaceDir: alias })
@@ -516,6 +524,7 @@ it.each(['workspace', 'grant', 'selector'] as const)(
             kind === 'selector' ? [alias] : undefined,
           );
     const fs = createNodeFsCapability({
+      operatorHomeDir: operatorHome,
       tier: 'project',
       workspaceDir: kind === 'workspace' ? grant : workspace,
       readOnly: false,
@@ -551,7 +560,12 @@ it(
 
 it('never repairs a failed construction by later creating the missing workspace', async () => {
   const missing = join(base, 'missing-workspace');
-  const fs = createNodeFsCapability({ tier: 'sandboxed', workspaceDir: missing, readOnly: false });
+  const fs = createNodeFsCapability({
+    operatorHomeDir: base,
+    tier: 'sandboxed',
+    workspaceDir: missing,
+    readOnly: false,
+  });
   mkdirSync(missing);
   writeFileSync(join(missing, 'a.txt'), 'later');
   await expect(fs.readFile('a.txt', {})).rejects.toThrow(/pinned identities/);
@@ -569,6 +583,7 @@ it.runIf(process.platform === 'win32')(
       undefined,
     );
     const fs = createNodeFsCapability({
+      operatorHomeDir: base,
       tier: 'project',
       workspaceDir: fsPolicyWorkspace(policy),
       pathPolicy: policy,

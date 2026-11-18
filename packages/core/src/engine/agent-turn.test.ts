@@ -20,6 +20,7 @@ import { ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
+  ToolDeniedByUserError,
   ToolDispatchError,
   ToolExecutionError,
   ToolPolicyError,
@@ -172,6 +173,84 @@ function baseParams(
   capturedEvents.set(params, events);
   return params;
 }
+
+describe('ephemeral read observations follow model round trips', () => {
+  it('promotes before a new response batch, never between sibling calls, and releases each fresh scope', async () => {
+    const tools = (ids: string[]): StreamChunk[] =>
+      ids.flatMap((id) => [
+        { type: 'tool_call_start', id, name: 'echo' },
+        { type: 'tool_call_end', id },
+      ]);
+    const oneTurn: StreamChunk[][] = [
+      [...tools(['a', 'b']), STOP('tool_use')],
+      [...tools(['c']), STOP('tool_use')],
+      [STOP()],
+    ];
+    const provider = scriptedProvider('anthropic', [...oneTurn, ...oneTurn]);
+    const inner = stubRegistry();
+    const order: string[] = [];
+    const promoted: object[] = [];
+    const released: object[] = [];
+    const registry: ToolRegistry = {
+      ...inner,
+      promoteReadScope: (scope) => {
+        promoted.push(scope);
+        order.push('promote');
+      },
+      releaseReadScope: (scope) => {
+        released.push(scope);
+        order.push('release');
+      },
+      dispatch: (call, ctx) => {
+        expect(ctx.readScope).toBe(promoted.at(-1));
+        order.push(call.id);
+        return inner.dispatch(call, ctx);
+      },
+    };
+    const params = baseParams(provider, { registry });
+    await runAgentTurn(params);
+    await runAgentTurn(params);
+    expect(order).toEqual([
+      'promote',
+      'a',
+      'b',
+      'promote',
+      'c',
+      'release',
+      'promote',
+      'a',
+      'b',
+      'promote',
+      'c',
+      'release',
+    ]);
+    expect(promoted[0]).toBe(promoted[1]);
+    expect(promoted[2]).toBe(promoted[3]);
+    expect(released).toEqual([promoted[0], promoted[2]]);
+    expect(released[0]).not.toBe(released[1]);
+    expect(params.dispatchContext.readScope).toBeUndefined();
+  });
+
+  it('releases a failed loop without replacing its canonical failure with a cache-cleanup error', async () => {
+    const released: object[] = [];
+    const inner = stubRegistry();
+    const outcome = await captureAgentTurnOutcome(
+      baseParams(scriptedProvider('anthropic', [[]]), {
+        registry: {
+          ...inner,
+          releaseReadScope: (scope) => {
+            released.push(scope);
+            throw new Error('external cache cleanup');
+          },
+        },
+      }),
+    );
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind === 'failed')
+      expect(String(outcome.error)).not.toContain('external cache cleanup');
+    expect(released).toHaveLength(1);
+  });
+});
 
 describe('a streamed tool-call continuation token reaches the assembled part (CR-52, ADR-0090)', () => {
   /** A scripted stream provider that RECORDS each request — the continuation is the thing under test. */
@@ -906,38 +985,34 @@ describe('runAgentTurn — tool loop', () => {
     expect(failResult).toBeDefined();
   });
 
-  it('combined budget: corrections accumulate across an interleaved genuine round and bound egress (tool_failed before turn_limit)', async () => {
-    // Pins the COMBINED tool-loop DoS bound: maxToolCorrections is a MONOTONIC sub-budget — a genuine
-    // (non-correctable) round between correctable ones neither resets nor counts toward it. With
-    // maxToolCorrections 2, the rounds correctable / genuine / correctable / correctable trip `tool_failed`
-    // on the 3rd correctable (at turn 4), well under maxToolTurns 16. Proves the two bounds are NOT
-    // multiplicative: the correction sub-budget ends the turn early; egress stays ≤ the turn count.
+  const okOutcome = (call: ToolCallPart): ToolDispatchOutcome => {
+    const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+    return {
+      output: 'OK',
+      mediaAttachments: markUntrusted([]),
+      toolResult: markUntrusted(result),
+      truncated: false,
+      events: {
+        call: { toolId: call.name, toolInput: {} },
+        result: { toolId: call.name, success: true, outputSummary: 'OK' },
+      },
+    };
+  };
+
+  it('combined budget: consecutive no-progress rounds end the turn early, far under maxToolTurns (ADR-0131)', async () => {
+    // maxToolCorrections counts CONSECUTIVE rounds in which nothing ran to a result. With a budget of 2, the
+    // third failing round in a row trips `tool_failed` at turn 3, well under maxToolTurns 16 — the two bounds
+    // are still not multiplicative: the sub-budget only ever shortens a turn.
     let dispatched = 0;
-    const registry = stubRegistry((call) => {
+    const registry = stubRegistry(() => {
       dispatched += 1;
-      if (dispatched === 2) {
-        // the one genuine round, interleaved between correctable ones
-        const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
-        return {
-          output: 'OK',
-          mediaAttachments: markUntrusted([]),
-          toolResult: markUntrusted(result),
-          truncated: false,
-          events: {
-            call: { toolId: call.name, toolInput: {} },
-            result: { toolId: call.name, success: true, outputSummary: 'OK' },
-          },
-        };
-      }
-      throw new UnknownToolError('echo', ['echo']); // calls 1, 3, 4 are model-correctable
+      throw new UnknownToolError('echo', ['echo']); // every call is model-correctable
     });
-    // A 5th turn is scripted but must never be reached (the budget trips on the 4th).
     const provider = scriptedProvider('anthropic', [
       toolUseTurn('c1'),
       toolUseTurn('c2'),
       toolUseTurn('c3'),
-      toolUseTurn('c4'),
-      toolUseTurn('c5'),
+      toolUseTurn('c4'), // scripted but must never be reached
     ]);
     const params = baseParams(provider, {
       registry,
@@ -947,11 +1022,64 @@ describe('runAgentTurn — tool loop', () => {
       code: 'tool_failed',
       retryable: false,
     });
-    expect(dispatched).toBe(4); // exactly 4 tool turns — the correction budget ended it far under maxToolTurns
-    // the interleaved genuine round actually ran (one successful tool_result between the corrections)
-    expect(
-      eventsOf(params).filter((e) => e.type === 'agent:tool_result' && e.success),
-    ).toHaveLength(1);
+    expect(dispatched).toBe(3);
+  });
+
+  it('a round that made progress resets the correction budget, so a long productive turn is not ended by unrelated slips (ADR-0131)', async () => {
+    // fail, fail, OK, fail, fail, then the final answer. With a budget of 2 the OLD monotonic count would have
+    // ended this at the 3rd failure (turn 4); the consecutive count never exceeds 2, so the turn completes.
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      if (dispatched === 3) return okOutcome(call);
+      throw new UnknownToolError('echo', ['echo']);
+    });
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('c1'),
+      toolUseTurn('c2'),
+      toolUseTurn('c3'),
+      toolUseTurn('c4'),
+      toolUseTurn('c5'),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      registry,
+      limits: { maxToolTurns: 16, maxToolCorrections: 2 },
+    });
+    const result = await runAgentTurn(params);
+    expect(result.text).toBe('done');
+    expect(dispatched).toBe(5);
+  });
+
+  it('a round with one success and one failure counts as progress (parallel calls)', async () => {
+    // Two calls in one response: one fails, one succeeds. That round made progress, so it never accumulates.
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      if (call.id.endsWith('b')) return okOutcome(call);
+      throw new UnknownToolError('echo', ['echo']);
+    });
+    const twoCalls = (n: number): StreamChunk[] => [
+      { type: 'tool_call_start', id: `c${n}a`, name: 'echo' },
+      { type: 'tool_call_end', id: `c${n}a` },
+      { type: 'tool_call_start', id: `c${n}b`, name: 'echo' },
+      { type: 'tool_call_end', id: `c${n}b` },
+      STOP('tool_use'),
+    ];
+    const provider = scriptedProvider('anthropic', [
+      twoCalls(1),
+      twoCalls(2),
+      twoCalls(3),
+      twoCalls(4),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      registry,
+      limits: { maxToolTurns: 16, maxToolCorrections: 1 },
+    });
+    const result = await runAgentTurn(params);
+    expect(result.text).toBe('done');
+    expect(dispatched).toBe(8);
   });
 
   it('maps a tool denial to a fatal tool_denied failure (no feedback loop)', async () => {
@@ -1126,6 +1254,163 @@ describe('runAgentTurn — tool loop', () => {
         }),
       ),
     ).rejects.toMatchObject({ code: 'tool_failed', retryable: true });
+  });
+
+  describe('a refusal a person (or the mode) decided returns to the model (ADR-0117)', () => {
+    const chatLimits = { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true };
+    const failedSummaries = (params: ReturnType<typeof baseParams>): string[] =>
+      eventsOf(params).flatMap((e) =>
+        e.type === 'agent:tool_result' && !e.success ? [e.outputSummary] : [],
+      );
+
+    it('feeds a user rejection back as the fixed user text plus their own words, and the turn continues', async () => {
+      const registry = stubRegistry(() => {
+        throw new ToolDeniedByUserError(
+          'echo',
+          'user_rejected',
+          'tool `echo` denied: use fixtures',
+          {
+            denialClass: 'user',
+            explanation: 'use the fixture instead',
+          },
+        );
+      });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('c1'),
+        [{ type: 'text_delta', text: 'ok, using the fixture' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        registry,
+        limits: chatLimits,
+        sessionToolCallId: (slot) => `session-tool:42:${String(slot)}`,
+      });
+      const result = await runAgentTurn(params);
+      expect(result.text).toBe('ok, using the fixture');
+      expect(result.toolHistory[0]?.result.outcome).toBe('denied');
+      const [text] = failedSummaries(params);
+      expect(text).toContain('The user declined this tool call');
+      expect(text).toContain('Nothing was run or changed');
+      expect(text).toContain('use the fixture instead');
+      // the free-form error message is NOT what the model is shown
+      expect(text).not.toContain('tool `echo` denied');
+    });
+
+    it('shows a mode refusal as the fixed mode text, naming the host label and nothing about the target', async () => {
+      const registry = stubRegistry(() => {
+        throw new ToolDeniedByUserError('echo', 'user_rejected', 'tool `echo` denied: plan mode', {
+          denialClass: 'mode',
+          explanation: 'plan mode is read-only',
+        });
+      });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('c1'),
+        [{ type: 'text_delta', text: 'here is the plan' }, STOP()],
+      ]);
+      const params = baseParams(provider, { registry, limits: chatLimits });
+      expect((await runAgentTurn(params)).text).toBe('here is the plan');
+      const [text] = failedSummaries(params);
+      expect(text).toContain('not available in the current mode (plan mode is read-only)');
+      expect(text).toContain('Nothing was run or changed');
+    });
+
+    it('shows a headless refusal as the fixed unavailable text', async () => {
+      const registry = stubRegistry(() => {
+        throw new ToolDeniedByUserError('echo', 'user_rejected', 'denied', {
+          denialClass: 'unavailable',
+        });
+      });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('c1'),
+        [{ type: 'text_delta', text: 'continuing without it' }, STOP()],
+      ]);
+      const params = baseParams(provider, { registry, limits: chatLimits });
+      await runAgentTurn(params);
+      expect(failedSummaries(params)[0]).toContain('No one is available to approve this action');
+    });
+
+    it('stays FATAL without recoverToolFailures (a workflow node fails fast on a denial)', async () => {
+      const registry = stubRegistry(() => {
+        throw new ToolDeniedByUserError('echo', 'user_rejected', 'tool `echo` denied by the user');
+      });
+      const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+      await expect(runAgentTurn(baseParams(provider, { registry }))).rejects.toMatchObject({
+        code: 'tool_denied',
+      });
+    });
+
+    it.each(['no_approval_hook', 'approval_error'] as const)(
+      'keeps the wiring fault %s fatal even on the chat surface',
+      async (reason) => {
+        const registry = stubRegistry(() => {
+          throw new ToolDeniedByUserError('echo', reason, `tool \`echo\` ${reason}`);
+        });
+        const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+        await expect(
+          runAgentTurn(baseParams(provider, { registry, limits: chatLimits })),
+        ).rejects.toMatchObject({ code: 'tool_denied' });
+      },
+    );
+
+    it('refuses an identical repeat of a call the user declined, without dispatching it again', async () => {
+      let dispatched = 0;
+      const registry = stubRegistry(() => {
+        dispatched += 1;
+        throw new ToolDeniedByUserError('echo', 'user_rejected', 'denied', { denialClass: 'user' });
+      });
+      const sameCall = (id: string): StreamChunk[] => [
+        { type: 'tool_call_start', id, name: 'echo' },
+        { type: 'tool_call_delta', id, argsJsonDelta: '{"path":"a.txt","mode":"w"}' },
+        { type: 'tool_call_end', id },
+        STOP('tool_use'),
+      ];
+      const reordered = (id: string): StreamChunk[] => [
+        { type: 'tool_call_start', id, name: 'echo' },
+        { type: 'tool_call_delta', id, argsJsonDelta: '{"mode":"w","path":"a.txt"}' },
+        { type: 'tool_call_end', id },
+        STOP('tool_use'),
+      ];
+      const different = (id: string): StreamChunk[] => [
+        { type: 'tool_call_start', id, name: 'echo' },
+        { type: 'tool_call_delta', id, argsJsonDelta: '{"path":"b.txt","mode":"w"}' },
+        { type: 'tool_call_end', id },
+        STOP('tool_use'),
+      ];
+      const provider = scriptedProvider('anthropic', [
+        sameCall('c1'),
+        reordered('c2'), // same invocation, keys in another order → refused WITHOUT a dispatch
+        different('c3'), // a different invocation → dispatched (and declined) again
+        [{ type: 'text_delta', text: 'done' }, STOP()],
+      ]);
+      const params = baseParams(provider, {
+        registry,
+        limits: { ...chatLimits, maxToolCorrections: 5 },
+      });
+      expect((await runAgentTurn(params)).text).toBe('done');
+      expect(dispatched).toBe(2); // c1 and c3 only
+      const texts = failedSummaries(params);
+      expect(texts[1]).toContain('already declined an identical call');
+      expect(texts[0]).toContain('The user declined this tool call');
+    });
+
+    it('lets a model that keeps calling denied tools end the turn on the correction budget', async () => {
+      const registry = stubRegistry(() => {
+        throw new ToolDeniedByUserError('echo', 'user_rejected', 'denied', { denialClass: 'mode' });
+      });
+      const provider = scriptedProvider('anthropic', [
+        toolUseTurn('c1'),
+        toolUseTurn('c2'),
+        toolUseTurn('c3'),
+        toolUseTurn('c4'),
+      ]);
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            registry,
+            limits: { ...chatLimits, maxToolCorrections: 2 },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'tool_failed' });
+    });
   });
 
   it('recovers a RECOVERABLE SCOPE denial (media_scope_denied) when recoverToolFailures is set (Step 14)', async () => {

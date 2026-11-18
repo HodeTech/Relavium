@@ -2,6 +2,8 @@
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { BundleClosureError } from './closure.mjs';
+import { inspectNativeAssets, nativeSourceBinding } from '../native-fs/assets.mjs';
+import { NATIVE_DIST_DIRECTORY } from '../native-fs/catalog.mjs';
 
 /** POSIX modes are actual evidence only where the platform exposes them. */
 export const MODE_EVIDENCE = process.platform === 'win32' ? 'not-observable-windows' : 'posix';
@@ -14,7 +16,7 @@ export const MODE_EVIDENCE = process.platform === 'win32' ? 'not-observable-wind
  * @param {{privateFiles?: readonly string[]}} [options] dist-root files that may remain unpublished
  * @returns {Record<string, {contents: string, mode?: number, kind: string}>}
  */
-export function emittedInventory(packageDirectory, { privateFiles = [] } = {}) {
+export function emittedInventory(packageDirectory, { privateFiles = [], nativeBinding } = {}) {
   const files = {};
   const root = join(packageDirectory, 'dist');
   function visit(directory) {
@@ -24,7 +26,17 @@ export function emittedInventory(packageDirectory, { privateFiles = [] } = {}) {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       const key = relative(packageDirectory, path).split(sep).join('/');
-      if (entry.isDirectory()) visit(path);
+      if (key === NATIVE_DIST_DIRECTORY) {
+        const checked = inspectNativeAssets(path, {
+          binding: nativeBinding ?? nativeSourceBinding(join(packageDirectory, '../..')),
+        });
+        const info = lstatSync(join(path, 'loader.cjs'));
+        files[`${key}/loader.cjs`] = {
+          contents: checked.files.get('loader.cjs').toString('utf8'),
+          kind: 'file',
+          ...(MODE_EVIDENCE === 'posix' ? { mode: info.mode & 0o7777 } : {}),
+        };
+      } else if (entry.isDirectory()) visit(path);
       else if (entry.isSymbolicLink()) {
         // Never follow a link that could hide runtime chunks.
         throw new BundleClosureError('OUTPUT_KIND', 'dist contains a symbolic link');

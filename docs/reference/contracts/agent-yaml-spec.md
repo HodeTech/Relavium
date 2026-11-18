@@ -29,7 +29,7 @@ reasoning_effort: string    # optional: off | low | medium | high | max (ADR-006
 input_schema: object        # optional JSON Schema for the agent's expected input shape
 output_schema: object       # optional JSON Schema for the agent's produced output shape
 
-tools: string[]             # tool ids this agent may call (built-in, mcp, plugin)
+tools: string[]             # tool ids this agent may call (built-in, mcp, plugin). `ask_user` is offered only on an interactive chat surface; in a workflow node it is inert
 mcp_servers: McpServerRef[] # optional MCP servers this agent consumes
 memory:                     # optional conversational memory policy
   type: none | window | summary
@@ -79,13 +79,13 @@ does not delete or rewrite either. [ADR-0095](../../decisions/0095-what-an-agent
 |---|---|---|---|
 | omitted | The complete working transcript, with any standing summary as untrusted user-role data | `[chat].auto_compact` (absent means enabled) | `/compact` and `/trim` allowed |
 | `none` | Only the current user message, alongside the authored system prompt | Never | `/compact` and `/trim` refused with a policy reason |
-| `window` | Current user message plus the last `window_size` completed turns | Never | `/compact` refused; `/trim` allowed |
+| `window` | Current user message plus the last `window_size` turns (a retained interrupted turn takes one slot, ADR-0119) | Never | `/compact` refused; `/trim` allowed |
 | `summary` | The complete working transcript, with any standing summary as untrusted user-role data | Permitted even when `[chat].auto_compact = false` | `/compact` and `/trim` allowed |
 
 A completed turn with empty final text still occupies one window slot. The current pending message is
 explicitly tracked and is never counted as a completed turn. Legacy text with no proven terminal
-remains in the archive and ordinary working transcript; `window` selects only proven completed
-turns, excluding unproven legacy prefixes, gaps and tails. Under `none` or `window`, a restored
+remains in the archive and ordinary working transcript; `window` selects only proven turns (completed, or retained as interrupted),
+excluding unproven legacy prefixes, gaps and tails. Under `none` or `window`, a restored
 summary remains durable but is excluded from the request. After selection, adjacent user/assistant
 messages are folded with explicit in-band separators; the archive stays unfolded.
 

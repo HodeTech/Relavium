@@ -7,9 +7,17 @@ import { invocationFixture } from '../process/invocation.test-support.js';
 import { SessionWorkOwner } from './session-work-owner.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { catalogModel, DEFAULT_ATTEMPT_TIMEOUT_MS, prepareOutputCapPlan } from '@relavium/llm';
-import type { PreEgressInfo } from '@relavium/core';
+import type { PreEgressInfo, ToolLiveEvent } from '@relavium/core';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  mkdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +26,7 @@ import {
   BudgetPauseError,
   CommitmentDurabilityError,
   RunLoopInvariantError,
+  ToolUnavailableError,
 } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
@@ -32,6 +41,11 @@ import type { AbortSignalLike, Agent, AgentSessionRecord, SessionMessage } from 
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import {
+  createSessionOutputStore,
+  SessionOutputStoreError,
+  type SessionOutputStore,
+} from '../engine/tool-host/session-output-store.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 
@@ -39,11 +53,15 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { createChatModeControl } from '../commands/chat.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { createChatStore } from '../render/tui/chat-store.js';
+import { wrapTranscript } from '../render/tui/chat-projection.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
+import { ApprovalCache } from './chat-mode.js';
+import * as nativeMetadata from '../engine/tool-host/fs-native-metadata.js';
 import { isCliError } from '../process/errors.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
+  ABORTED_EFFECT_ATTENTION_NOTICE,
   buildChatSession as buildFreshSession,
   buildGovernorWiring,
   chatAttemptDeadline,
@@ -93,6 +111,7 @@ async function buildChatSession(opts: Parameters<typeof buildFreshSession>[0]) {
 }
 async function buildResumedChatSession(opts: Parameters<typeof buildRestoredSession>[0]) {
   const built = await buildRestoredSession(opts);
+  built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
   let key = 0;
   built.attachEffectTurnAllocator(() => ++key);
   let invocationOrdinal = 0;
@@ -159,6 +178,8 @@ function capturingResolver(scripts: StreamChunk[][]): {
 }
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,
@@ -205,6 +226,252 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
 }
 
 describe('buildChatSession', () => {
+  it('keeps the trusted operator home private while exposing it only on the host result', async () => {
+    const operatorHomeDir = '/private-operator-home-canary';
+    const built = await build({ operatorHomeDir, toolHost: {} });
+    expect(built.operatorHomeDir).toBe(operatorHomeDir);
+    expect(built.context).not.toHaveProperty('operatorHomeDir');
+    built.session.start();
+    await built.session.sendMessage('hello');
+    built.session.cancel();
+    expect(JSON.stringify(await built.recordedEvents)).not.toContain(operatorHomeDir);
+  });
+
+  it('spills a real tool result and reads its opaque reference through the next model round', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'relavium-output-loop-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-loop-workspace-'));
+    const text = 'observed-source-'.repeat(5_000);
+    writeFileSync(join(workspace, 'source.txt'), text);
+    let calls = 0;
+    let reference = '';
+    let readBack = '';
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CHAT_TEXT_CAPABILITY_FLAGS,
+      generate: () => {
+        throw new Error('stream only');
+      },
+      stream: (request) => {
+        const index = calls++;
+        const results = request.messages
+          .flatMap((message) => message.content)
+          .filter((part) => part.type === 'tool_result');
+        let chunks: StreamChunk[];
+        if (index === 0) chunks = callWithArgs('source', 'read_file', { path: 'source.txt' });
+        else if (index === 1) {
+          const result = results.at(-1)?.result;
+          if (typeof result !== 'string') throw new Error('expected a bounded source result');
+          reference = /full output at (output:\/\/[a-f0-9-]+\/[a-f0-9-]+)/.exec(result)?.[1] ?? '';
+          if (reference === '') throw new Error('missing scoped output reference');
+          chunks = callWithArgs('output', 'read_file', {
+            path: reference,
+            range: { unit: 'bytes', start: 0, end: 128 },
+          });
+        } else if (index === 2) {
+          const result = results.at(-1)?.result;
+          if (
+            typeof result !== 'object' ||
+            result === null ||
+            !('content' in result) ||
+            typeof result.content !== 'string'
+          )
+            throw new Error('expected a ranged spill read');
+          readBack = result.content;
+          chunks = textTurn('done');
+        } else throw new Error('unexpected extra model request');
+        return (async function* () {
+          await Promise.resolve();
+          for (const chunk of chunks) yield chunk;
+        })();
+      },
+    };
+    let built: Awaited<ReturnType<typeof build>> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    try {
+      built = await build({
+        cwd: workspace,
+        operatorHomeDir: home,
+        providers: { resolveProvider: () => provider, keyFor: () => 'test-key' },
+      });
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      const live: ToolLiveEvent[] = [];
+      const published: SessionStreamHandleEvent[] = [];
+      unsubscribe = built.handle.subscribe((event) => {
+        published.push(event);
+        store.apply(event);
+      });
+      applyChatMode(
+        makeChatModeEnv({
+          session: built.session,
+          tools: built.tools,
+          workspaceDir: workspace,
+          prompt: store.requestApproval,
+          onToolLiveEvent: (event) => {
+            live.push(event);
+            store.applyToolLiveEvent(event);
+          },
+        }),
+        'ask',
+      );
+      built.session.start();
+      await built.session.sendMessage('read the source and inspect its spilled output');
+      expect(calls).toBe(3);
+      expect(reference).toMatch(/^output:\/\//);
+      expect(readBack).toContain('observed-source-');
+      expect(Buffer.byteLength(readBack)).toBe(128);
+      const previews = live.filter((event) => event.phase === 'preview');
+      expect(previews).toHaveLength(2);
+      expect(previews[0]?.preview.target).toBe('source.txt');
+      expect(JSON.stringify(live)).not.toContain(reference);
+      const publicCalls = published.filter((event) => event.type === 'agent:tool_call');
+      expect(publicCalls).toHaveLength(2);
+      expect(publicCalls[0]?.toolInput).toEqual({ path: 'source.txt' });
+      expect(JSON.stringify(published)).not.toContain(reference);
+      store.flush();
+      const snapshot = store.getSnapshot();
+      expect(snapshot.toolDisplays.size).toBe(2);
+      expect(JSON.stringify([...snapshot.toolDisplays.values()])).not.toContain(reference);
+      const rows = wrapTranscript(snapshot.state.transcript, 80, false, snapshot.toolDisplays);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(JSON.stringify(rows)).not.toContain(reference);
+      expect(readdirSync(join(home, '.relavium', 'session-outputs-v1'))).toHaveLength(1);
+    } finally {
+      built?.session.cancel();
+      await built?.whenHostSafeToClose();
+      await built?.closeOutputStore?.();
+      if (built !== undefined) await built.recordedEvents;
+      unsubscribe?.();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('corrects a no-range spill read to a range without another artifact or quota charge', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'relavium-output-correction-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-correction-workspace-'));
+    writeFileSync(join(workspace, 'source.txt'), 'observed-source-'.repeat(5_000));
+    let calls = 0,
+      reference = '',
+      rangedContent = '';
+    let outputStore: SessionOutputStore | undefined;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CHAT_TEXT_CAPABILITY_FLAGS,
+      generate: () => {
+        throw new Error('stream only');
+      },
+      stream: (request) => {
+        const result = request.messages
+          .flatMap((message) => message.content)
+          .filter((part) => part.type === 'tool_result')
+          .at(-1)?.result;
+        let chunks: StreamChunk[];
+        switch (calls++) {
+          case 0:
+            chunks = callWithArgs('source', 'read_file', { path: 'source.txt' });
+            break;
+          case 1:
+            if (typeof result !== 'string') throw new Error('expected source spill');
+            reference =
+              /full output at (output:\/\/[a-f0-9-]+\/[a-f0-9-]+)/.exec(result)?.[1] ?? '';
+            if (reference === '') throw new Error('missing source reference');
+            chunks = callWithArgs('whole-output', 'read_file', { path: reference });
+            break;
+          case 2:
+            expect(JSON.stringify(result)).toContain('explicit line or byte range');
+            expect(JSON.stringify(result)).not.toContain(reference);
+            chunks = callWithArgs('ranged-output', 'read_file', {
+              path: reference,
+              range: { unit: 'bytes', start: 0, end: 128 },
+            });
+            break;
+          case 3:
+            if (
+              typeof result !== 'object' ||
+              result === null ||
+              !('content' in result) ||
+              typeof result.content !== 'string'
+            )
+              throw new Error('expected ranged output');
+            rangedContent = result.content;
+            chunks = textTurn('done');
+            break;
+          default:
+            throw new Error('unexpected model retry');
+        }
+        return (async function* () {
+          await Promise.resolve();
+          for (const chunk of chunks) yield chunk;
+        })();
+      },
+    };
+    let built: Awaited<ReturnType<typeof build>> | undefined;
+    try {
+      built = await build({
+        cwd: workspace,
+        operatorHomeDir: home,
+        providers: { resolveProvider: () => provider, keyFor: () => 'test-key' },
+        outputStoreFactory: async (homeDir) => {
+          outputStore = await createSessionOutputStore({ homeDir, limits: { files: 2 } });
+          return outputStore;
+        },
+      });
+      built.session.start();
+      await built.session.sendMessage('read source and inspect output');
+      expect(calls).toBe(4);
+      expect(Buffer.byteLength(rangedContent)).toBe(128);
+      const rootName = readdirSync(join(home, '.relavium', 'session-outputs-v1'))[0];
+      if (rootName === undefined || outputStore === undefined)
+        throw new Error('missing output instance');
+      const artifactCount = () =>
+        readdirSync(join(home, '.relavium', 'session-outputs-v1', rootName)).filter((name) =>
+          name.endsWith('.txt'),
+        ).length;
+      expect(artifactCount()).toBe(1);
+      await outputStore.spill('remaining quota', { maxBytes: 1, maxLines: 1 });
+      expect(artifactCount()).toBe(2);
+    } finally {
+      built?.session.cancel();
+      await built?.whenHostSafeToClose();
+      await built?.closeOutputStore?.();
+      if (built !== undefined)
+        expect(JSON.stringify(await built.recordedEvents)).not.toContain(reference);
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('reports uncertain output initialization without exposing its cause or masking it', async () => {
+    const report = vi.fn();
+    const failure = new SessionOutputStoreError('io', true);
+    await expect(
+      build({
+        operatorHomeDir: '/tmp',
+        onListenerError: report,
+        outputStoreFactory: () => Promise.reject(failure),
+      }),
+    ).rejects.toBe(failure);
+    expect(report).toHaveBeenCalledWith('Session output cleanup could not be confirmed.');
+  });
+
+  it('owns separate ephemeral output stores per native session instance', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'relavium-output-home-'));
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-output-workspace-'));
+    try {
+      const first = await build({ cwd: workspace, operatorHomeDir: home });
+      const second = await build({ cwd: workspace, operatorHomeDir: home });
+      const parent = join(home, '.relavium', 'session-outputs-v1');
+      expect(readdirSync(parent)).toHaveLength(2);
+      await first.closeOutputStore?.();
+      expect(readdirSync(parent)).toHaveLength(1);
+      await second.closeOutputStore?.();
+      expect(readdirSync(parent)).toHaveLength(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('delivers a long reply live without a primary buffer or implicit iterator', async () => {
     const chunks: StreamChunk[] = Array.from({ length: 600 }, () => ({
       type: 'text_delta',
@@ -625,6 +892,8 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     };
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeMcpAgent(), // grants read_file + declares the fs MCP server
       providers: scriptedResolver([
         callWithArgs('c1', 'read_file', { path: 'r.txt' }),
@@ -744,6 +1013,24 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
 });
 
 describe('buildResumedChatSession (2.N)', () => {
+  it('takes private operator home from current host options rather than retained context', async () => {
+    const operatorHomeDir = '/private-restored-home-canary';
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: record(),
+      messages: [],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('continued')]),
+      operatorHomeDir,
+      toolHost: {},
+    });
+    expect(built.operatorHomeDir).toBe(operatorHomeDir);
+    expect(built.context).not.toHaveProperty('operatorHomeDir');
+    await built.session.sendMessage('continue');
+    built.session.cancel();
+    expect(JSON.stringify(await built.recordedEvents)).not.toContain(operatorHomeDir);
+  });
+
   const RESUME_AGENT = buildDefaultChatAgent('claude-sonnet-4-6');
   const ISO = '2026-06-25T00:00:00.000Z';
 
@@ -781,6 +1068,24 @@ describe('buildResumedChatSession (2.N)', () => {
       consentGate: () => Promise.resolve(new Map()), // see `build` above (ADR-0084 §1)
     });
   }
+
+  it('reports uncertain output initialization during resume without masking it', async () => {
+    const report = vi.fn();
+    const failure = new SessionOutputStoreError('io', true);
+    await expect(
+      buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record(),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers: scriptedResolver([textTurn('continued')]),
+        operatorHomeDir: '/tmp',
+        onListenerError: report,
+        outputStoreFactory: () => Promise.reject(failure),
+      }),
+    ).rejects.toBe(failure);
+    expect(report).toHaveBeenCalledWith('Session output cleanup could not be confirmed.');
+  });
 
   it('resumes and reseats with live-only delivery beyond the default queue capacity', async () => {
     for (const reseat of [false, true]) {
@@ -821,6 +1126,28 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(built.resumeState.cumulativeCostMicrocents).toBe(1234); // carried from the record
     // The persister continues PAST the persisted MAX(sequence_number) = 1.
     expect(built.nextSequenceNumber).toBe(2);
+  });
+
+  it('ADR-0132: a resumed session gets both ask_user gates from the same option, and neither without it', async () => {
+    // The resumed builder has its own delegate site and its own grant-narrowing site; a regression in either would leave
+    // a resumed chat unable to ask (or asking where no one can answer) while a fresh one behaved.
+    for (const interactive of [true, false]) {
+      const { providers, requests } = capturingResolver([textTurn('continued')]);
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: record(),
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers,
+        toolHost: {},
+        consentGate: () => Promise.resolve(new Map()),
+        ...(interactive ? { askUser: () => Promise.resolve({ kind: 'skipped' as const }) } : {}),
+      });
+      await built.session.sendMessage('continue');
+      expect((requests[0]?.tools ?? []).some((tool) => tool.name === 'ask_user')).toBe(interactive);
+      built.session.cancel();
+      await built.recordedEvents;
+    }
   });
 
   it('forwards the same configured fallback into the resumed session and its governor', async () => {
@@ -1478,6 +1805,8 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     writeFileSync(join(workspace, 'note.txt'), 'the file body');
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       providers: scriptedResolver([
         callWithArgs('c1', 'read_file', { path: 'note.txt' }),
         textTurn('done'),
@@ -1530,25 +1859,41 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
-  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime', async () => {
+  it('createChatModeControl (the LIVE wiring) gates a governed dispatch under the default ask regime: a declined card writes nothing and the turn continues (ADR-0117)', async () => {
     // Prove the PRODUCTION seam — createChatModeControl(built, store) applies the initial ask mode via the real
-    // store.requestApproval prompt — denies a governed write end-to-end (not just the manual-env path above).
+    // store.requestApproval prompt. The write is gated on a published card; declining it writes nothing and the
+    // REFUSAL RETURNS to the model, so the turn goes on and completes (it used to end with `tool_denied`).
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeAgent(['write_file']),
       providers: scriptedResolver([
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+        textTurn('understood, I will not write it'),
       ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // applies ask → the fail-closed regime is now active
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    createChatModeControl(built, store); // applies ask → the fail-closed regime is now active
     built.session.start();
-    await built.session.sendMessage('write a file');
+    const turn = built.session.sendMessage('write a file');
+    await vi.waitFor(
+      () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+      { timeout: 5000 },
+    );
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false); // nothing lands while the card is open
+    store.answerApproval({ outcome: 'reject', reason: 'not now' });
+    await turn;
     built.session.cancel();
     const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.error : 'missing',
+    ).toBeUndefined();
+    const refused = events.find((e) => e.type === 'agent:tool_result' && !e.success);
+    expect(refused?.type === 'agent:tool_result' ? refused.outputSummary : '').toContain(
+      'The user declined this tool call',
     );
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
@@ -1602,30 +1947,44 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     );
   });
 
-  it('createChatModeControl ask: denies an OS-class dispatch too (read_clipboard) — the exfil sink is gated', async () => {
+  it('createChatModeControl plan: refuses an OS-class dispatch too (read_clipboard) — the exfil sink is gated, and the refusal returns to the model', async () => {
     // ADR-0057 §security review: read_clipboard reads ambient secret-bearing OS state, so it is a governed os
-    // action — denied in ask (never advertised, and the confirm floor rejects it if the model calls it anyway).
+    // action — refused in plan (never advertised, and the confirm floor refuses it if the model calls it anyway).
+    // ADR-0117: the refusal is a fixed mode text that returns to the model, so the turn continues.
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
       agentRef: writeAgent(['read_clipboard']),
-      providers: scriptedResolver([callWithArgs('c1', 'read_clipboard', {})]),
+      providers: scriptedResolver([
+        callWithArgs('c1', 'read_clipboard', {}),
+        textTurn('I cannot read the clipboard in plan mode'),
+      ]),
     });
-    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime active
+    const control = createChatModeControl(
+      built,
+      createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
+    );
+    control.onModeChange('plan'); // the read-only regime
     built.session.start();
     await built.session.sendMessage('read my clipboard');
     built.session.cancel();
     const events = await built.recordedEvents;
     const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
+    expect(
+      completed?.type === 'session:turn_completed' ? completed.error : 'missing',
+    ).toBeUndefined();
+    const refused = events.find((e) => e.type === 'agent:tool_result' && !e.success);
+    expect(refused?.type === 'agent:tool_result' ? refused.outputSummary : '').toContain(
+      'not available in the current mode (plan mode is read-only)',
     );
   });
 
-  it('createChatModeControl accept-edits: an APPROVE lets the governed write through the store prompt', async () => {
+  it('createChatModeControl ask: an APPROVE lets the governed write through the store prompt', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     const built = await build({
       cwd: workspace,
+      operatorHomeDir: workspace,
+      outputStoreFactory: () => Promise.resolve(undefined),
       agentRef: writeAgent(['write_file']),
       providers: scriptedResolver([
         callWithArgs('c1', 'write_file', { path: 'ok.txt', content: 'hi' }),
@@ -1634,14 +1993,14 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     });
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const control = createChatModeControl(built, store);
-    control.onModeChange('accept-edits'); // switch to accept-edits (prompts each governed write)
+    control.onModeChange('ask'); // the default: a card for each governed write
     built.session.start();
     const turn = built.session.sendMessage('write a file');
     // Drive the interactive prompt: wait for the published approval, then approve it.
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
+    await vi.waitFor(
+      () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+      { timeout: 5000 },
+    );
     store.answerApproval({ outcome: 'approve', scope: 'once' });
     await turn;
     built.session.cancel();
@@ -1659,68 +2018,74 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
-  it('createChatModeControl auto: a PROTECTED-path write FALLS BACK to a prompt (not auto-approved)', async () => {
-    // The most bespoke ADR-0057 branch, end-to-end (real registry + fs host + store): in auto mode a
-    // protected-path target must NOT auto-approve — it publishes a non-cacheable prompt. Rejecting it denies
-    // the write (the fs protected-paths floor would refuse it regardless — this proves the graceful fallback).
-    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
-    const built = await build({
-      cwd: workspace,
-      agentRef: writeAgent(['write_file']),
-      providers: scriptedResolver([
-        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
-      ]),
-    });
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store).onModeChange('auto');
-    built.session.start();
-    const turn = built.session.sendMessage('write a protected file');
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    // auto did NOT auto-approve the protected target — it published a prompt, marked non-cacheable.
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
-    expect(store.getSnapshot().approval?.cacheable).toBe(false);
-    store.answerApproval({ outcome: 'reject' });
-    await turn;
-    built.session.cancel();
-    await built.recordedEvents;
-    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false);
-  });
-
-  it('auto: even an APPROVED protected-path write STILL fails — the fs floor is the true, approval-INDEPENDENT floor', async () => {
-    // The complement of the reject test: prove the fs-layer protected-paths refusal (not the prompt) is the real
-    // floor. Answer the auto fallback prompt with APPROVE and assert the write is STILL denied + never lands —
-    // so a future refactor that coupled the two layers (letting an approval bypass the fs floor) fails here.
-    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
-    const built = await build({
-      cwd: workspace,
-      agentRef: writeAgent(['write_file']),
-      providers: scriptedResolver([
-        callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
-      ]),
-    });
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    createChatModeControl(built, store).onModeChange('auto');
-    built.session.start();
-    const turn = built.session.sendMessage('write a protected file');
-    for (let i = 0; i < 200 && store.getSnapshot().approval === undefined; i += 1) {
-      await new Promise((r) => setImmediate(r));
-    }
-    // The fallback prompt WAS published (non-cacheable) — so the approve below is genuinely consumed, not a
-    // no-op that would let the fs floor pass the test even if auto stopped prompting.
-    expect(store.getSnapshot().approval?.request.toolId).toBe('write_file');
-    expect(store.getSnapshot().approval?.cacheable).toBe(false);
-    store.answerApproval({ outcome: 'approve', scope: 'once' }); // APPROVE — the fs floor must refuse it anyway
-    await turn;
-    built.session.cancel();
-    const events = await built.recordedEvents;
-    const completed = events.find((e) => e.type === 'session:turn_completed');
-    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
-      'tool_denied',
-    );
-    expect(existsSync(join(workspace, '.git', 'config'))).toBe(false); // never written despite the approval
-  });
+  it.each([false, true])(
+    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure',
+    async (existing) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+      const protectedDir = join(workspace, '.git');
+      const target = join(protectedDir, 'config');
+      if (existing) {
+        // A real existing target must remain byte-for-byte intact too.
+        mkdirSync(protectedDir);
+        writeFileSync(target, 'existing-protected-content');
+      }
+      const remember = vi.spyOn(ApprovalCache.prototype, 'rememberAlways');
+      const native = vi.spyOn(nativeMetadata, 'loadNativeMetadataProtocol');
+      try {
+        const built = await build({
+          cwd: workspace,
+          operatorHomeDir: workspace,
+          outputStoreFactory: () => Promise.resolve(undefined),
+          agentRef: writeAgent(['write_file']),
+          providers: scriptedResolver([
+            callWithArgs('c1', 'write_file', {
+              path: '.git/config',
+              content: 'protected-write-payload-canary',
+            }),
+          ]),
+        });
+        let claims = 0;
+        built.attachEffectJournal((correlation) => {
+          const journal = createInMemoryEffectJournal(correlation);
+          return {
+            ...journal,
+            prepare: (...args) => {
+              claims += 1;
+              return journal.prepare(...args);
+            },
+          };
+        });
+        const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+        const prompt = vi.spyOn(store, 'requestApproval');
+        createChatModeControl(built, store).onModeChange('auto');
+        built.session.start();
+        await built.session.sendMessage('write a protected file');
+        built.session.cancel();
+        const events = await built.recordedEvents;
+        const completed = events.find((event) => event.type === 'session:turn_completed');
+        const failure = completed?.type === 'session:turn_completed' ? completed.error : undefined;
+        expect(failure?.code).toBe('tool_denied');
+        expect(failure?.retryable).toBe(false);
+        expect(failure?.message).toBe(
+          'write_file: refusing to write a protected directory, credential store or shell startup file',
+        );
+        expect(prompt).not.toHaveBeenCalled();
+        expect(store.getSnapshot().approval).toBeUndefined();
+        expect(events.some((event) => event.type === 'agent:approval_requested')).toBe(false);
+        expect(remember).not.toHaveBeenCalled();
+        expect(native).not.toHaveBeenCalled();
+        expect(claims).toBe(0);
+        expect(JSON.stringify(events)).not.toContain('protected-write-payload-canary');
+        expect(JSON.stringify(events)).not.toContain('existing-protected-content');
+        if (existing) expect(readFileSync(target, 'utf8')).toBe('existing-protected-content');
+        else expect(existsSync(protectedDir)).toBe(false);
+      } finally {
+        remember.mockRestore();
+        native.mockRestore();
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('the advertise-filter keeps http_request now that egress is wired (chat-read-write, 2.5.E)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
@@ -2501,5 +2866,292 @@ describe('the default model follows the stored key (MVP-A4)', () => {
     expect(asked).toEqual(['anthropic']); // the default-model choice asked; the pre-flight reused its answer
     built.session.cancel();
     await built.whenHostSafeToClose();
+  });
+});
+
+describe('ADR-0126 interrupted effect disclosure', () => {
+  async function effectFixture(
+    options: {
+      notice?: (note: string) => void;
+      holdExecute?: Promise<void>;
+      abortInExecute?: boolean;
+      settleFailure?: boolean;
+      holdSettle?: Promise<void>;
+      abortAfterCommit?: boolean;
+      unavailableInExecute?: boolean;
+      cancelInExecute?: boolean;
+      discardFailure?: boolean;
+      holdDiscard?: Promise<void>;
+    } = {},
+  ) {
+    const execute = vi.fn(async () => {
+      await options.holdExecute;
+      if (options.abortInExecute === true) built.session.abort();
+      if (options.cancelInExecute === true) built.session.cancel();
+      if (options.unavailableInExecute === true) throw new ToolUnavailableError('write_file', 'fs');
+      return { path: 'private-target', bytesWritten: 3 };
+    });
+    const notices: string[] = [];
+    const built = await build({
+      providers: scriptedResolver([
+        callWithArgs('write', 'write_file', { path: 'private-target', content: 'new' }),
+        textTurn('done'),
+      ]),
+      toolHost: {
+        fs: {
+          readFile: () =>
+            Promise.resolve({
+              content: '',
+              mimeType: 'text/plain',
+              sizeBytes: 0,
+              lastModified: '',
+            }),
+          listDirectory: () => Promise.resolve({ entries: [] }),
+          writeFile: () => Promise.reject(new Error('blind write must not run')),
+          prepareWrite: () =>
+            Promise.resolve({
+              path: 'private-target',
+              before: 'old',
+              after: 'new',
+              release: () => {},
+              execute,
+            }),
+        },
+      },
+      onEffectAttention: options.notice ?? ((note) => notices.push(note)),
+    });
+    const journals: ReturnType<typeof createInMemoryEffectJournal>[] = [];
+    const settle = vi.fn();
+    built.attachEffectJournal((correlation) => {
+      const journal = createInMemoryEffectJournal(correlation);
+      journals.push(journal);
+      return {
+        ...journal,
+        discard: async (...args) => {
+          await options.holdDiscard;
+          if (options.discardFailure === true) throw new Error('private-discard-failure');
+          await journal.discard(...args);
+        },
+        settle: async (...args) => {
+          settle(...args);
+          await options.holdSettle;
+          if (options.settleFailure === true) throw new Error('private-journal-path');
+          await journal.settle(...args);
+          if (options.abortAfterCommit === true) built.session.abort();
+        },
+      };
+    });
+    built.session.start();
+    return { built, execute, notices, settle, journals };
+  }
+
+  it('discloses native-success/post-dispatch abort separately while preserving one aborted terminal', async () => {
+    const f = await effectFixture({ abortInExecute: true });
+    await f.built.session.sendMessage('write');
+    await f.built.whenHostSafeToClose();
+    expect(f.notices).toEqual([ABORTED_EFFECT_ATTENTION_NOTICE]);
+    expect(f.settle).not.toHaveBeenCalledWith(0, 'write_file', 'committed', expect.anything());
+    f.built.session.cancel();
+    const events = await f.built.recordedEvents;
+    expect(events.filter((e) => e.type === 'session:turn_completed')).toEqual([
+      expect.objectContaining({ stopReason: 'aborted' }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
+    expect(f.notices.join()).not.toContain('private-target');
+  });
+
+  it('waits for the held actual write producer before disclosing uncertainty', async () => {
+    let release = () => {};
+    const holdExecute = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await effectFixture({ holdExecute });
+    const turn = f.built.session.sendMessage('write');
+    await vi.waitFor(() => expect(f.execute).toHaveBeenCalledOnce());
+    f.built.session.abort();
+    await Promise.resolve();
+    expect(f.notices).toEqual([]);
+    let closed = false;
+    const close = f.built.whenHostSafeToClose().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    release();
+    await turn;
+    await close;
+    expect(f.notices).toEqual([ABORTED_EFFECT_ATTENTION_NOTICE]);
+    f.built.session.cancel();
+    await f.built.recordedEvents;
+  });
+
+  it('waits for a held settlement and clears the claim only after its committed ACK despite abort', async () => {
+    let release = () => {};
+    const holdSettle = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await effectFixture({ holdSettle });
+    const turn = f.built.session.sendMessage('write');
+    await vi.waitFor(() => expect(f.settle).toHaveBeenCalled());
+    f.built.session.abort();
+    await Promise.resolve();
+    expect(f.notices).toEqual([]);
+    release();
+    await turn;
+    await f.built.whenHostSafeToClose();
+    expect(f.notices).toEqual([]);
+    f.built.session.cancel();
+    await f.built.recordedEvents;
+  });
+
+  it('retains unresolved prepared evidence when settlement fails during interruption', async () => {
+    let release = () => {};
+    const holdSettle = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = await effectFixture({ holdSettle, settleFailure: true });
+    const turn = f.built.session.sendMessage('write');
+    await vi.waitFor(() => expect(f.settle).toHaveBeenCalled());
+    f.built.session.abort();
+    release();
+    await turn;
+    await f.built.whenHostSafeToClose();
+    expect(f.notices).toEqual([ABORTED_EFFECT_ATTENTION_NOTICE]);
+    f.built.session.cancel();
+    const events = await f.built.recordedEvents;
+    expect(JSON.stringify(events)).not.toContain('private-journal-path');
+  });
+
+  it('does not relabel an acknowledged committed action as unresolved on late abort', async () => {
+    const f = await effectFixture({ abortAfterCommit: true });
+    await f.built.session.sendMessage('write');
+    await f.built.whenHostSafeToClose();
+    expect(f.notices).toEqual([]);
+    f.built.session.cancel();
+    await f.built.recordedEvents;
+  });
+
+  it.each([false, true])(
+    'clears proven non-dispatch only on acknowledged discard (failure=%s)',
+    async (discardFailure) => {
+      let release = () => {};
+      const holdDiscard = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const f = await effectFixture({
+        abortInExecute: true,
+        unavailableInExecute: true,
+        holdDiscard,
+        discardFailure,
+      });
+      const turn = f.built.session.sendMessage('write');
+      await vi.waitFor(() => expect(f.execute).toHaveBeenCalledOnce());
+      await Promise.resolve();
+      expect(f.notices).toEqual([]);
+      release();
+      await turn;
+      await f.built.whenHostSafeToClose();
+      expect(f.notices).toEqual(discardFailure ? [ABORTED_EFFECT_ATTENTION_NOTICE] : []);
+      f.built.session.cancel();
+      await f.built.recordedEvents;
+    },
+  );
+
+  it('discloses incomplete effects after whole-session cancellation without changing its terminal', async () => {
+    const f = await effectFixture({ cancelInExecute: true });
+    await f.built.session.sendMessage('write');
+    await f.built.whenHostSafeToClose();
+    expect(f.notices).toEqual([ABORTED_EFFECT_ATTENTION_NOTICE]);
+    const events = await f.built.recordedEvents;
+    expect(events.filter((event) => event.type === 'session:cancelled')).toHaveLength(1);
+    expect(events.filter((event) => event.type === 'session:turn_completed')).toHaveLength(0);
+  });
+
+  it('owns a required notification failure instead of silently dropping the notice', async () => {
+    const f = await effectFixture({
+      abortInExecute: true,
+      notice: () => {
+        throw new Error('private-notice-sink');
+      },
+    });
+    await f.built.session.sendMessage('write');
+    await expect(f.built.whenHostSafeToClose()).rejects.toThrow(
+      'Unconfirmed effect disclosure failed.',
+    );
+    f.built.session.cancel();
+    await f.built.recordedEvents;
+  });
+});
+
+describe('the ask_user wiring (ADR-0132 §1): one boolean feeds both advertise gates', () => {
+  const asksUser = (requests: readonly LlmRequest[]): boolean =>
+    requests.some((request) => (request.tools ?? []).some((tool) => tool.name === 'ask_user'));
+
+  it('is offered to the model, and kept in the effective grant, when the driver wires the question delegate', async () => {
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({
+      providers,
+      toolHost: {},
+      askUser: () => Promise.resolve({ kind: 'skipped' }),
+    });
+    built.session.start();
+    await built.session.sendMessage('hello');
+    // BOTH gates kept it: the CLI's (`wiredToolIds`, which narrows the EFFECTIVE grant) and the engine's
+    // (`delegateAvailable`). Drop either and the tool is not in the request.
+    expect(asksUser(requests)).toBe(true);
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+
+  it('is neither offered nor kept when no delegate is wired (a non-interactive driver), though the default agent is granted it', async () => {
+    const { providers, requests } = capturingResolver([textTurn('hi')]);
+    const built = await build({ providers, toolHost: {} });
+    // The ORIGINAL agent keeps the author's full grant (it is what is persisted and exported); only the effective one narrows.
+    expect(built.agent.tools).toContain('ask_user');
+    built.session.start();
+    await built.session.sendMessage('hello');
+    expect(asksUser(requests)).toBe(false);
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+
+  it('runs a real question through the session: the delegate is called and its answer reaches the model', async () => {
+    const delegate = vi.fn(() =>
+      Promise.resolve({ kind: 'answered' as const, answers: [{ selected: ['alpha.ts'] }] }),
+    );
+    const args = {
+      questions: [
+        {
+          header: 'Pick',
+          question: 'Which file?',
+          options: [
+            { label: 'alpha.ts', description: 'The first file' },
+            { label: 'beta.ts', description: 'The second file' },
+          ],
+        },
+      ],
+    };
+    const { providers, requests } = capturingResolver([
+      [
+        { type: 'tool_call_start', id: 'ask-1', name: 'ask_user' },
+        { type: 'tool_call_delta', id: 'ask-1', argsJsonDelta: JSON.stringify(args) },
+        { type: 'tool_call_end', id: 'ask-1' },
+        {
+          type: 'stop',
+          stopReason: 'tool_use',
+          usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+        },
+      ],
+      textTurn('alpha it is'),
+    ]);
+    const built = await build({ providers, toolHost: {}, askUser: delegate });
+    built.session.start();
+    await built.session.sendMessage('which file?');
+    expect(delegate).toHaveBeenCalledTimes(1);
+    const second = JSON.stringify(requests[1]?.messages ?? []);
+    expect(second).toContain('alpha.ts');
+    expect(second).toContain('answered');
+    built.session.cancel();
+    await built.recordedEvents;
   });
 });

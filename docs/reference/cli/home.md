@@ -180,7 +180,14 @@ The Home and the chat render as **one ink tree with conditional rendering** — 
 | `loading` | the pending message echoed under `Starting chat…` | the deferred `buildChatSession` resolves → `chat`; it rejects → back to `home` with a banner |
 | `chat` | the live chat region ([chat-session.md](chat-session.md)) | the chat ends (`/exit` / `/cancel` / Ctrl-C) → back to a freshly-read `home` |
 
-The chat session is built **after** the ink mount (an explicit loading state), so the strip shows instantly and a slow or failed build degrades to the loading state / a Home banner rather than blocking the entry. A built chat reuses the **built-in default chat agent** over `[chat].default_model` (a zero-config, read-only first run — see [chat-session.md](chat-session.md)); the Home does not bind a custom agent (`relavium chat --agent <ref>` is the path for that).
+The chat session is built **after** the ink mount (an explicit loading state), so the strip shows instantly and a slow or failed build degrades to the loading state / a Home banner rather than blocking the entry. A built chat reuses the **built-in default chat agent** over `[chat].default_model` (the mode-gated editing/search grant — see [chat-session.md](chat-session.md)); the Home does not bind a custom agent (`relavium chat --agent <ref>` is the path for that).
+
+Resume, model reseat and `/clear` retain the exact bound agent grant. `/clear`
+uses that session's private fresh-builder closure, including an authored agent
+named `relavium-chat` or an older read-only snapshot. It never identifies the
+built-in agent by id. Each replacement resolves the current configured start
+at its bound workspace and owns fresh approvals, read evidence and previews.
+
 
 ### Keymap (2.5.B)
 
@@ -189,9 +196,10 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
 | Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
 | Backspace / Delete | erase the char **before** the cursor | erase before the cursor (idle) / ignored mid-turn | ignored |
+| **`/mode`** (MVP-3) | configure the startup default | choose current mode or separately save a startup default | — |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
-| **`[y]`/`[a]`/`[n]`/`[esc]`** (2.5.E) | — | **answer a pending per-tool approval** — `[y]` once · `[a]` always · `[n]` no · `[esc]` abort (the prompt owns the keyboard) | — |
+| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`[esc]`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `[esc]` abort (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
 | **Ctrl+J** (2.5.D) | insert a newline (multi-line prompt) | insert a newline (idle) | ignored |
 | **↑ / ↓** (2.5.D) | — | recall prev/next submitted line (buffer edge) / move by line (mid-buffer) | — |
 | **Ctrl+R** (2.5.D) | — | reverse-incremental history search (chat only) | — |
@@ -210,7 +218,7 @@ The **footer hint-bar** in 2.5.B was the single fixed line; the context-aware hi
 The Home receives a bracketed paste on **ink 7's native `usePaste` channel** (separate from `useInput`; adopted in 2.6.F, [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)): ink enables/disables bracketed-paste mode (`ESC[?2004h`/`l`) automatically on mount/unmount and delivers the **whole paste as one event** (the `ESC[200~ … ESC[201~` markers stripped, and split stdin chunks reassembled). It is routed to `HomeController.handlePaste`, which appends the block **verbatim** — embedded newlines kept, CRLF/CR → LF — so a pasted multi-line block never submits early. A defensive `ESC[?2004l` is also written on the signal/exit teardown as belt-and-suspenders over ink's own unmount cleanup. Gate:
 
 - **A paste appends ONLY when the main prompt is the active editable target** — dropped while a session **builds** (`loading`), a chat turn **streams** (`running`), a `!`-shell / submit is in flight, or any keyboard-owning overlay/submode is open (the `/` palette, `Ctrl+R` reverse-search, `@`-mention, `/models`, `/effort`, the `[c]` reason capture). The gate is the shared `pasteIsEditable` predicate, so the Home and the standalone [chat](chat-session.md) can never diverge (a type-ahead queue while a turn runs is deferred — see the phase deferred list).
-- **Security ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)):** a paste is dropped while a per-tool **approval is pending**, so a pasted approval token (`y` / `a` / `n` / …) can **never** answer the fail-closed approval floor — paste arrives on the `usePaste` channel and is never routed to the approval key reducer.
+- **Security ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md)):** a paste is dropped while a per-tool **approval is pending**, so a pasted approval token (`y` / `a` / `n` / … or a control byte) can **never** answer the fail-closed approval floor — paste arrives on the `usePaste` channel and is never routed to the approval key reducer.
 
 ## Render mode (inline / alt-screen)
 
@@ -235,6 +243,16 @@ and refuses hidden typing, paste, Continue and palette activation using the live
 geometry. Esc and Ctrl-C/Ctrl-D cancellation remain available. A resize restores the
 existing input and selection. The resize is observed on stdout's cross-platform `resize`
 event (backed by SIGWINCH on POSIX).
+
+**MVP-3 Step 2 accepted on development (2026-11-12):** the same minimum and measured input
+custody also apply inside the Home chat and standalone chat. Prepared-write
+approval and `/details` share the
+[chat interaction contract](chat-session.md#proposed-mvp-3-interaction-contract)
+in both renderers; the full view and `/details` are one readable inspection screen
+([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md),
+[chat-session.md](chat-session.md#the-full-view-and-the-tool-details)). Tool details are chat-only; opening them executes no tool
+and does not activate the management strip. Their bounded private previews
+expire on teardown and are absent from restored history and transcript hatches.
 
 At or above the minimum, management lists use the remaining row budget after the full
 prompt, keyless action, errors and notices. The focused Continue session stays visible.

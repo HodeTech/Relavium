@@ -38,6 +38,9 @@ import {
   verifySealedDist,
 } from './manifest.mjs';
 
+import { syntheticNativeAssets } from '../native-fs/fixture.mjs';
+import { copyNativeAssets, inspectNativeAssets, NativeAssetError } from '../native-fs/assets.mjs';
+
 const refuses = (code) => (error) => error instanceof ManifestError && error.code === code;
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -642,4 +645,62 @@ test('a sealed manifest that is not exactly the validated shape refuses on read'
     writeFileSync(join(staging, 'manifest.json'), JSON.stringify(variant));
     assert.throws(() => readPrivateManifest(staging), refuses('SHAPE'), label);
   }
+});
+
+test('the sealed native inventory is complete, source-bound and immutable through post-seal verification', async () => {
+  const fixture = await candidate();
+  syntheticNativeAssets(fixture.root);
+  copyNativeAssets({ repository: fixture.root, complete: true });
+  const native = inspectNativeAssets(join(fixture.cli, 'dist/native-fs'), { complete: true });
+  const nativeAssets = [...native.files].map(([name, bytes]) => ({
+    path: `dist/native-fs/${name}`,
+    bytes: bytes.length,
+    sha256: digest(bytes),
+  }));
+  const recordPath = join(fixture.staging, 'finalized.json');
+  const record = JSON.parse(readFileSync(recordPath, 'utf8'));
+  writeFileSync(recordPath, JSON.stringify({ ...record, nativeAssets }));
+  const tarball = join(fixture.work, 'relavium.tgz');
+  writeFileSync(tarball, 'synthetic native package archive');
+  fixture.archive.sha256 = digest(readFileSync(tarball));
+  const manifest = await seal(fixture);
+  assert.deepEqual(manifest.nativeAssets, nativeAssets);
+  const verify = () => verifySealedDist({ candidate: fixture.root, manifest, tarball });
+  verify();
+  for (const asset of nativeAssets) {
+    const path = join(fixture.cli, asset.path);
+    const before = readFileSync(path);
+    rmSync(path);
+    assert.throws(
+      verify,
+      (error) =>
+        error instanceof NativeAssetError &&
+        error.code === (asset.path.endsWith('native-assets.json') ? 'UNREADABLE' : 'INVENTORY'),
+    );
+    writeFileSync(path, before);
+  }
+  const binary = nativeAssets.find((asset) => asset.path.endsWith('.node'));
+  const binaryPath = join(fixture.cli, binary.path);
+  const bytes = readFileSync(binaryPath);
+  bytes[bytes.length - 1] ^= 1;
+  writeFileSync(binaryPath, bytes);
+  assert.throws(
+    verify,
+    (error) => error instanceof NativeAssetError && error.code === 'BINARY_BINDING',
+  );
+  bytes[bytes.length - 1] ^= 1;
+  writeFileSync(binaryPath, bytes);
+  verify();
+  const changed = JSON.parse(JSON.stringify(manifest));
+  changed.nativeAssets[0].sha256 = 'f'.repeat(64);
+  assert.throws(
+    () => verifySealedDist({ candidate: fixture.root, manifest: changed, tarball }),
+    refuses('DIST_DRIFT'),
+  );
+  const lock = join(fixture.root, 'apps/cli/native/fs-metadata/Cargo.lock');
+  writeFileSync(lock, '! synthetic lock');
+  assert.throws(
+    verify,
+    (error) => error instanceof NativeAssetError && error.code === 'SOURCE_BINDING',
+  );
 });

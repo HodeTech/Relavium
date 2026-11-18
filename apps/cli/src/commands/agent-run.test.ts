@@ -838,9 +838,10 @@ describe('agentRunCommand (2.Q)', () => {
     expect(out()).toContain('one reply');
   });
 
-  it('DENIES a governed dispatch in the non-interactive one-shot — no user to approve (ADR-0057)', async () => {
+  it('REFUSES a governed dispatch in the non-interactive one-shot — no user to approve — and the refusal returns to the model (ADR-0057, ADR-0117)', async () => {
     // agent run shares the full-capability chat-read-write host; a one-shot has no interactive approver, so the
-    // fail-closed `ask` regime must deny a governed write (never execute it), restoring the pre-4b safety.
+    // fail-closed `ask` regime must refuse a governed write (never execute it), restoring the pre-4b safety. The
+    // refusal is a fixed "unavailable" text that returns to the model, so the turn ends with an answer, not an error.
     writeFileSync(
       join(cwd, 'writer.agent.yaml'),
       `${AGENT_YAML.replace('  - read_file', '  - write_file')}`,
@@ -861,33 +862,79 @@ describe('agentRunCommand (2.Q)', () => {
     ];
     const { d, out } = deps('write a file', {
       json: true,
-      providers: scriptedResolver([writeCall]),
+      providers: scriptedResolver([writeCall, textTurn('I could not write the file')]),
     });
     await agentRunCommand(
       { agent: join(cwd, 'writer.agent.yaml'), input: [], allowMcpStdio: [] },
       d,
     );
-    const completed = parseNdjson(out()).find((e) => e['type'] === 'session:turn_completed');
-    const error = isRecord(completed) ? completed['error'] : undefined;
-    expect(isRecord(error) ? error['code'] : undefined).toBe('tool_denied');
-    expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // denied BEFORE any write — no file on disk
+    const events = parseNdjson(out());
+    const completed = events.find((e) => e['type'] === 'session:turn_completed');
+    expect(isRecord(completed) ? completed['error'] : 'missing').toBeUndefined();
+    const refused = events.find((e) => e['type'] === 'agent:tool_result' && e['success'] === false);
+    expect(isRecord(refused) ? String(refused['outputSummary']) : '').toContain(
+      'No one is available to approve this action',
+    );
+    expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // refused BEFORE any write — no file on disk
+  });
+
+  // a one-shot has no one to answer a card, so a governed tool is hidden from the model — the same advertise
+  // filter `plan` and a non-interactive chat use — instead of being offered and then refused.
+  it('does not advertise governed tools to the model in a one-shot, though the agent is granted them', async () => {
+    const governed = [
+      'write_file',
+      'edit_file',
+      'run_command',
+      'git_commit',
+      'http_request',
+      'web_search',
+      'read_clipboard',
+      'notify',
+    ];
+    writeFileSync(
+      join(cwd, 'granted.agent.yaml'),
+      `${AGENT_YAML.replace('  - read_file', ['read_file', ...governed].map((id) => `  - ${id}`).join('\n'))}`,
+    );
+    const resolver = scriptedResolver([textTurn('done')]);
+    const provider = resolver.resolveProvider('anthropic');
+    if (provider === undefined) throw new Error('missing scripted provider');
+    const offered: string[][] = [];
+    const { d } = deps('use your tools', {
+      providers: {
+        ...resolver,
+        resolveProvider: (id) =>
+          id === 'anthropic'
+            ? {
+                ...provider,
+                stream: (request, options) => {
+                  offered.push((request.tools ?? []).map((tool) => tool.name));
+                  return provider.stream(request, options);
+                },
+              }
+            : undefined,
+      },
+    });
+    expect(
+      await agentRunCommand(
+        { agent: join(cwd, 'granted.agent.yaml'), input: [], allowMcpStdio: [] },
+        d,
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(offered).toHaveLength(1);
+    // The read-only grant is still offered (the filter is not "no tools"), the governed ones are not.
+    expect(offered[0]).toContain('read_file');
+    for (const id of governed) expect(offered[0], id).not.toContain(id);
   });
 
   it('a PLAIN-mode failed turn shows the bare code, NOT a session-continuity hint (2.5.H — one-shot)', async () => {
     // The one-shot cancels its session in `finally`, so the chat recovery hints ("the session is still active",
     // `/compact`, resend) would be FALSE here — the plain printer must suppress them (recoveryHints=false).
-    writeFileSync(
-      join(cwd, 'writer.agent.yaml'),
-      `${AGENT_YAML.replace('  - read_file', '  - write_file')}`,
-    );
-    const writeCall: StreamChunk[] = [
-      { type: 'tool_call_start', id: 'c1', name: 'write_file' },
-      {
-        type: 'tool_call_delta',
-        id: 'c1',
-        argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
-      },
-      { type: 'tool_call_end', id: 'c1' },
+    // The turn is made to fail the way a model that keeps calling a tool that does not exist does: four rounds in
+    // a row in which nothing runs exhaust the three-round correction budget (ADR-0131) → `tool_failed`.
+    writeFileSync(join(cwd, 'reader.agent.yaml'), AGENT_YAML);
+    const missingCall = (id: string): StreamChunk[] => [
+      { type: 'tool_call_start', id, name: 'no_such_tool' },
+      { type: 'tool_call_end', id },
       {
         type: 'stop',
         stopReason: 'tool_use',
@@ -896,13 +943,18 @@ describe('agentRunCommand (2.Q)', () => {
     ];
     const { d, out } = deps('write a file', {
       json: false, // PLAIN mode — the surface that shares makePlainPrinter
-      providers: scriptedResolver([writeCall]),
+      providers: scriptedResolver([
+        missingCall('c1'),
+        missingCall('c2'),
+        missingCall('c3'),
+        missingCall('c4'),
+      ]),
     });
     await agentRunCommand(
-      { agent: join(cwd, 'writer.agent.yaml'), input: [], allowMcpStdio: [] },
+      { agent: join(cwd, 'reader.agent.yaml'), input: [], allowMcpStdio: [] },
       d,
     );
-    expect(out()).toContain('[turn failed: tool_denied]'); // the code IS shown
+    expect(out()).toContain('[turn failed: tool_failed]'); // the code IS shown
     expect(out()).not.toContain('session is still active'); // …but no session-continuity hint on a one-shot
   });
 

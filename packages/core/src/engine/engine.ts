@@ -2745,8 +2745,10 @@ class RunExecution {
    *
    * A blanket "refuse a stale write" here would resurrect the exact defect `PR83-04` fixed — a row stuck
    * `prepared` forever, swept by nothing, reported as `needs_attention` for an effect that actually
-   * completed. So the three methods split:
+   * completed. So the methods split:
    *
+   * - `inspectReplay` is **refused** before and after inspection once the dispatch is stale; retained
+   *   results must not escape into an abandoned dispatch.
    * - `prepare` is **refused**. The effect has not left the process, and refusing it is the whole point: a
    *   dispatch the grace window abandoned must not start new external work.
    * - `settle` is **allowed**. The effect already left under a valid claim; refusing its receipt would leave
@@ -2768,6 +2770,21 @@ class RunExecution {
     // TypeScript's spread-type inference hides it, and both shipping implementations happen to be object
     // literals, so it would have been latent until the first class-based one.
     return {
+      inspectReplay: async (...args: Parameters<EffectDispatchPort['inspectReplay']>) => {
+        const refuse = (): never => {
+          throw new EngineStateError(
+            'run_already_terminal',
+            'the run stopped waiting on this dispatch; retained effects cannot be inspected',
+            { runId: this.runId },
+          );
+        };
+        scope.assertActive();
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        const verdict = await scope.enter(() => port.inspectReplay(...args));
+        scope.assertActive();
+        if (!this.#isLive(vertexId, dispatchId)) refuse();
+        return verdict;
+      },
       settle: (...args: Parameters<EffectDispatchPort['settle']>) =>
         scope.enter(() => port.settle(...args)),
       discard: (...args: Parameters<EffectDispatchPort['discard']>) =>

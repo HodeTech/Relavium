@@ -31,6 +31,7 @@ import type {
   ErrorCode,
   ReasoningEffort,
   SessionContext,
+  SessionInterruption,
   SessionEvent,
   SessionStopReason,
   SessionToolHistoryEntry,
@@ -39,13 +40,24 @@ import type {
   EffectCorrelation,
   EffectDispatchPort,
 } from '@relavium/shared';
-import { RelaviumError, createSessionToolCallId, unwiredEffectJournal } from '@relavium/shared';
+import {
+  RelaviumError,
+  SessionInterruptionSchema,
+  createSessionToolCallId,
+  unwiredEffectJournal,
+} from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
 import { collectAgentCeilingIssues } from '../limits.js';
 import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
+import {
+  admitSuppliedSpans,
+  receiptsFromToolHistory,
+  retainTurnReceipts,
+  type TurnEvidence,
+} from './turn-receipts.js';
 import {
   ToolDefSchema,
   type FallbackPlanEntry,
@@ -72,6 +84,7 @@ import type {
   ToolRegistry,
 } from '../tools/types.js';
 import { modelVisibleDescription } from '../tools/types.js';
+import { newAskUserTurnState, type AskUserDelegate } from '../tools/ask-user.js';
 import { delegateAvailable, type ToolDelegates } from '../tools/delegates.js';
 import {
   AgentTurnError,
@@ -239,6 +252,7 @@ export type SessionEventSink = (event: SessionStreamEvent) => void;
  * regime (the workflow author-trust floor).
  */
 export interface SessionTurnPolicy {
+  readonly onToolLiveEvent?: import('../tools/types.js').ToolLiveObserver;
   /**
    * Which of the agent's granted tools to **advertise** to the model this turn (the mode advertise-filter):
    * `true` keeps the tool in the model-visible set. A tool filtered OUT is never offered, but the `confirm`
@@ -250,7 +264,7 @@ export interface SessionTurnPolicy {
    * The host's interactive per-tool approval hook ([ConfirmActionHook]{@link ConfirmActionHook}) threaded into
    * the dispatch context's approval regime. Absent **while a policy is set** ⇒ fail-closed (a governed
    * dispatch is denied — a wiring bug can't let `ask` mode write). The host's hook owns the mode policy
-   * (ask denies writes, accept-edits prompts, auto auto-approves), the once/always cache, and protected paths.
+   * (`ask` prompts for every governed call, `plan` refuses, `accept-edits` prompts except for a file edit, `auto` approves), the once/always cache, and protected paths.
    */
   readonly confirm?: ConfirmActionHook;
 }
@@ -331,6 +345,13 @@ export interface SessionDeps {
   readonly reserveEffectTurnKey: (sessionId: string) => number;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
+  /**
+   * The host's question card for `ask_user` ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)).
+   * Optional capability: a surface with a person at it wires it; absent ⇒ the tool is never offered (`CR-73`). Each
+   * turn's dispatch context gets it together with a fresh per-turn state, so "a skip closes questions" holds on every
+   * surface (there is deliberately no count of cards per turn: the engine's tool-round and per-response ceilings bound it).
+   */
+  readonly askUser?: AskUserDelegate;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits?: AgentTurnLimits;
   /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); 0/absent ⇒ the default. */
@@ -450,8 +471,21 @@ export class SessionStateError extends RelaviumError {
   }
 }
 
-/** Resume metadata is copied only after its bounds and text-only completed-turn shape are proven. */
-function validateCompletedTurnSpans(state: SessionResumeState): void {
+/** `instanceof` through a guard: a hostile throwable's prototype accessors must not escape the settling path. */
+function isClassifiedTurnError(error: unknown): boolean {
+  try {
+    return error instanceof AgentTurnError;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resume metadata is copied only after its bounds and text-only completed-turn shape are proven. Returns the
+ * admitted spans, receipt copies frozen: host-supplied receipt metadata over a cap or of the
+ * wrong shape is a programming error and is refused like any other invalid resume state (ADR-0128).
+ */
+function validateCompletedTurnSpans(state: SessionResumeState): CompletedTurnSpan[] {
   const invalid = (): never => {
     throw new SessionStateError(
       'invalid_resume_state',
@@ -477,11 +511,15 @@ function validateCompletedTurnSpans(state: SessionResumeState): void {
       (length !== 1 && length !== 2) ||
       span.end > state.messages.length ||
       state.messages[span.start]?.role !== 'user' ||
-      (length === 2 && state.messages[span.end - 1]?.role !== 'assistant')
+      (length === 2 && state.messages[span.end - 1]?.role !== 'assistant') ||
+      // ADR-0119: an interrupted turn has no assistant answer, so its span is the user message alone.
+      (span.interruption !== undefined && length !== 1)
     )
       invalid();
     previousEnd = span.end;
   }
+  const admitted = admitSuppliedSpans(state.completedTurnSpans);
+  return admitted ?? invalid();
 }
 
 type PlanResult =
@@ -583,6 +621,21 @@ export class AgentSession {
         readonly engaged: boolean;
         readonly usage: { readonly input: number; readonly output: number };
         readonly observerFailure?: { readonly error: unknown };
+        /** The settled tool history of the failed attempt, structure only (ADR-0119; a retained `ask_user` call also carries its question record, ADR-0133); `[]` means none dispatched. */
+        readonly toolHistory?: readonly SessionToolHistoryEntry[] | undefined;
+        /**
+         * `true` when a call that dispatched is NOT in {@link toolHistory}, so the list cannot vouch for itself and the
+         * turn is not retained: the next request would otherwise say no call was recorded for a turn in which one ran.
+         */
+        readonly toolHistoryUncertain?: boolean;
+        /**
+         * `true` once the provider returned any non-error chunk: it ACCEPTED the request. A turn that ended before that —
+         * a refusal under any error code (overflow, a content filter, a validation error, a token-per-minute 429), a
+         * timeout, or an Esc before the first chunk — is not retained: the message may be one the provider will refuse
+         * again, and keeping it would resend it in every later request while compaction and trim, which never fold the
+         * latest exchange, could not remove it. Rolled back, exactly as before ADR-0119.
+         */
+        readonly contentReceived?: boolean;
       }
     | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
@@ -687,14 +740,14 @@ export class AgentSession {
     // `admit: false` — see the constructor. A resume continues a session that was already admitted, on a
     // frozen snapshot its user cannot edit; re-admitting it would strand their transcript.
     const session = new AgentSession(params, { admit: false });
-    validateCompletedTurnSpans(state);
+    const spans = validateCompletedTurnSpans(state);
     session.#messages.push(
       ...state.messages.map((message) => ({
         ...message,
         content: message.content.map((part) => ({ ...part })),
       })),
     );
-    session.#completedTurnSpans.push(...state.completedTurnSpans.map((span) => ({ ...span })));
+    session.#completedTurnSpans.push(...spans);
     session.#turnCount = state.turnCount;
     // Commands restart negative slots under a NEW durable turn key on resume/reseat.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
@@ -956,7 +1009,7 @@ export class AgentSession {
             model: result.model,
           },
           undefined,
-          result.toolHistory,
+          { toolHistory: result.toolHistory },
         );
       } catch (error) {
         lifecycleObserverFailure = { error };
@@ -964,21 +1017,44 @@ export class AgentSession {
       }
       const completedStart =
         this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
-      if (completedStart >= 0)
-        this.#completedTurnSpans.push({ start: completedStart, end: this.#messages.length });
+      if (completedStart >= 0) {
+        // ADR-0128: the typed `toolHistory` (structure only, plus an `ask_user` call's question record, ADR-0133) becomes this turn's receipts, and the same retention
+        // rule a restart applies evicts the oldest block if the payload would now exceed its cap. The span is
+        // pushed only AFTER the completion sink accepted the turn, so a rejected turn leaves no receipts.
+        this.#completedTurnSpans.push({
+          start: completedStart,
+          end: this.#messages.length,
+          receipts: receiptsFromToolHistory(result.toolHistory),
+        });
+        this.#completedTurnSpans.splice(
+          0,
+          this.#completedTurnSpans.length,
+          ...retainTurnReceipts(this.#completedTurnSpans),
+        );
+      }
       // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
       // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
       // (those return before here or from the catch, so a failed turn never triggers compaction).
       this.#autoCompactPending = true;
     } catch (err) {
-      // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
-      // exchanges on EVERY non-completing exit, including a cancel-during-turn or a throwing completion
-      // sink after the assistant append. Roll back the entire attempted exchange. This also keeps a
-      // non-AgentTurnError from orphaning it — a pre-egress `BudgetPauseError` is settled loudly as
+      // The turn did not complete. Unless it is RETAINED as an interrupted turn (ADR-0119, below), the user message
+      // is rolled back so the transcript holds only COMPLETED exchanges on every such exit, including a
+      // cancel-during-turn or a throwing completion sink after the assistant append: the entire attempted exchange
+      // goes. That also keeps a non-AgentTurnError from orphaning it — a pre-egress `BudgetPauseError` is settled loudly as
       // `budget_exceeded` by `#settleTurnError` below (a session has no pause/resume gate machinery), and an
       // unclassified throw is settled and re-raised.
-      this.#rollbackPendingUser();
-      if (this.#statusIs('cancelled')) return; // cancel-during-turn: session:cancelled is the terminal
+      //
+      // ADR-0119 narrows "roll back" to the turns that never reached the provider's answer or ended in a way the engine
+      // cannot vouch for: a turn the session accepted, that the provider ACCEPTED (it returned content), and that ended by
+      // the turn-level abort or a classified error is RETAINED instead — its user message stays, with the content-free
+      // structure of the tools it dispatched, and the terminal event carries the `interruption` the persister writes.
+      // Every other exit — including an Esc or a refusal before the first chunk — still rolls back exactly as before,
+      // so the decision to retain lives in `#mayRetain` and the two branches that call it, and nowhere else.
+      if (this.#statusIs('cancelled')) {
+        // cancel-during-turn: session:cancelled is the terminal, and a session-ending cancel keeps today's rollback.
+        this.#rollbackPendingUser();
+        return;
+      }
       if (this.#abortingTurn) {
         // EA7 mid-turn abort: the turn core threw on the aborted signal (an AgentTurnError 'cancelled').
         // Settle as ONE `session:turn_completed{stopReason:'aborted'}` — NO error (user-initiated, not a
@@ -987,10 +1063,16 @@ export class AgentSession {
         // #settleTurnError). It is NOT `cancel()`/`session:cancelled` (which is terminal).
         const failedAccounting = this.#readFailedTurnAccounting();
         if (failedAccounting?.engaged === true) this.#turnCount += 1;
-        this.#emitTurnCompleted(
-          'aborted',
-          failedAccounting?.usage ?? this.#lastEngagedUsage ?? { input: 0, output: 0 },
-        );
+        const abortUsage = failedAccounting?.usage ??
+          this.#lastEngagedUsage ?? { input: 0, output: 0 };
+        // Only a classified turn error is retained as an abort. A raw throw that raced the Esc cannot vouch for its
+        // tool list (ADR-0119 §1), exactly like an unclassified throw outside an abort.
+        if (this.#mayRetain() && isClassifiedTurnError(err)) {
+          this.#completeInterruptedTurn('aborted', abortUsage, undefined, { reason: 'aborted' });
+        } else {
+          this.#rollbackPendingUser();
+          this.#emitTurnCompleted('aborted', abortUsage);
+        }
         return;
       }
       this.#settleTurnError(err, lifecycleObserverFailure);
@@ -1036,7 +1118,9 @@ export class AgentSession {
 
   /**
    * Settle a turn that ended in a throw onto a terminal `session:turn_completed`, by error class. The caller has
-   * already rolled the user message back and ruled out a cancel-during-turn.
+   * already ruled out a cancel-during-turn; this method rolls the user message back, or — for a turn the provider
+   * accepted that ended in a classified error whose tool list can vouch for itself — RETAINS it as an interrupted
+   * turn (ADR-0119).
    * - A classified {@link AgentTurnError} completes with its mapped code, counting the turn against the cap ONLY
    *   when canonical accounting proves provider engagement and reporting its real EA2 usage.
    * - A {@link BudgetPauseError} completes as `budget_exceeded`; earlier engagement/usage is retained.
@@ -1074,7 +1158,12 @@ export class AgentSession {
       }
     }
     if (presentation !== undefined) {
-      this.#emitTurnCompleted('error', usage, presentation);
+      const interruption =
+        observerFailure === undefined ? this.#interruptionFor(presentation.code) : undefined;
+      if (interruption === undefined) {
+        this.#rollbackPendingUser();
+        this.#emitTurnCompleted('error', usage, presentation);
+      } else this.#completeInterruptedTurn('error', usage, presentation, interruption);
       if (rethrowObserver) throw err;
       return;
     }
@@ -1084,6 +1173,9 @@ export class AgentSession {
     // A failed canonical outcome consumes its engaged slot here. A successful turn whose later
     // durability/completion callback failed was already counted before that callback; no outcome is
     // stored for it, so do not count twice. Both paths retain known usage and preserve the raw error.
+    //
+    // ADR-0119: an unclassified throw is NOT retained — the turn cannot vouch for its tool list.
+    this.#rollbackPendingUser();
     this.#emitTurnCompleted('error', usage, {
       code: 'internal',
       message: 'the session turn failed with an unexpected error',
@@ -1107,6 +1199,87 @@ export class AgentSession {
       // The diagnostic is not used for presentation or authority; preserve its original raw escape.
     }
     return false;
+  }
+
+  /**
+   * The accounting half of ADR-0119's retention rule, shared by the abort branch and {@link #interruptionFor} so the two
+   * can never drift: a provider engaged AND accepted the request (it returned content), no host or observer fault was
+   * recorded, and the turn's tool list can vouch for itself.
+   */
+  #mayRetain(): boolean {
+    const accounting = this.#failedTurnAccounting;
+    return (
+      accounting?.engaged === true &&
+      accounting.contentReceived === true &&
+      accounting.observerFailure === undefined &&
+      accounting.toolHistoryUncertain !== true
+    );
+  }
+
+  /**
+   * The ADR-0119 retention predicate for a CLASSIFIED error: the session accepted the message (it is pending),
+   * {@link #mayRetain} holds (the provider accepted the request and the tool list can vouch for itself), and the error
+   * is classified. `tool_denied` and the within-turn `turn_limit` get their own reasons; every other code is `failed`
+   * with that code. `undefined` ⇒ the turn is rolled back as before.
+   */
+  #interruptionFor(code: ErrorCode): SessionInterruption | undefined {
+    if (this.#pendingUser === undefined || !this.#mayRetain()) return undefined;
+    // A context overflow in a turn that ran no tool says the MESSAGE does not fit the window — even when it arrives after
+    // the first chunk (a provider that streams until the window is exhausted). Keeping it would resend that message,
+    // plus the note and the next one, strictly larger than the request that overflowed, so every later turn would
+    // overflow and compaction and trim, which never fold the latest exchange, could not remove it. Rolled back.
+    if (code === 'context_overflow' && (this.#failedTurnAccounting?.toolHistory?.length ?? 0) === 0)
+      return undefined;
+    if (code === 'tool_denied') return { reason: 'denied' };
+    if (code === 'turn_limit') return { reason: 'turn_limit' };
+    return { reason: 'failed', code };
+  }
+
+  /**
+   * Complete a RETAINED interrupted turn (ADR-0119): the user message stays in the transcript, the terminal event
+   * carries the `toolHistory` (structure only, plus an `ask_user` question record) and the `interruption` (the persister writes the interruption row iff the
+   * event carries it, so the engine and the store cannot disagree), and the turn becomes a one-message span whose
+   * receipts and interruption the request projection renders. The span is pushed only AFTER the completion sink
+   * accepted the turn, exactly as for a completed turn; a sink that throws leaves the transcript rolled back.
+   */
+  #completeInterruptedTurn(
+    stopReason: SessionStopReason,
+    tokensUsed: { input: number; output: number },
+    error: { code: ErrorCode; message: string; retryable: boolean } | undefined,
+    interruption: SessionInterruption,
+  ): void {
+    const start = this.#pendingUser === undefined ? -1 : this.#messages.indexOf(this.#pendingUser);
+    // Callers retain only when the history can vouch for itself, so a missing list means none dispatched.
+    const toolHistory = this.#failedTurnAccounting?.toolHistory ?? [];
+    // The closed vocabulary is enforced here too, not only by the types: a code that is not an `ErrorCode`, or a value a
+    // sink later mutates, must never reach the request text. The span keeps its own frozen copy of the parsed value.
+    const parsed = SessionInterruptionSchema.safeParse(interruption);
+    if (start < 0 || !parsed.success) {
+      if (start >= 0) this.#rollbackPendingUser();
+      this.#emitTurnCompleted(stopReason, tokensUsed, error);
+      return;
+    }
+    const kept: SessionInterruption = Object.freeze({ ...parsed.data });
+    try {
+      this.#emitTurnCompleted(stopReason, tokensUsed, error, {
+        toolHistory,
+        interruption: { ...kept },
+      });
+    } catch (sinkFailure) {
+      this.#rollbackPendingUser();
+      throw sinkFailure;
+    }
+    this.#completedTurnSpans.push({
+      start,
+      end: start + 1,
+      receipts: receiptsFromToolHistory(toolHistory),
+      interruption: kept,
+    });
+    this.#completedTurnSpans.splice(
+      0,
+      this.#completedTurnSpans.length,
+      ...retainTurnReceipts(this.#completedTurnSpans),
+    );
   }
 
   /** Read through a method: a called/awaited turn mutates this private field outside TS narrowing. */
@@ -1136,8 +1309,11 @@ export class AgentSession {
    * **Mid-turn abort** (ADR-0057 EA7) — `Esc` ends the *in-flight turn* but **keeps the session alive**
    * (unlike {@link cancel}, which is terminal). It aborts the turn's signal; the turn core then throws on
    * the abort and the `sendMessage` catch settles the turn as **one** `session:turn_completed{stopReason:
-   * 'aborted'}` (no `error` — it is user-initiated, not a failure), rolls the pending user message back, and
-   * returns `#status` to `idle` so the next `sendMessage` continues the conversation. A **late** abort that
+   * 'aborted'}` (no `error` — it is user-initiated, not a failure), and returns `#status` to `idle` so the next
+   * `sendMessage` continues the conversation. A turn the provider had already ACCEPTED (it returned at least one stream
+   * chunk) is RETAINED as an interrupted turn (ADR-0119: the user message stays, with the content-free structure of the
+   * tools it dispatched, and the event carries `interruption`); one aborted before the provider returned anything rolls
+   * its user message back. A **late** abort that
    * lands after the turn already RESOLVED is a no-op — that turn completes normally (its reply is kept), so
    * a just-finished reply is never discarded. No-op unless a turn is in flight (`running`); a `cancel()`
    * already in progress wins (terminal precedence). There is **no** new session status.
@@ -1176,7 +1352,15 @@ export class AgentSession {
       config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
       toolPolicy: this.#deps.toolPolicy ?? {},
       fsScope: this.#context.fsScopeTier,
+      ...(turnPolicy?.onToolLiveEvent === undefined
+        ? {}
+        : { onToolLiveEvent: turnPolicy.onToolLiveEvent }),
       gateApproved: false, // a chat loop provides no human gate — git_commit stays denied (parity with 1.O)
+      // ADR-0132: the delegate and its per-turn state travel together, built ONCE per session turn (this method runs
+      // once before the tool loop), so an overflow-recovery re-run shares the state and nothing is held in a module.
+      ...(this.#deps.askUser === undefined
+        ? {}
+        : { askUser: this.#deps.askUser, askUserTurn: newAskUserTurnState() }),
       // ADR-0057: a set mode policy ACTIVATES the interactive-approval regime — a governed (write/process/
       // egress) dispatch then requires the host's `confirm` decision, fail-closed when `confirm` is absent
       // (`approval: {}`). No policy ⇒ no `approval` key ⇒ the workflow author-trust floor, unchanged.
@@ -1340,7 +1524,24 @@ export class AgentSession {
     const dropped = this.#messages.length - keptMessageCount;
     return this.#completedTurnSpans
       .filter((span) => span.start >= dropped)
-      .map((span) => ({ start: span.start - dropped, end: span.end - dropped }));
+      .map((span) => ({
+        start: span.start - dropped,
+        end: span.end - dropped,
+        receipts: span.receipts,
+        ...(span.interruption === undefined ? {} : { interruption: span.interruption }),
+      }));
+  }
+
+  /**
+   * Evidence for the foldable prefix, aligned by index: set only at a retained turn's user message (its receipts
+   * and, for an interrupted turn, its interruption — ADR-0119).
+   */
+  #foldableEvidence(count: number): (TurnEvidence | undefined)[] {
+    const aligned = new Array<TurnEvidence | undefined>(count).fill(undefined);
+    for (const span of this.#completedTurnSpans)
+      if (span.start < count)
+        aligned[span.start] = { receipts: span.receipts, interruption: span.interruption };
+    return aligned;
   }
 
   #replaceHistory(kept: readonly LlmMessage[]): void {
@@ -1468,12 +1669,21 @@ export class AgentSession {
         compactionRequestFits(prepared, windows, this.#maxTokensEstimate);
       const tokensBefore = this.#estimateContextTokens();
       checkCancelled();
+      // ADR-0128: the same bounded receipts a request carries, aligned with the foldable messages.
+      const foldableEvidence = this.#foldableEvidence(split.foldable.length);
       let running = this.#compactionSummary,
         offset = 0;
       const usage = { input: 0, output: 0 };
       const summaryUsageCoverage = { unverified: false, pendingInvocations: 0, unknownCalls: 0 };
       for (let pass = 0; pass < COMPACTION_MAX_PASSES && offset < split.foldable.length; pass++) {
-        const chunk = prepareCompactionChunk(split.foldable, offset, running, prepare, fits);
+        const chunk = prepareCompactionChunk(
+          split.foldable,
+          offset,
+          running,
+          prepare,
+          fits,
+          foldableEvidence,
+        );
         checkCancelled();
         const outcome = await captureAgentTurnOutcome({
           ...params,
@@ -1893,6 +2103,10 @@ export class AgentSession {
     this.#failedTurnAccounting = {
       engaged: outcome.engaged,
       usage: outcome.usage,
+      // ADR-0119: a failure before the first tool round never created a history, which means "none dispatched".
+      toolHistory: outcome.toolHistory ?? [],
+      ...(outcome.toolHistoryUncertain === true ? { toolHistoryUncertain: true } : {}),
+      ...(outcome.contentReceived === true ? { contentReceived: true } : {}),
       ...(outcome.failureOrigin === 'observer'
         ? { observerFailure: { error: outcome.error } }
         : {}),
@@ -1926,6 +2140,20 @@ export class AgentSession {
           this.#failedTurnAccounting = {
             engaged: outcome.engaged || retry.engaged,
             usage,
+            // Overflow recovery is only attempted before the first tool round (`recoverableOverflow` requires
+            // `!turnCommitted`), so the first attempt dispatched nothing and the retry's list is the whole turn's. The
+            // retry restarts the engine's tool ordinals, so the two lists could not be merged by id if that ever
+            // changed: should the first attempt ever have dispatched a call, the turn cannot vouch for its list.
+            toolHistory: retry.toolHistory ?? [],
+            // Overflow recovery only runs when the first attempt returned no content, so the retry decides it.
+            ...(outcome.contentReceived === true || retry.contentReceived === true
+              ? { contentReceived: true }
+              : {}),
+            ...((outcome.toolHistory?.length ?? 0) > 0 ||
+            outcome.toolHistoryUncertain === true ||
+            retry.toolHistoryUncertain === true
+              ? { toolHistoryUncertain: true }
+              : {}),
             ...(retry.failureOrigin === 'observer'
               ? { observerFailure: { error: retry.error } }
               : {}),
@@ -1974,13 +2202,18 @@ export class AgentSession {
     stopReason: SessionStopReason,
     tokensUsed: { input: number; output: number; model?: string },
     error?: { code: ErrorCode; message: string; retryable: boolean },
-    toolHistory?: readonly SessionToolHistoryEntry[],
+    retained?: {
+      readonly toolHistory?: readonly SessionToolHistoryEntry[] | undefined;
+      readonly interruption?: SessionInterruption;
+    },
   ): void {
+    const toolHistory = retained?.toolHistory;
     this.#deps.emit({
       type: 'session:turn_completed',
       stopReason,
       tokensUsed,
       ...(toolHistory === undefined ? {} : { toolHistory: [...toolHistory] }),
+      ...(retained?.interruption === undefined ? {} : { interruption: retained.interruption }),
       ...(error === undefined ? {} : { error }),
     });
   }

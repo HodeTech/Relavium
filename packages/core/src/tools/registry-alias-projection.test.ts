@@ -30,6 +30,7 @@ function harness() {
   const store = createInMemoryEffectJournalStore();
   const inner = store.for({ kind: 'run', runId: 'r-alias', nodeId: 'n', attempt: 1 });
   const effects: EffectDispatchPort = {
+    inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
     prepare: vi.fn((...args: Parameters<EffectDispatchPort['prepare']>) => inner.prepare(...args)),
     settle: vi.fn((...args: Parameters<EffectDispatchPort['settle']>) => inner.settle(...args)),
     discard: vi.fn((...args: Parameters<EffectDispatchPort['discard']>) => inner.discard(...args)),

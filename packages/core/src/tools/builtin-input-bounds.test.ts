@@ -22,6 +22,19 @@ function tool(id: string): ToolDef {
 
 const STRING_FIELDS = [
   { id: 'write_file', field: 'content', cap: 8 * 1024 * 1024, base: { path: 'out.txt' } },
+  // edit_file carries two independent 8 MiB fields; each is bounded on its own (the other stays valid).
+  {
+    id: 'edit_file',
+    field: 'old_string',
+    cap: 8 * 1024 * 1024,
+    base: { path: 'out.txt', new_string: 'x' },
+  },
+  {
+    id: 'edit_file',
+    field: 'new_string',
+    cap: 8 * 1024 * 1024,
+    base: { path: 'out.txt', old_string: 'x' },
+  },
   { id: 'http_request', field: 'body', cap: 1024 * 1024, base: { url: 'https://api.example/x' } },
   { id: 'git_commit', field: 'message', cap: 16 * 1024, base: {} },
 ] satisfies ReadonlyArray<{
@@ -66,13 +79,12 @@ describe('built-in executable UTF-8 input admission', () => {
     it(`[CHEAP-STRING] ${id}.${field} rejects impossible UTF-16 length before byte scanning`, () => {
       const byteLength = vi.mocked(utf8ByteLength);
       byteLength.mockClear();
-      expect(() => tool(id).parseArgs({ ...base, [field]: 'a'.repeat(cap + 1) })).toThrow(
-        z.ZodError,
-      );
+      const oversized = 'a'.repeat(cap + 1);
+      expect(() => tool(id).parseArgs({ ...base, [field]: oversized })).toThrow(z.ZodError);
       expect(
-        byteLength,
-        'cheap character lower bound must precede byte measurement',
-      ).not.toHaveBeenCalled();
+        byteLength.mock.calls.some(([value]) => value === oversized),
+        'cheap character lower bound must precede byte measurement of the oversized value',
+      ).toBe(false);
     });
 
     it(`[REAL-BYTES] ${id}.${field} measures plausible multibyte overflow and exact cap`, () => {

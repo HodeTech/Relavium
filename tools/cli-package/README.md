@@ -17,6 +17,11 @@ pnpm check:map-controls
 ```
 
 The producer (`produce.mjs`, run by `pack.mjs`) never builds in the developer's workspace.
+ADR-0125 package production first requires the complete source-bound
+[native asset inventory](../native-fs/README.md). A current-host development
+asset is deliberately insufficient; CI assembles all required native executions
+before either packing or product map controls. This adapter's finite assets and
+notices join archive inspection and sealed drift checks alongside the ESM graph.
 It copies the files Git would ship, by the repository's ignore rules and the developer's
 global excludes file (its Git reads no other home, global or system configuration or attributes), into a
 fresh owner-only candidate tree (owner-only where POSIX modes are observable; on Windows it

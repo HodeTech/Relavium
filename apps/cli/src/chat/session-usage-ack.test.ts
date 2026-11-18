@@ -7,6 +7,8 @@ import {
 import type { RunOrSessionEvent } from '@relavium/shared';
 import { expect, it, vi } from 'vitest';
 
+import type { ResolvedChatConfig } from '../config/resolve.js';
+
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { formatSessionFooter } from '../render/tui/chat-projection.js';
@@ -14,7 +16,9 @@ import { buildChatSession, type SessionUsageWriter } from './session-host.js';
 import { createSessionPersister } from './persister.js';
 import { scriptedResolver } from './test-support.js';
 
-const chat = {
+const chat: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,

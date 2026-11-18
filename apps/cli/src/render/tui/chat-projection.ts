@@ -1,9 +1,10 @@
+import type { ToolDisplay } from './tool-display.js';
 import type { ToolApprovalRequest } from '@relavium/core';
 import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
-import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { sanitizeInline, sanitizeUntrustedInline, stripTerminalControls } from '../sanitize.js';
 import { parseMarkdown, layoutMarkdown, type MarkdownBlock } from '../markdown/index.js';
 import { formatReportedCost, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type {
@@ -27,40 +28,48 @@ export { sanitizeInline, stripTerminalControls };
 /** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
  *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */
 export const MAX_APPROVAL_REASON_CHARS = 300;
+export const MAX_APPROVAL_REASON_INPUT_CHARS = 4096;
+const OMITTED_DENIAL_EXPLANATION = 'denial explanation omitted (too long)';
+const DENIAL_REASON_DISCLOSURE =
+  'Your reason may appear in session and redirected output. This is not a private note.';
 
-/**
- * Sanitize + bound a USER-typed denial reason for the approval seam (`[c]`, Step 14): strip terminal/bidi controls
- * and collapse to a single line ({@link sanitizeInline}), trim, and cap the length. Returns `undefined` for an
- * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
- * flows into `ToolApprovalDecision.reject.reason`; it is the user's own text (not a secret they'd hide from
- * themselves), but bounding + control-stripping keep it safe for the error line, logs, and `--json`.
- */
-export function sanitizeApprovalReason(text: string): string | undefined {
-  const clean = sanitizeInline(text).trim();
-  if (clean.length === 0) return undefined;
-  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
-  // Cap by code UNIT, but back off one unit if the boundary splits a surrogate pair (a high surrogate with its
-  // low half beyond the cap) so the truncation never leaves a lone surrogate (a `�` in the error line / --json).
-  // charCodeAt (NOT codePointAt) is REQUIRED here: we must see the raw UTF-16 unit to detect a LONE high surrogate;
-  // codePointAt would combine the pair into one code point, defeating the split-detection.
-  const lastUnit = clean.charCodeAt(MAX_APPROVAL_REASON_CHARS - 1); // NOSONAR — charCodeAt is intentional (lone-surrogate detection)
-  const end =
-    lastUnit >= 0xd800 && lastUnit <= 0xdbff
-      ? MAX_APPROVAL_REASON_CHARS - 1
-      : MAX_APPROVAL_REASON_CHARS;
-  return clean.slice(0, end);
+/** Explicit privacy scope, prewrapped without truncating it on a narrow terminal. */
+export function denialReasonDisclosure(columns: number): readonly string[] {
+  return wrapText(DENIAL_REASON_DISCLOSURE, Math.max(1, columns));
+}
+
+function capCodeUnits(text: string, maximum: number): string {
+  const lastUnit = text.charCodeAt(maximum - 1); // NOSONAR — inspect a possible split surrogate
+  const end = lastUnit >= 0xd800 && lastUnit <= 0xdbff ? maximum - 1 : maximum;
+  return text.slice(0, end);
+}
+
+/** Mixed host/user diagnostics, never proof of a secret-free origin or permission to retry. */
+export function projectDenialExplanation(message: string): string {
+  if (message.length > 4096) return OMITTED_DENIAL_EXPLANATION;
+  const clean = sanitizeUntrustedInline(message).replace(/\s+/gu, ' ').trim();
+  return clean.length <= 1024 ? clean : `${capCodeUnits(clean, 1023)}…`;
 }
 
 /**
- * Error codes whose `errorMessage` is safe to render in-chat. This leans on a load-bearing project-wide
- * contract, not a two-string allowlist: EVERY `tool_denied` / `tool_unavailable` message across the engine is,
- * by the `ToolDispatchError` reason-only rule (packages/core/src/tools/errors.ts; tool-registry.md §errors), a
- * static host/engine-authored LABEL that never interpolates an argument value, path, URL, or secret — the
- * ADR-0057 approval-floor denials ("not allowed in ask mode (read-only)", "refusing to write inside a protected
- * directory", "fs (read-only in this session)") plus every `ToolPolicyError` / `HostDeniedError` reason. Other
- * codes (validation / execution_failed / …) MAY carry prompt/model context, so only the code is shown for them.
- * A new denial subclass becomes chat-visible automatically once its code is one of these — which is safe
- * precisely because the reason-only contract binds it too (the message is still terminal-sanitized regardless).
+ * Sanitize + bound a USER-typed diagnostic explanation for the approval seam (`[c]`, Step 14).
+ * Run the existing finite secret backstop on the original input before control normalization and capping.
+ * This does not recognize arbitrary personal text or secret fragments. Returns `undefined` for an
+ * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
+ * flows into `ToolApprovalDecision.reject.reason`, including existing error/event/JSON diagnostic copies.
+ */
+export function sanitizeApprovalReason(text: string): string | undefined {
+  if (text.length > MAX_APPROVAL_REASON_INPUT_CHARS) return OMITTED_DENIAL_EXPLANATION;
+  const clean = sanitizeUntrustedInline(text).trim();
+  if (clean.length === 0) return undefined;
+  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
+  return capCodeUnits(clean, MAX_APPROVAL_REASON_CHARS);
+}
+
+/**
+ * Vetted message families. tool_denied can combine fixed host framing with a user's diagnostic explanation;
+ * it always uses bounded untrusted projection. Other codes keep their existing reason/status contracts.
+ * Unknown/tool_failed messages can contain tool/model context and are not echoed.
  */
 const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set([
   'tool_denied',
@@ -70,7 +79,7 @@ const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set([
 
 /**
  * Error codes whose `errorMessage` is a PROVIDER-authored, already-redacted status line safe to render in-chat —
- * distinct from {@link SAFE_MESSAGE_CODES} (static host-authored tool-denial labels) and justified separately.
+ * distinct from {@link SAFE_MESSAGE_CODES} and justified separately.
  * These carry the upstream provider's own error text (`provider_auth` → "402 Insufficient Balance" / "401
  * Invalid API key", `provider_rate_limit` → "429 …", `provider_unavailable` → "503 …", `content_filter` → the
  * moderation reason). Surfacing it is safe because the seam already scrubs secret material at the single
@@ -87,18 +96,17 @@ const PROVIDER_MESSAGE_CODES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code +,
- * for the vetted approval-floor codes, its secret-free reason), the turn's token usage, and its duration.
- * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
+ * A one-line per-turn summary: counts/codes and selected diagnostic families, with tool denials protected
+ * as mixed-origin text. The finite backstop does not promise arbitrary user content is nonsensitive.
  */
 export function formatTurnSummary(summary: TurnSummary): string {
-  // Terminal-sanitize the whitelisted reason (like every other display string here) BEFORE the whitespace
-  // collapse — the whitelisted messages are host-authored ASCII today, but the render boundary must strip any
-  // ANSI/OSC/control byte regardless so the whitelist stays robust to a future producer.
-  const reason =
-    summary.errorMessage === undefined
-      ? ''
-      : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+  let reason = '';
+  if (summary.errorMessage !== undefined) {
+    reason =
+      summary.errorCode === 'tool_denied'
+        ? projectDenialExplanation(summary.errorMessage)
+        : sanitizeInline(summary.errorMessage).replace(/\s+/gu, ' ').trim();
+  }
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;
@@ -106,12 +114,7 @@ export function formatTurnSummary(summary: TurnSummary): string {
     reason.length > 0 &&
     (SAFE_MESSAGE_CODES.has(summary.errorCode) || PROVIDER_MESSAGE_CODES.has(summary.errorCode))
   ) {
-    // Surface WHY the turn died — the reason is the only place it reaches the user. Two vetted families:
-    // an approval-floor denial (`error: tool_denied — not allowed in ask mode (read-only)`, a static
-    // host-authored label) and a provider status line (`error: provider_auth — 402 Insufficient Balance`, the
-    // upstream message, already secret-scrubbed at the seam). Unlike the run path's final-summary.ts (which
-    // renders errorMessage for every code), the chat path restricts it to these two secret-free sets, since a
-    // chat turn is interactive/lower-trust — every other code (e.g. `tool_failed`) shows only its code.
+    // Explain only vetted families. A denial's fixed framing does not make its optional user text trusted.
     head = `error: ${summary.errorCode} — ${reason}`;
   } else if (summary.errorCode === 'tool_failed') {
     // A tool call ended the turn (a repeated failure spent the correction budget, or a non-recoverable tool
@@ -120,8 +123,16 @@ export function formatTurnSummary(summary: TurnSummary): string {
     // We must NOT echo `errorMessage` (a tool_failed message MAY carry model/prompt/MCP-server context — the very
     // reason it is outside SAFE_MESSAGE_CODES); instead a STATIC, host-authored hint at the most common real
     // cause: a path outside the session workspace (the #1 launch-cwd gotcha) or an unavailable target.
+    const failed = (summary.failedTools ?? [])
+      .map(({ toolId, count }) => {
+        const name = [...sanitizeInline(toolId)].slice(0, 40).join('');
+        return count > 1 ? `${name} \u00d7${count}` : name;
+      })
+      .filter((entry) => entry.length > 0);
     head =
-      "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)";
+      failed.length === 0
+        ? "error: tool_failed — a tool call failed (a path may be outside this session's workspace, or the target was unavailable)"
+        : `error: tool_failed — failed calls ended the turn: ${failed.join(', ')} (a path may be outside this session's workspace, or the target was unavailable)`;
   } else {
     head = `error: ${summary.errorCode}`;
   }
@@ -134,7 +145,13 @@ export function formatTurnSummary(summary: TurnSummary): string {
     // the bound model), so it surfaces exactly when attribution differs from the footer. Sanitized like every id.
     summary.model === undefined ? undefined : `via ${sanitizeInline(summary.model)}`,
     formatTokens(summary.tokensUsed),
-    summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
+    // The time the SYSTEM took: a wait on an approval card is the person's, shown on its own.
+    summary.durationMs === undefined
+      ? undefined
+      : formatDuration(Math.max(0, summary.durationMs - (summary.waitedMs ?? 0))),
+    summary.waitedMs === undefined
+      ? undefined
+      : `${formatDuration(summary.waitedMs)} waiting for you`,
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
 }
@@ -227,7 +244,7 @@ export function errorRecoveryHint(
       // proceed without it; guide to rephrasing / re-wiring — mirrors the tool_failed no-blind-retry correction.
       return "That tool isn't wired for this session (a host/config gap). The session is still active; rephrase to avoid needing it, or wire the capability and start a fresh session.";
     case 'tool_denied':
-      return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
+      return "The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.";
     case 'budget_exceeded':
       return 'The turn hit the session cost cap — raise `[chat].max_cost_microcents`, or `/clear` to reset the running total. The session is still active.';
     case 'effect_needs_attention':
@@ -262,7 +279,31 @@ export function errorRecoveryHint(
  * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
  * recovery-hint line.
  */
-export function entryLines(entry: TranscriptEntry): DisplayLine[] {
+export function entryLines(
+  entry: TranscriptEntry,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): DisplayLine[] {
+  if (entry.role === 'tools') {
+    const lines: DisplayLine[] = [];
+    for (let start = 0; start < entry.calls.length; start += 4)
+      lines.push({
+        style: 'notice',
+        text: entry.calls
+          .slice(start, start + 4)
+          .map((call) => formatToolCall(call, displays?.get(call.id)))
+          .join(' · '),
+      });
+    if ((entry.omitted ?? 0) > 0) {
+      const last = lines.at(-1);
+      if (last !== undefined)
+        lines[lines.length - 1] = {
+          ...last,
+          text: last.text + ` · ${entry.omitted} omitted calls`,
+        };
+      else lines.push({ style: 'notice', text: `${entry.omitted} omitted calls` });
+    }
+    return lines;
+  }
   if (entry.role === 'user') {
     return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
   }
@@ -284,9 +325,14 @@ export function entryLines(entry: TranscriptEntry): DisplayLine[] {
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
 const entryParseCache = new WeakMap<TranscriptEntry, readonly MarkdownBlock[]>();
 
-function wrapEntry(entry: TranscriptEntry, cols: number, color: boolean): DisplayLine[] {
+function wrapEntry(
+  entry: TranscriptEntry,
+  cols: number,
+  color: boolean,
+  displays?: ReadonlyMap<string, ToolDisplay>,
+): DisplayLine[] {
   const wrapped: DisplayLine[] = [];
-  const source = entryLines(entry);
+  const source = entryLines(entry, displays);
   let offset = 0;
   if (color && entry.role === 'assistant') {
     let blocks = entryParseCache.get(entry);
@@ -346,10 +392,15 @@ export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
   color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
 ): DisplayLine[] {
   if (!Number.isFinite(cols) || cols < 1) return [];
   const out: DisplayLine[] = [];
   for (const entry of transcript) {
+    if (entry.role === 'tools' && displays !== undefined) {
+      out.push(...wrapEntry(entry, cols, color, displays));
+      continue;
+    }
     const cached = entryWrapCache.get(entry);
     let lines: readonly DisplayLine[];
     if (cached?.cols === cols && cached.color === color) {
@@ -379,8 +430,12 @@ export function liveScrollGeometry(
   cols: number,
   measuredHeight: number,
   color = false,
+  displays?: ReadonlyMap<string, ToolDisplay>,
 ): ScrollGeometry {
-  return { totalLines: wrapTranscript(transcript, cols, color).length, height: measuredHeight };
+  return {
+    totalLines: wrapTranscript(transcript, cols, color, displays).length,
+    height: measuredHeight,
+  };
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
@@ -415,6 +470,11 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
+  /**
+   * Milliseconds an approval card has been open, when one is. The turn is then WAITING FOR THE PERSON, not working:
+   * the line says so (and what Esc does) instead of "Working…", and its timer is the wait, never the turn's.
+   */
+  readonly awaitingApprovalMs?: number | undefined;
   /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
   readonly columns?: number | undefined;
   /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
@@ -428,6 +488,12 @@ export function formatBusyLine(input: {
   if (input.busyCommand !== undefined) {
     return {
       text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      dim: true,
+    };
+  }
+  if (input.awaitingApprovalMs !== undefined) {
+    return {
+      text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)} · Esc stops the turn`,
       dim: true,
     };
   }
@@ -605,8 +671,28 @@ export function formatReasoningPanel(input: {
  * arrived. Never renders the tool's arguments or result bytes (those can carry user/secret data); only the id,
  * which (being model-named) is sanitized so it cannot inject terminal control sequences.
  */
-export function formatToolCall(call: ToolCallView): string {
-  return `→ ${sanitizeInline(call.toolId)} ${call.resolved ? (call.success === false ? '✗' : '✓') : '…'}`;
+export function formatToolCall(call: ToolCallView, display?: ToolDisplay): string {
+  const outcome = display?.outcome ?? call.outcome ?? legacyToolOutcome(call);
+  const marks = {
+    success: '✓',
+    failure: '✗ failed',
+    denied: '⊘ denied',
+    unknown: '? outcome unknown',
+    running: '…',
+  };
+  const target = display?.target === undefined ? '' : ` → ${display.target}`;
+  const stats =
+    display?.stats === undefined
+      ? ''
+      : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
+  return `→ ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
+}
+
+function legacyToolOutcome(call: ToolCallView): NonNullable<ToolCallView['outcome']> | 'running' {
+  if (!call.resolved) return 'running';
+  if (call.success === true) return 'success';
+  if (call.success === false) return 'failure';
+  return 'unknown';
 }
 
 /**

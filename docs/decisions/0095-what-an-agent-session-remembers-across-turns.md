@@ -23,6 +23,11 @@
   [agent-session-spec.md](../reference/contracts/agent-session-spec.md) ·
   [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md)
 
+> **Amended 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** The "content-free tool structure" of §1 has one exception: the result part of a successful
+> `ask_user` call that showed a card carries an optional `ask` record — the question and the person's answer, bounded and
+> schema-validated — and the request projection of §4 renders it under that call's receipt (ADR-0128, amended). Every other tool's
+> row is unchanged.
+
 > **Landing note 2026-10-02 — W7 step 5 request memory.** The development implementation now
 > enforces §4 request selection and typed engine/CLI history-operation refusals, copies/freezes the
 > instance's policy and applies its permission to the existing after-turn trigger. Explicit completed-turn
@@ -371,3 +376,29 @@ The approved W7 implementation and scoped independent reviews are complete. Fina
 acceptance, per-item causal evidence, canonical landing checks and approved residuals are joined in
 the [W7 closing register](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md#w7-closing-register--2026-10-10).
 This dated note preserves the earlier decision and status history; W8 and the phase remain open.
+
+## ADR-0128 forward note — 2026-11-15
+
+[ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) is Accepted and refines three
+places here; the historical body above is unchanged. **§1**'s sentence that the in-memory transcript
+stays text-only now reads: text-only *plus* bounded content-free receipts projected from §1's own
+structure into the next request. **§4**'s "what the next request contains" column gains those receipts
+under every policy except `none`. **§2** is neither triggered nor closed: a receipt carries no argument,
+result, path or id, so CR-70's "process only" and per-turn-ceiling constraints, which govern carried
+*content*, do not apply, and a restart or reseat rebuilds receipts from the structure §1 already stores
+(§2 itself says the new model "sees notes" after a reseat). CR-70's raw-content carrying remains
+deferred to v0.2.1 on its existing trigger. The runtime lands in one implementation step; until then
+the text-only request still ships.
+
+> **Amended 2026-11-16 by accepted [ADR-0119](0119-an-interrupted-turn-stays-as-a-content-free-marker.md).**
+> §1's "a completed turn is persisted as `user → assistant(tool_call) → tool → … → assistant(text)`" gains a second
+> shape: a **retained interrupted turn** ends with a `role: 'system'` *interruption row* instead of the terminal
+> assistant row (`user → (assistant(tool_call) → tool)* → system(interruption)`), and a turn is still identified
+> by row structure. §1's sentence "no migration is needed" is amended for this one element: the interruption row
+> carries a typed `interruption` field stored in two nullable, `CHECK`-constrained columns, which is one
+> migration. The generic durable content union is untouched, so the 2026-09-18 session-only arm holds. §4's
+> `window` row: an interrupted turn takes one of the `window_size` slots, like a completed turn. A user row with
+> structural rows and no terminal row remains a crash remnant and keeps today's rollback. Invariants 1–6 are
+> unchanged; invariant 4 (resume reproduces the transcript) is the reason the turn cannot be retained in memory
+> alone.
+

@@ -1,4 +1,4 @@
-import type { SessionStreamHandleEvent } from '@relavium/core';
+import type { SessionStreamHandleEvent, ToolLiveEvent } from '@relavium/core';
 import { contextWindowForModel } from '@relavium/llm';
 import {
   isUsageCoverageComplete,
@@ -34,6 +34,7 @@ export interface ToolCallView {
   readonly resolved: boolean;
   /** Actual result outcome; absent only on older view seeds without that fact. */
   readonly success?: boolean;
+  readonly outcome?: 'success' | 'failure' | 'denied' | 'unknown';
 }
 
 /** The per-turn summary shown after a completed assistant turn. */
@@ -46,15 +47,23 @@ export interface TurnSummary {
   readonly stopReason: SessionStopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
+  /** Milliseconds of {@link durationMs} the turn spent waiting for the person (an open approval card). The footer
+   *  shows the active time and this wait separately, so a turn that waited on a card is not read as a slow one. */
+  readonly waitedMs?: number;
   /** The model that produced the turn's tokens (from the accurate per-attempt `cost:updated.model`, EA2). Set
    *  ONLY when it differs from the session's bound `model` — i.e. a within-turn failover attributed the output to
    *  a fallback model — so a plain turn's summary is unchanged (the footer already shows the bound model). */
   readonly model?: string;
+  /**
+   * The tools whose calls failed in this turn, with how many times ([ADR-0131](../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md) §3).
+   * Built from the live tool rows the transcript already holds — no new event or history field, no argument or
+   * result text. The projection sanitizes and bounds the names before it shows any.
+   */
+  readonly failedTools?: readonly { readonly toolId: string; readonly count: number }[];
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
-  /** The classified error message. `formatTurnSummary` renders it ONLY for the vetted secret-free approval-floor
-   *  codes (`tool_denied` / `tool_unavailable`, whose message is a host-supplied label) — other codes' messages
-   *  may carry prompt context, so only `errorCode` is shown for them. */
+  /** Classified diagnostic text. The projection limits display to vetted families and treats tool_denied
+   *  as mixed host/user text requiring bounded untrusted rendering. Unknown tool/model context is not echoed. */
   readonly errorMessage?: string;
 }
 
@@ -62,7 +71,14 @@ export interface TurnSummary {
 export type TranscriptEntry =
   | { readonly role: 'user'; readonly text: string }
   | { readonly role: 'assistant'; readonly text: string; readonly summary?: TurnSummary }
-  | { readonly role: 'notice'; readonly text: string };
+  | { readonly role: 'notice'; readonly text: string }
+  | {
+      readonly role: 'tools';
+      readonly text: '';
+      readonly calls: readonly ToolCallView[];
+      readonly omitted?: number;
+      readonly summary?: never;
+    };
 
 export interface SessionViewState {
   readonly memoryPolicy?: Readonly<Memory>;
@@ -106,6 +122,7 @@ export interface SessionViewState {
   readonly liveReasoningTruncated: boolean;
   /** The in-flight turn's tool calls (annotations), in first-seen order. */
   readonly liveToolCalls: readonly ToolCallView[];
+  readonly liveObserver?: boolean;
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
   readonly usageCoverage?: UsageCoverage;
@@ -125,6 +142,15 @@ export interface SessionViewState {
    *  (required-nullable, not optional, so it can be reset to `undefined` between turns under
    *  exactOptionalPropertyTypes — mirrors run-view-model's `activeModel`). */
   readonly turnStartedAtMs: number | undefined;
+  /**
+   * Milliseconds the in-flight turn has spent WAITING FOR THE PERSON — the time an approval card was open
+   * ([ADR-0129](../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)). A
+   * turn that waits on a card is not "slow": its elapsed time and its footer duration exclude this wait and the
+   * wait is shown on its own. Display state only; zero between turns.
+   */
+  readonly approvalWaitMs: number;
+  /** Wall-clock (ms) a card opened and is still open, else `undefined`. */
+  readonly approvalSinceMs: number | undefined;
   /** The LAST completed turn's input tokens (ADR-0062 §7) — the numerator of the footer context-fullness
    *  indicator. `undefined` until the first turn completes (a resumed session carries no per-turn seed). */
   readonly lastInputTokens?: number;
@@ -315,6 +341,8 @@ export function initialSessionViewState(
     activeTurnModel: undefined,
     turnCount: seed?.turnCount ?? 0,
     turnStartedAtMs: undefined,
+    approvalWaitMs: 0,
+    approvalSinceMs: undefined,
     gapDetected: false,
     warnings: [],
   };
@@ -467,6 +495,8 @@ export function reduceSessionEvent(
         liveToolCalls: [],
         activeTurnModel: undefined,
         turnStartedAtMs: Date.parse(event.timestamp),
+        approvalWaitMs: 0,
+        approvalSinceMs: undefined,
       };
 
     case 'agent:reasoning': {
@@ -498,6 +528,7 @@ export function reduceSessionEvent(
     }
 
     case 'agent:tool_call':
+      if (base.liveObserver === true) return base;
       // The final assistant text is the segment AFTER the last tool call (mirrors the engine's result.text
       // and the persister), so reset the live buffer here; the tool annotation marks the boundary.
       return {
@@ -514,6 +545,7 @@ export function reduceSessionEvent(
       };
 
     case 'agent:tool_result':
+      if (base.liveObserver === true) return base;
       return {
         ...base,
         liveToolCalls: markResolved(base.liveToolCalls, event.toolId, event.success),
@@ -551,6 +583,8 @@ export function reduceSessionEvent(
         liveToolCalls: [],
         activeTurnModel: undefined,
         turnStartedAtMs: undefined,
+        approvalWaitMs: 0,
+        approvalSinceMs: undefined,
       };
 
     case 'session:compacting':
@@ -642,6 +676,35 @@ type TurnCompletedEvent = Extract<SessionStreamHandleEvent, { type: 'session:tur
  * empty-text success is a silent no-op, mirroring the engine/persister). `base` already carries the
  * seq-tracking patch from {@link reduceSessionEvent}.
  */
+/** An approval card opened: start the wait clock (idempotent while one is already open). */
+export function approvalOpened(state: SessionViewState, nowMs: number): SessionViewState {
+  return state.approvalSinceMs === undefined ? { ...state, approvalSinceMs: nowMs } : state;
+}
+
+/** The card closed (answered, aborted or sealed): fold the wait into the turn's total and stop the clock. */
+export function approvalClosed(state: SessionViewState, nowMs: number): SessionViewState {
+  if (state.approvalSinceMs === undefined) return state;
+  const waited = Math.max(0, nowMs - state.approvalSinceMs);
+  return {
+    ...state,
+    approvalWaitMs: state.approvalWaitMs + (Number.isFinite(waited) ? waited : 0),
+    approvalSinceMs: undefined,
+  };
+}
+
+/** Tools with at least one failed call this turn, in first-failure order and bounded in number. */
+function failedToolCounts(
+  calls: readonly ToolCallView[],
+): readonly { readonly toolId: string; readonly count: number }[] {
+  const counts = new Map<string, number>();
+  for (const call of calls) {
+    if (!call.resolved || call.success !== false) continue;
+    if (counts.has(call.toolId) || counts.size < 6)
+      counts.set(call.toolId, (counts.get(call.toolId) ?? 0) + 1);
+  }
+  return [...counts].map(([toolId, count]) => ({ toolId, count }));
+}
+
 function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent): SessionViewState {
   // A finite, non-negative duration only — guard against a NaN from an unparseable timestamp so a NaN can
   // never reach `durationMs` (and `formatDuration`), keeping the `durationMs?: number` contract strict.
@@ -657,9 +720,12 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     base.activeTurnModel !== undefined && base.activeTurnModel !== base.model
       ? base.activeTurnModel
       : undefined;
+  const failedTools = failedToolCounts(base.liveToolCalls);
   const summary: TurnSummary = {
     ...(base.memoryPolicy === undefined ? {} : { memoryPolicy: base.memoryPolicy }),
     toolsRan: base.liveToolCalls.length > 0,
+    ...(failedTools.length === 0 ? {} : { failedTools }),
+    ...(base.approvalWaitMs >= 1000 ? { waitedMs: base.approvalWaitMs } : {}),
     stopReason: event.stopReason,
     tokensUsed: { input: event.tokensUsed.input, output: event.tokensUsed.output },
     ...(durationMs === undefined ? {} : { durationMs }),
@@ -706,6 +772,54 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     liveToolCalls: [],
     activeTurnModel: undefined,
     turnStartedAtMs: undefined,
+    approvalWaitMs: 0,
+    approvalSinceMs: undefined,
     transcript,
+  };
+}
+
+/** In-process lifecycle is the sole source of engine-call correlation; public events have no call id. */
+export function reduceToolLiveEvent(
+  state: SessionViewState,
+  event: ToolLiveEvent,
+): SessionViewState {
+  if (event.phase === 'started') {
+    const transcript =
+      state.turnText.length === 0
+        ? state.transcript
+        : appendTranscript(state.transcript, {
+            role: 'assistant',
+            text: (state.turnTextTruncated ? '…' : '') + state.turnText,
+          });
+    return {
+      ...state,
+      liveObserver: true,
+      transcript,
+      turnText: '',
+      turnTextTruncated: false,
+      liveTokens: '',
+      liveTokensTruncated: false,
+      liveToolCalls: pushBounded(
+        state.liveObserver === true ? state.liveToolCalls : [],
+        { id: event.callId, toolId: event.toolId, resolved: false },
+        MAX_LIVE_TOOL_CALLS,
+      ),
+    };
+  }
+  if (event.phase !== 'completed') return state;
+  const call = state.liveToolCalls.find((entry) => entry.id === event.callId);
+  if (call === undefined || call.resolved) return state;
+  const completed = {
+    ...call,
+    resolved: true,
+    outcome: event.outcome,
+    success: event.outcome === 'success',
+  };
+  return {
+    ...state,
+    liveToolCalls: state.liveToolCalls.map((entry) =>
+      entry.id === event.callId ? completed : entry,
+    ),
+    transcript: appendTranscript(state.transcript, { role: 'tools', text: '', calls: [completed] }),
   };
 }

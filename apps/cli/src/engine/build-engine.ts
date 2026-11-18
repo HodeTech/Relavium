@@ -72,6 +72,8 @@ export interface BuildEngineOptions {
    * `fs_scope`. The MCP arm is merged on top below.
    */
   readonly toolEnv?: {
+    /** Trusted operator home for private filesystem inventory; never workflow/model configuration. */
+    readonly operatorHomeDir?: string;
     readonly workspaceDir: string;
     readonly fsScopeTier: FsScopeTier;
     readonly nativeProcesses?: NativeProcessController;
@@ -143,6 +145,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
           profile: RUN_TOOL_PROFILE,
           fsScopeTier: options.toolEnv.fsScopeTier,
           workspaceDir: options.toolEnv.workspaceDir,
+          ...(options.toolEnv.operatorHomeDir === undefined
+            ? {}
+            : { operatorHomeDir: options.toolEnv.operatorHomeDir }),
           ...(options.toolEnv.nativeProcesses === undefined
             ? {}
             : { nativeProcesses: options.toolEnv.nativeProcesses }),

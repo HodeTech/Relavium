@@ -386,6 +386,7 @@ function storeAwareResolver(
   keychain: KeychainStore,
   openedDb?: Db,
   options: Pick<ProviderResolverOptions, 'standardEnvPolicy' | 'credentialSurface'> = {},
+  validatedHomeDir?: string,
 ): ReturnType<typeof createProviderResolver> {
   const fromDb = (db: Db): ReturnType<typeof createProviderResolver> => {
     const providerStore = createProviderStore(db, {
@@ -395,10 +396,9 @@ function storeAwareResolver(
     return createProviderResolver(ctx.io.env, keychain, { providerStore, ...options });
   };
   if (openedDb !== undefined) return fromDb(openedDb);
-  const { homeDir } = loadResolvedConfig({
-    cwd: ctx.global.cwd,
-    configPath: ctx.global.configPath,
-  });
+  const homeDir =
+    validatedHomeDir ??
+    loadResolvedConfig({ cwd: ctx.global.cwd, configPath: ctx.global.configPath }).homeDir;
   return withSynchronousResource(
     ctx.invocation,
     (captureClose) =>
@@ -411,13 +411,14 @@ function storeAwareResolver(
 function keyResolvers(
   ctx: DispatchContext,
   openedDb?: Db,
+  validatedHomeDir?: string,
 ): {
   providers: ReturnType<typeof createProviderResolver>;
   mcpSecretResolver: ReturnType<typeof createMcpSecretResolver>;
 } {
   const keychain = createOsKeychainStore();
   return {
-    providers: storeAwareResolver(ctx, keychain, openedDb),
+    providers: storeAwareResolver(ctx, keychain, openedDb, {}, validatedHomeDir),
     mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
   };
 }
@@ -434,24 +435,31 @@ const executeRun: CommandExecutor = (input, ctx) =>
 
 /** One named-source policy for standalone TTY setup, chat, replacement hosts and live diagnostics. */
 function chatKeyResolvers(ctx: DispatchContext, db?: Db, loaded?: LoadedConfig): ChatResolvedKeys {
-  if (!chatIsInteractive(ctx.io, ctx.global)) return keyResolvers(ctx, db);
   if (loaded === undefined) throw new CliError('cli_internal', '');
+  if (!chatIsInteractive(ctx.io, ctx.global)) return keyResolvers(ctx, db, loaded.homeDir);
   const keychain = createOsKeychainStore();
   const policy = createStandardEnvKeyPolicy(loaded.globalConfig?.preferences);
-  const providers = storeAwareResolver(ctx, keychain, db, {
-    standardEnvPolicy: policy,
-    credentialSurface: 'standalone-chat',
-  });
+  const providers = storeAwareResolver(
+    ctx,
+    keychain,
+    db,
+    {
+      standardEnvPolicy: policy,
+      credentialSurface: 'standalone-chat',
+    },
+    loaded.homeDir,
+  );
   return {
     providers,
     mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
-    prepareInteractiveSetup: (lifetime, liveDb) => {
+    prepareInteractiveSetup: (lifetime, liveDb, configReadObserver) => {
       if (lifetime === undefined || liveDb === undefined) throw new CliError('cli_internal', '');
       const store = createProviderStore(liveDb, {
         uuid: () => randomUUID(),
         now: () => Date.now(),
       });
       return runStandaloneProviderSetup({
+        ...(configReadObserver === undefined ? {} : { configReadObserver }),
         lifetime,
         loaded,
         global: ctx.global,

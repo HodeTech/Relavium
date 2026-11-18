@@ -26,6 +26,7 @@ it.each(['notice', 'store-listener'] as const)(
       runMigrations(client.db);
       const sessions = createSessionStore(client.db);
       const cwd = mkdtempSync(join(tmpdir(), 'relavium-home-advisory-'));
+      const homeDir = mkdtempSync(join(tmpdir(), 'relavium-home-advisory-operator-'));
       mkdirSync(join(cwd, '.relavium'));
       writeFileSync(
         join(cwd, '.relavium', 'project.toml'),
@@ -46,6 +47,7 @@ it.each(['notice', 'store-listener'] as const)(
       if (provider === undefined) throw new Error('Expected offline provider.');
       const stream = vi.spyOn(provider, 'stream');
       const running = driveHome({
+        homeDir,
         invocation: f.invocation,
         io: { ...captureIo().io, stdoutIsTty: true, stdinIsTty: true },
         global: {
@@ -108,8 +110,10 @@ it.each(['notice', 'store-listener'] as const)(
         const controller = props.controller;
         for (const char of 'hello') controller.handleKey(char, {});
         controller.handleKey('', { return: true });
-        await flush();
-        await flush();
+        await vi.waitFor(() => {
+          expect(controller.getSnapshot().session).toBeDefined();
+          expect(controller.getSnapshot().submitBusy).toBe(false);
+        });
         const session = controller.getSnapshot().session;
         if (session === undefined) throw new Error('Expected active Home session.');
         sessionId = session.sessionId;
@@ -150,8 +154,7 @@ it.each(['notice', 'store-listener'] as const)(
                 .state.transcript.some((entry) => entry.text?.includes('budget warning')),
             ).toBe(true);
             controller.handleKey('c', { ctrl: true });
-            await flush();
-            await flush();
+            await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
             controller.handleKey('c', { ctrl: true });
           }
         } finally {
@@ -171,6 +174,7 @@ it.each(['notice', 'store-listener'] as const)(
         vi.restoreAllMocks();
         if (client.sqlite.open) client.sqlite.close();
         rmSync(cwd, { recursive: true, force: true });
+        rmSync(homeDir, { recursive: true, force: true });
       }
     }
   },

@@ -4,9 +4,9 @@
 - **Canonical home**: the contract for the engine-side `ToolRegistry` + dispatch in `packages/core` (`@relavium/core`) and the host-injected `ToolHost` capability seam it performs side effects through — workstream **1.T**
 - **Related**: [../../decisions/0037-engine-tool-execution-boundary.md](../../decisions/0037-engine-tool-execution-boundary.md) (the decision), [../../decisions/0029-tool-policy-hardening.md](../../decisions/0029-tool-policy-hardening.md) (the guardrails), [built-in-tools.md](built-in-tools.md) (the tool catalog + the concrete result-bounding / config-only-param shapes), [node-types.md](node-types.md) (the `tool_config` / `agent_config` blocks that carry `parameters` / `input_mapping` / `output_mapping`), [mcp-integration.md](mcp-integration.md) (the MCP tool transport, 2.R), [llm-provider-seam.md](llm-provider-seam.md) (the canonical `ToolDef` the `ToolNormalizer` lowers), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxonomy) (`agent:tool_call` / `agent:tool_result` payloads + the `tool_denied` / `tool_failed` codes), [../../standards/security-review.md](../../standards/security-review.md#prompt-injection-posture) (the untrusted-data + SSRF + secret rules), [../../standards/error-handling.md](../../standards/error-handling.md) (the retryable/fatal mapping), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md) (the sibling `ExecutionHost` seam + the single event-translation point), [../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md) (durable media handles)
 
-This page is the **one canonical home** for the tool-execution *contract* — how the engine registers a tool, resolves it, assembles and validates its effective arguments, enforces [ADR-0029](../../decisions/0029-tool-policy-hardening.md)'s guardrails, performs the side effect through the host, bounds the model-facing result, and marks it untrusted. The *why* (the engine↔host boundary, the policy/mechanism split) lives in [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md); the *tool catalog* (the thirteen built-ins, their return shapes, FS scope tiers, and the concrete result-bounding thresholds) lives in [built-in-tools.md](built-in-tools.md). This file is the dry reference its consumers (the 1.T registry, the 1.O `AgentRunner`, the 1.V `AgentSession`, each surface's `ToolHost` wiring) bind to. Where any other doc names a tool-dispatch rule it links here and never restates it.
+This page is the **one canonical home** for the tool-execution *contract* — how the engine registers a tool, resolves it, assembles and validates its effective arguments, enforces [ADR-0029](../../decisions/0029-tool-policy-hardening.md)'s guardrails, performs the side effect through the host, bounds the model-facing result, and marks it untrusted. The *why* (the engine↔host boundary, the policy/mechanism split) lives in [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md); the *tool catalog* (the built-in catalog, their return shapes, FS scope tiers, and the concrete result-bounding thresholds) lives in [built-in-tools.md](built-in-tools.md). This file is the dry reference its consumers (the 1.T registry, the 1.O `AgentRunner`, the 1.V `AgentSession`, each surface's `ToolHost` wiring) bind to. Where any other doc names a tool-dispatch rule it links here and never restates it.
 
-> **The one rule that shapes everything here.** `@relavium/core` has **zero platform-specific imports** (CLAUDE.md rule 5). Twelve of the thirteen built-in tools need filesystem / process / network / OS / media-store I/O the engine therefore cannot perform (only `invoke_agent` is engine-internal). The engine owns **policy + dispatch** (pure); the **mechanism** is injected as a `ToolHost`, the same purity seam as `ResolverCapabilities.readFile` (1.L2) and the injected HTTP transport ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). The TypeScript shapes below are the canonical interface the implementation mirrors.
+> **The one rule that shapes everything here.** `@relavium/core` has **zero platform-specific imports** (CLAUDE.md rule 5). Filesystem, process, network, OS and media-store I/O stay behind host capabilities; `invoke_agent` is engine-internal. The engine owns **policy + dispatch** (pure); the **mechanism** is injected as a `ToolHost`, the same purity seam as `ResolverCapabilities.readFile` (1.L2) and the injected HTTP transport ([ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)). The TypeScript shapes below are the canonical interface the implementation mirrors.
 
 ## The `ToolDef` — a registered tool
 
@@ -47,6 +47,26 @@ interface ToolDef<Args = unknown, Result = unknown> {
    * base URL / timeout the model can't touch).
    */
   readonly configOnlyParams?: readonly string[];
+  /** Explicit pure field selection; absent means name-only, never enumerate arguments. */
+  readonly preview?: (args: Args) => ToolPreview;
+  /** Trusted first-party filesystem preparation; invocation is read-only, before approval. */
+  readonly prepare?: (
+    args: Args,
+    host: ToolHost,
+    ctx: ToolDispatchContext,
+  ) => Promise<ToolPreparedCall<Result>>;
+  readonly requiresFsMethod?: 'findFiles' | 'searchFiles' | 'prepareWrite';
+  // The dispatch-context delegate this tool needs; a surface that wires none is never offered the tool (CR-73).
+  readonly requiresDelegate?: 'invokeAgent' | 'mediaRead' | 'askUser';
+  // A pure function of THIS tool's own result that replaces the derived `outputSummary` (built-ins only, ≤ 64 printable ASCII
+  // characters, else `completed`); `ask_user` is the one user, because its result carries the person's words (ADR-0132 §6).
+  readonly displaySummary?: (result: Result) => string;
+  // A pure, total function of the VALIDATED args and THIS tool's own result that builds the question record the call leaves in the
+  // session (built-ins only; the registry re-validates it against `SessionAskRecordSchema` and drops it on a throw or a refusal).
+  // `ask_user` is the one user (ADR-0133); its output rides `ToolDispatchOutcome.ask`, never an event.
+  readonly askRecord?: (args: Args, result: Result) => SessionAskRecord | undefined;
+  readonly effect?: (args: Args) => EffectTier | undefined;
+  readonly duplicationBenign?: boolean; // trusted built-ins only; see effect-journal.md §3
 
   readonly policy: ToolPolicyClass;
 
@@ -106,14 +126,19 @@ capability is absent fails with a typed `ToolUnavailableError` (never a crash, n
 sneaking into the engine) — exactly as an absent `ResolverCapabilities.readFile` fails the `read_file`
 interpolation filter.
 
+Prepared file diffs use `yieldControl` at bounded work intervals so host input and deadlines can run.
+The host must resolve it after an event-loop turn; if it is absent when a diff needs to yield, preparation
+fails closed and releases its handle before approval or journaling.
+
 ```ts
 interface ToolHost {
+  readonly yieldControl?: () => Promise<void>; // resolves after a host event-loop turn
   readonly fs?: FsCapability;            // file read/write/list, jailed to the active FS scope tier
   readonly process?: ProcessCapability;  // process spawn — host-resolved executable + base env; shell:false
   readonly egress?: EgressCapability;    // outbound HTTPS — shared SSRF primitive; host-resolved credential ref
   readonly os?: OsCapability;            // clipboard / native notification
   readonly mcp?: McpCapability;          // MCP client transport (ADR-0034; wired at 2.R)
-  readonly outputStore?: ToolOutputStore; // run-scoped bounded spill for over-ceiling results (below)
+  readonly outputStore?: ToolOutputStore; // host-scoped bounded spill for over-ceiling results (below)
 }
 
 interface ProcessCapability {
@@ -155,8 +180,8 @@ interface EgressCapability {
 }
 
 interface ToolOutputStore {
-  /** Spill an over-ceiling result to a run-scoped store; returns a handle + byte length, reclaimed on the
-   *  run's terminal event (ADR-0036). A genuinely streamed huge source is bounded by its host capability
+  /** Spill an over-ceiling result within its host-owned lifetime; return an authorized handle + byte length.
+   *  Reclaim after actual producers join. A genuinely streamed huge source is bounded by its host capability
    *  at the boundary (returning an already-bounded payload); this spills the in-memory result a
    *  `dispatch` returned, so the engine hands the model a preview + the spill handle, not the full bytes. */
   spill(text: string, limits: ToolResultLimits, signal?: AbortSignalLike): Promise<SpilledResult>;
@@ -241,7 +266,7 @@ host is touched once, in the middle.
 2. **Assemble the effective argument set.** Start from the model-supplied args (for an agent tool-call) and/or `ctx.config.input_mapping` (for a `tool` node, where there are no model args), apply `input_mapping`, then merge `configOnlyParams` **last (config wins)**.
 3. **Validate the COMPLETE effective set** via `tool.parseArgs` **and** the secret-taint check — `input_mapping`/config-derived values are validated identically to model args; a secret-tainted value reaching a non-credential arg is rejected (0029(c)). A miss → `ToolArgsInvalidError`.
 4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` (+ opt-in `allowedCommandGlobs`, deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**.
-4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, an `os` action (`read_clipboard` / `notify` — the clipboard is an un-jailed exfiltration sink), or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret); just before invoking that hook, the **engine's `confirmDispatch`** emits `agent:approval_requested` (via `ctx.approval.emitApprovalRequested`) for **every** governed dispatch reaching this gate — whether the host then prompts a human (accept-edits / auto's protected-path fallback) or auto-decides (ask/plan deny, auto approve). **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (fatal, never retried); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
+4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, an `os` action (`read_clipboard` / `notify` — the clipboard is an un-jailed exfiltration sink), or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret); just before invoking that hook, the **engine's `confirmDispatch`** emits `agent:approval_requested` (via `ctx.approval.emitApprovalRequested`) for **every** governed dispatch reaching this gate — whether the host then prompts a human (`ask` on every governed call; `accept-edits` for everything except a workspace file edit) or decides without one (`plan` refuses with a fixed text that returns to the model; `auto` approves). A protected path never reaches this gate: it is refused while the write is prepared, in every mode. **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (never retried; in an agent session the refusal is returned to the model as the call's result and the turn continues — [ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), the section "Refusals that return to the model" below); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
 5. **Call the host capability** (the single side effect), threading `ctx.signal`. Absent capability → `ToolUnavailableError`; an `AbortSignal`-origin failure → the **cancellation** path (`cancelled`, never `tool_failed` — preserves ADR-0036 cancel precedence); any other host throw → `ToolExecutionError`. A host capability MAY itself throw a typed `ToolDispatchError` subclass for a **deterministic host-side denial** (e.g. the CLI `fs` arm throwing a `tool_denied` when a path escapes the FS scope tier, or `ToolUnavailableError` for a read-only fail-close) — the registry passes any `ToolDispatchError` through **verbatim**, exactly as it does an engine-side `ToolPolicyError`, so such a denial is fatal (never burns the node-retry budget); only a *raw* host throw becomes the retryable `ToolExecutionError`.
 5b. **Split off a media attachment**, if the dispatch returned one (`CR-50`,
    [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1). A tool that answers with media
@@ -274,6 +299,11 @@ live durability latch independently of journal tier or cached effect identity.
 
 ```ts
 interface ToolDispatchContext {
+  readonly onToolLiveEvent?: ToolLiveObserver; // synchronous, ephemeral display only; no authority
+  readonly readScope?: ToolReadScope;       // current tool-loop read evidence; never persisted
+  readonly effects: EffectDispatchPort;    // REQUIRED; unwiredEffectJournal refuses journal operations
+  readonly effectSlot: EffectSlot;         // engine-owned ordinal across the current tool loop
+  readonly effectAttempt?: Pick<EffectAttemptId, 'providerAttempt' | 'toolCallId'>;
   readonly hostCallOptions?: ToolHostCallOptions | undefined; // trusted execution-only lifetime authority, never tool arguments
   readonly nodeId: string;
   readonly grantedToolIds: ReadonlySet<ToolId>;  // the node's narrowed grant (0029(b)); dispatch refused outside it
@@ -292,6 +322,8 @@ interface ToolDispatchContext {
   // see Secret argument provenance below before activating a future mapped path.
   readonly secretArgKeys?: ReadonlySet<string>;
   readonly invokeAgent?: (nodeId: string, input: unknown) => Promise<unknown>; // engine delegate (invoke_agent); absent ⇒ ToolUnavailableError
+  readonly askUser?: AskUserDelegate;      // engine delegate (ask_user, ADR-0132): the host's question card; absent ⇒ the tool is never offered
+  readonly askUserTurn?: AskUserTurnState; // the per-turn skip state (no card count), built once per session turn and shared by reference; travels WITH askUser
   readonly limits?: ToolResultLimits;      // the result-bounding ceilings; absent ⇒ DEFAULT_TOOL_RESULT_LIMITS
   readonly beforeDispatch?: (toolId: ToolId) => void; // synchronous trusted admission immediately before actual dispatch
   readonly signal?: AbortSignalLike;
@@ -302,7 +334,15 @@ interface ToolDispatchContext {
 config block ([node-types.md](node-types.md) `tool_config` / `agent_config`) — that is where the
 config-only VALUES and the `input_mapping` / `output_mapping` come from. `invokeAgent` is an
 **engine-provided delegate**, not a `ToolHost` capability — `invoke_agent` is pure orchestration
-(dispatch another node by id), no platform I/O, no full router selection this phase.
+(dispatch another node by id), no platform I/O, no full router selection this phase. `askUser` is likewise a delegate: it carries
+the host's card for `ask_user`, which the tool awaits like the approval hook but which is **not governed** (no action class,
+approval, effect journal entry or cache). A `ToolDef` that dispatches through a delegate declares it in `requiresDelegate`
+(`invokeAgent` / `mediaRead` / `askUser`), and a surface that wires none never offers the tool. A tool may also declare
+`displaySummary`, a pure function of its own result that replaces the derived `outputSummary` (only `ask_user` does, because its
+result carries the person's words), and `askRecord`, a pure function of its validated arguments and its own result that builds the
+record of what the person was asked and answered ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)):
+built-ins only, re-validated by the registry, delivered on the optional `ToolDispatchOutcome.ask` and from there into the typed
+`SessionToolHistoryEntry` (never an event payload). The contract is [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d).
 
 ### The per-tool approval seam (`ConfirmActionHook`, ADR-0057 EA3)
 
@@ -319,11 +359,13 @@ preview is **secret-free, display-only**.
  *  workflow author-trust path (governed tools proceed under the step-4 floor, unchanged). */
 interface ToolApprovalContext {
   readonly confirm?: ConfirmActionHook; // ABSENT under an active regime ⇒ fail-closed deny (no_approval_hook)
+  readonly emitApprovalRequested?: (request: ToolApprovalRequest) => void; // original closed request only
 }
 
 type ConfirmActionHook = (
   request: ToolApprovalRequest,
   signal?: AbortSignalLike, // SHOULD be honored — an abort while prompting routes to the engine's cancel path
+  live?: ToolApprovalLiveContext, // in-process only; never part of the durable approval request/event
 ) => Promise<ToolApprovalDecision>;
 
 interface ToolApprovalRequest {
@@ -349,9 +391,23 @@ interface ToolActionPreview {
 }
 
 type ToolApprovalDecision =
-  | { readonly outcome: 'approve' }
-  | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
+  | {
+      readonly outcome: 'approve';
+      readonly onDispatchSucceeded?: () => void; // commit a provisional mutation grant after real non-replay success
+    }
+  | { readonly outcome: 'reject'; readonly reason?: string }; // optional host-supplied explanation
 ```
+
+**Denial explanation content.** An optional `reason` can be a fixed host label
+or user-authored text collected by that host. A `string` type or `tool_denied`
+code proves neither static origin nor absence of secrets. The registry currently
+appends this text to the public denial message, so callers must not supply
+managed secrets or raw native details. Terminal-only cleanup is not a redaction
+guarantee. The accepted
+[ADR-0127 CLI diagnostic policy](../cli/chat-session.md#denial-explanation-trust-and-output-policy)
+requires producer and presentation protection for its typed-rejection path.
+That policy changes no approval decision shape, authority, retry behavior or
+return-to-model contract; other host implementations own their input protection.
 
 **Preview redaction (#91).** "Secret-free" is enforced by the registry, not asserted: every preview field is
 scrubbed with the same `redactSecretShapedText` detector applied to `agent:tool_call.toolInput`, because the
@@ -414,7 +470,7 @@ distinct from the *event* `outputSummary`, which the registry bounding stage pro
 
 - **Bounding is model-facing only.** `output_mapping` runs on the **full** result (step 6) so workflow state holds the real value; only the model-facing `tool_result` is replaced by a **bounded preview + an explicit truncation marker + the spill path** (step 7).
 - **The full result is spilled to the host `outputStore`; the model gets a preview + handle.** *v1.0 caveat:* the bound is over the **in-memory** result the `dispatch` returns — the seam's `FileRead.content` / `EgressResponse.body` / `ProcessResult.stdout` are `string`, so the engine holds the full result transiently before spilling. A **stream-and-incrementally-spill-at-the-boundary** guarantee (the engine never holding the full bytes) requires a **host-capability contract**; it is not provided by this string-returning seam. Hosts own their source limits, and network availability depends on the surface/profile wiring. The shipping CLI wires egress in `chat-read-write`; its `chat-read-only` and `workflow-read-write` profiles omit that arm. This does not claim streamed engine results or shipping workflow HTTP. The model-facing context-window protection (the stated purpose) holds today regardless. The output store is its **own** `ToolHost` capability, so bounding does not depend on the optional `fs` capability (a `web_search` / MCP host with no `fs` still bounds).
-- **Reclaimed at the terminal event.** Spilled output is run-scoped and swept when the run reaches a terminal event (the ADR-0036 terminal-state sweep), like other run-scoped artifacts.
+- **Reclaimed by its host lifetime.** Native CLI chat wires an ephemeral per-session-instance store, closed only after actual producers join. A host with no store returns a preview and an explicit unavailable note; the workflow factory does not yet wire a spill producer. A future run-scoped store must obey the existing run-terminal ownership contract.
 
 The ceiling is a **byte/line** bound (no token count — that needs a provider-specific tokenizer, which would break engine purity); concrete defaults and the marker shape are canonical in
 [built-in-tools.md](built-in-tools.md#tool-result-bounding). `ToolResultLimits` carries them into `ctx`.
@@ -460,7 +516,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 
 | Tool | Capability / delegate | Guardrail |
 |------|----------------------|-----------|
-| `read_file` / `write_file` / `list_directory` | `host.fs` | FS scope tier (binary/media ⇒ **durable handle**, not inline base64 — below) |
+| `read_file` / `write_file` / `edit_file` / `list_directory` / `search_files` / `find_files` | `host.fs` (`readFile`, prepared `prepareWrite`, `listDirectory`, `searchFiles`, `findFiles`) | FS scope tier; writes additionally require preparation, approval and durable admission. Binary/media boundary below. |
 | `run_command` | `host.process` | exact `allowedCommands` + host-resolved executable + declared env, `shell:false` |
 | `git_status` | `host.process` | pre-approved git allowlist |
 | `git_commit` | `host.process` | **human-gate approval required** |
@@ -469,6 +525,7 @@ per-call-site discipline ([security-review.md §Prompt-injection](../../standard
 | `read_clipboard` / `notify` | `host.os` | — |
 | `mcp_call` | `host.mcp` | server URL runs the same SSRF primitive (0029(d); 2.R) |
 | `invoke_agent` | `ctx.invokeAgent` (engine delegate) | pure orchestration — no `ToolHost` I/O |
+| `ask_user` | `ctx.askUser` (engine delegate) + `ctx.askUserTurn` | a question to the person, not governed; per-turn skip state — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) |
 
 **Binary / media results.** A tool returning binary or media content (a `read_file` on a non-text file,
 a media `http_request` body) returns a **durable media handle** (`tool_result.media`,
@@ -565,6 +622,337 @@ Live authority changes only at explicit rebuild/refresh, not file watching. Old
 and pending hosts share it, so failed replacement cannot restore a grant. A
 request admitted before narrowing may finish. Workflow domains remain separately
 owned and are not switched to global chat policy.
+
+<a id="proposed-prepared-writes-and-live-previews--mvp-3"></a>
+
+## Prepared writes and live previews — MVP-3
+
+**Step 2 accepted on development (2026-11-12):** implements
+accepted [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md),
+[ADR-0124](../../decisions/0124-inspect-retained-run-effects-before-file-preparation.md)
+and the [effect-journal protocol](effect-journal.md#retained-evidence-and-early-inspection--mvp-3).
+The [source-bound acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+records clean implementation/security reviews and combined CI.
+[ADR-0125](../../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md)
+defines the all-write durability and native metadata completion requirements,
+accepted as corrected design after maintainer review. The interfaces below
+describe the accepted Step 2 implementation, including its validated native
+target matrix. Existing event and secret-provenance
+contracts remain in force.
+
+The engine-side `ToolDef` gains an optional pure preview declaration, separate
+from the LLM-facing tool schema. It selects a target, explicit named fields
+and optional prepared-file diff; absent declaration means name-only display.
+No generic argument enumeration is permitted. Declared secret fields,
+`credentialRef` and tainted effective inputs are ineligible. Unknown external
+provenance keeps its existing documented limits; string types and shape masking
+are not proof that arbitrary user/model text contains no secret.
+
+`ToolPreview` is a bounded, immutable live display value. The core `ToolHost`
+filesystem seam gains optional read/search and prepared-write capabilities;
+their exact source/range semantics belong in
+[built-in-tools.md](built-in-tools.md#proposed-edit-search-and-ranged-reads--mvp-3).
+No Node filesystem object, descriptor number, SDK type or terminal span crosses
+the seam. An opaque preparation binds one validated target, before/after byte
+snapshot and execution operation; model arguments cannot construct or substitute
+it. A missing new capability
+refuses the dependent operation rather than approving a blind fallback.
+
+A trusted first-party filesystem `ToolDef.prepare` hook declares a prepared
+operation without running preparation. Its presence and a non-`undefined`
+`journaledTier` identify a dispatch eligible for early replay inspection.
+Neither model arguments, a tool-name heuristic nor MCP metadata can declare
+this behavior. Capability availability is checked before dependent host work.
+Under [effect-journal.md §3](effect-journal.md#3-what-is-journaled), every built-in
+`write_file` call and every `edit_file` call is tier 3, so new-file creation,
+overwrite, append and empty/unchanged writes take the early lookup path. Read-only
+file tools and GET requests remain outside it. All admitted new file writes
+require the existing durable journal seam before directory creation, staging or
+execution; missing wiring refuses rather than selecting a blind or native-owned
+journal fallback.
+
+### Prepared capability and live display types
+
+The model arguments in the [tool catalog](built-in-tools.md) remain separate
+from this host-only union: `old_string`, `new_string` and `replace_all` are
+validated and lowered to the camel-case fields below. `readScope` carries only
+current-loop observed-byte evidence; its absence does not waive read-before-edit.
+
+```ts
+type ToolReadScope = object;
+type FsPrepareWriteRequest =
+  | {
+      readonly kind: 'write';
+      readonly path: string;
+      readonly content: string;
+      readonly append?: boolean | undefined;
+      readonly createDirs?: boolean | undefined;
+    }
+  | {
+      readonly kind: 'edit';
+      readonly path: string;
+      readonly oldString: string;
+      readonly newString: string;
+      readonly replaceAll?: boolean | undefined;
+      readonly readScope?: ToolReadScope | undefined;
+    };
+
+interface FsPreparedWrite {
+  readonly path: string;
+  readonly before: string | null;
+  readonly after: string;
+  execute(signal?: AbortSignalLike, options?: ToolHostCallOptions): Promise<FileWritten>;
+  release(): void | Promise<void>;
+}
+
+interface FsCapability {
+  prepareWrite?(request: FsPrepareWriteRequest, signal?: AbortSignalLike): Promise<FsPreparedWrite>;
+  readFile(path: string, opts: FsReadOpts, signal?: AbortSignalLike): Promise<FileRead>;
+  writeFile(path: string, data: string, opts: FsWriteOpts, signal?: AbortSignalLike): Promise<FileWritten>;
+  listDirectory(path: string, opts: FsListOpts, signal?: AbortSignalLike): Promise<DirListing>;
+  findFiles?(path: string, opts: FsFindOpts, signal?: AbortSignalLike): Promise<FsFindResult>;
+  searchFiles?(path: string, opts: FsSearchOpts, signal?: AbortSignalLike): Promise<FsSearchResult>;
+  acknowledgeReadResult?(scope: ToolReadScope, result: unknown): void;
+  promoteReadScope?(scope: ToolReadScope): void;
+  releaseReadScope?(scope: ToolReadScope): void;
+}
+
+interface ToolPreparedCall<Result = unknown> {
+  readonly preview: ToolPreview;
+  dispatch(ctx: ToolDispatchContext): Promise<Result>;
+  release(): void | Promise<void>;
+}
+
+interface ToolDiffSourceSpan {
+  readonly line: number;
+  readonly start: number;
+  readonly end: number;
+}
+interface ToolDiffLine {
+  readonly kind: 'context' | 'added' | 'removed';
+  readonly text: string;
+  readonly ending: 'lf' | 'crlf' | 'none';
+  readonly before?: ToolDiffSourceSpan;
+  readonly after?: ToolDiffSourceSpan;
+}
+// A file's convention. A final line with no terminator has no ending to compare, so with more than one line it does
+// not make the file `mixed` (`a\nb` is `lf`); each `ToolDiffLine` still carries its own ending (`none` for that line).
+// `none` is a file whose only line is unterminated.
+type ToolFileEndings = 'empty' | 'lf' | 'crlf' | 'mixed' | 'none';
+interface ToolFileDiff {
+  readonly before: string | null;
+  readonly after: string;
+  readonly lines: readonly ToolDiffLine[];
+  readonly beforeEndings: ToolFileEndings;
+  readonly afterEndings: ToolFileEndings;
+  readonly stats: {
+    readonly addedLines: number;
+    readonly removedLines: number;
+    readonly beforeBytes: number;
+    readonly afterBytes: number;
+  };
+}
+interface ToolPreview {
+  readonly kind: 'operation' | 'saved-result';
+  readonly target?: string;
+  readonly fields: readonly { readonly name: string; readonly value: string }[];
+  readonly diff?: ToolFileDiff;
+}
+interface ToolApprovalLiveContext {
+  readonly callId: string;
+  readonly preview: ToolPreview;
+}
+type ToolLiveEvent =
+  | { readonly phase: 'started'; readonly callId: string; readonly toolId: string }
+  | { readonly phase: 'preview'; readonly callId: string; readonly toolId: string;
+      readonly preview: ToolPreview }
+  | { readonly phase: 'completed'; readonly callId: string; readonly toolId: string;
+      readonly outcome: 'success' | 'failure' | 'denied' | 'unknown'; readonly summary?: string };
+type ToolLiveObserver = (event: ToolLiveEvent) => void;
+```
+
+`FsPreparedWrite` owns one source identity, frozen before/after bytes and one-shot
+execution through private host closures. It exposes no native token, descriptor
+or metadata blob. `before: null` means a new file; `before: ''` means an existing
+empty file. Execution consumes the preparation after final admission and
+revalidation; release also runs on denial, cancellation, replay races and errors.
+`ToolPreparedCall` keeps that ownership inside the registry. Built-in file writes
+use this path, never a legacy `writeFile` preview/publication fallback. The
+[native metadata contract](../cli/native-filesystem-metadata.md) owns platform
+access checks, preservation and publication requirements.
+
+Diff spans use one-based source line numbers and absolute half-open UTF-16
+`start`/`end` offsets into their exact side snapshot. A span includes its line
+ending; `text` excludes it, and `ending` records it separately. UTF-8 byte counts
+are the independent `beforeBytes`/`afterBytes` statistics, never guessed from
+UTF-16 lengths. Empty files have zero source lines. Complete diff coverage must
+account for every source line on each applicable side, including unchanged
+context, both sides of every changed byte, line-ending-only changes and an
+unterminated final line. A shortened card states omissions; full inspection can
+traverse all admitted changes and original spans. Budget failure refuses with
+`diff_limit`; it never produces an approved coarse replacement or silently
+clips the diff.
+
+The synchronous `onToolLiveEvent` observer receives `started` and `completed`
+for every registry dispatch attempt, including validation failure, denial,
+read-only calls and auto/always writes. `preview` is optional declared display
+state; completion has only its outcome and optional bounded summary, not raw
+arguments or result bodies. Session call ids are engine-owned; a registry may
+issue private ids for other in-process callers. Provider/model ids never become
+this authority. Consumers correlate by these ids, not tool names or durable
+event order: the current turn emits sanitized durable tool-call/result events
+after dispatch, and failed attempts may have no durable tool-call event.
+Observer failures grant no authorization and do not change dispatch. No live
+value becomes an event, history row, journal field, seed or export.
+
+An approving hook may return `onDispatchSucceeded` to commit a provisional
+`always` choice. The registry invokes it only after an actual successful
+non-replay call and its normal mapping, bounding, settlement and cancellation
+checks. The initial approval must not eagerly populate the mutation cache:
+atomic prepare may instead return a replay. Denial, cancellation, preparation
+failure and either replay path leave that provisional grant uncommitted.
+Saved-result delivery never invokes this callback, even if a hook returns one.
+This is an in-process decision receipt; neither `ToolPreview` nor the display
+observer is an authorization channel. Pre-existing cache/mode authority retains
+its normal floor.
+
+### Dispatch ordering
+
+The dispatch order is:
+
+1. Resolve/grant-check, assemble and byte-bound effective arguments, validate
+   schemas/provenance, classify the immutable raw target, and enforce policy.
+   For a journaled call, compute its stable journal projection now; reject
+   unsettled/colliding projections before inspection and reuse it at prepare.
+2. For a prepared, journaled dispatch, call the required `inspectReplay` port.
+   A hit validates the shared retained envelope and exact current mapping, then
+   takes the saved-result confirmation/delivery path below with no filesystem
+   preparation/publication. A miss reserves nothing; a failure never becomes
+   a miss or a loop-correctable edit precondition.
+3. On a miss, if required, prepare through read-only, bounded, cancellable host work. This
+   includes no directory creation, temporary file or effect. Freeze content and
+   compute a bounded diff; refused preparation reaches neither approval nor write.
+4. Pass a separate, optional third in-process argument to `ConfirmActionHook`:
+   an immutable live approval context carrying the engine call id and
+   `ToolPreview`. Do not widen `ToolApprovalRequest.preview`/`ToolActionPreview`.
+   The event emitter receives the original closed request only, never this live
+   context. A separate call-id-correlated live display observer handles read
+   rows and auto/always traces; it is not an event/history producer. Keep the
+   original target for classification; never classify a redacted target.
+5. Obtain the existing mode/once/always decision, prepare the durable effect row
+   for every new built-in write/edit,
+   and retain all existing post-approval/post-prepare `beforeDispatch` gates.
+   If atomic prepare instead finds a retained result, use the same strict replay
+   validation and saved-result path; release the unused preparation.
+6. Revalidate and execute the owned preparation once, map/bound/settle results
+   under existing effect/cancellation precedence, and release preparation state
+   on every outcome. No preview or new display callback can bypass journaling,
+   make a tier-3 failure retryable, or replay session effects.
+
+**Saved-result confirmation is not a new file-byte approval.** A replay live
+preview explicitly says saved-result delivery/no new filesystem operation;
+it contains no invented current diff, file snapshot or new change statistics.
+An active approval regime still requires its hook and current mode/decision,
+using the original policy target and existing closed approval request. The
+optional live context identifies replay to the in-process host. An absent hook,
+denial or abort cannot be bypassed because a result is recorded. Approval of
+delivery never creates/expands a future mutation's `always` cache; a prompting
+replay offers delivery-once/deny, while existing mode/pre-existing cache policy
+can decide under its normal floor. A prepare-race replay replaces the live
+projection and uses this same delivery confirmation rather than claiming that
+the previously previewed file bytes were published. Author-trusted workflows
+receive no interactive approver.
+
+Replay skips only the actual-dispatch `beforeDispatch` hook and file execution,
+as the existing replay already does. Inspection's ownership/fencing and actual
+producer lifetime, grants/provenance/policy and cancellation remain enforced.
+Its recorded result is validated at both entry points; neither a corrupt
+envelope nor an inspection error manufactures `undefined` success. Error and
+resume-gate rules belong in the effect-journal protocol linked above.
+
+```mermaid
+flowchart TD
+    A[Resolve, grant, validate and enforce policy] --> B[Stable journal projection; reject unsettled]
+    B --> C{Prepared and journaled?}
+    C -->|Yes| D[Read-only inspectReplay]
+    D -->|Retained hit| E[Validate envelope and mapping]
+    E --> F[Saved-result decision and delivery]
+    D -->|Proven miss| G[Read-only filesystem preparation if required]
+    C -->|No| G
+    G --> H[New-operation approval]
+    H --> I[Atomic durable prepare if journaled]
+    I -->|Proceed| J[beforeDispatch, revalidate and execute]
+    I -->|Replay race| E
+```
+
+An `auto`/explicit-`Ctrl+G` write still prepares/revalidates, records its normal
+effect and emits a bounded live outcome/target/diff-stat projection. Approval
+absence in an author-trusted workflow does not create an interactive approver.
+Core never renders. Public durable events and `agent:approval_requested` retain
+their existing closed schemas; they do not receive the richer preview, diff,
+reveal buffer or opaque preparation. Logs, session history/effects, display
+metadata and export code likewise receive none of those values. Curated new
+core exports and these additive capability signatures are part of the MVP-3
+plan's public-API approval; no LLM wire/seam schema change is proposed.
+
+**Correctable edit preconditions.** A closed typed preparation refusal identifies
+only `read_required`, `stale_file`, `match_not_found`, `match_not_unique`,
+`unobserved_match`, `unsupported_text` or `diff_limit`, with fixed content-free
+guidance to re-read, narrow the match or reduce the change. It is not a permission
+denial and carries no source/path/match excerpt. Only the registry's read-only
+preparation cut, before durable effect preparation and dispatch, may classify it
+as recoverable `tool_failed`; node retry remains disabled. On existing
+`recoverToolFailures` chat paths it becomes a bounded `isError` tool result under
+the existing finite tool/correction budgets; workflow nodes retain fail-fast
+policy. A same-shaped failure after effect preparation/dispatch is not eligible.
+Final revalidation failure stays conservatively fatal if its no-effect status
+cannot be established through the existing journal protocol. Native metadata
+admission failures are fixed-reason fatal safety refusals, never additions to
+this correction vocabulary. Generic read-only preparation failure does not
+prove that classification: the native host must map metadata refusals to an
+existing fatal denial or fixed-diagnostic `ToolExecutionError` with both
+`recoverable: false` and `retryable: false`. User/mode rejection,
+protected/confidentiality/guardrail denial, cancellation and uncertain effects
+keep their current classifications. No generic side-effect failure or denial
+recovery is activated before MVP-4.
+
+The CLI composes transcript sanitization with a distinct approval-safe projection.
+It needs a bounded, source-span-preserving masking projection, at least as
+conservative as the existing finite masker, including whole-field fallback.
+Never guess original offsets from replacement-string lengths or weaken existing
+event/journal redaction. Uncertain mapping refuses review, or requires deliberate
+inspection of the whole eligible field as escaped, in-memory content. Literal
+mask/escape notation must be distinguishable without color. Full-view behavior
+and permitted sinks belong in the
+[chat interaction contract](../cli/chat-session.md#proposed-mvp-3-interaction-contract).
+
+## Step 1 read/search capability and evidence — MVP-3
+
+**Implemented on development; locally accepted (2026-11-12).** The
+[source-bound record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
+distinguishes local review/security acceptance from checkpoint CI. `FsReadOpts`
+adds `range`; filesystem capabilities may provide `findFiles`/`searchFiles`.
+The exact range/discovery inputs and bounded result fields live in
+[built-in-tools.md](built-in-tools.md#file-tool-inputs-results-and-resource-limits).
+An engine-side `ToolDef.requiresFsMethod` declaration names `findFiles` or
+`searchFiles`; the advertise filter checks that method, while dispatch retains
+its typed capability-unavailable backstop. This declaration never crosses the
+LLM wire schema.
+
+Every captured agent tool loop creates a fresh private object identity in
+`ToolDispatchContext.readScope`. After successful bounding, the registry forwards
+only an untruncated built-in read's exact raw result to
+`fs.acknowledgeReadResult(scope, result)`. The native host recognizes its own
+frozen result through a WeakMap and stages source-version/interval evidence;
+generic/model-created values are not receipts. The next model response's tool
+batch calls `registry.promoteReadScope(scope)` before dispatching that batch,
+promoting only previously staged observations. No promotion occurs between
+sibling calls, so a read and edit requested together cannot imply the model saw
+the read. `releaseReadScope` drops staged/promoted evidence in a finally block
+on every turn outcome. A cleanup callback failure cannot substitute an error
+for canonical accounting/outcome; a fresh identity still prevents future reuse.
+These synchronous hooks perform no I/O or durable/event writes. Session and
+workflow agents share this one substrate; no cross-turn content carry is added.
 
 ## Secret argument provenance
 

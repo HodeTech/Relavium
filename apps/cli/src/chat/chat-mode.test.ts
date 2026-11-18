@@ -8,6 +8,7 @@ import {
   DEFAULT_CHAT_MODE,
   governedToolIds,
   isGovernedTool,
+  MODE_DESCRIPTION,
   nextMode,
   nonInteractiveApprovalPrompt,
   parseMode,
@@ -78,6 +79,7 @@ describe('isGovernedTool — mirrors the registry governedAction (advertise-filt
     expect(governedToolIds(BUILTIN_TOOLS)).toEqual(
       new Set([
         'write_file',
+        'edit_file',
         'run_command',
         'git_commit',
         'http_request',
@@ -101,6 +103,7 @@ describe('nonInteractiveApprovalPrompt — the fail-closed no-TTY policy (Step 1
     await expect(prompt(req(), true)).resolves.toEqual({
       outcome: 'reject',
       reason: 'interactive approval is unavailable in a one-shot agent run',
+      denialClass: 'unavailable', // ADR-0117: no one can answer → a fixed "unavailable" text returns to the model
     });
     const proc = await prompt(
       req({ toolId: 'run_command', action: 'process', preview: {} }),
@@ -117,6 +120,7 @@ describe('nonInteractiveApprovalPrompt — the fail-closed no-TTY policy (Step 1
     expect(driver).toEqual({
       outcome: 'reject',
       reason: 'interactive approval is unavailable on this non-interactive driver',
+      denialClass: 'unavailable',
     });
   });
 });
@@ -139,9 +143,98 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     ...over,
   });
 
-  it('ask: hides governed tools (incl. git_commit) AND its confirm rejects EVERY governed class (two-layer)', async () => {
-    const d = deps();
+  it('ask: advertises every granted tool and PROMPTS for every governed class — nothing is auto-approved (ADR-0130)', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'once' }),
+    );
+    const d = deps({ prompt });
     const policy = buildTurnPolicy('ask', d);
+    expect(policy.advertise).toBeUndefined(); // the person decides each call, so the model sees the whole toolbelt
+    for (const r of [
+      req(),
+      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+      req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+      req({ toolId: 'read_clipboard', action: 'os', preview: {} }),
+    ]) {
+      expect((await successful(policy.confirm!(r))).outcome).toBe('approve');
+    }
+    expect(d.prompt).toHaveBeenCalledTimes(4); // one card per governed action
+  });
+
+  it('ask with no one to answer (canAsk:false): hides governed tools as plan does, and still refuses a named one as unavailable', async () => {
+    const d = deps({ canAsk: false, prompt: nonInteractiveApprovalPrompt('on this driver') });
+    const policy = buildTurnPolicy('ask', d);
+    expect(policy.advertise?.('read_file')).toBe(true);
+    expect(policy.advertise?.('write_file')).toBe(false);
+    expect(await policy.confirm!(req())).toEqual({
+      outcome: 'reject',
+      reason: 'interactive approval is unavailable on this driver',
+      denialClass: 'unavailable',
+    });
+  });
+
+  // The fail-closed guarantee lives in buildTurnPolicy itself, not only in the callers that coerce a no-approver
+  // surface to `ask`: with nobody to answer, accept-edits and auto must not approve a governed action unseen.
+  const GOVERNED_REQUESTS = [
+    req(),
+    req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+    req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+    req({ toolId: 'notify', action: 'os', preview: {} }),
+  ];
+
+  it.each(['accept-edits', 'auto'] as const)(
+    '%s with no one to answer (canAsk:false) decides exactly as ask does: no governed action is approved without a card',
+    async (mode) => {
+      const decide = async (asked: 'ask' | typeof mode) => {
+        const prompt = vi.fn<ApprovalPrompt>(() =>
+          Promise.resolve({
+            outcome: 'reject',
+            reason: 'unavailable here',
+            denialClass: 'unavailable',
+          }),
+        );
+        const policy = buildTurnPolicy(asked, { ...deps({ prompt }), canAsk: false });
+        const decisions = [];
+        for (const request of GOVERNED_REQUESTS) decisions.push(await policy.confirm!(request));
+        return {
+          decisions,
+          prompts: prompt.mock.calls.length,
+          advertised: ['read_file', 'write_file', 'run_command', 'http_request', 'notify'].map(
+            (id) => policy.advertise?.(id),
+          ),
+        };
+      };
+      const coerced = await decide(mode);
+      const reference = await decide('ask');
+      expect(coerced).toEqual(reference);
+      // The reference itself is the refusing behaviour (not an accidental shared approval).
+      expect(reference.prompts).toBe(GOVERNED_REQUESTS.length);
+      expect(reference.decisions.every((decision) => decision.outcome === 'reject')).toBe(true);
+      expect(reference.advertised).toEqual([true, false, false, false, false]);
+    },
+  );
+
+  it('plan keeps refusing with its fixed mode refusal when canAsk is false', async () => {
+    const policy = buildTurnPolicy('plan', { ...deps(), canAsk: false });
+    expect(await policy.confirm!(req())).toMatchObject({ outcome: 'reject', denialClass: 'mode' });
+  });
+
+  it.each([undefined, true])(
+    'accept-edits and auto behave as before when canAsk is %s: a normal edit is applied without a card',
+    async (canAsk) => {
+      for (const mode of ['accept-edits', 'auto'] as const) {
+        const d = deps({ ...(canAsk === undefined ? {} : { canAsk }) });
+        const policy = buildTurnPolicy(mode, d);
+        expect(policy.advertise).toBeUndefined();
+        expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+        expect(d.prompt).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it('plan: hides governed tools (incl. git_commit) AND refuses every governed class with a FIXED mode refusal that returns to the model', async () => {
+    const d = deps();
+    const policy = buildTurnPolicy('plan', d);
     expect(policy.advertise?.('read_file')).toBe(true);
     expect(policy.advertise?.('git_status')).toBe(true); // read-only process tool stays advertised
     expect(policy.advertise?.('write_file')).toBe(false);
@@ -149,66 +242,48 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     // git_commit is the requiresGateApproval superset element — hidden here is its ONLY mode-level containment
     // on the chat path (the confirm hook is never invoked for it, since governedAction returns undefined).
     expect(policy.advertise?.('git_commit')).toBe(false);
-    // The authoritative floor: confirm rejects fs_write AND process AND egress dispatches, not just writes.
+    // The authoritative floor: confirm refuses fs_write AND process AND egress AND os dispatches, not just writes.
     for (const r of [
       req(),
       req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
       req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
+      req({ toolId: 'read_clipboard', action: 'os', preview: {} }),
     ]) {
       expect(await policy.confirm!(r)).toEqual({
         outcome: 'reject',
-        reason: 'not allowed in ask mode (read-only)',
+        denialClass: 'mode', // ADR-0117: a mode refusal is decided from the policy alone → it returns to the model
+        reason: 'plan mode is read-only',
       });
     }
-    expect(d.prompt).not.toHaveBeenCalled(); // ask never prompts
+    expect(d.prompt).not.toHaveBeenCalled(); // plan never prompts
   });
 
-  it('plan: same read-only posture as ask (advertises reads, hides governed, rejects all 3 classes)', async () => {
-    const d = deps();
-    const policy = buildTurnPolicy('plan', d);
-    expect(policy.advertise?.('read_file')).toBe(true);
-    expect(policy.advertise?.('git_status')).toBe(true);
-    expect(policy.advertise?.('write_file')).toBe(false);
-    expect(policy.advertise?.('git_commit')).toBe(false);
-    for (const r of [
-      req(),
-      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
-      req({ toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }),
-    ]) {
-      expect(await policy.confirm!(r)).toEqual({
-        outcome: 'reject',
-        reason: 'not allowed in plan mode (read-only)',
-      });
-    }
-    expect(d.prompt).not.toHaveBeenCalled();
-  });
-
-  it('accept-edits: advertises all + prompts; an "always" answer is cached so the next call skips the prompt', async () => {
+  it('ask: advertises all + prompts; an "always" answer is cached so the next call skips the prompt', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
     const d = deps({ prompt });
-    const policy = buildTurnPolicy('accept-edits', d);
+    const policy = buildTurnPolicy('ask', d);
     expect(policy.advertise).toBeUndefined(); // every granted tool advertised
-    expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+    expect(await successful(policy.confirm!(req()))).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(1);
     // Second call to the SAME tool id is short-circuited by the always cache — no second prompt.
-    expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+    expect(await successful(policy.confirm!(req()))).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
-  it('accept-edits: a CONCRETE egress preview (host) STILL caches "always" — the blank-check did not over-correct', async () => {
+  it('ask: a CONCRETE egress preview (host) STILL caches "always" — the blank-check did not over-correct', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     const egressReq = req({
       toolId: 'http_request',
       action: 'egress',
       preview: { host: 'api.example.com' },
     });
-    expect(await policy.confirm!(egressReq)).toEqual({ outcome: 'approve' });
-    expect(prompt).toHaveBeenNthCalledWith(1, egressReq, true, undefined); // cacheable=true (a concrete host)
+    expect(await successful(policy.confirm!(egressReq))).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenNthCalledWith(1, egressReq, true, undefined, undefined); // cacheable=true (a concrete host)
     // A concrete-preview grant IS cached — the second call short-circuits (proves isBlankPreview's `host` check).
     expect(
       await policy.confirm!(
@@ -218,7 +293,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
-  it('accept-edits: a FULLY REDACTED preview does NOT earn a blanket grant (#W15-12)', async () => {
+  it('ask: a FULLY REDACTED preview does NOT earn a blanket grant (#W15-12)', async () => {
     // PRESENT is not INFORMATIVE, and #91's fix made the difference reachable: `previewFor` scrubs secret-shaped
     // text, so a path can arrive as literally `[redacted]`. Treating that as concrete let a user be shown
     // `Approve write to [redacted]?`, press "always", and silently authorise EVERY later governed tool call for
@@ -226,7 +301,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     for (const preview of [
       { path: '[redacted]' },
       { command: '[redacted]' },
@@ -234,43 +309,43 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       { path: '[redacted]/[redacted]' }, // framing punctuation is not information either
     ]) {
       const request = req({ toolId: 'write_file', action: 'fs_write', preview });
-      expect(await policy.confirm!(request)).toEqual({ outcome: 'approve' });
-      // cacheable=false: the REPL greys out `[a]`, and the "always" is downgraded to a once.
-      expect(prompt).toHaveBeenLastCalledWith(request, false, undefined);
+      expect(await successful(policy.confirm!(request))).toEqual({ outcome: 'approve' });
+      // cacheable=false: the card offers no `[Ctrl+G]`, and the "always" is downgraded to a once.
+      expect(prompt).toHaveBeenLastCalledWith(request, false, undefined, undefined);
     }
     // …so a LATER call still prompts rather than short-circuiting on a cached grant.
     const later = req({ toolId: 'write_file', action: 'fs_write', preview: { path: '/tmp/x' } });
     await policy.confirm!(later);
-    expect(prompt).toHaveBeenLastCalledWith(later, true, undefined);
+    expect(prompt).toHaveBeenLastCalledWith(later, true, undefined, undefined);
   });
 
-  it('accept-edits: a PARTLY redacted preview still counts — real content survived', async () => {
+  it('ask: a PARTLY redacted preview still counts — real content survived', async () => {
     // The guard must not over-reach: `/etc/[redacted]/config` tells the approver where the write lands.
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     const request = req({
       toolId: 'write_file',
       action: 'fs_write',
       preview: { path: '/etc/[redacted]/config' },
     });
-    expect(await policy.confirm!(request)).toEqual({ outcome: 'approve' });
-    expect(prompt).toHaveBeenLastCalledWith(request, true, undefined);
+    expect(await successful(policy.confirm!(request))).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenLastCalledWith(request, true, undefined, undefined);
   });
 
-  it('accept-edits: a CONCRETE process preview (command) STILL caches "always" — pins isBlankPreview`s command check', async () => {
+  it('ask: a CONCRETE process preview (command) STILL caches "always" — pins isBlankPreview`s command check', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     const procReq = req({
       toolId: 'run_command',
       action: 'process',
       preview: { command: 'ls -la' },
     });
-    expect(await policy.confirm!(procReq)).toEqual({ outcome: 'approve' });
-    expect(prompt).toHaveBeenNthCalledWith(1, procReq, true, undefined); // cacheable=true (a concrete command)
+    expect(await successful(policy.confirm!(procReq))).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenNthCalledWith(1, procReq, true, undefined, undefined); // cacheable=true (a concrete command)
     expect(
       await policy.confirm!(
         req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } }),
@@ -279,25 +354,25 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1); // cached — a dropped `command` check would force a re-prompt here
   });
 
-  it('accept-edits: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {
+  it('ask: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     const blank = req({ toolId: 'mcp_call', action: 'egress', preview: {} }); // no path/command/host to review
     expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
-    // The prompt is told cacheable=false (the REPL greys out `[a]`), and the "always" is downgraded to once…
-    expect(prompt).toHaveBeenNthCalledWith(1, blank, false, undefined);
+    // The prompt is told cacheable=false (the card offers no `[Ctrl+G]`), and the "always" is downgraded to once…
+    expect(prompt).toHaveBeenNthCalledWith(1, blank, false, undefined, undefined);
     // …so the SECOND identical call re-prompts (not blanket-approved for the whole session).
     expect(await policy.confirm!(blank)).toEqual({ outcome: 'approve' });
     expect(prompt).toHaveBeenCalledTimes(2);
   });
 
-  it('accept-edits: forwards the exact request + AbortSignal to the prompt (the preview the user approves)', async () => {
+  it('ask: forwards the exact request + AbortSignal to the prompt (the preview the user approves)', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'once' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     const signal = new AbortController().signal;
     const request = req({
       toolId: 'run_command',
@@ -306,15 +381,15 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     });
     await policy.confirm!(request, signal);
     // The secret-free preview + the cacheable hint (true in accept-edits) + the cancel signal reach the host.
-    expect(prompt).toHaveBeenCalledWith(request, true, signal);
+    expect(prompt).toHaveBeenCalledWith(request, true, signal, undefined);
   });
 
-  it('accept-edits: an "always" grant is scoped to its tool id — a DIFFERENT governed tool still prompts', async () => {
+  it('ask: an "always" grant is scoped to its tool id — a DIFFERENT governed tool still prompts', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
-    await policy.confirm!(req()); // always-approve write_file
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
+    await successful(policy.confirm!(req())); // successful actual dispatch remembers write_file
     // The cache is keyed by tool id ONLY (not tool+args), so a write_file to a DIFFERENT path still short-circuits.
     await policy.confirm!(req({ preview: { path: 'other.md' } }));
     expect(prompt).toHaveBeenCalledTimes(1);
@@ -325,22 +400,22 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(2);
   });
 
-  it('accept-edits: a "once" approval does NOT cache — the next call re-prompts', async () => {
+  it('ask: a "once" approval does NOT cache — the next call re-prompts', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'once' }),
     );
-    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const policy = buildTurnPolicy('ask', deps({ prompt }));
     await policy.confirm!(req());
     await policy.confirm!(req());
     expect(prompt).toHaveBeenCalledTimes(2);
   });
 
-  it('accept-edits: a rejection is passed through with its reason and NEVER touches the cache', async () => {
+  it('ask: a rejection is passed through with its reason and NEVER touches the cache', async () => {
     const cache = new ApprovalCache();
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'reject', reason: 'nope' }),
     );
-    const decision = await buildTurnPolicy('accept-edits', deps({ prompt, cache })).confirm!(req());
+    const decision = await buildTurnPolicy('ask', deps({ prompt, cache })).confirm!(req());
     expect(decision).toEqual({ outcome: 'reject', reason: 'nope' });
     expect(cache.isAlways('write_file')).toBe(false); // a reject never remembers
   });
@@ -349,7 +424,7 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     const d = deps();
     const policy = buildTurnPolicy('auto', d);
     expect(policy.advertise).toBeUndefined();
-    expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+    expect(await successful(policy.confirm!(req()))).toEqual({ outcome: 'approve' });
     expect(d.prompt).not.toHaveBeenCalled();
   });
 
@@ -375,14 +450,14 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     });
     const decision = await policy.confirm!(protectedReq, signal);
     expect(prompt).toHaveBeenCalledTimes(1);
-    expect(prompt).toHaveBeenCalledWith(protectedReq, false, signal);
+    expect(prompt).toHaveBeenCalledWith(protectedReq, false, signal, undefined);
     expect(decision.outcome).toBe('reject');
   });
 
   it('auto: an "always" answer at the protected-path fallback is NOT cached (no cross-mode escalation)', async () => {
     // The session cache is shared across modes; an "always" at an auto protected-path prompt must not blanket-
-    // approve that tool id in a later accept-edits turn (a consent-scope violation). So the auto fallback never
-    // remembers — the protected prompt re-asks, and accept-edits still prompts for the same tool.
+    // approve that tool id in a later ask turn (a consent-scope violation). So the auto fallback never
+    // remembers — the protected prompt re-asks, and ask still prompts for the same tool.
     const cache = new ApprovalCache();
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
@@ -393,9 +468,151 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     });
     await autoPolicy.confirm!(req());
     expect(cache.isAlways('write_file')).toBe(false); // the always grant was dropped
-    // A subsequent accept-edits turn (same shared cache) still prompts for write_file — no leaked blanket grant.
-    const acceptPolicy = buildTurnPolicy('accept-edits', deps({ prompt, cache }));
+    // A subsequent ask turn (same shared cache) still prompts for write_file — no leaked blanket grant.
+    const acceptPolicy = buildTurnPolicy('ask', deps({ prompt, cache }));
     await acceptPolicy.confirm!(req());
-    expect(prompt).toHaveBeenCalledTimes(2); // auto's prompt + accept-edits' prompt (no short-circuit)
+    expect(prompt).toHaveBeenCalledTimes(2); // auto's prompt + ask's prompt (no short-circuit)
+  });
+});
+
+async function successful(decision: Promise<import('@relavium/core').ToolApprovalDecision>) {
+  const result = await decision;
+  if (result.outcome === 'approve') result.onDispatchSucceeded?.();
+  return result.outcome === 'approve' ? { outcome: 'approve' } : result;
+}
+
+describe('the /mode descriptions', () => {
+  // a protected path is refused by the filesystem layer before any card exists, so no description may
+  // promise that a mode will ASK about one; accept-edits says what really happens.
+  it('says accept-edits refuses a protected path, and never that it asks or prompts for one', () => {
+    const clauses = MODE_DESCRIPTION['accept-edits'].split(';').map((clause) => clause.trim());
+    const protectedClauses = clauses.filter((clause) => /protected/iu.test(clause));
+    expect(protectedClauses.length).toBeGreaterThan(0);
+    for (const clause of protectedClauses) {
+      expect(clause).toMatch(/refus/iu);
+      expect(clause).not.toMatch(/\bask|prompt/iu);
+    }
+    // The rest of the sentence is unchanged: edits are applied, commands and network still ask.
+    expect(MODE_DESCRIPTION['accept-edits']).toMatch(/applies file edits without asking/u);
+    expect(MODE_DESCRIPTION['accept-edits']).toMatch(/still asks for commands and network/u);
+  });
+});
+
+describe('accept-edits — file edits are applied without a card, everything else still asks (ADR-0130)', () => {
+  const deps = (over: Partial<Parameters<typeof buildTurnPolicy>[1]> = {}) => ({
+    governed: governedToolIds(BUILTIN_TOOLS),
+    cache: new ApprovalCache(),
+    prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'reject', reason: 'asked' })),
+    ...over,
+  });
+
+  it('advertises every tool and approves an fs_write without prompting', async () => {
+    const d = deps();
+    const policy = buildTurnPolicy('accept-edits', d);
+    expect(policy.advertise).toBeUndefined();
+    expect(await policy.confirm!(req())).toEqual({ outcome: 'approve' });
+    expect(await policy.confirm!(req({ toolId: 'edit_file' }))).toEqual({ outcome: 'approve' });
+    expect(d.prompt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['process', { toolId: 'run_command', action: 'process', preview: { command: 'ls' } }],
+    ['egress', { toolId: 'http_request', action: 'egress', preview: { host: 'x.com' } }],
+    ['os', { toolId: 'read_clipboard', action: 'os', preview: {} }],
+  ] as const)('still prompts for a %s action', async (_name, over) => {
+    const d = deps();
+    const decision = await buildTurnPolicy('accept-edits', d).confirm!(req(over));
+    expect(d.prompt).toHaveBeenCalledTimes(1);
+    expect(decision).toEqual({ outcome: 'reject', reason: 'asked' });
+  });
+
+  it('prompts — without offering "always" — for a protected target', async () => {
+    const d = deps();
+    const policy = buildTurnPolicy('accept-edits', {
+      ...d,
+      isProtectedTarget: (request) => request.unredactedPreview?.path === '.git/config',
+    });
+    expect(await policy.confirm!(req({ unredactedPreview: { path: 'ok.md' } }))).toEqual({
+      outcome: 'approve',
+    });
+    const protectedReq = req({
+      preview: { path: '.git/config' },
+      unredactedPreview: { path: '.git/config' },
+    });
+    await policy.confirm!(protectedReq);
+    expect(d.prompt).toHaveBeenCalledTimes(1);
+    expect(d.prompt).toHaveBeenCalledWith(protectedReq, false, undefined, undefined);
+  });
+
+  it('never waves a delivered saved result through — it asks, as in ask mode', async () => {
+    const d = deps();
+    const live = {
+      callId: 'saved',
+      preview: { kind: 'saved-result', fields: [] },
+    } satisfies import('@relavium/core').ToolApprovalLiveContext;
+    await buildTurnPolicy('accept-edits', d).confirm!(req(), undefined, live);
+    expect(d.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an "always" granted in ask mode change what accept-edits asks', async () => {
+    const cache = new ApprovalCache();
+    cache.rememberAlways('run_command');
+    const d = deps({ cache });
+    // The session cache is shared: a remembered grant for the tool id still applies to the process action.
+    expect(
+      await buildTurnPolicy('accept-edits', d).confirm!(
+        req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' } }),
+      ),
+    ).toEqual({ outcome: 'approve' });
+    expect(d.prompt).not.toHaveBeenCalled();
+  });
+});
+
+describe('provisional always decisions', () => {
+  const deps = (over: Partial<Parameters<typeof buildTurnPolicy>[1]> = {}) => ({
+    governed: governedToolIds(BUILTIN_TOOLS),
+    cache: new ApprovalCache(),
+    prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'approve', scope: 'once' })),
+    ...over,
+  });
+  it('never remembers the first file card when atomic prepare subsequently finds a saved result', async () => {
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve({ outcome: 'approve', scope: 'always' }),
+    );
+    const d = deps({ prompt });
+    const policy = buildTurnPolicy('ask', d);
+    const original = await policy.confirm!(req(), undefined, {
+      callId: 'call-1',
+      preview: { kind: 'operation', fields: [] },
+    });
+    expect(original.outcome).toBe('approve');
+    expect(d.cache.isAlways('write_file')).toBe(false);
+    // Registry discards the provisional receipt on replay, replacing the ordinary card.
+    const live = {
+      callId: 'call-1',
+      preview: { kind: 'saved-result', fields: [] },
+    } satisfies import('@relavium/core').ToolApprovalLiveContext;
+    const replay = await policy.confirm!(req(), undefined, live);
+    expect(prompt).toHaveBeenLastCalledWith(req(), false, undefined, live);
+    expect(replay).toEqual({ outcome: 'approve' });
+    expect(d.cache.isAlways('write_file')).toBe(false);
+    await policy.confirm!(req());
+    expect(prompt).toHaveBeenCalledTimes(3);
+  });
+  it('commits authority only after successful real dispatch and preserves read-only denial', async () => {
+    const d = deps({
+      prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'approve', scope: 'always' })),
+    });
+    const policy = buildTurnPolicy('ask', d);
+    const decision = await policy.confirm!(req());
+    expect(d.cache.isAlways('write_file')).toBe(false);
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(d.cache.isAlways('write_file')).toBe(true);
+    expect(
+      await buildTurnPolicy('plan', d).confirm!(req(), undefined, {
+        callId: 'saved',
+        preview: { kind: 'saved-result', fields: [] },
+      }),
+    ).toEqual({ outcome: 'reject', denialClass: 'mode', reason: 'plan mode is read-only' });
   });
 });

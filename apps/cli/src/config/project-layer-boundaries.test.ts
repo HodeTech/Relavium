@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadResolvedConfig } from './load.js';
 import { applyInvocationDefault } from './invocation-default.js';
+import { createStartingModeRuntime } from '../chat/starting-mode.js';
 
 describe('automatic project configuration target boundaries', () => {
   let root: string, home: string, cwd: string, marker: string, globalDir: string;
@@ -32,15 +33,21 @@ describe('automatic project configuration target boundaries', () => {
   );
 
   it.each(['workspace.toml', 'project.toml'])(
-    'rechecks %s before invocation-default precedence reads',
+    'rejects a later %s global alias on the next owned read without reopening it for fallback',
     (name) => {
-      const loaded = loadResolvedConfig({ cwd, home });
+      writeFileSync(join(globalDir, 'config.toml'), '[preferences]\ndefault_mode="auto"\n');
+      const runtime = createStartingModeRuntime(loadResolvedConfig({ cwd, home }), true);
+      const { loaded, startingMode } = runtime.resolve(cwd);
       const target = join(globalDir, name);
       writeFileSync(target, source);
       symlinkSync(target, join(marker, name));
-      expect(() =>
-        applyInvocationDefault(loaded, { model: 'invocation-model', provider: 'openai' }),
-      ).toThrow('global configuration');
+      expect(
+        applyInvocationDefault(loaded, { model: 'invocation-model', provider: 'openai' }).config
+          .chat.defaultModel,
+      ).toBe('invocation-model');
+      expect(() => runtime.authority.assertDispatch(startingMode, 'write_file')).not.toThrow();
+      expect(() => runtime.read(cwd)).toThrow('global configuration');
+      expect(() => runtime.authority.assertDispatch(startingMode, 'write_file')).toThrow('revoked');
       expect(readFileSync(target, 'utf8')).toBe(source);
     },
   );

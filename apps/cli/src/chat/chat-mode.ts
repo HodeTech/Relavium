@@ -5,29 +5,38 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolDef,
+  ToolDenialClass,
+  ToolApprovalLiveContext,
+  ToolLiveObserver,
 } from '@relavium/core';
-import type { AbortSignalLike } from '@relavium/shared';
+import { CHAT_MODES, type AbortSignalLike, type ChatMode } from '@relavium/shared';
+
+export { CHAT_MODES } from '@relavium/shared';
+export type { ChatMode } from '@relavium/shared';
 
 /**
  * The CLI chat **mode** model (2.5.E Step 4, [ADR-0057](../../../../docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)).
  * A mode is a POLICY LAYER on the one session instance — never a reseat: it maps to a
  * {@link SessionTurnPolicy} the host pushes via `AgentSession.setTurnPolicy`, controlling only (a) the
  * model-advertised tool subset and (b) the per-dispatch approval decision. The engine stays mode-agnostic;
- * this module is the single home of the ask / plan / accept-edits / auto vocabulary and its two mappings.
+ * this module maps the shared ask / plan / accept-edits / auto vocabulary to those policies.
  *
  * Two-layer safety (ADR-0057): the advertise-filter is BEST-EFFORT (it keeps a governed tool out of the
  * model's reach), while the `confirm` hook is AUTHORITATIVE — the registry calls it for every governed-class
  * dispatch (fs_write / egress / a model-controlled process), so even if the model names a hidden tool the
- * mode policy still decides. `ask`/`plan` deny governed actions; `accept-edits` prompts (`[y]/[a]/[n]`) with a
- * session once/always memory; `auto` auto-approves EXCEPT a protected-path write, which falls back to a prompt
- * (and the fs layer hard-denies protected paths regardless — the floor beneath every mode).
+ * mode policy still decides. Per [ADR-0130](../../../../docs/decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md):
+ * `ask` prompts (`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`) before every governed action, with a session once/always memory; `plan` is
+ * read-only — governed tools are hidden and a call that arrives anyway is refused with a fixed message that
+ * RETURNS to the model (ADR-0117), so the turn continues; `accept-edits` applies file edits (inside the
+ * workspace or a root the operator authorised) without a card (the write is never silent — its row keeps the target and diff stats) but still
+ * prompts for commands, network and ambient OS actions; `auto` auto-approves every granted governed action.
+ * A protected path is not a prompt in any mode: the fs layer refuses it while the write is being prepared,
+ * before any card exists — the floor beneath every mode. The protected-target branches in {@link confirmFor}
+ * (a prompt that is never offered "always") are a defensive fallback behind that refusal, not a path a
+ * person is expected to see.
  */
 
-/** The four chat modes, in `Shift+Tab` cycle order (ADR-0057 — `auto` is on the cycle, not hidden). */
-export const CHAT_MODES = ['ask', 'plan', 'accept-edits', 'auto'] as const;
-export type ChatMode = (typeof CHAT_MODES)[number];
-
-/** The default mode: read-only `ask` (secure by default — no governed action without a deliberate mode step). */
+/** The default mode: `ask` (secure by default — no governed action without the person's explicit, previewed answer). */
 export const DEFAULT_CHAT_MODE: ChatMode = 'ask';
 
 /** Short labels for the footer indicator + `/mode` output. Kept identical to the mode ids (kebab, no spaces)
@@ -41,11 +50,15 @@ export const MODE_LABEL: Record<ChatMode, string> = {
 
 /** One-line descriptions, listed by the bare `/mode` output (the chat command's mode-discovery affordance). */
 export const MODE_DESCRIPTION: Record<ChatMode, string> = {
-  ask: 'read-only — writes, commands, and network are declined',
-  plan: 'read-only — draft a plan before acting',
-  'accept-edits': 'prompt before each write / command / network call',
-  auto: 'auto-approve actions (protected paths still prompt; the fs jail still holds)',
+  ask: 'asks before each write, command or network call — the default',
+  plan: 'read-only — nothing is changed; the agent drafts a plan first',
+  'accept-edits':
+    'applies file edits without asking; still asks for commands and network; refuses protected paths',
+  auto: 'approves granted actions; scope and protected-path rules still apply',
 };
+
+/** The fixed label the mode refusal carries to the model (ADR-0117 §2): the mode's name, never a target. */
+const PLAN_REFUSAL = 'plan mode is read-only';
 
 /** The next mode in the `Shift+Tab` cycle: ask → plan → accept-edits → auto → ask. */
 export function nextMode(mode: ChatMode): ChatMode {
@@ -76,12 +89,17 @@ function isChatMode(value: string): value is ChatMode {
  */
 export type ApprovalAnswer =
   | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' }
-  | { readonly outcome: 'reject'; readonly reason?: string };
+  | {
+      readonly outcome: 'reject';
+      readonly reason?: string;
+      /** Why no one said yes — `user` (the default) or `unavailable` (no one can answer). See ADR-0117. */
+      readonly denialClass?: ToolDenialClass;
+    };
 
 /**
  * The interactive prompt the REPL supplies (accept-edits, and auto's protected-path fallback). `cacheable`
  * tells the REPL whether an "always" answer will actually be REMEMBERED for the session: `true` in accept-edits
- * (offer `[a]lways`), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
+ * (offer "always"), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
  * REPL should grey out / omit the `always` choice rather than silently discard it). It is a UX signal only —
  * the `toDecision` floor still enforces the same rule if a prompt returns `always` anyway.
  */
@@ -89,6 +107,7 @@ export type ApprovalPrompt = (
   request: ToolApprovalRequest,
   cacheable: boolean,
   signal?: AbortSignalLike,
+  live?: ToolApprovalLiveContext,
 ) => Promise<ApprovalAnswer>;
 
 /**
@@ -102,7 +121,7 @@ export type ApprovalPrompt = (
  */
 export function nonInteractiveApprovalPrompt(context: string): ApprovalPrompt {
   const reason = `interactive approval is unavailable ${context}`;
-  return () => Promise.resolve({ outcome: 'reject', reason });
+  return () => Promise.resolve({ outcome: 'reject', reason, denialClass: 'unavailable' });
 }
 
 /**
@@ -123,7 +142,7 @@ export class ApprovalCache {
 }
 
 /**
- * Whether a tool is a mutating/side-effecting action the `ask`/`plan` advertise-filter HIDES. It is a superset
+ * Whether a tool is a mutating/side-effecting action the `plan` advertise-filter HIDES. It is a superset
  * of the registry's runtime `confirmAction` `governedAction`: it also hides a `requiresGateApproval` tool
  * (`git_commit`), which `confirmAction` does NOT gate (its `enforcePolicy` human-gate floor denies it on the
  * chat path instead) but which is plainly not read-only. Covered: `write_file` (`fsWrite`), any `egress`
@@ -141,7 +160,7 @@ export function isGovernedTool(def: ToolDef): boolean {
   return def.policy.spawnsProcess === true && def.policyTarget !== undefined;
 }
 
-/** The set of governed tool ids across a def list — the advertise-filter's `ask`/`plan` hide set. */
+/** The set of governed tool ids across a def list — the advertise-filter's `plan` hide set. */
 export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
   const out = new Set<string>();
   for (const def of defs) {
@@ -152,10 +171,18 @@ export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
 
 /** The inputs {@link buildTurnPolicy} needs beyond the mode itself — the session-scoped consent machinery. */
 export interface TurnPolicyDeps {
-  /** Governed tool ids (from {@link governedToolIds}) — hidden by the `ask`/`plan` advertise-filter. */
+  readonly onToolLiveEvent?: ToolLiveObserver;
+  /** Governed tool ids (from {@link governedToolIds}) — hidden by the `plan` advertise-filter. */
   readonly governed: ReadonlySet<string>;
-  /** The REPL interactive prompt (accept-edits, and auto's protected-path fallback). */
+  /** The REPL interactive prompt (ask, accept-edits for non-edits and protected paths, and auto's protected-path fallback). */
   readonly prompt: ApprovalPrompt;
+  /**
+   * Whether a person can answer a card. `false` (a plain / `--json` chat, a one-shot run) means no `Ctrl+Y` can ever
+   * come, so the governed tools are hidden from the model exactly as in `plan` rather than offered and then
+   * refused: it never sees a tool it cannot use, and no approval request is published that nothing could answer.
+   * The confirm floor still refuses if the model names a hidden tool. Absent ⇒ `true`.
+   */
+  readonly canAsk?: boolean;
   /** The session once/always memory. */
   readonly cache: ApprovalCache;
   /**
@@ -173,25 +200,36 @@ export interface TurnPolicyDeps {
 /**
  * Map a {@link ChatMode} to the {@link SessionTurnPolicy} the host pushes to `AgentSession.setTurnPolicy`.
  * Setting ANY policy activates the fail-closed approval regime (the dispatch context's `approval` is present),
- * so a governed dispatch always requires a `confirm` decision — the reason a wiring bug can never let `ask`
- * write. `ask`/`plan` also hide governed tools from the model (best-effort); `accept-edits`/`auto` advertise
+ * so a governed dispatch always requires a `confirm` decision — the reason a wiring bug can never let `plan`
+ * write. `plan` also hides governed tools from the model (best-effort); `ask`/`accept-edits`/`auto` advertise
  * every granted tool and rely on `confirm`.
  */
-export function buildTurnPolicy(mode: ChatMode, deps: TurnPolicyDeps): SessionTurnPolicy {
-  const advertise = advertiseFor(mode, deps.governed);
+export function buildTurnPolicy(requested: ChatMode, deps: TurnPolicyDeps): SessionTurnPolicy {
+  const canAsk = deps.canAsk !== false;
+  // Fail closed HERE, not only in the callers: with no one to answer a card, a mode that approves a governed
+  // action without one (accept-edits, auto) is never honoured — it degrades to `ask`, which asks every time and so
+  // refuses through the non-interactive prompt. `plan` already refuses everything and stays as it is.
+  const mode: ChatMode =
+    !canAsk && (requested === 'accept-edits' || requested === 'auto') ? 'ask' : requested;
+  const advertise = advertiseFor(mode, deps.governed, canAsk);
   const confirm = confirmFor(mode, deps);
-  return advertise === undefined ? { confirm } : { advertise, confirm };
+  const live = deps.onToolLiveEvent === undefined ? {} : { onToolLiveEvent: deps.onToolLiveEvent };
+  return advertise === undefined ? { confirm, ...live } : { advertise, confirm, ...live };
 }
 
-/** The advertise-filter for a mode: `ask`/`plan` offer only non-governed tools; the others offer all. */
+/**
+ * The advertise-filter for a mode: `plan` — and any mode with no one to ask — offers only non-governed tools;
+ * the others offer all.
+ */
 function advertiseFor(
   mode: ChatMode,
   governed: ReadonlySet<string>,
+  canAsk: boolean,
 ): ((toolId: string) => boolean) | undefined {
-  if (mode === 'ask' || mode === 'plan') {
+  if (mode === 'plan' || !canAsk) {
     return (toolId) => !governed.has(toolId);
   }
-  return undefined; // accept-edits / auto advertise every granted tool — the confirm floor gates them
+  return undefined; // ask / accept-edits / auto advertise every granted tool — the confirm floor gates them
 }
 
 /**
@@ -237,34 +275,66 @@ function isInformative(value: string | undefined): boolean {
   return value.replace(REDACTION_MARKER, '').replace(/[\s/\\.:,;'"`|=-]+/g, '').length > 0;
 }
 
+/**
+ * Ask the person, remembering an "always" answer only when the preview showed a concrete target. A BLANK
+ * preview (mcp_call / web_search — `previewFor` returns no path/command/host) gives the user nothing to review,
+ * so "always" there would be an unreviewed, session-long blank check over any future server/tool/args (a
+ * prompt-injection-after-one-grant hazard, ADR-0057 review). For those the grant is once-only (cacheable=false
+ * ⇒ the REPL greys out `Ctrl+G` and toDecision never caches).
+ */
+async function askPerson(
+  request: ToolApprovalRequest,
+  deps: TurnPolicyDeps,
+  signal: AbortSignalLike | undefined,
+  live: ToolApprovalLiveContext | undefined,
+): Promise<ToolApprovalDecision> {
+  if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
+  const cacheable = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
+  const answer = await deps.prompt(request, cacheable, signal, live);
+  return toDecision(answer, request.toolId, deps.cache, cacheable);
+}
+
+/**
+ * Fall back to an explicit prompt for a protected-path target. Its answer is NOT cacheable: a protected-path
+ * prompt must re-ask every time, and — since the session cache is shared across modes — an "always" here must
+ * not silently blanket-approve that tool id in a later turn (a cross-mode consent escalation).
+ */
+async function askAboutProtectedTarget(
+  request: ToolApprovalRequest,
+  deps: TurnPolicyDeps,
+  signal: AbortSignalLike | undefined,
+  live: ToolApprovalLiveContext | undefined,
+): Promise<ToolApprovalDecision> {
+  const cacheable = false;
+  const answer = await deps.prompt(request, cacheable, signal, live);
+  return toDecision(answer, request.toolId, deps.cache, cacheable);
+}
+
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
-  return async (request, signal): Promise<ToolApprovalDecision> => {
+  return async (request, signal, live): Promise<ToolApprovalDecision> => {
     switch (mode) {
-      case 'ask':
       case 'plan':
-        return { outcome: 'reject', reason: `not allowed in ${MODE_LABEL[mode]} mode (read-only)` };
+        // Read-only. The refusal is a FIXED class + label, so it can return to the model without ever
+        // depending on the target (ADR-0117); the turn continues and the model explains what it would do.
+        return { outcome: 'reject', denialClass: 'mode', reason: PLAN_REFUSAL };
+      case 'ask':
+        return askPerson(request, deps, signal, live);
       case 'accept-edits': {
-        if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
-        // An "always" answer is remembered (the once/always memory) ONLY when the preview showed a concrete
-        // target. A BLANK preview (mcp_call / web_search — `previewFor` returns no path/command/host) gives the
-        // user nothing to review, so `[a]lways` there would be an unreviewed, session-long blank check over any
-        // future server/tool/args (a prompt-injection-after-one-grant hazard, ADR-0057 review). For those the
-        // grant is once-only (cacheable=false ⇒ the REPL greys out `[a]` and toDecision never caches).
-        const cacheable = !isBlankPreview(request.preview);
-        const answer = await deps.prompt(request, cacheable, signal);
-        return toDecision(answer, request.toolId, deps.cache, cacheable);
+        // File edits inside the workspace are applied without a card; every other governed class keeps its
+        // prompt, and a protected target or a delivered saved result is never waved through (ADR-0130).
+        if (request.action !== 'fs_write') return askPerson(request, deps, signal, live);
+        if (deps.isProtectedTarget?.(request) === true) {
+          return askAboutProtectedTarget(request, deps, signal, live);
+        }
+        if (live?.preview.kind === 'saved-result') return askPerson(request, deps, signal, live);
+        return { outcome: 'approve' };
       }
       case 'auto': {
         // auto auto-approves — except a protected-path target, which falls back to an explicit prompt (the fs
-        // layer also hard-denies protected paths, so this is the graceful UX, not the security floor). Its
-        // answer is NOT cacheable: a protected-path prompt must re-ask every time, and — since the session
-        // cache is shared across modes — an "always" here must not silently blanket-approve that tool id in a
-        // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
+        // layer also hard-denies protected paths, so this is the graceful UX, not the security floor).
         if (deps.isProtectedTarget?.(request) === true) {
-          const cacheable = false;
-          const answer = await deps.prompt(request, cacheable, signal);
-          return toDecision(answer, request.toolId, deps.cache, cacheable);
+          return askAboutProtectedTarget(request, deps, signal, live);
         }
         return { outcome: 'approve' };
       }
@@ -288,10 +358,13 @@ function toDecision(
   allowAlwaysCache: boolean,
 ): ToolApprovalDecision {
   if (answer.outcome === 'reject') {
-    return answer.reason === undefined
-      ? { outcome: 'reject' }
-      : { outcome: 'reject', reason: answer.reason };
+    return {
+      outcome: 'reject',
+      ...(answer.reason === undefined ? {} : { reason: answer.reason }),
+      ...(answer.denialClass === undefined ? {} : { denialClass: answer.denialClass }),
+    };
   }
-  if (allowAlwaysCache && answer.scope === 'always') cache.rememberAlways(toolId);
-  return { outcome: 'approve' };
+  return allowAlwaysCache && answer.scope === 'always'
+    ? { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlways(toolId) }
+    : { outcome: 'approve' };
 }

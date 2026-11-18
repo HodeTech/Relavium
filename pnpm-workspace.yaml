@@ -12,7 +12,7 @@ catalog:
   eslint-config-prettier: ^9.1.0
   prettier: ^3.4.2
   # Exact cooled pin: a fresh install must not resolve a newer unreviewed release (§9a).
-  turbo: 2.11.4
+  turbo: 2.11.11
   typescript: ^5.7.2
   typescript-eslint: ^8.18.1
   vitest: ^3.0.0

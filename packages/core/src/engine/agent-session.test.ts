@@ -54,6 +54,7 @@ import {
   createSessionHandle,
   type SessionStreamHandleEvent,
 } from './session-handle.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -2049,7 +2050,7 @@ describe('AgentSession — authored memory request projection (ADR-0095)', () =>
             { role: 'user', content: [{ type: 'text', text: 'past' }] },
             { role: 'assistant', content: [{ type: 'text', text: 'answer' }] },
           ],
-          completedTurnSpans: [{ start: 0, end: 2 }],
+          completedTurnSpans: [{ start: 0, end: 2, receipts: KNOWN_EMPTY_RECEIPTS }],
           turnCount: 1,
           cumulativeCostMicrocents: 0,
           conservativeCostMicrocents: 0,

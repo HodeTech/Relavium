@@ -35,6 +35,7 @@ import type {
   OutputModality,
   ReasoningEffort,
   StopReason,
+  SessionAskRecord,
   SessionToolHistoryEntry,
   UsageDisposition,
 } from '@relavium/shared';
@@ -72,10 +73,10 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
-import { RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
+import { canonicalJson, RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
 
 import { ADMISSION_CEILINGS } from '../limits.js';
-import { ToolDispatchError } from '../tools/errors.js';
+import { ToolDeniedByUserError, ToolDispatchError } from '../tools/errors.js';
 import type {
   ToolCallPart,
   ToolDispatchContext,
@@ -93,6 +94,7 @@ import {
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
 import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { denialResultText, REPEATED_DENIAL_TEXT } from './denial-text.js';
 import { sessionJsonBytes } from './session-json-bytes.js';
 
 /**
@@ -100,13 +102,15 @@ import { sessionJsonBytes } from './session-json-bytes.js';
  *
  * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** (the
  * tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
- * `turn_limit`), while `maxToolCorrections` is a **monotonic sub-budget** *within* that loop: a
- * recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` when
- * {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once exceeded, ends the turn EARLY
- * with `tool_failed`. A genuine (non-recoverable) tool round never resets it, so
- * corrections accumulate across interleaved genuine rounds. Net worst-case egress is `maxToolTurns + 1`
- * provider calls regardless of `maxToolCorrections` — the correction budget can only *shorten* a turn,
- * never extend its egress (so the DoS bound is the turn budget alone, not the product of the two).
+ * `turn_limit`), while `maxToolCorrections` is a **sub-budget** *within* that loop that counts
+ * CONSECUTIVE rounds in which no tool call ran to a result ([ADR-0131](../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)):
+ * a recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` or a refusal that
+ * returns to the model when {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once
+ * exceeded, ends the turn EARLY with `tool_failed`. A round in which at least one call succeeded — or one with
+ * no failure at all — resets it to zero, so a long productive turn is not ended by its fourth unrelated slip.
+ * Net worst-case egress is `maxToolTurns + 1` provider calls regardless of `maxToolCorrections` — the
+ * correction budget can only *shorten* a turn, never extend its egress (so the DoS bound is the turn budget
+ * alone, not the product of the two).
  */
 export interface AgentTurnLimits {
   /** Max tool-loop continuations before the run-default DoS guard fails the turn (`turn_limit`). */
@@ -397,6 +401,23 @@ function isRecoverableToolError(err: ToolDispatchError, limits: AgentTurnLimits)
   return limits.recoverToolFailures === true && err.recoverable;
 }
 
+/** The fixed model-facing text for a refusal that returns to the model (ADR-0117 §2–§3). */
+function deniedResultText(err: ToolDeniedByUserError): string {
+  return err.repeated ? REPEATED_DENIAL_TEXT : denialResultText(err.denialClass, err.explanation);
+}
+
+/**
+ * A stable key for "the same invocation": the tool name plus the canonical form of its arguments. `undefined`
+ * when the arguments have no canonical form (the engine then simply does not remember the refusal).
+ */
+function invocationKey(call: ToolCallPart): string | undefined {
+  try {
+    return `${call.name}\u0000${canonicalJson(call.args)}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Map a non-correctable tool throw to the node `ErrorCode` (cancel wins; a denial is fatal). */
 function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable: boolean } {
   switch (err.code) {
@@ -653,7 +674,10 @@ async function streamOneTurn(
   for await (const chunk of chain.stream(request)) {
     // An error alone may be a local pre-egress refusal. Every other actual provider chunk proves
     // engagement before a host readiness/sink fault can prevent the chain's AttemptRecord.
-    if (chunk.type !== 'error') usage.engaged = true;
+    if (chunk.type !== 'error') {
+      usage.engaged = true;
+      usage.contentReceived = true;
+    }
     if (
       chunk.type === 'stop' &&
       chunk.usage.kind === 'complete' &&
@@ -1030,6 +1054,7 @@ function sessionToolHistoryEntry(
   result: ToolResultPart,
   media: readonly DurableMediaPart[] = [],
   outcome: SessionToolHistoryEntry['result']['outcome'] = result.isError === true ? 'error' : 'ok',
+  ask?: SessionAskRecord,
 ): SessionToolHistoryEntry {
   const parsed = SessionToolHistoryEntrySchema.safeParse({
     call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
@@ -1038,6 +1063,7 @@ function sessionToolHistoryEntry(
       toolCallId: id,
       resultBytes: jsonBytes(result.result),
       outcome,
+      ...(ask === undefined ? {} : { ask }),
       ...(media.length === 0
         ? {}
         : {
@@ -1080,17 +1106,20 @@ function toolFailureMessage(
     attemptNumber,
   });
   if (err instanceof ToolDispatchError && isRecoverableToolError(err, params.limits)) {
+    // A refusal a person (or the mode) decided is shown as ONE fixed text per class (ADR-0117 §2), never as the
+    // free-form error message; every other recoverable failure keeps its own reason-only message.
+    const text = err instanceof ToolDeniedByUserError ? deniedResultText(err) : err.message;
     emitToolOutcome(params, {
       type: 'agent:tool_result',
       nodeId: params.nodeId,
       toolId: call.name,
       success: false,
-      outputSummary: err.message,
+      outputSummary: text,
       attemptNumber,
     });
     return {
       role: 'tool',
-      content: [{ type: 'tool_result', toolCallId: call.id, result: err.message, isError: true }],
+      content: [{ type: 'tool_result', toolCallId: call.id, result: text, isError: true }],
     };
   }
   const { code, retryable } =
@@ -1186,7 +1215,9 @@ async function dispatchToolCalls(
   /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
   slotBase: number,
   history: SessionToolHistoryEntry[],
-): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
+  /** Invocations the user already declined this turn (ADR-0117 §3) — a repeat is refused without prompting. */
+  denied: Set<string>,
+): Promise<{ messages: LlmMessage[]; correctable: boolean; succeeded: number }> {
   // **ADR-0086 §2's tool-call ceiling, checked BEFORE the first dispatch.** It is the one ceiling whose
   // subject is a provider RESPONSE rather than an authored file, so it cannot live at admission — the model
   // chooses this width, not the author. Checking it per-call would leave the first sixteen already executed,
@@ -1203,10 +1234,16 @@ async function dispatchToolCalls(
       false,
     );
   }
+  // Only a subsequent model response can authorize use of prior-batch read observations. A read
+  // followed by an edit in this same response has not yet exposed the read result to the model.
+  if (params.dispatchContext.readScope !== undefined)
+    params.registry.promoteReadScope?.(params.dispatchContext.readScope);
   const results: LlmMessage[] = [];
   /** Media the response's tool calls produced, delivered as ONE message after the loop (`CR-50`). */
   const pending: PendingAttachment[] = [];
   let correctable = false;
+  /** Calls that ran to a result — the "this round made progress" signal for the correction budget. */
+  let succeeded = 0;
   // INDEXED, and the index is the effect slot (ADR-0080). One model response can contain several tool calls,
   // so the correlation alone cannot tell two effects of one turn apart — the second legitimate effect would
   // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
@@ -1215,6 +1252,15 @@ async function dispatchToolCalls(
     const id = params.sessionToolCallId?.(slotBase + slot);
     let outcome: ToolDispatchOutcome;
     try {
+      const repeatKey = invocationKey(call);
+      if (repeatKey !== undefined && denied.has(repeatKey)) {
+        throw new ToolDeniedByUserError(
+          call.name,
+          'user_rejected',
+          `tool \`${call.name}\` denied: the user already declined this call`,
+          { repeated: true },
+        );
+      }
       outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
         // Prepared/standalone context data cannot grant execution-local lifetime authority.
@@ -1231,22 +1277,62 @@ async function dispatchToolCalls(
     } catch (err) {
       const hostFailure = toolHostEntryFailure(err);
       if (hostFailure !== undefined) throw hostFailure.error;
+      // Remember a refusal the user decided, so an identical repeat is refused without asking again.
+      if (
+        err instanceof ToolDeniedByUserError &&
+        err.reason === 'user_rejected' &&
+        err.denialClass === 'user' &&
+        !err.repeated
+      ) {
+        const refusedKey = invocationKey(call);
+        if (refusedKey !== undefined) denied.add(refusedKey);
+      }
+      const name =
+        err instanceof ToolDispatchError &&
+        err.code !== 'unknown_tool' &&
+        params.registry.has(err.toolId ?? call.name)
+          ? (err.toolId ?? call.name)
+          : 'unknown_tool';
       // Either a model-correctable result to feed back, or a classified throw — see `toolFailureMessage`.
-      const failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      let failure: LlmMessage;
+      try {
+        failure = toolFailureMessage(err, call, params, getModel(), attemptNumber);
+      } catch (fatal) {
+        // ADR-0119: a fatal tool failure ends the turn, but the call DID dispatch. Record it before the throw so a
+        // retained interrupted turn lists it — `cancelled` ("execution state unknown") for a call in flight when the
+        // turn was aborted, `denied` for a fatal refusal, `error` otherwise. Calls the model asked for that never
+        // started are not recorded. A failure to record never replaces the failure being thrown.
+        if (id !== undefined) {
+          try {
+            history.push(
+              unfinishedToolHistoryEntry(
+                id,
+                name,
+                call,
+                err instanceof ToolDispatchError && err.code === 'cancelled'
+                  ? 'cancelled'
+                  : err instanceof ToolDispatchError && err.code === 'tool_denied'
+                    ? 'denied'
+                    : 'error',
+              ),
+            );
+          } catch {
+            // The original failure stays primary, but a dispatched call that could not be listed makes the list
+            // uncertain, and an uncertain list is not retained.
+            uncertainHistories.add(history);
+          }
+        }
+        throw fatal;
+      }
       const part = failure.content.find((entry) => entry.type === 'tool_result');
       if (id !== undefined && part?.type === 'tool_result') {
-        const name =
-          err instanceof ToolDispatchError &&
-          err.code !== 'unknown_tool' &&
-          params.registry.has(err.toolId ?? call.name)
-            ? (err.toolId ?? call.name)
-            : 'unknown_tool';
-        history.push(
+        const recordedPart = part;
+        recordDispatchedCallOrThrow(history, () =>
           sessionToolHistoryEntry(
             id,
             name,
             call,
-            part,
+            recordedPart,
             [],
             err instanceof ToolDispatchError && err.code === 'tool_denied' ? 'denied' : 'error',
           ),
@@ -1256,6 +1342,27 @@ async function dispatchToolCalls(
       correctable = true;
       continue;
     }
+    succeeded += 1;
+    // ADR-0119: the call has run, so it is recorded BEFORE any event is emitted. A sink that throws on the events
+    // below must not leave an executed call out of a retained turn's history, which would tell the next request that
+    // no tool call was recorded for a turn in which one ran.
+    const part = unwrapUntrusted(outcome.toolResult);
+    // A failure to record is held until the call's own event has been emitted (observers must see a call that ran), then
+    // fails the turn; the history is marked uncertain so the session does not retain such a turn.
+    const recording =
+      id === undefined
+        ? undefined
+        : recordDispatchedCall(history, () =>
+            sessionToolHistoryEntry(
+              id,
+              outcome.events.call.toolId,
+              call,
+              part,
+              unwrapUntrusted(outcome.mediaAttachments),
+              undefined,
+              outcome.ask,
+            ),
+          );
     // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
     // (config-only + secret-tainted keys stripped — registry `sanitizeInput`), never the raw model
     // args, so the event contract that `agent:tool_call.toolInput` carries no secrets holds.
@@ -1267,17 +1374,7 @@ async function dispatchToolCalls(
       toolInput: outcome.events.call.toolInput,
       attemptNumber,
     });
-    const part = unwrapUntrusted(outcome.toolResult);
-    if (id !== undefined)
-      history.push(
-        sessionToolHistoryEntry(
-          id,
-          outcome.events.call.toolId,
-          call,
-          part,
-          unwrapUntrusted(outcome.mediaAttachments),
-        ),
-      );
+    if (recording !== undefined) throw recording.failure;
     results.push({ role: 'tool', content: [part] });
     // The bytes a media-answering tool owes the model ride the media-INPUT rail (`CR-50`, ADR-0089 §1) —
     // `tool_result.media` is handle-only and nothing lowers it. HELD until every call in this response has
@@ -1301,7 +1398,62 @@ async function dispatchToolCalls(
   if (attachment !== undefined) {
     results.push(attachment);
   }
-  return { messages: results, correctable };
+  return { messages: results, correctable, succeeded };
+}
+
+/**
+ * Histories in which a call that DISPATCHED could not be recorded (ADR-0119). Such a list cannot vouch for itself — it
+ * would say "no tool call was recorded" about a turn in which one ran — so a failed outcome reports it as uncertain and
+ * the session does not retain the turn. A `WeakSet` keyed by the very array the driver appends to keeps the marker out
+ * of every signature between the dispatcher and the capture.
+ */
+const uncertainHistories = new WeakSet<readonly SessionToolHistoryEntry[]>();
+
+/**
+ * Record a dispatched call. A failure to build the entry marks the history uncertain and is RETURNED rather than thrown,
+ * so a caller that owes observers an event for the call can emit it first and then fail the turn with this error — a
+ * call that ran must still be visible on the stream (the PR 90 contract), whether or not it could be recorded.
+ */
+function recordDispatchedCall(
+  history: SessionToolHistoryEntry[],
+  build: () => SessionToolHistoryEntry,
+): { readonly failure: unknown } | undefined {
+  try {
+    history.push(build());
+    return undefined;
+  } catch (failure) {
+    uncertainHistories.add(history);
+    return { failure };
+  }
+}
+
+/** {@link recordDispatchedCall} for a path that emits no event for the call: a failure fails the turn at once. */
+function recordDispatchedCallOrThrow(
+  history: SessionToolHistoryEntry[],
+  build: () => SessionToolHistoryEntry,
+): void {
+  const recording = recordDispatchedCall(history, build);
+  if (recording !== undefined) throw recording.failure;
+}
+
+/**
+ * The history entry for a call that dispatched but never produced a result the model saw — in flight at an abort
+ * (`cancelled`: ADR-0128's "execution state unknown"), or refused/failed fatally. `resultBytes` is 0 because there
+ * is no bounded model-facing result; the pair contract is unchanged.
+ */
+function unfinishedToolHistoryEntry(
+  id: string,
+  resolvedName: string,
+  call: ToolCallPart,
+  outcome: SessionToolHistoryEntry['result']['outcome'],
+): SessionToolHistoryEntry {
+  const parsed = SessionToolHistoryEntrySchema.safeParse({
+    call: { type: 'tool_call', id, name: resolvedName, argsBytes: jsonBytes(call.args) },
+    result: { type: 'tool_result', toolCallId: id, resultBytes: 0, outcome },
+  });
+  if (!parsed.success)
+    throw new AgentTurnError('internal', 'session tool structure could not be recorded', false);
+  return parsed.data;
 }
 
 /**
@@ -1326,6 +1478,7 @@ async function dispatchToolUseTurn(
    */
   slotBase: number,
   history: SessionToolHistoryEntry[],
+  denied: Set<string>,
 ): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
@@ -1354,9 +1507,15 @@ async function dispatchToolUseTurn(
     nonSkippedAttempts,
     slotBase,
     history,
+    denied,
   );
+  // The budget counts CONSECUTIVE rounds in which nothing ran to a result (ADR-0131). A round where at least
+  // one call succeeded made progress, so it resets the count; a long, productive turn is no longer ended by
+  // its fourth unrelated slip. The total stays bounded by `maxToolTurns`, so this can only shorten a turn.
   let next = corrections;
-  if (dispatched.correctable) {
+  if (!dispatched.correctable || dispatched.succeeded > 0) {
+    next = 0;
+  } else {
     next += 1;
     if (next > params.limits.maxToolCorrections) {
       throw new AgentTurnError(
@@ -1381,6 +1540,15 @@ export type CapturedAgentTurnOutcome =
       readonly overflowEntry?: FallbackPlanEntry;
       readonly engaged: boolean;
       readonly usage: { readonly input: number; readonly output: number };
+      /** Calls that dispatched before the failure, content-free; absent when the driver never started. */
+      readonly toolHistory?: readonly SessionToolHistoryEntry[];
+      /**
+       * `true` when a call that dispatched could not be recorded, so {@link toolHistory} cannot vouch for itself
+       * (ADR-0119). The session does not retain such a turn.
+       */
+      readonly toolHistoryUncertain?: true;
+      /** `true` when the provider returned at least one non-error chunk: it accepted the request (ADR-0119). */
+      readonly contentReceived?: true;
     };
 
 /** Behavioral ports may use prototype/private state; forwarding preserves presence and receiver. */
@@ -1448,6 +1616,7 @@ function observeTurnMoney(
 export async function captureAgentTurnOutcome(
   params: AgentTurnParams,
 ): Promise<CapturedAgentTurnOutcome> {
+  const readScope = Object.freeze({});
   const acc: TurnUsageAccumulator = { input: 0, output: 0, engaged: false };
   const supplied = Object.freeze({ ...params });
   const suppliedCapabilities = Object.freeze({ ...supplied.chainCapabilities });
@@ -1459,6 +1628,7 @@ export async function captureAgentTurnOutcome(
   };
   const observed: AgentTurnParams = {
     ...supplied,
+    dispatchContext: { ...supplied.dispatchContext, readScope },
     chainCapabilities: {
       ...suppliedCapabilities,
       sleep: async (...args) => {
@@ -1574,7 +1744,19 @@ export async function captureAgentTurnOutcome(
           : 'turn',
       engaged: acc.engaged,
       usage: knownUsage,
+      ...(acc.toolHistory === undefined ? {} : { toolHistory: [...acc.toolHistory] }),
+      ...(acc.toolHistory !== undefined && uncertainHistories.has(acc.toolHistory)
+        ? { toolHistoryUncertain: true as const }
+        : {}),
+      ...(acc.contentReceived === true ? { contentReceived: true as const } : {}),
     };
+  } finally {
+    try {
+      supplied.registry.releaseReadScope?.(readScope);
+    } catch {
+      // Fresh, private loop identities prevent reuse even if an external cache cleanup fails.
+      // This synchronous cache-release hook must not replace the canonical outcome/accounting error.
+    }
   }
 }
 
@@ -1628,6 +1810,13 @@ interface TurnUsageAccumulator {
   input: number;
   output: number;
   engaged: boolean;
+  /**
+   * `true` once the provider returned ANY non-error stream chunk for this turn — proof that it ACCEPTED the request.
+   * A turn that ended before this (a refusal under whatever error code, a timeout, an Esc before the first chunk) was
+   * never taken up by the model, so a session does not retain it (ADR-0119): keeping a request the provider may refuse
+   * would resend it in every later request. Distinct from `engaged`, which a request that was merely sent also sets.
+   */
+  contentReceived?: boolean;
   /** Exact, call-local consumer provenance; an error class alone cannot authorise retries or a gate. */
   observerFailure?: { readonly error: unknown };
   /** A core attempt callback may also fail during internal admission settlement. */
@@ -1644,6 +1833,12 @@ interface TurnUsageAccumulator {
   overflow?: { readonly error: AgentTurnError; readonly entry: FallbackPlanEntry };
   /** Complete stop/attempt quantities observed before host callbacks, not yet consumed by accounting. */
   observedStopUsage?: { readonly input: number; readonly output: number };
+  /**
+   * The turn's settled tool structure, the SAME array the driver appends to. A failed outcome carries a copy so a
+   * retained interrupted turn can list the calls that dispatched before it ended (ADR-0119). Absent until the
+   * driver started.
+   */
+  toolHistory?: readonly SessionToolHistoryEntry[];
 }
 
 /**
@@ -2169,6 +2364,9 @@ async function driveAgentTurn(
     // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
     let slotBase = 0;
     const toolHistory: SessionToolHistoryEntry[] = [];
+    usage.toolHistory = toolHistory; // a failed outcome reads the settled history from here (ADR-0119)
+    /** Invocations the user declined this turn — an identical repeat is refused without prompting (ADR-0117 §3). */
+    const deniedInvocations = new Set<string>();
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       coverageRound = toolTurn;
@@ -2278,6 +2476,7 @@ async function driveAgentTurn(
         corrections,
         slotBase,
         toolHistory,
+        deniedInvocations,
       ));
     }
   } catch (error) {

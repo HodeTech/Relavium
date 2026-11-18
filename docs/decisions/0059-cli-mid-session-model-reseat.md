@@ -32,6 +32,13 @@
 > every other path uses. The reseat is one of the two places ADR-0081's acceptance criteria re-assert the
 > property, because the original defect survived a reseat.
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> a reseated interactive instance starts in the currently configured mode rather
+> than unconditionally ask, subject to shared revocable startup-auto authority.
+> Frozen agent grants remain unchanged and approvals/read evidence are fresh;
+> failed/stale replacements cannot restore revoked authority. Headless remains
+> ask. This is accepted MVP-3 design, not a shipped implementation claim.
+
 ## Context
 
 An `AgentSession` binds one agent and one model for its lifetime — multi-agent/model orchestration is a
@@ -131,3 +138,20 @@ session that drops history (rejected: poor UX — the user expects to continue).
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Clear/reseat/Home builds share live narrowing HTTP authority and latest-only selection publication. Explicit ephemeral provider/model choices survive invocation rebuilds without being represented as persisted defaults. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+## ADR-0128 forward note — 2026-11-15
+
+[ADR-0128](0128-content-free-tool-receipts-ground-later-chat-turns.md) is Accepted. Once implemented, a
+reseat carries bounded content-free *receipts* of earlier completed turns' tool names and outcomes, beside
+the text transcript, through the same reconstruction a resume uses. The disclosure then says: prior tool
+arguments and results (including files a tool read) are not carried; only content-free records of tool
+names and outcomes are; text the user sent, `@`-attached file contents included, is. Note 4's correction
+stands, and the new wording must not repeat its error in the opposite direction. Until the implementation
+step lands, the current notice is accurate. The body above is unchanged.
+
+## ADR-0133 forward note — 2026-11-16
+
+[ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) stores what an `ask_user` card asked and how the person
+answered, and a reseat carries it to the new model — possibly another provider — beside the receipts. The disclosure therefore also says
+so: *for the question tool, what you were asked and how you answered*. Saying only "names and outcomes" would understate what leaves, the
+direction note 4 warns against. The body above is unchanged.

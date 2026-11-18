@@ -18,6 +18,7 @@ import {
   type SessionResumeState,
 } from './session-resume.js';
 import type { ToolRegistry } from '../tools/types.js';
+import { KNOWN_EMPTY_RECEIPTS, RECEIPT_NOTICE_INCOMPLETE } from './turn-receipts.js';
 
 const TS = '2026-06-17T08:00:00.000Z';
 const CTX = SessionContextSchema.parse({ workingDir: '/workspace/s', fsScopeTier: 'sandboxed' });
@@ -355,9 +356,10 @@ describe('AgentSession.resume (1.Y)', () => {
       msg(7, 'user', [{ type: 'text', text: 'rolled back' }]),
     ];
     const state = reconstructSessionState(record(), rows);
+    // Rows carry no tool structure, so each restored turn is ambiguous: no completeness marker exists.
     expect(state.completedTurnSpans).toEqual([
-      { start: 1, end: 3 },
-      { start: 4, end: 5 },
+      { start: 1, end: 3, receipts: { records: [], omitted: 0, incomplete: true } },
+      { start: 4, end: 5, receipts: { records: [], omitted: 0, incomplete: true } },
     ]);
     const archive = JSON.stringify(state.messages);
     const seen: LlmMessage[][] = [];
@@ -371,20 +373,20 @@ describe('AgentSession.resume (1.Y)', () => {
       seen[0]?.map((message) =>
         message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
       ),
-    ).toEqual(['first', 'answer', 'empty-final\n\ncurrent']);
+    ).toEqual([`${RECEIPT_NOTICE_INCOMPLETE}\n\nfirst`, 'answer', 'empty-final\n\ncurrent']);
     expect(JSON.stringify(state.messages)).toBe(archive);
   });
 
   it.each([
-    { spans: [{ start: -1, end: 1 }] },
-    { spans: [{ start: 0, end: 3 }] },
-    { spans: [{ start: 1, end: 2 }] },
-    { spans: [{ start: 0, end: Number.NaN }] },
-    { spans: [{ start: 0, end: Number.MAX_SAFE_INTEGER + 1 }] },
+    { spans: [{ start: -1, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }] },
+    { spans: [{ start: 0, end: 3, receipts: KNOWN_EMPTY_RECEIPTS }] },
+    { spans: [{ start: 1, end: 2, receipts: KNOWN_EMPTY_RECEIPTS }] },
+    { spans: [{ start: 0, end: Number.NaN, receipts: KNOWN_EMPTY_RECEIPTS }] },
+    { spans: [{ start: 0, end: Number.MAX_SAFE_INTEGER + 1, receipts: KNOWN_EMPTY_RECEIPTS }] },
     {
       spans: [
-        { start: 0, end: 2 },
-        { start: 0, end: 2 },
+        { start: 0, end: 2, receipts: KNOWN_EMPTY_RECEIPTS },
+        { start: 0, end: 2, receipts: KNOWN_EMPTY_RECEIPTS },
       ],
     },
   ])('refuses invalid completed-turn spans before any host budget callback (%o)', ({ spans }) => {
@@ -413,7 +415,7 @@ describe('AgentSession.resume (1.Y)', () => {
       msg(0, 'user', [{ type: 'text', text: 'past' }]),
       msg(1, 'assistant', [{ type: 'text', text: 'answer' }]),
     ]);
-    const spans = [{ start: 0, end: 2 }];
+    const spans = [{ start: 0, end: 2, receipts: KNOWN_EMPTY_RECEIPTS }];
     const seen: LlmMessage[][] = [];
     const agent = AgentSchema.parse({ ...AGENT, memory: { type: 'window', window_size: 1 } });
     const s = AgentSession.resume(
@@ -449,8 +451,15 @@ describe('AgentSession.resume (1.Y)', () => {
     await session.sendMessage('again');
 
     // the provider's call saw the resumed transcript followed by the new user message.
+    // A restored turn with zero tool rows is ambiguous, so exactly one fixed notice heads the request.
     expect(seen[0]).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `${RECEIPT_NOTICE_INCOMPLETE}\n\n` },
+          { type: 'text', text: 'hi' },
+        ],
+      },
       { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
       { role: 'user', content: [{ type: 'text', text: 'again' }] },
     ]);
@@ -468,7 +477,7 @@ describe('AgentSession.resume (1.Y)', () => {
         { role: 'user', content: [{ type: 'text', text: 'hi' }] },
         { role: 'assistant', content: [{ type: 'text', text: 'hello' }] },
       ],
-      completedTurnSpans: [{ start: 0, end: 2 }],
+      completedTurnSpans: [{ start: 0, end: 2, receipts: KNOWN_EMPTY_RECEIPTS }],
       turnCount: 1,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -547,7 +556,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      completedTurnSpans: [{ start: 0, end: 1 }],
+      completedTurnSpans: [{ start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 900,
@@ -588,7 +597,7 @@ describe('AgentSession.resume (1.Y)', () => {
     };
     AgentSession.resume(params(deps), {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-      completedTurnSpans: [{ start: 0, end: 1 }],
+      completedTurnSpans: [{ start: 0, end: 1, receipts: KNOWN_EMPTY_RECEIPTS }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
       conservativeCostMicrocents: 0,

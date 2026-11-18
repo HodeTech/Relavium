@@ -65,6 +65,7 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 
 function capability(tier: FsScopeTier = 'project', selectors?: readonly string[]): FsCapability {
   const fs = assembleToolEnv({
+    operatorHomeDir: base,
     profile: 'chat-read-write',
     fsScopeTier: tier,
     workspaceDir: workspace,
@@ -232,6 +233,7 @@ it.runIf(process.platform === 'win32')(
 async function assertUncRefusal(pattern: string): Promise<void> {
   for (const tier of ['project', 'full'] as const) {
     const fs = createNodeFsCapability({
+      operatorHomeDir: base,
       tier,
       workspaceDir: workspace,
       readOnly: false,

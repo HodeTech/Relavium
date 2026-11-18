@@ -15,11 +15,35 @@ import {
   MediaMimeTypeSchema,
   mediaModalityOf,
   scopeSetIncludes,
+  type SessionAskRecord,
   utf8ByteLength,
+  extractHttpsHost,
 } from '@relavium/shared';
 import { z } from 'zod';
 
-import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
+import {
+  ASK_USER_DESCRIPTION,
+  ASK_USER_LLM_PARAMS,
+  AskUserAnswerError,
+  AskUserAnswerSchema,
+  AskUserArgsSchema,
+  askUserDisplaySummaryOf,
+  askUserRecord,
+  buildAnsweredResult,
+  notAskedResult,
+  skippedResult,
+  type AskUserAnswer,
+  type AskUserRequest,
+} from './ask-user.js';
+import {
+  ToolArgsInvalidError,
+  ToolExecutionError,
+  ToolPolicyError,
+  ToolUnavailableError,
+  ToolPreparationError,
+  ToolCancelledError,
+} from './errors.js';
+import { diffLines, DiffLimitError } from './line-diff.js';
 import { attachMedia, type WithMediaAttachment } from './media-attachment.js';
 import {
   type EgressCapability,
@@ -35,6 +59,9 @@ import {
   type ToolHost,
   type ToolId,
   type ToolPolicyClass,
+  type ToolPreview,
+  type ToolPreparedCall,
+  type FsPrepareWriteRequest,
 } from './types.js';
 
 /* ------------------------------------------------------------------------------------------------ *
@@ -57,6 +84,17 @@ interface BuiltinSpec<A> {
   readonly duplicationBenign?: boolean;
   /** The dispatch-context delegate this tool needs, so a filter can stop advertising it — see `ToolDef`. */
   readonly requiresDelegate?: ToolDelegateName;
+  readonly requiresFsMethod?: ToolDef['requiresFsMethod'];
+  /** A content-free summary in place of the derived one — see `ToolDef.displaySummary`. */
+  readonly displaySummary?: (result: unknown) => string;
+  /** The question record this call leaves in the session — see `ToolDef.askRecord`. */
+  readonly askRecord?: (args: A, result: unknown) => SessionAskRecord | undefined;
+  readonly preview?: (args: A) => ToolPreview;
+  readonly prepare?: (
+    args: A,
+    host: ToolHost,
+    ctx: ToolDispatchContext,
+  ) => Promise<ToolPreparedCall>;
   readonly dispatch: (args: A, host: ToolHost, ctx: ToolDispatchContext) => Promise<unknown>;
 }
 
@@ -75,6 +113,11 @@ function defineBuiltin<A>(spec: BuiltinSpec<A>): ToolDef<A> {
     ...(spec.effect === undefined ? {} : { effect: spec.effect }),
     ...(spec.duplicationBenign === undefined ? {} : { duplicationBenign: spec.duplicationBenign }),
     ...(spec.requiresDelegate === undefined ? {} : { requiresDelegate: spec.requiresDelegate }),
+    ...(spec.requiresFsMethod === undefined ? {} : { requiresFsMethod: spec.requiresFsMethod }),
+    ...(spec.displaySummary === undefined ? {} : { displaySummary: spec.displaySummary }),
+    ...(spec.askRecord === undefined ? {} : { askRecord: spec.askRecord }),
+    ...(spec.preview === undefined ? {} : { preview: spec.preview }),
+    ...(spec.prepare === undefined ? {} : { prepare: spec.prepare }),
     dispatch: spec.dispatch,
   };
   return def;
@@ -234,20 +277,81 @@ const MEDIA_POLICY: ToolPolicyClass = {
  * Filesystem tools.
  * ------------------------------------------------------------------------------------------------ */
 
+const readRange = z
+  .object({
+    unit: z.enum(['lines', 'bytes']),
+    start: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    end: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .superRefine((range, ctx) => {
+    if (range.end < range.start || (range.unit === 'lines' && range.start < 1))
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid source range' });
+  });
+
 const readFileTool = defineBuiltin({
   id: 'read_file',
-  description: 'Read a text file as UTF-8; binary/media content returns a durable media handle.',
-  args: z.object({ path: z.string().min(1), glob: z.boolean().optional() }).strict(),
+  preview: (args) => ({
+    kind: 'operation',
+    ...(args.path.startsWith('output://') ? {} : { target: args.path }),
+    fields: [],
+  }),
+  description:
+    'Read UTF-8 text, optionally by line or byte range. CLI hosts refuse binary/media and invalid UTF-8. A truncated result grants no edit evidence: re-read a narrower source range before editing. A glob read grants none either: re-read a file by its own path before editing it.',
+  args: z
+    .object({
+      path: utf8String(4096, 1),
+      glob: z.boolean().optional(),
+      range: readRange.optional(),
+    })
+    .strict()
+    .superRefine((args, ctx) => {
+      if (args.glob === true && args.range !== undefined)
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['range'],
+          message: 'a range cannot combine with glob',
+        });
+    }),
   llmVisibleParams: {
     type: 'object',
     properties: {
       path: {
         type: 'string',
-        description: 'File path within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty file path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       glob: {
         type: 'boolean',
         description: 'Treat the path as a glob pattern when true; defaults to false.',
+      },
+      range: {
+        type: 'object',
+        description:
+          'Exclusive of glob: lines are one-based inclusive; bytes are zero-based start-inclusive/end-exclusive UTF-8 offsets. Cuts inside a UTF-8 sequence are refused.',
+        properties: {
+          unit: {
+            type: 'string',
+            enum: ['lines', 'bytes'],
+            description: 'Choose inclusive source lines or exclusive UTF-8 byte offsets.',
+          },
+          start: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description: 'First source line (at least 1) or inclusive byte offset (at least 0).',
+          },
+          end: {
+            type: 'integer',
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description:
+              'Last source line inclusive, or byte offset exclusive; never before start.',
+          },
+        },
+        required: ['unit', 'start', 'end'],
+        additionalProperties: false,
       },
     },
     required: ['path'],
@@ -255,15 +359,183 @@ const readFileTool = defineBuiltin({
   },
   policy: FS_POLICY,
   dispatch: (args, host, ctx) =>
-    requireFs(host, 'read_file').readFile(args.path, { glob: args.glob }, ctx.signal),
+    requireFs(host, 'read_file').readFile(
+      args.path,
+      { glob: args.glob, range: args.range },
+      ctx.signal,
+    ),
 });
+
+const findFilesTool = defineBuiltin({
+  id: 'find_files',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.path,
+    fields: [{ name: 'glob', value: args.glob }],
+  }),
+  description:
+    'Find authorized files by a bounded in-house glob, respecting root ignore rules. Results are sorted newest first within the scanned set; incomplete traversal and limits are explicit.',
+  args: z.object({ path: utf8String(4096, 1).default('.'), glob: utf8String(4096, 1) }).strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Scoped directory, at most 4096 UTF-8 bytes; defaults to the workspace.',
+      },
+      glob: {
+        type: 'string',
+        maxLength: 4096,
+        description:
+          'File glob, at most 4096 UTF-8 bytes; supports *, ? and **, not regular expressions.',
+      },
+    },
+    required: ['glob'],
+    additionalProperties: false,
+  },
+  policy: FS_POLICY,
+  requiresFsMethod: 'findFiles',
+  dispatch: (args, host, ctx) => {
+    const fs = requireFs(host, 'find_files');
+    if (fs.findFiles === undefined) throw new ToolUnavailableError('find_files', 'fs.findFiles');
+    return fs.findFiles(args.path, { glob: args.glob }, ctx.signal);
+  },
+});
+
+const searchFilesTool = defineBuiltin({
+  id: 'search_files',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.path,
+    fields: [{ name: 'pattern', value: args.pattern }],
+  }),
+  description:
+    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit; results do not confer read-before-edit evidence.',
+  args: z
+    .object({
+      path: utf8String(4096, 1).default('.'),
+      pattern: utf8String(1024, 1),
+      caseSensitive: z.boolean().optional(),
+      wholeWord: z.boolean().optional(),
+      glob: utf8String(4096, 1).optional(),
+    })
+    .strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Scoped directory, at most 4096 UTF-8 bytes; defaults to the workspace.',
+      },
+      pattern: {
+        type: 'string',
+        maxLength: 1024,
+        description: 'Nonempty literal, at most 1024 UTF-8 bytes; never a regular expression.',
+      },
+      caseSensitive: {
+        type: 'boolean',
+        description: 'Case-sensitive by default; false enables locale-independent case folding.',
+      },
+      wholeWord: {
+        type: 'boolean',
+        description: 'Require Unicode letter/number/underscore word boundaries; defaults to false.',
+      },
+      glob: {
+        type: 'string',
+        maxLength: 4096,
+        description: 'Optional file glob, at most 4096 UTF-8 bytes; not a regular expression.',
+      },
+    },
+    required: ['pattern'],
+    additionalProperties: false,
+  },
+  policy: FS_POLICY,
+  requiresFsMethod: 'searchFiles',
+  dispatch: (args, host, ctx) => {
+    const fs = requireFs(host, 'search_files');
+    if (fs.searchFiles === undefined)
+      throw new ToolUnavailableError('search_files', 'fs.searchFiles');
+    return fs.searchFiles(
+      args.path,
+      {
+        pattern: args.pattern,
+        caseSensitive: args.caseSensitive,
+        wholeWord: args.wholeWord,
+        glob: args.glob,
+      },
+      ctx.signal,
+    );
+  },
+});
+
+async function prepareFile(
+  request: FsPrepareWriteRequest,
+  host: ToolHost,
+  ctx: ToolDispatchContext,
+  toolId: string,
+): Promise<ToolPreparedCall> {
+  const fs = requireFs(host, toolId);
+  if (fs.prepareWrite === undefined) throw new ToolUnavailableError(toolId, 'fs.prepareWrite');
+  const prepared = await fs.prepareWrite(request, ctx.signal);
+  let retained = false;
+  try {
+    const diff = await diffLines(prepared.before, prepared.after, {
+      checkCancelled: () => {
+        if (ctx.signal?.aborted === true) throw new ToolCancelledError(toolId);
+      },
+      yield: () => {
+        if (host.yieldControl === undefined) throw new ToolUnavailableError(toolId, 'yieldControl');
+        return host.yieldControl();
+      },
+    });
+    const preview: ToolPreview = Object.freeze({
+      kind: 'operation',
+      target: prepared.path,
+      fields: Object.freeze([]),
+      diff: Object.freeze({
+        ...diff,
+        stats: Object.freeze({ ...diff.stats }),
+        lines: Object.freeze(
+          diff.lines.map((line) =>
+            Object.freeze({
+              ...line,
+              ...(line.before === undefined ? {} : { before: Object.freeze({ ...line.before }) }),
+              ...(line.after === undefined ? {} : { after: Object.freeze({ ...line.after }) }),
+            }),
+          ),
+        ),
+      }),
+    });
+    retained = true;
+    return {
+      preview,
+      dispatch: (dispatchCtx) => prepared.execute(dispatchCtx.signal, dispatchCtx.hostCallOptions),
+      release: () => prepared.release(),
+    };
+  } catch (error) {
+    if (error instanceof DiffLimitError) throw new ToolPreparationError('diff_limit');
+    throw error;
+  } finally {
+    if (!retained) {
+      // Preparation has already failed. Preserve that primary refusal or cancellation;
+      // the host retains responsibility for any uncertain cleanup.
+      try {
+        await prepared.release();
+      } catch {
+        // Cleanup failure cannot replace the primary error.
+      }
+    }
+  }
+}
 
 const writeFileTool = defineBuiltin({
   id: 'write_file',
   description: 'Write or append content to a file, within the allowed FS scope only.',
   args: z
     .object({
-      path: z.string().min(1),
+      path: utf8String(4096, 1),
       content: utf8String(WRITE_CONTENT_MAX_BYTES),
       append: z.boolean().optional(),
       createDirs: z.boolean().optional(),
@@ -274,7 +546,9 @@ const writeFileTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'Destination file within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty destination path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       content: {
         type: 'string',
@@ -298,27 +572,36 @@ const writeFileTool = defineBuiltin({
   // (ADR-0057 EA3). NOT a guardrail target — `enforcePolicy` reads only `command`/`url`, so this changes no
   // allowlist behavior; it is display-only.
   policyTarget: (args) => ({ path: args.path }),
-  // An APPEND is an effect: appends compose, so a replay doubles the content. A whole-file overwrite is
-  // naturally idempotent — writing the same bytes twice leaves the same file, and the file IS the receipt,
-  // so it needs no journal row (ADR-0080 §3). Local, but "external" means outside this PROCESS.
-  effect: (args) => (args.append === true ? 3 : undefined),
-  dispatch: (args, host, ctx) =>
-    requireFs(host, 'write_file').writeFile(
-      args.path,
-      args.content,
-      { append: args.append, createDirs: args.createDirs },
-      ctx.signal,
+  // ADR-0125: every file publication is tier 3, including new/overwrite/empty/unchanged bytes.
+  // Final bytes are not a receipt for inode/security-metadata publication or intervening changes.
+  effect: () => 3,
+  requiresFsMethod: 'prepareWrite',
+  prepare: (args, host, ctx) =>
+    prepareFile(
+      {
+        kind: 'write',
+        path: args.path,
+        content: args.content,
+        append: args.append,
+        createDirs: args.createDirs,
+      },
+      host,
+      ctx,
+      'write_file',
     ),
+  dispatch: () => Promise.reject(new ToolUnavailableError('write_file', 'fs.prepareWrite')),
 });
 
-const listDirectoryTool = defineBuiltin({
-  id: 'list_directory',
-  description: 'List directory contents, optionally recursive with a glob filter.',
+const editFileTool = defineBuiltin({
+  id: 'edit_file',
+  description:
+    'Replace exact text in a previously observed unchanged UTF-8 text file; binary files refuse. Re-read or narrow the match after a preparation refusal.',
   args: z
     .object({
-      path: z.string().min(1),
-      recursive: z.boolean().optional(),
-      glob: z.string().optional(),
+      path: utf8String(4096, 1),
+      old_string: utf8String(WRITE_CONTENT_MAX_BYTES, 1),
+      new_string: utf8String(WRITE_CONTENT_MAX_BYTES),
+      replace_all: z.boolean().optional(),
     })
     .strict(),
   llmVisibleParams: {
@@ -326,7 +609,71 @@ const listDirectoryTool = defineBuiltin({
     properties: {
       path: {
         type: 'string',
-        description: 'Directory path within the host-authorized filesystem roots.',
+        maxLength: 4096,
+        description:
+          'Nonempty file path within the host-authorized roots, at most 4096 UTF-8 bytes, previously read in this tool loop.',
+      },
+      old_string: {
+        type: 'string',
+        minLength: 1,
+        maxLength: WRITE_CONTENT_MAX_BYTES,
+        description:
+          'Exact observed text to replace, nonempty and at most 8 MiB of UTF-8 bytes; unique unless replace_all.',
+      },
+      new_string: {
+        type: 'string',
+        maxLength: WRITE_CONTENT_MAX_BYTES,
+        description: 'Exact replacement text, at most 8 MiB of UTF-8 bytes; empty text is allowed.',
+      },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace every wholly observed occurrence; defaults to false.',
+      },
+    },
+    required: ['path', 'old_string', 'new_string'],
+    additionalProperties: false,
+  },
+  policy: FS_WRITE_POLICY,
+  policyTarget: (args) => ({ path: args.path }),
+  effect: () => 3,
+  requiresFsMethod: 'prepareWrite',
+  prepare: (args, host, ctx) =>
+    prepareFile(
+      {
+        kind: 'edit',
+        path: args.path,
+        oldString: args.old_string,
+        newString: args.new_string,
+        replaceAll: args.replace_all,
+        readScope: ctx.readScope,
+      },
+      host,
+      ctx,
+      'edit_file',
+    ),
+  dispatch: () => Promise.reject(new ToolUnavailableError('edit_file', 'fs.prepareWrite')),
+});
+
+const listDirectoryTool = defineBuiltin({
+  id: 'list_directory',
+  preview: (args) => ({ kind: 'operation', target: args.path, fields: [] }),
+  description:
+    'List directory contents, optionally recursive with a glob filter. CLI results normally cap at 200 entries. Results stopped by that cap state the entry limit; results stopped by another traversal bound state their incompleteness without an entry limit. Omitted-entry counts remain unknown.',
+  args: z
+    .object({
+      path: utf8String(4096, 1),
+      recursive: z.boolean().optional(),
+      glob: utf8String(4096).optional(),
+    })
+    .strict(),
+  llmVisibleParams: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        maxLength: 4096,
+        description:
+          'Nonempty directory path within the host-authorized roots, at most 4096 UTF-8 bytes.',
       },
       recursive: {
         type: 'boolean',
@@ -334,7 +681,9 @@ const listDirectoryTool = defineBuiltin({
       },
       glob: {
         type: 'string',
-        description: 'Optional glob pattern used to filter the returned directory entries.',
+        maxLength: 4096,
+        description:
+          'Optional glob pattern, at most 4096 UTF-8 bytes, used to filter the returned directory entries; empty is allowed.',
       },
     },
     required: ['path'],
@@ -355,6 +704,11 @@ const listDirectoryTool = defineBuiltin({
 
 const runCommandTool = defineBuiltin({
   id: 'run_command',
+  preview: (args) => ({
+    kind: 'operation',
+    target: args.command,
+    fields: [{ name: 'args', value: JSON.stringify(args.args ?? []) }],
+  }),
   description:
     'Run an authorized executable directly, without a shell; return its output and exit code.',
   args: z
@@ -509,6 +863,11 @@ const gitCommitTool = defineBuiltin({
 
 const httpRequestTool = defineBuiltin({
   id: 'http_request',
+  preview: (args) => ({
+    kind: 'operation',
+    target: extractHttpsHost(args.url)?.host ?? '',
+    fields: [{ name: 'method', value: args.method ?? 'GET' }],
+  }),
   description:
     'Make an HTTPS request to a configured allowed host, when network access is available.',
   args: z
@@ -827,6 +1186,64 @@ const invokeAgentTool = defineBuiltin({
   },
 });
 
+/** A host failure that must end the turn and must not be retried — a retry would reopen the card. */
+function askUserFault(message: string, cause?: unknown): ToolExecutionError {
+  return new ToolExecutionError('ask_user', message, cause, {
+    recoverable: false,
+    retryable: false,
+  });
+}
+
+// ask_user (ADR-0132) — delegate-backed like invoke_agent / read_media, and NOT governed: it mutates nothing outside the
+// process, so it has no action class, no approval, no effect journal entry and no `always`. A surface with nobody to
+// answer wires no delegate and the tool is never offered; the dispatch guard below stays authoritative.
+const askUserTool = defineBuiltin<AskUserRequest>({
+  id: 'ask_user',
+  description: ASK_USER_DESCRIPTION,
+  args: AskUserArgsSchema,
+  llmVisibleParams: ASK_USER_LLM_PARAMS,
+  policy: MEDIA_POLICY,
+  requiresDelegate: 'askUser',
+  // The result carries the person's own words, so its event/observer summary is a closed phrase (ADR-0132 §6). No
+  // `preview` either: the question appears on the card and in the host's transcript entry, never on the tool row.
+  displaySummary: askUserDisplaySummaryOf,
+  // ADR-0133: what the person was asked and answered is kept with the session, so a later turn and a resumed session can
+  // ground on it. The event/observer summary above stays a closed phrase; the record travels only in the typed tool history.
+  askRecord: askUserRecord,
+  dispatch: async (args, _host, ctx) => {
+    const ask = ctx.askUser;
+    if (ask === undefined) throw new ToolUnavailableError('ask_user', 'askUser');
+    const turn = ctx.askUserTurn;
+    // The session supplies the delegate and the per-turn state together; one without the other is a wiring fault.
+    if (turn === undefined) throw askUserFault('ask_user is wired without its per-turn state');
+    if (turn.skipped) return notAskedResult('skipped_earlier');
+    let answer: AskUserAnswer;
+    try {
+      answer = await ask(args, ctx.signal);
+    } catch (cause) {
+      // A stop (Esc / Ctrl-C at the card, or a sealed store) is a CANCEL: the registry routes it. Any other failure
+      // is a host fault and is fatal.
+      if (ctx.signal?.aborted === true || (cause instanceof Error && cause.name === 'AbortError'))
+        throw cause;
+      throw askUserFault('the question could not be shown', cause);
+    }
+    // Validate the SHAPE before reading anything from it: a host is code this module does not control, and a stray `null` or
+    // a string where an array belongs must be a fatal host fault, not a TypeError the registry would wrap as recoverable.
+    if (!AskUserAnswerSchema.safeParse(answer).success)
+      throw askUserFault('the host returned a malformed answer');
+    if (answer.kind === 'skipped') {
+      turn.skipped = true;
+      return skippedResult();
+    }
+    try {
+      return buildAnsweredResult(args, answer);
+    } catch (cause) {
+      if (cause instanceof AskUserAnswerError) throw askUserFault(cause.message, cause);
+      throw cause;
+    }
+  },
+});
+
 /* ------------------------------------------------------------------------------------------------ *
  * The catalog.
  * ------------------------------------------------------------------------------------------------ */
@@ -841,7 +1258,10 @@ const invokeAgentTool = defineBuiltin({
  */
 export const BUILTIN_TOOLS: readonly ToolDef[] = [
   readFileTool,
+  searchFilesTool,
+  findFilesTool,
   writeFileTool,
+  editFileTool,
   listDirectoryTool,
   runCommandTool,
   gitStatusTool,
@@ -853,6 +1273,7 @@ export const BUILTIN_TOOLS: readonly ToolDef[] = [
   notifyTool,
   readMediaTool,
   invokeAgentTool,
+  askUserTool,
 ] as readonly ToolDef[];
 
 /** The built-in tool ids (sorted), for grant construction and tests. */

@@ -3465,6 +3465,7 @@ ${line
         },
       },
       effectJournal: () => ({
+        inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
         prepare: (slot, toolId) => {
           calls.push('prepare');
           livePrepare.push({ slot, toolId });

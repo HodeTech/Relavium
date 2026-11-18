@@ -29,6 +29,8 @@ import {
 import type { ProviderResolver } from '../engine/providers.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,
@@ -759,6 +761,175 @@ describe('createSessionPersister', () => {
     expect(full?.session.totalCostMicrocents).toBe(1300);
   });
 
+  describe('a /models reseat is durable before its first completed turn', () => {
+    const stored = (
+      built: {
+        sessionId: string;
+        agent: AgentSessionRecord['agentSnapshot'];
+        context: AgentSessionRecord['context'];
+      },
+      model: string,
+    ): AgentSessionRecord => ({
+      id: built.sessionId,
+      agentSlug: built.agent?.id ?? 'chat',
+      ...(built.agent === undefined ? {} : { agentSnapshot: { ...built.agent, model } }),
+      context: built.context,
+      status: 'ended',
+      totalInputTokens: 7,
+      totalOutputTokens: 11,
+      totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+
+    it('writes the switched model to the adopted row when it differs, keeping its totals and title', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession({ ...stored(built, 'a-model-the-person-left'), title: 'My chat' });
+      persister.start();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe(built.agent.model);
+      expect(after?.title).toBe('My chat');
+      expect(after?.totalCostMicrocents).toBe(1300);
+      expect(after?.totalInputTokens).toBe(7);
+      persister.close();
+    });
+
+    it('writes it when only the provider differs (the same model name under another provider)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      const row = stored(built, built.agent.model);
+      store.createSession({
+        ...row,
+        ...(row.agentSnapshot === undefined
+          ? {}
+          : { agentSnapshot: { ...row.agentSnapshot, provider: 'openai' as const } }),
+      });
+      expect(built.agent.provider).not.toBe('openai');
+      persister.start();
+      expect(store.loadFull(built.sessionId)?.session.agentSnapshot?.provider).toBe(
+        built.agent.provider,
+      );
+      persister.close();
+    });
+
+    it('leaves the row untouched on a plain resume (same model and provider)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession(stored(built, built.agent.model));
+      persister.start();
+      expect(store.loadFull(built.sessionId)?.session.updatedAt).toBe('2026-06-24T00:00:00.000Z');
+      expect(store.loadFull(built.sessionId)?.session.status).toBe('ended');
+      persister.close();
+    });
+
+    // The Home's `/models` reseat is build-first: the NEW persister adopts the row (naming the new model) and only then is
+    // the old session torn down, whose persister handles `session:cancelled`. The old persister used to write its own
+    // (old) model and `ended` back, undoing the adopt write. These two tests drive that order against the real store; the
+    // adopt write itself is simulated by writing the row the new persister writes.
+    it('does not put the old model back when the old session ends after a build-first reseat (the Home order)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const row = store.loadFull(built.sessionId)?.session;
+      expect(row?.agentSnapshot?.model).toBe(built.agent.model);
+      // What the new persister's adopt write leaves on the row: the switched model, still active.
+      store.updateSession({
+        ...(row as AgentSessionRecord),
+        agentSnapshot: { ...built.agent, model: 'the-model-the-person-switched-to' },
+        status: 'active',
+      });
+      built.session.cancel(); // the old session's teardown: its persister handles `session:cancelled`
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe('the-model-the-person-switched-to');
+      expect(after?.status).toBe('active');
+    });
+
+    // A failed read is not "not superseded": writing blind could put the old model and `ended` back over a reseated
+    // row, so the terminal write is skipped (a stale `active` row is the cost) and the failure is surfaced and latched
+    // like any failed durable write instead of vanishing.
+    it('skips the terminal write and surfaces the failure when the reseat check cannot read the row', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const row = store.loadFull(built.sessionId)?.session;
+      store.updateSession({
+        ...(row as AgentSessionRecord),
+        agentSnapshot: { ...built.agent, model: 'the-model-the-person-switched-to' },
+        status: 'active',
+      });
+      const update = vi.spyOn(store, 'updateSession');
+      const load = vi.spyOn(store, 'loadSession').mockImplementation(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      built.session.cancel();
+      expect(load, 'the reseat check really tried to read the row').toHaveBeenCalled();
+      expect(update, 'no blind terminal write over the reseated row').not.toHaveBeenCalled();
+      expect(persister.durabilityFailure?.message).toContain('database is locked');
+      expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+      load.mockRestore();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.agentSnapshot?.model).toBe('the-model-the-person-switched-to');
+      expect(after?.status).toBe('active');
+    });
+
+    it('still writes the terminal row when the row is simply not found (not a read failure)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      const update = vi.spyOn(store, 'updateSession');
+      vi.spyOn(store, 'loadSession').mockReturnValue(undefined);
+      built.session.cancel();
+      expect(update).toHaveBeenCalledOnce();
+      expect(update.mock.calls[0]?.[0].status).toBe('ended');
+      expect(persister.durabilityFailure).toBeUndefined();
+    });
+
+    it('still marks the session ended when the row names its own model (the standalone teardown-first order)', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      built.session.cancel();
+      const after = store.loadFull(built.sessionId)?.session;
+      expect(after?.status).toBe('ended');
+      expect(after?.agentSnapshot?.model).toBe(built.agent.model);
+    });
+
+    it('does not stop a resume when that write fails: the first completed turn rewrites the row', async () => {
+      const { built, persister } = await setup(scriptedResolver([textTurn('hi')]), 5, 'adopt');
+      store.createSession(stored(built, 'a-model-the-person-left'));
+      vi.spyOn(store, 'updateSession').mockImplementation(() => {
+        throw new Error('SQLITE_BUSY');
+      });
+      expect(() => persister.start()).not.toThrow();
+      persister.close();
+    });
+  });
+
+  it('a resumed session keeps the workflow path `chat export` recorded through a completed turn', async () => {
+    // The live effect of the persister's row carrying no `exportedWorkflowPath`: export, resume, complete a turn.
+    const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5, 'adopt');
+    store.createSession({
+      id: built.sessionId,
+      agentSlug: built.agent.id,
+      agentSnapshot: built.agent,
+      context: built.context,
+      status: 'exported',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
+      exportedWorkflowPath: 'flows/chat.relavium.yaml',
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    });
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('go');
+    await built.session.sendMessage('go');
+    const row = store.loadFull(built.sessionId)?.session;
+    expect(row?.status, 'the turn flush really rewrote the row').toBe('active');
+    expect(row?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
+  });
+
   it('resumed persister folds new-turn tokens ON TOP of the adopted row totals, not from zero', async () => {
     // Simulate 2.N resume: a row with prior totals already exists; start() adopts it and hydrates the totals.
     const { built, persister } = await setup(scriptedResolver([textTurn('go')]), 5, 'adopt');
@@ -1005,6 +1176,276 @@ describe('createSessionPersister', () => {
     expect(full?.session.title).toBe('kept');
   });
 
+  describe('a RETAINED interrupted turn (ADR-0119)', () => {
+    const toolThenFailure = (): StreamChunk[][] => [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'read_file' },
+        { type: 'tool_call_end', id: 'c1' },
+        stop('tool_use'),
+      ],
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'refused' },
+        },
+      ],
+    ];
+
+    it('writes the user message, the content-free tool structure and ONE interruption row, atomically', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('read it', 'read it (display)');
+      await built.session.sendMessage('read it');
+
+      const full = store.loadFull('sess-1');
+      expect(full?.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'system',
+      ]);
+      const terminal = full?.messages[3];
+      expect(terminal?.content).toEqual([]);
+      expect(terminal?.interruption).toMatchObject({ reason: 'failed' });
+      expect(terminal?.interruption?.code).toBeDefined();
+      expect(terminal?.modelId).toBeUndefined();
+      // The exchange now exists, so its real usage accumulates into the session; the display text landed with it.
+      expect(full?.session.totalInputTokens).toBeGreaterThan(0);
+      expect([...store.loadUserDisplayTexts('sess-1', [0])]).toEqual([[0, 'read it (display)']]);
+      expect(persister.hasSavedTurns).toBe(true);
+      expect(listenerNotes).toEqual([]);
+    });
+
+    it('reconstructs as a counted turn whose span carries the interruption', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('read it');
+      await built.session.sendMessage('read it');
+      const full = store.loadFull('sess-1');
+      if (full === undefined) throw new Error('missing session');
+      const state = reconstructSessionState(full.session, full.messages);
+      expect(state.turnCount).toBe(1);
+      expect(state.messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'read it' }] },
+      ]);
+      expect(state.completedTurnSpans).toHaveLength(1);
+      expect(state.completedTurnSpans[0]).toMatchObject({
+        start: 0,
+        end: 1,
+        interruption: { reason: 'failed' },
+      });
+    });
+
+    it('LATCHES a failed interrupted-turn write: nothing is written, the failure is latched and the user is told', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      const boom = Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+        throw boom;
+      });
+      persister.beginUserTurn('read it', 'read it (display)');
+      await built.session.sendMessage('read it');
+      // All of the turn or none of it: not the user row, not the call/result pairs, not the interruption row, and
+      // not the display text that would have ridden the same transaction.
+      expect(store.loadMessages('sess-1')).toHaveLength(0);
+      expect([...store.loadUserDisplayTexts('sess-1', [0])]).toEqual([]);
+      expect(persister.durabilityFailure).toBe(boom);
+      expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+      expect(persister.hasSavedTurns).toBe(false);
+    });
+
+    it('persists an abort that landed after a provider engaged', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([
+          [
+            { type: 'tool_call_start', id: 'c1', name: 'read_file' },
+            { type: 'tool_call_end', id: 'c1' },
+            stop('tool_use'),
+          ],
+          textTurn('never streamed to completion'),
+        ]),
+      );
+      persister.start();
+      built.session.start();
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (event.type === 'agent:tool_result') built.session.abort();
+      });
+      persister.beginUserTurn('stop me');
+      await built.session.sendMessage('stop me');
+      unsubscribe();
+      const full = store.loadFull('sess-1');
+      expect(full?.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'system',
+      ]);
+      expect(full?.messages.at(-1)?.interruption).toEqual({ reason: 'aborted' });
+    });
+
+    it.each([
+      [
+        'an abort stop paired with a failed interruption',
+        { stopReason: 'aborted', interruption: { reason: 'failed', code: 'internal' } },
+      ],
+      [
+        'a failure naming another code than the error',
+        {
+          stopReason: 'error',
+          error: { code: 'tool_failed', message: 'x', retryable: false },
+          interruption: { reason: 'failed', code: 'internal' },
+        },
+      ],
+      [
+        'an interruption on a normal stop',
+        { stopReason: 'stop', interruption: { reason: 'aborted' } },
+      ],
+    ] as const)(
+      'fails closed instead of writing an interruption row its event contradicts (%s)',
+      async (_name, shape) => {
+        const { built, persister } = await setup(scriptedResolver([]));
+        persister.start();
+        built.session.start();
+        persister.beginUserTurn('a request');
+        // A synthetic completion event through the host's own sink: the bus validates the schema, which cannot carry
+        // the cross-field rule, so the persister is the check that stands between the event and the database.
+        built.emitSessionEvent({
+          type: 'session:turn_completed',
+          tokensUsed: { input: 1, output: 1 },
+          ...shape,
+        } as never);
+        expect(store.loadMessages('sess-1')).toHaveLength(0);
+        expect(persister.durabilityFailure?.message).toMatch(/contradicts/u);
+        expect(listenerNotes.join('\n')).toMatch(/contradicts/u);
+      },
+    );
+
+    it('rolls the whole turn back when the transaction fails on its LAST row (a real database failure, not a mocked store)', async () => {
+      const { built, persister } = await setup(scriptedResolver(toolThenFailure()));
+      persister.start();
+      built.session.start();
+      const realWriteTurn = store.writeTurn.bind(store);
+      // Give the interruption row the user row's sequence number: the user, call and result rows insert fine and the
+      // LAST insert violates the (session, sequence) uniqueness, so only a real transaction rollback leaves nothing.
+      vi.spyOn(store, 'writeTurn').mockImplementationOnce((input) =>
+        realWriteTurn({
+          ...input,
+          messages: input.messages.map((entry, index, all) =>
+            index === all.length - 1
+              ? { ...entry, message: { ...entry.message, sequenceNumber: 0 } }
+              : entry,
+          ),
+        }),
+      );
+      persister.beginUserTurn('read it');
+      await built.session.sendMessage('read it');
+      expect(store.loadMessages('sess-1')).toHaveLength(0);
+      expect(persister.durabilityFailure).toBeInstanceOf(Error);
+      expect(persister.hasSavedTurns).toBe(false);
+    });
+
+    it('stores no partial answer text for an aborted turn', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([textTurn('PARTIAL-VISIBLE-ANSWER and more words')]),
+      );
+      persister.start();
+      built.session.start();
+      const unsubscribe = built.handle.subscribe((event) => {
+        if (event.type === 'agent:token') built.session.abort();
+      });
+      persister.beginUserTurn('stop while you talk');
+      await built.session.sendMessage('stop while you talk');
+      unsubscribe();
+      const rows = store.loadMessages('sess-1');
+      expect(rows.map((row) => row.role)).toEqual(['user', 'system']);
+      expect(rows[1]?.interruption).toEqual({ reason: 'aborted' });
+      expect(JSON.stringify(rows)).not.toContain('PARTIAL-VISIBLE-ANSWER');
+    });
+
+    it('counts an interrupted-only session as having saved turns when it is adopted', async () => {
+      const first = await setup(scriptedResolver(toolThenFailure()));
+      first.persister.start();
+      first.built.session.start();
+      first.persister.beginUserTurn('read it');
+      await first.built.session.sendMessage('read it');
+      first.persister.close();
+      const adopted = await setup(scriptedResolver([]), undefined, 'adopt');
+      adopted.persister.start();
+      expect(adopted.persister.hasSavedTurns).toBe(true);
+      adopted.persister.close();
+    });
+
+    it('maps a trim boundary over an interrupted turn: the retained suffix keeps it, a resume sees it', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([textTurn('r1'), ...toolThenFailure(), textTurn('r3')]),
+      );
+      persister.start();
+      built.session.start();
+      for (const text of ['q1', 'q2 interrupted', 'q3']) {
+        persister.beginUserTurn(text);
+        await built.session.sendMessage(text);
+      }
+      // 5 in-memory messages (q1 a1 q2 q3 a3): keeping 3 keeps q2's turn and q3's, and drops q1's.
+      expect(built.session.trimHistory(3)).toMatchObject({ kind: 'trimmed' });
+      const messages = store.loadMessages('sess-1');
+      const marker = messages.find((message) => message.compaction !== undefined);
+      const q1Terminal = messages.find(
+        (message) => message.role === 'assistant' && message.content[0]?.type === 'text',
+      );
+      expect(marker?.compaction?.droppedThroughSequence).toBe(q1Terminal?.sequenceNumber);
+      const state = reconstructSessionState(
+        store.loadFull('sess-1')?.session as AgentSessionRecord,
+        messages,
+      );
+      expect(state.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'q2 interrupted' },
+        { type: 'text', text: 'q3' },
+        { type: 'text', text: 'r3' },
+      ]);
+      expect(state.completedTurnSpans.map((span) => span.interruption?.reason)).toEqual([
+        'failed',
+        undefined,
+      ]);
+    });
+
+    it('maps a later compaction boundary over the interruption row as a turn slot', async () => {
+      const { built, persister } = await setup(
+        scriptedResolver([
+          textTurn('r1'),
+          ...toolThenFailure(),
+          textTurn('r3'),
+          textTurn('SUMMARY'),
+        ]),
+      );
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('q1');
+      await built.session.sendMessage('q1');
+      persister.beginUserTurn('q2 interrupted');
+      await built.session.sendMessage('q2 interrupted');
+      persister.beginUserTurn('q3');
+      await built.session.sendMessage('q3');
+      expect((await built.session.compact('manual')).kind).toBe('compacted');
+      const messages = store.loadMessages('sess-1');
+      const marker = messages.find((message) => message.compaction !== undefined);
+      // q3 is kept; the boundary sits at q2's interruption row (sequence 5), not at a "real message".
+      const interruptionRow = messages.find((message) => message.interruption !== undefined);
+      expect(marker?.compaction?.droppedThroughSequence).toBe(interruptionRow?.sequenceNumber);
+      // A resume sees only q3's exchange past the boundary.
+      const reconstructed = reconstructSessionState(
+        store.loadFull('sess-1')?.session as AgentSessionRecord,
+        messages,
+      );
+      expect(reconstructed.messages.map((message) => message.content[0])).toEqual([
+        { type: 'text', text: 'q3' },
+        { type: 'text', text: 'r3' },
+      ]);
+    });
+  });
+
   it('marks the session ended on cancel (its sole terminal), leaving it resumable', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     persister.start();
@@ -1105,7 +1546,9 @@ describe('createSessionPersister', () => {
     await built.session.sendMessage('second').catch(() => undefined);
     const after = store.loadFull('sess-1');
     expect(after?.session.totalCostMicrocents).toBe(afterSuccess); // cost did NOT regress to 0 on the error
-    expect(after?.messages).toHaveLength(2); // the failed turn added no transcript rows
+    // ADR-0119: the unscripted provider returned no content at all, so the turn is not retained — nothing the provider
+    // accepted needs remembering, and a refused request must not ride every later request. Only the first exchange stays.
+    expect(after?.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
   });
 
   it('on cancel after a successful turn: status ended, totals retained, messages untouched', async () => {

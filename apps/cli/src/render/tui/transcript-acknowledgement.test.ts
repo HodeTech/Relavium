@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createChatStore } from './chat-store.js';
 import { createTranscriptAcknowledgement } from './transcript-acknowledgement.js';
-import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 describe('transcript publication acknowledgement', () => {
   it('requires the exact newly printed notice, even when its text matches an earlier notice', () => {
@@ -78,4 +78,35 @@ describe('transcript publication acknowledgement', () => {
       expect(publication.visible()).toBe(true);
     },
   );
+});
+
+it('measures notice visibility after the same expanded tool rows that the viewport paints', () => {
+  const store = createChatStore(
+    false,
+    {
+      transcript: [
+        { role: 'tools', text: '', calls: [{ id: 'call', toolId: 'write_file', resolved: true }] },
+      ],
+    },
+    FULLSCREEN_TRANSCRIPT_BOUND,
+  );
+  store.applyToolLiveEvent({
+    phase: 'preview',
+    callId: 'call',
+    toolId: 'write_file',
+    preview: {
+      kind: 'operation',
+      target: 'long-directory/'.repeat(20) + 'file.txt',
+      fields: [],
+    },
+  });
+  const proof = createTranscriptAcknowledgement(() => store);
+  const publication = proof.capture();
+  store.notice('Startup authority disclosure');
+  publication.published();
+  const snapshot = store.getSnapshot();
+  proof.viewport(snapshot.state.transcript, 80, 0, 2, 80, snapshot.toolDisplays);
+  expect(publication.visible()).toBe(false);
+  proof.viewport(snapshot.state.transcript, 80, 0, 20, 80, snapshot.toolDisplays);
+  expect(publication.visible()).toBe(true);
 });

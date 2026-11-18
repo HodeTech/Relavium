@@ -69,6 +69,9 @@ function call(payload: unknown) {
 
 function recordingPort(inner: EffectDispatchPort) {
   return {
+    inspectReplay: vi.fn((...args: Parameters<EffectDispatchPort['inspectReplay']>) =>
+      inner.inspectReplay(...args),
+    ),
     prepare: vi.fn((...args: Parameters<EffectDispatchPort['prepare']>) => inner.prepare(...args)),
     settle: vi.fn((...args: Parameters<EffectDispatchPort['settle']>) => inner.settle(...args)),
     discard: vi.fn((...args: Parameters<EffectDispatchPort['discard']>) => inner.discard(...args)),

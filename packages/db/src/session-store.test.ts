@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
+  agents,
   agentSessions,
   llmProviders,
   modelCatalog,
@@ -450,6 +451,85 @@ describe('SessionStore (1.X) — persist + resume', () => {
       })
       .run();
     expect(() => store.loadMessages('sess-1')).toThrow();
+  });
+});
+
+describe('SessionStore — the question record of an ask_user call (ADR-0133)', () => {
+  const ask = {
+    status: 'answered' as const,
+    items: [
+      { header: 'Scope', question: 'Which module?', selected: ['alpha'] },
+      { header: 'Note', question: 'Anything else?', selected: [], other: 'keep the API stable' },
+    ],
+  };
+  const callRow = (seq: number): SessionMessage =>
+    makeMessage(seq, {
+      role: 'assistant',
+      content: [{ type: 'tool_call', id: 'session-tool:1:0', name: 'ask_user', argsBytes: 120 }],
+    });
+  const resultRow = (seq: number, record: unknown): SessionMessage =>
+    makeMessage(seq, {
+      role: 'tool',
+      content: [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 80,
+          outcome: 'ok',
+          ...(record === undefined ? {} : { ask: record }),
+        } as SessionMessage['content'][number],
+      ],
+    });
+
+  it('round-trips through the JSON column with no migration: written, read back, validated', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(callRow(1));
+    store.appendMessage(resultRow(2, ask));
+    const stored = store.loadFull('sess-1')?.messages[2]?.content[0];
+    expect(stored).toMatchObject({ type: 'tool_result', ask });
+    // The column holds exactly the schema's JSON — the person's words are plain JSON text in `content_parts`.
+    const raw = client.sqlite
+      .prepare('SELECT content_parts FROM session_messages WHERE sequence_number = 2')
+      .get() as { content_parts: string };
+    expect(JSON.parse(raw.content_parts)).toEqual([
+      expect.objectContaining({ type: 'tool_result', ask }),
+    ]);
+  });
+
+  it('refuses a record the schema does not admit, at the write boundary', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(callRow(1));
+    for (const bad of [
+      { status: 'answered', items: [] },
+      { ...ask, extra: 1 },
+      { status: 'answered', items: [{ header: 'H', question: 'a\nb', selected: ['x'] }] },
+      { status: 'answered', items: [{ header: 'H'.repeat(25), question: 'Q?', selected: ['x'] }] },
+    ])
+      expect(() => store.appendMessage(resultRow(2, bad))).toThrow();
+    expect(store.loadFull('sess-1')?.messages).toHaveLength(2);
+  });
+
+  it('refuses a stored row whose record was edited into something the schema does not admit', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(callRow(1));
+    store.appendMessage(resultRow(2, ask));
+    client.sqlite
+      .prepare('UPDATE session_messages SET content_parts = ? WHERE sequence_number = 2')
+      .run(
+        JSON.stringify([
+          {
+            type: 'tool_result',
+            toolCallId: 'session-tool:1:0',
+            resultBytes: 1,
+            outcome: 'ok',
+            ask: { status: 'x' },
+          },
+        ]),
+      );
+    expect(() => store.loadFull('sess-1')).toThrow();
   });
 });
 
@@ -1333,5 +1413,74 @@ describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (
     store.createSession(makeSession({ id: 'sess-never' }));
     expect(rows).toEqual([]);
     expect(store.loadSessionCosts('sess-never')).toEqual([]);
+  });
+});
+
+/**
+ * A writer that does not CARRY a column must not erase it. The chat persister's row (`record()`) carries no
+ * `agentId`, `exportedWorkflowPath` or `deletedAt`, yet every `updateSession`/`writeTurn` SET them to NULL: a
+ * `chat export` was undone by the next completed turn after a resume, and a soft-delete mark by any later flush.
+ * `exportedWorkflowPath` and `deletedAt` are still settable by a record that carries a value (that is how `chat export`
+ * records the path); only an ABSENT value is left alone.
+ */
+describe('SessionStore — an update never NULLs a column its record does not carry', () => {
+  const rawRow = (id: string) =>
+    client.db.select().from(agentSessions).where(eq(agentSessions.id, id)).get();
+
+  it.each([
+    ['updateSession', (record: AgentSessionRecord) => store.updateSession(record)],
+    [
+      'writeTurn',
+      (record: AgentSessionRecord) =>
+        store.writeTurn({ messages: [{ message: makeMessage(0) }], session: record }),
+    ],
+  ] as const)(
+    '%s keeps an exported workflow path that its record omits, and still sets one it carries',
+    (_name, flush) => {
+      store.createSession(makeSession());
+      // `chat export`: the one writer that carries the path.
+      store.updateSession(
+        makeSession({ status: 'exported', exportedWorkflowPath: 'flows/chat.relavium.yaml' }),
+      );
+      // Resume + a completed turn: the persister's row carries no path.
+      flush(makeSession({ status: 'active', updatedAt: '2026-06-17T09:00:00.000Z' }));
+      expect(store.loadSession('sess-1')?.exportedWorkflowPath).toBe('flows/chat.relavium.yaml');
+      expect(store.loadSession('sess-1')?.status).toBe('active'); // the flush DID apply its own columns
+      // A carried value still wins.
+      store.updateSession(makeSession({ exportedWorkflowPath: 'flows/other.relavium.yaml' }));
+      expect(store.loadSession('sess-1')?.exportedWorkflowPath).toBe('flows/other.relavium.yaml');
+    },
+  );
+
+  it('does not resurrect a soft-deleted row when a later flush omits `deletedAt`', () => {
+    store.createSession(makeSession());
+    store.updateSession(makeSession({ deletedAt: '2026-06-17T09:00:00.000Z' }));
+    expect(store.loadSession('sess-1')).toBeUndefined(); // the mark landed (loadSession hides deleted rows)
+    store.updateSession(makeSession({ status: 'ended', updatedAt: '2026-06-17T10:00:00.000Z' }));
+    store.writeTurn({
+      messages: [],
+      session: makeSession({ updatedAt: '2026-06-17T11:00:00.000Z' }),
+    });
+    expect(store.loadSession('sess-1'), 'still hidden: not resurrected').toBeUndefined();
+    expect(rawRow('sess-1')?.deletedAt).toBe(Date.parse('2026-06-17T09:00:00.000Z'));
+  });
+
+  it('keeps the agent link when a later flush omits `agentId`', () => {
+    seedModelCatalog(client);
+    client.db
+      .insert(agents)
+      .values({
+        id: 'agent-1',
+        name: 'Chatter',
+        slug: 'chatter',
+        modelId: 'model-1',
+        createdAt: TS_MS,
+        updatedAt: TS_MS,
+      })
+      .run();
+    store.createSession(makeSession({ agentId: 'agent-1' })); // the INSERT path still carries it
+    expect(rawRow('sess-1')?.agentId).toBe('agent-1');
+    store.updateSession(makeSession({ status: 'ended', updatedAt: '2026-06-17T09:00:00.000Z' }));
+    expect(rawRow('sess-1')?.agentId).toBe('agent-1');
   });
 });

@@ -19,7 +19,11 @@ export const servicePackages = Object.freeze([
 ]);
 
 export function isServiceSpecifier(specifier) {
-  return servicePackages.some((name) => specifier === name || specifier.startsWith(`${name}/`));
+  return (
+    /(?:^|\/)native-fs\/loader\.cjs$/u.test(specifier) ||
+    /(?:^|\/)native\/fs-metadata\/runtime\/loader\.cjs$/u.test(specifier) ||
+    servicePackages.some((name) => specifier === name || specifier.startsWith(`${name}/`))
+  );
 }
 
 export const importFailureCanary = 'synthetic-bootstrap-import-canary-9173';

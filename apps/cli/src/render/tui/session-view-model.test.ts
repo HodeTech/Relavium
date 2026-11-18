@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendUserMessage,
+  approvalClosed,
+  approvalOpened,
   initialSessionViewState,
   MAX_LIVE_TOKEN_CHARS,
   MAX_LIVE_TOOL_CALLS,
@@ -61,13 +63,13 @@ function events() {
       toolId,
       toolInput: {},
     }),
-    toolResult: (toolId: string): SessionStreamHandleEvent => ({
+    toolResult: (toolId: string, success = true): SessionStreamHandleEvent => ({
       type: 'agent:tool_result',
       ...stamp(),
       nodeId: NODE,
       toolId,
-      success: true,
-      outputSummary: 'ok',
+      success,
+      outputSummary: success ? 'ok' : 'failed',
     }),
     cost: (cumulative: number, model: string = MODEL): SessionStreamHandleEvent => ({
       type: 'cost:updated',
@@ -206,7 +208,7 @@ describe('session-view-model', () => {
     const state = reduceAll([
       e.started(),
       e.turnStarted(),
-      // No token — the common abort-during-approval case (Esc at the [y]/[a]/[n] prompt before any text streamed).
+      // No token — the common abort-during-approval case (Esc at the approval card before any text streamed).
       e.turnCompleted({ stopReason: 'aborted' }),
     ]);
     expect(state.transcript).toHaveLength(1); // NOT silently dropped
@@ -260,6 +262,76 @@ describe('session-view-model', () => {
     if (entry?.role === 'assistant') {
       expect(entry.summary?.errorCode).toBe('turn_limit');
     }
+  });
+
+  it('records which tools failed, and how often, on the turn summary (ADR-0131 §3)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.toolCall('read_file'),
+      e.toolResult('read_file', false),
+      e.toolCall('read_file'),
+      e.toolResult('read_file', false),
+      e.toolCall('search_files'),
+      e.toolResult('search_files', true), // a success is not listed
+      e.toolCall('find_files'),
+      e.toolResult('find_files', false),
+      e.turnCompleted({ error: { code: 'tool_failed', message: 'budget' } }),
+    ]);
+    const entry = state.transcript.find((item) => item.role === 'assistant');
+    expect(entry?.role === 'assistant' ? entry.summary?.failedTools : undefined).toEqual([
+      { toolId: 'read_file', count: 2 },
+      { toolId: 'find_files', count: 1 },
+    ]);
+  });
+
+  it('records no failed tools for a turn where every call succeeded', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.toolCall('read_file'),
+      e.toolResult('read_file'),
+      e.token('done'),
+      e.turnCompleted(),
+    ]);
+    const entry = state.transcript.find((item) => item.role === 'assistant');
+    expect(entry?.role === 'assistant' ? entry.summary : undefined).not.toHaveProperty(
+      'failedTools',
+    );
+  });
+
+  it("keeps the person's wait on an approval card out of the turn (ADR-0129)", () => {
+    const e = events();
+    let state = reduceAll([e.started(), e.turnStarted()]);
+    expect(state.approvalWaitMs).toBe(0);
+    state = approvalOpened(state, 1_000);
+    expect(state.approvalSinceMs).toBe(1_000);
+    // A second open while one is already open does not restart the clock.
+    expect(approvalOpened(state, 9_999).approvalSinceMs).toBe(1_000);
+    state = approvalClosed(state, 4_500);
+    expect(state.approvalWaitMs).toBe(3_500);
+    expect(state.approvalSinceMs).toBeUndefined();
+    // A second card adds to the same turn's wait; closing with none open changes nothing.
+    state = approvalClosed(approvalClosed(approvalOpened(state, 10_000), 10_500), 20_000);
+    expect(state.approvalWaitMs).toBe(4_000);
+    const done = reduceSessionEvent(reduceSessionEvent(state, e.token('hi')), e.turnCompleted());
+    const entry = done.transcript.find((item) => item.role === 'assistant');
+    expect(entry?.role === 'assistant' ? entry.summary?.waitedMs : undefined).toBe(4_000);
+    // The next turn starts with a clean clock.
+    const next = reduceSessionEvent(done, e.turnStarted());
+    expect(next.approvalWaitMs).toBe(0);
+    expect(next.approvalSinceMs).toBeUndefined();
+  });
+
+  it('records no wait for a turn that never opened a card, or waited under a second', () => {
+    const e = events();
+    const quick = approvalClosed(approvalOpened(reduceAll([e.started(), e.turnStarted()]), 0), 400);
+    const done = reduceSessionEvent(reduceSessionEvent(quick, e.token('hi')), e.turnCompleted());
+    const entry = done.transcript.find((item) => item.role === 'assistant');
+    expect(entry?.role).toBe('assistant');
+    expect(entry?.role === 'assistant' ? entry.summary : undefined).not.toHaveProperty('waitedMs');
   });
 
   it('ends the session on session:cancelled', () => {

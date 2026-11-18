@@ -802,7 +802,7 @@ adapters):
   one canonical JSON-Schema each adapter lowers to the provider's native
   structured-output mode (OpenAI `response_format`, Gemini `responseJsonSchema`,
   Anthropic `output_config`). This is the seam mechanism that realizes a node's
-  `output_schema`. (The opencode `{ type: 'tool' }` variant is deliberately not
+  `output_schema`. (A separate `{ type: 'tool' }` variant is deliberately not
   adopted — `toolChoice: { name }` already forces a specific tool.)
 - **`providerExecuted`** — an optional flag on `ContentPart` `tool_call`/`tool_result`
   plus a provider-executed `tool_result` `StreamChunk` arm, distinguishing a tool

@@ -163,6 +163,7 @@ async function agentRunOwned(
     const built = await hostOwner.build((workOwner) =>
       (deps.buildSession ?? buildChatSession)({
         workOwner,
+        operatorHomeDir: homeDir,
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
         chat: config.chat,
         oneShot: true, // MVP-A7's chat output default and its scaled deadline are for chat surfaces only.
@@ -471,6 +472,9 @@ async function runOneShotTurn(
     // restoring the pre-4b fail-closed behavior (read-only tools still work). A deliberate author-trusted
     // one-shot would be a separate, security-reviewed decision using the workflow-read-write profile, not this.
     const modeEnv = makeChatModeEnv({
+      // No one can answer a card, so the governed tools are hidden from the model (as in `plan`) rather than
+      // offered and then refused; the confirm floor below still denies one the model names anyway.
+      interactive: false,
       session: built.session,
       tools: built.tools,
       workspaceDir: built.context.workingDir,

@@ -55,6 +55,8 @@ function capturingResolver(scripts: StreamChunk[][], requests: LlmRequest[]): Pr
 }
 
 const chat: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,
@@ -212,21 +214,41 @@ describe('session structure through the real CLI host and SQLite', () => {
         consentGate: () => Promise.resolve(new Map()),
       });
       const resumedPersister = attach(resumed, resumed.nextSequenceNumber);
+      // Derived from the real persisted rows. The surviving empty-final turn made one MCP-discovered call, which
+      // is recorded under the fixed label; the plain turn after it has zero tool rows and is therefore ambiguous.
       expect(resumed.resumeState.completedTurnSpans).toEqual([
-        { start: 0, end: 1 },
-        { start: 1, end: 3 },
+        {
+          start: 0,
+          end: 1,
+          receipts: {
+            records: [{ label: 'other_tool', outcome: 'ok' }],
+            omitted: 0,
+            incomplete: false,
+          },
+        },
+        { start: 1, end: 3, receipts: { records: [], omitted: 0, incomplete: true } },
       ]);
       for (const text of ['q4', 'q5']) {
         resumedPersister.beginUserTurn(text);
         await resumed.session.sendMessage(text);
       }
+      // The fixed ADR-0128 prose is replaced by short tokens so this test pins WHERE receipts sit, not their wording
+      // (the wording is pinned in core).
+      const tokens = (text: string): string =>
+        text
+          .replace(/\[Earlier turns of this conversation[^\]]*\]/g, '<legend>')
+          .replace(/\[Some earlier tool activity[^\]]*\]/g, '<gap>')
+          .replace(/\[Recorded tool calls made while[^\]]*\]/g, '<open>')
+          .replace(/\[End of recorded tool calls\.\]/g, '<close>');
       const wire = requests.map((request) =>
         request.messages.map((message) => ({
           role: message.role,
-          text: message.content
-            .filter((part) => part.type === 'text')
-            .map((part) => part.text)
-            .join(''),
+          text: tokens(
+            message.content
+              .filter((part) => part.type === 'text')
+              .map((part) => part.text)
+              .join(''),
+          ),
         })),
       );
       expect(wire).toEqual(
@@ -234,12 +256,18 @@ describe('session structure through the real CLI host and SQLite', () => {
           ? [[{ role: 'user', text: 'q4' }], [{ role: 'user', text: 'q5' }]]
           : [
               [
-                { role: 'user', text: 'q2\n\nq3' },
+                // Both selected turns: the legend (one block exists), the gap sentence (the plain turn is
+                // ambiguous), then q2 with its own block, folded with q3.
+                {
+                  role: 'user',
+                  text: '<legend> <gap>\n\nq2\n\n<open>\n1. other_tool — ok\n<close>\n\nq3',
+                },
                 { role: 'assistant', text: 'a3' },
                 { role: 'user', text: 'q4' },
               ],
               [
-                { role: 'user', text: 'q3' },
+                // q2 has left the window; only the ambiguous plain turn keeps the one gap sentence.
+                { role: 'user', text: '<gap>\n\nq3' },
                 { role: 'assistant', text: 'a3' },
                 { role: 'user', text: 'q4' },
                 { role: 'assistant', text: 'a4' },
@@ -299,7 +327,13 @@ describe('session structure through the real CLI host and SQLite', () => {
       persister.beginUserTurn('first');
       await built.session.sendMessage('first');
       unsubscribe();
-      expect(store.loadMessages('session')).toEqual([]);
+      // ADR-0119: the engaged turn is RETAINED as user → call → result → interruption, content-free.
+      const kept = store.loadMessages('session');
+      expect(kept.map((message) => message.role)).toEqual(['user', 'assistant', 'tool', 'system']);
+      expect(kept.at(-1)?.interruption).toMatchObject({
+        reason: mode === 'errored' ? 'failed' : 'aborted',
+      });
+      expect(JSON.stringify(kept)).not.toContain('SYNTHETIC_PRIVATE_TOOL_RESULT');
       const journal = createEffectJournalStore(client.db, { uuid: () => 'unused', now });
       const first = journal.readSessionDisclosureSnapshot('session');
       expect(first.disclosures).toEqual([
@@ -321,13 +355,109 @@ describe('session structure through the real CLI host and SQLite', () => {
         startMcpClient: connect,
         consentGate: () => Promise.resolve(new Map()),
       });
-      const next = attach(resumed, 0);
+      // The real host seeds the sequence past EVERY row, including the retained turn's interruption row.
+      const next = attach(resumed, resumed.nextSequenceNumber);
       next.beginUserTurn('second');
       await resumed.session.sendMessage('second');
       expect(journal.readSessionDisclosureSnapshot('session').disclosures).toEqual([]);
       expect(client.sqlite.prepare('SELECT scope, result_json FROM run_effects').all()).toEqual([
         { scope: 'session:session:2', result_json: null },
       ]);
+    },
+  );
+
+  it.each([{ reseat: false }, { reseat: true }])(
+    'shows the model the same request after a real SQLite resume as in the live session, an aborted turn in between (ADR-0119, reseat=$reseat)',
+    async ({ reseat }) => {
+      const mcp = () =>
+        startMcpClient([
+          {
+            id: 'fs',
+            open: () =>
+              Promise.resolve({
+                ...connection,
+                callTool: () =>
+                  Promise.resolve({
+                    content: [{ type: 'text', text: 'SYNTHETIC_PRIVATE_TOOL_RESULT' }],
+                    isError: false,
+                  }),
+              }),
+          },
+        ]);
+      const liveRequests: LlmRequest[] = [];
+      const live = await fresh([], {
+        providers: capturingResolver(
+          // q1 makes a call: a restart cannot prove a plain-chat turn made none (ADR-0128), so parity is stated for
+          // turns whose evidence is recorded — the interrupted one included.
+          [call('provider-id-1'), textTurn('a1'), call('provider-id-2'), textTurn('a3')],
+          liveRequests,
+        ),
+        startMcpClient: mcp,
+      });
+      const persister = attach(live);
+      persister.beginUserTurn('q1');
+      await live.session.sendMessage('q1');
+      const unsubscribe = live.handle.subscribe((event) => {
+        if (event.type === 'agent:tool_result') live.session.abort();
+      });
+      persister.beginUserTurn('q2 interrupted');
+      await live.session.sendMessage('q2 interrupted');
+      unsubscribe();
+      const saved = store.loadFull('session');
+      if (saved === undefined) throw new Error('missing session');
+      expect(saved.messages.map((message) => message.role)).toEqual([
+        'user',
+        'assistant',
+        'tool',
+        'assistant',
+        'user',
+        'assistant',
+        'tool',
+        'system',
+      ]);
+      // The live session continues first; its request is the reference. Its q3 is deliberately NOT staged for
+      // persistence, so the resumed host below can write the same sequence numbers into the same database.
+      await live.session.sendMessage('q3');
+      const liveWire = liveRequests.at(-1)?.messages;
+
+      const restoredRequests: LlmRequest[] = [];
+      const snapshot = saved.session.agentSnapshot;
+      if (snapshot === undefined) throw new Error('missing frozen agent snapshot');
+      const resumed = await buildResumedChatSession({
+        chat,
+        // A reseat resumes the same persisted rows under another model (ADR-0059): the request text must not change.
+        record: reseat
+          ? {
+              ...saved.session,
+              agentSnapshot: swapAgentModel(snapshot, 'claude-opus-4-8', 'anthropic'),
+            }
+          : saved.session,
+        messages: saved.messages,
+        now,
+        providers: capturingResolver([textTurn('a3')], restoredRequests),
+        onListenerError: () => undefined,
+        startMcpClient: connect,
+        consentGate: () => Promise.resolve(new Map()),
+      });
+      expect(resumed.resumeState.turnCount).toBe(2);
+      expect(resumed.resumeState.completedTurnSpans.map((span) => span.interruption)).toEqual([
+        undefined,
+        { reason: 'aborted' },
+      ]);
+      const next = attach(resumed, resumed.nextSequenceNumber);
+      next.beginUserTurn('q3');
+      await resumed.session.sendMessage('q3');
+      expect(restoredRequests[0]?.messages).toEqual(liveWire);
+      // The interrupted turn reached the model as a recorded call plus the fixed note, and nothing from the tool.
+      const sent = JSON.stringify(liveWire);
+      expect(sent).toContain('q2 interrupted');
+      expect(sent).toContain('1. other_tool — ok');
+      expect(sent).toContain('the user stopped it');
+      expect(sent).not.toContain('SYNTHETIC_PRIVATE_TOOL_RESULT');
+      // Neither the tool's arguments nor its result ever reached disk or the request (item 7 of ADR-0119's tests).
+      expect(sent).not.toContain('argument-sentinel');
+      expect(JSON.stringify(saved.messages)).not.toContain('argument-sentinel');
+      expect(JSON.stringify(saved.messages)).not.toContain('SYNTHETIC_PRIVATE_TOOL_RESULT');
     },
   );
 
@@ -699,7 +829,12 @@ describe('session structure through the real CLI host and SQLite', () => {
         ],
         textTurn('recovered'),
       ],
-      { agentRef, cwd: workspace },
+      {
+        agentRef,
+        cwd: workspace,
+        operatorHomeDir: root,
+        outputStoreFactory: () => Promise.resolve(undefined),
+      },
     );
     const persister = attach(built);
     persister.beginUserTurn('read');

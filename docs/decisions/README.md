@@ -159,14 +159,25 @@ flowchart TD
 | 0113 | [Secret-derived context keeps provenance at public sinks](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) | Accepted | 2026-10-15 |
 | 0114 | [In-house markdown rendering for the chat transcript](0114-in-house-markdown-rendering-for-the-chat-transcript.md) | Accepted | 2026-11-05 |
 | 0115 | [One interrupt keymap for the interactive CLI](0115-one-interrupt-keymap-for-the-interactive-cli.md) | Proposed | 2026-11-05 |
-| 0116 | [The built-in chat agent can edit, and the starting mode is configurable](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Proposed | 2026-11-05 |
-| 0117 | [A denied tool call returns to the model](0117-a-denied-tool-call-returns-to-the-model.md) | Proposed | 2026-11-05 |
+| 0116 | [The built-in chat agent can edit, and the starting mode is configurable](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Accepted | 2026-11-05 |
+| 0117 | [A denied tool call returns to the model](0117-a-denied-tool-call-returns-to-the-model.md) | Accepted | 2026-11-05 |
 | 0118 | [A command outside the allowlist asks instead of failing](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) | Proposed | 2026-11-05 |
-| 0119 | [An interrupted turn stays in the session as a content-free marker](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) | Proposed | 2026-11-05 |
-| 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Proposed | 2026-11-05 |
+| 0119 | [An interrupted turn stays in the session as a content-free marker](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) | Accepted | 2026-11-05 |
+| 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Accepted | 2026-11-05 |
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
 | 0122 | [The Home is the interactive product; subcommands are the scripting surface](0122-the-home-is-the-interactive-product.md) | Accepted | 2026-11-08 |
 | 0123 | [Restored transcripts use host-recorded display text](0123-restored-transcripts-use-host-recorded-display-text.md) | Accepted | 2026-11-09 |
+| 0124 | [Inspect retained run effects before file preparation](0124-inspect-retained-run-effects-before-file-preparation.md) | Accepted | 2026-11-11 |
+| 0125 | [File writes preserve security metadata through a native host adapter](0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md) | Accepted | 2026-11-12 |
+| 0126 | [Native write admission and recovery keep explicit lifetime proof](0126-native-write-admission-and-recovery-keep-explicit-lifetime-proof.md) | Accepted | 2026-11-13 |
+| 0127 | [macOS write metadata has distinct parent and file profiles](0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md) | Accepted (locally implemented/reviewed; final-head CI/merge gates remain) | 2026-11-14 |
+| 0128 | [Content-free tool receipts ground later chat turns](0128-content-free-tool-receipts-ground-later-chat-turns.md) | Accepted | 2026-11-15 |
+| 0129 | [The approval card is docked, bounded and says only what matters](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) | Accepted | 2026-11-16 |
+| 0130 | [Chat modes say what they do — `ask` asks, `plan` reads, `accept-edits` accepts](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md) | Accepted | 2026-11-16 |
+| 0131 | [A round that made progress resets the correction budget, and a line range past the end of a file is clipped](0131-a-round-that-made-progress-resets-the-correction-budget.md) | Accepted | 2026-11-16 |
+| 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted | 2026-11-16 |
+| 0133 | [An `ask_user` question and its answer are kept with the session](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) | Accepted | 2026-11-16 |
+| 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
 
 ## Creating a new ADR
 

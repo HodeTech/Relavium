@@ -15,13 +15,382 @@ A tool declaration in YAML has a `type` discriminator:
 | `plugin` | a user-supplied npm package | see [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md) |
 | `http` | an arbitrary REST endpoint | configured per call |
 
+<a id="proposed-edit-search-and-ranged-reads--mvp-3"></a>
+
+## Edit, search and ranged reads — MVP-3
+
+**Accepted design (2026-11-11); Step 1 locally accepted (2026-11-12):**
+[ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+and its linked plan authorize these additions. Ranges, discovery, observed-read
+bookkeeping and the session spill store are implemented on `development`, with
+the [source-bound local acceptance](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-1-local-acceptance-2026-11-12)
+distinguishing review/security gates from checkpoint CI.
+[Step 2 is also accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12),
+including editing/prepared writes and native metadata validation.
+[Step 3 is accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12):
+fresh built-in conversations receive the read/search/find/write/edit grant.
+Older and authored conversations retain their frozen grants; the
+[chat contract](../cli/chat-session.md) owns the mode and lifecycle behavior.
+
+- `edit_file` accepts `path`, nonempty `old_string`, `new_string` and optional
+  `replace_all` (default false). A nonunique match without `replace_all`, no
+  match, binary/invalid UTF-8 source, stale source or insufficient observed
+  source intervals refuses without a write. Exact replacement copies untouched
+  bytes, including line endings; replacement text is UTF-8 encoded as supplied,
+  without silent newline normalization. Every changed occurrence must be
+  observable through the [prepared-write contract](tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3).
+- `read_file` gains mutually exclusive line and byte ranges for a single file;
+  ranges cannot combine with glob. Line indices are one-based and inclusive;
+  byte offsets are zero-based, start-inclusive/end-exclusive UTF-8 offsets.
+  Refuse negative/reversed ranges, a line `start` past the last line (the error
+  names the file's line count), a byte range past the file's size, and byte cuts
+  inside a UTF-8 sequence. A line `end` past the last line is **clipped** to it
+  ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
+  §2): the result's `range.end` is the last line actually delivered and
+  `range.requestedEnd` carries the end that was asked for, present only when the
+  request was clipped. Return source range/size and explicit omitted counts
+  alongside text. The CLI continues to refuse binary/media reads: the catalog's generic
+  media-handle description does not activate CLI media support.
+- Successful model-facing reads establish source-identity/content-version and
+  delivered-byte intervals for the active agent turn's tool loop, in sessions
+  and workflow agent nodes alike. Bound both retained
+  sources and intervals; eviction only removes edit eligibility. Exact raw read
+  objects stage evidence only after untruncated model bounding; the next model
+  response promotes it before that response's tool batch. Sibling read/edit
+  calls cannot borrow evidence from a result not yet sent to the model. The
+  current implementation conservatively grants no evidence for truncated
+  results or spill reads: re-read the original file in a narrower source range.
+  A future spill mapping would have to prove original snapshot intervals.
+  Search snippets, find results and
+  arbitrary spill paths do not certify a file read. Reset on turn end/abort,
+  context reset, clear, resume and model reseat; do not implement CR-70's
+  deferred cross-turn tool-content carry.
+- `search_files` takes a literal nonempty pattern, optional case-sensitive and
+  whole-word matching, a scoped directory and optional file glob. Whole-word
+  boundaries use Unicode letters/numbers/underscore, not locale-dependent
+  casing or a model-supplied regular expression. Results identify usable paths,
+  one-based line numbers and bounded line excerpts. Omitted/skipped counts and
+  incomplete traversal are explicit; an unknown unvisited count is labelled
+  unknown, never invented as exact.
+- `find_files` takes a scoped directory and glob. Sort the admitted scanned set
+  by descending mtime with relative-path order as a deterministic tie-break.
+  A capped walk is labelled incomplete; it cannot claim the newest files in
+  the whole tree. Both tools reuse the existing jail, lexical/canonical
+  confidentiality checks, no-directory-symlink descent and bounded fd reads.
+- Ignore behavior starts with the existing documented in-house root-file subset:
+  workspace-root `.gitignore`, then `.relaviumignore`, last match wins;
+  comments, negation, directory suffixes, anchoring and `*`/`?`/`**` are
+  supported. Nested ignore files, character classes and other unsupported
+  syntax are not silently advertised as Git parity. Ignore rules only hide;
+  they never grant access. Bound ignore bytes/rules and matching work, preserve
+  security-pruned directories even under negation, and report unreadable or
+  unsupported ignore inputs rather than silently treating them as empty.
+- All discovery work is capped independently of matches: visited entries,
+  directories, depth, candidate files, per-file and aggregate bytes, pattern
+  and ignore work, results, output bytes and line width. Yield/check cancellation
+  during traversal and matching. Named finite defaults are below. No unbounded
+  walk/exponential matcher sits behind a bounded result list. Existing byte
+  ceilings remain floors. `list_directory` exposes its existing truncation.
+
+### File-tool inputs, results and resource limits
+
+`read_file` accepts `path`, optional `glob`, and optional `range: { unit:
+"lines" | "bytes", start, end }`; `range` and `glob: true` are exclusive. A
+range result adds `{ unit, start, end, startByte, endByte, omittedBytes }` to the
+existing file result; `sizeBytes` is the original source length. Empty files
+have zero lines: whole reads and byte `[0, 0)` succeed, line 1 is out of range.
+Whole/line reads scan at most 8 MiB. Byte seeks may address larger files with at
+most 8 MiB of requested bytes, plus an 8 KiB binary prefix and two one-byte
+boundary probes; only that prefix and requested UTF-8 slice/boundaries are
+inspected, not the unscanned file. Such large-file seeks confer no edit
+evidence. Stable source evidence hashes complete files of at most 8 MiB. Each
+active tool loop retains at most 256 eligible interval records and separately
+stages at most 256 records awaiting the next model response. Promotion keeps
+the newest 256 combined records; eviction only denies later edit eligibility.
+
+Glob reads admit at most 8 MiB of complete source reads in aggregate, including
+fully read candidates later skipped for NUL/invalid UTF-8. Each opened descriptor's
+size is admitted against the remaining source budget before its full read.
+The existing prefix-only binary skip is separately bounded by 8 KiB per matched
+file (at most 200 matches by default); it consumes no full-source budget.
+Returned glob `sizeBytes` counts delivered text sources, excluding skipped ones.
+
+`find_files` accepts `glob` and optional `path` (default `.`). `search_files`
+accepts a nonempty `pattern`, optional `path`/`glob`, `caseSensitive` (default
+true) and `wholeWord` (default false). Paths/globs are at most 4,096 UTF-8 bytes;
+literal patterns are at most 1,024. Case-insensitive search uses locale-independent
+per-code-point lowercase with source-offset mapping; it is not full Unicode
+case folding. Word boundaries are tested on the original source.
+
+Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
+returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
+contain visited entries, scanned files/bytes, binary/oversize skips, unreadable
+count, `incomplete` and optional limiting category. Search byte accounting charges
+actual source reads, including skipped binary/invalid UTF-8 candidates; every
+descriptor read observes the remaining aggregate budget. Capped traversal does not
+invent an unvisited total or global-newest claim. Each clipped line states its
+exact omitted byte count. Root ignore files use the declared subset; unreadable
+or unsupported rules/nested ignore files produce incomplete results rather than
+pretending to apply those rules.
+Ignore matching uses canonical workspace-relative candidates, including an
+invocation whose working directory is a permitted symlink. A present but
+unresolvable root ignore entry is unreadable input, not a proven absent file.
+Scoped discovery checks up to 32 admitted ancestors above its selected root for
+unsupported ignore files, stopping at workspace, grant or confidentiality
+boundaries. It also
+checks each visited non-workspace directory before enumerating it; presence is
+enough, so nested rule contents and final symlink targets are never read.
+An exhausted ancestor check reports the depth limit rather than a complete scan.
+
+| Independent host ceiling | Default |
+|---|---|
+| Visited entries / directories / depth | 10,000 / 1,000 / 32 |
+| Additional admitted ancestor directories checked for ignore files | 32; up to two fixed-name presence probes per directory |
+| Candidate files / results | 1,000 / 200 |
+| Search bytes per file / call | 1 MiB / 16 MiB |
+| Conservative matcher work units | 16,777,216 |
+| Bytes / rules per root ignore file | 64 KiB / 256 |
+| UTF-8 bytes per search excerpt | 2,048 |
+| Ordinary directory entries | 200 by default; a host-selected limit cannot exceed 1,000 |
+
+Directory truncation adds `truncated` and `omittedEntries: null` when the
+remaining count is unknown; `incomplete` distinguishes an unfinished walk.
+`entryLimit` is present only when the result-entry cap was reached, not when
+another traversal bound stopped the walk. Glob reads refuse an incomplete walk
+or an observed extra match beyond their 200-file default rather than silently
+dropping matches. Directory streams
+are bounded without materializing huge `readdir` arrays. Cooperative cancellation
+is checked across traversal, matching and chunked fd reads.
+
+Chat wires `ToolHost.outputStore` to a random per-session-instance private
+subtree admitted by an exact [host scratch descriptor](#host-issued-scratch),
+with owner-only POSIX directory/file modes and the existing Windows profile/ACL
+assumption. The model receives an opaque reference readable only by that
+session's bounded read capability; possession is not cross-session authority.
+Stored output is the bounded-result contract's content projection, not raw
+inline media or structurally excluded secrets. Cap individual and aggregate
+spill bytes/files. Join/cancel producers before clear/reseat/end cleanup; a
+next-start sweep checks ownership and identity, refuses links and preserves
+live or uncertain owners. Failure refuses a spill or reports cleanup honestly.
+Native production builders receive the operator home explicitly. Allocation
+creates `~/.relavium/session-outputs-v1/output-v1.<pid>.<uuid>` and an identity
+marker. Model refs use `output://<instance-uuid>/<file-uuid>`, never native paths;
+only that instance's read closure recognizes them. Ordinary filesystem grants
+do not gain the store root or write authority. Limits are 16 MiB per spill,
+64 MiB and 64 files per instance. Spills containing NUL are refused as invalid
+text before reserving bytes/files or creating an artifact; the existing
+preview-only fallback still reports full output unavailable. A no-range
+`output://` read whose complete JSON `FileRead` envelope exceeds the default
+model-result byte/line ceiling refuses with a fixed request for an explicit
+line or byte range. It neither truncates nor creates another spill/reference.
+Small full reads and explicit ranges keep their existing semantics; an
+oversized explicit range remains subject to ordinary result bounding.
+Startup sweep inspects at most 128 subtrees and 129 children per candidate, deletes only a proven dead PID's privately
+owned, matching regular/link-free tree, and preserves live/reused or uncertain
+owners and unmarked/malformed entries. An incomplete scan emits a fixed safe
+notice. Close seals new work, joins actual read/write producers, then validates
+and removes only owned files; cleanup uncertainty is reported. This is bounded
+filesystem work under owner-controlled storage, not an OS race-free jail.
+If exclusive temporary creation succeeds but its native identity cannot be
+captured, the instance seals admission, retains the reservation and reports
+cleanup uncertainty; an unpinned file is never guessed safe to delete.
+No content/ref is added to session messages, display metadata, session effects,
+exports or `history.db`. This lifecycle is not the future child-artifact store.
+
+Prepared writes cover replacement, append, new files and optional parent
+creation with the same target policy. Existing bytes and final content are
+bounded before diffing. No `mkdir` or temporary publication precedes approval
+and durable effect preparation. An unchanged source identity/version and
+missing-target expectation are rechecked immediately before atomic publication;
+detectable replacement/change refuses with a fresh-read/preview remedy. Preserve
+existing file metadata policy and untouched bytes. This is not an OS-level
+compare-and-swap or a race-free parent-directory jail against a hostile same-user
+process (ADR-0105). A host lacking the required prepared-write capability fails
+closed for the new interactive contract; it never shows a diff then dispatches
+an unbound legacy write.
+
+<a id="ask-the-user--mvp-3d"></a>
+
+## Ask the user — MVP-3d
+
+> **Accepted — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md); MVP-3d.**
+> This section is the contract; the decisions (the delegate, the pause, what is and is not recorded, why an answer is
+> never consent) are the ADR's.
+
+`ask_user` pauses the turn, shows the person a host-drawn card and returns their selection. It dispatches through the
+`askUser` engine **delegate**, not a host arm: a surface with no person to answer wires none, and the tool is then never
+offered to the model (a workflow node, `relavium agent run`, `--json`, a non-TTY chat). It is **not governed** — no action
+class, approval, effect journal entry or cache — it opens its card in **every** chat mode, and an answer never changes a
+permission. A delegated child agent never inherits the delegate.
+
+**Arguments** (strict; the whole call is validated before any card opens). A call outside a bound is refused as
+`invalid_args`, which names the **field path** (the registry reports paths, not bounds — the bounds are in the
+model-facing description):
+
+| Field | Bound |
+| --- | --- |
+| `questions` | 1–4 entries |
+| `questions[].header` | non-empty, at most 24 UTF-8 bytes |
+| `questions[].question` | non-empty, at most 150 UTF-8 bytes |
+| `questions[].multiSelect` | boolean, default `false` |
+| `questions[].options` | 2–4 entries; labels unique within the question |
+| `questions[].options[].label` | non-empty, at most 60 UTF-8 bytes |
+| `questions[].options[].description` | non-empty, at most 72 UTF-8 bytes |
+
+**Plain text, refused rather than repaired.** Every model-authored string is refused (never escaped, flattened or
+truncated) when it: contains a control character (which includes ESC, so every terminal sequence — and a newline or
+tab), a line or paragraph separator, a format character (bidirectional controls, zero-width characters and joiners,
+tag characters, the byte-order mark), a private-use, unassigned or unpaired-surrogate code point, or a run of more than
+three combining marks; contains a **default-ignorable or invisible** code point (a Hangul filler, a combining grapheme joiner,
+a variation selector, the braille blank — only the variation selector-16 that makes an emoji an emoji, or precedes a keycap, is
+admitted); uses any space but the ordinary one; builds one character (grapheme) from more than four code points; is not NFC;
+has leading or trailing whitespace; or begins with a marker a list could draw (`1.`, `2)`, `[x]`, `[ ]`, `( )`, a bullet). The
+host's own drawing is refused **anywhere** in the string, not only at its start — the cursor `›`, the own-answer glyph `✎`, the
+field cursor `█`, the box-drawing range `─`–`╿` (including the gutter `│`), the tick shapes `(•)`, `( )`, `[x]`, `[ ]`, and the
+approval card's key tokens `[Ctrl+Y]`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]` and `[v]` (and the single-letter tokens `[y]`, `[a]`, `[n]`, `[c]` the card drew before its answers became chords) — because a question is hard-wrapped and a forged row can start at any
+byte. A **label** must also be unique within its question after NFC, trimming, whitespace collapse and a locale-independent
+lower-casing (`toLowerCase`; no `ß`/`ς` folding), must not fold to `other`, must not contain `type your own`, and must not begin
+with `✎`. Look-alike letters (a Cyrillic `а`) are not detected — [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+accepts that residual.
+
+**Layout.** The host adds a final **type-your-own-answer** row (`✎`, unnumbered, not a model label). At the 80×24
+floor the docked card has twelve rows (`cardRowBudget(24)`): the rule, two key rows and nine body rows — progress and
+header (1), question (≤ 2), options (≤ 4), the type-your-own row (1), the highlighted option's description (1). The
+bounds above make each part fit: a code point is never wider in columns than it is in bytes, and every model-authored
+line is **hard-wrapped by display width** (not word-wrapped), so a line takes `⌈width / 78⌉` rows and an over-long word is
+broken, not cut. A terminal smaller than 80×24 gets the approval card's "too small" state; only the stop keys work.
+The rule row reads **`Question from the agent · not an approval`** (fixed host text, cyan where colour is on — never the
+approval card's yellow `Approval needed`). **A call with one question has no tabs.** A call with several shows them as **tabs** — one dot
+per question (`●` answered, `○` not yet, the tab on screen in brackets) and a final **Review** tab — in the progress row, and the person moves
+between them freely. Every row of
+model-authored text (the question, the highlighted option's description) is drawn **behind the host's gutter `│ `** — the glyph is
+refused inside model text, so the renderer owns column 0 of every wrapped line; the usable width of those rows is two columns
+narrower, which the bounds already allow (a code point is never wider in columns than in bytes, and 150 bytes fit two 76-column
+rows). In `accept-edits` and `auto`, where no card follows a write, the stop row also reads `· an answer is guidance, not a veto`.
+The **Review** tab lists every question with its answer exactly as it will be sent (`● 2 Also → one, “my text”`, `○ 3 Last → not answered yet`) and a
+line saying what `Enter` does; it is shorter than a question tab, so it always fits. Host text (hints, the own-answer note) is **not** behind the gutter —
+the gutter always means "the agent wrote this".
+
+**Delegate** (`SessionDeps.askUser`, copied into the dispatch context): `(request, signal) => Promise<AskUserAnswer>`.
+`request` is the validated questions. The answer is `{ kind: 'answered', answers: [{ selected: string[], other?: string }] }`
+— one entry per question, `selected` the chosen option labels — or `{ kind: 'skipped' }`. The engine re-validates an
+answer: its **shape** first (a strict schema, before anything is read from it — a `null`, a string where an array belongs or a
+non-promise is a host fault, never a stray `TypeError`), then the count, that every `selected` is one of that question's
+labels, that a **single-select question carries exactly one of a label or its own text, never both**, that a multi-select question
+carries at least one label or text, and that `other` is one line of at most 500 code points; a malformed answer is a host fault. The delegate **resolves, or rejects with an `AbortError`**; any other
+failure — a malformed answer included — is fatal and **not retryable**, because a retry would reopen the card. A store
+that is sealed or closed while a question is pending rejects it with an `AbortError`. **A host must show the person every question of a
+call before it resolves `answered`**: the stored record keeps each answered question's text on exactly that basis
+([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) amendment 7). A host that cannot show
+them all resolves `skipped` (stored as headers only) or rejects with an `AbortError`. Only the CLI's docked card wires a delegate today, and it
+satisfies this by requiring an answer on every question's own acknowledged frame.
+
+**Result** (the model-facing value; every case below is a successful, non-error result and is recorded `ok`):
+
+| Case | Model-facing result |
+| --- | --- |
+| Answered | `{ "status": "answered", "answers": [{ "header", "selected": [<labels>], "other"? }] }` — one entry per question in order; `selected` is empty when only text of the person's own was given; `other` is present only when given, one line, secret-shaped runs masked |
+| Skipped (`Ctrl+S`) | `{ "status": "skipped", "message": "The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn." }` |
+| After a skip, same turn | `{ "status": "not_asked", "reason": "skipped_earlier", "message": "The user already skipped a question in this turn, so no question was shown. Continue with your best judgment, or ask in your reply." }` |
+| Stopped (`Esc`, `Ctrl-C`) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
+| No delegate | the typed `tool_unavailable` (a throw, not a result; the tool is not offered in that case) |
+
+A skip closes questions for the rest of the turn. That is enforced inside the tool from per-turn state (`skipped`) on the dispatch
+context the session builds once per turn, so every surface behaves alike. There is **no count of cards per turn**: a turn is already
+bounded by the engine (16 tool rounds, 16 calls per response), a call carries up to four questions, and the person holds an instant,
+turn-wide circuit breaker — `Ctrl+S` ends every further question this turn. A fixed ceiling would only stop a task that genuinely needs more
+answers. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
+§1 each one **resets** the correction budget.
+A session-ending cancel (`/cancel`, `Ctrl-C` outside a card, the process signals) and a crash roll the turn back
+(ADR-0119); only `Esc`/`Ctrl-C` **at the card** abort the turn and retain it.
+
+**Keys** (the card is routed before the composer and before `Shift+Tab`, and ignores choosing keys until its exact frame
+has been acknowledged visible — the approval card's measured-frame acknowledgement, keyed on a **frame the store mints** when the card
+opens, moves to its next question, or is resized or resumed from suspend — **and has been on screen for 250 ms**, so a held or
+auto-repeating key cannot answer a question the person has not had time to read; the stop keys always work and never wait):
+
+| Key | On a question | In the text field | On the Review tab |
+| --- | --- | --- | --- |
+| `↑` / `↓` | move the highlight (no wrap; it starts on the first option, and nothing is pre-chosen) | `↑` returns to the list, keeping the text as a draft | — |
+| `←` / `→` (`Shift+Tab` / `Tab`) | previous / next question **without answering**; `→` from the last question opens Review; ignored when the call has one question | `←` / `→` move the cursor | `←` back to the last question |
+| `1`–`4` | single-select: choose that option and move on; multi-select: toggle it; a digit with no such option is ignored | typed as text | `1`–`n` jump to that question |
+| `Space` | multi-select: toggle the highlighted option; single-select and the `✎` row: ignored | typed as text | — |
+| **any other printable key** (letters, punctuation, a pasted or fast-typed chunk) | **starts the person's own answer**: the field opens on the `✎` row with that text, wherever the highlight was | typed as text | — |
+| `Enter` | single-select: choose the highlighted option and move on; multi-select: **confirm** the question (needs a tick or text; otherwise a hint) and move on; on the `✎` row: open the field — except in a multi-select question whose text is already saved, where it confirms | non-empty: **save** the text. Single-select: it is the answer, move on. Multi-select: it is **saved and counts, but the question stays open** (a note says so) — the person may keep picking, and the next `Enter` confirms. Empty: back to the list and **clear** any saved text and draft | all answered: **send**. Otherwise: go to the first unanswered question with a note — a hole is never sent |
+| `Backspace` | on the `✎` row with saved text: reopen the field to edit it | deletes | — |
+| `Ctrl+S` | **skip the whole call**; answers given so far are discarded | skip | skip |
+| `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** | **stop the turn** |
+
+No bare letter is a command, so typing — including an `s` — never skips. A one-question call sends from the question itself (there is no
+Review tab); a call with several questions sends only from Review, so every answer can be seen and changed first.
+
+The person's text is one line of at most 500 code points: control
+sequences are removed and newlines become spaces on paste; a paste that would pass the limit is refused whole, not cut,
+and a counter shows `n/500` from 400. While the `✎` row is highlighted the description row reads that the text is **sent
+to the model**. A highlighted row, a chosen row and a plain row are drawn differently (a chosen row is green where colour is on).
+
+**What is recorded** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)).
+The durable session row is the ordinary tool structure (the call's argument byte count; the result's byte count and outcome)
+**plus one optional `ask` record on the result part** — and only on a successful `ask_user` call that showed a card (an answered
+or skipped one; a stopped, failed or never-shown call leaves none). The record is what the person was asked and what they
+answered, and nothing else:
+
+| Field | Content |
+|---|---|
+| `status` | `answered` or `skipped` |
+| `items[]` (1–4, in question order) | `header` (≤ 24 B); for an **answered** item also `question` (≤ 150 B — required, the card necessarily showed it), and `selected` (the chosen labels, in the order the question offered them; ≤ 4, each ≤ 60 B) and/or `other` (the person's own text, masked of secret-shaped runs by the engine, ≤ 500 code points). A **skipped** item stores its `header` only: `Ctrl+S` ends the whole call from any tab, so a question the person never reached must not outlive the turn ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) amendment 7). A stored skipped item that still carries a `question` is read and ignored. |
+
+Never recorded: the options that were not chosen, the option descriptions, the `multiSelect` flag, the model's call id or any
+argument byte beyond these. Every string is one line without a control character, line or paragraph separator or unpaired
+surrogate; the shape is the strict `SessionAskRecordSchema` in `@relavium/shared`, checked when the row is written and when it
+is read, and a record is accepted in a history entry only for an `ask_user` call with outcome `ok`. There is **no SQL
+migration**: `content_parts` is a JSON column.
+
+The record is built by `ToolDef.askRecord` (a pure, total function of the validated arguments and the tool's own result; **honoured
+for built-in tools only**; a throw or a record the schema refuses costs the record, never the result). It travels in the typed
+`SessionToolHistoryEntry` of `session:turn_completed.toolHistory` — the channel a surface persists session rows from — and in no
+other event: `agent:tool_result.outputSummary` is still a closed phrase from a pure, optional display-summary function on the tool
+definition (`ToolDef.displaySummary`, given the tool's result and nothing else; honoured for built-in tools only, its result must be a
+short single line of printable ASCII (at most 64 characters) or the fixed phrase `completed` is shown instead, and a throw is
+contained the same way; every other tool keeps the derived summary): `answered N question(s)`, `skipped` or `not asked`.
+`agent:tool_call.toolInput` carries the sanitised arguments as it does for every tool. A surface that logs events wholesale must
+treat `toolHistory` as conversation content, as it treats the person's own messages. A session export (`/export`, `chat-export`) drops the field from the exported rows. The tool defines **no `preview`**, so its tool
+row shows the name only; the question and the choice appear in the transcript entry the host builds from the answer it holds, and
+a resumed session rebuilds the same entry from the stored record ([chat-session.md](../cli/chat-session.md)).
+
+**What a later turn sees.** The record is carried by the ADR-0128 receipt of the call and rendered under it, quoted:
+
+```
+1. ask_user — ok
+   answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API stable"
+```
+
+([agent-session-spec.md](../contracts/agent-session-spec.md#content-free-action-receipts--adr-0128) owns the format, the
+bounds and the retention rule). The same text is built from the rows after a resume, so a resumed session's first request
+carries exactly what the live one did. An `ask_user` record whose text was not kept (an older row, a call that showed no card,
+a note past the budget) reads `ask_user — ok (no question text kept)`. An answer guides the model and never restricts it: in
+`accept-edits` and `auto` no card follows a write, and a recorded answer is context for a later request, not a new request.
+
+**Model-facing description** (code-owned; the exact words are pinned by a test): ask a question only the user can answer —
+a choice between real alternatives, a preference, a requirement that cannot be found by reading; give two to four options
+with a short description each and do not add an "Other" option, because the user can always type their own answer; the
+limits (a question of at most 150 bytes, labels of at most 60, descriptions of at most 72, headers of at most 24, plain text
+only); the plain-text rules a refusal would otherwise hide (the registry reports only the field path of an invalid argument):
+no leading list marker, no box-drawing or tick glyphs, no `[y]`-style key tokens, no zero-width or invisible characters, no
+leading or trailing spaces, NFC only; ask up to four related questions in one call; never ask for a password, token or other
+secret; do not use it to ask permission, because approval of writes and commands is requested by the system and an answer here
+changes no permission; and know that the question and the answer are kept with the conversation (a long answer may be shortened), so later turns can refer back to them — while still stating any decision relied on in the reply.
+
 ## The built-in tools
 
 | Tool id | Purpose | Returns (shape) | Notes |
 | --- | --- | --- | --- |
-| `read_file` | Read text file content as UTF-8. Supports glob for reading multiple files. | `{ content, mimeType, sizeBytes, lastModified }`; **binary/media content returns a durable media handle** (`tool_result.media`, [ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)), never inline base64 | Respects the workflow's FS scope tier. |
+| `read_file` | Read UTF-8 text, optionally by line/byte range or multi-file glob. | `{ content, mimeType, sizeBytes, lastModified, range? }`; generic media-capable hosts may use durable handles, while CLI hosts refuse binary/invalid UTF-8 text | Respects FS scope; source evidence requires an untruncated result and a later model response. A multi-file glob read grants **no** edit evidence — re-read a file by its own path before `edit_file`. In a glob view each file's header name has control characters, line separators and Unicode format characters (bidi controls, zero-width marks, a BOM, tag characters) written as `\uXXXX` (`\u{XXXXX}` above the BMP). |
+| `search_files` | Bounded literal content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
+| `find_files` | Find by bounded glob, newest-first within the scanned set. | `{ files: [{ path, sizeBytes, lastModified }], stats }` | Idempotent; incomplete traversal is explicit. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
-| `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }` | Respects FS scope. |
+| `edit_file` | Replace exact text in a previously observed unchanged UTF-8 file. | `{ path, bytesWritten }` | Scoped read evidence, exact matching, bounded diff approval and durable effect admission; binary or stale sources refuse. |
+| `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }`; `type` is `file`, `directory` or `symlink` (a link is reported from its own directory entry; its target is never resolved or followed) | Respects FS scope. |
 | `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
 | `web_search` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |
@@ -31,6 +400,7 @@ A tool declaration in YAML has a `type` discriminator:
 | `notify` | Send a native desktop notification (title, body, optional action buttons). | `void` | Lets an agent request attention mid-run without blocking the run. |
 | `mcp_call` | Connect to a registered MCP server and invoke one of its tools by name. | the MCP tool result as JSON | Server resolved from config; see [mcp-integration.md](mcp-integration.md). |
 | `invoke_agent` | Call another agent node in the same workflow by node id, with explicit input. | that agent's output | The dynamic-dispatch mechanism used by orchestrator agents to delegate. |
+| `ask_user` | Ask the person one to four structured questions mid-turn (two to four options each, multi-select, always a type-your-own row) and return the selection. | `{ status: 'answered', answers }`, `{ status: 'skipped' }` or `{ status: 'not_asked' }` — see [Ask the user](#ask-the-user--mvp-3d) | **Not governed** (no approval, effect or cache) and never a permission. Dispatches through the `askUser` engine delegate, so it is offered **only** on a surface with a person at it (the standalone chat and the Home); a workflow node or a one-shot run never sees it. |
 | `read_media` | Read a produced/received media asset by its durable `media://sha256-…` handle (**whole handle** — no byte range), so a media-capable model can look at it. | a short **text descriptor** (mime type, byte length, handle) as the `tool_result`; the media itself arrives as a top-level `media` part on a **marked, engine-synthesized `user` message** appended right after it ([ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1) | **Scope-set authz** — the requesting `session`/`workspace` must be in the handle's `allowedScopes` ([ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1); knowing a sha256 is **not** authorization; read-only (bypasses the action gate), secret-free `media_scope_denied`. The tool never touches bytes: it authorizes a handle and describes it, and the chain's egress re-materialization resolves the handle per attempt (ADR-0043 §1), so a failover or a resume re-resolves from the canonical handle. The synthesized message carries a fixed engine-authored preamble naming the tool — it must never present as the user's own words. Because the media rides the ordinary media-INPUT rail it is bounded by it: `read_media` **refuses** a video, a PDF (never inline at any size) or an image/audio handle over `INLINE_MEDIA_CEILING`, with a correctable `invalid_args` naming the limit — so the model picks another handle instead of the next request dying on a schema error after the tool has already run. A response's tool calls may deliver at most `ADMISSION_CEILINGS.mediaAttachmentsPerResponse` attachments, refused by the engine before the seam's own per-message cap. All of a response's attachments arrive on **one** synthesized message appended after the FINAL tool result — after every one of them, never interleaved between two — a tool result must stay contiguous with its siblings or the providers reject the turn. And a model that does not accept image input refuses the turn rather than being handed a descriptor for something it never received. *(The delivery path ships as of `W5`/`CR-50`. The host `MediaReadAccess` delegate and the `session`/`workspace` scope population remain unwired in production — see [deferred-tasks.md](../../roadmap/deferred-tasks.md); absent the delegate the tool fails closed with `tool_unavailable`.)* |
 
 > **Where each tool runs.** `http_request` and `web_search` need the host's egress arm, `read_clipboard` and
@@ -42,11 +412,17 @@ A tool declaration in YAML has a `type` discriminator:
 > wires that arm only when an inline agent declares `mcp_servers`, so `mcp_call` without a declared server still
 > fails at its first call. A run resumed by `relavium gate` or `budget resume` is not re-checked. `invoke_agent`
 > and `read_media` are outside this check: they need an engine delegate rather than a host arm, no path wires either
-> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing.
+> yet, and the engine never offers them to the model, so a grant of either is inert rather than failing. `ask_user` is the third
+> delegate-backed tool: wired only by the interactive chat surfaces, so a grant of it on a workflow node is inert in the same way.
 
 > **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
+
+For prepared `write_file`, `bytesWritten` is the UTF-8 byte size of the supplied
+`content` payload. With append, it counts only the appended fragment and excludes
+the retained prefix. For `edit_file`, it is the UTF-8 byte size of the complete
+published file. Neither value counts filesystem write syscalls.
 
 ## Tool input/output mapping
 
@@ -65,6 +441,8 @@ limits, independent of operating-system command-line capacity.
 | Argument | Maximum |
 | --- | --- |
 | `write_file.content` | 8 MiB (8,388,608 bytes) |
+| `edit_file.old_string` / `edit_file.new_string` | 8 MiB each; `old_string` remains non-empty |
+| Filesystem tool `path` / `root`, and file discovery/list `glob` when supplied | 4,096 UTF-8 bytes; required paths remain non-empty |
 | `http_request.body` | 1 MiB (1,048,576 bytes), when supplied |
 | `git_commit.message` | 16 KiB (16,384 bytes); still non-empty |
 | `run_command.args` | 256 entries, each at most 16 KiB, totaling at most 64 KiB (65,536 bytes) |
@@ -74,22 +452,55 @@ argument vector remain valid. Impossible UTF-16 lengths and argument counts are 
 scanning; the vector's cheap aggregate check precedes all member byte scans. The existing shared
 byte counter measures plausible values, including multibyte text and unmatched surrogates.
 
+The byte admission ceiling is independent of review complexity. Prepared diffs
+also cap each source at 100,000 lines, emit at most 200,000 operations and bound
+the Myers frontier to 1,000,000 work units and 8 MiB of trace storage. Linear
+empty-side and common-prefix/suffix paths retain line/operation bounds and
+cooperative cancellation. A complex admitted input may still receive
+`diff_limit`; the content bound does not promise reviewability for every diff.
+
 The model-visible properties and array items describe their use, defaults and these limits through
 all supported dialect normalizers. JSON Schema `maxLength` is a necessary character bound, **not**
 the byte authority; descriptions communicate the UTF-8 constraint and aggregate argument limit.
 Config-only parameters remain excluded. These limits apply only to the listed arguments, without
 imposing matching-name limits on unrelated fields such as `notify.body` or `git_status` configuration.
 
+## Refusals that return to the model
+
+[ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md) returns
+a refusal that was decided from the call and the session's own policy to the model
+as an `isError` tool result, on the interactive surfaces (`relavium chat`, the Home,
+a one-shot `agent run`) and never in a workflow node. There is **one fixed text per
+class, identical for every target state**; the only variable parts are the user's own
+typed words and the mode's fixed label, both bounded to 300 code points with
+control characters, bidirectional overrides and line separators flattened to a
+space. The code owns the strings in `packages/core/src/engine/denial-text.ts`; this
+table is their canonical description, so the two must change together.
+
+| Class | Model-facing text |
+|---|---|
+| `user` | The user declined this tool call. Nothing was run or changed, and the call must not be repeated. Suggest a different approach, or ask the user what they prefer. *(+ ` The user's reason: "<their words>"` when they gave one.)* |
+| `mode` | This action is not available in the current mode *(+ ` (<mode label>)`, e.g. `plan mode is read-only`)*. Nothing was run or changed. Describe what you would do, so the user can switch modes or do it themselves. |
+| `unavailable` | No one is available to approve this action in this session, so it was not run. Nothing was changed. Continue without it, or describe what you would have done. |
+| repeat | The user already declined an identical call in this turn, so it was not run again. Nothing was run or changed. Propose something different, or ask the user what they prefer. |
+
+A repeat is the same tool name with the same canonical arguments within one turn.
+Each returned refusal counts toward the correction budget, which counts
+**consecutive rounds in which no call ran to a result**; a round with at least one
+success resets it (ADR-0131 §1). A refusal after an effect was admitted, a
+saved-result delivery, a revoked starting-`auto` authority and the wiring faults stay
+fatal.
+
 ## Tool result bounding
 
-The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and the **path** to the full output spilled to the host's run-scoped **output store** (reclaimed at the run's terminal event). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
+The result a tool hands **back to the model** (which re-enters the next request) is size-bounded — distinct from the `agent:tool_result.outputSummary` *event* field, which is truncated separately for display ([sse-event-schema.md](../contracts/sse-event-schema.md)). The bound is **model-facing only**: `output_mapping` writes the **full** result into workflow state, so a downstream node still gets the real value; only the model-facing copy is replaced by a **bounded preview** (honoring **both** the byte and the line ceiling), an explicit **truncation marker**, and an authorized **reference** to the full output in the host-owned **output store**, where wired (native chat joins producers before instance cleanup). This closes the model-facing context-window cost/DoS surface the pre-egress budget governor ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) cannot see — an oversized `read_file` / `http_request` / MCP result blows the *next* request's window. *v1.0 caveat:* the bound is over the **in-memory** result the dispatch returns; the stream-and-spill-at-the-source guarantee (the engine never holding the full bytes) is a **host-capability obligation** that lands with the first genuinely-streamed large source (see [tool-registry.md §Result bounding](tool-registry.md#result-bounding-and-spill-to-file)). The output store is its own host capability, so bounding works even on a host with no filesystem (`web_search` / MCP).
 
 | Knob | v1.0 default | Note |
 | --- | --- | --- |
 | Byte ceiling | 50 KB | over ⇒ spill + preview (model-facing only) |
 | Line ceiling | 2000 lines | over ⇒ spill + preview (model-facing only) |
 | Preview | head + tail slice within the ceiling | the marker names the omitted span; a result over the ceiling only by the inline media its text omits keeps that media-free text as its preview |
-| Spill | the host's run-scoped output store; reclaimed at the terminal event | the path is handed to the model; readable via the FS-scope-tiered tools |
+| Spill | the host-owned output store; native chat reclaims after session-instance producer join | the path is handed to the model; readable via the FS-scope-tiered tools |
 
 **Inline media counts against the ceiling (2026-11-04).** The bound counts the inline media a result still
 holds — a base64 `data:` URI, a canonical base64 source, a binary buffer at its `byteLength` — at its full size,
@@ -333,9 +744,9 @@ including literal and wildcard globs before separator normalization. On Windows 
 equivalent forward-slash and mixed-separator UNC prefixes also refuse; this does not
 change POSIX double-slash absolute-path semantics. A full tier does not bypass this floor.
 
-The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/` and `legacy_credentials/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
+The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/`, `legacy_credentials/`, `.gnupg/`, `.password-store/`, and the nested stores `Library/Keychains/`, `.local/share/keyrings/`, `.config/gnupg/` and `.config/op/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; the GitHub CLI token file `gh/hosts.yml` (`GitHub CLI/hosts.yml` on Windows); repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
 
-Chat uses the full-capability `chat-read-write` host with writes/egress/os gated by the per-tool approval floor: default ask denies governed actions. Credential/protected-path refusals remain mode-independent. `read_file` still fails closed on binary/media until its durable-handle host path is wired. Existing tool-fs bounded fd reads and hard-link controls remain, including the scoped [pnpm virtual-store read residual](../../roadmap/deferred-tasks.md). That exemption does not apply to CAS.
+Chat uses the full-capability `chat-read-write` host with writes/egress/os gated by the per-tool approval floor: default `ask` shows a card for every governed action and `plan` refuses them ([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)). Credential/protected-path refusals remain mode-independent. `read_file` still fails closed on binary/media until its durable-handle host path is wired. Existing tool-fs bounded fd reads and hard-link controls remain, including the scoped [pnpm virtual-store read residual](../../roadmap/deferred-tasks.md). That exemption does not apply to CAS.
 
 Permitted extra-root results remain usable as workspace-relative paths retaining necessary `..`, or canonical absolute paths when a relative representation is impossible across Windows drives. Glob reads accept literal paths as well as `*`, `?` and `**` patterns: the parent prefix before the first metacharacter, or the parent directory of a literal path, is admitted under the same roots and floors. Absolute and workspace-relative paths into selected extra roots obey the same authority. Directory entry names are relative to the requested directory; mention/completion consumers do not anchor them twice. Renderers still treat returned text as untrusted.
 
@@ -351,7 +762,7 @@ The host-only `issueHostScratchRoot({ homeDir, rootDir })` factory issues an opa
 
 Both lexical and canonical containment must hold. Anchor/root identities are pinned and rechecked; anchor/root and descendant directories require owner-only POSIX modes and ownership, and symlink descendants refuse. The descriptor exempts only the ancestor `.relavium` component for accesses inside that exact subtree. Home config/history, every project `.relavium`, siblings/prefixes and nested secret/protected components remain denied. Windows retains the owner-controlled profile/ACL assumption; POSIX-bit checks do not verify Windows ACLs.
 
-Synthetic tmp/artifact descriptor tests establish this prerequisite only. Automatic global tmp provisioning is removed without deleting existing directories; ordinary chat has no production allocator. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns production provisioning, per-parent isolation, join, cleanup and recovery.
+Native chat provisions the private session-output lifecycle described [above](#file-tool-inputs-results-and-resource-limits); its opaque reference reader does not add that subtree to ordinary filesystem grants. Automatic global tmp provisioning remains removed without deleting existing directories. [Phase 2.6.N](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage) still owns child-artifact provisioning, per-parent isolation, join, cleanup and recovery; the session-output store does not activate that foundation.
 
 ### Physical media storage and limits
 

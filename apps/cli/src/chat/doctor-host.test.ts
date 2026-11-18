@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +17,22 @@ const resolver: ProviderResolver = {
 const ref = (id: string): McpServerRef => ({ id });
 
 describe('assembleDoctorProbes', () => {
+  it('forwards the private home to ordinary filesystem reads without a native write profile', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-doctor-fs-'));
+    try {
+      const workspace = join(root, 'workspace');
+      const home = join(root, 'home');
+      mkdirSync(workspace);
+      mkdirSync(home, { mode: 0o700 });
+      writeFileSync(join(workspace, 'notes.txt'), 'doctor read control');
+      const probes = assembleDoctorProbes({ cwd: workspace, operatorHomeDir: home, resolver });
+      const fs = probes.toolHost?.fs;
+      if (fs === undefined) throw new Error('Doctor did not expose its filesystem capability.');
+      expect((await fs.readFile('notes.txt', {})).content).toBe('doctor read control');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('builds every probe as a CLOSURE — no keychain read / config load / connect at construction', () => {
     const keychain: KeychainStore = {
       get: vi.fn(() => null),

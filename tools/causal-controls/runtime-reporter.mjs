@@ -1,9 +1,11 @@
 /** Owned reporter for the installed Vitest Reporter.onTestRunEnd API (3.2.6). */
 import assert from 'node:assert/strict';
+import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runtimeDiagnostic } from './runtime-diagnostic.mjs';
 
 const reporter = 'tools/causal-controls/runtime-reporter.mjs';
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -17,6 +19,7 @@ export default class RuntimeReporter {
     const manifestBytes = readFileSync(runtime.manifestPath);
     assert.equal(digest(manifestBytes), runtime.manifestSha256, 'Runner reporter manifest changed');
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    this.diagnosticSource = { root: manifest.sourceRoot, files: manifest.files };
     const pin = manifest.files.find(({ path }) => path === reporter);
     assert.ok(pin, 'Runner reporter not source-owned');
     this.sourcePath = fileURLToPath(import.meta.url);
@@ -78,6 +81,26 @@ export default class RuntimeReporter {
       unhandledErrors: unhandledErrors.length,
       reason,
     };
+    // Forensics never authorize the run; the existing receipt and zero-error gate remain authoritative.
+    try {
+      const diagnostic = runtimeDiagnostic(
+        unhandledErrors,
+        this.identity,
+        this.diagnosticSource.root,
+        this.diagnosticSource.files,
+      );
+      if (diagnostic !== null) {
+        const bytes = Buffer.from(`${JSON.stringify(diagnostic)}\n`, 'utf8');
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(2, bytes, offset, bytes.length - offset);
+          if (written <= 0) throw new Error('diagnostic write made no progress');
+          offset += written;
+        }
+      }
+    } catch {
+      // A hostile error value or unavailable diagnostic sink cannot alter the receipt.
+    }
     // The terminal write is the callback's last operation; no asynchronous tail.
     writeFileSync(this.receiptPath, `${JSON.stringify(receipt)}\n`);
   }

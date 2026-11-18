@@ -164,8 +164,13 @@ workflow:
           expect(f.registry.budget.deadline()).toBe(3_000);
           if (closeFails && !closeRecovers) {
             expect(fixture.native()?.sqlite.open).toBe(true);
-            expect(fixture.closeAttempts(), 'PARTIAL_SURFACE_RETAINS_NATIVE_CLOSE_CAPABILITY').toBe(
-              2,
+            // The first failure happens inside acquisition. Surface cleanup must first
+            // join the real host tails; one setImmediate is not their acknowledgement.
+            await vi.waitFor(() =>
+              expect(
+                fixture.closeAttempts(),
+                'PARTIAL_SURFACE_RETAINS_NATIVE_CLOSE_CAPABILITY',
+              ).toBe(2),
             );
             expect(f.registry.activeOwners).toBe(1);
             expect(removeSignals).not.toHaveBeenCalled();

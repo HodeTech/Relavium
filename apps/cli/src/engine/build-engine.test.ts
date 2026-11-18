@@ -1,7 +1,7 @@
 import { createCliInvocation } from '../process/invocation.js';
 import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,7 +26,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildEngine } from './build-engine.js';
 import { createCliHost } from './host.js';
 import { createHistoryCheckpointer } from './checkpointer.js';
-import { scriptedResolver, textTurn, toolUseTurn } from '../chat/test-support.js';
+import { scriptedResolver, textTurn, toolUseTurn, stop } from '../chat/test-support.js';
 
 describe('buildEngine configured output fallback (ADR-0101)', () => {
   it.each([undefined, 17])(
@@ -346,4 +346,59 @@ workflow:
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+});
+
+describe('buildEngine private filesystem home forwarding', () => {
+  it.each([false, true])(
+    'actual read-only file call requires and receives explicit home (%s)',
+    async (present) => {
+      const workspace = mkdtempSync(join(tmpdir(), 'relavium-engine-fs-home-'));
+      const home = mkdtempSync(join(tmpdir(), 'relavium-engine-operator-home-'));
+      try {
+        writeFileSync(join(workspace, 'source.txt'), 'operator-home-forwarding-canary');
+        const workflow = parseWorkflow(`schema_version: '1.0'
+workflow:
+  id: private-home-read
+  agents:
+    - {id: worker, model: claude-sonnet-4-6, provider: anthropic, system_prompt: read, tools: [read_file]}
+  nodes:
+    - {id: work, type: agent, agent_ref: worker, prompt_template: read}
+  edges: []
+`);
+        const providers = scriptedResolver([
+          [
+            { type: 'tool_call_start', id: 'source', name: 'read_file' },
+            { type: 'tool_call_delta', id: 'source', argsJsonDelta: '{"path":"source.txt"}' },
+            { type: 'tool_call_end', id: 'source' },
+            stop('tool_use'),
+          ],
+          textTurn('done'),
+        ]);
+        const engine = await buildEngine({
+          host: createInMemoryHost(),
+          providers,
+          toolEnv: {
+            workspaceDir: workspace,
+            fsScopeTier: 'sandboxed',
+            ...(present ? { operatorHomeDir: home } : {}),
+          },
+        });
+        const handle = engine.start({ workflow });
+        const events: RunEvent[] = [];
+        for await (const event of handle.events) events.push(event);
+        await handle.depart();
+        expect(events.at(-1)?.type).toBe(present ? 'run:completed' : 'run:failed');
+        const results = events.filter((event) => event.type === 'agent:tool_result');
+        if (present) {
+          const readResult = results.find((event) => event.toolId === 'read_file');
+          expect(readResult?.success).toBe(true);
+          expect(readResult?.outputSummary).toContain('operator-home-forwarding-canary');
+        } else expect(JSON.stringify(results)).not.toContain('operator-home-forwarding-canary');
+        expect(JSON.stringify(events)).not.toContain(home);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
 });

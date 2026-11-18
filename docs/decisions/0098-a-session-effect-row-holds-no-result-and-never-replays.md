@@ -17,6 +17,10 @@
   [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) (runs only; a session has no ownership
   guarantee)
 
+> **Scoped 2026-11-16 by [ADR-0133](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md).** "A session's transcript … hold[s] no tool result" is about tool OUTPUT. The transcript row of
+> one non-effect tool, `ask_user`, now keeps the conversation it carried (the question and the person's answer). The effect rows
+> this ADR governs are untouched: `ask_user` is not governed and has no effect row.
+
 > **Amended 2026-09-18 — the `W7` pre-implementation review.** A systematic review against the tree found that the
 > one mechanism this ADR offers for linking a persisted turn to its effect rows does not exist, and that the
 > monotonic key cannot be derived from the journal once the sweep runs. The decision is unchanged; the mechanism

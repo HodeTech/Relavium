@@ -34,6 +34,8 @@ import {
   type EffectResumePort,
   type UnresolvedEffect,
   blocksResume,
+  decodeRetainedEffectEnvelope,
+  type EffectInspectReplayVerdict,
   nodeIdFromRunScope,
   type EffectState,
   type EffectTier,
@@ -87,6 +89,7 @@ export interface EffectJournalStoreDeps {
  * use, which effect-journal.md §8 names as a follow-up.
  */
 export interface EffectJournalStore {
+  inspectReplay: (identity: EffectIdentity, argsDigest: string) => EffectInspectReplayVerdict;
   prepare: (
     identity: EffectIdentity,
     correlation: EffectCorrelation,
@@ -195,7 +198,39 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       .filter((record) => (session ? record.state !== 'committed' : blocksResume(record)));
   };
 
+  const inspectReplay = (
+    identity: EffectIdentity,
+    argsDigest: string,
+  ): EffectInspectReplayVerdict => {
+    // No session result column is selected or parsed, even for a malformed legacy writer.
+    const session = identity.scope.startsWith('session:');
+    const held = db
+      .select({
+        state: runEffects.state,
+        argsDigest: runEffects.argsDigest,
+        resultJson: session ? sql<null>`NULL` : runEffects.resultJson,
+      })
+      .from(runEffects)
+      .where(whereIdentity(identity))
+      .get();
+    if (held === undefined) return { outcome: 'miss' };
+    if (
+      !session &&
+      held.state === 'committed' &&
+      held.argsDigest === argsDigest &&
+      held.resultJson !== null
+    ) {
+      try {
+        const result = decodeRetainedEffectEnvelope(JSON.parse(held.resultJson));
+        if (result !== undefined) return { outcome: 'replay', result };
+      } catch {
+        /* Unreadable committed evidence conflicts rather than becoming an I/O retry. */
+      }
+    }
+    throw new EffectConflictError(identity);
+  };
   return {
+    inspectReplay,
     prepare: (identity, correlation, attempt, tier, argsDigest, targetIdempotencyKey) =>
       withBusyRetry(() =>
         db.transaction(
@@ -203,7 +238,16 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             // Read-then-insert inside ONE `BEGIN IMMEDIATE`, so the check and the claim cannot interleave —
             // the same reasoning ADR-0078 §2's compare-and-append uses. The UNIQUE index is the backstop; this
             // read is what turns a driver constraint error into the typed refusal callers narrow on.
-            const held = tx.select().from(runEffects).where(whereIdentity(identity)).get();
+            const session = identity.scope.startsWith('session:');
+            const held = tx
+              .select({
+                state: runEffects.state,
+                argsDigest: runEffects.argsDigest,
+                resultJson: session ? sql<null>`NULL` : runEffects.resultJson,
+              })
+              .from(runEffects)
+              .where(whereIdentity(identity))
+              .get();
             if (held !== undefined) {
               // §4's RUN replay row, decided HERE because only the host can compute the digest the comparison
               // needs. Same identity + same args digest + a retained result means this exact effect already
@@ -217,7 +261,9 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
                 held.resultJson !== null
               ) {
                 try {
-                  return { outcome: 'replay', result: JSON.parse(held.resultJson) as unknown };
+                  const result = decodeRetainedEffectEnvelope(JSON.parse(held.resultJson));
+                  if (result === undefined) throw new EffectConflictError(identity);
+                  return { outcome: 'replay', result };
                 } catch {
                   // An UNPARSABLE retained result is a committed row we cannot re-deliver — §4's refusal,
                   // reached by a different route. Letting the raw `SyntaxError` escape was worse than
@@ -386,13 +432,16 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         }
         // Schema-valid rows can still be unfinished, orphaned or abandoned. Only the shared
         // structural projector proves completion; working compaction/trim boundaries never filter it.
-        const completedCalls = new Set(
-          completedSessionTurns(history, false).flatMap((turn) =>
-            turn.messages.flatMap((message) =>
-              message.content.flatMap((part) => (part.type === 'tool_call' ? [part.id] : [])),
-            ),
-          ),
-        );
+        // ADR-0119: a RETAINED INTERRUPTED turn is a turn that did not complete. It stays out of `completedCalls`, so
+        // a committed effect that landed in it is disclosed as `turn_incomplete` exactly as it was when that whole
+        // turn was rolled back — keeping the turn in the transcript for the model must not silence the user's notice.
+        const completedCalls = new Set<string>();
+        const interruptedCalls = new Set<string>();
+        for (const turn of completedSessionTurns(history, false)) {
+          const into = turn.interruption === undefined ? completedCalls : interruptedCalls;
+          for (const message of turn.messages)
+            for (const part of message.content) if (part.type === 'tool_call') into.add(part.id);
+        }
         const committed: CapturedSessionEffect[] = [];
         const disclosures: SessionEffectDisclosure[] = [];
         for (const row of rows) {
@@ -418,6 +467,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id !== undefined && calls.has(id) && calls.get(id) !== row.toolId) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
+          } else if (id !== undefined && interruptedCalls.has(id)) {
+            disclosures.push({ toolId: row.toolId, state, reason: 'turn_incomplete' });
           } else if (id !== undefined && calls.has(id) && !completedCalls.has(id)) {
             disclosures.push({ toolId: row.toolId, state, reason: 'unattributable' });
           } else if (id === undefined || !calls.has(id)) {
@@ -513,6 +564,15 @@ export function createEffectJournalPort(
     toolId,
   });
   return {
+    inspectReplay: (slot, toolId, redactedArgs) => {
+      try {
+        return Promise.resolve(
+          store.inspectReplay(identityFor(slot, toolId), digestOf(redactedArgs)),
+        );
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
     prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
       try {
         return Promise.resolve(

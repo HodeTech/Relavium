@@ -9,6 +9,7 @@ import {
   prepareStandardEnvKeyConsent,
   type ConfigWriteResult,
   type PreparedConfigWrite,
+  type ConfigReadObserver,
 } from '../config/write.js';
 import {
   KNOWN_PROVIDER_IDS,
@@ -24,6 +25,7 @@ import { runOnboardingWizard, type OnboardingDeps } from '../onboarding/wizard.j
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 
 export interface ProviderSetupDeps {
+  readonly configReadObserver?: ConfigReadObserver;
   readonly flow: NativePromptFlow;
   readonly credentialSurface?: Extract<CredentialSurface, 'home' | 'standalone-chat'>;
   readonly resolver: ProviderResolver;
@@ -190,7 +192,9 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       for (;;) {
         try {
           assertAdmitting();
-          const result = await publish(prepareStandardEnvKeyConsent(id, deps.home, targetPath));
+          const result = await publish(
+            prepareStandardEnvKeyConsent(id, deps.home, targetPath, deps.configReadObserver),
+          );
           // The publisher resolves only after rename. Do not recheck cancellation after publication.
           deps.policy.allowForInvocation(id);
           return grantOutcome(
@@ -266,7 +270,12 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         try {
           assertAdmitting();
           const result = await publish(
-            prepareKeychainUnavailableAcknowledged(true, deps.home, targetPath),
+            prepareKeychainUnavailableAcknowledged(
+              true,
+              deps.home,
+              targetPath,
+              deps.configReadObserver,
+            ),
           );
           acknowledged = true;
           return {

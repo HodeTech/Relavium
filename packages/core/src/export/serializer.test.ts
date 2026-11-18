@@ -112,6 +112,75 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     expect(exported.workflow.nodes[1]).not.toHaveProperty('tools');
   });
 
+  it('shows an interrupted turn as interrupted in the transcript but never derives a workflow step from it (ADR-0119)', () => {
+    const interruption = {
+      ...msg(5, 'system', []),
+      interruption: { reason: 'aborted' as const },
+    };
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'answered' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(2, 'user', [{ type: 'text', text: 'stopped halfway' }]),
+      msg(3, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'write_file', argsBytes: 2 },
+      ]),
+      msg(4, 'tool', [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:2:0',
+          resultBytes: 0,
+          outcome: 'cancelled',
+        },
+      ]),
+      interruption,
+    ]);
+    // input → turn-1 → output: the interrupted exchange is not a step and grants no tool.
+    expect(exported.workflow.nodes.map((node) => node.id)).toEqual(['input', 'turn-1', 'output']);
+    expect(JSON.stringify(exported.workflow.nodes)).not.toContain('write_file');
+    // The transcript keeps every row, and the interruption row says why the exchange ended.
+    const kept = (
+      exported.workflow.metadata?.['relaviumExport'] as { messages: SessionMessage[] } | undefined
+    )?.messages;
+    expect(kept).toHaveLength(6);
+    expect(kept?.at(-1)).toMatchObject({ role: 'system', interruption: { reason: 'aborted' } });
+  });
+
+  it('carries legacy bare-user context that precedes an interrupted turn into the next step, once (ADR-0119)', () => {
+    const exported = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'legacy context' }]),
+      msg(1, 'user', [{ type: 'text', text: 'stopped halfway' }]),
+      msg(2, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'read_file', argsBytes: 2 },
+      ]),
+      msg(3, 'tool', [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:2:0',
+          resultBytes: 0,
+          outcome: 'cancelled',
+        },
+      ]),
+      { ...msg(4, 'system', []), interruption: { reason: 'aborted' as const } },
+      msg(5, 'user', [{ type: 'text', text: 'real request' }]),
+      msg(6, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(7, 'user', [{ type: 'text', text: 'third request' }]),
+      msg(8, 'assistant', [{ type: 'text', text: 'ok' }]),
+    ]);
+    expect(exported.workflow.nodes.map((node) => node.id)).toEqual([
+      'input',
+      'turn-1',
+      'turn-2',
+      'output',
+    ]);
+    // The interrupted turn is no step, but the legacy context before it still reaches the next prompt…
+    expect(exported.workflow.nodes[1]).toMatchObject({
+      prompt_template: 'legacy context\n\nreal request',
+    });
+    // …exactly once: the step after it does not repeat it, and the interrupted turn's own text is in no prompt.
+    expect(exported.workflow.nodes[2]).toMatchObject({ prompt_template: 'third request' });
+    expect(JSON.stringify(exported.workflow.nodes)).not.toContain('stopped halfway');
+  });
+
   it('exports completed empty finals and old compacted tool history, omitting the unresolved marker from grants', () => {
     const def = sessionToWorkflow(session(), [
       msg(0, 'user', [{ type: 'text', text: 'old' }]),
@@ -140,6 +209,75 @@ describe('sessionToWorkflow (1.Z) — linear-chain scaffold', () => {
     ]);
     expect(def.workflow.nodes[1]).toMatchObject({ tools: ['mcp_fs_read'] });
     expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
+  });
+  it('omits ask_user from a node’s tools: a workflow node cannot ask a question (ADR-0132 §1)', () => {
+    const def = sessionToWorkflow(session(), [
+      msg(0, 'user', [{ type: 'text', text: 'which one' }]),
+      msg(1, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:1:0', name: 'ask_user', argsBytes: 90 },
+        { type: 'tool_call', id: 'session-tool:1:1', name: 'read_file', argsBytes: 12 },
+      ]),
+      msg(2, 'tool', [
+        {
+          type: 'tool_result',
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 40,
+          outcome: 'ok',
+          // The rebuilt row keeps its other structural fields, media included.
+          media: [
+            {
+              type: 'media',
+              mimeType: 'image/png',
+              source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+            },
+          ],
+          // ADR-0133: the stored question record is conversation content; an export carries none of it.
+          ask: {
+            status: 'answered',
+            items: [
+              {
+                header: 'Pick',
+                question: 'QUESTION-WORDS-NOT-EXPORTED',
+                selected: [],
+                other: 'ANSWER-WORDS-NOT-EXPORTED',
+              },
+            ],
+          },
+        },
+        { type: 'tool_result', toolCallId: 'session-tool:1:1', resultBytes: 4, outcome: 'ok' },
+      ]),
+      msg(3, 'assistant', [{ type: 'text', text: 'done' }]),
+      msg(4, 'user', [{ type: 'text', text: 'only a question' }]),
+      msg(5, 'assistant', [
+        { type: 'tool_call', id: 'session-tool:2:0', name: 'ask_user', argsBytes: 90 },
+      ]),
+      msg(6, 'tool', [
+        { type: 'tool_result', toolCallId: 'session-tool:2:0', resultBytes: 40, outcome: 'ok' },
+      ]),
+      msg(7, 'assistant', [{ type: 'text', text: 'ok' }]),
+    ]);
+    expect(def.workflow.nodes[1]).toMatchObject({ tools: ['read_file'] });
+    expect(def.workflow.nodes[2]).not.toHaveProperty('tools');
+    expect(JSON.stringify(def.workflow.nodes)).not.toContain('ask_user');
+    expect(JSON.stringify(def)).not.toContain('NOT-EXPORTED');
+    expect(JSON.stringify(def)).toContain(`media://sha256-${'a'.repeat(64)}`);
+    // The rebuilt row is exactly the allow-listed structure: pairing id, size, outcome and media, and nothing else.
+    const exported = (
+      def.workflow.metadata?.['relaviumExport'] as { messages: SessionMessage[] } | undefined
+    )?.messages;
+    expect(exported?.[2]?.content[0]).toEqual({
+      type: 'tool_result',
+      toolCallId: 'session-tool:1:0',
+      resultBytes: 40,
+      outcome: 'ok',
+      media: [
+        {
+          type: 'media',
+          mimeType: 'image/png',
+          source: { kind: 'handle', ref: `media://sha256-${'a'.repeat(64)}` },
+        },
+      ],
+    });
   });
   it('maps assistant turns to a linear agent-node chain (input → turn-n → output) with edges', () => {
     const def = sessionToWorkflow(session(), [

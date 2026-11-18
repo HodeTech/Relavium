@@ -168,10 +168,24 @@ hub and MCP management — leads to `relavium` v0.2.0. Since 2026-11-08 the inte
 full-screen Home: you type `relavium` and do everything there, while subcommands stay for scripting
 ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 
-MVP-2's four steps are implemented and independently accepted on `development`:
+MVP-2 is complete and merged to `main` through [PR #98](https://github.com/HodeTech/Relavium/pull/98)
+(2026-11-11):
 readable chat, native provider setup, project initialization and safe session
-discovery/resume. The [checkpoint record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
-tracks review and verification; the published npm version remains `0.1.1`.
+discovery/resume. The [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
+records completed review and verification. MVP-3's original three steps
+(ranged reads/search, exact edits, inspectable write diffs, tool details,
+preserved filesystem security metadata and configurable starting modes) are
+implemented and independently reviewed on `development`. MVP-3b (the docked
+approval card and honest chat modes), MVP-3c (an interrupted turn stays as a
+marker) and MVP-3d (`ask_user`, with its question and answer kept with the
+session) are implemented and placed ahead of MVP-4; their review, security and
+acceptance gates are tracked in the
+[phase register](docs/roadmap/phases/phase-2.6-conversational-authoring.md) and
+[current.md](docs/roadmap/current.md). The
+[implementation checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+records completed steps and required combined PR CI/maintainer review. MVP-4
+(command permissions, the interrupt keymap and turn ceilings) follows; the
+published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source
 for the exact active wave, completed work, and open reliability obligations is

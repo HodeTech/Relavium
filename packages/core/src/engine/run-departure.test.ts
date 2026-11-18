@@ -177,6 +177,7 @@ for (const receipt of ['committed', 'failed'] as const) {
     const released = deferred<void>();
     let child: Promise<void> | undefined;
     const port: EffectDispatchPort = {
+      inspectReplay: () => Promise.resolve({ outcome: 'miss' }),
       prepare: () => Promise.resolve({ outcome: 'proceed' }),
       settle: () =>
         receipt === 'failed'

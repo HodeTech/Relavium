@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import {
@@ -34,12 +35,23 @@ import {
  * the bytes (rule 6 / I3). A raw Node `fs` error (whose `message`/`path`/`dest` would carry the absolute
  * path) is caught at the boundary and re-wrapped, so the port honours its own contract regardless of caller.
  */
-export function createFilesystemMediaWrite(scopeRoot: string): MediaWritePort {
-  return (relativePath: string, bytes: Uint8Array, signal?: AbortSignalLike) =>
-    writeJailed(scopeRoot, relativePath, bytes, signal);
+/** Captured host-only checks; no CLI or native type crosses the DB boundary. */
+export interface CapturedMediaWriteGuard {
+  assertPath(lexical: string, canonical: string): void;
+  assertIdentity(identity: { readonly dev: bigint; readonly ino: bigint }): void;
+}
+export interface FilesystemMediaWriteGuard {
+  capture(signal?: AbortSignalLike): Promise<CapturedMediaWriteGuard>;
+}
+export function createFilesystemMediaWrite(
+  scopeRoot: string,
+  guard?: FilesystemMediaWriteGuard,
+): MediaWritePort {
+  return (relativePath, bytes, signal) =>
+    writeJailed(scopeRoot, relativePath, bytes, signal, guard);
 }
 
-/** A media-write failure naming a reason only (never a path / the bytes) — mirrors `MediaEgressError`. */
+/** Fixed public diagnostic; raw filesystem and private inventory failures never cross this boundary. */
 export class MediaWriteError extends RelaviumError {
   constructor(message: string) {
     super(message);
@@ -52,13 +64,16 @@ async function writeJailed(
   relativePath: string,
   bytes: Uint8Array,
   signal: AbortSignalLike | undefined,
+  guard: FilesystemMediaWriteGuard | undefined,
 ): Promise<MediaWriteResult> {
   try {
-    return await writeJailedUnsafe(scopeRoot, relativePath, bytes, signal);
+    throwIfAborted(signal);
+    assertRelativePath(relativePath);
+    const captured = await guard?.capture(signal);
+    throwIfAborted(signal);
+    return await writeJailedUnsafe(scopeRoot, relativePath, bytes, signal, captured);
   } catch (error) {
-    // The port's own checks already throw a reason-only MediaWriteError; re-throw those verbatim. A RAW
-    // Node fs error (realpath/mkdir/writeFile/rename/lstat) carries the absolute path in `.message`/`.path`/
-    // `.dest` — re-wrap it so the resolved path never escapes the port (the I3 self-defending contract).
+    throwIfAborted(signal);
     throw error instanceof MediaWriteError
       ? error
       : new MediaWriteError('save_to: the filesystem write failed');
@@ -70,56 +85,148 @@ async function writeJailedUnsafe(
   relativePath: string,
   bytes: Uint8Array,
   signal: AbortSignalLike | undefined,
+  guard: CapturedMediaWriteGuard | undefined,
 ): Promise<MediaWriteResult> {
-  throwIfAborted(signal);
-  assertRelativePath(relativePath);
-  // The scope root must exist and resolve (no dangling/symlinked root) — fail-closed otherwise.
-  const realRoot = await realpath(scopeRoot);
-  const lexicalTarget = resolve(realRoot, relativePath);
-  assertWithinRoot(realRoot, lexicalTarget); // lexical commonpath — defense-in-depth vs a slipped `..`
-  const targetDir = dirname(lexicalTarget);
-  // Resolve the deepest EXISTING ancestor and verify it is within the root BEFORE any mkdir, so a
-  // symlinked ancestor pointing outside the root is caught before we create or write anything there.
-  // (A `mkdir(recursive)` through a not-yet-checked symlinked ancestor could create stray empty dirs
-  // outside the root, but the post-mkdir realpath re-check below throws before ANY byte is written.)
-  assertWithinRoot(
-    realRoot,
-    await deepestExistingReal(targetDir, {
-      realpath,
-      lstat,
-      dirname,
-      isMissing: (error) => errnoCode(error) === 'ENOENT',
-    }),
-  );
+  const lexicalRoot = resolve(scopeRoot);
+  const requested = resolve(lexicalRoot, relativePath);
+  guard?.assertPath(lexicalRoot, lexicalRoot);
+  guard?.assertPath(requested, requested);
+  const resolveGuarded = async (path: string): Promise<string> => {
+    guard?.assertPath(path, path);
+    const canonical = await realpath(path);
+    guard?.assertPath(path, canonical);
+    return canonical;
+  };
+  const inspect = async (path: string) => {
+    guard?.assertPath(path, path);
+    const info = await lstat(path, { bigint: true });
+    guard?.assertIdentity(info);
+    return info;
+  };
+  const realRoot = await resolveGuarded(lexicalRoot);
+  const rootIdentity = await inspect(realRoot);
+  const target = resolve(realRoot, relativePath);
+  assertWithinRoot(realRoot, target);
+  guard?.assertPath(requested, target);
+  const targetDir = dirname(target);
+  const ancestor = await deepestExistingReal(targetDir, {
+    realpath: resolveGuarded,
+    lstat: inspect,
+    dirname,
+    isMissing: (error) => errnoCode(error) === 'ENOENT',
+  });
+  assertWithinRoot(realRoot, ancestor);
+  await inspect(ancestor);
   throwIfAborted(signal);
   await mkdir(targetDir, { recursive: true });
-  // The parent now exists — re-resolve it and re-check (tightens the window between the ancestor check
-  // and the write; a symlink that appeared mid-mkdir surfaces here).
-  const realDir = await realpath(targetDir);
+  const realDir = await resolveGuarded(targetDir);
+  const parentIdentity = await inspect(realDir);
   assertWithinRoot(realRoot, realDir);
-  const finalTarget = join(realDir, basename(lexicalTarget));
-  await assertNotSymlink(finalTarget); // never write THROUGH an existing symlink at the final component
+  const finalTarget = join(realDir, basename(target));
+  guard?.assertPath(requested, finalTarget);
+  await assertNotSymlink(finalTarget, guard);
+  if (guard !== undefined) await inspectOpenedTarget(finalTarget, guard);
   throwIfAborted(signal);
-  // Atomic publish: write a unique temp file in the same (in-root) dir, then rename it onto the final
-  // path. `rename` replaces the name atomically and never follows a final-component symlink, so a partial
-  // write never lands at the target and a racing symlink cannot redirect the bytes. The `finally` reclaims
-  // the temp on ANY non-success exit (a writeFile/rename throw, or a cancel), leaving no orphaned `.tmp`.
   const tmp = join(realDir, `.save-to.${randomUUID()}.tmp`);
+  guard?.assertPath(tmp, tmp);
   let published = false;
+  let owned: { readonly dev: bigint; readonly ino: bigint } | undefined;
   try {
-    // `wx` = O_CREAT|O_EXCL: the kernel refuses to follow (or create through) a pre-existing path —
-    // including a symlink — at the temp name, and fails EEXIST. With the unguessable UUID name this also
-    // closes the (astronomically unlikely) planted-temp-symlink redirect, the one fs step otherwise relying
-    // on the random name alone (defense-in-depth, consistent with the "symlinks OFF" discipline above).
-    await writeFile(tmp, bytes, { flag: 'wx' });
+    // Inspect the actual exclusive fd before payload bytes; a pathname alone cannot prove its identity.
+    const handle = await open(
+      tmp,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+    );
+    try {
+      const info = await handle.stat({ bigint: true });
+      if (!info.isFile() || info.nlink !== 1n)
+        throw new MediaWriteError('save_to: temporary ownership could not be verified');
+      owned = { dev: info.dev, ino: info.ino };
+      guard?.assertIdentity(info);
+      throwIfAborted(signal);
+      await handle.writeFile(bytes);
+      const after = await handle.stat({ bigint: true });
+      if (!after.isFile() || after.nlink !== 1n || !sameIdentity(after, owned))
+        throw new MediaWriteError('save_to: temporary ownership changed');
+      guard?.assertIdentity(after);
+    } finally {
+      await handle.close();
+    }
+    const entry = await inspect(tmp);
+    if (
+      owned === undefined ||
+      !entry.isFile() ||
+      entry.isSymbolicLink() ||
+      entry.nlink !== 1n ||
+      !sameIdentity(entry, owned)
+    )
+      throw new MediaWriteError('save_to: temporary ownership changed');
+    const finalParent = await resolveGuarded(targetDir);
+    const currentParent = await inspect(finalParent);
+    const currentRoot = await inspect(await resolveGuarded(lexicalRoot));
+    if (
+      finalParent !== realDir ||
+      !sameIdentity(currentParent, parentIdentity) ||
+      !sameIdentity(currentRoot, rootIdentity)
+    )
+      throw new MediaWriteError('save_to: parent identity changed');
+    await assertNotSymlink(finalTarget, guard);
+    if (guard !== undefined) await inspectOpenedTarget(finalTarget, guard);
+    guard?.assertPath(requested, finalTarget);
+    throwIfAborted(signal);
     await rename(tmp, finalTarget);
     published = true;
   } finally {
-    if (!published) {
-      await rm(tmp, { force: true }).catch(() => undefined); // best-effort cleanup of the orphaned temp
+    if (!published && owned !== undefined) {
+      const identity = owned;
+      // Cleanup retains an uncertain/replaced/linked entry; it never removes an unproven pathname.
+      await (async () => {
+        guard?.assertPath(tmp, tmp);
+        const entry = await lstat(tmp, { bigint: true });
+        guard?.assertIdentity(entry);
+        if (
+          entry.isFile() &&
+          !entry.isSymbolicLink() &&
+          entry.nlink === 1n &&
+          sameIdentity(entry, identity)
+        )
+          await rm(tmp);
+      })().catch(() => undefined);
     }
   }
   return { bytesWritten: bytes.length };
+}
+
+function sameIdentity(
+  left: { readonly dev: bigint; readonly ino: bigint },
+  right: { readonly dev: bigint; readonly ino: bigint },
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+async function inspectOpenedTarget(path: string, guard: CapturedMediaWriteGuard): Promise<void> {
+  let observed;
+  try {
+    observed = await lstat(path, { bigint: true });
+  } catch (error) {
+    if (errnoCode(error) === 'ENOENT') return;
+    throw error;
+  }
+  if (observed.isSymbolicLink() || !observed.isFile())
+    throw new MediaWriteError('save_to: refusing an unsafe target');
+  guard.assertPath(path, path);
+  guard.assertIdentity(observed);
+  const handle = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | constants.O_NONBLOCK,
+  );
+  try {
+    const actual = await handle.stat({ bigint: true });
+    guard.assertIdentity(actual);
+    if (!actual.isFile() || !sameIdentity(actual, observed))
+      throw new MediaWriteError('save_to: target identity changed');
+  } finally {
+    await handle.close();
+  }
 }
 
 /** Reject anything that is not a pure relative path (absolute / drive / UNC / a `..` traversal segment). */
@@ -150,9 +257,11 @@ function assertWithinRoot(realRoot: string, target: string): void {
 }
 
 /** Refuse to write through an existing symlink at the final path; a missing path (ENOENT) is fine. */
-async function assertNotSymlink(target: string): Promise<void> {
+async function assertNotSymlink(target: string, guard?: CapturedMediaWriteGuard): Promise<void> {
   try {
-    const stat = await lstat(target);
+    const stat = await lstat(target, { bigint: true });
+    guard?.assertPath(target, target);
+    guard?.assertIdentity(stat);
     if (stat.isSymbolicLink()) {
       throw new MediaWriteError('save_to: refusing to write through a symlink');
     }

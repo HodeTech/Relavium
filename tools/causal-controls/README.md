@@ -27,6 +27,12 @@ The reporter runs from the copied graph, checks its own source pin, and is named
 in both the source manifest and runtime infrastructure. Its receipt joins the
 exact runtime bytes, phase/control, reporter source and spawned Vitest PID.
 Stderr checks remain additional diagnostics; they supply no zero-error authority.
+When Vitest reports unhandled errors, the reporter also writes a bounded JSON
+diagnostic to stderr, retained in the existing phase stdio envelope. It contains
+the phase and control, a fixed error-kind vocabulary, and at most eight reported
+stack locations that exactly match manifest-owned source paths. Messages, raw
+stacks and absolute paths are never included. A reported location is an untrusted
+clue, not proof of cause or a replacement for the unchanged completion receipt.
 
 The reporter creates an incomplete receipt before the run and invalidates it before
 each lifecycle transition. Its synchronous terminal write is the final callback
@@ -133,8 +139,11 @@ order, so the `count` shards partition the family; each shard is a selection wit
 `complete: false` and its own export, and records `shard: { index, count, declared,
 members }`, so the shards' summaries can be joined against the declaration. Only every
 shard of one count passing, each within the export bounds, covers the family. The
-secrets family runs as two shards because one export of all its controls exceeds the
-64-MiB bound; a full unsharded run still executes every control, but it cannot export.
+secrets family cannot export as one run because one export of all its controls exceeds the
+64-MiB bound; a full unsharded run still executes every control, but it cannot export. CI runs
+the secrets family as three shards and the filesystem family as two (`.github/workflows/ci.yml`;
+the secrets family ran as two until 2026-11-17, when a half had become the workflow's critical
+path), and the local gate (`pnpm gate`) cuts them the same way — a test keeps the counts equal.
 
 The permanent coordinator integration guard runs three bounded actual captures.
 Each family proves synthetic fixed/red/restored execution before a real assertion

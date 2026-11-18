@@ -1,6 +1,6 @@
 # `relavium chat` — Agent Session REPL
 
-> Last updated: 2026-11-11
+> Last updated: 2026-11-15
 
 - **Status**: Reference — the whole chat family is live: the interactive REPL + `--agent`, `/exit`/`/cancel`, exit code 4, durable persistence (**2.M**); `chat-resume` (**2.N**); `chat-list` (**2.O**); `chat-export` + the in-REPL `/export` (**2.P**); `chat --json` + `agent run` (+ `--fixture`) (**2.Q**); the chat modes + fail-closed per-tool approval (**2.5.E**); and the mid-chat **`/models` reseat** + per-message `modelId` attribution + the `/effort` control (**2.5.G**) — this page is the reseat's behaviour home
 - **Surface**: CLI (`relavium chat`)
@@ -36,7 +36,7 @@ a key. Restart chat after changing a provider endpoint in another process; its
 existing resolver and displayed recipient stay pinned together.
 
 On resume or `/models` reseat, including Home reseat, a notice lists unresolved external effects and effects
-that landed in a turn that did not persist; legacy rows with no durable attribution are reported conservatively.
+that landed in a turn that did not persist, or in a retained interrupted turn (persisted but not completed); legacy rows with no durable attribution are reported conservatively.
 Completed model turns and committed `!` commands are silent. Earlier effects are **never auto-retried**: check
 the target before sending the message again. TTY/Home notices appear in the active transcript; plain/JSON modes
 use stderr. A failed disclosure preserves the audit evidence for a later resume. The exact retention and
@@ -65,7 +65,8 @@ the existing shared structural history rules with the drop boundary ignored:
 compatible legacy prefixes and the shared projection's trailing legacy context
 even when no later completed exchange exists; expose/reuse that projection support
 instead of copying its state machine into the UI. Omit tool-call preambles, tool rows,
-reasoning and interrupted exchanges. An explicit empty assistant final remains
+reasoning and crash remnants (a user message with structural rows and no terminal row); a retained interrupted turn is
+shown, as described below. An explicit empty assistant final remains
 an empty answer entry and counts toward the restore budget; it has no invented
 usage or stop-reason line. Preserve legacy bare-user prefix/trailing-context
 identities wherever the existing reconstruction preserves them, without counting
@@ -142,7 +143,7 @@ text. Do not display a stored summary as an authored system instruction.
 
 The region labels describe durable restoration, not the next model request.
 Add a policy notice for `memory: none` (earlier conversation is excluded) or
-`memory: window` (only its most recent permitted completed turns are selected;
+`memory: window` (only its most recent permitted turns — an interrupted turn takes one slot — are selected;
 earlier summaries are excluded). Under other policies a retained summary may
 also enter the request as untrusted user context. The
 [memory contract](../contracts/agent-yaml-spec.md#conversational-memory) remains
@@ -234,7 +235,7 @@ A session **binds one agent for its whole lifetime** — there is no mid-session
 - `--agent <ref>` names the `.agent.yaml` (path or `.relavium/` id). If omitted, the chat-mode default applies.
 - the model and `fallback_chain` come from that agent, exactly as a workflow `agent` node resolves them; the same fallback chain a workflow uses applies to a chat turn.
 - when no agent names a model, the `[chat].default_model` from project config is used — the chat-mode **defaults** (`default_model`, `fs_scope`, the command allowlist, `max_turns` (the hard turn cap → `SessionDeps.maxTurns`), `max_messages`) live in the `[chat]` block of [config-spec.md](../contracts/config-spec.md), which references the workflow canonical homes rather than forking them.
-- when **no** `--agent` is given, 2.M binds a **built-in default chat agent** over `[chat].default_model` (a conservative, read-only tool grant — write/exec/egress need an explicit `--agent`), so `relavium chat` is a zero-config first run.
+- when **no** `--agent` is given, 2.M binds a **built-in default chat agent** over `[chat].default_model` (the ADR-0116 read/search/find/write/edit grant, plus `ask_user` where a card can answer — [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md); execution, egress and ambient OS tools remain opt-in), so `relavium chat` is a zero-config first run.
 - **the default model follows the stored key (MVP-A4).** With no `default_model` at any layer, the default agent's provider is the first of `anthropic`, `openai`, `gemini`, `deepseek` that has a key (keychain or `RELAVIUM_<PROVIDER>_API_KEY`). Anthropic keeps `claude-sonnet-4-6`; another provider gets the onboarding wizard's starter model for it, so a user with only an OpenAI key reaches a working chat. A `default_provider` set without a `default_model` is ignored, as [config-spec.md](../contracts/config-spec.md) resolves it. The check is a yes/no question to the key resolver and never reads a key into the session; one session build asks it at most once per provider.
 - **a provider with no key is caught before anything is sent (MVP-A4).** Every session build asks whether the bound agent's provider has a key before it asks for MCP consent, spawns an MCP server or sends anything. The message is the one `provider set-key` documents: ``no API key for provider '<id>' — store one with `relavium provider set-key <id>` or set RELAVIUM_<ID>_API_KEY.`` What happens next depends on the surface:
   - `chat`, `agent run` and a non-interactive `chat-resume` refuse with exit `2`. `agent run --fixture` is the exception: it replays a cassette with no key, so it never refuses.
@@ -253,15 +254,15 @@ A session **binds one agent for its whole lifetime** — there is no mid-session
 
 A reseat is a **host-side** move — the engine is unchanged. It reconstructs the conversation and resumes a **new `AgentSession`** instance on the chosen model; the **session id and its `history.db` row continue unbroken** ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)). Two different things are called "the transcript", and a reseat treats them differently:
 
-- the **model-facing** transcript is reconstructed from surviving persisted conversation text. Prior model-issued tool arguments/results, including file contents returned only through those tools, are excluded; content-free tool structure remains available for history/export/disclosure. User-injected `@` file content and `!` shell text remain user text, subject to the existing history boundaries and authored memory projection. A one-line notice discloses this on every switch. Carrying tool history into context remains deferred under [ADR-0095 §2](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) and [CR-70](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md), rather than waiting for a new persister/schema.
+- the **model-facing** transcript is reconstructed from surviving persisted conversation text **plus bounded, content-free receipts** of earlier completed turns' recorded tool calls — a built-in tool's name (every other name is the fixed label `other_tool`) and its recorded outcome, rebuilt from the content-free structure already persisted — **and, for the question tool alone, what the person was asked and how they answered** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md): a bounded, quoted note under that call's receipt, so a resumed or reseated session grounds on it like a live one) ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md); the [session contract](../contracts/agent-session-spec.md#content-free-action-receipts--adr-0128) owns the grammar and bounds). Prior model-issued tool **arguments and results**, including file contents returned only through those tools, are excluded. User-injected `@` file content and `!` shell text remain user text, subject to the existing history boundaries and authored memory projection. A one-line notice discloses exactly this on every switch: arguments and results are not carried, content-free records of tool names and outcomes are (and, for the question tool, what you were asked and how you answered — the new model, possibly another provider, receives it), and text you sent is. Carrying tool history *content* into context remains deferred under [ADR-0095 §2](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) and [CR-70](../../roadmap/phases/phase-2.6.5-core-reliability-remediation.md), rather than waiting for a new persister/schema.
 - the **rendered (on-screen)** transcript **carries too** (2.6.C). The reseated view opens with the conversation you were having, and the switch **marker** — `⇄ model changed <old> → <new>` — lands *beneath* it, so the switch reads as an interruption of a conversation you can still see. This matters most on the **full-screen alt screen**, the TTY default ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e), where the viewport windows the store's in-memory transcript and the alt buffer has **no native scrollback** to fall back on: before 2.6.C the reseated view opened empty and the whole chat vanished from the screen. The **inline** renderer deliberately carries nothing — its lines were already printed by ink's `<Static>` and survive the swap in the terminal's own scrollback; re-seeding them would print the conversation **twice**. (`/clear` carries nothing on either renderer — a fresh start is its entire contract.)
 
-The **cumulative cost** carries forward from the session row. The **turn count** is *re-derived* from the surviving reconstructed transcript, so a reseat after a `/compact` or `/trim` — or after an errored turn, which persists no message — resumes at a **lower** count than the pre-switch session. The hard turn cap is measured against the reconstruction, not the session's lifetime total.
+The **cumulative cost** carries forward from the session row. The **turn count** is *re-derived* from the surviving reconstructed transcript, so a reseat after a `/compact` or `/trim` — or after an errored turn the engine did not retain (a retained interrupted turn is persisted and counted, ADR-0119) — resumes at a **lower** count than the pre-switch session. The hard turn cap is measured against the reconstruction, not the session's lifetime total.
 
 What a reseat does **not** carry:
 
 - the original agent's **`fallback_chain`**. The new instance builds the default chain for the chosen model, exactly as a fresh session on that model would.
-- the chat **mode** — it resets to fail-closed **`ask`** (the same reset [`/clear`](#the-multi-turn-loop) performs).
+- the chat **mode** — the new instance starts in the **currently configured starting mode**, resolved exactly as a fresh session resolves it (`auto` still needs the revocable startup-auto authority, and a repository config layer can never supply `auto` or `accept-edits`), not in the mode the old instance had ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md), amended 2026-11-11). [`/clear`](#the-multi-turn-loop) does the same.
 - the per-tool **approval once/always cache** — it is instance-scoped, so previously-approved tools **re-prompt** on the new model ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); a new model is a new trust context).
 - a live **`/effort` override** — a stale tier from the old model is never carried; the new instance takes the tier picked in the reseat's effort sub-step, or none.
 
@@ -282,7 +283,7 @@ Each prompt you type is one user turn; the assistant turn that follows may inclu
 
 1. you type a message → it is appended as a `user` [`SessionMessage`](../contracts/agent-session-spec.md#session-messages);
 2. the `AgentRunner` streams the assistant turn (tokens, tool calls, tool results);
-3. the assistant's final **text** is appended — within-turn tool call/result pairs are not carried into later turns ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2); the prompt returns for your next turn.
+3. the assistant's final **text** is appended — within-turn tool call/result pairs are not carried into later turns ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2); the turn's content-free **receipts** (tool names and recorded outcomes, never arguments or results) are kept with it and shown to the model on later requests ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)); the prompt returns for your next turn.
 
 Messages are **append-only** and persisted per turn; the loop is the same code path a workflow `agent` node uses — the difference is the entry point and lifetime, not the execution.
 
@@ -296,32 +297,246 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/export` | Export the session-so-far to a `.relavium.yaml` scaffold (same ADR-0026 contract as `relavium chat-export`). Writes the file where workflows live — `<project>/.relavium/workflows/<id>.relavium.yaml`, where `<project>/.relavium/` is the nearest actual project directory found walking up from the working directory (global `~/.relavium/` and its aliases are excluded by the [project-location contract](commands.md#relavium-init)), or `<cwd>/.relavium/workflows/` when there is no project — with the session title's slug as the id (written into the file as `workflow.id`), and shows the path and the command that runs it (``run it with `relavium run <id>` ``) (MVP-A3) — in the transcript on the interactive chat and Home, on stderr on the plain driver. Under `--json` no path line or run hint is printed: the path is the `session:exported` event's `workflowPath`. A refusal (`export failed: …`) goes to the transcript, or to stderr on the plain and `--json` drivers. It never overwrites another workflow: the id is the first of `<slug>`, `<slug>-2`, … that no catalog file or `workflow.id` already holds. The one file it rewrites is the session's own earlier export, recognized from the file itself — a regular file, never a link, at one of those names whose `metadata.relaviumExport` names this session — so a later `/export` of the same session updates it in place, atomically, across a `/models` reseat, a `chat-resume` or a Home reopen, while a workflow put where an old export used to be is left alone. The rewrite re-checks the file just before it replaces it, so a file changed or replaced after it was recognized is left alone too and the export moves on through the same names: another of this session's own exports there is rewritten instead, otherwise the next free id is taken; the check compares the file's bytes as well as its stat, so a same-length rewrite is caught too; a swap in the moment between that check and the replace is not detected. Under `--json` it emits a `session:exported` event on the stream. It does **not** mark the session row `exported` (a later turn's persist would clobber that) — use `relavium chat-export` for the durable provenance mark. **Live (2.P / 2.Q).** |
 | `/workflows` | List the project's discovered workflows + agents (the disk catalog) as an in-view **notice** (**2.5.C S4**). A project-less cwd is reported, not an error. Chat-only today. |
 | `/cost` | Show the session's spend as an in-view **notice** — the total, then a **per-model breakdown** (**2.5.C S4**; the breakdown is **2.6.C**, [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)). Read from `history.db`, not from memory, so a **resumed** session shows the whole session's models and not just this process's. A `$0` row with real tokens is flagged *price unknown* — an unpriced model is not a free one. A model carrying a **conservative budget commitment** ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4 — money a provider may already have billed for an attempt that returned no trustworthy usage) shows it as *estimated, possibly billed*, **never added into the spend figure or the share**; a commitment made before any completed call on that model reads `(no completed call)` rather than claiming `0 calls`. That is what explains a `$0.0000` session whose next turn the cap refuses. Chat-only. |
-| `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
+| `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare interactive `/mode` opens the mode/default picker. In idle Home it configures startup only. `Shift+Tab` cycles current modes without saving. |
 | `/thinking` | Show / hide the collapsible **reasoning ("thinking") panel** (**2.5.H**; also `Ctrl+T`). A pure UI-view toggle (no session/engine effect); the panel is only rendered while the model is actually streaming reasoning. Default collapsed. Chat-only. |
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
 | `/compact` | **Model-summarise** the conversation so far to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports context-token estimates, known summary-token observations (qualified when incomplete), and a summary preview as a **notice**. Acknowledged summariser money remains in the session's qualified totals and `/cost`. Checks the bound agent's [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before showing progress; a policy refusal names why without starting a call. Effect `write` (spends tokens). Chat-only. |
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F); keep a user boundary even if that retains an extra message. Checks the [memory policy](../contracts/agent-yaml-spec.md#conversational-memory) before missing/invalid-bound notices. When permitted, a bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
 | `/models` | Open the live catalog **picker** ([ADR-0064](../../decisions/0064-live-model-catalog.md)) — **interactive-only**. In a **chat**, picking a *different* model **reseats** the live session onto it; re-picking the model you are already on only sets its effort tier (a per-turn override, **no reseat**). In the **bare Home** it writes the next session's defaults instead. Both paths — and what a reseat does and does not carry — are in § [Model reseat](#model-reseat-models) (**2.5.G**). Opening the picker changes nothing — the effect lands only on an explicit selection. Under `--json` / a plain non-TTY there is no overlay: nothing is reseated and an actionable hint is printed. |
 | `/effort [tier]` | Set the **reasoning-effort** tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)); bare `/effort` shows the current tier + the options. A **per-turn session override** on the live session — **no reseat** (unlike `/models`), and it does **not** survive one. Always available in a chat: on a model with no controllable reasoning tier the command says so and the tier is stored but **inert** (gated off at send) — it is the picker's effort sub-step and the footer indicator that are capability-gated, not this command. Chat-only. |
+| `/details` | **MVP-3 Step 2 accepted on development:** inspect bounded live tool-call details using the [shared interaction contract](#proposed-mvp-3-interaction-contract). Interactive chat-only; a plain/JSON session prints a fixed remedy. It executes no tool, sends no model message and reconstructs no historical preview. |
 | `/scrollback` | Dump the transcript into the terminal's **native scrollback** (to scroll, search, select, copy — Enter returns). One of the three copy-and-search **hatches** described under § [Entry](#entry) — the alt screen has no scrollback of its own. Not available before the first turn. Chat-only. |
 | `/edit` | Open the transcript **read-only** in `$EDITOR` (to search or copy). See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
 | `/copy` | Copy the **whole unwrapped transcript** to the system clipboard over **OSC 52**. See the hatches under § [Entry](#entry). Not available before the first turn. Chat-only. |
-| `/clear` | Start a **fresh conversation** — end the current session (**persisted + resumable** via `relavium chat-resume <sessionId>`) and swap in a new one under a new `sessionId` ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7, **2.5.F**). Effect `destructive`; the fresh session resets the mode to `ask` and the budget/turn/cost totals to zero (the old totals stay on the resumable row). Its notice names the prior session + the exact resume command. **Interactive-only** — rejected under `--json` / plain non-TTY, where one machine stream is one session lifecycle ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Works in `relavium chat`, `chat-resume`, and the in-Home chat (swap in place, staying in chat); in the **bare** Home (no live session) it is an honest "nothing to clear" notice. |
+| `/clear` | Start a **fresh conversation** — end the current session (**persisted + resumable** via `relavium chat-resume <sessionId>`) and swap in a new one under a new `sessionId` ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7, **2.5.F**). Effect `destructive`; the fresh session resolves the configured starting mode, preserves its bound agent grant and resets budget/turn/cost totals to zero (the old totals stay on the resumable row). Its notice names the prior session + the exact resume command. **Interactive-only** — rejected under `--json` / plain non-TTY, where one machine stream is one session lifecycle ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Works in `relavium chat`, `chat-resume`, and the in-Home chat (swap in place, staying in chat); in the **bare** Home (no live session) it is an honest "nothing to clear" notice. |
 
 An unrecognized `/…` command — or an **undeclared argument** on a known one (`/exit now`) — prints a one-line, secret-free notice and the prompt returns. A command may accept flags (`/doctor --deep`) or a single positional value (`/mode plan`); the `/` palette runs the bare form, so a flag/value is opt-in by typing it. The idle footer surfaces `/ for commands` at an empty prompt (2.5.C S6). In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
+<a id="proposed-mvp-3-interaction-contract"></a>
+
+## MVP-3 interaction contract
+
+**Accepted design (2026-11-11); Step 2 accepted on development (2026-11-12):** approved together with
+[ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+and [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md).
+Step 2's approval/details and structural restoration complete native-write
+integration, independent implementation/security reviews and combined CI in the
+[acceptance record](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12).
+Step 3's mode/default picker and new built-in grant are independently
+[accepted on development](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-step-3-acceptance-2026-11-12).
+The checkpoint PR carries combined CI and maintainer review. These contracts
+describe that implementation.
+
+**Mode picker.** In a live interactive chat, bare `/mode` opens a shared picker
+with current-mode selection and a separate `Save startup default` action. Direct
+`/mode <name>` and Shift+Tab change the mode for the next turn without saving. The engine takes the turn policy once, when a
+turn starts, so while a turn is running Shift+Tab changes nothing and shows `Mode changes apply between turns — Esc stops the running
+turn.`; the footer never names a mode the running turn is not under.
+In idle Home, `/mode` opens only startup-default settings, with no imaginary
+active session; `/mode <name>` there does not silently save. Show the effective
+start and any project/workspace override before saving globally. Confirm `auto`
+explicitly, explain approval-free ordinary writes, and preserve hard path floors.
+Cancel saves nothing. The hint names Shift+Tab, `/mode` and the configurable
+start; persist its acknowledgement only after visible delivery. Fresh/resumed/
+cleared/reseated interactive instances bind the configured start and first-frame
+footer together, with a fresh approval cache. Preserve frozen agent grants;
+older read-only sessions require a new built-in conversation to gain new tools.
+The [config contract](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3)
+owns authority and publication outcomes. Non-TTY/JSON never open this picker and remain
+effective `ask`; direct mode commands cannot create a headless approver.
+
+**The docked card ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)).**
+While an approval waits, its card sits in the live region below the conversation, which stays
+on screen; the full view (`[v]`) and the call list (`/details`) are the only screens that take
+the terminal over. The card takes at most three fifths of the rows (twelve at 80×24) and never
+leaves fewer than eight for the transcript. It shows, in order: a thin rule; the **effect and
+target** (`Create merhaba.md`, `Edit src/app.ts`, `Overwrite notes.txt`); the **diff body**
+(`+n` additions, `-n` removals, context dimmed, coloured when colour is on) sized to the
+height; one summary row — the tool's id, `+added −removed · N bytes`, and, when the body is
+cut, `… N more lines (M bytes hidden)`; **only the warnings that apply** (a shortened target, masked
+values that require inspection, a non-LF or changed line-ending convention or a final newline added or removed, a lock with no
+other stated cause), each wrapped to the card's width; and two key rows —
+`[Ctrl+Y] Allow   [Ctrl+G] Allow all <file writes|file edits|<tool> calls> this session` and
+`[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn`. While Allow is locked behind an
+inspection the first key row says so (`(Allow is locked until you inspect the change)`) and the second still offers `[Ctrl+N] Deny`. The card's body opens on the first changed line with up to three lines of unchanged context above it, not on the top of the file;
+if any changed line is not drawn it adds `⚠ N changed lines not shown — press [v] for the full diff.` and withholds `[Ctrl+G]`. A session-wide
+grant is never offered on a partial view, on the card or in the full view: `[Ctrl+G]` appears only while the page drawn shows every changed line, and a call
+without a diff whose content is clipped shows `⚠ N lines of this call are not shown — press [v] for the full view.` and offers no `[Ctrl+G]` either
+(`[Ctrl+Y]` and `[Ctrl+N]` stay). **Every answer key is a Ctrl chord, never a bare letter** — a letter typed while a turn runs is typing, and "yes do it" would otherwise approve a write with its first character; the question card's `Ctrl+S` skip follows the same rule ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), and `Ctrl+A` is deliberately not an answer (the line-start key of every readline habit and the prefix of GNU screen). A bare `y`, `a`, `n` or `c` answers nothing and counts as typed text. An affirmative chord (`Ctrl+Y`, or the first `Ctrl+G`) counts only when it is a deliberate answer: the card has been on screen for at least 400 ms,
+the previous key of any kind is at least 300 ms old, no key that is not a card action (text typed into the composer while the turn ran, a key the card
+ignores, text typed into a search, a reason box or a question card's own answer) arrived in the previous 1.5 s, and no card was resolved by a key in the previous 2 s (a held
+key keeps extending that window). The session-wide `[Ctrl+G]` takes two steps: the first `Ctrl+G` shows
+`Press Enter to allow all … this session · any other key cancels` and Enter 0.8–5 s later with no other key between grants; a second `Ctrl+G`, typed text or a held key never does. A refused chord is ignored
+without effect and the card says why, once. `[Ctrl+N]`, `[Ctrl+R]`, `[v]`, `Esc` and Ctrl-C are never delayed (`Ctrl+N` needs no visible frame, so a card that cannot be read can still be refused); all timing uses a monotonic clock. Typed text can never resolve a card; the one stray source left is a held chord, whose repeats the 2 s lockout refuses. A chord is not an answer inside the reason box, the full view's search box or the call list. The card opens with a yellow rule labelled `Approval needed`,
+its answer keys are coloured, and while it is open the busy line reads `Waiting for your answer <time> · Esc stops the turn`;
+the wait is excluded from the turn's elapsed time and from the footer's duration, which shows `<active> · <wait> waiting for you`. `[Ctrl+N]` and `[Ctrl+R]` deny and
+**continue**; `Esc` and Ctrl-C **stop** the turn. A clean change shows no zero counts. An ending
+token (`<LF>`, `<CRLF>`) is printed only where a line's ending differs from the rest of its side or
+from the other side; `<EOF:NO_NEWLINE>` always prints. Everything below about inspection,
+masks, exact-frame acknowledgement and resource limits applies to the card and the full view alike.
+
+### The full view and the tool details
+
+([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md))
+`[v]` on the card and Enter on a `/details` call open **one** screen. The card, its answer keys and its guard are unchanged.
+
+- **Listing.** One row per unchanged line, in the card's format (a gutter number, `+`/`-`, dim context, colour where on); a call's
+  fields read as a name with its value indented below. The second copy of an unchanged line (`=before N`) is listed only when a
+  mask touches it. Every escape, mask and ending token rule is unchanged.
+- **Opens** on the first change with up to three unchanged lines above it, like the card — or on the top when the card shortened the
+  target (it is read first) or when field rows come before the diff. Details open on the top.
+- **Chrome**: a header (the screen's name, the tool's identity and the counts — always — on one row when they fit; otherwise the identity on one row under the title), a `target` row while the body is scrolled away from it,
+  only the warnings that apply (the lock names its cause and its key; a met requirement prints nothing; line endings only for a
+  change of convention), the body, a status rule (`64% · changed lines off this page: 2 above, 4 below`, plus `masked values
+  revealed (view only)` and `Unicode code points` while on), a message row (always one row, blank when empty) and a search row while the search box is open, the navigation legend
+  (`[key] words`, keys coloured; only keys that do something; movement and inspection on their own rows), the answer rows (the card's
+  two, without `[Ctrl+R]` and `[v]`, with `[b] Back to the card`) and one closing note: the protected-path sentence on an approval,
+  `[b] Back to the list   Esc closes · viewing never executes a tool` on details. One row stays empty.
+- **Keys** (none answers anything; one that acts is not typing evidence): `↑`/`↓` or `k`/`j` one listed line · `PgUp`/`PgDn` or
+  `Space` a page (a page cut inside a long line continues there) · `Home`/`End` · `Tab`/`Shift+Tab` the next/previous change (a
+  run of changed lines; runs six unchanged lines or fewer apart are one, and a change is about 40 listed lines at most; inside a
+  change longer than a page `Tab` lands on the next page that shows a changed line not yet seen and `Shift+Tab` on the page that ends on the nearest one above, so none is stepped over) · `/` search · `r` reveal (only where something is
+  masked) · `p` every non-ASCII character as its code point (`<U+0131>`; ASCII stays readable) · `c` copy the masked page · `b` back · `Esc`/Ctrl-C stop the turn on an approval, close on details.
+  Scrolling down stops at the last page that begins on a line (the screen ends on the document's last row). A row is measured as the whole string the renderer
+  (`string-width`) measures and is never cut by it: a row wider than its page would wrap — one wrapped row uses the spare row and is drawn
+  whole, a second makes the frame too tall and it is refused — and a row holds at most three tokens per column, so a run of zero-width
+  characters goes on in the next row.
+- **The call list**: oldest first, opening on the **newest**; a row is a mark (`✓`, `✗ failed`, `⊘ denied`, `? outcome unknown`,
+  `… running`), the tool, what it touched, `+a −r`; never a result (read it in the details view, through the masks). `↑`/`↓`,
+  `PgUp`/`PgDn` (ten), `Home`/`End` select; Enter opens; Esc closes.
+
+**Approval and details.** Both chat hosts reuse one pure state machine and views.
+The card names the target, exact changed/hidden byte and line counts, and `[Ctrl+G]`'s tool/session
+scope; mask counts and line-ending notes appear on it when non-zero or non-LF, and the full view always
+lists them. `[v]` opens its full view — one readable inspection screen shared with
+`/details` ([ADR-0134](../../decisions/0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md);
+see [the full view and the tool details](#the-full-view-and-the-tool-details)) with
+search, code-point inspection and an explicit `[r]` reveal action. A compact target header states its exact omitted
+byte count when shortened; the full target remains a paged source field in the
+full view. A shortened target blocks affirmative answers until its complete
+source has actually been displayed there in acknowledged frames. Readable,
+unmasked target bytes need no reveal action; a placeholder never proves visibility
+of its hidden bytes. A bare `[r]` (reveal) is never an approval key; `Ctrl+R` is the deny-with-reason chord. Any masked
+changed content, or a flagged target/field span, blocks `[Ctrl+Y]`/`[Ctrl+G]` until revealed
+deliberately and the required revealed spans have actually been displayed in
+acknowledged frames; an entirely masked changed line is inspectable under that
+rule, not a blind exception. The approval projection escapes invisible/control/blank
+characters and distinguishes literal escape text, tabs, trailing spaces and line
+endings under ADR-0120. Reveal is overlay-local, re-escaped and reset on close,
+card/owner replacement, geometry invalidation or abort. Structurally excluded
+secrets are never available to reveal.
+
+A retained workflow result uses the
+[saved-result confirmation contract](../shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3),
+when an approval regime is present. Its live card labels delivery of a saved
+result with no new filesystem operation, shows no invented fresh diff, and
+cannot grant `always` authority for a later mutation. Current mode/denial,
+ownership, visibility and cancellation controls remain. Session effects never
+replay; this does not add replay to chat history or restore previews at rest.
+
+Every affirmative input must match the exact current card, owner, geometry and
+actually flushed measured frame. A mere React render or terminal-size check is
+insufficient. Below 80×24, clipped mandatory card content or controls, suspend,
+output backpressure or a stale/mismatched frame disables affirmatives. Intentional
+diff pagination is different: the shortened card may be approved when its target
+is fully visible or has completed the required full-view inspection, its
+effect/truncation/mask disclosures and answer controls are fully visible, its
+full view can traverse every admitted change and all required mask inspections
+are acknowledged. Visiting every unmasked diff page is the operator's choice,
+not an implicit approval prerequisite. Coalesced input or paste
+cannot reveal and approve unseen content, and typed-ahead, repeated or double-tapped keys are refused by the rules above. Existing rejection, abort, suspend
+and mouse-consumption controls remain; Esc/Ctrl-C cancel these overlays. Resize
+requires fresh visibility acknowledgement. This also applies to an idle Home's
+focused Continue row; prompt/keyless/error/notice rows get explicit priority,
+and optional rows cannot displace the focused row or active input/card. MVP-8
+still owns workflow/run/gate content and actions.
+
+The approval content projection has one color-independent token alphabet:
+`<U+HEX>` for escaped code points, `<TAB>`, `<SP>` for trailing ASCII spaces,
+`<LF>`, `<CRLF>`, `<EOF:NO_NEWLINE>` and labelled `<MASK:id=N;bytes=N>` spans.
+Every source `<` becomes `<U+003C>` before inserting synthetic tokens; process
+source characters once, never re-escape generated tokens. Masked source ranges
+are projected before this escaping. Literal token-shaped text therefore differs
+from every synthetic token in both sides, inline/stacked layouts and color-off.
+Gutters/status labels are typed UI framing, never inferred from source prefixes.
+Wrap tokens as indivisible atoms or disable approval if the complete required
+notation cannot be inspected. The final-line ending is `LF`, `CRLF` or `none`;
+show differing/missing final endings on both sides. Empty files have zero lines
+and an explicit empty-file state; a new empty file still has a new-file effect.
+Test literal middle dots/tokens/tabs, empty/new files and final-newline-only
+additions/removals as adversarial pairs, not just snapshots of one projection.
+
+Live `/details` opens a keyboard-selectable bounded tool-call list (opening on the
+newest call) and the same inspection screen as the full view, with declared preview and
+bounded result summary. It is a view
+action, never a new execution or approval. Keep targets and write diff stats
+after a live turn and order assistant text segments between calls. Failure,
+denial and unknown have distinct marks/words; missing facts never become success.
+No interrupted-turn persistence is added. Both hosts provide inline and no-color
+parity, scroll/search and explicit copy of the escaped, masked representation
+with truthful clipboard feedback. Copy uses the masked companion of the exact
+acknowledged page's original source intervals and row boundaries, including a
+cursor inside a mask. It never independently projects a larger or differently
+collapsed source window. Partial masked intervals retain their original mask id
+and report only the intersecting byte count. Revealing never copies raw secrets;
+a stale or unacknowledged page cannot be copied.
+Ordinary transcript hatches, `/edit`'s temporary file, `/export`, logs and display
+metadata exclude previews/reveal buffers. No preview-to-disk hatch is introduced.
+
+**Review resource limits.** Each diff side admits at most 8 MiB of UTF-8 and
+100,000 lines. The in-house line diff caps graph work at 1,000,000 steps,
+retained search trace at 8 MiB and output at 200,000 operations. Source spans
+use UTF-16 offsets; displayed byte counts use UTF-8. These units are not
+interchangeable. A review document also caps target text at 4,096 code units,
+fields at 64 (256 per name, 4,096 per value), and required inspection intervals
+at 8,192. Invalid spans, incomplete diff coverage or inconsistent counts make
+the document unavailable for approval rather than silently dropping changes.
+
+Live detail retention admits 64 calls and 32 MiB of source text per store,
+keeping an active review pinned. Older evicted details are labelled
+unavailable. Navigation keeps no history stack (motion is by geometry, ADR-0134 §5), searches accept
+256 code units, and a projected page consumes at most 65,536 source code units
+and 200 display rows. Display targets/summaries have separate 512/2,048-character
+caps and explicit omission counts; these abbreviated labels never replace the
+full approval document. Teardown seals preview retention before joining host
+resources, clears reveal/detail buffers and ignores late preview delivery.
+
+**Restored safe tool groups.** Extend the existing restore projection only with
+content-free call names/engine ids/outcomes already retained for completed turns.
+Join within the same turn by engine call id, never name or adjacency. Do not
+restore tool-call preambles, arguments, targets, diffs, result bodies or reasoning.
+Live diff statistics are also absent after restore; only the retained safe
+structural facts supply the group, with missing outcomes shown as unknown.
+Retain at most 16 structural call summaries per turn, displayed as a collapsed
+group of at most four logical rows with explicit omitted-call counts. Treat
+that bounded group and its user/final assistant as one restore unit; reserve
+its rows inside the existing 500/full-screen or 200/inline logical-entry budget
+before admitting an older unit. A tool-heavy latest completed turn must still
+fit. Report omitted conversation entries and omitted tool calls separately;
+physical wrapping is independently measured. Keep existing legacy-user display
+substitution, empty finals, compaction dividers and model-context projection.
+Since [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c), a restored
+**interrupted turn** shows its user message, its structural tool calls and a fixed dim row, `Interrupted — the user
+stopped it` / `it failed (<code>)` / `a tool call was refused and the turn ended` / `it reached a limit on tool use`,
+where an assistant answer would be; it restores no argument, target, diff or result, and counts as two entries in the
+restore budget (the user line and the dim row), like a completed turn.
+Historical unavailable preview/detail content is labelled unavailable, never
+reconstructed from text. This needs no new history payload or migration.
+
 ## Chat modes + per-tool approval (2.5.E, [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md))
 
-The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+write, process, egress, os); a **mode** is a policy layer on that one instance — **no reseat**, so switching never loses tool context. `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** and `/mode <name>` jumps directly; the active mode is always shown in the footer. The default is read-only **`ask`**. Two layers enforce it: a best-effort per-turn **advertise-filter** (a governed tool is not offered to the model) and the **authoritative, fail-closed `confirmAction` floor** — so even if the model names a hidden tool, the mode still decides.
+The session's `ToolHost` is bound **full-capability** for its lifetime (fs read+write, process, egress, os); a **mode** is a policy layer on that one instance — **no reseat**, so switching never loses tool context. `Shift+Tab` cycles **`ask → plan → accept-edits → auto`** and `/mode <name>` jumps directly; the active mode is always shown in the footer. Absent a configured start, the default is **`ask`**; [starting-mode authority](../contracts/config-spec.md#proposed-starting-chat-mode--mvp-3) governs every new instance. Two layers enforce it: a best-effort per-turn **advertise-filter** (a governed tool is not offered to the model) and the **authoritative, fail-closed `confirmAction` hook**. The names say what the modes do ([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)):
 
 | Mode | Advertised tools | A governed action (write / command / network / clipboard) |
 | --- | --- | --- |
-| `ask` (default) | read-only (`read_file`, `list_directory`, `git_status`) | **denied** |
-| `plan` | read-only | **denied** |
-| `accept-edits` | all granted | **prompts** each time — `[y]` yes (once) · `[a]` always (this tool, this session) · `[n]` no · `[esc]` abort |
-| `auto` | all granted | **auto-approved** — EXCEPT a **protected-path** write, which still prompts |
+| `ask` (default) | every granted tool | **a card, every time** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always for this tool this session · `Ctrl+N` deny and continue · `Ctrl+R` deny with a reason · `[v]` full view · `Esc` stops the turn |
+| `plan` | granted **non-governed** tools (the built-in agent has read/list/git status/search/find, and `ask_user` where a card can answer) | **refused** with a fixed mode text that **returns to the model** ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)); nothing is asked or changed |
+| `accept-edits` | every granted tool | a **file edit is applied without a card** — inside the workspace or inside a root the operator authorised with `--allow-fs-root` (its transcript row keeps the target and diff statistics); a command, network call, ambient OS action or delivered saved result still gets a card unless the person already granted `Ctrl+G` for that tool this session. A protected path is refused while the write is prepared, before any card, in every mode |
+| `auto` | every granted tool | **auto-approved** for granted actions; hard protected-path and scope refusals remain (a protected target is refused while the write is prepared, before any card) |
 
-**Governed classes** (what the floor gates): a write (`fsWrite`), any egress (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), an `os` action (`read_clipboard` — an un-jailed read of ambient, secret-bearing OS state — and `notify`), and a `run_command` with a model-chosen command. Read-only fs reads + `git_status` are never gated. **Protected paths** (`.git/`, `.relavium/`, `.ssh/`, shell-startup files) are refused in **every** mode including `auto`; only the ancestor `.relavium` component of an exact [host-issued scratch descriptor](../shared-core/built-in-tools.md#host-issued-scratch) has a contextual exemption, with nested floors retained. No mode escapes the `fs` jail / scope tier. An **`Esc`** mid-turn aborts the in-flight turn but **keeps the session alive** (distinct from `/cancel`): it settles one `session:turn_completed` (an `aborted` stop-reason), rolls back the pending message, and returns to idle. The once/always memory is **in-memory** and per-session — a `chat-resume` re-prompts. The one-shot `relavium agent run` (non-interactive) runs `ask` (governed actions denied — no approver). On the interactive surface a host tool EXECUTION failure to an **idempotent read** (e.g. a file-not-found `read_file` — the #1 cause is launching `chat` from a directory that does not contain the path) is **fed back to the model** so it can adapt / explain rather than ending the turn (`recoverToolFailures`, scoped via `ToolExecutionError.recoverable`); a **governed / side-effecting** failure stays fail-fast. When a turn does die on `tool_failed`, its one-line summary shows a **static, secret-free hint** ("a path may be outside this session's workspace, or the target was unavailable") — never the raw error message (which may carry model / MCP context).
+With **no one to answer** — a plain, `--json` or one-shot surface — the effective mode stays `ask`, but the governed tools are **hidden** from the model as in `plan`, and a call that names one anyway is refused with the *unavailable* text. The model never sees a tool it cannot use.
+
+**Governed classes** (what the floor gates): a write (`fsWrite`), any egress (`http_request` / `web_search` / `mcp_call` / a discovered MCP tool), an `os` action (`read_clipboard` — an un-jailed read of ambient, secret-bearing OS state — and `notify`), and a `run_command` with a model-chosen command. Read-only fs reads + `git_status` are never gated. **Protected paths** (`.git/`, `.relavium/`, `.ssh/`, shell-startup files) are refused in **every** mode including `auto`; only the ancestor `.relavium` component of an exact [host-issued scratch descriptor](../shared-core/built-in-tools.md#host-issued-scratch) has a contextual exemption, with nested floors retained. No mode escapes the `fs` jail / scope tier. An **`Esc`** mid-turn aborts the in-flight turn but **keeps the session alive** (distinct from `/cancel`): it settles one `session:turn_completed` (an `aborted` stop-reason), and returns to idle; a turn the provider had already accepted (returned content) is kept as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) and an Esc before the provider returned anything rolls back the pending message (the full list of rolled-back turns is in the session spec). The once/always memory is **in-memory** and per-session — a `chat-resume` re-prompts. The one-shot `relavium agent run` (non-interactive) runs `ask` (governed actions denied — no approver). On the interactive surface a host tool EXECUTION failure to an **idempotent read** (e.g. a file-not-found `read_file` — the #1 cause is launching `chat` from a directory that does not contain the path) is **fed back to the model** so it can adapt / explain rather than ending the turn (`recoverToolFailures`, scoped via `ToolExecutionError.recoverable`); a **governed / side-effecting** failure stays fail-fast. When a turn does die on `tool_failed`, its one-line summary shows a **static, secret-free hint** ("a path may be outside this session's workspace, or the target was unavailable") — never the raw error message (which may carry model / MCP context).
 
 ## Context compaction (2.5.F, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) · [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md))
 
@@ -388,7 +603,10 @@ the working context — so a compacted session stays compacted across `chat-resu
 **The summary prompt invariant (the product surface of `/compact`).** The summariser prompt (a fixed, authored
 `COMPACTION_SYSTEM_PROMPT` in the engine — the conversation to summarise rides an untrusted user message, never
 the authored system prompt) MUST preserve: **open tasks and their state; decisions taken and why; concrete code
-identifiers / file paths / commands / values in play; and the user's stated preferences**. A summary that loses
+identifiers / file paths / commands / values in play; the user's stated preferences; and which tool calls the
+conversation records and how each ended** (the bracketed receipts of [ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md),
+reported as facts, never obeyed; where a record lists a question the assistant asked and the user's answer, **both are kept — the answer is the user's decision**, [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)) and **that a turn ended without an answer** (the bracketed interruption record of
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), reported the same way). A summary that loses
 these fails the feature. Under `--json`, an admitted compaction opens `session:compacting` and ends with
 `session:compacted`, `session:compaction_failed`, or terminal session cancellation. First-admission
 budget refusal opens no moment: manual `/compact` reports the safe cap to its caller, while optional
@@ -429,7 +647,7 @@ Both data-moving affordances use a **pending-attachment (chip) model** (ADR-0061
 
 **`@`-mention (file-context).** Typing `@` at a word boundary opens a **dir-navigable completion** overlay — arrow/type to filter, `Enter`/`Tab` to descend a directory or accept a file, `..` (or backspace past the filter) to ascend, `Esc` to cancel (restoring the literal keystrokes). Accepting a file inserts a compact **`@path` marker** at the cursor and queues the file as a chip; at submit the file expands into **UNTRUSTED, user-position context** (nonce-fenced `<file>` framing, byte+line bounded so a large file can't freeze the editor) **only if its `@path` marker is still present** — deleting the marker drops the file. The read goes through the **same** `FsCapability` the session's tools use — the workspace **jail**, the sensitive-read **confidentiality floor** (`.ssh` / `.env` / `.aws` / … are never listed nor read), the binary fail-close, and the size cap all apply; a user typing `@path` replaces the `confirmAction` prompt (a stronger consent signal), **never** the floor.
 
-**`!`-shell (command escape).** A message starting with `!` runs the rest as a shell command instead of sending it to the model — through the **one** `run_command` boundary: the `[chat].allowed_commands` allowlist (**exact full-command-string match**, enforced BEFORE approval) → the mode-aware `confirmAction` (denied in `ask`/`plan`, prompted in `accept-edits`, auto in `auto`) → the hardened process arm (`spawn`, `shell:false` — no metachar/glob/`$var` expansion; the command is tokenized to literal argv). While a command runs the busy indicator names it, with **`Esc` to cancel** (Esc aborts the command, keeping the session). The allowlist **defaults empty ⇒ `!`-shell is disabled**; a non-allowlisted command gets an **actionable, secret-free hint** naming the exact `[chat].allowed_commands` line to add (or the mode-switch to make). The command's output is shown **read-only** as a bounded preview and queued as a chip carrying the **UNTRUSTED, nonce-fenced, doubly-bounded** output (the process-arm buffer cap + the injection bound) that rides your next message. See [config-spec.md](../contracts/config-spec.md) `[chat].allowed_commands` + [built-in-tools.md](../shared-core/built-in-tools.md).
+**`!`-shell (command escape).** A message starting with `!` runs the rest as a shell command instead of sending it to the model — through the **one** `run_command` boundary: the `[chat].allowed_commands` allowlist (**exact full-command-string match**, enforced BEFORE approval) → the mode-aware `confirmAction` (a card in `ask`, refused in `plan`, a card in `accept-edits` — only workspace file edits skip it — and auto-approved in `auto`) → the hardened process arm (`spawn`, `shell:false` — no metachar/glob/`$var` expansion; the command is tokenized to literal argv). While a command runs the busy indicator names it, with **`Esc` to cancel** (Esc aborts the command, keeping the session). The allowlist **defaults empty ⇒ `!`-shell is disabled**; a non-allowlisted command gets an **actionable, secret-free hint** naming the exact `[chat].allowed_commands` line to add (or the mode-switch to make). The command's output is shown **read-only** as a bounded preview and queued as a chip carrying the **UNTRUSTED, nonce-fenced, doubly-bounded** output (the process-arm buffer cap + the injection bound) that rides your next message. See [config-spec.md](../contracts/config-spec.md) `[chat].allowed_commands` + [built-in-tools.md](../shared-core/built-in-tools.md).
 
 ## Streaming
 
@@ -447,10 +665,144 @@ A classified **failed** turn is not a session terminal, so the REPL remains live
 - `provider_auth` — check the key or **unlock the OS keychain** if it locked mid-session, then resend.
 - **context overflow** — a classified `context_overflow` displays the fixed engine facts (attempted model/window and whether tools ran) with one policy-aware remedy in its summary, without a second static hint. The same remedy serves the legacy keyword heuristic on an unclassified/custom-endpoint `validation` message. Under [`memory`](../contracts/agent-yaml-spec.md#conversational-memory) `none`, it suggests a shorter message or larger model, never `/compact` or `/trim`; `window` permits `/trim` and a smaller `window_size` for a **new** session, never `/compact`; `summary` or omitted memory permits both history commands. If tools ran, it tells the user to check their effects before continuing because resending can repeat them.
 - `tool_failed` (incl. an **unreachable MCP server**) — the summary names the likely cause (a path / an unavailable target); fix it and resend (no blind retry — a side-effecting tool failure is fail-fast by design).
-- `tool_denied` — switch the `/mode` if that was intended; `tool_unavailable` — a host/config gap (the capability arm isn't wired for the session): rephrase to avoid the tool, or wire it and start a fresh session.
+- `tool_denied` — read the reported reason, check the session's permissions or safety requirements and consult the [denial guidance](#denial-guidance-design--adr-0127); `tool_unavailable` — a host/config gap (the capability arm isn't wired for the session): rephrase to avoid the tool, or wire it and start a fresh session.
 - `budget_exceeded` / `turn_limit` / `content_filter` / `internal` — each renders its own actionable one-liner. (`cancelled` settles as `aborted` with no error, and `sandbox_error` / `run_timeout` are WorkflowEngine-only, so none is chat-reachable and none carries a hint.)
 
-The remedy is **always host-authored** — the provider message is read only to pick the right hint (the context-overflow heuristic), **never echoed**, so no provider text or secret reaches the terminal. The classified overflow remedy renders once with the summary; other hints render on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
+The remedy is **always host-authored**; it never interpolates a provider message. The existing vetted provider-status summary is separate from that hint. The classified overflow remedy renders once with the summary; other hints render on the interactive TUI (a yellow line under the summary) and the plain chat driver (`drivePlain`, under `[turn failed: <code>]`); a **one-shot `relavium agent run`** suppresses the hint (its session ends immediately after, so a session-continuity hint would be false), and `--json` stays the structured stream (the consumer branches on `error.code`).
+
+### Denial guidance design — ADR-0127
+
+**Design and local source accepted 2026-11-15.** See the
+[implementation checkpoint](../../roadmap/phases/phase-2.6-conversational-authoring.md#adr-0127-final-local-source-acceptance-2026-11-15)
+for verification and remaining delivery gates.
+[ADR-0127](../../decisions/0127-macos-write-metadata-has-distinct-parent-and-file-profiles.md)
+replaces the old generic mode/policy recommendation. Current source includes the
+neutral hint and the continuing plain driver's bounded denial explanation;
+fresh source acceptance is recorded separately from design agreement.
+
+The presentation boundary receives `error.code`, `error.message` and context;
+it does not receive a typed approval-denial reason. `user_rejected` is a private
+`ToolApprovalDenyReason` carried by `ToolDeniedByUserError`, whose public code is
+also `tool_denied`. It is not a separate turn-error code. A single neutral hint
+therefore serves mode, user, scope and host-safety refusals. This intentionally
+removes the mode shortcut from the generic hint without changing the `/mode`
+command or the actual mode/approval decisions. Do not parse message text to
+infer a subtype or add a new public discriminator for this correction.
+
+The exact fixed hint is:
+
+> The tool was denied. Check the reported reason and the session's permissions or safety requirements. Help: https://github.com/HodeTech/Relavium/blob/main/docs/runbooks/troubleshoot-tool-denials.md. The session is still active.
+
+The destination is a compile-time constant, not an error-, model- or
+configuration-selected URL; rendering it performs no request or automatic open.
+The tracked [troubleshooting guide](../../runbooks/troubleshoot-tool-denials.md)
+must ship in the repository with the correction. Local development can use that
+file before its `main` URL becomes available after merge.
+Before a CLI artifact carrying this URL is published, the guide must exist on
+`main` in that release's ancestry and the public URL must resolve to it. Keep
+this a delivery check, not a runtime network dependency. A local checkout before
+merge uses the tracked guide directly; an unmerged-branch 404 is not evidence
+that the profile or a user's permissions are broken. This adds no release
+authorization and does not bypass the existing publication guard.
+
+#### Denial explanation trust and output policy
+
+`tool_denied` does not prove that its message is a static host label. The CLI
+supports an optional user-written rejection reason, and the registry currently
+appends that text to `ToolDeniedByUserError.message`. Thus a denial message can
+combine host framing and user-authored data. The present `sanitizeInline`
+terminal cleanup by itself does not redact secrets or establish origin. The
+corrected producer/display pipeline does not rely on the former static-label
+assumption.
+
+Retain the optional typed-rejection experience as user-owned diagnostic text.
+In the CLI producer, apply the existing `sanitizeUntrustedInline` pipeline to
+the original submitted reason **before** the existing 300-code-unit cap and
+before handing it to `ToolApprovalDecision.reject.reason`. If the submitted
+input exceeds 4096 UTF-16 code units, omit the entire explanation with the same
+fixed too-long label used below. Raw tool-review capture retains one overflow
+code point so its input boundary cannot silently truncate a credential before
+this omission/redaction decision. This uses the
+[finite diagnostic backstop](../shared-core/diagnostic-secret-backstop.md),
+not a new detector or a promise that arbitrary personal text/secret fragments
+can be recognized. Explain in the denial-entry UI that the submitted explanation
+is diagnostic text that can appear in session output, including redirected
+output; it is not a private note for the approval editor alone. Never inject a
+managed secret, raw native failure or metadata fact into a reason.
+
+Render the complete assembled denial explanation as untrusted text in Home,
+standalone TUI and continuing plain chat, regardless of whether it contains a
+fixed label or a user explanation. If incoming explanation text exceeds 4096
+UTF-16 code units, omit it entirely with the fixed label
+`denial explanation omitted (too long)`, rather than printing a truncated raw
+prefix. Otherwise use `sanitizeUntrustedInline` on the complete original message
+before display normalization/capping, then cap the resulting one-line text to
+1024 UTF-16 code units without splitting a surrogate pair, with a fixed elision
+mark when shortened. Do not classify message text, infer a trusted subtype,
+or treat terminal stripping alone as redaction.
+
+**Add the missing plain-driver explanation line.** Continuing `drivePlain`
+must print the sanitized `tool_denied` explanation with its failure code before
+the common hint, using that same projection as Home/TUI. A hint pointing at a
+reported reason with no reason line is not acceptance. A fixed host mode or
+metadata explanation stays understandable; a user explanation stays visibly
+diagnostic data and may be redacted. Neither establishes authority to retry.
+Do not broadly echo `tool_failed`, unknown error messages or provider text.
+The native contract separately owns the
+[fixed aggregate preparation explanation](native-filesystem-metadata.md#native-refusal-presentation).
+Native details are still reduced to that fixed label at their host boundary;
+the display scrubber is not permission to forward raw native errors.
+
+The CLI producer's already-sanitized optional user reason can enter the existing
+turn error/event `message` and therefore JSON or existing diagnostic copies.
+That redacted-value change is deliberate; the machine stream gets no new field
+or human hint. Other embedding hosts remain responsible for their own reason
+content under the [approval contract](../shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
+No failed-turn retention, return-to-model, retry or mode-authority change is
+selected by this guidance work. (ADR-0117 has since been accepted and
+implemented with MVP-3b; ADR-0119 is implemented as MVP-3c; its D64 rounds and security sittings are done and the maintainer's acceptance is owed.)
+
+Pin the actual displayed code, sanitized explanation and exact hint in each continuing
+driver, using native metadata refusal, an ask/plan restriction, user rejection
+and an in-scope/protected-path refusal. Check that a mode restriction remains
+understandable and that metadata/uncertain effects do not suggest `/mode` as a
+repair. Post-publication proof failures keep the separate
+`effect_needs_attention` presentation. One-shot `agent run` still suppresses the
+continuing-session hint, and JSON still emits its existing structured stream;
+no human hint is inserted into it. Test benign free user text, terminal/bidi/OSC
+controls, recognized synthetic credential/header/query shapes, redaction before
+the producer/display caps, oversize omission and redirected plain output. Check
+the producer's JSON/error value as well as TUI/Home/plain projections; do not
+claim complete detection of arbitrary secrets from a successful finite fixture.
+No additional error family becomes displayable.
+
+## The question card — MVP-3d ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md))
+
+The model can ask the person a structured question mid-turn with the built-in `ask_user` tool; the tool contract (arguments, bounds,
+key table, results) is canonical in [built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d). What this surface adds:
+
+- **It is a docked card where the approval card sits**, below the live region, with the conversation still on screen above it. The
+  rule reads `Question from the agent · not an approval`; the keys are the question keys, never `[Ctrl+Y]`/`[Ctrl+G]`/`[Ctrl+N]`. An open card is the
+  person's time, not the turn's: the busy line reads `Waiting for your answer <time> · Esc stops the turn` and the turn's active time
+  excludes the wait ([ADR-0129](../../decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) §6).
+- **It opens in every mode**, `auto` and `plan` included; no mode answers a question, and there is **no timeout**.
+- **`Esc` and `Ctrl-C` at the card stop the turn**, as at an approval card; `Ctrl+S` skips the call (no bare letter is a command — typing starts your own answer). A session-ending cancel (`/cancel`,
+  `Ctrl-C` outside a card) ends the session as everywhere else.
+- **It appears only on a surface with a person at it**: the standalone chat and the Home wire the delegate; a plain, `--json` or
+  one-shot surface wires none, and the model is then never offered the tool.
+- **The transcript keeps a record**, built from the answer the card holds: `› Asked: <header> — <question>` and `  └ <choice>` per
+  question (the person's own text in quotes), or `› Skipped the agent's question: <header>` (`questions: <header> · <header>` for several; a skipped call stores and lists its headers only, never the question text, because the person may have skipped before reaching it).
+  The host's rows start with `›` / `└`, glyphs the plain-text rules refuse in model text, so a long question cannot forge one at a wrap boundary. The
+  question and the answer are **also stored with the session** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)):
+  a **resumed** session rebuilds the entry, in the same wording, from the stored record, right after the `ask_user` tool row and before the answer, and a
+  later turn — live or after a resume — sees the question and the answer under the `ask_user` receipt
+  ([built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d) owns the record, the session spec owns the request text). A
+  resumed turn shows at most 16 such entries and counts the rest; each counts toward the restore budget.
+- **Several questions are tabs** (`←`/`→`, Tab / Shift+Tab) ending in a **Review** tab that lists every answer and sends them; one question has
+  neither. **Typing anywhere starts your own answer**; in a multi-select question `Enter` in the field *saves* the text and the question stays open
+  until the next `Enter` confirms it. The key table is in the [contract](../shared-core/built-in-tools.md#ask-the-user--mvp-3d).
+- **A paste goes into the own-answer field** — opening it if the list is showing (one line, cut nowhere: a paste that would pass 500 characters is
+  refused whole) — and is ignored on the Review tab; it never reaches the composer.
 
 ## Tool availability
 

@@ -259,6 +259,7 @@ function closure(entry) {
 test("the binding receipt's closure starts no process, so reuse makes no GnuPG call", () => {
   const { files, specifiers } = closure('release-binding.mjs');
   assert.deepEqual(files, [
+    '../native-fs/catalog.mjs',
     'archive.mjs',
     'custody-error.mjs',
     'files.mjs',
@@ -278,7 +279,12 @@ test("the binding receipt's closure starts no process, so reuse makes no GnuPG c
     'node:zlib',
   ];
   for (const specifier of specifiers) {
-    assert.ok(specifier.startsWith('./') || builtins.includes(specifier), specifier);
+    assert.ok(
+      specifier.startsWith('./') ||
+        specifier === '../native-fs/catalog.mjs' ||
+        builtins.includes(specifier),
+      specifier,
+    );
   }
   // Nor can a closure file reach a process or a module without a literal import.
   for (const file of files) {

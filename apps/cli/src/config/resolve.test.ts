@@ -15,6 +15,8 @@ describe('resolveConfig', () => {
       mediaCostEstimate: undefined,
       mediaGcGraceMs: undefined,
       chat: {
+        defaultMode: 'ask',
+        defaultModeSource: 'fallback',
         defaultModel: undefined,
         reasoningEffort: undefined,
         fsScope: undefined,

@@ -80,8 +80,9 @@ instance on a new model and rebuilds the chain for it ([ADR-0059](../decisions/0
    `AgentRunner`.
 2. The runner streams tokens and drives the tool-call loop against the `ToolRegistry`,
    walking the fallback chain on provider failure — identical to a workflow node.
-3. The completed exchange is persisted atomically with its content-free tool structure and an explicit
-   terminal assistant text row (including empty text); see [the session contract](../reference/contracts/agent-session-spec.md). Within-turn
+3. The completed exchange is persisted atomically with its content-free tool structure (one exception: the result row of an `ask_user`
+   call that showed a card also keeps what the person was asked and answered, [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md))
+   and an explicit terminal assistant text row (including empty text); see [the session contract](../reference/contracts/agent-session-spec.md). Within-turn
    tool call/result pairs are not carried into later turns ([ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2).
 
 The difference between a session and a workflow node is the **entry point and lifetime**,
@@ -145,7 +146,7 @@ form of the chat-to-workflow continuum, and it is honest about its fidelity: it 
 - The session's assistant turns become a **linear chain of `agent` nodes**, in order,
   carrying the agent binding, resolved prompts and the persisted resolved tool union. Empty-final turns
   count; superseded working-context turns remain in the full export.
-- The **transcript, including content-free tool structure, is preserved in the workflow's durable `metadata` field** (a schema
+- The **transcript, including content-free tool structure, is preserved in the workflow's durable `metadata` field** (the stored `ask_user` question records are dropped from it, ADR-0133) (a schema
   field that survives parse → serialize — **not** fragile YAML comments, which [ADR-0026](../decisions/0026-session-export-to-workflow.md)
   rejects) so the file is self-documenting. The no-interpolation rule above keeps **resolved
   secret-tainted `{{ … }}` references** out of the transcript — but it does **not** sanitize a secret a

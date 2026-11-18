@@ -840,6 +840,8 @@ pattern). Cascades from `agent_sessions`.
 | `finish_reason` | TEXT | NULL |
 | `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
 | `compaction_dropped_through_sequence` | INTEGER | NULL — ADR-0062: set ONLY on a `role='system'` compaction/trim boundary marker; the durable `sequence_number` through which older messages are superseded (resume drops rows at/below it). Additive nullable column (migration 0006); NULL on every normal transcript row |
+| `interruption_reason` | TEXT | NULL — ADR-0119 (migration 0021): set ONLY on the empty-content `role='system'` terminal row of a retained interrupted turn; `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`) |
+| `interruption_code` | TEXT | NULL — ADR-0119 (migration 0021): the closed `ErrorCode` taxonomy; present **iff** `interruption_reason = 'failed'` |
 | `created_at` | INTEGER | NOT NULL |
 
 ```sql
@@ -869,8 +871,9 @@ host-recorded display text, never an inferred empty prompt.
 
 The migration leaves every existing row NULL. Every host user-row insert with
 captured display metadata includes that field in the same transaction. MVP-2
-uses the existing completed-turn transaction; a future accepted ADR-0119
-interruption transaction inherits this rule without being implemented here.
+uses the existing completed-turn transaction; ADR-0119's interruption transaction
+(MVP-3c, implemented in migration 0021) inherits this rule: the user row, the structural rows and the interruption row, with
+the display metadata, are one transaction.
 Updates/backfills of historical rows
 are not introduced. Metadata writes and the separate display read reject display
 metadata on non-user roles within their admitted rows.
@@ -1227,6 +1230,37 @@ do not query or allocate step rows. A strict failure invokes no step callback; d
 may still show standalone step detail only with explicitly unverified coverage and an unavailable
 usage marker. This grants no resume or mutation authority.
 
+#### Interruption rows — ADR-0119
+
+**Implemented in migration `0021` (MVP-3c).** An interrupted turn
+([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md);
+[contract](../contracts/agent-session-spec.md#interrupted-turns--adr-0119)) ends with a `role: 'system'` row
+whose `content` is empty and whose typed `interruption` field is stored in two nullable columns of
+`session_messages`:
+
+| Column | Type | Rule |
+|---|---|---|
+| `interruption_reason` | text | `CHECK` in (`aborted`, `failed`, `denied`, `turn_limit`); only on a `role = 'system'` row; `NULL` on every other row and whenever `compaction_dropped_through_sequence` is set |
+| `interruption_code` | text | the closed `ErrorCode` taxonomy; present **iff** the reason is `failed` |
+| (shape) | — | an interruption row also has empty `content_parts` (`NULL` or `'[]'`): the database refuses text in the structured body, not only the schema (the denormalised `content` column is not constrained; the row loader refuses text there) |
+
+The row carries no text, tool name, argument or result. It is not a content part: the strict session-only
+content union below is unchanged. `SessionMessage.interruption` is `{ reason, code? }`, strict, and the store
+refuses a row that violates the column rules at its boundary as well as in the database. Existing rows are
+`NULL`; there is no backfill.
+
+**The migration is hand-written and additive.** Two `ALTER TABLE … ADD COLUMN` statements, each carrying its own
+column `CHECK`; the cross-column rules (a `failed` reason iff a code; a reason only on a `system` row without a
+compaction marker) are column constraints (the cross-column shape rule is attached to `interruption_code`, the later of the two added columns, because it names both), which SQLite accepts on `ADD COLUMN`. A
+generated table rebuild was rejected: it would drop the ADR-0104 triggers on `session_messages`, move the table's
+root page, and copy rows through a statement that selected columns the old table does not have. The upgrade path
+is pinned by a test that opens a database at the previous migration, adds legacy rows, applies this one, and
+checks the rows, the triggers and the CHECKs.
+
+A migration that has been applied is immutable. Migration 0021 was amended before release to add the "no content" clause; a development
+database that ran the earlier draft keeps the weaker `CHECK` (its row loader still refuses text on an interruption row), and is
+recreated or lived with — drizzle decides what to apply by the journal timestamp, never by a file's text.
+
 #### Session content parts
 
 `SessionMessage.content: SessionContentPart[]` is the canonical body in `content_parts`.
@@ -1237,6 +1271,7 @@ and replaces raw tool values with the following structural parts:
 |---|---|---|
 | `tool_call` (assistant row) | `type`, `id`, `name`, `argsBytes` | Registry-resolved tool id, or fixed `unknown_tool`; UTF-8 bytes of the JSON arguments issued by the model. No arguments, signatures, provider ids or digests |
 | `tool_result` (tool row) | `type`, `toolCallId`, `resultBytes`, `outcome` | Matching engine id; UTF-8 bytes of the bounded model-facing JSON result (0 when the result is absent), rather than the full host result or event summary; `ok` / `error` / `denied` / `cancelled` |
+| `tool_result` optional `ask` | `status`, `items[]` (`header`; `question` on an answered item only; `selected?`, `other?`) | **The one tool whose result row keeps content** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)): an `ask_user` call that showed a card with outcome `ok` keeps what the person was asked and answered — one-line strings, 1–4 items, the person's own text masked and at most 500 code points. Its fields and bounds are in [built-in-tools.md](built-in-tools.md#ask-the-user--mvp-3d). `content_parts` is a JSON column, so this needs no migration |
 
 An optional result `media` array contains strict handle-only media metadata (`type`, `mimeType`,
 `source`, optional `byteLength` / `durationMs`). It has no filename or transcript field. Sizes are
@@ -1249,7 +1284,8 @@ still use the fixed marker. A recovered policy denial remains
 completed-turn transcript. Byte measurement preserves native JSON encoding, including string/key
 escaping, and counts deeply nested plain JSON iteratively when native serialization exceeds the
 call stack; structural metadata does not prevent correction of valid model JSON. Generic durable
-run/event/IPC tool parts retain their existing shape.
+run/event/IPC tool parts retain their existing shape. Every other tool's parts remain content-free:
+no tool output, argument or digest is stored, whatever the tool returned.
 
 The engine id is `session-tool:<effect-turn-key>:<slot>`, with canonical decimal safe integers,
 a positive turn key and a non-negative whole-turn slot. No provider- or model-chosen string is part

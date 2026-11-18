@@ -2097,13 +2097,17 @@ resolved-id notice, `/export`'s "next free id" wording, and the card-ownership c
 - [ ] **No test pins `gate`'s "already settled" notice sanitizer.** *Low; test gap.* *(sinks-1)* Reaching it needs a
   paused run whose stored id carries controls. **Re-check:** seed one through the run store and resume it with a
   closed handle. *(low · apps/cli/src/commands/gate.ts)*
-- [ ] **ADR-0120's approval escape is a starting set; its completeness is for MVP-3's security review.**
+- [x] **ADR-0120's approval escape completeness — closed in MVP-3 on development (2026-11-12).**
   *Maintainer ruling 2026-11-07.* Rounds 2 to 5 each found a further way an approval preview could hide content
   (zero-width and tag runs, U+2028 and U+2029, line-end whitespace and endings, code inside a mask), each rated medium
   against the draft's claim that a preview never hides what it approves. The draft now states its rules as a starting
   set and claims only them; the mandatory security review confirms or extends them before the card is built, and the
   correction's later rounds do not treat a further gap as a finding against the draft. **Trigger:** MVP-3's approval
   card. *(docs/decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)*
+  **Closure:** the pre-build design sitting and independent implementation/security
+  reviews verify the escaped, masked, inspectable approval projection. The
+  [MVP-3 checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+  owns actual execution evidence and remaining PR CI/maintainer review.
 
 **D64 round 6 of the correction (2026-11-07, at `2cc865c7`)** found one medium in the correction: commands.md still
 said a losing rejection does not stop later gates, which cbe39064 changed; it now says the run parks on them. It also
@@ -2160,6 +2164,9 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
 > reviews and the separate filesystem sitting passed; the
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-3-acceptance-2026-11-10)
 > records the actual-target corrections and verification.
+
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
 
 Found while planning `init`. `findProjectConfigDir` (`apps/cli/src/config/paths.ts`) walks up from the working
 directory to the filesystem root and returns the first `.relavium/` directory it finds. The global configuration
@@ -2282,6 +2289,13 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       *(high · packages/core/src/engine/agent-session.ts, turn-messages.ts; `CR-70`, ADR-0095)*
       **Scheduled 2026-11-04 (D67):** v0.2.1, right after the CLI MVP's v0.2.0, designed together with ADR-0096 §5's
       in-turn overflow continuation ([current.md](current.md#next-work--the-cli-mvp)); the trigger above is unchanged.
+      **Investigation note 2026-11-15:** the maintainer retained that schedule.
+      [ADR-0128](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)
+      (Accepted 2026-11-15) adds only bounded content-free call/outcome receipts; it
+      neither implements raw carrying nor closes this item, and this item's trigger and
+      constraints are unchanged. Reuse the
+      [ADR-0128 acceptance cases](../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md#acceptance-and-landing-obligations)
+      when designing the separate full-content projection.
 
 - [ ] **Binding a budget allowance to its model, and giving it an expiry (`CR-94`, remainder).** *Medium.*
       [ADR-0097](../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) builds the minimum
@@ -2299,7 +2313,12 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
         allowance to the model it was quoted for, and expiring it, stay deferred behind that refusal.
       *(medium · packages/core/src/engine/budget-governor.ts; `CR-94`, ADR-0097 §3)*
 
-- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* Recorded
+- [ ] **An errored or aborted turn persists nothing, including one whose tools already ran.** *Medium.* **NARROWED
+      2026-11-16 by [ADR-0119](../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) (MVP-3c, implemented,
+      acceptance pending): a turn the provider accepted that ends by the abort or a classified error is now persisted as the
+      user's message, its structural pairs and one interruption row; what still persists nothing is listed in that ADR's
+      implementation note and the session spec's *Not retained* list — read the paragraph below as the pre-ADR-0119
+      record.** Recorded
       2026-09-18, because [ADR-0095](../decisions/0095-what-an-agent-session-remembers-across-turns.md)'s Negative
       section calls it "recorded as a residual" and no record existed. The engine rolls the user message back and
       the persister writes no row, so a turn that dispatched a tool and then failed leaves no transcript trace at
@@ -2310,8 +2329,8 @@ surface ships. CR-95's long continuation and the exact-capacity residual remain 
       - **Trigger.** The first surface that needs to show, or resume from, what a failed turn did — a coding
         assistant replaying a half-finished edit, or an audit view over a session's tool use.
       *(medium · apps/cli/src/chat/persister.ts, packages/core/src/engine/agent-session.ts; `CR-71`, ADR-0095)*
-      **Pulled into the CLI MVP 2026-11-04 (D67, MVP-4) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
-      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment drafted in Gate 0.
+      **Pulled into the CLI MVP 2026-11-04 (D67) as "the CR-71 residual"** — CR-71 itself closed in `W7`: a failed, denied or aborted turn stays in context as a
+      content-free interruption marker (ADR-0095 §1), behind an ADR-0095 amendment. **Moved 2026-11-16 out of MVP-4 into MVP-3c;** ADR-0119 Accepted, ADR-0095 amended.
 
 - [ ] **Two at-rest residuals `secure_delete` does not cover: a blocked WAL checkpoint, and pages freed before the
       upgrade.** *Low.* Recorded 2026-09-18 with the `secure_delete` decision, and sharpened the same day after a
@@ -3158,6 +3177,9 @@ so directly: these "should remain visible rather than disappear behind the green
 > [acceptance record](phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 > owns the evidence. The description and scheduling discussion below are historical.
 
+> **Merged to `main` — 2026-11-11:** PR #98 (`0db4c940`); see the
+> [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11).
+
 > **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
 > OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
 >
@@ -3404,15 +3426,25 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   D-2; PR #69).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
   `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
   *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
-- [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
+- [x] **Approval-consent-line zero-width hardening — closed in MVP-3 on development (2026-11-12).** The shared render
   floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
   highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
   already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
   a CVE gap (those chars cannot reorder a command to masquerade). **2026-11-06:** they can still hide content in an
-  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (Proposed) makes the
+  approved diff or argument (a tag-character run, a zero-width space in a literal); ADR-0120 (accepted 2026-11-11, implementation pending) makes the
   approval preview escape every default-ignorable and format code point, which covers this target when it lands.
-  **Scheduled → 2.6.M** (with tool-render v2). **Not pulled into the CLI MVP (checked 2026-11-04):** MVP-3 takes only render v2's two named behaviours, so this lands with render v2's remainder. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+  **Scheduled → 2.6.M** (with tool-render v2). **2026-11-11 preflight correction:** the
+  earlier 2026-11-04 exclusion is superseded by ADR-0120's mandatory approval-preview
+  escaping in MVP-3; see the [accepted plan](phases/phase-2.6-conversational-authoring.md#mvp-3-plan--editing-search-and-reviewable-effects-2026-11-11).
+  Design acceptance is complete; implementation remains pending and this item is not closed by design approval.
+  **Implementation closure 2026-11-12:** the mandatory ADR-0120 projection escapes
+  default-ignorable/format and other hidden source code points in targets and
+  review fields, with actual inspection/visibility guards on both hosts. The
+  [Step 2 acceptance](phases/phase-2.6-conversational-authoring.md#mvp-3-step-2-acceptance-2026-11-12)
+  records implementation tests and separate security sittings; earlier pending
+  wording above is historical. Shared `[c]` extraction below remains separate.
+  *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
   primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
@@ -3812,6 +3844,39 @@ future test cannot silently re-acquire it.
 > pinned tests. `type ToolId = string` is a deliberate **semantic domain alias** for readability, not a
 > redundant alias.
 
+## The default chat agent cannot rename, move, copy or delete a file (found 2026-11-15)
+
+> **Found in use:** after attaching a file, the user asked the agent to rename it. The agent has no rename tool, so
+> it says so, offers to create a new file under the new name with the same content, and states that it cannot delete
+> the original. That is the grant working as designed and the model describing it truthfully; the gap is the
+> capability, not the wording.
+
+**What is true today.** The built-in agent holds seven tools ([ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)):
+`read_file`, `list_directory`, `git_status`, `search_files`, `find_files`, `write_file`, `edit_file`. None can rename,
+move, copy or delete, and no accepted or proposed ADR adds such a tool. The nearest thing the model can do is read the
+old file and `write_file` the same bytes elsewhere, which is a copy, not a rename; it cannot remove the original.
+Observed 2026-11-15: the model already discloses exactly that, so no prompt change was made. (A first reading
+assumed it presented the copy as a rename; the user's transcript showed otherwise, and a prompt sentence added on
+that assumption was reverted before it was committed.)
+
+**What is planned, and what is not.**
+
+- **Planned, as a command, not a tool.** MVP-4 ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md),
+  D63) gives the default agent `run_command` behind a typed argv/cwd approval card, so `mv a b` and `rm a` become
+  possible there as ordinary approved commands (`shell: false`, executable plus argv, no globbing). Until then the
+  only route is the user's own `!mv a b`, which is disabled unless `[chat].allowed_commands` names that exact string.
+- **Not planned: a dedicated `move_file` / `delete_file` tool.** It would be a new filesystem write path (jail and
+  protected-path checks on both ends, symlink and cross-device cases, native metadata preservation per
+  [ADR-0125](../decisions/0125-file-writes-preserve-security-metadata-through-a-native-host-adapter.md), an approval
+  preview that shows source and destination, and an effect-journal identity), so it needs its own ADR, a rigor pass
+  and a separate security sitting under the D64 bar.
+
+**Decision needed from the maintainer, after MVP-4 has been used:** whether a command card for `mv`/`rm` is good
+enough (the card shows the argv but not the files' content or metadata, and a command is not `fsWrite`-governed), or
+whether rename/move earns a typed tool. **Trigger to revisit:** MVP-4 observed in use, or a second report of a
+rename/move/delete request. **MVP-4 acceptance should include** a rename through the approved command path and a
+refusal when the command is declined. *(medium · apps/cli/src/chat/default-agent.ts; ADR-0116, ADR-0118)*
+
 ## Phase-2.6 out-of-scope carry-forward
 
 > Items explicitly marked out-of-scope in
@@ -3827,7 +3892,7 @@ future test cannot silently re-acquire it.
       event namespace, and cost/resource governance — before any implementation.
       *(medium · `packages/core` engine + an `invoke_workflow` tool)*
 
-- [ ] **File-snapshot undo (opencode-style revert of message + file changes).** Phase 2.6.E ships
+- [ ] **File-snapshot undo (revert of message + file changes).** Phase 2.6.E ships
   conversation-level `/rewind`/`/fork` only — reverting the file changes a message made requires an
   engine-level file-snapshot mechanism (tracking which tool calls modified which files at which
   conversation point). Deferred to [Phase 3 — desktop](../roadmap/phases/phase-3-desktop.md) or a
@@ -4095,10 +4160,13 @@ future test cannot silently re-acquire it.
   load through `loadProductionRecipient()` itself, so the production path's own denylist and root wiring are
   exercised: in Wave 3 the absent directory refuses before either is read (round 1, TEST-9B2-R1-4).
 
-- [x] **Closed on development — MVP-2 step 1: alt-screen word wrapping (#61).**
+- [x] **Closed on `main` — MVP-2 step 1: alt-screen word wrapping (#61).**
   Implemented and independently accepted at `b636be5f` (2026-11-10), with Unicode,
   tab, prefix-exhaustion, source-preservation and both-renderer regression evidence;
   see the [acceptance record](phases/phase-2.6-conversational-authoring.md#step-1-acceptance-2026-11-10).
+  Merged 2026-11-11 through PR #98 (`0db4c940`); the
+  [MVP-2 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
+  closes its combined verification and maintainer gate.
   **Historical scheduling:** the maintainer
   approved retaining character-wrap replacement with render-v2/D18 and picker
   positioning #60, so that renderer restructuring and the palette sweep occur
@@ -4109,3 +4177,197 @@ future test cannot silently re-acquire it.
   after actual word-wrap implementation and regression evidence land.
   **Moved 2026-11-04 (D65):** into the CLI MVP's MVP-2 ([current.md](current.md#next-work--the-cli-mvp)); the Wave 5a
   ownership ends, and the close condition above stands.
+
+- [ ] **ADR-0119 — a failed, aborted or refused turn stays in the session (MVP-3c, ahead of MVP-4).**
+  **Accepted 2026-11-16** after a twelve-finding design review (see the ADR's disposition table); **implemented on
+  `development` the same day** (shared field and event, migration `0021`, turn-core history channel, `AgentSession`
+  retention, persister, restored transcript, export, effect-journal disclosure); the author's chosen mutants are all killed (see the register's "Mutation evidence" — not an exhaustive sweep).
+  **Rounds 1–3 with their separate security sittings, the gates (before the final fixes) and a two-provider real sample have run** (see the
+  phase register; `smoke:cli-package` and `check:map-controls` are owned by the platform CI legs). **Still owed (D64):** the
+  accepting round (no blocker/high/medium finding) and a re-run of the gates after the fixes. Work list in the
+  [phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16).
+  *(high · product · packages/core/src/engine/agent-session.ts, apps/cli/src/chat/persister.ts)*
+- [ ] **ADR-0119 — an Esc at an approval card is recorded `cancelled` although the tool never ran.** The registry throws
+  `ToolCancelledError` from several points before `def.dispatch`, and the engine cannot tell them from a call that executed, so
+  the next request says "one marked cancelled has an unknown outcome" and the model may spend a call re-verifying a file that
+  was never touched. Conforms to ADR-0128's `cancelled` ("execution state unknown"); a registry mark for "never reached
+  dispatch" would let the engine record `denied`/`error` instead but needs a vocabulary decision. *(low · packages/core/src/tools/registry.ts, agent-turn.ts)*
+- [ ] **ADR-0119 — hardening: latch an interruption event that arrives with no pending user message.** The persister fails
+  closed on a contradictory event but writes nothing, without a latch, when `interruption` is set and `beginUserTurn` was never
+  called (completed turns behave the same today; every production caller calls it). *(low · apps/cli/src/chat/persister.ts)*
+- [ ] **A way to remove an interrupted turn (the removal path ADR-0119 names).** An Esc after the provider returned its first chunk now keeps the
+  user's message — and anything they pasted or `@`-mentioned — in `history.db`, in every later request of the session and
+  in the `/export` file's `metadata.relaviumExport.messages` (and possibly the session title and export file name);
+  ADR-0119 points at `/rewind` (2.6.E), which does not exist, and the CLI has no session delete. Until a removal path ships,
+  the residual recorded in the security-review sitting stands. Needs: `/rewind` or "discard the last interrupted turn", and
+  a decision whether Esc should keep the turn when the user's message carried `@`/`!` content. *(medium · privacy ·
+  docs/standards/security-review.md, apps/cli/src/chat/persister.ts)*
+- [ ] **`ask_user` — a structured mid-turn question (MVP-3d; ADR-0132 Accepted, implemented on `development`).** Built with
+  multi-select, free text, a docked card in the chat and the Home, and no timeout. Still owed before it counts as done: the accepting
+  D64 round (a new complete round with no blocker, high or medium finding), the full gate and a real-provider sample, and the
+  maintainer's acceptance. Follow-ups recorded in the ADR: a validation warning for a workflow node that grants `ask_user` (it is inert,
+  like `invoke_agent`); `Esc` at a card when a driver wires no `onAbort`; letting `Ctrl+T` pass through an open card.
+  *(The stored question/answer form this item once listed is done: [ADR-0133](../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md), no migration — its D64 round, separate security sitting and a focused corrective sitting have run (2026-11-16); the named residual is model-authored question text in a user-role block.)* *(medium · product · docs/decisions/0132-…)*
+- [ ] **Resume audit lows (2026-11-16, from the `chat resume` report).** None blocks a resume; each is a wording or small-state gap. (1) On a resumed
+  session every plain chat turn is "ambiguous" (ADR-0128's choice), so the model gets the 109-byte "some earlier tool activity may not be listed" sentence
+  even when no tool ever ran — an ADR-0128 amendment to tell a turn that predates receipts from one that has none. (2) After `/compact` or `/trim` the
+  resumed turn count shrinks, so the hard `max_turns` limit that fires on turn 4 live does not on resume, and the banner says "1 earlier turn".
+  (3) A `/effort` override is lost on a plain resume (document it, or persist it on the row). (4) *(done 2026-11-16: a `/models` reseat now writes the
+  switched model to the adopted row when the persister starts, and — D64 round — the OLD persister no longer writes its model and `ended` back over it when the Home's build-first reseat tears the old session down.)* (5) A second process opening the same session fails on the `UNIQUE` row rather than saying it
+  is open elsewhere. (6) An agent whose MCP server is gone makes the session unresumable. (7) `@` attachments are re-sent every turn (a context-size risk).
+  *(low · resume · apps/cli/src/chat, packages/core/src/engine/session-resume.ts)*
+- [ ] **ADR-0132/0133 — lows from the D64 cumulative round (2026-11-16).** The round's mediums are fixed; these lows are recorded, none blocks.
+  *Card UI:* the model's `header` and the Review tab's rows are drawn at column 0, outside the host gutter, so a header such as `● ● · [Review]`
+  can imitate the tab strip (the accepted "approval-sounding header" residual, not the option rows); the own-answer field draws its block cursor at
+  the end while `←`/`→` move the real one; the Review tab ellipsises long answers although the contract says "exactly as it will be sent"; the settle
+  clock is wall-clock `Date.now()` (use `performance.now()`); typing or opening the field refuses the 500th character (`>=`); the `n/500` counter
+  threshold and the Esc/Ctrl-C key-to-abort chain have no mounted-host test; the abort listener's removal on settle is unpinned. *Core/shared:* the stored
+  part's `outcome === 'ok'` half of the pairing could be a part-level refine (three consumers re-check it, so it is inert); `new Intl.Segmenter` is
+  built at module load in `ask-user.ts` (a runtime without it would fail the whole `@relavium/core` import; construct it lazily); the model-facing
+  description does not mention that older answers can be evicted from view; a `not_asked` second call reads `ask_user — ok (no question text kept)`
+  (wording); `askUserRecord` clips own text by code unit before the schema (an astral split would drop the record). *Resume/persister:* the bare
+  `catch` around the adopt write swallows every error with no latch, and the adopt write (like every flush) resets `exported_workflow_path` and an
+  `exported` status; the restore notice still says "targets, previews, results and diff statistics are unavailable" next to answers it now shows, and
+  "N more saved questions" counts calls, not questions. *Tests:* ±1 boundaries at the 2,560-byte turn budget and the 1,232 line limit, duplicate
+  result rows, the omitted-line entry in the restore budget, the empty-`other` refine, and an interrupted turn that kept an answered question have
+  no committed test. *Docs:* the stored `ask` shape's field table is split between `built-in-tools.md`, `database-schema.md` and ADR-0133 §1 (keep one
+  home); ADR-0133's commit (`ebe8b361`) has no scope or trailer and bundles the reseat-durability fix its message does not mention.
+  *(low · apps/cli/src/render/tui, packages/core/src/tools/ask-user.ts, apps/cli/src/chat)*
+- [ ] **ADR-0133 — lows from the separate security sitting (2026-11-16).** The sitting's one medium (a skipped call stored question text the
+  person never saw) is fixed — amendment 7; these three lows are recorded, none blocks. (1) *Look-alike host glyphs (amendment 9):* the entry's
+  `› ` / `  └ ` rows are protected by refusing the exact glyphs; a look-alike the rules do not refuse (U+23BF `⎿`, U+23A3, U+221F, U+231E, U+276F,
+  U+FF1E, `»`) can open a continuation row of a long wrapped question and read as a host row, live and restored, when the break lands on the
+  right column. Display only. Give the entry's continuation rows a hanging indent or gutter as the card has, or widen the refused set (one home:
+  `HOST_GLYPH` in `packages/core/src/tools/ask-user.ts`). (2) *A quoted string can read as more of the note (amendment 8):* a model question
+  containing `→ chose “…”; own text “…` plus a look-alike quote reads as an answer clause inside its own JSON string; the compaction prompt
+  (`authored-system-prompt.ts`) calls a recorded answer "the user's decision", so a summary may restate it as one. Escape `→` and the quote
+  look-alikes (U+201C–U+201F, U+FF02, U+2033, U+3003, U+05F4) in the note's strings, or refuse them in model text, and reword the prompt so only
+  the recorded answer counts. Escaping a 3-byte character to 6 bytes is the same 2× as an escaped quote, but re-run the per-note cap sweep when it is built. (3) *The masker's
+  `&` boundary (amendment 10; existing behaviour):* `password=Tr0ub4dor&3xyz` is stored as `[redacted]&3xyz`. Treat under the masker acceptance
+  bar, with the other masker items. *Not examined by the sitting:* real terminal and font rendering of the look-alikes, how a live model reacts
+  to planted text, the standalone `chat` reseat ordering and two-process leases, the inline renderer's scrollback, and the desktop and VS Code
+  surfaces (none exists). The corrective sitting on the fix (also no blocker/high/medium) adds: (4) the headers of tabs a person never reached
+  stay in the model's view after a skip (ADR-0133 amendment 7(a)); keep the first header plus a count, or only the visited headers (the
+  answer type would have to report them). (5) The ask notice sentence says the note shows "what the assistant asked and how the person
+  answered", which reads slightly off for a header-only skip note; rewording it changes the ADR-0128 notice bytes and the pinned reserve
+  (795), so do it with the next notice change. (6) An unpaired surrogate in the person's own text now fails the turn as a host fault instead of
+  silently dropping the record; the CLI cannot produce one (input is decoded from UTF-8), so it matters only to a future host.
+  *(low · apps/cli/src/render/tui, packages/core/src/engine/turn-receipts.ts, packages/core/src/tools/ask-user.ts)*
+- [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
+  predicate also covers credential stores, which the rule keeps fatal; split the two and design the
+  allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **ADR-0131 — clip a spill read's line range too.** `session-output-store.ts` still refuses a line range
+  whose end is past the last line; align it with `read_file`'s clip. *(low · apps/cli/src/engine/tool-host/session-output-store.ts)*
+- [ ] **ADR-0129 follow-ups.** A terminal bell or notification when a card waits while the terminal is
+  unfocused; a side-by-side diff on wide terminals; per-file review of a multi-file change; the
+  narrow-the-scope key and editable "always" pattern for command cards (MVP-4). *(low · product)*
+
+- [ ] **`surface-db-acquisition.test.ts` hung five cases once in CI under coverage (2026-11-16) — cause not found.** On PR #99 head `a15c8f8e`
+  the push-event run's `engine coverage floor (llm, mcp)` job failed: of the file's 15 cases, `chat` (close failure) and both `chat-resume` and
+  both `home` cases each ran 15.0 s (the 5 s case timeout plus the 10 s `afterEach` hook that awaits the raw case), and `agent` (no close
+  failure) failed its 1 s `vi.waitFor` (`ACTUAL_SURFACE_REACHED_SQLITE_SETUP`); the other nine passed. The pull-event run of the **same SHA**
+  passed the same job (the whole file in 4.5 s, every case under the reporter's 300 ms line), and so did every earlier run (file total 4.5–5.5 s
+  at `56c63ab0`, `b2dff860`, `f29d44ae`). Measured locally on a quiet 18-core machine and under 18 and 54 CPU spinners, with and without
+  `--coverage`: 27 of 27 runs passed, slowest case 180 ms quiet, 643 ms at 3× load, the file 5.4 s at 3× load — so neither the MVP-3d
+  import growth (case cost is unchanged in CI) nor CPU contention reproduces it. The failing log has no stderr, crash or resource message. By reading
+  the code (not confirmed in CI), the design can amplify one missed window into a cascade: when a surface has not reached SQLite setup,
+  `disposeCommand` awaits a `result` that may never settle, so the next cases would wait out `afterEach` too. **Open:** if it recurs, capture the state at the first stuck case (open handles, pending
+  imports, the fixture's `faultEnabled` and close attempts) before touching any timeout; bounding that await would stop the cascade but would
+  not explain the stall. *(low · apps/cli/src/commands/surface-db-acquisition.test.ts, db-fault-acquisition.test-support.ts; one occurrence in about twelve CI runs of the file)*
+- [ ] **SonarCloud: 44 open issues on PR #99, none gating (2026-11-16, head `a15c8f8e`).** The quality gate is **OK** (new reliability, security and
+  maintainability ratings all 1; duplicated lines 0.9 % against 3 %; hotspots 100 % reviewed, none to review), so nothing here blocks the
+  merge. The 44 are issues Sonar reports as open (`OPEN`/`CONFIRMED`, since the PR's leak period) and are separate from the 207 initial reports
+  and 45 follow-ups the PR's Sonar record already dispositions: S3776 cognitive complexity ×10 (CRITICAL), S3358 nested ternary ×8, S6479 index
+  keys ×6, S5906 `toHaveLength` ×5, S4624 nested template ×3, S7780 `String.raw` ×3, S7718 catch-parameter name ×3, S6353 `\d` ×2, S7758
+  `fromCodePoint` ×2, S6606 `??` ×1, S6035 character class ×1. Four came from the last push (created 18:28 UTC): S5906 at
+  `apps/cli/src/chat/restored-transcript.test.ts:632` and `apps/cli/src/render/tui/question-card-record.test.ts:78,79`, and S4624 at
+  `apps/cli/src/render/tui/question-card-record.ts:46`. The rest sit mainly in `tool-review-view.tsx` (8), `ask-user.ts` (5), `denial-text.ts` (4)
+  and `question-card-model.ts` / `question-card.ts` (6). **Decision (maintainer, 2026-11-16): leave the accepted source untouched and take them in a separate
+  Sonar-only increment** — the cognitive-complexity refactors reach `persister.ts`, `turn-receipts.ts`, `ask-user.ts` and `agent-session.ts`,
+  paths the security sittings reviewed, so changing them re-opens the full gate and the review rounds. Each issue needs a source action or a
+  verified remote disposition; setting a remote status needs a maintainer token. *(low · apps/cli, packages/core)*
+- [x] **MVP-3b D64 round and separate security sitting (approval card, modes, denial text — ADR-0129/0130/0131).** Recorded as owed in ADR-0129 and
+  ADR-0130, the phase register and `current.md`, but until the PR #99 independent review (2026-11-17) there was no entry here. **Decision (maintainer,
+  2026-11-17): run one combined round and a separate security sitting over MVP-3b and that day's consent-path corrections** (a repository config layer can
+  no longer choose `accept-edits`; the review card's target projection now reserves the verb prefix so a long path cannot hide its end behind an unlocked
+  Allow; the "Allow stays locked" sentence only before inspection; `[n]` accepted while the card is not visible; `agent run` no longer offers governed
+  tools). **Done 2026-11-17** — one four-reviewer D64 round (one high, three mediums, all fixed), a separate security sitting (one high, two mediums, one low) and two further
+  sittings (a medium and two lows; a medium and three lows) ran; every finding is fixed, the lows and residuals are in the entries below, and the 21-step gate passes on the final source
+  (the [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)). The last medium's fix (the Enter-confirmed `[a]`) was verified
+  by the third sitting's own reproductions, not by a fourth sitting; the maintainer decides whether D64 needs one. The maintainer's acceptance is owed. *(high · process · apps/cli/src/render/tui, apps/cli/src/chat)*
+- [ ] **PR #99 independent review (2026-11-17): verified findings left open.** Six read-only verifiers re-derived each claim; about a third were refuted
+  or are accepted ADR behaviour (for the record: the `#foldableEvidence` trim offset, retention rules #1/#2, #5, #7, #8, #10, #11, #14, #15, #16, U-5, U-8,
+  U-9, #17). Verified and **not** fixed in that round, low unless noted. (1) DB-2: `media-write.ts` leaves a 0-byte `.save-to.<uuid>.tmp` when
+  `handle.stat` throws or `nlink !== 1`; the cleanup's own identity test refuses an unproven path, so the reviewer's "assign `owned` earlier" does not
+  change those branches — decide whether to remove an O_EXCL-created temp after a failed stat. (2) C-3: `gate` resume loads config from the resumer's
+  cwd (`gate.ts` ~296-299, pre-existing): persist the fs tier on the run row or resolve config from `saveToRoot`. (3) C-6: an execute-time `stale_file`
+  after `createParents()` is journaled `ambiguous` and blocks resume by design (`tool-registry.md` ~896-915); only the pre-mutation `stale_file` throws are
+  provably effect-free, and a "refused before native work" marker for those would let them discard. (4) #19: `os.ts` ~255 clipboard/notify children
+  inherit the whole environment on purpose (`os.ts` ~30-34); add a deny-filter for `RELAVIUM_*`, `*_API_KEY`, `*_TOKEN`, `*_SECRET` and keep `DISPLAY` and
+  `DBUS_*`. (5) The overflow-after-tool residual, now an ADR-0119 amendment. (6) UX: U-2 type-ahead is dropped for 250 ms without a hint; U-3 the inline
+  renderer can push the question card off screen (cap the live tool region); U-8 the legend lacks "1–n choose"; U-12 an empty new file shows no body row;
+  U-13 a parked `↑` draft is invisible and not sent; U-14 Backspace on an empty denial reason cannot return to the card; U-18 the approval card shows no
+  protected-path warning although the fs floor refuses. (7) Docs and evidence: the analysis archive redaction is incomplete (`_archive/synthesis-raw.json`
+  names one product four times and four more competitors, `deep-analysis-raw.json:5`, `managed-inference-business-model-2026-06-03.md:71,75,78,211`);
+  the release-admission regex accepts only a bare `Accepted` status line while 22 ADRs use `Accepted — date, by …` (`native-release-admission.mjs`; add a
+  test for that form and for a multi-status file before ADR-0121 is accepted); the `pnpm-workspace.yaml` "cooled" comment for turbo 2.11.11 has no
+  recorded justification (the version was at most about 2.8–4 days old at the bump; the publish date is not verifiable offline, and §9a asks for a stated
+  reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
+  the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
+  check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17).** Measured on the built addon
+  (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
+  and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
+  the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
+  `Index::entries` treats ENOENT between `read_dir` and `open_nofollow` as a fatal `changed` (78 of 200 recovers under a tight churner); skip a vanished
+  `.reserved` or `.prepare` as the TypeScript reader does, keep `.record` strict. (c) H2: Linux `mkdirat(0o700)` has no `fchmod`, so a setgid parent yields
+  mode 02700 and `verify_private_directory` refuses after approval and claim (by reading only; add the `fchmod` that `macos.rs` ~884 has). (d) N-2:
+  `Record::encode` does not enforce `decode`'s invariants (unreachable through the TypeScript host, which realpaths first). (e) N-3: the operator script's
+  `removed + retained > 128` bound is wrong for entry counts (`native-filesystem-metadata.md` ~630-631; up to 385). (f) N-4: Windows stage verify and publish
+  lack `nNumberOfLinks == 1`; N-5: Linux and Windows do not re-prove the staged payload before publish (macOS checks length only); N-6: the Linux private
+  file create skips the parent policy check; N-7: `pin_empty` unlinks `.reserved` without identity revalidation. (g) No `SAFETY:` comments exist (ADR-0125
+  does not require them; a `clippy::undocumented_unsafe_blocks` gate is a quality choice). Needs a native rebuild, the source-binding pins, a security
+  sitting and the eight-target CI legs; Linux and Windows behaviour is verifiable only in CI. *(medium · apps/cli/native/fs-metadata)*
+- [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
+  per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
+  needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads
+  `document.sourceBytes` and the call list's "preview unavailable" marker reads `document === undefined`. (2) C-2: `tools/fs-policy-controls/floor.cases.mjs`
+  (~72-76) lists the credential classes its mutation cases cover; extend it with `.gnupg`, `.password-store`, `Library/Keychains`,
+  `.local/share/keyrings`, `.config/op` and `gh/hosts.yml`, and expect the pinned fs control inventory counts to move. Windows GnuPG keeps its home in
+  `%APPDATA%\gnupg` (no leading dot), which the floor still does not cover. (3) U-7 reserves more than strictly needed: the card strips the `target ` label only from the
+  first row and the second row has spare columns, so a reviewer's probe puts the real headroom at about 15 columns (about 137 characters instead of 122 at
+  80 columns); not worth a second budget. *(low · apps/cli/src/render/tui, apps/cli/src/engine/tool-host)*
+- [ ] **PR #99 D64 round (2026-11-17): lows left open.** Four independent reviewers (approval logic, card/TUI, fs/core/db, honesty and pins) found one high, three
+  mediums and the lows below; the high and the mediums are fixed. (1) A double-tap of `n` after card A can deny card B before its frame is acknowledged — a
+  `user` denial for a call never shown, after which ADR-0117 §3 refuses an identical repeat for the turn; ignore a second `n` for about 150 ms after the review
+  state changes. (2) `accept-edits` as a start mode is enforced only by the shared schema; `auto` also needs `source === 'global'` in
+  `StartingModeAuthority.resolve`, so a card-approved or model-written `[preferences].default_mode = "accept-edits"` in an operator-selected
+  workspace-local `--config` (ADR-0112) would start the next `/clear`, reseat or restart without a card for edits: give `accept-edits` the same
+  global-source check, and give a repository `accept-edits` an actionable `OperatorConfigError` instead of the generic enum message (`load.ts` ~72).
+  (3) A repository's `[chat].allowed_commands` and globs still widen what an operator's own `auto` runs without a card (it needs an agent that grants
+  `run_command`; ADR-0118, still Proposed, records it). (4) `reduceApprovalKey` in `chat-input.ts` mapped `y`, `a`, `1` and `2` to an approve with no
+  visibility gate and was unreachable — **since 2026-11-17 it answers nothing** (only Esc and the Ctrl+T reasoning toggle); the dead legacy prompt around it is its own entry below; `agent:approval_requested` is still published for plan refusals,
+  headless refusals and auto-approved writes with no card (ADR-0130 amendment 4). (5) A masked substring in a target does not lock Allow (conforms to
+  ADR-0120; consider requiring a reveal for any mask in the target field); typing in the denial-reason box can drop characters typed in the same tick (`reviewPage`
+  is reset after every state change); "Review unavailable — the tool identity does not fit; enlarge terminal" is also shown when the identity is invalid
+  because a mask matched, where enlarging does nothing; there is no wide, CJK or emoji target test of the card; a last changed line whose ending-token row is
+  cut counts as not shown on the card; repeated Shift+Tab mid-turn adds one notice row per press. (6) A `.prepare` that vanishes mid-scan is skipped without a retry
+  (documented in the native contract); `list_directory` and `find_files` names still show Unicode format characters (only glob headers escape them);
+  `GH_CONFIG_DIR` outside `gh` and Windows `%APPDATA%\gnupg` are not covered; glob headers are not counted in `sizeBytes` and the escape can expand a name up to
+  6×; `hasSegmentRun` leaves `..` segments alone on purpose. *(low · apps/cli)*
+- [ ] **Chord answer keys: security sitting residuals (2026-11-17; no blocker, high or medium).** (1) `Ctrl+G` is the abort reflex of Emacs, readline, zsh and fzf, and here it starts the most permissive answer: a person who presses it to "cancel" and then Enter 0.8–5 s later grants the session-wide permission (it only asks first; the rows say "Press Enter to allow all … · Any other key cancels"). The sitting judged a different key only marginally safer (every chord has a reflex) and advised keeping it unless a manual test shows the reflex; optionally put the scope first in the confirm row. Test it in the real terminals (VS Code's integrated terminal, tmux, Windows Terminal) before 0.2.0. (2) A terminal left in xterm `modifyOtherKeys` mode (a crashed app can leave it set) sends Ctrl+letter as `ESC[27;5;121~`, which Ink does not read as a chord: every answer chord is ignored and only Esc answers (fail-closed, and a regression from bare letters, which were immune); parse `CSI 27;m;c ~` in the host or reset `CSI > 4;0 m` on mount, and document the Esc fallback. Some hosts may also swallow Ctrl+G/Ctrl+Y/Ctrl+N/Ctrl+R (an Emacs terminal mode, VS Code's `commandsToSkipShell`): unverified here. (3) The `ask_user` refusal of key tokens (`APPROVAL_KEY_TOKEN`) catches the exact `[Ctrl+Y]`-style forms but not look-alikes (full-width brackets or letters, Cyrillic `С`, `<Ctrl+Y>`, `[Ctrl + Y]`, unbracketed `Ctrl+Y Allow`); harmless today because a question card answers no approval, and prose cannot be filtered. (4) A held chord's refusal note reads "Keys were typed just before this answer" although nothing was typed (wording predates the chords); `Ctrl+R` (the reverse-search reflex) opens the reason box, which can be left only by Enter (a denial with the typed text as its reason) or Esc (stops the turn). (5) With no paste listener Ink delivers a pasted 0x19 as Ctrl+Y; the product always mounts one on both surfaces, but a terminal that does not strip `ESC[201~` from pasted content lets a clipboard break out of bracketed paste (the old breakout plus a bare `y` did the same). *(low · apps/cli/src/render/tui, packages/core)*
+- [ ] **Delete the dead legacy approval prompt (found 2026-11-17, with the chord change).** The store opens a card for EVERY approval (`requestApproval` builds a fallback review when the call has no preview), and `handleReviewInput` answers `handled` for every key while one is open, so the older prompt is never reached: the `approval={review === undefined ? approval : undefined}` block in `chat-ink.tsx` / `home-app.tsx` (its hint text is kept truthful meanwhile), the `reasonDraft`/`applyReasonDraft` capture and its React state, `reduceApprovalKey` in `chat-input.ts`, and the `approve`/`reject`/`reject-with-reason` members of `ChatKeyAction` that nothing produces any more. Delete them together with their tests; it touches the approval path, so it takes a review round. Other bare-letter confirms in the CLI (the native prompt host's `y/N`, MCP consent, the workflow gate prompt) are line prompts that a running turn cannot be typed over, a separate surface and not part of this. *(low · apps/cli/src/render/tui)*
+- [ ] **PR #99 separate security sitting (2026-11-17): residuals after the fixes.** The sitting found one high, two mediums and one low; all four are fixed (the approval
+  keys now need a 400 ms dwell and a 300 ms quiet gap; `[a]` only on a page that shows everything it grants; the card names the canonical path when parents are created;
+  `list_directory` no longer resolves a link target). Left open, all low: (1) **Closed 2026-11-17:** a `y` that was the first key after 1.5 s with no other key, and a lone `a` followed by Enter, could not be told from a deliberate press; the maintainer
+  moved every answer key to a Ctrl chord (`Ctrl+Y`, `Ctrl+G` then Enter, `Ctrl+N`, `Ctrl+R` — ADR-0129 note 12), so no letter typed at a card answers it. A bare `v` still opens the full view
+  (inspection only, grants nothing). (2) `read_file`, `find_files`, `search_files` and `list_directory` with a planted link as the root still tell "escapes the allowed filesystem scope" from "does not exist"
+  (and a search over a directory holding such a link counts an existing out-of-scope target as skipped, a missing one as unreadable), so the existence of a protected
+  store is still observable (contents never are); (2b) the question card's `QUESTION_SETTLE_MS` guard still reads the wall clock (`Date.now()`) where the approval guard now uses a monotonic one. (3) Windows: the canonical-path comparison is exact, so a new intermediate
+  directory name with a trailing dot or space is normalised by `mkdir` and is now refused as `stale_file`; the link tests are skipped on Windows. (4) The workflow-level
+  `TURBO_TOKEN`/`TURBO_TEAM` environment applies to every job in `ci.yml` (it predates this change). (5) A shortened target on a call without a diff is not treated as a
+  clipped body for `[a]`; the target already has its own mandatory-inspection lock. *(low · apps/cli, .github)*
+- [ ] **Full view and tool details: left out of ADR-0134 on purpose (2026-11-17).** (1) A readable leading-tab glyph: a tab is `<TAB>` per character, so every indent of a Go or Makefile source reads `<TAB><TAB>func …`; drawing a leading run differently would change a safety notation and needs its own decision. (2) Syntax highlighting (a new dependency: ADR), word-level highlight inside changed lines, and a side-by-side layout on wide terminals. (3) Mouse-wheel scrolling in the full view (the alternate screen reports the wheel; the full view ignores it). (4) `End` on a document whose last line is longer than a page lands at that line's start, not its tail (`PgDn` walks through it, every page reachable). (5) `Tab`/`Shift+Tab` is listed even when the only change is already on screen. (6) The call list drops its right-hand text (`+a −r`, the outcome word) when it cannot fit — never at the 80-column floor — and its tool column follows the visible window, so it can shift while scrolling. (7) The nav legend says `[p] Unicode codes` and the status rule `Unicode code points`: one concept, two words. (7b) Found by the second security sitting, outside this change: a space at a row's cut is drawn raw at the end of the row (a `run_command` target `rm -rf …ddddd /` reads `Run rm -rf …ddddd` with a lone `/` on the next row), so the separating space is invisible and `[p]` does not mark it either; it comes from the ADR-0120 projection and affects the card's title and body rows alike. (7c) A terminal that draws a cluster wider than `string-width` counts (a conjunct chain, a keycap plus mark) is invisible to the measured acknowledgement — the standing ADR-0069 assumption. (7d) Rows and cut targets can be SHORTER than the room allows for text whose clusters the width estimate over-counts (decomposed Hangul, skin-tone emoji, a keycap followed by a modifier): a row ends at about two thirds of the page, a cut target keeps fewer characters than fit. Wasted columns only — never wider than the page, no byte lost; an upward probe after the downward halving would fix it (found by the ADR-0134 tests, accepted). (8) Found by the ADR-0134 review, not in its diff: searching again with the same query (`/` then Enter) finds the same occurrence, because a search starts at the cursor's own offset inclusive (`findLineMatch`), so "No later visible match" is never reached by repeating it. (9) The call list shows `ToolDisplay.target` — sanitised and bounded, but not secret-masked, exactly as the transcript's `→ target` row already does (a `run_command` target is the whole command); the review document masks it. Nothing new is exposed, but one masking policy for both would be cleaner. *(low · apps/cli/src/render/tui)*
+- [ ] **Full view and tool details: seven SonarCloud cognitive-complexity findings left open (PR #99, 2026-11-17).** After PR #99's push, SonarCloud's gate was OK (all four new-code ratings 1, duplication 0.8%) and 98 non-gating `CODE_SMELL`s were open; 43 were new from the ADR-0134 commit and 36 of them were fixed in source (the `KeyRow` splitter is now a linear single pass, `keyLabelParts`, after Sonar's S8786 showed its regular expression backtracked quadratically — 5,000 `[` took 10 ms, 100,000 took 3.4 s — though a row is bounded by the terminal's width, so it was not exploitable; nested ternaries became helpers or statements, `.at()`/`toReversed()`, row keys that do not depend on position, `toHaveLength`). The maintainer chose to leave the seven S3776 findings open rather than refactor consent-path code without a new D64 round: `reduceFullReviewKey` (`tool-review-model.ts`, complexity 38 of 15), `projectReviewRow` (`tool-review-projection.ts`, 27) and `projectReviewPage` (17), the full view's chrome and status builders (`tool-review-screen.ts`, 21 and 21), and `tool-review-scroll.ts` (20 and 18). Splitting them is behaviour-preserving work that the 1,320 tests of the eight review files can check, but it touches the approval and inspection path, so it needs the tiered bar's new complete round and a separate security sitting. The other 40 open findings are the older non-gating set and are unchanged. *(low · apps/cli/src/render/tui)*
+- [x] **DONE 2026-11-17 — the full gate and the required CI check were shortened without weakening a control (maintainer authorised the actions after the private analysis of 2026-11-17).** *(author, reviewed by an independent read-only reviewer)* (1) **`pnpm gate`** ([tools/ci/local-gate.mjs](../../tools/ci/local-gate.mjs)): the local gate in parallel. It reads the steps from the root `ci` script (no second list), runs the ordinary steps serially, the wire/usage/filesystem/secrets causal controls as parallel lanes cut into the same `--shard i/n` counts CI runs, then the enforced coverage run alone, adds the workspace tests under the CI environment (`CI=true GITHUB_ACTIONS=true`, `--concurrency=1 --force`), and fingerprints the working tree before and after. 24 tests; thirteen mutations of the runner were each killed by them. (2) **C1**: the required context `ci` (job id and name `lint · typecheck · test` unchanged) is now a thin `if: always()` aggregate; the 14.8-minute lint/typecheck/test/build/smoke work moved to a new job `ci-work` (`needs: native-fs-assets` only) that runs beside the long control jobs, and the aggregate asserts its result like the others. The pins moved with it: `tools/ci/workspace-scheduling.test.mjs` pins the join (15 mutation cases), every `ci-work` step (10 mutation cases; the old pins never covered a `continue-on-error`, a conditional or an echo on most of its steps, and the review found the aggregate's own `continue-on-error` unpinned after the split), `require-w8-acceptance`, `require-packed-cli` and `native-fs/delivery`. (3) **C2**: the secrets causal controls run in three shards instead of two (47/46/46 of 139 controls; a half took 41–52 minutes on CI and was the critical path), under every unchanged bound. *Evidence:* the prototype of the runner measured **44 minutes** twice (against 94); the Node runner's first full run passed every step except five mutation lanes that failed together at one minute with "missing completed report" — every causal phase has a 90-second deadline, and one-minute load had spiked machine-wide (the first coverage run on 2026-11-17 failed the same way at a load of 56, unexplained) — and the same five lanes passed when re-run alone through the same runner (17 minutes, peak load 18); so no single end-to-end green run of the Node runner exists, only the prototype's two and this pair. The runner now logs the load while the lanes run. The unit pins pass (1,180 acceptance-tool cases), `actionlint` is clean. **Not verified:** a real CI run of the split workflow (the first push is its test), GitHub's concurrent-job limit (the workflow now peaks at about 15 jobs per run, two runs per push), Windows (the runner stops only a step's own process there, not its process group). *Follow-up 2026-11-18 (after the push `2ca08aec`):* SonarCloud's gate on PR #99 failed on the new reliability rating (C) and the new security rating (B), both from this runner and nothing else. S3403 (`result.code === 0` in `runGate`, a bug): the TypeScript checker inferred the elements of the untyped `results` array as `code: undefined`, so the comparison looked always false although `code` is a number at run time; the array now carries a JSDoc type (`number | undefined`), checked with the compiler's own API. S4036 (a vulnerability): `treeFingerprint` ran a bare `git`, and pnpm puts every `node_modules/.bin` of the workspace first on the PATH of the scripts it runs, so a dependency could have installed a `git` there. `resolveGit` now takes the first `git` on the PATH that is not inside the repository (empty and relative entries and links into the repository are refused; no git outside it is an error, never a fallback). Two tests were added (1,182 acceptance-tool cases); seven mutations of `resolveGit` and its use are each killed. The eight S4036 findings accepted earlier on this PR were for fixed-argument calls in tools the maintainer reviewed; this one was fixed in source instead, so no disposition needs a token.
+- [ ] **Gate and CI speed-up left for a decision (2026-11-17).** (C4) The `push` and `pull_request` runs of one commit are two full CI runs (about 544 job-minutes per commit) and, today, two sets of macOS runner requests that GitHub cancelled for capacity; limiting `push` to `main` would halve it, but a `development` push with no open pull request would get no CI, and the workflow's own concurrency comment records that the two runs are kept apart on purpose (a cancelled required check blocks a merge) — a policy choice for the maintainer. (C5) Build the eight native targets only when native sources change (the macOS arm64 leg is the one GitHub cancels). (C6) A path filter for docs-only pull requests (a skipped required check counts as passing, so it needs its own design). (C7) A shared `pnpm install` cache. (Y2/C3) Scope the enforced coverage run to the packages that have a floor (`llm`, `mcp`): about −10 to −14 minutes, but the other packages' tests may contribute coverage, and it changes what the floor measures, so it needs an experiment first. (Y4/Y5) Share the fixed/restored phases between controls that use the same tests (about half the phases) or cut a phase's fixed cost: the mutation evidence model, a security-owner and ADR decision. *(low · tools/ci, .github/workflows/ci.yml)*

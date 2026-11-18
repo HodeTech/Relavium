@@ -464,3 +464,38 @@ test('inventory and manifest resource ceilings are enforced before comparison', 
   missingEntry.delete('package/dist/index.js');
   rejects(gzipSync(tar(missingEntry)), 'EXPECTED_INVENTORY', missingEntry);
 });
+
+test('archive inspection binds every finalized native file and refuses native omissions or same-length drift', () => {
+  const nativeNames = [
+    'loader.cjs',
+    'native-assets.json',
+    'THIRD_PARTY_NOTICES.txt',
+    'aarch64-apple-darwin.node',
+    'aarch64-pc-windows-msvc.node',
+    'aarch64-unknown-linux-gnu.node',
+    'aarch64-unknown-linux-musl.node',
+    'x86_64-apple-darwin.node',
+    'x86_64-pc-windows-msvc.node',
+    'x86_64-unknown-linux-gnu.node',
+    'x86_64-unknown-linux-musl.node',
+  ];
+  const files = inventory();
+  for (const name of nativeNames)
+    files.set(`package/dist/native-fs/${name}`, Buffer.from(`synthetic archive bytes ${name}\n`));
+  const inspected = inspectPackageArchive(gzipSync(tar(files)), {
+    expectedFiles: files,
+    expectedPackage,
+  });
+  assert.equal(inspected.files.length, inventory().size + nativeNames.length);
+  for (const name of nativeNames) {
+    const path = `package/dist/native-fs/${name}`;
+    const omitted = new Map(files);
+    omitted.delete(path);
+    rejects(gzipSync(tar(omitted)), 'MISSING_FILE', files);
+    const changed = new Map(files);
+    const bytes = Buffer.from(files.get(path));
+    bytes[0] ^= 1;
+    changed.set(path, bytes);
+    rejects(gzipSync(tar(changed)), 'FILE_DRIFT', files);
+  }
+});

@@ -82,8 +82,9 @@ describe.each([true, false])('Continue prompt edits alternate=%s', (alternate) =
       );
       try {
         await vi.waitFor(() => expect(output.frames.join('')).toContain('Saved conversation'));
-        input.push('\x1b[B');
+        input.push('\x1b[B\r'); // coalesced Enter cannot activate the newly focused, unflushed row
         await vi.waitFor(() => expect(controller.getSnapshot().continueSessionId).toBe('saved'));
+        expect(resume).not.toHaveBeenCalled();
         const text = kind === 'pasted' ? 'my prompt\nsecond line' : 'my typed prompt';
         input.push(kind === 'pasted' ? '\x1b[200~my prompt\r\nsecond line\x1b[201~' : text);
         await vi.waitFor(() => expect(controller.getSnapshot().input.text).toBe(text));

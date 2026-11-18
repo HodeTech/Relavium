@@ -65,7 +65,11 @@ function textOf(content: readonly SessionContentPart[]): string {
     .join('\n\n');
 }
 
-/** The tool names invoked in a turn — the `tool_call` parts of an assistant message's content. */
+/**
+ * The tool names invoked in a turn — the `tool_call` parts of an assistant message's content. `ask_user` is left out:
+ * a workflow node cannot ask a question (its counterpart is `human_gate`), so naming it in a node's `tools:` would be
+ * an inert grant that claims a capability the exported workflow does not have (ADR-0132 §1).
+ */
 function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
   return content
     .filter(
@@ -73,7 +77,7 @@ function toolsUsedIn(content: readonly SessionContentPart[]): string[] {
         part.type === 'tool_call',
     )
     .map((part) => part.name)
-    .filter((name) => name !== 'unknown_tool');
+    .filter((name) => name !== 'unknown_tool' && name !== 'ask_user');
 }
 
 /**
@@ -135,6 +139,31 @@ function workflowIdFor(record: AgentSessionRecord): string {
 }
 
 /**
+ * The message as the export carries it (ADR-0133): a tool row's stored `ask` record — what an `ask_user` card asked and what the
+ * person answered — is conversation content of a kind an export never carries (like a tool's output, it is not provenance of the
+ * workflow, and a workflow file is meant to be committed and shared). The result part is rebuilt from an explicit allow-list of the
+ * structural fields, so a field added to it later is not exported by accident. Everything else is exported as persisted.
+ */
+function withoutQuestionRecords(message: SessionMessage): SessionMessage {
+  if (!message.content.some((part) => part.type === 'tool_result' && part.ask !== undefined))
+    return message;
+  return {
+    ...message,
+    content: message.content.map((part) =>
+      part.type === 'tool_result' && part.ask !== undefined
+        ? {
+            type: 'tool_result' as const,
+            toolCallId: part.toolCallId,
+            resultBytes: part.resultBytes,
+            outcome: part.outcome,
+            ...(part.media === undefined ? {} : { media: part.media }),
+          }
+        : part,
+    ),
+  };
+}
+
+/**
  * Map a persisted session + its ordered transcript into a linear-chain scaffold `WorkflowDefinition`
  * (ADR-0026). Deterministic — the same `record` + `messages` always produce the same definition (no
  * wall-clock / randomness). Frozen agent entries are preserved; historical entries which no longer pass
@@ -153,11 +182,20 @@ export function sessionToWorkflow(
   let previousNodeId = 'input';
   let turnIndex = 0;
 
+  // Legacy bare-user context that precedes an interrupted turn folds into the NEXT step's prompt, as it did when that
+  // turn was rolled back and never stored.
+  let carriedPrefix: readonly SessionMessage[] = [];
   for (const turn of completedSessionTurns(ordered, false)) {
+    // ADR-0119: an interrupted turn was never answered, so deriving a workflow never turns it into a step. It stays
+    // in `metadata.relaviumExport.messages` (its interruption row marks it as interrupted, with its tool structure).
+    if (turn.interruption !== undefined) {
+      carriedPrefix = [...carriedPrefix, ...turn.legacyUserPrefix];
+      continue;
+    }
     turnIndex += 1;
     const nodeId = `turn-${turnIndex}`;
     const prompt = neutralizeInterpolation(
-      [...turn.legacyUserPrefix, turn.user]
+      [...carriedPrefix, ...turn.legacyUserPrefix, turn.user]
         .map((message) => textOf(message.content))
         .filter((text) => text.length > 0)
         .join('\n\n'),
@@ -170,6 +208,7 @@ export function sessionToWorkflow(
       ...(prompt.length > 0 ? { prompt_template: prompt } : {}),
       ...(tools.length > 0 ? { tools } : {}),
     };
+    carriedPrefix = [];
     nodes.push(node);
     edges.push({ from: previousNodeId, to: nodeId });
     previousNodeId = nodeId;
@@ -187,7 +226,7 @@ export function sessionToWorkflow(
       ...(record.title === undefined ? {} : { title: record.title }),
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
-      messages: ordered,
+      messages: ordered.map(withoutQuestionRecords),
     },
   };
 

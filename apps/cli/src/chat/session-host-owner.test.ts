@@ -5,8 +5,12 @@ import {
   runMigrations,
 } from '@relavium/db';
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { resolveConfig } from '../config/resolve.js';
+import { SessionOutputStoreError } from '../engine/tool-host/session-output-store.js';
 import { createInvocationFiniteExit } from '../process/invocation-finite-exit.js';
 import { InvocationRegistry } from '../process/invocation-registry.js';
 import { createSessionPersister } from './persister.js';
@@ -90,6 +94,27 @@ async function fixture(
 }
 
 describe('actual session builder, persister and host cleanup ownership', () => {
+  it('retains uncertain output initialization rollback on the owning work ledger', async () => {
+    const invocation = invocationFixture();
+    const owner = new SessionHostOwner(invocation, 'chat');
+    const uncertain = vi.spyOn(owner.work, 'cleanupUncertain');
+    const failure = new SessionOutputStoreError('io', true);
+    await expect(
+      owner.build((workOwner) =>
+        buildChatSession({
+          ...options(),
+          workOwner,
+          operatorHomeDir: '/tmp',
+          outputStoreFactory: () => Promise.reject(failure),
+        }),
+      ),
+    ).rejects.toBe(failure);
+    expect(uncertain).toHaveBeenCalledWith(failure);
+    void owner.work.close();
+    await reactions();
+    expect(invocation.registry.activeOwners).toBe(1);
+  });
+
   it.each([false, true])(
     'owns reporter failure %s without fatalizing a successfully reported passive fault',
     async (faulted) => {
@@ -150,6 +175,8 @@ describe('actual session builder, persister and host cleanup ownership', () => {
   it.each([false, true])(
     'retains actual provider work after cancellation (cooperative %s), independently of its terminal',
     async (cooperative) => {
+      const home = mkdtempSync(join(tmpdir(), 'relavium-owner-output-'));
+      const outputParent = join(home, '.relavium', 'session-outputs-v1');
       const started = gate();
       const producer = gate();
       const provider = {
@@ -162,6 +189,7 @@ describe('actual session builder, persister and host cleanup ownership', () => {
       };
       const f = await fixture((opts) => ({
         ...opts,
+        operatorHomeDir: home,
         providers: { resolveProvider: () => provider, keyFor: () => 'synthetic-test-key' },
       }));
       let turn: Promise<void> | undefined;
@@ -189,12 +217,14 @@ describe('actual session builder, persister and host cleanup ownership', () => {
         await reactions();
         expect(f.store.loadSession(f.built.sessionId)?.status).toBe('ended');
         expect(retired, 'SESSION_NATIVE_ROOT_OUTLIVES_CANCEL_TERMINAL').toBe(false);
+        expect(readdirSync(outputParent)).toHaveLength(1);
         expect(f.invocation.registry.activeOwners).toBe(1);
         producer.release();
         await turn;
         await reactions();
         expect(f.owner.work.firstFailure).toBeUndefined();
         await closing;
+        expect(readdirSync(outputParent)).toHaveLength(0);
         await reactions();
         expect(f.invocation.registry.activeOwners).toBe(0);
         expect(f.store.loadMessages(f.built.sessionId)).toHaveLength(0);
@@ -204,6 +234,7 @@ describe('actual session builder, persister and host cleanup ownership', () => {
         await turn;
         f.persister.close();
         f.client.sqlite.close();
+        rmSync(home, { recursive: true, force: true });
       }
     },
   );

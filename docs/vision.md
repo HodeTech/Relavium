@@ -16,11 +16,10 @@ debuggable, every cost tracked, every artifact yours.
 
 Today's AI coding and agent tools force a choice the developer should never have
 to make — and then strand them on whichever side they pick. Chat-driven
-assistants (Claude Code, Cursor, Cline) are where real work starts: fast,
+assistants are where real work starts: fast,
 conversational, exploratory. But every session is ephemeral, single-model,
 single-agent, and impossible to share or re-run in CI — once you've found a flow
-that works, there is no way to *keep* it. Multi-agent frameworks (CrewAI,
-AutoGen) can capture a repeatable pipeline but require Python expertise, start
+that works, there is no way to *keep* it. Multi-agent frameworks can capture a repeatable pipeline but require Python expertise, start
 from a blank file, and produce no visual or reviewable artifact. General
 automation builders (n8n, Zapier) have a visual canvas but no developer-native
 surfaces and no real multi-agent AI orchestration. No single tool lets a
@@ -138,7 +137,7 @@ editor, file browser, or terminal — it refines that boundary without reversing
   visual design, local execution, multi-model routing, and multi-agent
   orchestration in one product.
 
-The full positioning and competitor matrix lives in [uvp.md](uvp.md).
+The full positioning lives in [uvp.md](uvp.md).
 
 ## Killer Features (Phase 1)
 

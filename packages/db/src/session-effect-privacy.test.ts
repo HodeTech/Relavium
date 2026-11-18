@@ -95,7 +95,15 @@ describe('session-effect logical and physical privacy (ADR-0098)', () => {
     const run: EffectCorrelation = { kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 };
     const runId = { scope: effectScope(run), slot: 0, toolId: 'run_command' };
     journal().prepare(runId, run, { providerAttempt: 1, toolCallId: 'provider' }, 3, 'run digest');
-    journal().settle(runId, 'committed', { result: 'run replay survives' });
+    journal().settle(runId, 'committed', {
+      v: 2,
+      hasValue: true,
+      value: { result: 'run replay survives' },
+      hasMappedValue: false,
+      outputMapping: null,
+      truncated: false,
+      summary: '',
+    });
     const before = client.db.select().from(runEffects).all();
     expect(bytesContainToken()).toBe(true);
     expect(runMigrations(client.db)).toBe('complete');
@@ -110,7 +118,18 @@ describe('session-effect logical and physical privacy (ADR-0098)', () => {
         3,
         'run digest',
       ),
-    ).toEqual({ outcome: 'replay', result: { result: 'run replay survives' } });
+    ).toEqual({
+      outcome: 'replay',
+      result: {
+        v: 2,
+        hasValue: true,
+        value: { result: 'run replay survives' },
+        hasMappedValue: false,
+        outputMapping: null,
+        truncated: false,
+        summary: '',
+      },
+    });
     expect(bytesContainToken()).toBe(false); // Connection remains OPEN: close cannot be the erasure mechanism.
   });
 

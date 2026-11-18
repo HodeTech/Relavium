@@ -159,9 +159,8 @@ constructs:
   CommonMark's rule.
 - A table renders verbatim until its block ends, then as a grid (revised
   2026-11-08). A grid's column widths depend on every row. Drawing it early
-  would re-layout the rows above it on every new row. Codex CLI and
-  Antigravity CLI hold tables back for the same reason
-  ([benchmark](../analysis/cli-ux-benchmark-2026-11-08.md)).
+  would re-layout the rows above it on every new row. See the
+  [retained UX notes](../analysis/cli-ux-benchmark-2026-11-08.md).
 
 Because block parsing is line-oriented, the rendering of every completed block
 in the live answer is the same as its final rendering. Only the in-progress last
@@ -230,7 +229,7 @@ rather than terminal control, and their rendering is a separate decision.
 
 - Some valid markdown renders literally: setext headings, HTML, reference
   links, and tables too wide or too long for the grid. Wrapping cell text inside
-  a narrow grid (Gemini CLI does it) is a candidate for a follow-up.
+  a narrow grid is a candidate for a follow-up.
 - Relavium now owns a parser and its edge cases, and needs tests for every
   construct in the subset, including adversarial and pathological input.
 - The two renderers may break long lines at different points, as they already
@@ -248,3 +247,6 @@ parser security sitting. Its canonical behavior is in the
 records corrections and evidence. Earlier unimplemented wording is historical.
 The complete four-step MVP-2 checkpoint retains its combined CI and maintainer
 review gates; no dependency, highlighting scope or release decision changes here.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** named external
+> product comparisons are removed; the technical decision remains unchanged.

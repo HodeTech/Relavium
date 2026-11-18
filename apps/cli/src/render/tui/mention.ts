@@ -260,7 +260,7 @@ export function createMentionReader(fs: FsCapability): MentionReader {
         .filter((entry) => !(entry.type === 'directory' && NOISE_DIRS.has(entry.name)))
         .map((entry) => ({
           name: entry.name,
-          type: entry.type,
+          type: entry.type === 'directory' ? ('directory' as const) : ('file' as const),
           path: joinRelative(dir, entry.name),
         }))
         // Drop a gitignored entry (an ignored DIRECTORY is dropped too, so its children are never listed — the

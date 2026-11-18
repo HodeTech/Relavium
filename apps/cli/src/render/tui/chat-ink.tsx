@@ -1,3 +1,7 @@
+import type { ToolDisplay } from './tool-display.js';
+import { ToolReviewHost } from './tool-review-view.js';
+import { QuestionCardHost } from './question-card-view.js';
+import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
   Box,
@@ -132,6 +136,7 @@ import {
   liveScrollGeometry,
   reasoningLabelActive,
   sanitizeApprovalReason,
+  denialReasonDisclosure,
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
@@ -182,13 +187,14 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
 function TranscriptLine(
   props: Readonly<{
     entry: TranscriptEntry;
+    displays?: ReadonlyMap<string, ToolDisplay> | undefined;
     color: boolean;
     columns?: number | undefined;
     acknowledgement?: TranscriptAcknowledgement | undefined;
   }>,
 ): ReactElement {
   const { entry, color } = props;
-  const lines = wrapTranscript([entry], props.columns ?? 80, color);
+  const lines = wrapTranscript([entry], props.columns ?? 80, color, props.displays);
   useLayoutEffect(() => {
     if (entry.role === 'notice' && lines.length > 0) props.acknowledgement?.inlineNotice(entry);
   }, [entry, props.acknowledgement, lines.length]);
@@ -211,6 +217,7 @@ function TranscriptLine(
 }
 
 interface ChatAppProps {
+  readonly modePrompt?: ChatDriveContext['modePrompt'];
   /** Synchronous invocation seal; the tree stays mounted until entered native work joins. */
   readonly inputEnabled?: () => boolean;
   readonly store: ChatStoreController;
@@ -269,9 +276,13 @@ interface ChatAppProps {
   /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
    *  but copy-on-select is inert (a driver/test that wires no terminal). */
   readonly clipboard?: ClipboardWriter | undefined;
+  /** Explicit masked review copy; independent of mouse selection preferences. */
+  readonly reviewClipboard?: ClipboardWriter | undefined;
 }
 
 interface ChatViewProps {
+  readonly toolDisplays?: ReadonlyMap<string, ToolDisplay> | undefined;
+  readonly hidden?: boolean;
   readonly markdown?:
     | Pick<MarkdownStream, 'tail' | 'plainTail' | 'sourceTail' | 'elided'>
     | undefined;
@@ -295,7 +306,7 @@ interface ChatViewProps {
   /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
    *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
   readonly reasoningVisible: boolean;
-  /** An in-flight per-tool approval — when set, the `[y]/[a]/[n]` prompt replaces the idle prompt. */
+  /** An in-flight per-tool approval — when set, the `Ctrl+Y/Ctrl+G/Ctrl+N` prompt replaces the idle prompt. */
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
@@ -313,7 +324,7 @@ interface ChatViewProps {
    *  width (the Home). Absent ⇒ the formatter's 80-col fallback. `| undefined` for the createElement passthrough. */
   readonly columns?: number | undefined;
   /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
-   *  approval prompt shows the reason input instead of the `[y]/[a]/[n]` hint. `| undefined` ⇒ the normal prompt. */
+   *  approval prompt shows the reason input instead of the `Ctrl+Y/Ctrl+G/Ctrl+N` hint. `| undefined` ⇒ the normal prompt. */
   readonly reasonDraft?: EditorState | undefined;
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
@@ -396,10 +407,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const showIdlePrompt = !running && paletteOpen !== true;
   // The whole-second live-turn elapsed (2.5.H) — `undefined` before a turn starts (no `turnStartedAtMs`), so the
   // pre-first-token status shows only when a turn is actually in flight.
+  // An open approval card is the person's time, not the turn's: the timer excludes it (and shows the wait itself).
+  const awaitingApprovalMs =
+    state.approvalSinceMs === undefined
+      ? undefined
+      : Math.max(0, props.nowMs - state.approvalSinceMs);
   const elapsedMs =
     state.turnStartedAtMs === undefined
       ? undefined
-      : Math.max(0, props.nowMs - state.turnStartedAtMs);
+      : Math.max(
+          0,
+          props.nowMs - state.turnStartedAtMs - state.approvalWaitMs - (awaitingApprovalMs ?? 0),
+        );
   // The in-flight busy line — the labeled compaction moment (ADR-0062 §7), the `!`-shell command line, the
   // pre-token live-turn status ("Working… {elapsed} · Esc to stop"), or the streaming token line (with the
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
@@ -415,6 +434,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       props.markdown !== undefined &&
       !state.compacting &&
       props.busyCommand === undefined &&
+      awaitingApprovalMs === undefined &&
       state.liveTokens.length > 0
     ) {
       const cols = props.viewport?.cols ?? props.columns ?? 80;
@@ -446,6 +466,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: props.markdown?.sourceTail() ?? state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
+      awaitingApprovalMs,
       reasoningActive,
       // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
       // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
@@ -487,8 +508,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
   const wrappedTranscript = useMemo(
     () =>
-      viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols, color),
-    [viewport?.cols, state.transcript, color],
+      viewport === undefined
+        ? undefined
+        : wrapTranscript(state.transcript, viewport.cols, color, props.toolDisplays),
+    [viewport?.cols, state.transcript, color, props.toolDisplays],
   );
   // Static advances its cursor even when a child paints no rows. Retain its
   // admitted prefix during width suspension, then deliver pending entries once
@@ -504,7 +527,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     ? state.transcript
     : state.transcript.slice(0, admittedInlineCount.current);
   return (
-    <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
+    <Box
+      display={props.hidden === true ? 'none' : 'flex'}
+      flexDirection="column"
+      {...(viewport === undefined ? {} : { flexGrow: 1 })}
+    >
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
@@ -514,6 +541,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             <TranscriptLine
               key={index}
               entry={entry}
+              displays={props.toolDisplays}
               color={color}
               columns={props.columns}
               acknowledgement={props.acknowledgement}
@@ -535,6 +563,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               firstRow,
               endRow,
               measuredWidth,
+              props.toolDisplays,
             )
           }
         />
@@ -545,11 +574,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           the honest Esc-to-cancel affordance (Esc aborts the command, keeping the session; Ctrl-C would end it). */}
       {running && (
         <Box flexDirection="column">
-          {state.liveToolCalls.map((call) => (
-            <Text key={call.id} {...colorProps(color, 'yellow')}>
-              {formatToolCall(call)}
-            </Text>
-          ))}
+          {state.liveToolCalls
+            .filter((call) => state.liveObserver !== true || !call.resolved)
+            .map((call) => (
+              <Text key={call.id} {...colorProps(color, 'yellow')}>
+                {formatToolCall(call, props.toolDisplays?.get(call.id))}
+              </Text>
+            ))}
           {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
               body only when expanded. Shown above the busy line whenever the turn streamed reasoning. */}
           {reasoningPanel !== undefined && (
@@ -599,8 +630,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       )}
 
       {/* The per-tool approval prompt (ADR-0057) — shown mid-turn when a governed dispatch awaits consent. It
-          OWNS the keyboard via the reduceChatKey approval-intercept (no deadlock): [y] once, [a] always (only
-          when the answer is cacheable — accept-edits, not auto's protected-path fallback), [n] no, Esc aborts. */}
+          is answered by the docked card (`handleReviewInput`, which owns every key): Ctrl+Y once, Ctrl+G always (only
+          when the answer is cacheable — accept-edits, not auto's protected-path fallback), Ctrl+N no, Esc aborts. This block renders
+          only for an approval with NO card, which the store never creates (it always opens a card), so it is dead text kept
+          truthful until the legacy prompt is deleted. */}
       {approval !== undefined && (
         <Box flexDirection="column">
           <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
@@ -614,8 +647,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             // The `[c]` typed-reason capture (Step 14): a hint + the buffer echoed SANITIZED (bidi/control-stripped,
             // one line) with a block cursor. Enter denies WITH this reason; Esc cancels back to the choices below.
             <Box flexDirection="column">
+              <Text {...dimProps(color)}>
+                {denialReasonDisclosure(props.columns ?? props.viewport?.cols ?? 80).join('\n')}
+              </Text>
               <Text {...dimProps(color)} wrap="truncate-end">
-                reason to deny · Enter to send · Esc to cancel
+                Enter to send · Esc to cancel
               </Text>
               <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
                 {`> ${sanitizeInline(props.reasonDraft.text)}█`}
@@ -624,8 +660,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           ) : (
             <Text {...dimProps(color)}>
               {approval.cacheable
-                ? '[y] yes   [a] always   [n] no   [c] reason   [esc] abort'
-                : '[y] yes   [n] no   [c] reason   [esc] abort'}
+                ? 'Ctrl+Y yes   Ctrl+G always   Ctrl+N no   Ctrl+R reason   [esc] abort'
+                : 'Ctrl+Y yes   Ctrl+N no   Ctrl+R reason   [esc] abort'}
             </Text>
           )}
         </Box>
@@ -666,6 +702,8 @@ function useRawTerminalColumns(): number | undefined {
   return useSyncExternalStore(subscribe, read, read);
 }
 
+const subscribeNoPrompt = (): (() => void) => () => undefined;
+
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const clipboardFeedbackMounted = useRef(true);
   useLayoutEffect(() => {
@@ -674,7 +712,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       clipboardFeedbackMounted.current = false;
     };
   }, []);
-  const acceptsInput = (): boolean => props.inputEnabled?.() !== false;
+  const nativeActive = useSyncExternalStore(
+    props.modePrompt?.ui.subscribe ?? subscribeNoPrompt,
+    () => props.modePrompt?.ui.getSnapshot().active === true,
+  );
+  const acceptsInput = (): boolean =>
+    props.inputEnabled?.() !== false && props.modePrompt?.ui.getSnapshot().active !== true;
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
@@ -686,6 +729,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     reasoningEffort,
     reasoningVisible,
     approval,
+    review,
+    toolDisplays,
     markdown,
     displaySuspended,
   } = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
@@ -743,7 +788,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setScroll(next);
   };
   // NOTE (ADR-0068 §c force-scroll override): a per-tool approval prompt / human gate must never be HIDDEN by a
-  // paused scroll. In this layout it inherently cannot be — the [y]/[a]/[n] prompt renders in the FIXED live region
+  // paused scroll. In this layout it inherently cannot be — the Ctrl+Y/Ctrl+G/Ctrl+N prompt renders in the FIXED live region
   // BELOW the scrollable transcript viewport, so it is always on-screen regardless of the transcript scroll offset.
   // A transcript force-follow would only yank the user off history they are reading, so it is deliberately NOT wired.
   const running = state.status === 'running';
@@ -799,7 +844,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEffortPicker(next);
   };
   // The `[c]` typed-reason capture (Step 14) — a small keyboard-owning buffer opened FROM a pending approval to
-  // record WHY the user denies. `undefined` ⇒ closed (the normal [y]/[a]/[n] prompt). React-local + ref-shadowed
+  // record WHY the user denies. `undefined` ⇒ closed (the normal Ctrl+Y/Ctrl+G/Ctrl+N prompt). React-local + ref-shadowed
   // (survives a coalesced stdin chunk, like the other submodes); only ever open while an approval is pending.
   const [reasonDraft, setReasonDraft] = useState<EditorState | undefined>(undefined);
   const reasonDraftRef = useRef<EditorState | undefined>(undefined);
@@ -1161,9 +1206,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const suspendPort = props.suspendPort;
   useEffect(() => {
     if (suspendPort === undefined) return;
-    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    suspendPort.attach(async (callback) => {
+      props.store.invalidateToolReview();
+      try {
+        await app.suspendTerminal(callback);
+      } finally {
+        // Reclaim requires new measured, flushed evidence; pre-suspend reveal never survives.
+        props.store.invalidateToolReview();
+      }
+    });
     return () => suspendPort.attach(undefined);
-  }, [app, suspendPort]);
+  }, [app, suspendPort, props.store]);
 
   const submit = (message: string, display?: string): void => {
     if (!acceptsInput()) return;
@@ -1221,6 +1274,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
     const snap = props.store.getSnapshot();
+    // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
+    if (snap.question !== undefined) {
+      props.store.pasteIntoQuestion(pasted);
+      return;
+    }
     const editable = pasteIsEditable({
       running: snap.state.status === 'running',
       shellBusy: shellBusyRef.current,
@@ -1231,7 +1289,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       modelPickerOpen: modelPickerRef.current !== undefined,
       effortPickerOpen: effortPickerRef.current !== undefined,
       reasonCaptureOpen: reasonDraftRef.current !== undefined,
-      approvalPending: snap.approval !== undefined,
+      approvalPending: snap.approval !== undefined || snap.review !== undefined,
     });
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
@@ -1250,6 +1308,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       windowSize.columns,
       scrollGeomRef.current.height,
       props.store.getSnapshot().color,
+      props.store.getSnapshot().toolDisplays,
     );
 
   const routeSelection = (event: TerminalMouseEvent): void => {
@@ -1299,6 +1358,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.transcript,
       windowSize.columns,
       props.store.getSnapshot().color,
+      props.store.getSnapshot().toolDisplays,
     ).map((line) => line.text);
     const store = props.store;
     void attemptClipboardWrite(clipboard, selectionText(rows, normalizeSelection(state)))
@@ -1327,6 +1387,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
     if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
+      props.store.invalidateToolReview();
       props.onSuspend?.();
       return;
     }
@@ -1340,6 +1401,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       if (read.kind !== 'none') {
         const mouse = read.kind === 'event' ? read.event : undefined;
         const overlayOwnsKeyboard =
+          props.store.getSnapshot().review !== undefined ||
+          props.store.getSnapshot().question !== undefined ||
           reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
           searchRef.current !== undefined ||
@@ -1360,6 +1423,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return; // CONSUMED in every state — a mouse report's raw bytes must never type into the prompt
       }
     }
+    const reviewAction = props.store.handleReviewInput(char, key);
+    if (reviewAction === 'handled') return;
+    if (reviewAction === 'abort') {
+      if (props.onAbort !== undefined) props.onAbort();
+      else props.store.answerApproval({ outcome: 'reject' });
+      return;
+    }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
@@ -1370,7 +1440,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       submitBusyRef.current;
     // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
     // pending approval, so if that approval settled out-of-band (an external abort while typing) the capture is
-    // stale: drop it. Else `Esc` CANCELS back to the [y]/[a]/[n] prompt (the approval is STILL pending — not an
+    // stale: drop it. Else `Esc` CANCELS back to the Ctrl+Y/Ctrl+G/Ctrl+N prompt (the approval is STILL pending — not an
     // abort); plain `Enter` submits the reject with the sanitized+bounded reason; every other key edits the buffer
     // (Ctrl-C / a non-edit chord is a harmless no-op, matching the approval floor's keyboard ownership). Read the
     // REF so a coalesced same-chunk key sees a just-applied open/edit. The floor is unchanged — this only enriches
@@ -1382,7 +1452,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       }
       if (key.escape === true) {
-        applyReasonDraft(undefined); // cancel the reason; the approval stays pending ([y]/[a]/[n] again)
+        applyReasonDraft(undefined); // cancel the reason; the approval stays pending (Ctrl+Y/Ctrl+G/Ctrl+N again)
         return;
       }
       if (key.return === true && key.shift !== true) {
@@ -1540,7 +1610,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
     // scrollback, so these keys fall through to the editor there. The overlays + the `[c]` reason capture `return`
     // ABOVE this, so they keep their keys; a plain pending approval is still REACHED here (it is consumed by
-    // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
+    // reduceChatKey below), which is safe because scroll keys never overlap the Ctrl+Y/Ctrl+G/Ctrl+N answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
       // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.) The scroll
@@ -1715,65 +1785,98 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       : undefined;
 
   return (
-    <Box
-      flexDirection="column"
-      width={layoutColumns(windowSize.columns)}
-      {...(viewport === undefined ? {} : { height: viewport.rows })}
-    >
-      <ChatView
-        markdown={markdown}
-        displaySuspended={displaySuspended}
-        acknowledgement={acknowledgement}
-        state={state}
-        tick={tick}
-        nowMs={Date.now()}
-        color={color}
-        editor={editor}
-        running={running || shellBusy || submitBusy}
-        mode={mode}
-        reasoningEffort={reasoningEffort}
-        reasoningVisible={reasoningVisible}
-        approval={approval}
-        attachments={attachments}
-        busyCommand={busyCommand}
-        // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
-        columns={windowSize.columns}
-        viewport={viewport}
-        reasonDraft={reasonDraft}
-        copied={copied}
-        paletteOpen={
-          palette !== undefined ||
-          search !== undefined ||
-          mention !== undefined ||
-          modelPicker !== undefined ||
-          effortPicker !== undefined
-        }
-      />
-      {palette !== undefined && (
-        <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
-      )}
-      {search !== undefined && (
-        <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
-      )}
-      {mention !== undefined && <MentionView state={mention} color={color} />}
-      {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
-          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
-      {modelPicker !== undefined && (
-        <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
-      )}
-      {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
-      {effortPicker !== undefined && (
-        <EffortTierList
-          tiers={effortPicker.tiers}
-          model={effortPicker.model}
-          selected={effortPicker.selected}
-          current={effortPicker.current}
-          labelSuffix={effortPicker.model}
-          footer="↑/↓ select · Enter apply · Esc cancel"
+    <>
+      {nativeActive && props.modePrompt !== undefined && (
+        <NativePromptHost
+          ui={props.modePrompt.ui}
           color={color}
+          {...(props.inputEnabled === undefined ? {} : { inputEnabled: props.inputEnabled })}
+          suspendPort={props.suspendPort}
+          ownsSuspendAttachment={false}
+          {...(props.onSuspend === undefined ? {} : { onSuspend: props.onSuspend })}
+          onRendererReady={props.modePrompt.ready}
+          onRendererError={props.onError}
         />
       )}
-    </Box>
+      <Box
+        display={nativeActive ? 'none' : 'flex'}
+        flexDirection="column"
+        width={layoutColumns(windowSize.columns)}
+        {...(viewport === undefined ? {} : { height: viewport.rows })}
+      >
+        <ChatView
+          hidden={review !== undefined && review.screen !== 'card'}
+          toolDisplays={toolDisplays}
+          markdown={markdown}
+          displaySuspended={displaySuspended}
+          acknowledgement={acknowledgement}
+          state={state}
+          tick={tick}
+          nowMs={Date.now()}
+          color={color}
+          editor={editor}
+          running={running || shellBusy || submitBusy}
+          mode={mode}
+          reasoningEffort={reasoningEffort}
+          reasoningVisible={reasoningVisible}
+          approval={review === undefined ? approval : undefined}
+          attachments={attachments}
+          busyCommand={busyCommand}
+          // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
+          columns={windowSize.columns}
+          viewport={viewport}
+          reasonDraft={reasonDraft}
+          copied={copied}
+          paletteOpen={
+            palette !== undefined ||
+            search !== undefined ||
+            mention !== undefined ||
+            modelPicker !== undefined ||
+            effortPicker !== undefined
+          }
+        />
+        {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
+            overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}
+        <ToolReviewHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+          clipboard={props.reviewClipboard}
+          color={color}
+        />
+        {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
+        <QuestionCardHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+          color={color}
+        />
+        {palette !== undefined && (
+          <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
+        )}
+        {search !== undefined && (
+          <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
+        )}
+        {mention !== undefined && <MentionView state={mention} color={color} />}
+        {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
+          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
+        {modelPicker !== undefined && (
+          <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
+        )}
+        {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
+        {effortPicker !== undefined && (
+          <EffortTierList
+            tiers={effortPicker.tiers}
+            model={effortPicker.model}
+            selected={effortPicker.selected}
+            current={effortPicker.current}
+            labelSuffix={effortPicker.model}
+            footer="↑/↓ select · Enter apply · Esc cancel"
+            color={color}
+          />
+        )}
+      </Box>
+    </>
   );
 }
 
@@ -2023,6 +2126,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         createElement(ChatApp, {
           inputEnabled: () => active && !driverStopped,
           store: ctx.store,
+          ...(ctx.modePrompt === undefined ? {} : { modePrompt: ctx.modePrompt }),
           onActivated,
           // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
           // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
@@ -2053,6 +2157,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           suspendPort: ownedMount?.port ?? ctx.suspendPort,
           onSuspend: ctx.onSuspend,
           clipboard: ctx.clipboard,
+          reviewClipboard: ctx.reviewClipboard,
         }),
         {
           ...(workOwner === undefined

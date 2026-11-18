@@ -24,6 +24,7 @@ import type { Memory } from '@relavium/shared';
 
 import { unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import type { CompletedTurnSpan } from './session-resume.js';
+import { renderReceiptNotice, renderTurnBlock } from './turn-receipts.js';
 
 export interface SessionRequestProjection {
   readonly memory?: Readonly<Memory>;
@@ -59,18 +60,50 @@ export function buildTurnMessages(
   projection?: SessionRequestProjection,
 ): LlmMessage[] {
   const memory = projection?.memory;
-  let selected: readonly LlmMessage[] = messages;
-  if (memory?.type === 'none')
-    selected = projection?.pendingUser === undefined ? [] : [projection.pendingUser];
-  else if (memory?.type === 'window')
+  const spans = projection?.completedTurnSpans ?? [];
+  const pending = projection?.pendingUser === undefined ? [] : [projection.pendingUser];
+  // Selection comes first (ADR-0095 §4) and decides which turns' receipts exist for this request at all:
+  // `none` includes none, `window` only its own turns, and every other policy follows retained history.
+  let selectedSpans: readonly CompletedTurnSpan[] = spans;
+  let selected: readonly LlmMessage[];
+  if (memory?.type === 'none') {
+    selectedSpans = [];
+    selected = pending;
+  } else if (memory?.type === 'window') {
+    selectedSpans = spans.slice(-memory.window_size);
     selected = [
-      ...(projection?.completedTurnSpans ?? [])
-        .slice(-memory.window_size)
-        .flatMap((span) => messages.slice(span.start, span.end)),
-      ...(projection?.pendingUser === undefined ? [] : [projection.pendingUser]),
+      ...selectedSpans.flatMap((span) => withReceiptBlocks(messages, [span], span.start, span.end)),
+      ...pending,
     ];
+  } else selected = withReceiptBlocks(messages, spans, 0, messages.length);
   const allowedSummary = memory?.type === 'none' || memory?.type === 'window' ? undefined : summary;
-  return foldAdjacent(placeSummary(allowedSummary, selected));
+  const notice = renderReceiptNotice(selectedSpans.map((span) => span.receipts));
+  return foldAdjacent(placeHead(allowedSummary, notice, selected));
+}
+
+/**
+ * `messages[from, to)` with each completed turn's receipt block appended after its user text, as a separate
+ * text part of that same user-role message (ADR-0128). Clones the touched messages and no others; the archive
+ * is never edited. A turn that retains no record contributes nothing, so a history without receipts is
+ * returned structurally unchanged.
+ */
+function withReceiptBlocks(
+  messages: readonly LlmMessage[],
+  spans: readonly CompletedTurnSpan[],
+  from: number,
+  to: number,
+): LlmMessage[] {
+  const blocks = new Map<number, string>();
+  for (const span of spans) {
+    const block = renderTurnBlock(span);
+    if (block !== undefined) blocks.set(span.start, block);
+  }
+  return messages.slice(from, to).map((message, offset) => {
+    const block = blocks.get(from + offset);
+    return block === undefined
+      ? message
+      : { ...message, content: [...message.content, { type: 'text' as const, text: block }] };
+  });
 }
 
 /** The request owns its message/content arrays; the archive and its parts remain untouched. */
@@ -86,15 +119,24 @@ function foldAdjacent(messages: readonly LlmMessage[]): LlmMessage[] {
   return folded;
 }
 
-function placeSummary(
+/**
+ * The head of the request: the compaction summary (when allowed), then the single receipt notice (when one
+ * applies), both as text parts at the head of the first user-role message. With neither, the messages are
+ * returned untouched, so the request is byte-identical to the text-only one.
+ */
+function placeHead(
   summary: Untrusted<string> | undefined,
+  notice: string | undefined,
   messages: readonly LlmMessage[],
 ): readonly LlmMessage[] {
-  if (summary === undefined) return messages;
-  const block = {
-    type: 'text' as const,
-    text: `${SUMMARY_OPENING}\n\n${unwrapUntrusted(summary)}\n\n${SUMMARY_CLOSING}\n\n`,
-  };
+  const blocks: { type: 'text'; text: string }[] = [];
+  if (summary !== undefined)
+    blocks.push({
+      type: 'text',
+      text: `${SUMMARY_OPENING}\n\n${unwrapUntrusted(summary)}\n\n${SUMMARY_CLOSING}\n\n`,
+    });
+  if (notice !== undefined) blocks.push({ type: 'text', text: notice });
+  if (blocks.length === 0) return messages;
   // **Joined only when the first message IS the user's**, and otherwise prepended.
   //
   // A review caught the earlier form embedding into the first user message WHEREVER it sat: given
@@ -109,7 +151,7 @@ function placeSummary(
   // creates no same-role adjacency — the next message is the `assistant` that was already leading.
   const target = messages[0];
   if (target === undefined || target.role !== 'user') {
-    return [{ role: 'user', content: [block] }, ...messages];
+    return [{ role: 'user', content: blocks }, ...messages];
   }
-  return [{ ...target, content: [block, ...target.content] }, ...messages.slice(1)];
+  return [{ ...target, content: [...blocks, ...target.content] }, ...messages.slice(1)];
 }

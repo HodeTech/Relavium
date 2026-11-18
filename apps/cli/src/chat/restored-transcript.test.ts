@@ -3,6 +3,7 @@ import {
   projectSessionHistory,
   resumableSessionMessages,
   type AgentSessionRecord,
+  type SessionAskRecord,
   type Memory,
   type SessionMessage,
 } from '@relavium/shared';
@@ -331,5 +332,326 @@ describe('safe initial archive display', () => {
         },
       }),
     ).toHaveLength(1);
+  });
+});
+
+describe('MVP-3 restored structural tool groups', () => {
+  function toolTurn(start: number, turn: number, count: number): SessionMessage[] {
+    return [
+      row(start, 'user', 'private original user'),
+      {
+        ...row(start + 1, 'assistant', 'PRIVATE TOOL PREAMBLE'),
+        content: [
+          { type: 'text', text: 'PRIVATE TOOL PREAMBLE' },
+          ...Array.from({ length: count }, (_, slot) => ({
+            type: 'tool_call' as const,
+            id: `session-tool:${turn}:${slot}`,
+            name: 'write_file',
+            argsBytes: 999,
+          })),
+        ],
+      },
+      {
+        ...row(start + 2, 'tool', ''),
+        content: Array.from({ length: Math.max(0, count - 1) }, (_, slot) => ({
+          type: 'tool_result' as const,
+          toolCallId: `session-tool:${turn}:${slot}`,
+          resultBytes: 123,
+          outcome: slot === 0 ? ('denied' as const) : ('ok' as const),
+        })),
+      },
+      row(start + 3, 'assistant', ''),
+    ];
+  }
+  it('joins ids inside the completed turn, preserves missing outcomes and excludes preambles/results/targets', () => {
+    const messages = toolTurn(0, 1, 3);
+    const entries = restore(messages, new Map([[0, 'safe display']]));
+    const group = entries.find((entry) => entry.role === 'tools');
+    expect(group?.role).toBe('tools');
+    if (group?.role !== 'tools') throw new Error('missing tools');
+    expect(group.calls.map((call) => call.outcome)).toEqual(['denied', 'success', 'unknown']);
+    expect(group.calls.map((call) => call.id)).toEqual([
+      'session-tool:1:0',
+      'session-tool:1:1',
+      'session-tool:1:2',
+    ]);
+    expect(JSON.stringify(entries)).not.toMatch(/PRIVATE|argsBytes|resultBytes|"target"|"diff"/);
+    expect(entries.at(-1)).toEqual({ role: 'assistant', text: '' });
+  });
+  it.each([INLINE_TRANSCRIPT_BOUND, FULLSCREEN_TRANSCRIPT_BOUND] as const)(
+    'reserves collapsed group rows inside the existing cap %s',
+    (transcriptBound) => {
+      const messages = Array.from({ length: 300 }, (_, index) =>
+        toolTurn(index * 4, index + 1, 20),
+      ).flat();
+      const entries = restoreSessionTranscript({
+        messages,
+        memory: undefined,
+        transcriptBound,
+        readDisplay: () =>
+          new Map(
+            messages
+              .filter((message) => message.role === 'user')
+              .map((message) => [message.sequenceNumber, 'safe']),
+          ),
+      });
+      const group = entries.findLast((entry) => entry.role === 'tools');
+      if (group?.role !== 'tools') throw new Error('missing latest tools');
+      expect(group.calls).toHaveLength(16);
+      expect(group.omitted).toBe(4);
+      expect(entryLines(group)).toHaveLength(4);
+      const logical = entries.reduce(
+        (sum, entry) => sum + (entry.role === 'tools' ? entryLines(entry).length : 1),
+        0,
+      );
+      expect(logical).toBeLessThanOrEqual(transcriptBound === INLINE_TRANSCRIPT_BOUND ? 200 : 500);
+      expect(entries.at(-1)).toEqual({ role: 'assistant', text: '' });
+      expect(entries[0]?.text).toContain('omitted tool calls');
+      expect(JSON.stringify(entries)).not.toContain('PRIVATE TOOL PREAMBLE');
+    },
+  );
+});
+
+describe('ADR-0119 restored interrupted turns', () => {
+  const interruptionRow = (
+    sequence: number,
+    interruption: NonNullable<SessionMessage['interruption']>,
+  ): SessionMessage => ({
+    ...row(sequence, 'system', ''),
+    content: [],
+    interruption,
+  });
+  const interrupted = (
+    start: number,
+    interruption: NonNullable<SessionMessage['interruption']>,
+  ) => [
+    row(start, 'user', 'original private text'),
+    {
+      ...row(start + 1, 'assistant', ''),
+      content: [
+        { type: 'tool_call' as const, id: 'session-tool:1:0', name: 'write_file', argsBytes: 999 },
+      ],
+    },
+    {
+      ...row(start + 2, 'tool', ''),
+      content: [
+        {
+          type: 'tool_result' as const,
+          toolCallId: 'session-tool:1:0',
+          resultBytes: 0,
+          outcome: 'cancelled' as const,
+        },
+      ],
+    },
+    interruptionRow(start + 3, interruption),
+  ];
+
+  it('shows the user line, the structural calls and one fixed dim row where an answer would be', () => {
+    const messages = [
+      row(0, 'user', 'first'),
+      row(1, 'assistant', 'answer'),
+      ...interrupted(2, { reason: 'aborted' }),
+    ];
+    const entries = restore(
+      messages,
+      new Map([
+        [0, 'first'],
+        [2, 'second (display)'],
+      ]),
+    );
+    const roles = entries.map((entry) => entry.role);
+    // notice, [user, assistant] for the answered turn, [user, tools, notice] for the interrupted one.
+    expect(roles.slice(-5)).toEqual(['user', 'assistant', 'user', 'tools', 'notice']);
+    const last = entries.at(-1);
+    expect(last).toEqual({ role: 'notice', text: 'Interrupted — the user stopped it' });
+    const group = entries.find((entry) => entry.role === 'tools');
+    expect(group?.role === 'tools' && group.calls.map((call) => call.outcome)).toEqual(['unknown']);
+    // The canonical text never appears as a fallback, and nothing is invented for the missing answer.
+    expect(JSON.stringify(entries)).not.toContain('original private text');
+    expect(entries.filter((entry) => entry.role === 'assistant')).toHaveLength(1);
+  });
+
+  it('names every reason from the closed phrase table and nothing from stored text', () => {
+    const cases: [NonNullable<SessionMessage['interruption']>, string][] = [
+      [{ reason: 'aborted' }, 'Interrupted — the user stopped it'],
+      [{ reason: 'failed', code: 'provider_auth' }, 'Interrupted — it failed (provider_auth)'],
+      [{ reason: 'denied' }, 'Interrupted — a tool call was refused and the turn ended'],
+      [{ reason: 'turn_limit' }, 'Interrupted — it reached a limit on tool use'],
+    ];
+    for (const [interruption, expected] of cases) {
+      const entries = restore(interrupted(0, interruption), new Map([[0, 'shown']]));
+      expect(entries.at(-1)).toEqual({ role: 'notice', text: expected });
+    }
+  });
+
+  it('counts an interrupted unit as two entries in the restore budget, like a completed turn', () => {
+    const entries = restore(interrupted(0, { reason: 'aborted' }), new Map([[0, 'shown']]));
+    // The user line and the dim row: two history entries (the structural tool group is reported separately).
+    expect(entries[0]).toMatchObject({ role: 'notice' });
+    expect(entries[0]?.text).toContain('Restored 2 history entries');
+  });
+
+  it('says a window policy counts permitted turns, interrupted ones included', () => {
+    const entries = restore([row(0, 'user', 'a'), row(1, 'assistant', 'b')], new Map([[0, 'a']]), {
+      type: 'window',
+      window_size: 2,
+    });
+    expect(entries.map((entry) => entry.text).join('\n')).toContain(
+      'only the most recent 2 permitted turns enter the next request',
+    );
+  });
+
+  it('does not mistake a crash remnant for an interrupted turn', () => {
+    // User + structural rows with NO terminal: ADR-0095's remnant, still omitted from the restored view.
+    const remnant = interrupted(0, { reason: 'aborted' }).slice(0, 3);
+    const looked: number[][] = [];
+    const entries = restoreSessionTranscript({
+      messages: remnant,
+      memory: undefined,
+      transcriptBound: FULLSCREEN_TRANSCRIPT_BOUND,
+      readDisplay: (sequences) => {
+        looked.push([...sequences]);
+        return new Map([[0, 'shown']]);
+      },
+    });
+    // The remnant is invisible: no interrupted row, no user line, and no display lookup for its sequence.
+    expect(JSON.stringify(entries)).not.toContain('Interrupted —');
+    expect(entries.some((entry) => entry.role === 'user')).toBe(false);
+    expect(looked.flat()).not.toContain(0);
+  });
+});
+
+describe('ADR-0133 restored question records', () => {
+  const answered: SessionAskRecord = {
+    status: 'answered',
+    items: [
+      { header: 'Scope', question: 'Which module?', selected: ['alpha'] },
+      { header: 'Note', question: 'Anything else?', selected: [], other: 'keep the API' },
+    ],
+  };
+  const skipped: SessionAskRecord = {
+    status: 'skipped',
+    items: [{ header: 'Scope', question: 'Which module?' }],
+  };
+  /** One turn: the user, one call/result row pair per tool (the persister's shape), the answer. */
+  function turnWith(
+    calls: readonly {
+      name: string;
+      ask?: SessionAskRecord;
+      outcome?: 'ok' | 'error' | 'cancelled';
+    }[],
+    start = 0,
+  ): SessionMessage[] {
+    const rows: SessionMessage[] = [row(start, 'user', 'original private user')];
+    calls.forEach((call, slot) => {
+      const id = `session-tool:1:${String(slot)}`;
+      rows.push({
+        ...row(start + 1 + slot * 2, 'assistant', ''),
+        content: [{ type: 'tool_call', id, name: call.name, argsBytes: 10 }],
+      });
+      rows.push({
+        ...row(start + 2 + slot * 2, 'tool', ''),
+        content: [
+          {
+            type: 'tool_result',
+            toolCallId: id,
+            resultBytes: 20,
+            outcome: call.outcome ?? 'ok',
+            ...(call.ask === undefined ? {} : { ask: call.ask }),
+          },
+        ],
+      });
+    });
+    rows.push(row(start + 1 + calls.length * 2, 'assistant', 'the final answer'));
+    return rows;
+  }
+  const texts = (entries: ReturnType<typeof restore>): string[] =>
+    entries.map((entry) => (entry.role === 'tools' ? '[tools]' : entry.text));
+
+  it("rebuilds the card's transcript entry where the live one stood: after the tool row, before the answer", () => {
+    const entries = restore(
+      turnWith([{ name: 'ask_user', ask: answered }]),
+      new Map([[0, 'my request']]),
+    );
+    const list = texts(entries);
+    const at = list.findIndex((text) => text.startsWith('› Asked: Scope'));
+    expect(at).toBeGreaterThan(0);
+    expect(list[at - 1]).toBe('[tools]');
+    expect(list[at]).toBe(
+      '› Asked: Scope — Which module?\n  └ alpha\n› Asked: Note — Anything else?\n  └ “keep the API”',
+    );
+    expect(list[at + 1]).toBe('the final answer');
+    expect(entries[at]?.role).toBe('notice');
+  });
+
+  it('rebuilds a skip as the live card words it', () => {
+    const list = texts(restore(turnWith([{ name: 'ask_user', ask: skipped }])));
+    expect(list).toContain("› Skipped the agent's question: Scope");
+  });
+
+  it('one entry per question call, in call order', () => {
+    const second: SessionAskRecord = {
+      status: 'answered',
+      items: [{ header: 'Tests', question: 'Add tests?', selected: ['yes'] }],
+    };
+    const list = texts(
+      restore(
+        turnWith([
+          { name: 'ask_user', ask: answered },
+          { name: 'read_file' },
+          { name: 'ask_user', ask: second },
+        ]),
+      ),
+    );
+    const asks = list.filter((text) => text.startsWith('› Asked:'));
+    expect(asks).toHaveLength(2);
+    expect(asks[1]).toBe('› Asked: Tests — Add tests?\n  └ yes');
+  });
+
+  it('reads a record only from an ask_user call that succeeded', () => {
+    const list = texts(
+      restore(
+        turnWith([
+          { name: 'write_file', ask: answered }, // a forged row: another tool cannot carry a question record
+          { name: 'ask_user', ask: answered, outcome: 'cancelled' },
+          { name: 'ask_user', ask: answered, outcome: 'error' },
+          { name: 'ask_user', ask: skipped, outcome: 'cancelled' },
+          { name: 'ask_user' }, // no card was shown (or an older session): nothing to rebuild
+        ]),
+      ),
+    );
+    // Both entry shapes begin with the host's `› ` marker, so a filter on the bare words would match nothing.
+    expect(list.some((text) => text.startsWith('› Asked:') || text.startsWith('› Skipped'))).toBe(
+      false,
+    );
+  });
+
+  it('shows at most sixteen records of a turn and counts the rest', () => {
+    const many = Array.from({ length: 20 }, () => ({ name: 'ask_user', ask: skipped }));
+    const list = texts(restore(turnWith(many)));
+    expect(list.filter((text) => text.startsWith('› Skipped the agent')).length).toBe(16);
+    expect(list).toContain('4 more saved questions are not shown.');
+  });
+
+  it('counts the entries in the restore budget, so the display cap still holds', () => {
+    const turns = Array.from({ length: 60 }, (_, index) =>
+      turnWith([{ name: 'ask_user', ask: answered }], index * 4),
+    ).flat();
+    const entries = restoreSessionTranscript({
+      messages: turns,
+      memory: undefined,
+      transcriptBound: INLINE_TRANSCRIPT_BOUND,
+      readDisplay: () => new Map(),
+    });
+    // 60 turns × (user + assistant + 1 tool row group + 1 question notice) cannot all fit a 200-entry inline cap.
+    expect(entries.length).toBeLessThanOrEqual(200);
+    expect(entries.length).toBeGreaterThan(100);
+  });
+
+  it("keeps the question's words out of the structural tool row", () => {
+    const entries = restore(turnWith([{ name: 'ask_user', ask: answered }]));
+    const tools = entries.find((entry) => entry.role === 'tools');
+    expect(JSON.stringify(tools)).not.toContain('Which module?');
+    expect(JSON.stringify(tools)).not.toContain('keep the API');
   });
 });

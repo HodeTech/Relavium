@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer';
 /** ADR-0105 bounded causal witnesses. Collected only by the isolated control runner. */
 import { createHash } from 'node:crypto';
 import {
-  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -28,6 +27,7 @@ import {
 import { discoverCatalog } from '../../apps/cli/src/workflows/catalog.js';
 const observed = vi.hoisted(() => ({
   failure: undefined,
+  failureSeen: vi.fn(),
   mkdir: vi.fn(),
   open: vi.fn(),
 }));
@@ -35,12 +35,20 @@ vi.mock('node:fs/promises', async (original) => {
   const native = await original();
   return {
     ...native,
-    realpath: (...args) =>
-      String(args[0]) === observed.failure?.path
-        ? Promise.reject(
-            Object.assign(new Error('private-native-sentinel'), { code: observed.failure.code }),
-          )
-        : native.realpath(...args),
+    realpath: (...args) => {
+      if (
+        String(args[0]) === observed.failure?.path &&
+        observed.failureSeen.mock.calls.length === 0
+      ) {
+        observed.failureSeen(observed.failure.code);
+        // Fail only the ancestor admission. Later independent parent revalidation must
+        // observe the actual missing directory rather than mask removal of this guard.
+        return Promise.reject(
+          Object.assign(new Error('private-native-sentinel'), { code: observed.failure.code }),
+        );
+      }
+      return native.realpath(...args);
+    },
     mkdir: (...args) => {
       observed.mkdir(args[0]);
       return native.mkdir(...args);
@@ -60,12 +68,14 @@ beforeEach(() => {
   mkdirSync(outside);
   writeFileSync(join(outside, 'a.txt'), 'private');
   observed.failure = undefined;
+  observed.failureSeen.mockClear();
   observed.mkdir.mockClear();
   observed.open.mockClear();
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 const fs = () =>
   createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,
@@ -98,6 +108,7 @@ it('FS_CAUSAL_LEXICAL_PROVENANCE', async () => {
   const alias = join(base, '.azure');
   symlinkSync(outside, alias, 'junction');
   const host = createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'project',
     workspaceDir: workspace,
     readOnly: false,
@@ -111,7 +122,11 @@ it('FS_CAUSAL_SCRATCH_EXACT', async () => {
     scratch = join(home, '.relavium', 'tmp', 'parent');
   mkdirSync(scratch, { recursive: true, mode: 0o700 });
   writeFileSync(join(scratch, 'safe.txt'), 'safe');
+  const nested = join(scratch, '.relavium', 'history.db');
+  mkdirSync(join(scratch, '.relavium'), { mode: 0o700 });
+  writeFileSync(nested, 'nested-private');
   const host = createNodeFsCapability({
+    operatorHomeDir: base,
     tier: 'sandboxed',
     workspaceDir: workspace,
     readOnly: false,
@@ -121,11 +136,12 @@ it('FS_CAUSAL_SCRATCH_EXACT', async () => {
     }),
   });
   expect((await host.readFile(join(scratch, 'safe.txt'), {})).content).toBe('safe');
-  await requireRefusal(
-    host.writeFile(join(scratch, '.relavium', 'history.db'), 'private', { createDirs: true }),
+  await requireRefusal(host.readFile(nested, {}), 'FS_CAUSAL_SCRATCH_EXACT');
+  expect(
+    observed.open.mock.calls.map(([path]) => String(path)),
     'FS_CAUSAL_SCRATCH_EXACT',
-  );
-  expect(existsSync(join(scratch, '.relavium'))).toBe(false);
+  ).not.toContain(nested);
+  expect(readFileSync(nested, 'utf8')).toBe('nested-private');
 });
 it.each([
   'KUBECONFIG',
@@ -154,6 +170,9 @@ it.each(['tool', 'save_to'])('FS_CAUSAL_ANCESTOR_ERROR %s', async (port) => {
       ? () => fs().writeFile('new/deep/a.txt', 'x', { createDirs: true })
       : () => createFilesystemMediaWrite(workspace)('new/deep/a.txt', Buffer.from('x'));
   await requireRefusal(write(), 'FS_CAUSAL_ANCESTOR_ERROR');
+  expect(observed.failureSeen, 'FS_CAUSAL_ANCESTOR_ERROR').toHaveBeenCalledExactlyOnceWith(
+    'EACCES',
+  );
   expect(observed.mkdir, 'FS_CAUSAL_ANCESTOR_ERROR').not.toHaveBeenCalled();
 });
 it.each(['tool', 'save_to'])('FS_CAUSAL_ANCESTOR_CLIMB %s', async (port) => {

@@ -40,6 +40,10 @@ const COPIED = Object.freeze([
   'cli-package/process.mjs',
   'bundle-closure/closure.mjs',
   'bundle-closure/inventory.mjs',
+  'native-fs/assets.mjs',
+  'native-fs/catalog.mjs',
+  'native-fs/profile.mjs',
+  'native-fs/profile-catalog.mjs',
 ]);
 
 /**
@@ -524,34 +528,40 @@ test(
   'an interrupt during the root removal of the check still ends it with the signal',
   { skip: process.platform === 'win32' },
   async () => {
-    // The consumer publishes, leaves a large tree in the check root and starts a helper that signals
-    // the check as soon as that tree starts to shrink, that is during the check's own removal.
-    const removal = (markers) =>
-      PUBLISHING_CONSUMER('local')(markers) +
-      `
+    // Build the tree before starting the check, so the exit bound measures the check and its removal
+    // rather than also counting the fixture's construction. Both locations are under scratch, so the
+    // consumer can adopt the complete tree with a same-filesystem rename.
+    const fixture = mkdtempSync(join(scratch, 'bulk-fixture-'));
+    let run;
+    try {
+      for (let i = 0; i < 20000; i += 1) writeFileSync(join(fixture, String(i)), '');
+      // The helper signals the check as soon as that tree starts to shrink during its removal.
+      const removal = (markers) =>
+        PUBLISHING_CONSUMER('local')(markers) +
+        `
 const bulk = join(reports, 'bulk');
-mkdirSync(bulk);
-for (let i = 0; i < 20000; i += 1) writeFileSync(join(bulk, String(i)), '');
+const { renameSync } = await import('node:fs');
+renameSync(${JSON.stringify(fixture)}, bulk);
 const { spawn } = await import('node:child_process');
 const helper = spawn(process.execPath, ['-e', ${JSON.stringify(
-        `const fs = require('node:fs');` +
-          `const [bulk, check, marker] = process.argv.slice(1);` +
-          `const poll = () => { let count; try { count = fs.readdirSync(bulk).length; } catch { process.exit(0); }` +
-          ` if (count < 20000) { process.kill(Number(check), 'SIGINT'); fs.writeFileSync(marker, 'sent'); process.exit(0); }` +
-          ` setTimeout(poll, 1); }; poll();`,
-      )}, bulk, String(process.ppid), ${JSON.stringify(join(markers, 'removal-signalled'))}], { detached: true, stdio: 'ignore' });
+          `const fs = require('node:fs');` +
+            `const [bulk, check, marker] = process.argv.slice(1);` +
+            `const poll = () => { let count; try { count = fs.readdirSync(bulk).length; } catch { process.exit(0); }` +
+            ` if (count < 20000) { process.kill(Number(check), 'SIGINT'); fs.writeFileSync(marker, 'sent'); process.exit(0); }` +
+            ` setTimeout(poll, 1); }; poll();`,
+        )}, bulk, String(process.ppid), ${JSON.stringify(join(markers, 'removal-signalled'))}], { detached: true, stdio: 'ignore' });
 writeFileSync(${JSON.stringify(join(markers, 'helper.pid'))}, String(helper.pid));
 helper.unref();
 `;
-    const run = check({ pack: RECORDING_PRODUCER, consume: removal });
-    try {
+      run = check({ pack: RECORDING_PRODUCER, consume: removal });
       const outcome = await exitOf(run);
       assert.equal(readFileSync(join(run.markers, 'removal-signalled'), 'utf8'), 'sent');
       assert.equal(outcome.signal, null);
       assert.equal(outcome.code, 130);
       assert.deepEqual(checkRoots(run.temporary), []);
     } finally {
-      stopAll(run);
+      if (run !== undefined) stopAll(run);
+      rmSync(fixture, { recursive: true, force: true });
     }
   },
 );

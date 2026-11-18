@@ -64,7 +64,11 @@ function spawnWorker(path: string, mode: string, barrier: string): Worker {
         const timer = setTimeout(() => {
           listeners.delete(check);
           reject(new Error(`Metadata fixture did not reach ${stage}: ${diagnostic}`));
-        }, 5000);
+          // A stage wait is a hang bound: every stage is an event the fixture emits, never a time the test asserts. The
+          // full-suite CI-env run starved a child's start-up past the former 5 s (1.5 s alone, 2.1 s under 18 busy cores).
+          // The case timeout stays at the 15 s ceiling the causal-controls timeout policy enforces, so two start-ups
+          // (owner, then contender) still have to fit inside that ceiling: it, not this bound, is the effective hang limit.
+        }, 12_000);
         const check = (): void => {
           const found = messages.find((message) => message['stage'] === stage);
           if (found === undefined && !ended) return;

@@ -25,6 +25,8 @@ const EMPTY_CONFIG: ResolvedConfig = {
   mediaCostEstimate: undefined,
   mediaGcGraceMs: undefined,
   chat: {
+    defaultMode: 'ask',
+    defaultModeSource: 'fallback',
     defaultModel: undefined,
     defaultProvider: undefined,
     fsScope: undefined,

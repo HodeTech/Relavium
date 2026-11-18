@@ -68,9 +68,9 @@ stateDiagram-v2
 | Operation | Meaning |
 | --- | --- |
 | **start** | Open a session for an `agentRef` with an initial [`SessionContext`](#session-context). Allocates a `sessionId` and persists the session row. |
-| **sendMessage** | Append the pending user to the **working transcript**, run one assistant turn through the shared turn core (streaming + tool-call loop), and retain the final assistant **text** on success. The host atomically persists the completed turn's [durable messages](#session-messages), including content-free tool structure and an explicit terminal even for empty final text. Working context excludes tool pairs; carrying them to a later request is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). |
+| **sendMessage** | Append the pending user to the **working transcript**, run one assistant turn through the shared turn core (streaming + tool-call loop), and retain the final assistant **text** on success. The host atomically persists the completed turn's [durable messages](#session-messages), including content-free tool structure and an explicit terminal even for empty final text. Working context excludes tool pairs; carrying them to a later request is deferred ([ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §2). The request instead carries bounded, content-free [receipts](#content-free-action-receipts--adr-0128) of earlier completed turns' recorded calls and outcomes ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)). |
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
-| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), roll the pending user message back, and return to `idle`. **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
+| **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), and return to `idle`. A turn the provider had already **accepted** (it returned at least one stream chunk) is **retained** as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md): the event carries `interruption: { reason: 'aborted' }`); an abort before the provider returned anything rolls its pending user message back (see [Interrupted turns](#interrupted-turns--adr-0119), *Not retained*). **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
 | **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
@@ -107,14 +107,334 @@ Hosts use these getters before progress or bound validation; the engine remains 
 
 `reconstructSessionState(record, messages)` returns a text-only, unfolded `SessionResumeState`.
 Alongside its messages, costs and turn counter, it supplies required `completedTurnSpans`: ordered,
-non-overlapping `{ start, end }` indices into that message array, with exclusive `end`. Each span
-starts with a user and contains either that user alone for an empty final, or the user plus its final
-assistant text. Structural durable rows are excluded. Legacy text remains outside spans rather than
+non-overlapping `{ start, end, receipts, interruption? }` indices into that message array, with exclusive `end`. Each
+span starts with a user and contains either that user alone for an empty final or for a retained interrupted turn (whose span
+then carries the `interruption` and must be exactly one message long), or the user plus its final assistant text.
+Structural durable rows are excluded. Legacy text remains outside spans rather than
 being invented into a completed turn. The current pending user is tracked separately during a send.
 Build resume state with this helper; `AgentSession.resume` validates span bounds, roles and text-only
 parts before host cost callbacks, refuses invalid metadata with `SessionStateError` code
 `invalid_resume_state`, and copies the admitted state. A compact/trim rebases surviving whole spans;
-a failed, aborted or cancelled turn creates none.
+a turn that ends in a session-ending cancel, an unclassified throw, an observer fault or a refusal before any content
+creates none, while a retained interrupted turn (below) creates a one-message span.
+
+### Content-free action receipts — ADR-0128
+
+**Accepted 2026-11-15 ([ADR-0128](../../decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md));
+implementation status is recorded at the end of this section.** A session request
+carries bounded, content-free *receipts* of earlier completed turns' recorded
+tool calls beside those turns' text. Receipts are a projection of the durable
+structure [ADR-0095](../../decisions/0095-what-an-agent-session-remembers-across-turns.md) §1
+already stores. They are not carried tool content: no argument, result, path,
+stored id or byte size survives into the request, and no tool-protocol message
+is fabricated. (One bounded exception, [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md):
+the record of a successful `ask_user` call also carries the question and the person's answer —
+see *Question notes* below. It is conversation, not tool output.) CR-70's raw-content carrying remains separately deferred. The
+acceptance cases live in the ADR and are not restated here.
+
+- **Source and identity.** A completed turn's receipt records come from exactly
+  three sources: the typed `SessionToolHistoryEntry[]` the turn returns on
+  successful completion (the `toolHistory` field, already Zod-parsed and
+  content-free but for the `ask_user` question record, ADR-0133; never `agent:tool_call`/`agent:tool_result` events, summaries or
+  any other payload), the same typed list carried on the failed `session:turn_completed` of a **retained interrupted
+  turn** (ADR-0119), or the durable turn's structural row pairs on resume/reseat. A record is one adjacent `assistant(tool_call)` + `tool(tool_result)`
+  pair whose engine-form ids match. Pairing and uniqueness are validated **within
+  one completed turn's inspected rows only**; an id is never used across turns and
+  is never rendered, so a session-wide uniqueness property is neither needed nor
+  claimed. This is structural validation, not authenticated proof of historical
+  execution or registry membership: a modified store can forge a syntactically
+  valid pair, so restored evidence is labelled an unverified local record. Do not
+  infer receipts from assistant prose. A turn whose inspected rows are
+  malformed (unpaired, mismatched or duplicate ids) yields **no receipts for that
+  turn and is marked incomplete**; derivation never fails a resume and never emits
+  a partial or guessed pair. Metadata that a host *supplies* to
+  `AgentSession.resume` is a programming contract and is refused through the
+  existing `invalid_resume_state` path when it violates the caps below.
+- **Safe labels.** Only exact built-in tool ids from the code-owned catalog may
+  be emitted as names. Every other historical/custom/MCP-discovered name becomes
+  the fixed label `other_tool`, regardless of syntactic validity or current
+  discovery. A call to the built-in `mcp_call` renders as `mcp_call`; a
+  discovered external tool is indistinguishable from any other unlisted tool. This
+  substitution makes no registry-membership assertion, including for a forged
+  built-in name. Never echo a rejected name in a diagnostic. The stored name,
+  id and outcome are classified at the reconstruction boundary into a closed
+  record type (`label` is a built-in id or `other_tool`; `outcome` is the
+  four-value enum) and the original strings are discarded there, so no free-form
+  store- or model-chosen text can reach request text. Call ids serve only
+  bounded internal pairing; render a per-turn ordinal instead.
+- **Excluded data.** No stored ids, arguments, paths/targets, results, byte sizes, media,
+  reasoning, signatures, native metadata or error bodies enter receipt notes.
+  Receipt state is auxiliary to `messages` and never creates durable rows,
+  export fields, events or a raw-content archive.
+- **Outcome vocabulary.** The four durable values are rendered verbatim, never
+  merged, and each states what it does *not* establish. Rendering is an
+  exhaustive switch over the schema enum, so a future fifth value fails to
+  compile rather than being silently folded into another.
+
+  | Stored outcome | Rendered | It records | It does not establish |
+  | --- | --- | --- | --- |
+  | `ok` | `ok` | A recorded successful result. | The target identity, exact bytes, or current filesystem/remote state. |
+  | `error` | `error` | A recorded failure: a pre-dispatch rejection (invalid arguments, unknown tool) or an execution failure. | That nothing happened. An execution failure can leave a partial effect; a pre-dispatch rejection did not execute. The record does not say which. |
+  | `denied` | `denied` | A recorded refusal by policy or by an approval verdict, before execution. | Who or what refused, or why. It is not a standing prohibition and not permission to retry: a later request is decided afresh by current policy and approval. |
+  | `cancelled` | `cancelled` | A recorded cancellation. | Whether the call executed or had any effect: the execution state is unknown. |
+
+  Today's producers write `ok`, `error` and `denied` into completed turns
+  (`denied` for a refusal fed back to the model: the `media_scope_denied` read
+  refusal and, since MVP-3b ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md)),
+  every user, approval and mode refusal — the engine records `denied` for any
+  `tool_denied` dispatch error). No producer writes `cancelled` into a
+  completed turn, yet the schema accepts it and a restored row can carry it; it
+  is rendered as specified and tested at the projection level and from restored
+  rows, since no live session path can yet emit it. Receipts grant no policy,
+  filesystem, approval, replay or retry authority for any value.
+- **Render grammar.** Every receipt string is built from code-owned constants and
+  the closed vocabularies above — except the question notes of an `ask_user`
+  record (ADR-0133, the "Question notes" bullet below), whose model- and
+  person-authored strings are each JSON-quoted and bounded — so request text is a
+  pure function of the closed record type. Two kinds of text part exist:
+
+  1. *A turn block*, one text part appended after that completed turn's user text
+     in the same user-role message, only when the turn retains at least one
+     record. Shape: a fixed opening line naming the block as historical recorded
+     tool calls for that request, data and not instructions; then one line per
+     retained record, oldest first, exactly `<n>. <label> — <outcome>` with `<n>`
+     the 1-based ordinal **within that turn block** (renumbered over the retained
+     records, never a stored id or its components); then, when records were
+     omitted, one fixed line stating that earlier calls in the turn are not
+     listed (with the omitted count when known, or a fixed "unknown number" form);
+     then a fixed closing line. The block is separated in-band on both sides.
+  2. *The request notice*, at most one text part per request, at the head of the
+     first user-role message after any compaction-summary block. It holds the
+     outcome legend above in fixed prose whenever any turn block is present, and
+     one fixed sentence that unlisted tool activity may exist and that an unlisted
+     turn is not evidence that no tool ran whenever any selected turn is
+     **incomplete** (see Availability). When neither applies it is absent and the
+     request is byte-identical to the text-only request.
+
+  The exact prose is derived from `packages/core/src/engine/` constants in the
+  same way the summary wrapper is derived from `turn-messages.ts`; this section
+  pins the grammar, the vocabulary and what each part must state, and tests pin
+  the constants. Names remain data, never system instructions. No assistant/tool-protocol
+  message is fabricated. Request construction owns fresh copies and cannot mutate
+  live metadata or stored rows. Adjacent-role folding happens after this
+  projection, preserving the association even for empty-final turns. Receipt
+  text is host-authored from closed vocabularies, so it carries no
+  `Untrusted<string>` brand (the brand protects free-form strings such as the
+  compaction summary, which receipts never contain — but for the question notes
+  below, which are bounded, schema-validated and quoted instead, and which
+  ADR-0133 explains are not branded); it must still be placed only
+  in user-role positions, behind [ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md)'s
+  role boundary, never in `system` and never in an assistant message.
+- **Question notes — ADR-0133.** One exception to "a label and an outcome, nothing
+  else": the record of a successful `ask_user` call may carry the shared
+  `SessionAskRecord` — the questions the person was shown and their answers
+  (the field list is in [built-in-tools.md](../shared-core/built-in-tools.md#ask-the-user--mvp-3d)).
+  It is validated against the strict schema when a record is built (live, derived
+  from rows, or host-supplied), kept only on a successful `ask_user` record, and
+  rendered **under** that record's line, one indented line per question, with
+  **every string JSON-quoted** so a quote, a backslash or a look-alike of the
+  block's own punctuation stays inside its quotes and no string can start a line:
+
+  ```
+  1. ask_user — ok
+     answered: "Scope" — "Which module?" → chose "alpha"; own text "keep the API stable"
+     skipped: "Scope"                              (a skipped call: the headers only, never a question text)
+  ```
+
+  A successful `ask_user` record without a note reads
+  `<n>. ask_user — ok (no question text kept)`; a failed or cancelled one gets
+  nothing added. Bounds, applied identically to the live source, derivation from
+  rows and admission: one call's note at most **1,280 bytes** (questions that do
+  not fit are replaced by one `[N more questions not listed]` line; a note whose
+  first question does not fit is not shown), the person's own text clipped to
+  **160 code points** with `…` in the note (the stored record keeps up to 500),
+  and one turn's notes at most **2,560 bytes** together, spent newest first — the
+  first note that does not fit, and every older one in the turn, is dropped. A
+  host-supplied note over its budget is refused, never trimmed. Notes count
+  toward the per-turn and total byte caps, so retention evicts a note-heavy block
+  by the same newest-first rule, and the summariser sees the same text. The
+  request notice gains one fixed sentence, present whenever a selected turn lists
+  a note, saying that the questions are the **assistant's** words (they now ride a
+  user-role message), that an answer is what the person said at that time, and
+  that neither is a new request. The question text is model-authored: it is
+  bounded and plain-text-only at ingestion, quoted here, and framed as
+  historical data, which is the whole mitigation for a poisoned question (the
+  person saw the card when it was asked).
+- **Selection.** First apply the existing memory policy: `none` includes no
+  prior receipts, turn blocks or request notice; `window` includes only its
+  selected turns and evaluates incompleteness over those turns only;
+  omitted/`summary` follows retained history. No receipt creates a new completed
+  turn or changes `/trim` message units, counters or durable boundary mapping.
+- **Retention and bounds.** One ordered rule applies identically to a live
+  session, to resume and to reseat. It is a pure function of the ordered
+  completed-turn evidence, never of the order in which that evidence arrived,
+  so every route to the same history retains the same records. Normal overflow is
+  eviction, never an error.
+
+  1. *Inspection* (derivation from durable rows only): walk turns **newest first**
+     and, inside a turn, record pairs newest first, inspecting at most 256 parts
+     per turn and 4,096 parts per operation, always at whole-record boundaries.
+     Uninspected detail is unknown: that turn is marked incomplete. Never scan
+     past the budget to count.
+  2. *Per turn*: retain at most the newest 32 records and 5,120 UTF-8 bytes
+     (4,096 before [ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)
+     added question notes), counting wrappers, notes and omission line; older
+     records of the turn are omitted whole, in order, never partially truncated.
+  3. *Across turns*: walk turns newest first and retain each turn's block whole
+     while the running total stays within **128 records and 16,384 UTF-8 bytes**
+     after reserving the request notice's fixed bytes. The first block that does
+     not fit, and every older block, is omitted. Do not skip a large block to keep
+     a smaller older one. There is **no separate cap on the number of turns**:
+     only turns with at least one retained record cost anything, so the record
+     cap alone bounds turn blocks. A turn that loses its record or its block to
+     steps 2-3 is marked incomplete.
+
+  The retained payload is bounded by step 3 in a live session as well (oldest
+  block evicted when a new turn would exceed it); because eviction always removes
+  the oldest retained block, the live result equals the newest-first result of
+  step 3 over the same history. Beside the payload, each already-retained
+  completed-turn span carries O(1) availability metadata. Check array and string
+  lengths before copying, byte counting or uniqueness work; never reuse an
+  unbounded history-array parse for this metadata. Use saturated counts with an
+  explicit unknown state, never unchecked arithmetic. Derivation and projection
+  are synchronous over these fixed caps and need no internal cancellation
+  points; an operation that publishes receipt state observes its own existing
+  cancellation immediately before its atomic installation. This bounds added receipt processing,
+  not the existing whole-history load. All wrappers and notices count toward
+  request admission and token measurement.
+  Supplied auxiliary state is admitted only if it already satisfies steps 2-3
+  (at most 128 records and 16,384 bytes in total, at most 32 records per turn);
+  a host that derives it through this section's helper cannot exceed them.
+  Typical reach is stated in the ADR; the cap that binds first depends on turn
+  shape and is a measured property, not a promise.
+- **Availability.** A turn is **incomplete** when any of its evidence may be
+  missing: omitted or evicted by retention, uninspected, malformed, or
+  *ambiguous*. A live turn that observed no tool call is known empty and is not
+  incomplete. After resume/reseat, zero durable tool rows cannot distinguish a
+  no-call turn from legacy missing structure because there is no completeness
+  marker, so such a turn is ambiguous, hence incomplete; add no migration or
+  marker to infer otherwise. Missing, evicted or uninspected evidence never
+  means no call occurred. Incompleteness is disclosed **only** by the single
+  request notice, never by a per-turn line, so a plain-chat history costs one
+  fixed notice (and none in a live session, where every turn is observed).
+  Live/restore parity applies to the retained records and to conservative
+  meaning, not to exact knowledge of empty turns or exact omitted counts.
+- **Compaction and trimming.** Feed the same bounded observations for the
+  foldable turns into measured summarizer input. Current request construction
+  alone is insufficient. Keep exact receipts only for surviving whole turns,
+  rebased with their spans after an atomic successful compaction/trim. Failed or
+  cancelled compaction keeps the original metadata. A generated summary can
+  report earlier actions but remains lossy, untrusted text; it is not an exact
+  receipt. Every summarizer pass measures its actual notes and keeps the current
+  four-pass/all-or-nothing bounds and irreducible kept-turn floor.
+  Preserve whole receipt records through the summarizer's oversized-message
+  handling. A message's receipts are rendered beside its text and are never
+  flattened into the text that head/tail truncation clips. If a message still
+  does not fit with an empty text and its receipts, those receipts are dropped
+  whole (disclosed by the notice, since the dropped state is incomplete) before
+  the existing does-not-fit failure is reported. Never turn a clipped
+  label/ordinal/outcome into a new record.
+- **Lifecycle.** Publish receipt metadata only with the existing successful
+  completed-turn installation; observer/durability failure rolls back its
+  installation with the text. A process restart rebuilds only existing durable
+  structural evidence; a model reseat follows the same reconstruction. This
+  introduces no live raw-content handoff. Since ADR-0119 (MVP-3c) an engaged turn that
+  ended by abort, a fatal denial or another classified error keeps its recorded calls
+  and a fixed interruption note; the cases listed under *Not retained* in
+  [Interrupted turns](#interrupted-turns--adr-0119) (a session-ending cancel, a crash, an unclassified throw, an observer
+  or host fault, an unrecordable call, a turn before any provider content) still create no receipt even when a tool ran
+  (the user-facing disclosure is
+  [ADR-0098](../../decisions/0098-a-session-effect-row-holds-no-result-and-never-replays.md)
+  invariant 4); [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+  (Accepted 2026-11-16, MVP-3c) owns that gap — see
+  [Interrupted turns](#interrupted-turns--adr-0119). Current cancellation, financial
+  acknowledgement and session non-replay rules hold.
+
+Measure the added request bytes/tokens and local cost against an otherwise
+identical text-only baseline, including a plain-chat history with no tool calls
+(live: no added bytes; restored: the one fixed notice). Do not treat synthetic
+provider timings as a measurement of a real hosted model.
+
+**Implementation status (2026-11-15):** implemented on `development` as one step
+(the pure projection, live collection, resume/reseat derivation, request and
+summariser integration, and the reseat notice). The independent review rounds,
+the separate security sitting and the measured request-size results the ADR
+requires are still owed; no merge or publication is claimed. Measured: the legend
+is 409 bytes and the gap sentence 109 bytes; a block is 148 bytes for one record
+and 791 for 32 (worst case 1,232, so the 4,096-byte per-turn cap could not bind; with ADR-0133's question notes the by-construction worst is under 4,300 bytes, hence 5,120);
+the 128-record cap binds first from about two calls per turn (105 turns of
+evidence at one call per turn — 107 before ADR-0133 reserved 274 more bytes for the fixed notice in every session — and 32 at four); projection and retention cost under
+0.1 ms per 1,000 turns and derivation about 1 ms. See the ADR's implementation
+note.
+
+### Interrupted turns — ADR-0119
+
+**Status: implemented on `development` (MVP-3c, 2026-11-16); D64 rounds 1–4 are done and the final gate run passed (see the phase register); the maintainer's acceptance is owed.**
+A session-ending cancel, a crash and an unclassified throw are still rolled back and forgotten (below).
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md) owns the decision; this
+section owns the contract.
+
+**What is retained.** A turn the session accepted, in which a provider engaged and returned content (engagement is the predicate that counts a turn
+against the hard cap), that ended by the turn-level abort or a classified error. The engine says so on the event:
+`session:turn_completed.interruption = { reason, code? }`, together with the additive `toolHistory`. The
+persister writes the interruption row **iff** the event carries `interruption`.
+
+| Terminal event | `reason` | `code` |
+|---|---|---|
+| `stopReason: 'aborted'`, no error | `aborted` | absent |
+| `error.code = tool_denied` | `denied` | absent |
+| `error.code = turn_limit` from a within-turn limit (the `maxToolTurns` guard, the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
+| any other classified error | `failed` | the `ErrorCode` literal |
+
+Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
+unclassified throw, a refusal before the message was accepted (including the **session hard cap**, whose
+`turn_limit` is raised before acceptance — see [Hard turn cap](#hard-turn-cap)), a turn in which no provider
+engaged, a non-streaming (media-out) turn — it has no chunk stream, so it is never retained — a turn that ended **before the provider returned any content** — a refusal under any error code
+(`context_overflow`, `content_filter`, `validation`, a token-per-minute `429`, a timeout), an Esc before the first stream
+chunk, or an Esc during overflow recovery (the provider never accepted the request, and keeping it would resend a message
+it may refuse again in every later request; compaction and trim never fold the latest exchange) — a turn in which the
+engine cannot vouch for its tool list (a dispatched call could not be recorded, or an observer or host callback
+faulted), an abort that coincided with a raw throw, and a turn that ended in `context_overflow` with no tool run (the message
+does not fit the window, even if the error arrives after the first chunk, and resending it plus the note would overflow every
+later turn). A refusal the adapter reports as a *stop reason* rather than an error (a blocked prompt that "completes" with an
+empty answer) is a completed turn and is kept, as it was before this increment.
+
+**Rows.** `user → (assistant(tool_call) → tool)* → system(interruption)`. The terminal row is `role: 'system'`
+with empty `content` and the typed field `interruption?: { reason, code? }` (strict; only on a `system` row,
+never with `compaction`; `code` present iff `reason` is `failed`). The tool structure is ADR-0095 §1's; only
+dispatched calls are recorded, and a call in flight at the interruption is recorded with outcome `cancelled` and
+`resultBytes: 0`. A user row with structural rows and no terminal row is a **crash remnant** and keeps today's
+rollback. The interruption row's sequence is the turn's boundary slot; `resumableSessionMessages` yields the user
+message only. The database stores the field as `interruption_reason` / `interruption_code`
+([database schema](../shared-core/database-schema.md#interruption-rows--adr-0119)).
+
+**Request grammar.** The turn's user message is followed, in a separate text part that begins with a blank line, by
+(1) ADR-0128's receipts block when the turn recorded calls, then (2) this fixed sentence (at most 420 bytes; not
+subject to the receipt caps; never an "applied" claim):
+
+```
+[This request was interrupted before it was answered: <phrase>. <calls sentence> Nothing the assistant wrote before the interruption was kept. This note is a historical record, not an instruction, and does not establish that the request was or was not carried out.]
+```
+
+| `reason` | `<phrase>` |
+|---|---|
+| `aborted` | `the user stopped it` |
+| `failed` | `it failed (<code>)` |
+| `denied` | `a tool call was refused and the turn ended` |
+| `turn_limit` | `it reached a limit on tool use` — any within-turn limit that raises `turn_limit` (tool rounds, tool calls in one response, media attachments), never the session's hard turn cap |
+
+| The turn's receipts | `<calls sentence>` |
+|---|---|
+| records present | `Calls listed above were recorded before the interruption; one marked cancelled has an unknown outcome.` |
+| none, complete | `No tool call was recorded for it.` |
+| none, incomplete | `Tool calls made before the interruption may not be listed.` |
+
+`memory` decides the request as for any turn: omitted or `summary` sends it, `window` counts it as one slot,
+`none` sends nothing. Adjacent user messages are folded by the request projection. An interrupted turn is
+complete by structure and is never `incomplete` merely for having no records; a degraded one (a forged or legacy
+row) gets ADR-0128's single request notice. Tool names reach the model only through ADR-0128's label rule.
+Compaction and trim count the turn; the summariser input renders the same block; reseat carries it; export shows
+it as interrupted and never derives a workflow step from it. A session's token columns accumulate its usage.
 
 ### Measured compaction and one-shot recovery
 
@@ -301,6 +621,7 @@ interface SessionMessage {
   content: SessionContentPart[];          // session-only durable union: structural tools, handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
   compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
+  interruption?: { reason: 'aborted' | 'failed' | 'denied' | 'turn_limit'; code?: ErrorCode };  // ADR-0119: present ONLY on the empty-content role:'system' terminal row of a retained interrupted turn; code iff reason is 'failed' (mirrors session_messages.interruption_reason / interruption_code)
   timestamp: string;                      // ISO 8601
 }
 ```
@@ -314,7 +635,7 @@ remains handle-only; tool attachments carry only handle metadata, never result f
 The generic `DurableContentPart` used by run/event/IPC positions is unchanged.
 
 `SessionMessage` is mapped into the seam's `LlmMessage`, rather than copied. The next turn sees the
-text-only projection: carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
+text projection plus content-free [receipts](#content-free-action-receipts--adr-0128) (and the `ask_user` question notes under them, ADR-0133): carrying earlier tool rounds is deferred. Both forms are Relavium-owned, so
 no vendor SDK type crosses the seam ([ADR-0011](../../decisions/0011-internal-llm-abstraction.md)).
 A completed turn persists its user row, ordered structural call/result rows, and one terminal
 assistant row containing a text part, even when that text is empty. The additive `toolHistory`
@@ -331,7 +652,7 @@ recovers. This supplements the governor's settlement barrier.
 The dispatch check runs
 after asynchronous approval and preparation. Its refusal proves dispatch never started and releases
 any prepared claim. Settling or discarding an already-started effect remains available to record its outcome.
-Errors and aborts commit no transcript; their billed cost remains real.
+An error or abort commits no completed exchange; a turn the engine **retains** ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md), below) is stored as the user message, its structural pairs and one interruption row instead, and every other one commits nothing. Billed cost remains real either way.
 
 Resume, model reseat, export, boundary mapping and effect disclosure share the pure structural history
 projection in `@relavium/shared`; existing core exports remain available. `completedSessionTurns`
@@ -349,8 +670,8 @@ field; the persister's legacy compatibility does not weaken the current producer
 successful empty final as a user row alone. A bare user immediately followed by another user retains
 its text in resumed/reseated context, matching the old projection. It prefixes the next completed
 export prompt and has its own compaction/trim boundary slot. It does not create a terminal row or add
-to the reconstructed hard turn cap. The final bare user still rolls back, and interrupted structural
-exchanges stay excluded. Legacy prefix text without a later terminal remains resumed context and
+to the reconstructed hard turn cap. The final bare user still rolls back, and unterminated structural
+exchanges (crash remnants, which have no terminal row) stay excluded. Legacy prefix text without a later terminal remains resumed context and
 export metadata; it does not invent an exported node. Explicit empty-terminal turns retain their
 ordinary distinct identity. No historical row is rewritten.
 The legacy rollback is a read projection: a later append can make a previously trailing bare user
@@ -383,10 +704,10 @@ changes as a consequence of this addition.
 
 Every host user-row insert path that has captured display text writes it in the
 same transaction as that user row. MVP-2 uses the completed-turn transaction;
-if the separately Proposed [ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
-lands in MVP-4, its interruption transaction inherits this rule. Metadata validation
-is role-restricted, not restricted to a successful-turn status; this does not
-activate interrupted-turn persistence now. No optional
+[ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)
+(MVP-3c, implemented) interruption transaction inherits this rule: a retained interrupted turn writes its user row, its
+structural rows and its interruption row, with the display metadata, in one transaction. Metadata validation
+is role-restricted, not restricted to a successful-turn status. No optional
 denormalized `content` metadata is repurposed: that remains checked against
 canonical content. The host explicitly supplies display text captured before
 expansion, even for a plain prompt. A caller without that representation leaves
@@ -479,7 +800,10 @@ reproducible; snapshots satisfying current authored validation round-trip):
   Structural tool preambles/results do not create nodes. An interrupted exchange is omitted from the chain
   and remains in the full metadata. Each `agent` node carries `agent_ref` = the session's `agentSlug`;
   `prompt_template` = the user text, with interpolation openers neutralised (omitted if empty);
-  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids.
+  `tools` = the deduplicated union of resolved names in its structural calls, including admitted MCP ids, **except `ask_user`**
+  ([ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) §1): a workflow node cannot ask a question
+  (its counterpart is `human_gate`), so naming it would be an inert grant claiming a capability the workflow lacks. The agent
+  snapshot the export carries is left faithful, and a node that only asked questions has no `tools`.
   The fixed unresolved `unknown_tool` marker never becomes a grant. No
   `model`/`temperature`/`max_tokens`/`retry`/`output_schema` are emitted — those are authoring concerns the
   user adds on the canvas, not replay fields.
@@ -502,7 +826,7 @@ reproducible; snapshots satisfying current authored validation round-trip):
   When no snapshot was captured, `agents` is omitted and `agent_ref` resolves
   against the workspace agent registry at author time (the file still parses — `agent_ref` resolution is the
   engine's job, not the schema's).
-- **`metadata`** — the full persisted transcript, including content-free tool structure, under a single reserved key: `metadata.relaviumExport = { source:
+- **`metadata`** — the full persisted transcript, including content-free tool structure — **except the stored `ask_user` question records** ([ADR-0133](../../decisions/0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md)): a tool row's `ask` field is dropped from the exported rows, because an exported workflow is meant to be committed and shared and a question/answer is not provenance of it — under a single reserved key: `metadata.relaviumExport = { source:
   'session', sessionId, agentSlug, title?, createdAt, updatedAt, messages: SessionMessage[] }`. It is a real
   schema field (`z.record`), so it survives parse → serialize round-trips.
 - **Determinism + exclusions** — the YAML emitter (1.Z, `serializeWorkflow`; 1.L is parse-only) sorts map

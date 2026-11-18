@@ -350,6 +350,10 @@ export type {
   CompletedSessionTurn,
   CompletedTurnSpan,
 } from './engine/session-resume.js';
+// ADR-0128 — the content-free tool-receipt vocabulary a completed-turn span carries. Types only: the prose,
+// the retention rule and the derivation are engine internals, reached through `reconstructSessionState`.
+export type { ReceiptOutcome, ReceiptRecord, TurnReceipts } from './engine/turn-receipts.js';
+export { interruptionPhrase } from './engine/turn-receipts.js';
 // 1.W — the session:* namespace on the shared bus: the SessionEventSink→RunEventBus adapter (attaches the
 // sessionId; the bus stamps the per-session sequenceNumber) and the SessionHandle (mirrors RunHandle,
 // scoped to sessionId, terminal on session:cancelled). See sse-event-schema.md §"The session stream".
@@ -391,6 +395,15 @@ export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
 export { createToolRegistry } from './tools/registry.js';
 export { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './tools/builtins.js';
+// `ask_user` (ADR-0132): the question/answer contract a host's card implements, and its closed bounds.
+export { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH, plainTextRefusal } from './tools/ask-user.js';
+export type {
+  AskUserAnswer,
+  AskUserDelegate,
+  AskUserQuestion,
+  AskUserQuestionAnswer,
+  AskUserRequest,
+} from './tools/ask-user.js';
 export { DEFAULT_TOOL_RESULT_LIMITS } from './tools/types.js';
 export { markUntrusted, unwrapUntrusted, isUntrusted } from './tools/untrusted.js';
 export {
@@ -424,9 +437,21 @@ export type {
   ToolApprovalContext,
   ToolApprovalRequest,
   ToolApprovalDecision,
+  ToolDenialClass,
   ToolActionPreview,
   ToolHost,
   FsCapability,
+  FsReadRange,
+  FileReadRange,
+  ToolReadScope,
+  FsScanLimit,
+  FsScanStats,
+  FsFindOpts,
+  FsSearchOpts,
+  FsFoundFile,
+  FsFindResult,
+  FsSearchMatch,
+  FsSearchResult,
   ProcessCapability,
   EgressCapability,
   ToolHostCallOptions,
@@ -471,3 +496,19 @@ export {
   type UsageDispositionDraft,
 } from './engine/money-durability.js';
 export { HostWorkRegistry } from './engine/host-work-registry.js';
+
+export { ToolPreparationError } from './tools/errors.js';
+export type { ToolPreparationReason } from './tools/errors.js';
+export type {
+  ToolDiffSourceSpan,
+  ToolDiffLine,
+  ToolFileEndings,
+  ToolFileDiff,
+  ToolPreview,
+  FsPrepareWriteRequest,
+  FsPreparedWrite,
+  ToolPreparedCall,
+  ToolApprovalLiveContext,
+  ToolLiveEvent,
+  ToolLiveObserver,
+} from './tools/types.js';

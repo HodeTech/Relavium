@@ -230,6 +230,14 @@ function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSess
   delete mutable.totalConservativeMicrocents;
   // ADR-0098: not part of AgentSessionRecord/toAgentSessionRow at all; only the allocator writes this mark.
   delete mutable.effectTurnHighWater;
+  // A record that does not CARRY one of these optional columns says nothing about it, so the UPDATE leaves the stored
+  // value alone. `toAgentSessionRow` maps "absent" to NULL (right for an INSERT), and the persister's row carries none
+  // of them: without this, every flush after a resume erased `chat export`'s workflow path, the agent link, and a
+  // soft-delete mark. A record that carries a value still sets it (that is how `chat export` records its path); a
+  // column can therefore no longer be cleared by omission, only overwritten.
+  if (mutable.agentId === null) delete mutable.agentId;
+  if (mutable.exportedWorkflowPath === null) delete mutable.exportedWorkflowPath;
+  if (mutable.deletedAt === null) delete mutable.deletedAt;
   return mutable;
 }
 
@@ -257,6 +265,9 @@ export function toSessionMessageRow(
     modelId: m.modelId ?? null,
     // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
     compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
+    // ADR-0119: NULL for every row but an interruption row; the closed reason (+ the closed code for 'failed').
+    interruptionReason: m.interruption?.reason ?? null,
+    interruptionCode: m.interruption?.code ?? null,
     createdAt: isoToEpochMs(m.timestamp),
   };
 }
@@ -271,6 +282,10 @@ export function toSessionMessageRow(
 export function fromSessionMessageRow(
   row: Omit<SessionMessageRow, 'userDisplayText'>,
 ): SessionMessage {
+  // ADR-0119: a code with no reason is the one malformed interruption shape that would otherwise vanish without a
+  // signal (the object below is built only when a reason exists), so it is refused here like every other forgery.
+  if (row.interruptionReason === null && row.interruptionCode !== null)
+    throw new SessionMessageBoundaryError('message_invalid');
   const candidate = {
     id: row.id,
     sessionId: row.sessionId,
@@ -281,6 +296,15 @@ export function fromSessionMessageRow(
     ...(row.compactionDroppedThroughSequence === null
       ? {}
       : { compaction: { droppedThroughSequence: row.compactionDroppedThroughSequence } }),
+    // ADR-0119: re-validated by the schema below; a stored value outside the closed sets cannot be reloaded.
+    ...(row.interruptionReason === null
+      ? {}
+      : {
+          interruption: {
+            reason: row.interruptionReason,
+            ...(row.interruptionCode === null ? {} : { code: row.interruptionCode }),
+          },
+        }),
     timestamp: epochMsToIso(row.createdAt),
   };
   const message = validateSessionMessage(candidate);
@@ -569,6 +593,8 @@ export function createSessionStore(db: Db): SessionStore {
         finishReason: sessionMessages.finishReason,
         modelId: sessionMessages.modelId,
         compactionDroppedThroughSequence: sessionMessages.compactionDroppedThroughSequence,
+        interruptionReason: sessionMessages.interruptionReason,
+        interruptionCode: sessionMessages.interruptionCode,
         createdAt: sessionMessages.createdAt,
       })
       .from(sessionMessages)

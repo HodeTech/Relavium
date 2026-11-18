@@ -14,10 +14,12 @@ import {
 } from '@relavium/db';
 import {
   completedSessionTurns,
+  interruptionMatchesTurnCompleted,
   type AgentSessionRecord,
   type SessionContext,
   type SessionMessage,
   type SessionStatus,
+  type SessionInterruption,
   type SessionToolHistoryEntry,
   type UsageInvocation,
   type UsageCoverageSnapshot,
@@ -55,8 +57,9 @@ export function makeCatalogIdResolver(
  *
  * Each completed exchange stores user text, ordered content-free tool pairs from the terminal event,
  * and an explicit final assistant text part (even empty), in one transaction with the session row.
- * The engine's next-turn projection remains text-only. Error/abort turns persist no exchange,
- * while their billed cost remains real. Held application keys are not injected into these rows;
+ * The engine's next-turn projection remains text-only. A turn the engine RETAINED as interrupted (ADR-0119) is
+ * stored as the user text, the same tool pairs and one interruption row instead of an answer; every other
+ * error/abort turn persists no exchange. Billed cost is real either way. Held application keys are not injected into these rows;
  * user-authored text, including explicit file/shell injection, can still contain sensitive data.
  */
 
@@ -279,6 +282,23 @@ export function createSessionPersister(
   });
 
   /**
+   * True when another persister has adopted this session's row for a DIFFERENT model or provider — a build-first
+   * `/models` reseat (the Home): the row's agent snapshot is then no longer this persister's own, and its terminal write
+   * would put the old model back. A row that is simply absent, or names this persister's own agent, is "not superseded"
+   * and the terminal write proceeds. A read FAILURE is not an answer, so it is NOT caught here: it propagates to the
+   * caller's `persistDurably`, which skips the terminal write (the cost is a stale `active` status; writing blind could
+   * put the old model back over a reseated row) and latches and surfaces the failure like any failed durable write.
+   */
+  const supersededByReseat = (): boolean => {
+    const stored = deps.store.loadSession(deps.sessionId);
+    const agent = stored?.agentSnapshot;
+    return (
+      agent !== undefined &&
+      (agent.model !== deps.agent.model || agent.provider !== deps.agent.provider)
+    );
+  };
+
+  /**
    * Persist one COMPLETED exchange: stage its rows, write them and the session row in one transaction, then —
    * and only then — adopt the staged state in memory. Extracted from `onEvent`'s `session:turn_completed` arm
    * so that arm reads as one decision (persist or just flush) rather than carrying the whole staging protocol
@@ -289,6 +309,7 @@ export function createSessionPersister(
     userDisplayText: string | undefined,
     tokensUsed: { input: number; output: number },
     toolHistory: readonly SessionToolHistoryEntry[],
+    interruption?: SessionInterruption,
   ): void => {
     const nextTitle = title ?? deriveSessionTitle(userText);
     // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
@@ -311,10 +332,26 @@ export function createSessionPersister(
         });
       }
     }
-    // An explicit terminal, even for empty text, distinguishes completion from an interrupted tool loop.
-    staged.push(
-      stageText(sequenceNumber + staged.length, 'assistant', assistantText, turnModelCatalogId),
-    );
+    if (interruption === undefined) {
+      // An explicit terminal, even for empty text, distinguishes completion from an interrupted tool loop.
+      staged.push(
+        stageText(sequenceNumber + staged.length, 'assistant', assistantText, turnModelCatalogId),
+      );
+    } else {
+      // ADR-0119: a RETAINED INTERRUPTED turn ends in an interruption row instead of an answer — role `system`
+      // (a storage encoding only), empty content, the typed reason. The partial assistant text in `assistantText` is
+      // deliberately not stored: it is incomplete and possibly the reason the user stopped. The engine decided to
+      // retain the turn and said so on the event, so this never re-derives the predicate.
+      staged.push({
+        id: deps.uuid(),
+        sessionId: deps.sessionId,
+        sequenceNumber: sequenceNumber + staged.length,
+        role: 'system',
+        content: [],
+        interruption,
+        timestamp: iso(),
+      });
+    }
     const nextInput = totalInputTokens + tokensUsed.input;
     const nextOutput = totalOutputTokens + tokensUsed.output;
     deps.store.writeTurn({
@@ -335,8 +372,10 @@ export function createSessionPersister(
     realMessageSeqs.push(user.sequenceNumber);
     const terminal = staged.at(-1);
     if (terminal !== undefined) {
+      // The interruption row is the turn's boundary slot (ADR-0095 invariant 5) but not a real message.
       turnBoundarySeqs.push(terminal.sequenceNumber);
-      if (assistantText.length > 0) realMessageSeqs.push(terminal.sequenceNumber);
+      if (interruption === undefined && assistantText.length > 0)
+        realMessageSeqs.push(terminal.sequenceNumber);
     }
     totalInputTokens = nextInput;
     totalOutputTokens = nextOutput;
@@ -394,12 +433,19 @@ export function createSessionPersister(
         return;
       }
       case 'session:turn_completed':
-        // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
-        // `stopReason:'aborted'`, ADR-0057) are rolled back by the engine (`#messages.pop()`), so persisting
-        // their rows would orphan a user message with no in-memory counterpart on chat-resume. Gating on
-        // BOTH (`error === undefined && stopReason !== 'aborted'`) keeps the durable transcript to completed
-        // exchanges, matching the engine. But the session COST (the cumulative from cost:updated) is real
-        // even for a failed/aborted turn — the engine never decrements it — so flush the row UNCONDITIONALLY
+        // ADR-0119: the interruption row is written iff the event carries `interruption`, so the persister must not
+        // trust one the event contradicts (an engine bug). Fail closed and loudly, like any failed durable write: the
+        // latch stops further egress and the user is told, instead of persisting a row the event disagrees with.
+        if (!interruptionMatchesTurnCompleted(event))
+          persistDurably(() => {
+            throw new Error('a retained turn\u2019s interruption contradicts its completion event');
+          });
+        // A COMPLETED exchange, or a turn the engine RETAINED as interrupted (ADR-0119: the event carries
+        // `interruption`), writes MESSAGES. Any other ERROR or ABORTED turn (EA7, `stopReason:'aborted'`,
+        // ADR-0057) is rolled back by the engine, so persisting its rows would orphan a user message with no
+        // in-memory counterpart on chat-resume; the gate below (`interruption !== undefined || (error === undefined
+        // && stopReason !== 'aborted')`) keeps the durable transcript equal to what the engine kept. The session
+        // COST (the cumulative from cost:updated) is real even for a failed/aborted turn — the engine never decrements it — so flush the row UNCONDITIONALLY
         // so a resumed budget governor seeds from the true spend (ADR-0028), not an understated one. The
         // token COLUMNS, by contrast, are NOT accumulated on a non-persisted turn (gated with the messages).
         // (EA2/ADR-0055 delivers a real, non-zero `tokensUsed` on a failed/aborted turn, but those tokens
@@ -407,13 +453,21 @@ export function createSessionPersister(
         // from `cost:updated`, is kept.) A completed exchange always has a user message (the REPL calls
         // beginUserTurn before sendMessage); gating the whole exchange on it prevents an orphaned assistant
         // row with no preceding user row.
+        //
+        // ADR-0119 narrows that: the engine now RETAINS a turn it accepted, that the provider accepted (it returned
+        // content), and that ended by the turn-level abort or a classified error. It says so by setting `interruption`
+        // on this event, and the persister writes the user message, the content-free tool structure and one
+        // interruption row iff that field is present — the engine and the store cannot disagree, because the store
+        // never re-derives the predicate. Everything else (a session-ending cancel emits no event; an unclassified
+        // throw, a refusal or Esc before any provider content, the hard cap) still persists no messages.
         if (
-          event.error === undefined &&
-          event.stopReason !== 'aborted' &&
+          (event.interruption !== undefined ||
+            (event.error === undefined && event.stopReason !== 'aborted')) &&
           pendingUserText !== undefined
         ) {
-          // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
-          // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
+          // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of an exchange that PERSISTS (a
+          // completed one, or a turn retained as interrupted, ADR-0119) of a titleless session, so a rolled-back turn
+          // never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
           // A failed write already skipped the reset below by throwing, so `pendingUserText` survived — but
           // only by ACCIDENT, and the next `beginUserTurn` overwrote it anyway, losing an exchange the
@@ -423,10 +477,16 @@ export function createSessionPersister(
           // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
           const userText = pendingUserText;
           persistDurably(() => {
-            commitTurn(userText, pendingUserDisplayText, event.tokensUsed, event.toolHistory ?? []);
+            commitTurn(
+              userText,
+              pendingUserDisplayText,
+              event.tokensUsed,
+              event.toolHistory ?? [],
+              event.interruption,
+            );
           });
         } else {
-          // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
+          // A turn the engine did NOT retain persists no messages and accumulates no TOKENS, but the row is still
           // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.
           persistDurably(() => {
             deps.store.updateSession(record('active'));
@@ -485,6 +545,11 @@ export function createSessionPersister(
         // exactly when a leak is worst.
         try {
           persistDurably(() => {
+            // The Home's `/models` reseat is BUILD-first: the new session's persister adopts this row (and names the new
+            // model on it) BEFORE the old session is torn down. This persister's terminal write would then put the OLD
+            // model and an `ended` status back on a row that a live session still owns — the very window the adopt write
+            // exists to close. A persister whose agent is no longer the row's agent has been superseded: it writes nothing.
+            if (supersededByReseat()) return;
             deps.store.updateSession(record('ended'));
           });
         } finally {
@@ -552,6 +617,21 @@ export function createSessionPersister(
         hasSavedTurns = completedSessionTurns(messages, false).length > 0;
         realMessageSeqs.push(...resumableMessageSequences(messages));
         turnBoundarySeqs.push(...resumableTurnBoundarySequences(messages));
+        // A `/models` reseat builds a NEW session over this SAME row, and what a later resume reads is the row's agent
+        // snapshot. Without this write the row names the OLD model until the first completed turn, so a process that
+        // dies before then resumes on a model the person had already left. Written only when the model or provider
+        // differs, so a plain resume leaves the row (and its `updatedAt`) untouched. Best effort: a lock timeout here must
+        // not stop a resume, and the first completed turn writes the same row.
+        if (
+          existing.agentSnapshot?.model !== deps.agent.model ||
+          existing.agentSnapshot?.provider !== deps.agent.provider
+        ) {
+          try {
+            deps.store.updateSession(record('active'));
+          } catch {
+            /* the next completed turn rewrites the row */
+          }
+        }
       }
       const loadedCoverage = deps.usageStore.loadCoverage(deps.sessionId);
       if (loadedCoverage === undefined) throw new Error('session coverage is unavailable');
@@ -578,7 +658,8 @@ export function createSessionPersister(
       if (durabilityFailure !== undefined) return;
       // Only STAGE the user text; the title is derived when (and if) the exchange COMPLETES + persists (see
       // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
-      // errored first turn whose message rows are rolled back — a label with no transcript behind it.
+      // errored first turn whose message rows are rolled back (a turn the engine does not retain) — a label with no
+      // transcript behind it.
       pendingUserText = text;
       pendingUserDisplayText = userDisplayText;
       assistantText = '';

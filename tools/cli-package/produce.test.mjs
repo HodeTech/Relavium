@@ -22,6 +22,8 @@ import { exitWithin } from './child-exit.mjs';
 import { isolatedEnvironment } from './process.mjs';
 import { producePackage } from './produce.mjs';
 import { productionFailure } from './production-failure.mjs';
+import { syntheticNativeAssets } from '../native-fs/fixture.mjs';
+import { NativeAssetError } from '../native-fs/assets.mjs';
 
 const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'relavium-produce-')));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -46,6 +48,7 @@ function ports({ plantCache = false, failEmit = false, dirty = false } = {}) {
   return {
     seen,
     ports: {
+      nativeAssets: () => {},
       pnpm: async (args, options) => {
         assert.deepEqual(args, ['--version']);
         seen.pnpm = options;
@@ -273,6 +276,7 @@ test(
         environment: {},
         temporary,
         ports: {
+          nativeAssets: () => {},
           pnpm: async () => ({ stdout: '9.12.3\n', stderr: '' }),
           excludesFile: async () => undefined,
           prepare: async () => ({ source: SHA, dirty: false, files: 1 }),
@@ -489,6 +493,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
@@ -711,6 +716,7 @@ try {
     environment: {},
     temporary: ${JSON.stringify(temporary)},
     ports: {
+    nativeAssets: () => {},
       pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
       excludesFile: async () => undefined,
       prepare: async () => { throw new Error('PACKED_CLI_SOURCE_CHANGED_DURING_COPY'); },
@@ -753,6 +759,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
@@ -831,6 +838,7 @@ await producePackage({
   environment: {},
   temporary: ${JSON.stringify(temporary)},
   ports: {
+    nativeAssets: () => {},
     pnpm: async () => ({ stdout: '9.12.3\\n', stderr: '' }),
     excludesFile: async () => undefined,
     prepare: async () => ({ source: '${SHA}', dirty: false, files: 1 }),
@@ -1028,4 +1036,25 @@ test('the producer entry point hands the checkout, the artifact directory and it
     assert.notEqual(run(args).status, 0, String(args.length));
     assert.equal(existsSync(marker), false);
   }
+});
+
+test('the package producer refuses incomplete native inventory before emitting or sealing and removes owned staging', async () => {
+  const repository = fresh('incomplete-native-checkout');
+  syntheticNativeAssets(repository, { complete: false });
+  const destination = join(fresh('artifact-parent'), 'artifact');
+  const temporary = fresh('tmp');
+  const { seen, ports: fakes } = ports();
+  delete fakes.nativeAssets;
+  fakes.prepare = async ({ candidate }) => {
+    syntheticNativeAssets(candidate, { complete: false });
+    return { source: SHA, dirty: false, files: 1 };
+  };
+  await assert.rejects(
+    producePackage({ repository, destination, temporary, environment: {}, ports: fakes }),
+    (error) => error instanceof NativeAssetError && error.code === 'INCOMPLETE',
+  );
+  assert.equal(seen.emit, undefined);
+  assert.equal(seen.seal, undefined);
+  assert.deepEqual(leftovers(temporary), []);
+  assert.deepEqual(readdirSync(destination), []);
 });

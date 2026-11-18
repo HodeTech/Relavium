@@ -27,10 +27,11 @@ import { bracketed, settleFrames, waitFor } from './harness-util.js';
  *
  * The two load-bearing pins here:
  *   • SECURITY (ADR-0057) — a bracketed paste can neither ANSWER the fail-closed per-tool approval floor nor LEAK
- *     into the compose buffer. Two facets, two independent discriminators: (1) a LONE 'y' pasted during a pending
- *     approval — ink routes it to `usePaste` (dropped), never `useInput`; were the handler removed, ink's
- *     no-listener fallback re-emits 'y' to `useInput` and a lone 'y' WOULD answer the floor, so facet 1 fails iff
- *     the CHANNEL wiring regresses. (2) a distinctive token pasted during the same approval must not appear in the
+ *     into the compose buffer. Two facets, two independent discriminators: (1) a Ctrl+Y byte (the answer key —
+ *     a bare 'y' answers nothing any more) pasted during a pending approval — ink routes it to `usePaste` (dropped),
+ *     never `useInput`; were the handler removed, ink's no-listener fallback re-emits the pasted text to `useInput`,
+ *     where the byte parses as Ctrl+Y and WOULD answer the floor (every timing guard is off in that test, so nothing
+ *     else could refuse it), so facet 1 fails iff the CHANNEL wiring regresses. (2) a distinctive token pasted during the same approval must not appear in the
  *     frame; were `ChatApp`'s own `approvalPending` gate regressed, the paste would insert and render, so facet 2
  *     fails iff the GATE regresses (independent of the channel).
  *   • 2.5.H frozen-clock — the live-turn elapsed counter tracks WALL time (re-read each render), not a value frozen
@@ -81,6 +82,15 @@ function mountChat(
   );
 }
 
+/**
+ * The control bytes a terminal sends for the approval card's answer chords; ink maps a byte 0x01..0x1a to
+ * `{ ctrl: true, input: <letter> }`. A bare letter is just the letter. Every key that ANSWERS a card is a chord: a letter
+ * typed while a turn runs is typing (PR #99), so `y`, `a`, `n`, `c` answer nothing.
+ */
+const CTRL_Y = '\x19';
+const CTRL_N = '\x0e';
+const CTRL_R = '\x12';
+
 const approvalReq: ToolApprovalRequest = {
   toolId: 'write_file',
   action: 'fs_write',
@@ -96,6 +106,61 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 });
 
 describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
+  it('discloses diagnostic reason output and redacts the submitted approval explanation (ADR-0127)', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const h = mountChat(store);
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+    const pending = store.requestApproval(approvalReq, false);
+    await waitFor(() => (h.lastFrame() ?? '').includes('Esc stops the turn'));
+    await settleFrames();
+    expect(store.getSnapshot().review?.screen).toBe('card');
+    // A bare `c` — the letter that used to open the reason box — opens nothing: a letter typed at a card is typing.
+    h.stdin.write('c');
+    await settleFrames();
+    expect(store.getSnapshot().review?.denial, 'a bare c opens no reason box').toBeUndefined();
+    h.stdin.write(CTRL_R); // the answer key: Ctrl+R opens the reason box on the card
+    await waitFor(() => (h.lastFrame() ?? '').includes('private note'));
+    await settleFrames();
+    expect(store.getSnapshot().review?.denial).toBe('');
+    let typed = '';
+    for (const char of `please avoid sk-${'F'.repeat(60)}`) {
+      typed += char;
+      h.stdin.write(char);
+      await waitFor(() => store.getSnapshot().review?.denial === typed);
+      expect(store.getSnapshot().review?.denial).toBe(typed);
+      await settleFrames();
+    }
+    h.stdin.write('\r');
+    await expect(pending).resolves.toEqual({
+      outcome: 'reject',
+      reason: 'please avoid [REDACTED]',
+    });
+  });
+
+  it('renders untrusted denial diagnostics with the neutral hint in the mounted standalone chat', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const h = mountChat(store);
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+    store.apply(turnStarted('2026-11-15T00:00:00.000Z'));
+    store.apply({
+      type: 'session:turn_completed',
+      sessionId: 'sess-1',
+      sequenceNumber: 2,
+      timestamp: '2026-11-15T00:00:01.000Z',
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'tool_denied',
+        message: `user explanation: sk-${'G'.repeat(60)}`,
+        retryable: false,
+      },
+    });
+    await waitFor(() => (h.lastFrame() ?? '').includes('[REDACTED]'));
+    expect(h.lastFrame()).toContain('The tool was denied.');
+    expect(h.lastFrame()).not.toContain('sk-');
+    expect(h.lastFrame()).not.toContain('switch with');
+  });
+
   it('activates after commit and displays a notice delivered by the activation hook', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const onActivated = vi.fn(() => store.notice('External effect needs attention.'));
@@ -164,7 +229,10 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
   });
 
   it('SECURITY: a pasted approval token cannot answer the fail-closed floor nor leak into the buffer (ADR-0057)', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    // Every timing layer is off: the only thing that can keep a pasted Ctrl+Y from approving is the paste channel itself.
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+      approvalGuard: { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 },
+    });
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -174,10 +242,12 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     });
     await waitFor(() => store.getSnapshot().approval !== undefined);
     expect(store.getSnapshot().approval).toBeDefined(); // the prompt is up and owns the keyboard
+    await waitFor(() => frame().includes('Esc stops the turn'));
+    await settleFrames();
 
-    // Facet 1 — a LONE 'y' (the exact char that answers the floor via `useInput`) cannot ANSWER it: ink delivers it
+    // Facet 1 — a pasted Ctrl+Y (the exact byte that answers the floor via `useInput`) cannot ANSWER it: ink delivers it
     // to `usePaste`, dropped behind the gate. Give any erroneous answer a bounded window to manifest, then confirm.
-    stdin.write(bracketed('y'));
+    stdin.write(bracketed(CTRL_Y));
     await waitFor(() => answered !== undefined || store.getSnapshot().approval === undefined, 12);
     expect(store.getSnapshot().approval).toBeDefined();
     expect(answered).toBeUndefined();
@@ -187,9 +257,59 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     stdin.write(bracketed('zLEAKz'));
     await waitFor(() => frame().includes('zLEAKz'), 12);
     expect(lastFrame()).not.toContain('zLEAKz');
+
+    // Positive control: the same byte typed for real DOES answer this very store, so facet 1 above was refused by the
+    // paste channel — not because the byte, the card or the guards could not have answered.
+    stdin.write(CTRL_Y);
+    await waitFor(() => answered !== undefined);
+    expect(answered).toEqual({ outcome: 'approve', scope: 'once' });
   });
 
-  it('a REAL "y" keystroke DOES answer the pending approval (the floor is answerable — just not by paste)', async () => {
+  it('a REAL Ctrl+Y keystroke DOES answer the pending approval (the floor is answerable — just not by paste)', async () => {
+    // The guard that makes a key a deliberate answer (E1) is off here: this pins the route, not the timing.
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+      approvalGuard: { settleMs: 0, quietMs: 0 },
+    });
+    const { lastFrame, stdin } = mountChat(store);
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().length > 0);
+    let answered: ApprovalAnswer | undefined;
+    void store.requestApproval(approvalReq, false).then((a) => {
+      answered = a;
+    });
+    await waitFor(() => frame().includes('Esc stops the turn'));
+    await settleFrames();
+    stdin.write(CTRL_Y); // a genuine keystroke on the `useInput` channel — NOT wrapped as a paste
+    await waitFor(() => answered !== undefined);
+    expect(answered).toEqual({ outcome: 'approve', scope: 'once' });
+    expect(store.getSnapshot().approval).toBeUndefined();
+  });
+
+  it('a REAL bare "y" keystroke answers nothing — even with every timing guard off — and Ctrl+Y still answers afterwards', async () => {
+    // Every timing layer is switched off, so the ONLY thing between the letter and an approval is the rule that an answer is a
+    // chord. Were a bare `y` an answer again, "yes do it" typed while a card appeared would approve the write with its `y`.
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+      approvalGuard: { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 },
+    });
+    const { lastFrame, stdin } = mountChat(store);
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().length > 0);
+    let answered: ApprovalAnswer | undefined;
+    void store.requestApproval(approvalReq, false).then((a) => {
+      answered = a;
+    });
+    await waitFor(() => frame().includes('Esc stops the turn'));
+    await settleFrames();
+    stdin.write('y');
+    await waitFor(() => answered !== undefined || store.getSnapshot().approval === undefined, 12);
+    expect(answered, 'a bare y must not answer').toBeUndefined();
+    expect(store.getSnapshot().approval).toBeDefined();
+    stdin.write(CTRL_Y);
+    await waitFor(() => answered !== undefined);
+    expect(answered).toEqual({ outcome: 'approve', scope: 'once' });
+  });
+
+  it('a REAL bare "n" keystroke denies nothing, and Ctrl+N denies at once', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
@@ -198,10 +318,15 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     void store.requestApproval(approvalReq, false).then((a) => {
       answered = a;
     });
-    await waitFor(() => store.getSnapshot().approval !== undefined);
-    stdin.write('y'); // a genuine keystroke on the `useInput` channel — NOT wrapped as a paste
+    await waitFor(() => frame().includes('Esc stops the turn'));
+    await settleFrames();
+    stdin.write('n');
+    await waitFor(() => answered !== undefined || store.getSnapshot().approval === undefined, 12);
+    expect(answered, 'a bare n must not deny').toBeUndefined();
+    expect(store.getSnapshot().approval).toBeDefined();
+    stdin.write(CTRL_N); // a plain deny needs no dwell and no quiet gap
     await waitFor(() => answered !== undefined);
-    expect(answered).toEqual({ outcome: 'approve', scope: 'once' });
+    expect(answered).toEqual({ outcome: 'reject' });
     expect(store.getSnapshot().approval).toBeUndefined();
   });
 });

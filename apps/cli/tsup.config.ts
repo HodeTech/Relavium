@@ -1,4 +1,6 @@
 import { chmodSync, cpSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
 
 import { defineConfig } from 'tsup';
 
@@ -71,13 +73,41 @@ export default defineConfig({
   // is EXCLUDED from the published tarball (the `files` negation in package.json): its `inputs` would reveal the
   // inlined engine's source-file layout, which ADR-0051 keeps unpublished.
   metafile: true,
+  // Only this trusted host import may leave the flat ESM graph for the reviewed native shim.
+  // No external wildcard is added: every other loader acquisition remains forbidden by closure.
+  esbuildPlugins: [
+    {
+      name: 'relavium-fixed-native-fs-loader',
+      setup(build) {
+        build.onResolve(
+          { filter: /^\.\.\/\.\.\/\.\.\/native\/fs-metadata\/runtime\/loader\.cjs$/ },
+          (args) => {
+            if (
+              args.importer !== resolve('src/engine/tool-host/fs-native-metadata.ts') ||
+              args.kind !== 'dynamic-import'
+            ) {
+              return {
+                errors: [
+                  { text: 'Native metadata loader must be owned by its lazy host boundary' },
+                ],
+              };
+            }
+            return { path: './native-fs/loader.cjs', external: true };
+          },
+        );
+      },
+    },
+  ],
   dts: false,
   noExternal: [/^@relavium\//],
   external: THIRD_PARTY_EXTERNAL,
   // Replace the `__RELAVIUM_CLI_VERSION__` token (program.ts) with the literal package version, so the
   // bundled `relavium --version` reports the real version with no runtime file read. Source runs (tsx/vitest)
   // have no define and fall back to a dev sentinel.
-  define: { __RELAVIUM_CLI_VERSION__: JSON.stringify(version) },
+  define: {
+    __RELAVIUM_CLI_VERSION__: JSON.stringify(version),
+    __RELAVIUM_CLI_NATIVE_PACKAGED__: 'true',
+  },
   // The inlined `@relavium/db` resolves its drizzle migrations via `new URL('../drizzle', import.meta.url)`,
   // which — once bundled — points beside THIS bundle, not the db package. So ship the migration set alongside
   // `dist/` (`files: ["dist","drizzle"]`); `<pkg>/drizzle` is then what the bundled db code finds at runtime.
@@ -90,5 +120,12 @@ export default defineConfig({
     // would otherwise linger here and ship stale. Recreate from the source of truth each build.
     rmSync('./drizzle', { recursive: true, force: true });
     cpSync('../../packages/db/drizzle', './drizzle', { recursive: true });
+    // tsup clean has completed. Copy only source-bound prebuilt assets; never compile/download here.
+    const staged = spawnSync(process.execPath, ['../../tools/native-fs/stage.mjs'], {
+      stdio: 'inherit',
+      shell: false,
+    });
+    if (staged.error !== undefined || staged.status !== 0)
+      throw new Error('NATIVE_FS_ASSET_STAGE_FAILED');
   },
 });

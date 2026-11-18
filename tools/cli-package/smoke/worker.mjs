@@ -18,7 +18,11 @@ import { assertInstalledChat } from './chat.mjs';
 import { assertInstalledMcp, assertInstalledWorkflows } from './workflows.mjs';
 import { assertExit, explicitEnvironment, invoke, ndjson } from './process.mjs';
 import { assertInstalledNativeProcesses, InstalledNativeControlError } from './native-process.mjs';
-import { emitInstalledWorkerFailure } from './failure-diagnostic.mjs';
+import {
+  emitInstalledWorkerFailure,
+  nativeAssetLinks,
+  parseNativeLoadDiagnostic,
+} from './failure-diagnostic.mjs';
 import { installedModulesOwner } from './installation.mjs';
 import { createInstalledSmokeRoot } from './index.mjs';
 
@@ -87,21 +91,36 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
     entry,
     ...args,
   ];
+  let nativeLoadDiagnostic = {
+    stage: 'child-invoke',
+    loaderOutcome: 'not-attempted',
+    assets: nativeAssetLinks(packageRoot),
+  };
+  let workflowStage = 'start';
   async function runCase(name, operation) {
     const started = Date.now();
     try {
       const evidence = await operation();
       report.cases.push({ id: name, passed: true, elapsedMs: Date.now() - started, evidence });
     } catch (error) {
+      let errorDetail;
+      let failureEvidence = {};
+      if (error instanceof InstalledNativeControlError) {
+        errorDetail = error.primaryFailure;
+        failureEvidence = { evidence: error.evidence };
+      } else {
+        errorDetail = String(error.stack ?? error);
+        if (name === 'native-addon-load-only')
+          failureEvidence = { evidence: { diagnostic: nativeLoadDiagnostic } };
+        else if (name === 'workflow-gate-budget-effects')
+          failureEvidence = { evidence: { diagnostic: { stage: workflowStage } } };
+      }
       report.cases.push({
         id: name,
         passed: false,
         elapsedMs: Date.now() - started,
-        error:
-          error instanceof InstalledNativeControlError
-            ? error.primaryFailure
-            : String(error.stack ?? error),
-        ...(error instanceof InstalledNativeControlError ? { evidence: error.evidence } : {}),
+        error: errorDetail,
+        ...failureEvidence,
       });
     }
   }
@@ -153,18 +172,46 @@ async function exerciseInstalledSmoke({ packageRoot, supportRoot, artifactSha256
     }
     report.dependencies = dependencies;
     const Database = require('better-sqlite3');
-    const context = { root, Database, cli, environment, calls };
+    const context = {
+      root,
+      Database,
+      cli,
+      environment,
+      calls,
+      workflowCheckpoint: (stage) => {
+        workflowStage = stage;
+      },
+    };
     await runCase('native-addon-load-only', async () => {
       const result = await invoke([join(directory, 'native-load.mjs'), packageRoot], {
         cwd: root,
         env: environment(root),
       });
+      if (result.code !== 0 || result.signal !== null) {
+        nativeLoadDiagnostic = parseNativeLoadDiagnostic(result.stderr) ?? nativeLoadDiagnostic;
+      }
       assertExit(result, 0);
+      nativeLoadDiagnostic.stage = 'child-json';
+      nativeLoadDiagnostic.loaderOutcome = 'success';
       const evidence = JSON.parse(result.stdout);
-      for (const path of [evidence.keyring, evidence.sqlite, ...evidence.nativeModules]) {
+      nativeLoadDiagnostic.stage = 'protocol-check';
+      assert.equal(
+        evidence.metadataProtocol,
+        1,
+        'Actual metadata protocol must execute with both existing native components',
+      );
+      for (const path of [
+        evidence.keyring,
+        evidence.sqlite,
+        evidence.metadataLoader,
+        ...evidence.nativeModules,
+      ]) {
+        nativeLoadDiagnostic.stage = 'repository-boundary';
         assert.equal(within(repository, realpathSync(path)), false);
+        nativeLoadDiagnostic.stage = 'installation-boundary';
         assert.equal(within(installedModules, realpathSync(path)), true);
       }
+      nativeLoadDiagnostic.stage = 'complete';
       return evidence;
     });
     let version;

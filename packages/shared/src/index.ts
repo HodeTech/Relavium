@@ -63,3 +63,13 @@ export { createMediaVerifier } from './media-verifier.js';
 export type { MediaVerifier } from './media-verifier.js';
 export { collectMediaForAdmission } from './media-publication.js';
 export { registerNativeMediaIterator, closeMediaIterator } from './media-iterator.js';
+
+export {
+  RetainedEffectEnvelopeSchema,
+  decodeRetainedEffectEnvelope,
+} from './retained-effect-envelope.js';
+export type {
+  RetainedEffectEnvelope,
+  RetainedValuePresence,
+  RetainedMappingPresence,
+} from './retained-effect-envelope.js';

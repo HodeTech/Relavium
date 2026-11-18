@@ -33,6 +33,8 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
  */
 
 const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultMode: 'ask',
+  defaultModeSource: 'fallback',
   defaultModel: undefined,
   defaultProvider: undefined,
   fsScope: undefined,
@@ -206,8 +208,18 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
       // reconstruction (which a substring check would miss) fails here.
       expect(capture.requests).toHaveLength(1); // exactly one provider call drove the resumed turn
       const resumedRequest = capture.requests[0];
+      // ADR-0128: the restored turn made no recorded tool call and no completeness marker exists, so it is
+      // ambiguous and the request opens with exactly one fixed sentence saying so. Nothing else changes.
+      const gapSentence =
+        '[Some earlier tool activity may not be listed here. A turn without records is not evidence that no tool ran.]\n\n';
       expect(resumedRequest?.messages).toEqual([
-        { role: 'user', content: [{ type: 'text', text: 'first user message' }] },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: gapSentence },
+            { type: 'text', text: 'first user message' },
+          ],
+        },
         { role: 'assistant', content: [{ type: 'text', text: 'reply from the fresh session' }] },
         { role: 'user', content: [{ type: 'text', text: 'second user message' }] },
       ]);

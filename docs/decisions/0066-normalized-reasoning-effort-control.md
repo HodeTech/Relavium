@@ -43,8 +43,7 @@
 > answers what the WIRE takes, but it made a poor MENU: it offered five rows for models that expose fewer real
 > choices, because several normalized tiers can collapse onto one provider value (DeepSeek's low/medium/high all
 > send `high`; Gemini's `max` coarsens onto `high`) and because a continuous token BUDGET has no discrete rungs at
-> all (`claude-haiku-4-5` — the maintainer's report: a five-tier ladder where the model is really on/off, à la
-> Claude Code). A new PRESENTATION helper `reasoningControlShape(controls)` → `graded | budget | none` and a
+> all (`claude-haiku-4-5` — the maintainer's report: a five-tier ladder where the model is really on/off). A new PRESENTATION helper `reasoningControlShape(controls)` → `graded | budget | none` and a
 > `CANONICAL_ON_TIER` (= `medium`) drive a CLI projection (`effortTiersFor`, `effortRowLabel` in
 > `chat/effort-notice.ts`): a **graded** ladder is deduped by distinct wire value (the representative reads the
 > name that matches the wire); a **budget** model is a two-row **off/on** ("on" = `medium`, a real member of the
@@ -135,3 +134,6 @@ Considered and rejected: **(a) providerOptions-only** (the status quo — not pr
 
 - Amends ADR-0011 + complements ADR-0030/0039 **append-only** (a new optional field + a populated existing capability); no existing behavior changes for an unset `reasoningEffort`. No new runtime dependency.
 - The exact native field names are deliberately left to each adapter's SDK-typed implementation (the ground truth), not frozen here — so a provider renaming a field is an adapter edit, not an ADR supersede.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** named external
+> product comparisons are removed; the technical decision remains unchanged.

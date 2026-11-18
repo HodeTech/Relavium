@@ -12,6 +12,7 @@ import type { LlmProvider, StreamChunk } from '@relavium/llm';
 import { AgentSession } from './agent-session.js';
 import { DEFAULT_AGENT_TURN_LIMITS, runAgentTurn, type AgentTurnParams } from './agent-turn.js';
 import { MoneyDurability, type SettledAttemptDraft } from './money-durability.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const adversarial = vi.hoisted(() => ({ finalHint: false }));
 vi.mock('@relavium/llm', async (original) => {
@@ -200,7 +201,11 @@ it('actual custom SDK summary repair remains unknown in successful compaction co
     },
     {
       messages,
-      completedTurnSpans: messages.map((_, i) => ({ start: i, end: i + 1 })),
+      completedTurnSpans: messages.map((_, i) => ({
+        start: i,
+        end: i + 1,
+        receipts: KNOWN_EMPTY_RECEIPTS,
+      })),
       turnCount: 3,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,

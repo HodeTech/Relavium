@@ -26,6 +26,8 @@ import { exitOnInterrupt, isolatedEnvironment, runPnpm } from './process.mjs';
 import { sealPackage } from './seal.mjs';
 import { captureSupported } from './symbolicate.mjs';
 import { emitFreshPackage } from './pipeline.mjs';
+import { copyNativeAssets } from '../native-fs/assets.mjs';
+import { NATIVE_DIRECTORY } from '../native-fs/catalog.mjs';
 
 /**
  * Produce one package-test artifact from the original checkout `repository` into the empty
@@ -45,7 +47,7 @@ import { emitFreshPackage } from './pipeline.mjs';
  *   seal?: typeof sealPackage, noBuildCache?: typeof assertNoBuildCache,
  *   capturable?: typeof captureSupported,
  *   excludesFile?: typeof globalExcludesFile, pnpm?: typeof runPnpm,
- *   remove?: (path: string) => void}}} options
+ *   nativeAssets?: typeof copyNativeAssets, remove?: (path: string) => void}}} options
  */
 export async function producePackage({
   repository,
@@ -62,6 +64,7 @@ export async function producePackage({
     capturable = captureSupported,
     excludesFile = globalExcludesFile,
     pnpm = runPnpm,
+    nativeAssets = copyNativeAssets,
     // Retries absorb a child killed by the interrupt that was still finishing a write.
     remove = (path) => rmSync(path, { recursive: true, force: true, maxRetries: 3 }),
   } = ports;
@@ -145,6 +148,14 @@ export async function producePackage({
 
       const excludes = await excludesFile({ repository, environment });
       const identity = await prepare({ repository, candidate, environment, home, env, excludes });
+      // Native builds/execution happen before packing. Verify every receipt against this isolated
+      // chosen source tree; never borrow binaries from a newer or changed working tree.
+      nativeAssets({
+        repository,
+        candidate,
+        destination: join(candidate, 'apps/cli', NATIVE_DIRECTORY),
+        complete: true,
+      });
       const receipt = await emit({
         repository: candidate,
         destination,

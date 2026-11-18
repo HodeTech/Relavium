@@ -14,6 +14,7 @@ import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent
 import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
 import { BudgetPauseError } from './budget-governor.js';
 import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const text = (value: string): LlmMessage => ({
   role: 'user',
@@ -165,7 +166,11 @@ function fixture(
     },
     {
       messages: history,
-      completedTurnSpans: history.map((_, i) => ({ start: i, end: i + 1 })),
+      completedTurnSpans: history.map((_, i) => ({
+        start: i,
+        end: i + 1,
+        receipts: KNOWN_EMPTY_RECEIPTS,
+      })),
       turnCount: history.length,
       cumulativeCostMicrocents: 0,
       conservativeCostMicrocents: 0,
@@ -410,7 +415,11 @@ describe('W7 compaction authority, policy and atomic recovery controls', () => {
         await h.session.sendMessage('next-unique');
         const request = h.requests.at(-1);
         if (request === undefined) throw new Error('missing request');
+        // ADR-0119 implementation note: the provider never accepted the request (no content), so the turn is rolled
+        // back exactly as before. Keeping it would resend the refused message in every later request.
+        expect((terminal as { interruption?: unknown }).interruption).toBeUndefined();
         expect(body(request)).not.toContain('pending-unique');
+        expect(body(request)).not.toContain('interrupted before it was answered');
         expect(body(request)).toContain('latest');
         expect(body(request)).toContain('next-unique');
       } else expect(terminal).toMatchObject({ stopReason: 'stop' });
@@ -567,6 +576,9 @@ describe('W7 atomic compaction cancellation at every entry', () => {
             await h.session.sendMessage('next-unique');
             const nextRequests = h.requests.filter((r) => body(r).includes('next-unique'));
             expect(nextRequests.length).toBeGreaterThan(0);
+            // A turn no provider engaged in is rolled back, and so is one the provider refused outright and then
+            // aborted during overflow recovery (ADR-0119 implementation note): the refused message must not ride
+            // every later request.
             if (!after && entry !== 'manual')
               for (const request of nextRequests)
                 expect(body(request)).not.toContain('pending-unique');

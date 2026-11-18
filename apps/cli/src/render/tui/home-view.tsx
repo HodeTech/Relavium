@@ -1,5 +1,5 @@
-import { Box, Text } from 'ink';
-import { type ReactElement } from 'react';
+import { Box, Text, type DOMElement } from 'ink';
+import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
@@ -36,6 +36,7 @@ import { homePromptRows, layoutHomeNotice } from './home-notice.js';
  */
 
 interface HomeViewProps {
+  readonly onFrame?: ((node: DOMElement | null) => void) | undefined;
   readonly snapshot: HomeSnapshot;
   /** The current prompt editor — text + cursor (owned by the `RootApp`). */
   readonly editor: EditorState;
@@ -103,6 +104,10 @@ function Section(
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
+  const frame = useRef<DOMElement | null>(null);
+  useLayoutEffect(() => {
+    props.onFrame?.(frame.current);
+  });
 
   // Below the minimum, render ONLY the resize line (+ the exit affordance) — the RootApp suspends the strip
   // until a resize arrives, so the user must still be able to leave without resizing.
@@ -206,7 +211,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   }));
 
   return (
-    <Box flexDirection="column">
+    <Box ref={frame} flexDirection="column">
       {showBanner ? (
         // The banner REPLACES the plain heading rather than sitting above it, so nothing shifts when it is off.
         // `color === false` covers both `NO_COLOR` and `--no-color`, and takes the ASCII glyphs with it (ADR-0068).

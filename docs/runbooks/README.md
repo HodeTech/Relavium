@@ -17,6 +17,8 @@ specs and links to them rather than restating them (see
 | [add-a-provider.md](add-a-provider.md) | End-to-end CLI provider lifecycle: register (incl. a custom OpenAI-compatible endpoint), store + verify a key, discover models, and price an unknown model. |
 | [add-a-provider-key.md](add-a-provider-key.md) | Add or rotate an LLM provider API key into the OS keychain from the desktop app. |
 | [capture-provider-overflow.md](capture-provider-overflow.md) | Capture and review dated official-provider overflow evidence for W7 without recording credentials. |
+| [troubleshoot-tool-denials.md](troubleshoot-tool-denials.md) | Interpret mode, scope and filesystem-safety refusals and inspect them without changing security metadata. |
+| [verify-macos-write-metadata.md](verify-macos-write-metadata.md) | Reproduce the scoped metadata mechanisms and collect separate real-APFS host/user-interaction acceptance evidence. |
 | [release-a-surface.md](release-a-surface.md) | Cut a release for the desktop (`.dmg`), CLI (npm), or VS Code extension (Marketplace). |
 
 ## Conventions

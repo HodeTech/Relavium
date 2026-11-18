@@ -1,59 +1,13 @@
 import type { DOMElement } from 'ink';
-import { measureElement } from 'ink';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { reduceEditorMotion, type ChatKey } from './chat-input.js';
-
-type Size = { readonly cols: number; readonly rows: number };
-export function nativePromptFits(size: Size): boolean {
-  return (
-    Number.isSafeInteger(size.cols) &&
-    Number.isSafeInteger(size.rows) &&
-    size.cols >= 80 &&
-    size.rows >= 24
-  );
-}
-function fitsBounds(node: DOMElement, size: Size): boolean {
-  if (node.yogaNode === undefined) return false;
-  const measured = measureElement(node);
-  if (
-    !Number.isFinite(measured.width) ||
-    !Number.isFinite(measured.height) ||
-    measured.width < 1 ||
-    measured.height < 1
-  )
-    return false;
-  let top = 0;
-  let left = 0;
-  let current: DOMElement | undefined = node;
-  let relativeTop = 0;
-  let relativeLeft = 0;
-  while (current !== undefined) {
-    const y = current.yogaNode?.getComputedTop() ?? 0;
-    const x = current.yogaNode?.getComputedLeft() ?? 0;
-    top += y;
-    left += x;
-    relativeTop += y;
-    relativeLeft += x;
-    const parent = current.parentNode;
-    if (parent?.yogaNode !== undefined) {
-      const bounds = measureElement(parent);
-      if (
-        relativeTop < 0 ||
-        relativeLeft < 0 ||
-        relativeTop + measured.height > bounds.height ||
-        relativeLeft + measured.width > bounds.width
-      )
-        return false;
-    }
-    current = current.parentNode;
-  }
-  return (
-    top >= 0 &&
-    left >= 0 &&
-    top + measured.height <= size.rows &&
-    left + measured.width <= size.cols
-  );
-}
+import {
+  createMeasuredFrameAcknowledgement,
+  fitsTerminalBounds as fitsBounds,
+  reviewTerminalFits as nativePromptFits,
+  type TerminalFrameSize as Size,
+} from './measured-frame-acknowledgement.js';
+export { reviewTerminalFits as nativePromptFits } from './measured-frame-acknowledgement.js';
 
 /** Evidence is bound to one exact card, geometry and committed/actually flushed Ink frame. */
 export function createNativePromptAcknowledgement(
@@ -79,7 +33,13 @@ export function createNativePromptAcknowledgement(
   const notify = (): void => {
     for (const listener of listeners) listener();
   };
+  const sharedFrame = createMeasuredFrameAcknowledgement({
+    current: ui.getSnapshot,
+    getSize,
+    hasCustody,
+  });
   const invalidateCard = (preservePickerEditor: boolean): void => {
+    sharedFrame.invalidate();
     epoch++;
     observed = undefined;
     if (!preservePickerEditor) pickerEditor = undefined;
@@ -180,25 +140,12 @@ export function createNativePromptAcknowledgement(
       const size = getSize();
       if (!snapshot.active || node === null || !nativePromptFits(size) || !fitsBounds(node, size))
         return false;
-      void flush().then(
-        () => {
-          if (
-            disposed ||
-            currentEpoch !== epoch ||
-            ui.getSnapshot() !== snapshot ||
-            !sameSize(size, getSize()) ||
-            !fitsBounds(node, size)
-          )
-            return;
-          observed = { snapshot, size, epoch: currentEpoch, node };
-          pickerEditor = snapshot.kind === 'picker' ? observed : undefined;
-          notify();
-        },
-        () => {
-          /* the owning renderer's flush path reports output failure */
-        },
-      );
-      return true;
+      return sharedFrame.commit(snapshot, node, flush, () => {
+        if (disposed || currentEpoch !== epoch) return;
+        observed = { snapshot, size, epoch: currentEpoch, node };
+        pickerEditor = snapshot.kind === 'picker' ? observed : undefined;
+        notify();
+      });
     },
     wait: async (snapshot: NativePromptSnapshot): Promise<void> => {
       const signal = ui.signal();
@@ -238,6 +185,7 @@ export function createNativePromptAcknowledgement(
     },
     dispose: (): void => {
       disposed = true;
+      sharedFrame.dispose();
       ui.bindVisibility(undefined);
       unsubscribe();
       notify();

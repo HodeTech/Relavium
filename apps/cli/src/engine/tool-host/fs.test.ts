@@ -23,12 +23,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createNodeFsCapability,
+  FS_STAGE_DIRECTORY,
   FsCapabilityError,
   FsScopeDeniedError,
   readJailedFile,
   type NodeFsCapabilityConfig,
 } from './fs.js';
 import { issueHostScratchRoot } from './fs-policy.js';
+import { createSyntheticPinnedStage } from './fs-stage.test-support.js';
+import { FS_PRIVATE_INDEX_PARENT } from './fs-stage-inventory.js';
 
 /** An aborted signal for cancellation tests (AbortSignalLike: aborted + the two listener no-ops). */
 const ABORTED = {
@@ -62,6 +65,7 @@ function sandboxed(
   over: Partial<NodeFsCapabilityConfig> = {},
 ): ReturnType<typeof createNodeFsCapability> {
   return createNodeFsCapability({
+    operatorHomeDir: join(workspace, '..'),
     tier: 'sandboxed',
     workspaceDir: workspace,
     readOnly: false,
@@ -201,7 +205,12 @@ describe('createNodeFsCapability — read (jailed)', () => {
     async () => {
       await writeFile(join(outside, 'lib.txt'), 'LIB');
       await link(join(outside, 'lib.txt'), join(workspace, 'lib.txt'));
-      const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+      const fs = createNodeFsCapability({
+        operatorHomeDir: join(workspace, '..'),
+        tier: 'full',
+        workspaceDir: workspace,
+        readOnly: false,
+      });
       expect((await fs.readFile('lib.txt', {})).content).toBe('LIB');
     },
   );
@@ -428,11 +437,11 @@ describe('createNodeFsCapability — glob read', () => {
     expect(result.content).toContain('OK'); // the binary is skipped before its size is tested against the budget
   });
 
-  it('caps the glob read at maxGlobMatches', async () => {
+  it('refuses a glob with more matches than the limit', async () => {
     for (let i = 0; i < 5; i += 1) await writeFile(join(workspace, `f${i}.ts`), 'x');
-    const result = await sandboxed({ maxGlobMatches: 2 }).readFile('*.ts', { glob: true });
-    // each match contributes one `===== fN.ts =====` header; the cap bounds the surfaced set to 2 of the 5.
-    expect(result.content.match(/===== f\d\.ts =====/g)?.length).toBe(2);
+    await expect(sandboxed({ maxGlobMatches: 2 }).readFile('*.ts', { glob: true })).rejects.toThrow(
+      /limit/,
+    );
   });
 });
 
@@ -516,6 +525,7 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
       await writeFile(join(outside, 'target'), 'original');
       await link(join(outside, 'target'), join(workspace, 'alias.txt'));
       const fullTier = createNodeFsCapability({
+        operatorHomeDir: join(workspace, '..'),
         tier: 'full',
         workspaceDir: workspace,
         readOnly: false,
@@ -559,17 +569,24 @@ describe('createNodeFsCapability — write (read-write profile)', () => {
     10_000,
   );
 
-  it('cleans up the temp file when the atomic publish fails — no `.relavium-write.*.tmp` orphan', async () => {
-    // Force the rename to fail by pointing the final target at an existing NON-EMPTY directory: `rename(tmp,
-    // dir)` throws (ENOTEMPTY/EISDIR/EEXIST). The write must reject, AND the `finally` must remove the temp it
-    // created — so a failed publish never strands a `.relavium-write.*.tmp` in the workspace.
+  it('refuses an existing directory before creating a temporary file', async () => {
+    // Preparation refuses the non-regular target before publication creates any temporary file.
     await mkdir(join(workspace, 'busy'), { recursive: true });
     await writeFile(join(workspace, 'busy', 'keep.txt'), 'x'); // non-empty ⇒ the rename onto it always fails
     await expect(sandboxed().writeFile('busy', 'data', {})).rejects.toBeInstanceOf(
       FsCapabilityError,
     );
-    const orphans = (await readdir(workspace)).filter((n) => n.startsWith('.relavium-write.'));
-    expect(orphans).toEqual([]);
+    // Staged artifacts live in a `.relavium-fs-stage-v1[.…]` directory beside the target and as records in the
+    // private index under the operator home (here: the workspace's parent). Neither may be left behind.
+    const index = join(workspace, '..', FS_PRIVATE_INDEX_PARENT, 'fs-staging-v1');
+    const leftovers = async (): Promise<string[]> => [
+      ...(await readdir(workspace)).filter((n) => n.startsWith(FS_STAGE_DIRECTORY)),
+      ...(await readdir(index).catch(() => [])).filter((n) => n !== 'inventory.lock'),
+    ];
+    expect(await leftovers()).toEqual([]);
+    // Control: the filter really sees a stage directory, so the empty result above is not vacuous.
+    await mkdir(join(workspace, `${FS_STAGE_DIRECTORY}.1.${'a'.repeat(32)}`));
+    expect(await leftovers()).toEqual([`${FS_STAGE_DIRECTORY}.1.${'a'.repeat(32)}`]);
   });
 });
 
@@ -698,6 +715,7 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
   it('denies protected paths under the `full` (unjailed) tier too — a tier-independent floor', async () => {
     // ADR-0057: protected paths hold "even where the fs jail would allow them" — `full` is the no-jail case.
     const fullTier = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'full',
       workspaceDir: workspace,
       readOnly: false,
@@ -838,7 +856,12 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
   it('is tier-independent — the full (unjailed) tier still refuses a `.ssh/` read', async () => {
     await mkdir(join(workspace, '.ssh'), { recursive: true });
     await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
-    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
+      tier: 'full',
+      workspaceDir: workspace,
+      readOnly: false,
+    });
     await expect(fs.readFile('.ssh/id_rsa', {})).rejects.toBeInstanceOf(FsScopeDeniedError);
   });
 
@@ -863,20 +886,97 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
   });
 
   itPosix(
-    'list_directory (recursive) SKIPS a symlink whose REALPATH is a sensitive store (resolved, not lexical)',
+    'list_directory lists a symlink from its own entry, identically whatever it points at (no target oracle)',
     async () => {
-      // A symlink with an INNOCUOUS name (`notes`) pointing into a credential store: its lexical path is harmless,
-      // so a bare-lexical sensitive check would LIST it. The realpath-before-floor (mirroring collectGlobFiles)
-      // resolves it to `.ssh/` and skips it, so a recursive listing never surfaces a symlinked path to a secret.
+      // A planted link must not tell the model whether a credential store exists elsewhere: a link to an EXISTING
+      // store, a link to a MISSING target and a link to an unrelated place are listed the same way. (They used to
+      // differ: the entry's target was resolved, so a link to an existing store vanished and the other two stayed.)
+      await mkdir(join(outside, '.gnupg'), { recursive: true });
+      await mkdir(join(outside, 'Library', 'Keychains'), { recursive: true });
+      await writeFile(join(outside, '.gnupg', 'secring.gpg'), 'SECRET');
+      await writeFile(join(outside, 'Library', 'Keychains', 'login.keychain-db'), 'SECRET');
       await mkdir(join(workspace, '.ssh'), { recursive: true });
       await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
-      await symlink(join(workspace, '.ssh'), join(workspace, 'notes'), 'dir'); // harmless name → sensitive target
-      await writeFile(join(workspace, 'keep.txt'), 'x');
+      const links: Record<string, string> = {
+        a_store_exists: join(outside, '.gnupg', 'secring.gpg'),
+        b_store_missing: join(outside, '.gnupg', 'nope.gpg'),
+        c_keychain_exists: join(outside, 'Library', 'Keychains', 'login.keychain-db'),
+        d_keychain_missing: join(outside, 'Library', 'Keychains', 'nope-db'),
+        e_unrelated_missing: join(outside, 'unrelated.txt'),
+        f_in_workspace_store_dir: join(workspace, '.ssh'),
+        g_in_workspace_store_file: join(workspace, '.ssh', 'id_rsa'),
+      };
+      for (const [name, target] of Object.entries(links))
+        await symlink(target, join(workspace, name));
+      await writeFile(join(workspace, 'plain.txt'), 'x');
+      for (const recursive of [false, true]) {
+        const { entries } = await sandboxed().listDirectory('.', { recursive });
+        const types = Object.fromEntries(entries.map((e) => [e.name, e.type]));
+        expect(types, `recursive=${String(recursive)}`).toMatchObject({
+          ...Object.fromEntries(Object.keys(links).map((name) => [name, 'symlink'])),
+          'plain.txt': 'file',
+        });
+        // Listing a link never lists what is behind it.
+        expect(entries.some((e) => e.name.includes('id_rsa') || e.name.includes('secring'))).toBe(
+          false,
+        );
+      }
+    },
+  );
+
+  itPosix(
+    'list_directory still hides a symlink whose OWN name is a credential store name (the name floor)',
+    async () => {
+      // The floor applies to the entry's own path and name; it needs no look at the target.
+      await writeFile(join(workspace, 'target.txt'), 'x');
+      await symlink(join(workspace, 'target.txt'), join(workspace, '.npmrc'));
+      await symlink(join(workspace, 'target.txt'), join(workspace, '.env'));
+      await symlink(join(workspace, 'target.txt'), join(workspace, 'innocent'));
+      for (const recursive of [false, true]) {
+        const names = (await sandboxed().listDirectory('.', { recursive })).entries.map(
+          (e) => e.name,
+        );
+        expect(names, `recursive=${String(recursive)}`).toContain('innocent');
+        expect(names).not.toContain('.npmrc');
+        expect(names).not.toContain('.env');
+      }
+    },
+  );
+
+  itPosix(
+    'list_directory lists a link whose target is a recorded staging directory, without resolving or pinning the target',
+    async () => {
+      // The staging pin applies to the entry's own identity (a hard-linked alias still trips it, see
+      // fs-stage-inventory.test.ts); a symlink is its own inode, so a link to a stage is listed as a link and what
+      // is behind it is neither named nor readable.
+      const { stage } = await createSyntheticPinnedStage(join(workspace, '..'), workspace);
+      await symlink(stage, join(workspace, 'indirect'), 'dir');
+      await writeFile(join(workspace, 'plain.txt'), 'x');
+      const { entries } = await sandboxed().listDirectory('.', {});
+      expect(Object.fromEntries(entries.map((e) => [e.name, e.type]))).toEqual({
+        indirect: 'symlink',
+        'plain.txt': 'file',
+      });
+      await expect(sandboxed().readFile('indirect/payload', {})).rejects.toThrow();
+    },
+  );
+
+  itPosix(
+    'list_directory never reads through an innocently named link to a credential directory',
+    async () => {
+      // The link is listed (its target is not resolved for the listing), but a recursive walk does not enter it
+      // and a read through it still meets the read floor.
+      await mkdir(join(workspace, '.ssh'), { recursive: true });
+      await writeFile(join(workspace, '.ssh', 'id_rsa'), 'KEY');
+      await symlink(join(workspace, '.ssh'), join(workspace, 'notes'), 'dir');
       const { entries } = await sandboxed().listDirectory('.', { recursive: true });
       const names = entries.map((e) => e.name);
-      expect(names).toContain('keep.txt');
-      expect(names).not.toContain('notes'); // the symlink-to-.ssh is filtered by the RESOLVED sensitive check
-      expect(names.some((n) => n.includes('.ssh'))).toBe(false);
+      expect(entries.find((e) => e.name === 'notes')?.type).toBe('symlink');
+      expect(names.some((n) => n.startsWith('notes/'))).toBe(false); // never recursed into
+      expect(names.some((n) => n.includes('.ssh') || n.includes('id_rsa'))).toBe(false);
+      await expect(sandboxed().readFile('notes/id_rsa', {})).rejects.toBeInstanceOf(
+        FsScopeDeniedError,
+      );
     },
   );
 });
@@ -932,9 +1032,9 @@ describe('createNodeFsCapability — list_directory', () => {
     // The symlink itself shows as an entry, but its contents are never walked into.
     expect(entries.map((e) => e.name)).toContain('linkdir');
     expect(entries.map((e) => e.name)).not.toContain('linkdir/secret.txt');
-    // And it is reported as a `file`, never `directory` — `dirent.isDirectory()` is false for a symlink, so the
+    // And it is reported as a `symlink`, never `directory` — `dirent.isDirectory()` is false for a symlink, so the
     // reported type can never invite a caller to treat it as recursable (defense in depth beside the walk skip).
-    expect(entries.find((e) => e.name === 'linkdir')?.type).toBe('file');
+    expect(entries.find((e) => e.name === 'linkdir')?.type).toBe('symlink');
   });
 
   it('rejects listing a path outside the workspace', async () => {
@@ -993,13 +1093,19 @@ describe('createNodeFsCapability — tiers', () => {
 
   it('full tier reads outside the workspace (the power-user opt-in)', async () => {
     await writeFile(join(outside, 'anywhere.txt'), 'unjailed');
-    const fs = createNodeFsCapability({ tier: 'full', workspaceDir: workspace, readOnly: false });
+    const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
+      tier: 'full',
+      workspaceDir: workspace,
+      readOnly: false,
+    });
     expect((await fs.readFile(join(outside, 'anywhere.txt'), {})).content).toBe('unjailed');
   });
 
   it('project tier honours an extraRoots allowlist', async () => {
     await writeFile(join(outside, 'allowed.txt'), 'in-allowlist');
     const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'project',
       workspaceDir: workspace,
       extraRoots: [outside],
@@ -1013,6 +1119,7 @@ describe('createNodeFsCapability — tiers', () => {
     await mkdir(third, { recursive: true });
     await writeFile(join(third, 'secret.txt'), 'NOT ALLOWED');
     const fs = createNodeFsCapability({
+      operatorHomeDir: join(workspace, '..'),
       tier: 'project',
       workspaceDir: workspace,
       extraRoots: [outside], // `third` is deliberately NOT in the allowlist

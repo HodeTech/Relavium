@@ -37,6 +37,8 @@ test('the actual required workflow joins both full offline controls and checks t
   );
   const ci = workflow.jobs.ci;
   assert.deepEqual(ci.needs, [
+    'native-fs-assets',
+    'ci-work',
     'wire-mutations',
     'usage-mutations',
     'fs-mutations',
@@ -44,6 +46,23 @@ test('the actual required workflow joins both full offline controls and checks t
     'packed-cli',
     'map-controls',
   ]);
+  const nativeGuard = ci.steps.find(
+    (step) => step.name === 'Require all native component execution legs',
+  );
+  assert.deepEqual(nativeGuard, {
+    name: 'Require all native component execution legs',
+    env: { NATIVE_FS_RESULT: '${{ needs.native-fs-assets.result }}' },
+    run: "node -e \"require('node:assert/strict').equal(process.env.NATIVE_FS_RESULT, 'success')\"",
+  });
+  // The workspace checks run in their own job beside the control jobs; the required context joins it like the others.
+  assert.deepEqual(
+    ci.steps.find((step) => step.name === 'Require complete workspace checks'),
+    {
+      name: 'Require complete workspace checks',
+      env: { WORKSPACE_CHECKS_RESULT: '${{ needs.ci-work.result }}' },
+      run: "node -e \"require('node:assert/strict').equal(process.env.WORKSPACE_CHECKS_RESULT, 'success')\"",
+    },
+  );
   const packedGuard = ci.steps.find((step) => step.name === 'Require complete packed CLI controls');
   assert.equal(packedGuard.env.PACKED_CLI_RESULT, '${{ needs.packed-cli.result }}');
   assert.equal(
@@ -90,23 +109,27 @@ test('the actual required workflow joins both full offline controls and checks t
   );
   assert.equal(secretsGuard.if, undefined);
   assert.equal(secretsGuard['continue-on-error'], undefined);
-  // Both families run as two legs that each run and export a disjoint half under the unchanged
+  // Both families run as legs that each run and export a disjoint part under the unchanged
   // 64-MiB retained-evidence bound, which one export of either whole cohort no longer fits.
-  for (const [kind, directory, minutes] of [
-    ['fs', 'filesystem', 60],
-    ['secrets', 'secrets', 75],
+  // The shard counts are the ones the local gate (`pnpm gate`) cuts the same families into; its own test keeps them equal.
+  for (const [kind, directory, minutes, shards] of [
+    ['fs', 'filesystem', 60, 2],
+    ['secrets', 'secrets', 75, 3],
   ]) {
     const job = workflow.jobs[`${kind}-mutations`];
     assert.equal(job['continue-on-error'], undefined);
     assert.equal(job.if, undefined);
     assert.equal(job['timeout-minutes'], minutes);
-    // Two legs, each running and exporting a disjoint half; neither may stop the other early.
-    assert.deepEqual(job.strategy, { 'fail-fast': false, matrix: { shard: [1, 2] } });
+    // The legs each run and export a disjoint part; none may stop another early.
+    assert.deepEqual(job.strategy, {
+      'fail-fast': false,
+      matrix: { shard: Array.from({ length: shards }, (_, index) => index + 1) },
+    });
     assert.ok(job.steps.some((step) => step.run === 'pnpm install --frozen-lockfile'));
     assert.ok(job.steps.some((step) => step.run === 'pnpm test:acceptance-tools'));
     assert.ok(job.steps.some((step) => step.with?.['node-version-file'] === '.nvmrc'));
     const command = job.steps.find(
-      (step) => step.run === `pnpm check:${kind}-mutations --shard \${{ matrix.shard }}/2`,
+      (step) => step.run === `pnpm check:${kind}-mutations --shard \${{ matrix.shard }}/${shards}`,
     );
     assert.equal(command['continue-on-error'], undefined);
     assert.equal(command.if, undefined);
@@ -115,7 +138,7 @@ test('the actual required workflow joins both full offline controls and checks t
     assert.equal(artifact.if, '${{ always() }}');
     assert.equal(artifact.with.path, `\${{ runner.temp }}/wave2-acceptance/${directory}`);
     assert.ok(
-      artifact.with.name.startsWith(`wave2-${directory}-\${{ matrix.shard }}-of-2-`),
+      artifact.with.name.startsWith(`wave2-${directory}-\${{ matrix.shard }}-of-${shards}-`),
       artifact.with.name,
     );
     assert.equal(artifact.with['retention-days'], 7);

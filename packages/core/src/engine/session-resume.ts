@@ -2,9 +2,10 @@
  * Session resume (1.Y) — reconstruct an `AgentSession`'s in-flight state from its persisted transcript so a
  * conversation continues after a process restart. Sessions are **directly stored** (ADR-0003 governs *runs*,
  * not sessions), so resume RELOADS rows ({@link SessionStore.loadFull}, 1.X) rather than replaying an event
- * log, and it reuses the run-side idempotency **principle** (1.R): an interrupted, never-completed turn is
- * rolled back — the `sessionId+sequenceNumber` analog of "re-run the incomplete node" — so resume yields only
- * **completed exchanges** and the next turn re-prompts rather than replaying a half turn.
+ * log, and it reuses the run-side idempotency **principle** (1.R): a crash remnant — a user row with structural
+ * rows and no terminal — is rolled back, the `sessionId+sequenceNumber` analog of "re-run the incomplete node", so
+ * resume yields only **completed exchanges** and **retained interrupted turns** (ADR-0119: a user message ended by an
+ * interruption row, which carries no answer) and the next turn re-prompts rather than replaying a half turn.
  *
  * Platform-free: it operates only on `@relavium/shared` types (the host loads via `@relavium/db`; the engine
  * never imports it). The projection mirrors `AgentSession`'s cross-turn invariant — the in-flight transcript
@@ -19,15 +20,30 @@ import {
   resumableSessionMessages,
   type AgentSessionRecord,
   type SessionContentPart,
+  type SessionInterruption,
   type SessionMessage,
 } from '@relavium/shared';
 
 import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
+import { deriveTurnReceipts, retainTurnReceipts, type TurnReceipts } from './turn-receipts.js';
 
-/** One proven completed turn in the text-only, unfolded transcript; end is exclusive. */
+/**
+ * One proven completed turn in the text-only, unfolded transcript; end is exclusive.
+ *
+ * `receipts` is that turn's content-free tool evidence ([ADR-0128](../../../../docs/decisions/0128-content-free-tool-receipts-ground-later-chat-turns.md)).
+ * It is REQUIRED, not optional: a host that forgot to supply it would otherwise claim a known-empty turn, which
+ * is the unsafe direction. Build state with {@link reconstructSessionState}, which derives and retains it.
+ */
 export interface CompletedTurnSpan {
   readonly start: number;
   readonly end: number;
+  readonly receipts: TurnReceipts;
+  /**
+   * Present only for a RETAINED INTERRUPTED turn ([ADR-0119](../../../../docs/decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)):
+   * the span then covers the user message alone (there is no assistant answer) and the request appends the fixed
+   * interruption sentence after the receipts block. Absent for a completed turn.
+   */
+  readonly interruption?: SessionInterruption;
 }
 
 /**
@@ -83,7 +99,10 @@ export {
 } from '@relavium/shared';
 export type { CompletedSessionTurn } from '@relavium/shared';
 
-/** Reconstruct only completed surviving turns; empty finals count, interrupted tool loops roll back. */
+/**
+ * Reconstruct the surviving turns: completed ones (empty finals count) and retained interrupted turns (ADR-0119, a user
+ * message ended by an interruption row). A crash remnant — a user row with structural rows and no terminal — rolls back.
+ */
 export function reconstructSessionState(
   record: AgentSessionRecord,
   messages: readonly SessionMessage[],
@@ -111,10 +130,24 @@ export function reconstructSessionState(
   const lengths = new Map(
     turns.map((turn) => [turn.user, textOf(turn.terminal.content).length === 0 ? 1 : 2]),
   );
+  // ADR-0128: one derivation and one retention rule, shared with a live session, so a restart or a reseat
+  // retains the same records the original instance did. Derivation degrades a bad turn to incomplete; it never
+  // fails a resume.
+  const derived = deriveTurnReceipts(turns);
+  const receipts = new Map(turns.map((turn, index) => [turn.user, derived[index]]));
+  const interruptions = new Map(turns.map((turn) => [turn.user, turn.interruption]));
   const completedTurnSpans: CompletedTurnSpan[] = [];
   for (const [index, message] of surviving.entries()) {
     const length = lengths.get(message);
-    if (length !== undefined) completedTurnSpans.push({ start: index, end: index + length });
+    const turnReceipts = receipts.get(message);
+    const interruption = interruptions.get(message);
+    if (length !== undefined && turnReceipts !== undefined)
+      completedTurnSpans.push({
+        start: index,
+        end: index + length,
+        receipts: turnReceipts,
+        ...(interruption === undefined ? {} : { interruption }),
+      });
   }
   const committed: LlmMessage[] = surviving.map((m) => ({
     role: m.role === 'assistant' ? 'assistant' : 'user',
@@ -122,7 +155,7 @@ export function reconstructSessionState(
   }));
   return {
     messages: committed,
-    completedTurnSpans,
+    completedTurnSpans: retainTurnReceipts(completedTurnSpans),
     turnCount: turns.length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
     conservativeCostMicrocents: record.totalConservativeMicrocents,

@@ -51,31 +51,23 @@
 Relavium is **two entry points on one engine**: a conversational coding agent
 *and* a workflow-orchestration layer above the editor — not another editor. You
 **start in chat** and **graduate to a committed workflow**; the same engine backs
-both. The five properties that, taken together, no one else offers:
+both. The properties the product aims to combine are:
 
-| Property | What it means | Who lacks it |
-|----------|---------------|--------------|
-| **Chat-first** | Start in a conversational coding session on any surface (the `relavium` Home, a desktop Chat tab, a VS Code panel) that is persistent and one-click exportable to a workflow | Claude Code/Cursor/Cline (chat is the *only* surface, no export path), CrewAI/AutoGen (no conversational entry) |
-| **Visual** | Drag-and-drop canvas with live execution on the node face | CrewAI/AutoGen (code only), Claude Code/Cursor/Cline (chat only) |
-| **Git-native** | Workflows are diffable, PR-able YAML files | n8n (proprietary JSON), Claude Code/Cursor (no persistence) |
-| **Multi-model** | Per-agent model choice + fallback chains across providers | Claude Code (Claude only), Copilot Agent (MS/OpenAI only) |
-| **No lock-in** | Runs in standard VS Code, any terminal, any git host, locally | Cursor (fork lock-in), Copilot Agent (GitHub lock-in) |
+| Property | Relavium requirement |
+|----------|----------------------|
+| **Chat-first** | Persistent conversational coding sessions on each surface, exportable to a workflow. |
+| **Visual** | A canvas with live execution on the node face. |
+| **Git-native** | Diffable, reviewable workflow YAML. |
+| **Multi-model** | Per-agent model choice and provider fallback. |
+| **No lock-in** | Standard editor, terminal and git-host integration with local ownership. |
 
-## Competitive Framing
+## Product framing
 
-A condensed read of the per-competitor strengths and the gaps Relavium fills — this table is
-the surviving canonical competitive framing. *(The dated competitive-landscape analyses it
-distilled were removed on 2026-06-10.)*
-
-| Competitor | Their strength | The gap Relavium fills |
-|-----------|----------------|------------------------|
-| **Claude Code** | Deep Claude integration, strong CLI + editor UX, conversational coding agent | Single-model, single-agent, sessions are ephemeral with no export path, no visual canvas, no version-controllable workflows, no CI/CD path. Relavium meets it head-on with its own first-class chat agent, then adds the missing exit: export the session to a committed, multi-model, re-runnable workflow when users outgrow single-agent/single-model. |
-| **Cursor** | Best-in-class AI-native editor | Editor-only, fork lock-in, no workflow abstraction, no reuse/sharing. Relavium sits above any editor, keeping the user's preferred tools. |
-| **Continue.dev** | Open-source, multi-model, BYO keys | Stops at chat/autocomplete — no orchestration, no workflow files, no CLI, no desktop. Natural upgrade for users who want to chain and persist agents. |
-| **Cline / Roo-code** | Aggressive agentic execution (fs, shell, browser) | Every run is ephemeral and manual; no reuse, no team sharing, no canvas. Relavium makes agentic runs reusable and composable. |
-| **GitHub Copilot Agent Mode** | Massive GitHub distribution, enterprise trust | GitHub/MS ecosystem lock-in, no multi-model, no local-first, no portable workflow files. Relavium is VCS-, model-, and surface-agnostic. |
-| **n8n / Zapier** | Mature visual builders, huge connector libraries | Not AI-native, no developer surfaces (no VS Code/CLI), no local-first, no code/repo context. Relavium is the developer-native, AI-first equivalent. |
-| **CrewAI / AutoGen** | Powerful programmable multi-agent topologies | Python-only, no IDE/canvas, requires code to define agents, no visual artifact. Relavium delivers the same power via a canvas + readable YAML, no framework expertise. |
+The differentiator is the conversation-to-workflow path on one engine, with
+portable artifacts and explicit ownership of execution. These are Relavium's
+requirements and direction; current delivery is tracked in the
+[current roadmap](roadmap/current.md). External product comparisons were removed
+at the maintainer's request on 2026-11-15.
 
 ## Two Entry Points, One Wedge
 

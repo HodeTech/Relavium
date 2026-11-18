@@ -19,6 +19,7 @@ import {
   type EffortGateResult,
   reconstructSessionState,
   RunEventBus,
+  type AskUserDelegate,
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
@@ -53,6 +54,8 @@ import type {
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { governedToolIds } from './chat-mode.js';
+import { assertStartingModeDispatch, type ChatModeSelection } from './starting-mode.js';
 import {
   closePreparedMcp,
   connectAgentMcp,
@@ -66,6 +69,11 @@ import {
   type ProviderResolver,
 } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
+import {
+  createSessionOutputStore,
+  SessionOutputStoreError,
+  type SessionOutputStore,
+} from '../engine/tool-host/session-output-store.js';
 import { assertChatWorkspaceAdmission } from '../engine/tool-host/fs-admission.js';
 import {
   fsPolicyScopeRoots,
@@ -101,6 +109,18 @@ const SESSION_DURABILITY_FAILURE =
  */
 
 export interface BuildChatSessionOptions {
+  /** CLI-private resolved start; its invocation authority is never persisted in session state. */
+  readonly startingMode?: ChatModeSelection;
+  /**
+   * The `ask_user` question card ([ADR-0132](../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)). Present
+   * only on a surface with a person at it: it reaches `SessionDeps.askUser` AND the `wiredToolIds` delegate list from this ONE
+   * value, so the engine's advertise gate and the CLI's cannot disagree. Absent ⇒ the tool is never offered.
+   */
+  readonly askUser?: AskUserDelegate;
+  /** Resolved operator home, explicitly supplied by production surfaces. */
+  readonly operatorHomeDir?: string;
+  /** Explicit resource factory for hermetic embeddings and tests. */
+  readonly outputStoreFactory?: (homeDir: string) => Promise<SessionOutputStore | undefined>;
   /** Creation owner reserved by the surface before preparation; never persisted or reconstructed by ID. */
   readonly workOwner?: SessionWorkOwner;
   /** Host-only native authority for both tool processes and MCP startup. */
@@ -205,6 +225,8 @@ export interface BuildChatSessionOptions {
    * Absent ⇒ a no-op, and the tier is still withheld (never guessed at).
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Required production disclosure after an aborted turn's actual effect producers have joined. */
+  readonly onEffectAttention?: (note: string) => void;
   /**
    * Sink for a **passive subscriber** that threw while handling a session event (#228) — in practice the chat
    * persister failing a durable `history.db` write after its bounded retry was exhausted. Same channel shape as
@@ -251,11 +273,15 @@ export interface SessionUsageWriter {
 }
 
 export interface BuiltChatSession {
+  readonly startingMode?: ChatModeSelection;
+  /** Private trusted host input for model filesystem guards; never part of SessionContext/history. */
+  readonly operatorHomeDir?: string;
   /** Creation owner for surface persistence/teardown; absent in an explicitly unowned embedding. */
   readonly hostOwner?: SessionHostOwner;
   readonly workOwner?: SessionWorkOwner;
   readonly attachUsageWriter: (writer: SessionUsageWriter) => void;
   readonly whenHostSafeToClose: () => Promise<void>;
+  readonly closeOutputStore?: () => Promise<void>;
   /** Host-authoritative base-model window; present undefined for custom/unknown metadata. */
   readonly contextWindowTokens?: number | undefined;
   readonly session: AgentSession;
@@ -333,18 +359,25 @@ export interface BuiltChatSession {
   readonly mcpSkipped: readonly ManagerSkippedTool[];
 }
 
+/** Content-free interruption disclosure, separate from the session's terminal and durable events. */
+export const ABORTED_EFFECT_ATTENTION_NOTICE =
+  'Some actions could not be confirmed after interruption. Check the target before repeating them.';
+
 /** The safe default filesystem tier when `[chat].fs_scope` is unset (mirrors the workflow default). */
 const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
+  | 'startingMode'
+  | 'askUser'
   | 'chat'
   | 'maxTokensEstimate'
   | 'deadlineTimer'
   | 'now'
   | 'providers'
   | 'toolHost'
+  | 'operatorHomeDir'
   | 'fsPolicy'
   | 'nativeProcesses'
   | 'workOwner'
@@ -353,6 +386,7 @@ type SessionRuntimeOptions = Pick<
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
+  | 'onEffectAttention'
   | 'onListenerError'
   | 'resolvePrice'
 >;
@@ -374,6 +408,7 @@ function buildSessionRuntime(
   sessionId: string,
   mcp: McpClient | undefined,
   context: SessionContext,
+  outputStore?: SessionOutputStore,
 ): {
   attachUsageWriter: (writer: SessionUsageWriter) => void;
   whenHostSafeToClose: () => Promise<void>;
@@ -462,16 +497,43 @@ function buildSessionRuntime(
   // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
   // os) jailed to the session's fs-scope tier. Safety rests on the mode's per-tool APPROVAL floor, not on
   // capability absence — the REPL activates the fail-closed `confirmAction` regime via `applyChatMode` (default
-  // `ask` denies every governed action). Building it pins native filesystem identities, so we always assemble it for the policy
+  // `ask` shows a card for every governed action; `plan` refuses them). Building it pins native filesystem identities, so we always assemble it for the policy
   // even when a test injects its own `toolHost` (e.g. a fail-closed `{}` for a capability-gap assertion).
   const factoryEnv = assembleToolEnv({
     profile: 'chat-read-write',
     fsScopeTier: context.fsScopeTier,
     workspaceDir: context.workingDir,
+    ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
     ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
     ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
   });
-  const baseHost: ToolHost = opts.toolHost ?? factoryEnv.host;
+  const originalHost: ToolHost = opts.toolHost ?? factoryEnv.host;
+  const fs = originalHost.fs;
+  const baseHost: ToolHost =
+    outputStore === undefined || fs === undefined
+      ? originalHost
+      : {
+          ...originalHost,
+          outputStore,
+          fs: {
+            ...fs,
+            readFile: async (path, options, signal) => {
+              if (!path.startsWith('output://')) return fs.readFile(path, options, signal);
+              try {
+                return await outputStore.read(path, options, signal);
+              } catch (error) {
+                if (error instanceof SessionOutputStoreError && error.reason === 'range_required')
+                  throw new ToolExecutionError(
+                    'read_file',
+                    'read this output with an explicit line or byte range',
+                    undefined,
+                    { recoverable: true, retryable: false },
+                  );
+                throw error;
+              }
+            },
+          },
+        };
   // Conditional spread ⇒ the inbound-MCP arm is a true MERGE onto fs/process, never a replace (the prior bug).
   const host: ToolHost = mcp === undefined ? baseHost : { ...baseHost, mcp: mcp.capability };
   const assertDurableDispatch = (toolId: string): void => {
@@ -481,6 +543,7 @@ function buildSessionRuntime(
       });
   };
   const innerRegistry = createToolRegistry({ tools, host });
+  const governed = governedToolIds(tools);
   const registry: ToolRegistry = {
     ...innerRegistry,
     dispatch: (call, ctx) =>
@@ -489,6 +552,13 @@ function buildSessionRuntime(
         beforeDispatch: (toolId) => {
           ctx.beforeDispatch?.(toolId);
           assertDurableDispatch(toolId);
+          if (opts.startingMode !== undefined)
+            assertStartingModeDispatch(
+              opts.startingMode.authority,
+              ctx.approval?.confirm,
+              toolId,
+              governed,
+            );
         },
       }),
   };
@@ -534,6 +604,38 @@ function buildSessionRuntime(
     return usageWriter;
   };
   const hostWork = new HostWorkRegistry(sessionId);
+  // Separate from hostWork: a disclosure waits for producers and must never join itself.
+  const effectNotices = new HostWorkRegistry(sessionId);
+  let effectNoticeFailure: Error | undefined;
+  let turnClaims = new Set<string>();
+  let turnDisclosed = false;
+  let turnActive = false;
+  const discloseAbortedEffects = (): void => {
+    if (turnDisclosed) return;
+    turnDisclosed = true;
+    const claims = turnClaims;
+    const notify = async (): Promise<void> => {
+      await hostWork.join();
+      if (claims.size === 0) return;
+      try {
+        if (opts.onEffectAttention === undefined)
+          throw new Error('Unconfirmed effect disclosure is unavailable.');
+        opts.onEffectAttention(ABORTED_EFFECT_ATTENTION_NOTICE);
+      } catch (cause) {
+        effectNoticeFailure ??= new Error('Unconfirmed effect disclosure failed.', { cause });
+        opts.workOwner?.failure(effectNoticeFailure);
+      }
+    };
+    // Observe notification failure above; lifetime retention is independent of terminal cancellation.
+    void effectNotices
+      .invoke(() =>
+        opts.workOwner === undefined ? notify() : opts.workOwner.work.retainWork(notify),
+      )
+      .catch((cause: unknown) => {
+        effectNoticeFailure ??= new Error('Unconfirmed effect disclosure failed.', { cause });
+        opts.workOwner?.failure(effectNoticeFailure);
+      });
+  };
   let cumulativeCost = 0;
   let accountingSnapshot: SessionAccountingSnapshot | undefined;
   let accountingFailure: { readonly cause: unknown } | undefined;
@@ -669,14 +771,23 @@ function buildSessionRuntime(
     // and the same posture the commitment writer takes for money.
     effects: (correlation: EffectCorrelation): EffectDispatchPort => {
       const port = effectJournal?.(correlation);
+      const claims = turnClaims;
+      const claimKey = (slot: number, toolId: string): string =>
+        JSON.stringify([correlation, slot, toolId]);
       return {
+        inspectReplay: async (slot, toolId, redactedArgs) => {
+          // A retained result is admitted only while this instance still owns healthy durability.
+          // The read makes no claim; its Promise still retains the actual journal producer.
+          assertDurableDispatch(toolId);
+          return await (port ?? unwiredEffectJournal()).inspectReplay(slot, toolId, redactedArgs);
+        },
         prepare: async (slot, toolId, tier, redactedArgs, targetIdempotencyKey, callAttempt) => {
           // A cached idle-command key is not a durability acknowledgement. Check at the actual effect
           // boundary, including when cost persistence failed after this model attempt was admitted.
           // Settling/discarding an existing claim must remain possible after a failure: that records what
           // already happened rather than admitting another effect.
           assertDurableDispatch(toolId);
-          return await (port ?? unwiredEffectJournal()).prepare(
+          const verdict = await (port ?? unwiredEffectJournal()).prepare(
             slot,
             toolId,
             tier,
@@ -684,10 +795,17 @@ function buildSessionRuntime(
             targetIdempotencyKey,
             callAttempt,
           );
+          if (tier === 3 && verdict.outcome === 'proceed') claims.add(claimKey(slot, toolId));
+          return verdict;
         },
-        settle: (slot, toolId, state, result) =>
-          (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
-        discard: (slot, toolId) => (port ?? unwiredEffectJournal()).discard(slot, toolId),
+        settle: async (slot, toolId, state, result) => {
+          await (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result);
+          if (state === 'committed') claims.delete(claimKey(slot, toolId));
+        },
+        discard: async (slot, toolId) => {
+          await (port ?? unwiredEffectJournal()).discard(slot, toolId);
+          claims.delete(claimKey(slot, toolId));
+        },
       };
     },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
@@ -718,6 +836,18 @@ function buildSessionRuntime(
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
     emit: (event) => {
+      if (event.type === 'session:turn_started') {
+        turnClaims = new Set();
+        turnDisclosed = false;
+        turnActive = true;
+      }
+      if (
+        (event.type === 'session:cancelled' && turnActive) ||
+        (event.type === 'session:turn_completed' && event.stopReason === 'aborted')
+      )
+        discloseAbortedEffects();
+      if (event.type === 'session:cancelled' || event.type === 'session:turn_completed')
+        turnActive = false;
       if (usageWriter !== undefined) requiredUsageWriter();
       if (event.type === 'cost:updated') {
         // The engine/governor still owns its attempt-time counter. Public session money is
@@ -734,6 +864,7 @@ function buildSessionRuntime(
     // "empty/absent ⇒ run_command disabled"). Extended with the `[chat].allowed_commands` `!`-shell allowlist
     // (ADR-0061) — see `chatToolPolicy` above. A 2.5.E/ADR-0057 per-mode allowlist flows through automatically.
     toolPolicy: chatToolPolicy,
+    ...(opts.askUser === undefined ? {} : { askUser: opts.askUser }),
     // Interactive-surface turn bounds: recover from a host tool EXECUTION failure (a file-not-found read, a
     // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
@@ -794,6 +925,8 @@ function buildSessionRuntime(
     },
     whenHostSafeToClose: async () => {
       await hostWork.join();
+      await effectNotices.join();
+      if (effectNoticeFailure !== undefined) throw effectNoticeFailure;
       await money.waitForWrites();
       await joinMoney();
       if (publicationFailure !== undefined) throw publicationFailure;
@@ -1009,7 +1142,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
         mcpOptionsFor(opts, mcpArtifact, context.workingDir),
       );
 
+  let outputStore: SessionOutputStore | undefined;
   try {
+    opts.workOwner?.assertAdmitting();
+    if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
+      outputStore = await prepareSessionOutputStore(opts.operatorHomeDir, opts.outputStoreFactory);
+    reportOutputStartupSweep(outputStore, opts.onListenerError);
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1022,7 +1160,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, sessionId, mcp, context, outputStore);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -1034,7 +1172,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     const attached: { handle?: SessionHandle } = {};
     const whenReady = (): Promise<void> =>
       attached.handle?.whenConsumersReady() ?? Promise.resolve();
-    const wired = narrowToWired(withMcpGrant(agent, mcp), host, deps.tools);
+    const wired = narrowToWired(
+      withMcpGrant(agent, mcp),
+      host,
+      deps.tools,
+      opts.askUser !== undefined,
+    );
     const sessionAgent =
       opts.oneShot === true
         ? wired
@@ -1064,8 +1207,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       sessionId,
       agent,
       context,
-      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
-      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+      ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -1078,6 +1220,9 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
           }),
       attachUsageWriter,
       whenHostSafeToClose,
+      ...(outputStore === undefined
+        ? {}
+        : { closeOutputStore: outputStore.close.bind(outputStore) }),
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,
@@ -1087,8 +1232,24 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
     // leak the just-spawned MCP children — tear them down before the failure propagates. The build is then
     // all-or-nothing: it either returns a session that OWNS `closeMcp`, or it has already closed the client.
-    await releaseFailedBuild(opts.workOwner, mcp, err);
+    await cleanupFailedSessionBuild(opts, outputStore, mcp, err);
     throw err;
+  }
+}
+
+/** Report uncertain output cleanup without exposing native errors or replacing the build failure. */
+function reportOutputCleanupFailure(
+  opts: Pick<BuildChatSessionOptions, 'workOwner' | 'onListenerError'>,
+  cause: unknown,
+): void {
+  if (opts.workOwner !== undefined) {
+    opts.workOwner.cleanupUncertain(cause);
+    return;
+  }
+  try {
+    opts.onListenerError?.('Session output cleanup could not be confirmed.');
+  } catch {
+    // A failed diagnostic cannot replace the original build failure.
   }
 }
 
@@ -1140,8 +1301,16 @@ function narrowToWired(
   agent: AgentDefinition,
   host: ToolHost,
   defs: readonly ToolDef[],
+  canAsk: boolean,
 ): AgentDefinition {
-  return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
+  // The SECOND advertise gate (the first is the engine's `delegateAvailable`, per turn): without `askUser` in this list the
+  // tool is dropped from the effective grant even on a driver that wired the delegate (ADR-0132 §1).
+  return {
+    ...agent,
+    tools: wiredToolIds(agent.tools ?? [], host, defs, {
+      delegates: canAsk ? ['askUser'] : [],
+    }),
+  };
 }
 
 /**
@@ -1190,8 +1359,12 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 
 export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
+  | 'startingMode'
+  | 'askUser'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
+  | 'operatorHomeDir'
+  | 'outputStoreFactory'
   | 'fsPolicy'
   | 'nativeProcesses'
   | 'workOwner'
@@ -1213,6 +1386,8 @@ export interface BuildResumedChatSessionOptions extends Pick<
    * with, and the catalog may have moved under it since.
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Required production disclosure after an aborted turn's actual effect producers have joined. */
+  readonly onEffectAttention?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
   readonly onUnpriced?: (note: string) => void;
   /**
@@ -1275,7 +1450,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
 /**
  * Assemble a RESUMED `relavium chat` session (2.N) over `AgentSession.resume`: rebind the session's frozen
  * agent + context from the loaded record, reconstruct its in-flight state from the persisted transcript
- * ({@link reconstructSessionState} — text-only, with a trailing unanswered turn rolled back), and wire the
+ * ({@link reconstructSessionState} — text-only; a crash remnant is rolled back, and a retained interrupted turn resumes as its user message, ADR-0119), and wire the
  * SAME platform-capability runtime a fresh session uses. The resumed session lands directly at idle and does
  * NOT re-emit `session:started`; the next `sendMessage` continues the conversation. A session with no stored
  * `agentSnapshot` cannot be rebound and is a clean invalid invocation (exit 2).
@@ -1322,7 +1497,12 @@ export async function buildResumedChatSession(
     mcpOptionsFor(opts, opts.mcpArtifact ?? `resumed session ${record.id}`, context.workingDir),
   );
 
+  let outputStore: SessionOutputStore | undefined;
   try {
+    opts.workOwner?.assertAdmitting();
+    if (opts.operatorHomeDir !== undefined && opts.toolHost === undefined)
+      outputStore = await prepareSessionOutputStore(opts.operatorHomeDir, opts.outputStoreFactory);
+    reportOutputStartupSweep(outputStore, opts.onListenerError);
     opts.workOwner?.assertAdmitting();
     const {
       attachUsageWriter,
@@ -1335,13 +1515,13 @@ export async function buildResumedChatSession(
       attachDurabilityProbe,
       attachEffectJournal,
       attachEffectTurnAllocator,
-    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context);
+    } = buildSessionRuntime({ ...opts, providers }, record.id, mcp, context, outputStore);
     // The same late-bound producer-await slot as the fresh-session path (`CR-30`), declared again because
     // this is a separate function. A resumed session streams exactly like a new one, so leaving it out
     // would have shipped the bound on one of the two ways a chat starts.
     const attached: { handle?: SessionHandle } = {};
     const sessionAgent = withChatOutputDefault(
-      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools),
+      narrowToWired(withMcpGrant(agent, mcp), host, deps.tools, opts.askUser !== undefined),
       chatOutputSettings(opts.chat),
       officialEndpointOf(deps),
     );
@@ -1379,8 +1559,7 @@ export async function buildResumedChatSession(
       sessionId: record.id,
       agent,
       context,
-      ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
-      ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+      ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),
       tools: deps.tools,
       emitSessionEvent: emit,
@@ -1396,6 +1575,9 @@ export async function buildResumedChatSession(
           }),
       attachUsageWriter,
       whenHostSafeToClose,
+      ...(outputStore === undefined
+        ? {}
+        : { closeOutputStore: outputStore.close.bind(outputStore) }),
       attachDurabilityProbe,
       attachEffectTurnAllocator,
       attachEffectJournal,
@@ -1403,7 +1585,7 @@ export async function buildResumedChatSession(
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
-    await releaseFailedBuild(opts.workOwner, mcp, err);
+    await cleanupFailedSessionBuild(opts, outputStore, mcp, err);
     throw err;
   }
 }
@@ -1633,4 +1815,55 @@ function sessionContextWindow(agent: AgentDefinition, deps: SessionDeps): number
     // Optional host capacity metadata degrades to unknown; the foreground seam still validates requests.
     return undefined;
   }
+}
+
+/** Keep factory resolution separate from advisories: callers acquire custody before inspecting the store. */
+async function prepareSessionOutputStore(
+  homeDir: string,
+  factory: BuildChatSessionOptions['outputStoreFactory'],
+): Promise<SessionOutputStore | undefined> {
+  return factory === undefined ? createSessionOutputStore({ homeDir }) : factory(homeDir);
+}
+function reportOutputStartupSweep(
+  outputStore: SessionOutputStore | undefined,
+  onListenerError: BuildChatSessionOptions['onListenerError'],
+): void {
+  if (outputStore?.startupSweep.incomplete !== true) return;
+  try {
+    onListenerError?.('Output cleanup scanned a bounded subset; remaining folders were preserved.');
+  } catch {
+    // This advisory never changes output-store custody or the build result.
+  }
+}
+
+async function cleanupFailedSessionBuild(
+  opts: Pick<BuildChatSessionOptions, 'workOwner' | 'onListenerError'>,
+  outputStore: SessionOutputStore | undefined,
+  mcp: McpClient | undefined,
+  err: unknown,
+): Promise<void> {
+  if (err instanceof SessionOutputStoreError && err.cleanupUncertain)
+    reportOutputCleanupFailure(opts, err);
+  if (outputStore !== undefined) {
+    try {
+      await outputStore.close();
+    } catch (cause) {
+      reportOutputCleanupFailure(opts, cause);
+    }
+  }
+  await releaseFailedBuild(opts.workOwner, mcp, err);
+}
+
+function sessionBuildMetadata(
+  opts: Pick<
+    BuildChatSessionOptions,
+    'startingMode' | 'workOwner' | 'fsPolicy' | 'operatorHomeDir'
+  >,
+): Pick<BuiltChatSession, 'startingMode' | 'workOwner' | 'fsPolicy' | 'operatorHomeDir'> {
+  return {
+    ...(opts.startingMode === undefined ? {} : { startingMode: opts.startingMode }),
+    ...(opts.workOwner === undefined ? {} : { workOwner: opts.workOwner }),
+    ...(opts.fsPolicy === undefined ? {} : { fsPolicy: opts.fsPolicy }),
+    ...(opts.operatorHomeDir === undefined ? {} : { operatorHomeDir: opts.operatorHomeDir }),
+  };
 }

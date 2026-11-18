@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { syntheticNativeAssets } from '../native-fs/fixture.mjs';
 
 // The orchestrator runs from a copied tooling tree with a fake tsup that only records that it ran,
 // so no case can rebuild the real CLI even if the orchestration regresses.
@@ -30,6 +31,8 @@ function fixture({ buildExit = 0, tsup: installed = true, finalizer } = {}) {
   const root = join(scratch, `repository-${count}`);
   for (const path of [
     'cli-package/prepack.mjs',
+    'native-fs/assets.mjs',
+    'native-fs/catalog.mjs',
     'cli-package/finalize.mjs',
     'cli-package/source-map.mjs',
     'cli-package/files.mjs',
@@ -64,6 +67,7 @@ function fixture({ buildExit = 0, tsup: installed = true, finalizer } = {}) {
   const tsup = join(cli, 'node_modules', 'tsup');
   const marker = join(root, 'build-ran');
   mkdirSync(cli, { recursive: true });
+  syntheticNativeAssets(root);
   writeFileSync(join(cli, 'package.json'), JSON.stringify({ name: 'relavium', dependencies: {} }));
   if (!installed) return { root, cli, marker };
   mkdirSync(join(tsup, 'dist'), { recursive: true });

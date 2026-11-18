@@ -1,9 +1,19 @@
-import { projectSessionHistory, type Memory, type SessionMessage } from '@relavium/shared';
+import { interruptionPhrase } from '@relavium/core';
+import {
+  projectSessionHistory,
+  SESSION_ASK_TOOL_NAME,
+  type Memory,
+  type SessionAskRecord,
+  type SessionInterruption,
+  type SessionMessage,
+} from '@relavium/shared';
 import { stripTerminalControls } from '../render/sanitize.js';
+import { askRecordTranscriptText } from '../render/tui/question-card-record.js';
 import {
   INLINE_TRANSCRIPT_BOUND,
   type TranscriptBound,
   type TranscriptEntry,
+  type ToolCallView,
 } from '../render/tui/session-view-model.js';
 
 export const LEGACY_USER_DISPLAY = 'Earlier user message — compact display was not recorded.';
@@ -18,6 +28,61 @@ export class RestoredDisplayReadError extends Error {
 interface Unit {
   readonly user: SessionMessage;
   readonly terminal?: SessionMessage;
+  /** ADR-0119: set when the turn ended in an interruption row instead of an answer. */
+  readonly interruption?: SessionInterruption;
+  readonly tools?: readonly ToolCallView[];
+  readonly omittedCalls?: number;
+  /** ADR-0133: the stored question records of this turn's `ask_user` calls, in call order (at most {@link MAX_RESTORED_ASKS}). */
+  readonly asks?: readonly SessionAskRecord[];
+  readonly omittedAsks?: number;
+}
+/** The most question records one restored turn shows; the rest are counted, like omitted tool calls. */
+const MAX_RESTORED_ASKS = 16;
+/** Correlate only already-retained structural identities inside this completed turn. */
+function structuralTools(
+  messages: readonly SessionMessage[],
+): Pick<Unit, 'tools' | 'omittedCalls' | 'asks' | 'omittedAsks'> {
+  const calls = messages.flatMap((message) =>
+    message.content.filter((part) => part.type === 'tool_call'),
+  );
+  const results = messages.flatMap((message) =>
+    message.content.filter((part) => part.type === 'tool_result'),
+  );
+  const unique = [...new Map(calls.map((call) => [call.id, call])).values()];
+  const tools = unique.slice(0, 16).map((call): ToolCallView => {
+    const matching = results.filter((result) => result.toolCallId === call.id);
+    const outcome = restoredToolOutcome(matching);
+    return { id: call.id, toolId: call.name, resolved: true, outcome };
+  });
+  // ADR-0133: the question record of a successful `ask_user` call — read only from the result paired with an ask_user call.
+  const records = unique.flatMap((call) => {
+    if (call.name !== SESSION_ASK_TOOL_NAME) return [];
+    const matching = results.filter((result) => result.toolCallId === call.id);
+    const ask =
+      matching.length === 1 && matching[0]?.outcome === 'ok' ? matching[0].ask : undefined;
+    return ask === undefined ? [] : [ask];
+  });
+  return {
+    tools,
+    omittedCalls: Math.max(0, unique.length - tools.length),
+    asks: records.slice(0, MAX_RESTORED_ASKS),
+    omittedAsks: Math.max(0, records.length - MAX_RESTORED_ASKS),
+  };
+}
+function restoredToolOutcome(
+  matching: readonly { readonly outcome?: string }[],
+): NonNullable<ToolCallView['outcome']> {
+  if (matching.length !== 1) return 'unknown';
+  switch (matching[0]?.outcome) {
+    case 'ok':
+      return 'success';
+    case 'error':
+      return 'failure';
+    case 'denied':
+      return 'denied';
+    default:
+      return 'unknown';
+  }
 }
 type Region = 'summary' | 'trim' | 'retained';
 const textOf = (message: SessionMessage): string =>
@@ -36,11 +101,24 @@ export function restoreSessionTranscript(options: {
   const projection = projectSessionHistory(options.messages, false);
   const units: Unit[] = projection.turns.flatMap((turn) => [
     ...turn.legacyUserPrefix.map((user) => ({ user })),
-    { user: turn.user, terminal: turn.terminal },
+    {
+      user: turn.user,
+      terminal: turn.terminal,
+      ...(turn.interruption === undefined ? {} : { interruption: turn.interruption }),
+      ...structuralTools(turn.messages),
+    },
   ]);
   units.push(...projection.trailingLegacyUsers.map((user) => ({ user })));
-  const size = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
-  const total = units.reduce((count, unit) => count + size(unit), 0);
+  const conversationSize = (unit: Unit): number => (unit.terminal === undefined ? 1 : 2);
+  const askEntries = (unit: Unit): number =>
+    (unit.asks?.length ?? 0) + ((unit.omittedAsks ?? 0) > 0 ? 1 : 0);
+  const size = (unit: Unit): number =>
+    conversationSize(unit) + Math.ceil((unit.tools?.length ?? 0) / 4) + askEntries(unit);
+  const total = units.reduce((count, unit) => count + conversationSize(unit), 0);
+  const totalCalls = units.reduce(
+    (count, unit) => count + (unit.tools?.length ?? 0) + (unit.omittedCalls ?? 0),
+    0,
+  );
   const cap = options.transcriptBound === INLINE_TRANSCRIPT_BOUND ? 200 : 500;
   let start = units.length,
     potential = 0;
@@ -90,7 +168,7 @@ export function restoreSessionTranscript(options: {
     options.memory?.type === 'none'
       ? 'Memory policy: none — earlier conversation is excluded from the next request.'
       : options.memory?.type === 'window'
-        ? `Memory policy: window — only the most recent ${options.memory.window_size} permitted completed turns enter the next request; earlier summaries are excluded.`
+        ? `Memory policy: window — only the most recent ${options.memory.window_size} permitted turns enter the next request; earlier summaries are excluded.`
         : undefined;
   let budget = 1 + (policy === undefined ? 0 : 1),
     legacy = false,
@@ -110,13 +188,19 @@ export function restoreSessionTranscript(options: {
     legacy ||= missing;
   }
   const selected = candidates.slice(selectedStart);
-  const visible = selected.reduce((count, unit) => count + size(unit), 0);
+  const visible = selected.reduce((count, unit) => count + conversationSize(unit), 0);
+  const visibleCalls = selected.reduce((count, unit) => count + (unit.tools?.length ?? 0), 0);
   const omitted = total - visible;
   const retained = selected.some((unit) => regionOf(unit) === 'retained');
   const notice = (text: string): TranscriptEntry => ({ role: 'notice', text });
+  const omittedNotice = omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`;
+  const toolNotice =
+    totalCalls === 0
+      ? ''
+      : `${visibleCalls} structural tool calls restored; ${totalCalls - visibleCalls} omitted tool calls. Targets, previews, results and diff statistics are unavailable. `;
   const entries: TranscriptEntry[] = [
     notice(
-      `Restored ${visible} history entries${omitted === 0 ? '.' : `; ${omitted} earlier entries remain in history.`} Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
+      `Restored ${visible} history entries${omittedNotice} ${toolNotice}Display limits do not change model context.${retained ? '' : ' No retained conversation text is visible.'}`,
     ),
   ];
   if (policy !== undefined) entries.push(notice(policy));
@@ -143,7 +227,23 @@ export function restoreSessionTranscript(options: {
       role: 'user',
       text: recorded === undefined ? LEGACY_USER_DISPLAY : stripTerminalControls(recorded),
     });
-    if (unit.terminal !== undefined)
+    if ((unit.tools?.length ?? 0) > 0)
+      entries.push({
+        role: 'tools',
+        text: '',
+        calls: unit.tools ?? [],
+        omitted: unit.omittedCalls ?? 0,
+      });
+    // ADR-0133: what the person was asked and answered, rebuilt from the stored record — where the live card left it.
+    for (const ask of unit.asks ?? [])
+      entries.push(notice(stripTerminalControls(askRecordTranscriptText(ask))));
+    if ((unit.omittedAsks ?? 0) > 0)
+      entries.push(notice(`${unit.omittedAsks} more saved questions are not shown.`));
+    // ADR-0119: an interrupted turn has no answer. Show its fixed dim row where the answer would be, built from the
+    // closed phrase table — never from stored text — so it restores no argument, target, diff or result.
+    if (unit.interruption !== undefined)
+      entries.push(notice(`Interrupted — ${interruptionPhrase(unit.interruption)}`));
+    else if (unit.terminal !== undefined)
       entries.push({ role: 'assistant', text: stripTerminalControls(textOf(unit.terminal)) });
   }
   return entries;

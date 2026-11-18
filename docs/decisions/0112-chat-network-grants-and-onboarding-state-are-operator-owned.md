@@ -4,6 +4,13 @@
 - **Date**: 2026-10-15
 - **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0037](0037-engine-tool-execution-boundary.md), [ADR-0054](0054-cli-bare-invocation-interactive-home.md), [ADR-0055](0055-cli-host-capability-seam-tool-environment-factory.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0059](0059-cli-mid-session-model-reseat.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0105](0105-filesystem-roots-are-invocation-grants-not-project-authority.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [Wave 3](../roadmap/current.md#wave-3--clear-the-ground)
 
+> Amended 2026-11-11 by accepted [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md):
+> MVP-3 adds operator-owned visible startup-mode hint acknowledgement and a
+> distinct live, revocable startup-auto authority. This is not HTTP authority
+> activation. Model-writable selected config cannot re-admit revoked startup
+> auto; [config contract](../reference/contracts/config-spec.md#proposed-starting-chat-mode--mvp-3).
+> Accepted design, implementation pending.
+
 ## Context
 
 > **Amended 2026-11-09 — maintainer-approved MVP-2 refinement.** MVP-2 extends

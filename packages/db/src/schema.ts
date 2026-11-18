@@ -1,10 +1,12 @@
 import {
   CATALOG_METADATA_ORIGINS,
+  ERROR_CODES,
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
   MEDIA_MODALITIES,
   MEDIA_SCOPE_KINDS,
   RunStatusSchema,
+  SESSION_INTERRUPTION_REASONS,
   SessionStatusSchema,
   type CatalogMetadataOrigin,
   type ExecutionMode,
@@ -541,6 +543,11 @@ export const sessionMessages = sqliteTable(
     // sequence_number THROUGH which older messages are superseded. NULL on every normal transcript row.
     // Additive nullable column — an older reader that lacks it reads the marker as an inert system row.
     compactionDroppedThroughSequence: integer('compaction_dropped_through_sequence'),
+    // ADR-0119: present ONLY on an INTERRUPTION row (role='system', empty content) — the terminal row of a retained
+    // aborted/failed/denied/turn_limit turn. A closed reason, and a closed ErrorCode only for 'failed'. NULL on every
+    // other row. Additive nullable columns; CHECK-constrained so a forged value cannot be stored (see the checks below).
+    interruptionReason: text('interruption_reason'),
+    interruptionCode: text('interruption_code'),
     createdAt: epochMs('created_at').notNull(),
   },
   (t) => [
@@ -548,6 +555,20 @@ export const sessionMessages = sqliteTable(
     // must be unique — enforcing the gap-free transcript invariant at the DB level (no double-write).
     uniqueIndex('idx_session_messages_seq').on(t.sessionId, t.sequenceNumber),
     index('idx_session_messages_session').on(t.sessionId, t.createdAt),
+    check(
+      'session_messages_interruption_reason_check',
+      sql`${t.interruptionReason} is null or ${t.interruptionReason} in (${inList(SESSION_INTERRUPTION_REASONS)})`,
+    ),
+    check(
+      'session_messages_interruption_code_check',
+      sql`${t.interruptionCode} is null or ${t.interruptionCode} in (${inList(ERROR_CODES)})`,
+    ),
+    // The row's SHAPE, at rest: no reason means no code; a reason belongs to a system row that is not also a
+    // compaction boundary marker; and the code is present exactly when the reason is 'failed'.
+    check(
+      'session_messages_interruption_shape_check',
+      sql`(${t.interruptionReason} is null and ${t.interruptionCode} is null) or (${t.interruptionReason} is not null and ${t.role} = 'system' and ${t.compactionDroppedThroughSequence} is null and (${t.contentParts} is null or ${t.contentParts} = '[]') and ((${t.interruptionReason} = 'failed') = (${t.interruptionCode} is not null)))`,
+    ),
   ],
 );
 

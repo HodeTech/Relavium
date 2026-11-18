@@ -309,10 +309,9 @@ perf thresholds for the full-screen frame loop.
 >
 > **(b) "Mouse click / drag / text-selection / copy-on-select … deferred to Phase 3" → shipped now.** The alt screen's
 > copy regression is the renderer's single worst ergonomic cost, and §e's own mitigations (the bypass modifier, the
-> `/scrollback` + `/edit` hatches, `--no-mouse`) are workarounds, not the affordance users expect. Competing agent
-> CLIs (e.g. OpenCode) implement exactly this — the TUI captures the mouse, renders its own highlight, and writes the
-> selection to the system clipboard with **OSC 52** on release. Their published issues also map the hazards we must
-> design for up front rather than patch later: inside `tmux`/Zellij both the multiplexer and the app handle OSC 52
+> `/scrollback` + `/edit` hatches, `--no-mouse`) are workarounds, not the affordance users expect. The selected TUI behavior
+> captures the mouse, renders its own highlight, and writes the selection to the system clipboard with
+> **OSC 52** on release. The integration hazards to address are: inside `tmux`/Zellij both the multiplexer and the app handle OSC 52
 > (the escape needs DCS passthrough); OSC 52 is silently dropped over VS Code Remote SSH; and users want the behaviour
 > switchable. So: `$TMUX`/`$ZELLIJ` detection, a `[preferences].copy_on_select` key, and `--no-mouse` continuing to
 > disable the whole subsystem and hand native selection back.
@@ -503,3 +502,8 @@ perf thresholds for the full-screen frame loop.
   SIGINT-cancel rework); its retained-scrollable-history is a tracked follow-up.
 - New `[preferences]` keys (`alt_screen`, `mouse`, `show_banner`) extend the ADR-0063 config-write
   surface — small, typed, non-secret additions.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).

@@ -84,3 +84,5 @@ docs/analysis/private/
 zz*.test.ts
 *.repro.test.ts
 *-repro.test.ts
+# ADR-0125 generated native loader/assets; source and lockfile stay tracked.
+/apps/cli/native/fs-metadata/runtime/

@@ -35,9 +35,11 @@ import { COPIED_TOAST_MS } from './tui-constants.js';
  *
  * Load-bearing pins, one per surface-specific mechanism:
  *   • SECURITY (ADR-0057) — a bracketed paste can neither answer the per-tool approval floor nor leak into the
- *     buffer. As in the standalone chat, the payload is a LONE 'y': ink routes it to `usePaste` (dropped behind the
- *     gate), never to `useInput`; were the handler removed, the no-listener fallback would re-emit 'y' to `useInput`
- *     and answer the floor — so the test fails iff the wiring regresses.
+ *     buffer. As in the standalone chat, the payload is an answer key itself — a pasted Ctrl+N byte (a bare 'y'
+ *     answers nothing any more, so it would prove nothing; Ctrl+N is the one answer that needs neither a guard nor a
+ *     frame this unpainted harness cannot acknowledge): ink routes it to `usePaste` (dropped behind the gate), never to
+ *     `useInput`; were the handler removed, the no-listener fallback would re-emit it to `useInput`, where it parses
+ *     as Ctrl+N and denies the call — so the test fails iff the wiring regresses.
  *   • 2.5.H frozen-clock — the Home renders the live timer through a DIFFERENT path than `ChatApp`: a `now()`
  *     FUNCTION prop read per-frame inside `ChatRegion` (home-app.tsx warns a frozen number prop would stick the
  *     elapsed at 0s). That distinct mechanism gets its own pin here.
@@ -259,11 +261,14 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
     });
     await waitFor(() => store.getSnapshot().approval !== undefined);
     expect(store.getSnapshot().approval).toBeDefined(); // the prompt owns the keyboard
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Esc stops the turn'));
+    await settleFrames();
 
-    // A LONE 'y' — the char that answers the floor via `useInput` if the paste wiring regressed. `usePaste` →
-    // `handlePaste` drops it behind the approval gate (`pasteEditable` refuses it). Give any regression a bounded
+    // A pasted Ctrl+N byte — the key that answers the floor via `useInput` if the paste wiring regressed (a plain deny
+    // needs no dwell and no acknowledged frame, so nothing but the channel stands between it and the card). `usePaste`
+    // → `handlePaste` drops it behind the approval gate (`pasteEditable` refuses it). Give any regression a bounded
     // window to manifest (an answer, a cleared approval, or a leaked buffer), then confirm none did.
-    harness.stdin.write(bracketed('y'));
+    harness.stdin.write(bracketed('\x0e'));
     await waitFor(
       () =>
         answered !== undefined ||
@@ -274,6 +279,12 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
     expect(store.getSnapshot().approval).toBeDefined(); // still pending — the floor was untouched
     expect(answered).toBeUndefined(); // the awaiting dispatch never resolved
     expect(c.getSnapshot().input.text).toBe(''); // and nothing leaked into the compose buffer
+
+    // Positive control: the same byte typed for real DOES answer this very store, so the refusal above came from the paste
+    // channel — not because the byte or the card could not have answered.
+    harness.stdin.write('\x0e');
+    await waitFor(() => answered !== undefined);
+    expect(answered).toEqual({ outcome: 'reject' });
   });
 });
 

@@ -9,6 +9,7 @@ import {
   prepareGlobalPreferences,
   type PreparedConfigWrite,
   type ConfigWriteResult,
+  type ConfigReadObserver,
 } from '../config/write.js';
 import { providerEndpointContext, type ProviderResolver } from '../engine/providers.js';
 import type { StandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
@@ -31,10 +32,12 @@ export interface StandaloneProviderSetupResult extends ProviderSetupOutcome {
 export type PrepareStandaloneProviders = (
   lifetime?: SessionChatLifetime,
   liveDb?: Db,
+  configReadObserver?: ConfigReadObserver,
 ) => Promise<StandaloneProviderSetupResult>;
 
 /** This mount precedes the normal chat host and borrows no ambient stream or Clack input owner. */
 export async function runStandaloneProviderSetup(deps: {
+  readonly configReadObserver?: ConfigReadObserver;
   readonly lifetime: SessionChatLifetime;
   readonly loaded: LoadedConfig;
   readonly global: GlobalOptions;
@@ -122,6 +125,9 @@ export async function runStandaloneProviderSetup(deps: {
         credentialSurface: 'standalone-chat',
         endpointContext: (id) => providerEndpointContext(deps.resolver, id),
         publishPreference: publish,
+        ...(deps.configReadObserver === undefined
+          ? {}
+          : { configReadObserver: deps.configReadObserver }),
         wizard: {
           store: deps.store,
           keychain: deps.keychain,
@@ -141,6 +147,7 @@ export async function runStandaloneProviderSetup(deps: {
                     { defaultModel: model, defaultProvider: provider },
                     deps.loaded.homeDir,
                     deps.global.configPath === undefined ? undefined : deps.loaded.globalConfigPath,
+                    deps.configReadObserver,
                   ),
                   assertAdmitting,
                 );

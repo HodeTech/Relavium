@@ -377,6 +377,7 @@ async function runOwned(
     // path, so a workflow's read_file / write_file / run_command / git_status work (the MCP arm merges on top).
     const toolEnv = {
       ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      operatorHomeDir: homeDir,
       workspaceDir: deps.global.cwd,
       fsScopeTier: config.fsScope ?? 'sandboxed',
     };
@@ -451,6 +452,7 @@ async function runOwned(
           createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
         ),
         host: createCliHost(history.store, {
+          operatorHomeDir: homeDir,
           media: wiring.media,
           // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
           // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
@@ -539,7 +541,7 @@ async function runOwned(
     // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
     // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
     // survive precisely because its run is over.
-    // `opened` is undefined on the in-memory path (`--no-history`), which has no journal to sweep.
+    // `opened` is undefined for an in-memory embedding/test path, which has no journal to sweep.
     if (
       isTerminalOutcome(outcome) &&
       opened !== undefined &&

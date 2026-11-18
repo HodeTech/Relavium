@@ -4,9 +4,41 @@
 Step 4 first-run input matrix, Step 5 snapshot/export, Step 7 provider-header and PR #95 B2 redaction controls on physical source
 copies. `--mechanism <declared-id>`
 supports diagnosis only; selected runs retain `complete: false`. The current manifest
-declares **130 independent controls and 513 required named assertion witnesses**.
+declares **139 independent controls and 549 required named assertion witnesses**.
 These counts describe the workload; a declaration is not evidence that its removal
 passed. Actual fixed/removal/restored results belong to the coordinator's summary.
+
+Four MVP-3 controls additionally remove the repository `auto` exclusion, the
+captured-turn final dispatch admission, immediate confirmed-default narrowing,
+and the revision check on a delayed successful auto save. Their complete files
+contain 16 schema, five actual session dispatch, and 25 picker cases. Eight named
+witnesses require repository refusal, all three revocation races, both failed
+save phases and both later configuration observations. Positive explicit-current
+auto and unchanged admitted-auto dispatch remain in the same cohort. No test
+claim implies that final revocation leaves no durable prepare or guarantees
+discard success; the real final-gate fixture observes preparation and discard.
+
+Two further MVP-3 controls remove the owned reader from live export/workflow
+discovery and from the shared doctor configuration probe. The complete standalone
+file contains 21 cases; doctor also keeps all thirteen actual Home cases, for
+34 combined cases. Eight named removal witnesses require narrower and invalid
+observations to revoke retained configured-auto authority across these routes,
+including both actual Home doctor cases. Unchanged auto reads and explicit
+current-mode choices remain positive controls. Model fallback uses provenance
+from the original validated layers instead of reopening configuration files.
+
+Three writer controls independently remove validated mode observation, source
+load failure reporting, and pre-load source inspection failure reporting. Their
+complete writer cohort has 23 cases across five closed setters; mode/load
+controls also execute all 25 picker cases, including the two prompt-boundary
+cancellation and ownership-loss regressions added during Sonar remediation.
+Their combined writer/picker workload is 48 cases. Twelve named mode witnesses cover
+ask/absent sources and two changed-after-confirmation modes. Seven source-load
+witnesses cover five invalid sources, a directory and a picker validation failure;
+the separate inspection witness covers an `ENOTDIR` parent. The unchanged-auto,
+deliberately confirmed known-baseline auto, and symlink write-only refusal cases
+remain positive controls. An inspection/load observation precedes preference
+updates; an unrelated later write failure does not stand in for a read failure.
 
 The thirteen preserved Step 3 controls cover the stdin aggregate/single-chunk cap, mutable
 Buffer ownership, zero-byte retention, awaited iterator cleanup, fixed source-error
@@ -110,14 +142,14 @@ parse/export mechanisms: direct unsupported `secrets.*` context refusal, title N
 normalization, session-identity fallback for an unusable title, and bounded legal
 encoding for an odd external session id. The context removal must fail an unread
 direct-reference parser case; the complete analysis file has 22 cases. Each export-ID
-removal must fail its own serializer assertion in the complete 25-case file. Separate
+removal must fail its own serializer assertion in the complete 28-case file. Separate
 positive tests retain legitimate secret-input context propagation, faithful metadata,
 and deterministic parse/serialize behavior. These controls do not certify universal
 transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
 live `/export` notice sites. Each requires named human and JSON witnesses in
-the complete 18-case command-export or 133-case chat file. The live control also
+the complete 18-case command-export or 165-case chat file. The live control also
 requires its actual interactive transcript/Ink-frame witness. A third control
 restores raw stderr delivery only for the live notice: human/JSON positive cases
 still pass, while the interactive witness must fail with its named assertion marker.
@@ -267,7 +299,9 @@ physical causal captures or a clean review round. R3 is preserved as NONCLEAN;
 later corrective acceptance belongs to the owning phase register. Prior selected
 `7e9096a8` captures retain their older source/workload attribution.
 
-The current 130-control / 390-phase full declaration runs as two round-robin shards of 65 controls
+(Since 2026-11-17 CI cuts the family, by then 139 controls, into three round-robin shards, `--shard k/3`; the
+figures in this paragraph are the two-shard measurement at the round-10 source.) The 130-control / 390-phase full
+declaration then ran as two round-robin shards of 65 controls
 (`--shard 1/2` and `--shard 2/2`), each exporting its own evidence: each projects 1,177 retained
 files (65 × 18 + 7) of the unchanged 2,000. Locally both exports held exactly that many and measured
 50.24 MiB and 50.14 MiB, final export record included, against the unchanged

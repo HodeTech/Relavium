@@ -821,6 +821,41 @@ The [supplemental source register](../roadmap/phases/phase-2.5.5-hardening-and-r
 retains both actual failed Windows attempts and final-head publication criteria.
 Steps 9–19 remain unstarted; the PR owns the final live results.
 
+### Sitting: interrupted turns on the resume path — ADR-0119 (2026-11-16)
+
+Three separate security sittings read the MVP-3c diff (an engaged turn that ends by the abort or a classified error now
+stays in the session as the user's message, content-free tool structure and one typed interruption row): round 1 (no blocker,
+high or medium; four lows, three fixed and one accepted residual), round 2 (no blocker, high or medium; two lows and the
+availability case below, fixed code by code) and round 3 (one medium — the same availability defect under other codes —
+fixed as the fact rule below). The controls below hold across the three.
+
+| Control | Evidence |
+|---|---|
+| No stored or attacker-controlled string reaches the model text: the sentence is constants plus a switch over closed sets, tool labels pass `receiptLabel`, the row carries no tool name | `turn-receipts.ts`; byte bound pinned over every `ERROR_CODES` entry in `session-interruption.test.ts` |
+| A forged or tampered row is refused at the schema, by the database `CHECK`s (including "an interruption row carries no content") and on load with a fixed error that does not echo the stored value | `migration-0021-upgrade.test.ts` (CHECKs, and a tampered row loaded with `ignore_check_constraints`), `session-interruption.test.ts` (shared) |
+| Nothing from tool arguments, results or partial answer text reaches disk, an export or a later request, and the event adds only the closed `interruption` and the content-free `toolHistory` (its `error.message` is unchanged by this increment) | real-SQLite parity test with argument and result sentinels; persister test for a streamed partial answer; the sentence is built only from constants and a closed `ErrorCode` |
+| The note gives the model no authority and replays no effect; later calls take the current approval regime and a fresh durable effect key | engine review; ADR-0098 unchanged |
+| An effect that landed in a retained interrupted turn is still disclosed at resume (`turn_incomplete`) | `session-effect-disclosure.test.ts` |
+| A call that executed is recorded **before** any event is emitted, and a turn whose executed call could not be recorded is not retained (the next request would otherwise say "no tool call was recorded") | `session-interruption.test.ts`, with mutants of the ordering and of the uncertainty rule |
+| The restored transcript's "Interrupted" row is built from the closed phrase table, never from stored text | `restored-transcript.test.ts` |
+
+**Accepted residual (maintainer's to rule).** An Esc after the provider returned its first chunk — nearly every Esc past the first token — now writes the
+user's message (and its display text, and possibly the session title) to the unencrypted `history.db`, and the text is
+resent in every later request of that session. Before ADR-0119 an aborted turn left nothing. ADR-0119 names `/rewind`
+as the remedy, but `/rewind` (2.6.E) does not exist and the CLI has no session-delete command, so a user who pasted
+something sensitive and pressed Esc has no way to remove it short of abandoning the session. The same text also reaches the
+`metadata.relaviumExport.messages` of a `/export` or `chat-export` file — a git-committable file under `.relavium/workflows/`,
+which carries the existing review notice — and, when it was the session's first message, can name the session and that
+file. User text, `@` content and `!` output remain sensitive data at rest.
+
+**Availability finding, fixed in two steps.** A turn the provider refused for its own content with no tool run was being
+retained, so a message larger than the window would fail every later turn and survive a resume (the latest exchange is never
+folded by compaction or trim). The first fix keyed on three error codes; the round-3 sitting showed the same defect under other
+codes (a token-per-minute `429`, a timeout) and for an Esc before the refusal arrived. The rule is now the fact, not a code
+list: a turn is retained only if the provider returned at least one stream chunk, so a refusal under any code, an Esc before
+the first chunk and an Esc during overflow recovery are all rolled back as before ADR-0119. The removal path is tracked in the
+[deferred ledger](../roadmap/deferred-tasks.md); until it lands the residual stands.
+
 ## Sandbox and tool policy (`run_command`, node tools, secret inputs)
 
 This is the **binding home** for the tool-policy rules; the rationale is
@@ -962,6 +997,25 @@ security invariants** a review must confirm are:
 
 ### CLI terminal-render safety + interactive approval (2.5.E / 2.5-close Step 14)
 
+> **Historical MVP-3 design acceptance — 2026-11-11:** implementation was pending
+> at that design checkpoint. The
+> [MVP-3 implementation receipt](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-development-implementation-checkpoint-2026-11-12)
+> records subsequent development acceptance; later PR corrections require their
+> own review and security evidence.
+> [ADR-0116](../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
+> and [ADR-0120](../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
+> extend the earlier shipped whitelist below with view-only diff/details
+> navigation, focused search, numeric inspection and deliberate reveal. None
+> approves; the affirmative owner/card/geometry/flushed-frame check remains
+> authoritative. Approval content uses the reserved, color-independent escape
+> alphabet rather than stripping hidden source bytes. Closed proven pre-effect
+> edit preconditions may return content-free correction feedback; this does not
+> relax user/guardrail denials or post-effect uncertainty. The canonical
+> [chat](../reference/cli/chat-session.md#proposed-mvp-3-interaction-contract)
+> and [registry](../reference/shared-core/tool-registry.md#proposed-prepared-writes-and-live-previews--mvp-3)
+> contracts own exact keys, eligibility and sink restrictions. Separate pre-build
+> design and post-implementation security sittings are required.
+
 - **Terminal-control + Trojan-Source floor (a rendering-safety primitive).** Every dynamic
   string written to the terminal — streamed model output, a tool id, a path in an approval
   prompt, a pasted line — passes the shared `stripTerminalControls` sanitizer at the DISPLAY
@@ -973,10 +1027,10 @@ security invariants** a review must confirm are:
   provider-URL echo strips a stricter zero-width superset. **Never embed literal bidi bytes in
   source** — the sanitizer regex uses `\u` escapes.
 - **Interactive per-tool approval is fail-closed and cannot be widened by a keystroke.** During a
-  pending approval the key-swallow answers ONLY `[y]/[a]/[n]/[esc]` plus `[c]` (open a
-  reject-with-reason capture) and the VIEW-ONLY reasoning toggle (Ctrl+T — a pure repaint, zero
-  session/decision effect). A modified chord (Ctrl/Alt) never silently picks the most-permissive
-  approve/reject. The `[c]` reason is a USER-typed reject enrichment only — sanitized (terminal +
+  pending approval the card answers ONLY the Ctrl chords `Ctrl+Y` (once), `Ctrl+G` (session-wide, confirmed by Enter), `Ctrl+N` (deny) and
+  `Ctrl+R` (open a reject-with-reason capture), plus `[esc]`/Ctrl-C (stop the turn); while a card is open the card consumes every other key (the
+  VIEW-ONLY reasoning toggle, Ctrl+T, is reachable only when no card is open). A bare letter answers nothing (typing at a card must never decide it, PR #99), and any other modified chord
+  (Ctrl/Alt) never silently picks the most-permissive approve/reject. The `Ctrl+R` reason is a USER-typed reject enrichment only — sanitized (terminal +
   bidi stripped, one line) and length-bounded before it rides the secret-free denial; it never
   changes the floor or "a user deny is final". Off a TTY (`--json` / piped / one-shot `agent run`)
   the one canonical `nonInteractiveApprovalPrompt` DENIES every governed dispatch — never a hang,

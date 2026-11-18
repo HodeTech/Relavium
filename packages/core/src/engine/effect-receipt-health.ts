@@ -61,6 +61,8 @@ export class EffectReceiptHealth {
     const identity = (slot: number, toolId: string): string =>
       JSON.stringify([scope, slot, toolId] satisfies [EffectIdentity['scope'], number, string]);
     return {
+      // Observation retains the exact producer, but a read creates no pending admission.
+      inspectReplay: (...args) => this.invocation(() => port.inspectReplay(...args)),
       prepare: (...args) => {
         const [slot, toolId, tier] = args;
         return this.invocation(

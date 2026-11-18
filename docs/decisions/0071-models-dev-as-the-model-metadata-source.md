@@ -59,8 +59,7 @@ A provider's `/models` endpoint cannot fix this — it returns **availability**,
 already says so: *"the live tier is **never** a pricing authority — providers rarely return a price"*. The
 missing half has to come from somewhere.
 
-[models.dev](https://models.dev) is that somewhere: an open, **MIT-licensed** catalog maintained by the
-opencode project, carrying **per model** `cost` (input/output/cache-read/cache-write plus context-size
+[models.dev](https://models.dev) is that somewhere: an open, **MIT-licensed** catalog maintained upstream, carrying **per model** `cost` (input/output/cache-read/cache-write plus context-size
 `tiers`), `limit` (context **and max output**), and `reasoning_options` — which encodes both the **shape** of
 the reasoning control (`effort` / `budget_tokens{min,max}` / `toggle`) and its **accepted values**.
 
@@ -528,3 +527,8 @@ See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and t
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0111](0111-cli-meta-operations-use-a-lazy-packaged-runtime.md) is accepted by the maintainer. Lazy execution preserves filesystem admission, one invocation-owned file-catalog seed, current DB overlay, then capability/quote/budget reads. Late file seeding cannot replace authoritative DB long-tail prices; meta operations perform no catalog/cache work. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+> **Editorial revision 2026-11-15 (maintainer instruction):** external agent
+> product names/comparison references are removed from the explanatory prose.
+> The technical decision, status and guarantees are unchanged. See the
+> [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).
