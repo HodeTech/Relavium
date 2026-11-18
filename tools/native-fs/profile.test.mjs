@@ -358,13 +358,13 @@ const probeRecords = (status = 'invalid-parameter') =>
 test('Windows measurement case runs first while all production parents and eleven Node cases remain mandatory', () => {
   const windows = rustPopulation('win32');
   assert.equal(windows.passed[0], WINDOWS_RENAME_PROBE_CASE);
-  assert.equal(windows.passed.length, 34);
+  assert.equal(windows.passed.length, 36);
   assert.equal(windows.ignored.length, 2);
   assert.equal(
     windows.passed.filter(
       (name) => ![WINDOWS_RENAME_PROBE_CASE, WINDOWS_SECURITY_PROBE_CASE].includes(name),
     ).length,
-    32,
+    34,
   );
   assert.ok(
     windows.passed.includes(
@@ -373,8 +373,8 @@ test('Windows measurement case runs first while all production parents and eleve
   );
   assert.ok(windows.passed.includes(WINDOWS_OWNER_CASE));
   for (const [platform, count, ignored] of [
-    ['darwin', 63, 5],
-    ['linux', 30, 6],
+    ['darwin', 66, 5],
+    ['linux', 33, 6],
   ]) {
     const population = rustPopulation(platform);
     assert.equal(population.passed.length, count);
@@ -561,11 +561,11 @@ const securityRecords = (status = 'error') =>
 
 test('Windows descriptor probe preserves the expanded parents and remains a measurement before ordinary work', () => {
   const windows = rustPopulation('win32');
-  assert.equal(windows.passed.length, 34);
+  assert.equal(windows.passed.length, 36);
   assert.equal(windows.ignored.length, 2);
   assert.equal(windows.passed[0], WINDOWS_RENAME_PROBE_CASE);
   assert.equal(windows.passed[1], WINDOWS_SECURITY_PROBE_CASE);
-  assert.equal(windows.passed.filter((name) => name !== WINDOWS_SECURITY_PROBE_CASE).length, 33);
+  assert.equal(windows.passed.filter((name) => name !== WINDOWS_SECURITY_PROBE_CASE).length, 35);
   assert.ok(
     windows.passed.indexOf(
       'common::producer_crash_tests::native_producer_partial_crashes_recover',

@@ -192,21 +192,27 @@ export function rustPopulation(platform) {
       'stage_index::custody_tests::claim_survives_duplicates_but_not_child_exec',
       'stage_index::custody_tests::native_producer_claim_noninheritance_and_independent_reader',
       // Concurrent processes on one operator home: the allocation claim is waited for inside the
-      // operation's deadline, only contention is retried, a producer's vanishing uncommitted entry
-      // is skipped by a scan, a pin removes only its own reservation, and `encode` enforces what
-      // `decode` requires.
-      'stage_index::custody_tests::allocation_claim_waits_for_a_short_holder_and_fails_closed_after_the_budget',
+      // operation's deadline (at most three waiters per process, so the shared worker pool keeps a
+      // free thread), only contention is retried, a producer's vanishing uncommitted entry is skipped
+      // by a scan but still counted toward the bound, a pin removes only its own reservation, and
+      // `encode` enforces what `decode` requires.
+      'stage_index::custody_tests::a_vanished_entry_still_counts_toward_the_bound_and_the_scan_has_slack',
       'stage_index::custody_tests::allocation_claim_wait_honours_cancellation',
+      'stage_index::custody_tests::allocation_claim_waits_for_a_holder_and_fails_closed_after_the_budget',
       'stage_index::custody_tests::only_contention_is_waited_out_as_a_claim_failure',
+      'stage_index::custody_tests::only_three_waiters_park_and_a_fourth_is_refused_at_once',
+      'stage_index::custody_tests::pin_refuses_a_reservation_it_did_not_create',
       'stage_index::custody_tests::pin_removes_only_the_reservation_it_created',
       'stage_index::custody_tests::record_encode_enforces_the_decode_invariants',
-      'stage_index::custody_tests::recovery_waits_for_a_short_allocation_holder',
+      'stage_index::custody_tests::recovery_waits_for_an_allocation_holder',
       'stage_index::custody_tests::scan_skips_a_vanished_uncommitted_entry_but_not_a_committed_one',
-      'stage_index::custody_tests::scan_skips_an_uncommitted_entry_unlinked_after_it_was_opened',
       // POSIX only: a Windows scan can meet a delete-pending entry that only the eight-target CI observes.
       ...(platform === 'win32'
         ? []
-        : ['stage_index::custody_tests::scan_survives_concurrent_promotion_churn']),
+        : [
+            'stage_index::custody_tests::scan_skips_an_uncommitted_entry_unlinked_after_it_was_opened',
+            'stage_index::custody_tests::scan_survives_concurrent_promotion_churn',
+          ]),
       'common::producer_crash_tests::native_producer_partial_crashes_recover',
       'test_hooks::first_failure_preserves_primary_and_evaluates_once',
       ...(platform === 'win32'
