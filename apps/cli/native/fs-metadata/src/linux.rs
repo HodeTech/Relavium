@@ -1342,6 +1342,7 @@ mod tests {
         let fixture = Fixture::new();
         let parent = LinuxProfile::open_parent(&fixture.0).expect("parent");
         let stop = std::sync::atomic::AtomicBool::new(false);
+        let ready = std::sync::atomic::AtomicBool::new(false);
         let mut failure = None;
         std::thread::scope(|scope| {
             let churn = scope.spawn(|| {
@@ -1351,9 +1352,16 @@ mod tests {
                     let path = fixture.0.join(format!("churn-{counter}"));
                     std::fs::write(&path, b"x").expect("churn create");
                     std::fs::remove_file(&path).expect("churn remove");
+                    // The first completed create and remove: from here on the directory really is churning.
+                    ready.store(true, Ordering::Release);
                 }
                 counter
             });
+            // Snapshots taken before the churn began would not exercise it; a churner that died before its
+            // first cycle ends the wait and fails at the join below instead of hanging the test.
+            while !ready.load(Ordering::Acquire) && !churn.is_finished() {
+                std::thread::yield_now();
+            }
             for round in 0..300 {
                 if let Err(error) = LinuxProfile::capture_parent(&parent, None) {
                     failure = Some(format!("snapshot {round}: {error:?}"));

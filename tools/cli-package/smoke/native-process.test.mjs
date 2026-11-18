@@ -188,7 +188,9 @@ test('native control failure preserves its exact primary and partial mode/cleanu
 
 test(
   'two same-directory copied Nodes share verified runtime support and acknowledge the actual descendant',
-  { timeout: 10000 },
+  // Typically 0.2 to 1.4 s, but it copies the Node executable twice: one loaded runner took 13.97 s on 2026-11-18
+  // (the merge run's first attempt, a 10 s limit), so the limit is 30 s, still far below a hang.
+  { timeout: 30000 },
   async () => {
     const root = mkdtempSync(join(tmpdir(), 'relavium-status-fixture-test-'));
     const executable = join(root, process.platform === 'win32' ? 'git.exe' : 'git');

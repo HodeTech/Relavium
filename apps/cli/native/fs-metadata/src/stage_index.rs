@@ -3484,6 +3484,7 @@ mod custody_tests {
         let directory = index.directory.try_clone().expect("directory handle");
         let path = index.path.clone();
         let stop = AtomicBool::new(false);
+        let ready = AtomicBool::new(false);
         // A failing scan must end the test, never hang it: record the first failure and let the
         // churner stop before the scope joins it.
         let mut failure = None;
@@ -3497,9 +3498,16 @@ mod custody_tests {
                         .expect("churn create");
                     drop(file);
                     fs::remove_file(path.join(&name)).expect("churn remove");
+                    // The first completed create and remove: from here on the index really is churning.
+                    ready.store(true, Ordering::Release);
                 }
                 counter
             });
+            // Scans taken before the churn began would not exercise it; a churner that died before its first
+            // cycle ends the wait and fails at the join below instead of hanging the test.
+            while !ready.load(Ordering::Acquire) && !churn.is_finished() {
+                std::thread::yield_now();
+            }
             for round in 0..300 {
                 if let Err(error) = index.entries(Instant::now(), None) {
                     failure = Some(format!("scan {round}: {error:?}"));

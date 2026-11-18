@@ -91,51 +91,58 @@ function spawnWorker(path: string, mode: string, barrier: string): Worker {
   };
 }
 
-it('serializes incompatible native writers and rolls back the contender batch after a real busy retry', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'relavium-media-metadata-native-'));
-  const path = join(root, 'history.db');
-  const barrier = join(root, 'owner-joined');
-  const client = createClient(path);
-  const workers: Worker[] = [];
-  try {
-    runMigrations(client.db);
-    const owner = spawnWorker(path, 'owner', barrier);
-    workers.push(owner);
-    await owner.wait('locked');
-    const contender = spawnWorker(path, 'contender', barrier);
-    workers.push(contender);
-    await contender.wait('ready');
-    contender.release();
-    await contender.wait('native-busy');
-    owner.release();
-    expect(await owner.wait('done')).toMatchObject({ result: 'committed' });
-    expect(await owner.joined).toEqual({ code: 0, signal: null });
-    await writeFile(barrier, 'joined');
-    expect(
-      await contender.wait('done'),
-      'FS_CAUSAL_MEDIA_METADATA_NATIVE_SERIALIZATION',
-    ).toMatchObject({
-      result: 'descriptor_conflict',
-      observedBusy: true,
-    });
-    expect(await contender.joined).toEqual({ code: 0, signal: null });
-    expect(client.db.select().from(mediaObjects).all()).toMatchObject([
-      {
-        handle: `media://sha256-${'a'.repeat(64)}`,
-        mimeType: 'audio/L16',
-        byteLength: 2,
-        createdAt: 1000,
-        lastReferencedAt: 1000,
-        deletedAt: null,
-      },
-    ]);
-    expect(createMediaReferenceStore(client.db).listObjectHandles()).toEqual([
-      `media://sha256-${'a'.repeat(64)}`,
-    ]);
-    expect(client.db.select().from(mediaReferences).all()).toEqual([]);
-  } finally {
-    await Promise.all(workers.map((worker) => worker.stop()));
-    client.sqlite.close();
-    await rm(root, { recursive: true, force: true });
-  }
-}, 15_000);
+it(
+  'serializes incompatible native writers and rolls back the contender batch after a real busy retry',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'relavium-media-metadata-native-'));
+    const path = join(root, 'history.db');
+    const barrier = join(root, 'owner-joined');
+    const client = createClient(path);
+    const workers: Worker[] = [];
+    try {
+      runMigrations(client.db);
+      const owner = spawnWorker(path, 'owner', barrier);
+      workers.push(owner);
+      await owner.wait('locked');
+      const contender = spawnWorker(path, 'contender', barrier);
+      workers.push(contender);
+      await contender.wait('ready');
+      contender.release();
+      await contender.wait('native-busy');
+      owner.release();
+      expect(await owner.wait('done')).toMatchObject({ result: 'committed' });
+      expect(await owner.joined).toEqual({ code: 0, signal: null });
+      await writeFile(barrier, 'joined');
+      expect(
+        await contender.wait('done'),
+        'FS_CAUSAL_MEDIA_METADATA_NATIVE_SERIALIZATION',
+      ).toMatchObject({
+        result: 'descriptor_conflict',
+        observedBusy: true,
+      });
+      expect(await contender.joined).toEqual({ code: 0, signal: null });
+      expect(client.db.select().from(mediaObjects).all()).toMatchObject([
+        {
+          handle: `media://sha256-${'a'.repeat(64)}`,
+          mimeType: 'audio/L16',
+          byteLength: 2,
+          createdAt: 1000,
+          lastReferencedAt: 1000,
+          deletedAt: null,
+        },
+      ]);
+      expect(createMediaReferenceStore(client.db).listObjectHandles()).toEqual([
+        `media://sha256-${'a'.repeat(64)}`,
+      ]);
+      expect(client.db.select().from(mediaReferences).all()).toEqual([]);
+    } finally {
+      await Promise.all(workers.map((worker) => worker.stop()));
+      client.sqlite.close();
+      await rm(root, { recursive: true, force: true });
+    }
+    // The causal-controls fence caps this at 15 s where it runs (Linux physical phases); Windows, measured at 9.5 s of
+    // 15 s with two child start-ups per case and a sibling file's case timing out at the same ceiling on 2026-11-18,
+    // gets a wider case budget. The stage waits above still bound a hang.
+  },
+  process.platform === 'win32' ? 45_000 : 15_000,
+);

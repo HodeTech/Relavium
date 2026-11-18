@@ -26,7 +26,14 @@ import { MediaTemporaryMaintenanceError } from './media-store-temporaries.js';
 
 // Several native process starts and explicit IPC barriers belong to one case. Their joined
 // lifecycle needs a case budget separate from Vitest's five-second single-operation default.
-vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
+// The causal-controls timeout fence (tools/causal-controls/timeout-setup.mjs) caps this budget at 15 s in the
+// physical phases, which run on Linux. Windows is not in those phases, and one of its cases holds three cold
+// starts (claimant, retaining, deleting) that have been measured up to 4.4 s each on a loaded runner: on
+// 2026-11-18 the case took 15.04 s (CI run 44395981912, its file 104 s against a usual 53 to 98 s) and timed
+// out, with every stage inside its own deadline. A hang is still bounded by the per-stage deadlines below,
+// so only Windows gets the wider case budget.
+const CASE_MS = process.platform === 'win32' ? 45_000 : 15_000;
+vi.setConfig({ testTimeout: CASE_MS, hookTimeout: 15_000 });
 
 interface Worker {
   readonly child: ChildProcess;
