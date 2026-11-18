@@ -1727,7 +1727,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
   the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
   check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
-- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 (commits `c211b21f`, `2a70db08`; review round, security sitting and eight-target CI owed); Inc 2 and Inc 3 open.** Measured on the built addon
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 (two independent review rounds; the final cumulative round, a security sitting on the last delta, a two-real-process probe and the eight-target CI are owed); Inc 2 and Inc 3 open.** Measured on the built addon
   (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
   and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
   the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
@@ -1741,7 +1741,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   does not require them; a `clippy::undocumented_unsafe_blocks` gate is a quality choice). Needs a native rebuild, the source-binding pins, a security
   sitting and the eight-target CI legs; Linux and Windows behaviour is verifiable only in CI.
   **Work breakdown (2026-11-18, read-only analysis; the lock sites, the `open_nofollow` sites and the `unsafe` counts below were spot-checked against the code, the other anchors were not).**
-  Every finding is Rust-side: nothing needs the thin TypeScript binding (`fs-native-*.ts`) or `fs.ts`, so the work does not overlap the approval path. The stage drops come from
+  Every finding is Rust-side except one found later by an external review: the TypeScript inventory reader (`fs-stage-inventory.ts`) has the same two vanishing-entry windows and was fixed in Inc 1; the thin TypeScript binding (`fs-native-*.ts`) and `fs.ts` needed nothing, so the work does not overlap the approval path. The stage drops come from
   `stage_index.rs`: `allocation_lock_checked` (~532, called by reserve at ~626) and `cleanup()` (~887) take one nonblocking try and every errno maps to `Changed`, and the host turns
   any native stage failure into a non-retryable `effect_needs_attention` (`fs-native-write.ts` ~92-150). `recover` has a third one-shot allocation-lock site (~1196) that the text above
   does not name; retrying it too is a maintainer decision. How much of the 27 of 60 belongs to the lock and how much to N-1 is not separated, and the probes (`n3.cjs` K writers,
@@ -1759,42 +1759,38 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   `profile.test.mjs`, a new lifecycle case joins `NODE_LIFECYCLE_CASES`. `NATIVE_BUILD_INPUTS` includes `native-fs.yml` and four `tool-host` TypeScript files, so editing them
   shifts the build binding; the only committed source pin is the loader hash. `native-fs.yml` has no `workflow_dispatch`, so Linux and Windows evidence needs a push and a whole
   `ci.yml` run (each push costs one). D64 applies (writes, lease and resume paths): one rigor round plus a separate security sitting per increment.
-  **Inc 1 implemented (2026-11-18, author checkpoint; maintainer chose it before MVP-4).** [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)
-  records it. *Done:* the allocation claim is waited for inside the operation's deadline and cancellation flag at all three sites (reserve, post-publication cleanup, recovery's own claim; the
-  per-record claim and the marker claim stay single attempts); only contention is repeated; a scan skips an uncommitted `.reserved`/`.prepare` that vanishes before it is opened
-  **or after** (a second window the first analysis missed: the unlinked file the scan holds reads link count zero and the private-file check refuses it as `Unsupported`, not `Changed`);
-  N-2 (`encode` shares `decode`'s validators), N-7 (a pin removes only the reservation it created), N-3 (the contract bound is 384). *Measured* on the rebuilt addon with the same probes
-  (macOS): two writers 60/60 (before 32/60: 28 stage failures, 2 `possibly_published:uncertain`), four 120/120, eight 240/240, two writers plus a recovery loop 60/60 and 1,832/1,832
-  recoveries, the churn probe 200/200 (before 98/200); no leftover entries. Eight cross-platform custody tests plus a POSIX-only churn stress test are pinned in
-  `tools/native-fs/profile-catalog.mjs` (Windows population 26 → 34, macOS 54 → 63, Linux 21 → 30); an 11-mutant sweep killed every mutant (a mutant that removes the deadline is killed by a
-  hang, so the wait tests carry no timeout of their own); `node tools/native-fs/build.mjs --verify-profile` passed locally (source binding `94afadd2…` → `92af84bb…`), 153 native tool
-  tests and the 29 addon-backed TypeScript tests pass. *Not proved, owed to CI or a later increment:* Linux and Windows execution (only the eight-target CI shows it); a Windows scan meeting a
-  delete-pending entry (access denied or a sharing violation instead of not-found) — the churn test is POSIX-only for that reason; the cold-start race when two processes create the index
-  hierarchy on a fresh home at the same moment (not probed); a probe with two real OS processes (the in-process writers conflict under `flock` the same way, but it is not the same
-  experiment). *Sibling search:* every `lock(` and `lock_within(` site was reviewed (the two other `open_nofollow(&entry.path())` sites sit in cleanup paths over this producer's own
-  artifacts and were left alone). **Round 1 (2026-11-18, two independent read-only reviewers, the author's conclusions withheld):** no blocker or high in either. *Correctness review* (2 medium, 4 low, 3 nits) and *security
-  sitting* (1 medium, 4 low, 2 notes). Dispositions, all in the follow-up commit: (1) **medium, pool starvation** — every native call is an `AsyncTask` on Node's shared four-thread
-  worker pool, so a stuck holder parked up to all of it for up to two seconds each (reproduced: with 4 and 8 writers behind a held claim `fs.stat`, `dns.lookup` and `crypto.randomBytes`
-  stalled 1.8 s and 3.8 s); fixed by a process-wide limit of three waiters (a fourth gets the old immediate refusal, one pool thread is never parked), re-measured at 0 ms, and ordinary
-  in-process concurrency is unchanged (the pool already allows one holder and three waiters; eight writers still 240/240); the alternative of returning a distinct "busy" outcome and
-  retrying from the TypeScript host without holding a thread stays an option if the limit proves too tight. (2) **medium, pin-level proof missing** — a mutant that restored the old
-  by-name `remove_file` in the pin survived, because the only test called the helper; a pin-level test was added and kills it. (3) **medium/low, pre-pin cleanup budget** — `start` was taken before the
-  claim, so a wait near two seconds left the destructive steps half done (payload removed, stage directory and `.reserved` left, a leaked slot); fixed (the budget starts after the
-  claim); a mutant that restores the old order survives because only a wait of about 1.99 s observes it, so it has no deterministic test and the code comment is the guard. (4) **low,
-  capacity** — a skipped entry was not counted, so `reserve` could allocate the 129th nonce and every later scan failed closed (reproduced: undercounts in 587 of 1,500 scans, an allocation at true
-  capacity in 51 of 400; the unchanged tree already did it 11 of 400 times because a listing can omit a renamed entry); fixed by counting and listing the skipped nonce and letting a scan
-  tolerate eight more nonces while `reserve` still refuses at 128; a recovery pass now reports such an entry as retained (the probe's `retained` reads 121 instead of 120). (5) **low/nit, test
-  flakiness and a possible hang** — two assertions depended on a holder thread's sleep, and a regression of the deadline would have hung CI; replaced by a per-thread hook that releases
-  the holder, or raises the cancel flag, at the first contended attempt and fails the test after 2,000 attempts, so no test sleeps for its assertion. (6) **nit** — the POSIX-only test was gated inside its
-  body and listed for Windows as an empty pass; it is gated as a function and excluded for `win32`. *Left open, recorded:* the lock file's inode is checked before the wait but not
-  after (a user deleting `inventory.lock` inside the index during a wait splits the exclusion domain for up to two seconds; benign, same-user, no new capability); Windows delete-pending
-  entries and `LockFile` behaviour beyond the type check; closing the producer's reservation handle after the pin removes it (a possible Windows hardening); `recoverMetadataStaging` is
-  not wired into product code. Worst case per write is still several two-second waits (recovery, reserve, error-path cleanup, post-publication cleanup each have their own budget).
-  *Re-verified after the fixes:* 30 stage-index tests (11 cross-platform custody tests among them), an 18-mutant sweep (17 killed, the one survivor named above), the darwin test catalog equals the
-  binary's own list (71 of 71), the Windows type check passes (a deliberate error in the Windows-only code is caught, so it does check it), `build.mjs --verify-profile` passes, probes: 60/60,
-  120/120, 240/240, 60/60 with 2,182/2,182 recoveries, 200/200. A first rebuild attempt failed once with `ENOTEMPTY` while replacing `runtime/` (the log also said it was waiting for the build directory lock);
-  the immediate retry passed and the cause was not reproduced. *Owed:* one NEW complete cumulative D64 round on the final head with no blocker, high or medium, a separate security sitting on the
-  delta, then all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata)*
+  **Inc 1 — status (2026-11-18; the maintainer chose it before MVP-4).** [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)
+  records the decision, the measurements and the limits. *Done:* the allocation claim is waited for (a 2 ms poll) at all three sites: reserving and recovery inside the operation's deadline and cancellation
+  flag, cleanup after a publication and pre-pin cleanup under a fresh budget that ignores cancellation on purpose (each claim site has its own budget, so one write can wait several times two seconds); work under a
+  claim measures its budget from the instant it was acquired (`AllocationClaim.held_since`); the lock file is re-opened by name after the wait and must be the file that was locked; at most
+  pool size minus one threads per process wait, a caller beyond that polls for 100 ms and is then refused with `changed`, and cancellation is checked first; only contention is repeated; the per-record and
+  marker claims stay single attempts (no wait cycle). The Rust scan **and the TypeScript inventory reader** skip an uncommitted `.reserved` or `.prepare` that vanishes before it is opened **or after**
+  (the unlinked file reads link count zero and its identity differs, so it was `Unsupported`, not `Changed`; the name must really be absent), and the reader runs the whole scan again for a
+  committed `.record` unlinked after the open; a skipped entry still counts toward the nonce bound and the Rust scan tolerates eight more nonces while `reserve` refuses at 128; N-2 (`encode` shares `decode`'s
+  validators, the locator in normalized form like the reader's `resolve(stage) === stage`), N-7 (a pin removes only the reservation it created) and N-3 (the contract bound is 384).
+  *Measured* on the rebuilt addon (macOS, in-process writers; the same probes as before): two writers 60/60 clean (before 30/60 clean, 28 failed at stage and 2 wrote the target but ended uncertain), four 120/120,
+  eight 240/240, two writers plus a recovery loop 60/60 with 2,182/2,182 recoveries, the churn probe 200/200 (before 98/200); no leftover entries; behind a claim held by another process `fs.stat`, `dns.lookup` and
+  `crypto.randomBytes` took 0 ms with up to four writers, about 0.1 s with six and about 0.3 s with eight (about 0.1 s per caller beyond the limit, the price of the grace; 1.8 s and 3.8 s before the limit). *Proof kept in the repo:* 13 cross-platform and 6 POSIX-only Rust custody tests pinned in `tools/native-fs/profile-catalog.mjs` (Windows population 26 → 39, macOS 54 → 73, Linux 21 → 40;
+  the darwin catalog equals the binary's own list, 78 of 78), three new TypeScript inventory tests, and `fs-native-concurrency.test.ts` (three concurrent writers through the real host path, which fails with
+  `NativeWriteNeedsAttentionError` when the claim is one nonblocking attempt again); a 31-mutant Rust sweep killed 30 (the survivor is equivalent: the private-mode check of the file under the name is implied by
+  the identity comparison with the already-checked reservation handle) and the three TypeScript mutants are killed; the Windows type check passes (a deliberate error in the Windows-only code is caught, so it does
+  check it); `build.mjs --verify-profile` passes. One rebuild failed once with `ENOTEMPTY` while replacing `runtime/` (the log also said it was waiting for the build directory lock) and passed on the immediate retry; not reproduced.
+  *Review rounds.* **Round 1** (two independent read-only reviewers, the author's conclusions withheld): no blocker or high; mediums: pool starvation (every native call is an `AsyncTask` on Node's shared four-thread pool;
+  with four and eight writers behind a held claim `fs.stat`, `dns.lookup` and `crypto.randomBytes` stalled 1.8 s and 3.8 s; fixed by a waiter limit), a pin-level proof that was missing (a test now kills the mutant that
+  restored the by-name removal), the pre-pin cleanup budget started before the wait; lows: a skipped entry was not counted (a scan could undercount and `reserve` allocate the 129th nonce, 587 of 1,500 scans undercounted;
+  fixed), tests that slept for their assertions (hook-driven now), POSIX-only gating. **Round 2** (new, cumulative): no blocker or high; mediums: the limit refused a fourth concurrent caller even behind a holder
+  that was merely busy in another process (three processes with four lanes: 120 of 360 writes refused; fixed with a pool-derived limit and a 100 ms grace) and the budget-origin property was unpinned (a typed claim
+  now carries it, tested); lows: the lock-file inode window (closed), recovery and cleanup sharing a budget with the wait (fresh budget after the claim), unpinned behaviours (tests and sweep), the Rust slack
+  against the reader's strict 128 (documented). **Four external document reviews**, written by reviewers who did not know the process: most overlap; new and real: the TypeScript reader had the same two windows
+  (one reviewer's probe saw 17 and 6 failures in 300 scans; fixed, three tests, mutation-checked), cancellation had to outrank the waiter limit (fixed, tested), the ADR misdescribed the cleanup wait (corrected:
+  fresh budget, no cancellation, several budgets per write), the measurement wording (30 of 60 clean), the `.`/`//` claim about the locator (now the normalized-form rule), a status line that claimed more than it
+  had, and the lack of a repo-reproducible end-to-end proof (added). *Unproven or left open, recorded:* a probe with two real OS processes; Linux and Windows execution (only the eight-target CI shows it), including a Windows
+  scan meeting a delete-pending entry and `LockFile` behaviour beyond the type check; the cold-start race when two processes create the index hierarchy on a fresh home at the same moment (never probed); the
+  TypeScript reader's strict bound of 128 against the Rust scan's 136 (tool calls fail closed during an overshoot until operator recovery drains it); a fourth concurrent writer behind a busy holder in another process
+  that outlasts the 100 ms grace is still refused as before, and a refused post-publication cleanup is `possibly_published:uncertain` (a distinct "busy" result retried by the host without holding a thread stays an
+  option); closing the producer's reservation handle after the pin removes it (a possible Windows hardening); `recoverMetadataStaging` is not called by any product code; sibling `open_nofollow(&entry.path())` sites in
+  cleanup paths were reviewed and left alone. *Owed:* the final cumulative D64 round on the last head with no blocker, high or medium, a separate security sitting on the delta since round 2, and all eight native legs green
+  on the final head. *(medium · apps/cli/native/fs-metadata, apps/cli/src/engine/tool-host/fs-stage-inventory.ts)*
 - [ ] **PR #99 review corrections — what the 2026-11-17 implementation left undone (small).** (1) S-2 (review-document cost): the document is now built once
   per frozen preview and not at all in `plan`, but a build in `ask`, `accept-edits` and `auto` still runs when the preview event arrives, before any card
   needs it (about 300 ms per MiB of diff). Deferring it needs `ToolDisplay.document` (`tool-display.ts`) to become lazy; the retention loop reads

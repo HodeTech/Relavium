@@ -320,8 +320,9 @@ the index child. Keep the previous index namespace protected as described below.
 Reuse that one captured boundary through lazy root creation and publication;
 protecting only payload identities does not protect the ownership evidence.
 
-Bound the inventory to 128 records, each at most 16 KiB, and a recovery pass to
-128 records/2 MiB of record data, eight immediate children per stage and no
+Bound the inventory to 128 records (a scan tolerates eight more, see the
+allocation lock below), each at most 16 KiB, and a recovery pass to 128
+records/2 MiB of record data, eight immediate children per stage and no
 recursive descent. Check cancellation/yield and a two-second cooperative scan
 budget between OS operations, except the explicitly bounded cleanup completion
 section below; retain/join an actual native producer that has
@@ -456,12 +457,16 @@ whose record keeps vanishing fails closed as before. A vanishing `.reserved` or
 `.prepare` (for example a producer's `.prepare` to `.record` promotion, or its
 `.reserved` removal) is skipped without a retry, whether it is gone before the
 scan opens it or is unlinked after the scan opened it (the held file then has a
-link count of zero and the private-file check refuses it; the entry only counts
-as vanished when its name is really absent), but it still counts toward the
-nonce bound and is listed, since a listing can omit an entry renamed while it
-runs: a point-in-time inventory cannot be exact for an
-uncommitted artifact, and the path-based stage-directory floor does not depend
-on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
+link count of zero and its identity no longer matches; the entry only counts as
+vanished when its name is really absent, and a file that is still there and fails
+a check stays fatal). The TypeScript reader applies the same rule and, in
+addition, runs the whole scan again for a committed `.record` that is unlinked
+after it was opened (the Rust scan holds the allocation claim, so a `.record` or
+the lock file never vanishes under it). A skipped entry still counts toward the
+nonce bound and is listed, and a recovery pass reports it as retained, since a
+listing can omit an entry renamed while it runs: a point-in-time inventory
+cannot be exact for an uncommitted artifact, and the path-based stage-directory
+floor does not depend on those pins. Rust retains them without cleanup. `.reserved`/`.prepare` keep their bounded
 uncommitted meanings. Physical v1 directory/stage names are namespace names,
 not evidence of the record protocol. No mutable flag upgrades an old record.
 
@@ -473,9 +478,7 @@ old automatic recovery safe. No local PID scan is claimed to prove all old
 processes are gone across namespaces. Old readers may safely refuse new records;
 this is not a supported mixed-version operating mode.
 
-Allocation refuses at 128 distinct nonces (a scan tolerates eight more, because a
-lockless pin can let an allocation overshoot, instead of failing closed with no
-supported way out) and counts at most 385 directory
+Allocation refuses at 128 distinct nonces and a scan counts at most 385 directory
 entries (three transition entries per nonce plus the allocation lock, which a scan
 does not report, so a recovery report's `removed + retained` is at most 384), at most
 16 KiB per entry and 2 MiB of aggregate record data. Recovery inspects at most
@@ -510,18 +513,30 @@ name alone.
 
 Allocation holds an exclusive kernel lock on `inventory.lock`, taken by a
 nonblocking attempt that is repeated about every two milliseconds while another
-handle holds it, inside the operation's own two-second deadline and its
-cancellation flag ([ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)):
-concurrent writers, a post-publication cleanup and a recovery pass queue behind
-each other instead of failing the write. Only contention is repeated
+handle holds it ([ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)):
+concurrent writers, cleanups and a recovery pass queue behind each other
+instead of failing the write. Reserving and a recovery pass wait inside the
+operation's own two-second deadline and cancellation flag; cleanup after a
+publication and pre-pin cleanup wait under a fresh two-second budget and ignore
+cancellation (cleanup completion suppresses cancellation), so each claim site
+has its own budget and one write can wait several times two seconds in the worst
+case. Work done under a claim measures its budget from when the claim was
+acquired, and the lock file is opened by name again after the wait and must be
+the file that was locked. Only contention is repeated
 (`EWOULDBLOCK`/`EAGAIN`/`EINTR`, `ERROR_LOCK_VIOLATION`); any other error fails at
 once, and an exhausted deadline is the same `changed` refusal as before. The
 per-record claim below stays a single attempt: a held record claim means a live
 producer, and waiting on both claims would make a cycle (a writer holds its
 record claim while it waits for the allocation claim, and recovery holds the
-allocation claim while it tries a record claim). At most three threads per
-process wait at once, because every native call shares Node's four-thread worker
-pool with `fs`, `dns` and `crypto`; a fourth caller gets the immediate refusal.
+allocation claim while it tries a record claim). At most the Node worker pool
+size minus one threads per process wait at once (three by default; the pool is
+shared with `fs`, `dns` and `crypto`, and `UV_THREADPOOL_SIZE` sets it); a
+caller beyond that polls for a 100 ms grace and is then refused with `changed`,
+and cancellation and the deadline are checked before the limit. Allocation
+refuses at 128 distinct nonces; a scan tolerates eight more, because a lockless
+pin can let an allocation overshoot, so that an operator recovery pass can still
+run (the TypeScript reader keeps the strict bound of 128 and fails closed in the
+meantime).
 The v2 producer also claims its original prepared-record handle before record
 publication and payload bytes, retaining that same claim through stage,
 publication and joined release. Live-owner cleanup and pending-marker handling

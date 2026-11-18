@@ -241,7 +241,10 @@ first run exposed; the chord change was verified afterwards (19,945 tests: 19,92
 25 skips, the affected gate steps re-run) and by a further separate security sitting with no
 blocker, high or medium finding. The [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)
 owns the details and what is not claimed. The native adapter findings are their own
-increment after this round; the PR's final-head checks and the maintainer's acceptance
+increment after this round (its first part, concurrent processes on one operator home, was
+done on 2026-11-18 ahead of MVP-4 under
+[ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md);
+the [register](deferred-tasks.md) owns the evidence and what is still owed); the PR's final-head checks and the maintainer's acceptance
 are recorded in the merge checkpoint.
 
 **The full view and the tool details (2026-11-17): implemented on `development`; merged in PR #99 (2026-11-18).**
