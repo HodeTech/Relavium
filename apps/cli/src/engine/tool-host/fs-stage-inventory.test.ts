@@ -30,7 +30,7 @@ import { prepareGlobalPreferences } from '../../config/write.js';
 // A committed record can vanish between the directory read and the lstat/open/re-lstat of it (a concurrent write
 // completing removes its record). The window is microseconds wide, so the tests open it deterministically through the
 // real calls: `decide` may delete the file just before the real call ('unlink') or fail it outright ('vanish').
-type Decision = 'pass' | 'unlink' | 'vanish';
+type Decision = 'pass' | 'unlink' | 'vanish' | 'unlinkAfter' | 'replace';
 const seam = vi.hoisted(() => ({
   decide: undefined as undefined | ((op: 'lstat' | 'open', name: string, call: number) => Decision),
   calls: new Map<string, number>(),
@@ -38,8 +38,8 @@ const seam = vi.hoisted(() => ({
 }));
 vi.mock('node:fs/promises', async (original) => {
   const native = await original<typeof import('node:fs/promises')>();
-  const intercept = async (op: 'lstat' | 'open', target: unknown): Promise<void> => {
-    if (typeof target !== 'string' || !target.includes('fs-staging-v1')) return;
+  const intercept = async (op: 'lstat' | 'open', target: unknown): Promise<Decision> => {
+    if (typeof target !== 'string' || !target.includes('fs-staging-v1')) return 'pass';
     const name = target.slice(target.lastIndexOf('/') + 1);
     const call = (seam.calls.get(`${op}:${name}`) ?? 0) + 1;
     seam.calls.set(`${op}:${name}`, call);
@@ -49,8 +49,15 @@ vi.mock('node:fs/promises', async (original) => {
       await native.unlink(target);
       seam.log.push(`unlink:${name}`);
     }
+    if (decision === 'replace') {
+      // The name stays, but another file (a new inode) takes it between the lstat and the open.
+      await native.unlink(target);
+      await native.writeFile(target, '', { mode: 0o600 });
+      seam.log.push(`replace:${name}`);
+    }
     if (decision === 'vanish')
       throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+    return decision;
   };
   return {
     ...native,
@@ -59,8 +66,14 @@ vi.mock('node:fs/promises', async (original) => {
       return native.lstat(...args);
     },
     open: async (...args: Parameters<typeof native.open>) => {
-      await intercept('open', args[0]);
-      return native.open(...args);
+      const decision = await intercept('open', args[0]);
+      const handle = await native.open(...args);
+      if (decision === 'unlinkAfter' && typeof args[0] === 'string') {
+        // The entry disappears AFTER the real open succeeded: the reader now holds an unlinked file.
+        await native.unlink(args[0]);
+        seam.log.push(`unlinkAfter:${args[0].slice(args[0].lastIndexOf('/') + 1)}`);
+      }
+      return handle;
     },
     opendir: async (...args: Parameters<typeof native.opendir>) => {
       if (typeof args[0] === 'string' && args[0].endsWith('fs-staging-v1'))
@@ -585,5 +598,51 @@ it.skipIf(process.platform === 'win32')(
     expect(seam.log).toContain(`unlink:${nonce}.reserved`);
     expect(seam.log).toContain(`unlink:${nonce}.prepare`);
     expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'tolerates a reservation or prepare file that is unlinked after it was opened, without a retry',
+  async () => {
+    const nonce = 'c'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    await writeFile(join(index, `${nonce}.prepare`), '', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'open' && (name.endsWith('.reserved') || name.endsWith('.prepare'))
+        ? 'unlinkAfter'
+        : 'pass';
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    // Both unlinks really happened after the open (so the reader held a link-count-zero file), and
+    // neither made a second scan or a failure.
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.reserved`);
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.prepare`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(1);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'runs the whole scan again for a committed record that is unlinked after it was opened',
+  async () => {
+    const nonce = 'd'.repeat(32);
+    await writeFile(join(index, `${nonce}.record`), 'not a record', { mode: 0o600 });
+    seam.decide = (op, name) =>
+      op === 'open' && name === `${nonce}.record` && !seam.log.includes(`unlinkAfter:${name}`)
+        ? 'unlinkAfter'
+        : 'pass';
+    // The first scan loses the record under it and runs again; the second scan no longer lists it.
+    await expect(captureFsStageInventory(home)).resolves.toBeDefined();
+    expect(seam.log).toContain(`unlinkAfter:${nonce}.record`);
+    expect(seam.log.filter((entry) => entry === 'opendir:index')).toHaveLength(2);
+  },
+);
+
+it.skipIf(process.platform === 'win32')(
+  'still refuses a reservation whose name is now held by another file, because the name is not absent',
+  async () => {
+    const nonce = 'e'.repeat(32);
+    await writeFile(join(index, `${nonce}.reserved`), '', { mode: 0o600 });
+    seam.decide = (op, name) => (op === 'open' && name.endsWith('.reserved') ? 'replace' : 'pass');
+    await expect(captureFsStageInventory(home)).rejects.toBeInstanceOf(FsStageInventoryError);
+    expect(seam.log).toContain(`replace:${nonce}.reserved`);
   },
 );

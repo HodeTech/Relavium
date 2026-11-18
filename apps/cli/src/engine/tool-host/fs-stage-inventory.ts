@@ -107,6 +107,14 @@ function tick(start: number, signal: AbortSignalLike | undefined): void {
   throwIfAborted(signal, 'filesystem staging inventory scan was aborted');
   if (performance.now() - start > SCAN_MS) throw new FsStageInventoryError();
 }
+async function nameIsAbsent(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return false;
+  } catch (error) {
+    return code(error) === 'ENOENT';
+  }
+}
 function same(a: Identity, b: Identity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
 }
@@ -343,8 +351,19 @@ export async function captureFsStageInventory(
             before.nlink !== 1n ||
             !privatePolicy(before) ||
             (!transient && observedEntry.ctimeNs !== before.ctimeNs)
-          )
+          ) {
+            // A producer's pin removes its `.reserved` and renames its `.prepare` without any claim this
+            // reader could hold, and a completing write removes its `.record`: the file we just opened can
+            // be unlinked under us. Its link count then reads zero and its identity no longer matches, which
+            // looks exactly like a changed index. Only when the name is really absent now is it neither: an
+            // uncommitted entry is skipped (as one that vanished before the open), a committed record
+            // runs the whole scan again. A file that is still there and fails the check stays fatal.
+            if (await nameIsAbsent(path)) {
+              if (transient) return;
+              if (match?.[2] === 'record') throw new RecordVanished();
+            }
             throw new FsStageInventoryError();
+          }
           protectIdentity(before);
           if (transient || entry.name === 'inventory.lock') {
             total += Number(before.size);
