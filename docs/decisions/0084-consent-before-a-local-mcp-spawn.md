@@ -552,3 +552,5 @@ limits. Earlier pending/unmerged notes are historical; this landing adds no deci
 future feature, deferral or claim of merge-commit execution.
 
 > Note 2026-11-19 (decided; the command grants are built in MVP-4 step 3): the append-only grant log of §5 (`wx` 0600 creation, one record per `appendFileSync`, tombstones, an unparseable line means no grants) is reused for remembered command grants ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2). The residual recorded here, that a revocation racing a grant resolves by file order, applies there too.
+
+> Implemented 2026-11-19 (MVP-4 steps 3 and 4): the command grants reuse this append-only log protocol in `apps/cli/src/permissions/command-grants.ts` (plus a per-record MAC under a keychain key). See [command-permissions.md](../reference/cli/command-permissions.md).

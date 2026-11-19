@@ -115,7 +115,7 @@ async function revoke(
   if (result.ok) {
     // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked.
     const dropped = deps.session.forgetCommandsByGrant?.(result.id) ?? 0;
-    return `Revoked remembered command ${String(number)}: ${sanitizeInline(result.program)}, ${plural(result.args)}.${dropped > 0 ? ' This chat’s session approval of it went too.' : ''} It asks again the next time it is needed. The numbers have changed: /permissions lists them.`;
+    return `Revoked remembered command ${String(number)}: ${sanitizeInline(result.program)}, ${plural(result.args)}.${dropped > 0 ? ' This chat’s session approval of it went too.' : ''} It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.`;
   }
   if (result.reason === 'no-such-grant')
     return 'There is no remembered command with that number. /permissions lists them.';

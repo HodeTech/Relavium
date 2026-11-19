@@ -198,8 +198,9 @@ or remembered one, and in `auto` a command nothing pre-approved — with the add
 | Once | `Ctrl+Y` | a card that can be shown; locked until every requirement to read it is met (a shortened target, a masked span) |
 | This session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command (the card, or the full view) |
 | Remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not already pre-approved (on the allowlist or remembered), and the page shows the whole command |
-| Deny / Deny with a reason | `Ctrl+N` / `Ctrl+R` | always, even on a blocked card; a denial returns to the model with the person's words |
-| Stop | `Esc` or `Ctrl+C` | always; rejects the call and stops the turn (only `Ctrl+C` also starts the exit window) |
+| Deny | `Ctrl+N` | always, even on a blocked card; a denial returns to the model |
+| Deny with a reason | `Ctrl+R` | on a card that can be shown; the denial returns to the model with the person's words |
+| Stop | `Esc` or `Ctrl+C` | at the card and outside a text box (in the reason box or a search box `Esc` only closes the box); rejects the call and stops the turn (only `Ctrl+C` also starts the exit window) |
 
 *This session* approves this **exact argv** for the rest of this session instance (in memory, gone on `/exit`, and it asks
 again after a resume). *Remember* writes the grant at the moment of the answer — it is consent to the command, not to its
@@ -210,7 +211,7 @@ the card did not offer is narrowed to *Once* by the hook, whatever the prompt re
 The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions
 --revoke` withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
 `relavium permissions revoke`, or another chat) until the person withdraws it there with `/permissions --revoke --session`, and
-the revoke's message says so.
+both revoke messages say so.
 
 A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
 allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node

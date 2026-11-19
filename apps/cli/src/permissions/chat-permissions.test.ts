@@ -137,7 +137,7 @@ describe('/permissions --revoke', () => {
     const text = await chatPermissionsNotice(request({ revoke: true, number: '2' }), d);
     expect(d.revoke).toHaveBeenCalledExactlyOnceWith(2);
     expect(text).toBe(
-      'Revoked remembered command 2: npm, 1 argument. It asks again the next time it is needed. The numbers have changed: /permissions lists them.',
+      'Revoked remembered command 2: npm, 1 argument. It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.',
     );
   });
 
@@ -149,7 +149,7 @@ describe('/permissions --revoke', () => {
     });
     const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
     expect(text).toBe(
-      'Revoked remembered command 1: npm, 1 argument. This chat’s session approval of it went too. It asks again the next time it is needed. The numbers have changed: /permissions lists them.',
+      'Revoked remembered command 1: npm, 1 argument. This chat’s session approval of it went too. It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.',
     );
     expect(
       d.cache.isAlwaysCommand(['npm', 'test']),
@@ -164,7 +164,7 @@ describe('/permissions --revoke', () => {
       linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
     });
     const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
-    expect(text).not.toContain('session approval');
+    expect(text).not.toContain('This chat’s session approval');
     expect(d.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
   });
 

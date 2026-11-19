@@ -869,9 +869,10 @@ This is the **binding home** for the tool-policy rules; the rationale is
 restated). Three of the four rules below are **security tightenings** — public
 workflow-API tightenings, cheap now because no workflow exists yet, never sold as additive.
 
-- The `run_command` built-in tool spawns **model-driven shell execution**. Only commands
-  on the workflow's `allowedCommands` allowlist execute (an
-  unlisted command never runs). File-tool scope does not constrain arbitrary subprocess
+- The `run_command` built-in tool spawns **model-driven shell execution**. In a workflow only commands
+  on its `allowedCommands` allowlist execute (an
+  unlisted command never runs; an interactive chat is the one place a person can approve such a command,
+  on its card — see the command-card bullet below). File-tool scope does not constrain arbitrary subprocess
   arguments or provide OS filesystem isolation; an allowed command can access files or
   network resources using its own process authority. Review its argument surface and the
   host's actual resource/time controls rather than inferring an OS sandbox from a root grant.

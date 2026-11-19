@@ -189,3 +189,5 @@ future feature, deferral or claim of merge-commit execution.
 > **Amended 2026-11-17.** The "implementation pending" status above has since landed: the starting-mode preference was implemented with MVP-3 Step 3 (see `docs/reference/contracts/config-spec.md`, Starting chat mode — MVP-3). Final-head gates remain with the maintainer.
 
 > Note 2026-11-19 (decided; the store is built in MVP-4 step 3) ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2): remembered command grants are **not** a write target of this primitive. A last-writer-wins read-modify-write could resurrect a revoked grant and a malformed section would break every command's config load, so they use the append-only protocol of ADR-0084 in `~/.relavium/command-grants.ndjson`.
+
+> Implemented 2026-11-19 (MVP-4 steps 3 and 4): the store is `apps/cli/src/permissions/command-grants.ts`, and Remember writes to it from the command card. See [command-permissions.md](../reference/cli/command-permissions.md).

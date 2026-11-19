@@ -1436,7 +1436,7 @@ export class AgentSession {
    * dispatch-context construction VERBATIM (`this.#turnPolicy`, the session `toolPolicy`, `fsScope`,
    * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
    * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
-   * discriminated union — the host renders the output (untrusted context), the actionable allowlist-deny hint, or
+   * discriminated union — the host renders the output (untrusted context), the fixed "not allowed here" line, or
    * a failure. Dispatch failures use that result; host controller initialization preserves its original
    * throwable after releasing operation state. Callable only when started + idle (a `!` never races a turn).
    */
@@ -1497,8 +1497,8 @@ export class AgentSession {
     } catch (err) {
       if (err instanceof AgentTurnError) return { kind: 'failed', message: err.message };
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
-      // An allowlist MISS with no approval regime is a policy denial with `command_not_allowed` — the host shows the actionable
-      // `[chat].allowed_commands` hint (under a regime the miss is a request to the hook instead); any other `tool_denied` (an approval reject / protected path) is a plain
+      // An allowlist MISS with no approval regime is a policy denial with `command_not_allowed` — the host shows its fixed
+      // "not allowed here" line (under a regime the miss is a request to the hook instead); any other `tool_denied` (an approval reject / protected path) is a plain
       // decline. Both messages are secret-free (the error classes never echo the resolved command value).
       if (err instanceof ToolPolicyError) {
         return {

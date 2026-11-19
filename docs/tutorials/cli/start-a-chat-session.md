@@ -72,7 +72,7 @@ You do **not** need a `.relavium.yaml` workflow to start a chat — that is the 
    ```
 
 4. **Watch the agent use a tool.** When the agent needs to act on your machine — read a
-   file, run an allowlisted command — it issues a tool call and the result streams back
+   file, run a command you approve — it issues a tool call and the result streams back
    inline. Chat uses the **same** built-in `ToolRegistry` as a workflow agent (the same
    tools, the same result shapes), catalogued in
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md):
