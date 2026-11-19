@@ -734,6 +734,41 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().attachments).toEqual([]);
   });
 
+  it('a `!` line with an open quote is refused, runs nothing, sends nothing and stays in the editor (ADR-0118 §3)', async () => {
+    const shellCalls: { command: string; args: readonly string[] }[] = [];
+    const made = makeSession({
+      runShellCommand: (command, args) => {
+        shellCalls.push({ command, args });
+        return Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' });
+      },
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, '!echo "oops');
+    c.handleKey('', ENTER);
+    await flush();
+    // The old tokenizer ran this as `echo oops`. What runs must be what was typed, so nothing runs ...
+    expect(shellCalls).toEqual([]);
+    // ... nothing goes to the model as a message ...
+    expect(made.lines).toEqual([]);
+    // ... the person is told why, and can fix the line.
+    expect(c.getSnapshot().input.text).toBe('!echo "oops');
+    const noted = made.store
+      .getSnapshot()
+      .state.warnings.some((w) => w.includes('a quote is still open'));
+    expect(noted).toBe(true);
+  });
+
   it('a denied `!`-shell command injects NOTHING and surfaces the actionable allowlist hint (2.5.D step 5)', async () => {
     const made = makeSession({
       runShellCommand: () =>

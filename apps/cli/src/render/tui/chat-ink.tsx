@@ -100,8 +100,9 @@ import { AttachmentBar } from './attachment-bar.js';
 import {
   commandLine,
   isShellLine,
+  parseShellLine,
+  SHELL_UNTERMINATED_QUOTE_NOTICE,
   shellDenyHint,
-  tokenizeCommand,
   type ShellCommand,
 } from './shell.js';
 import type { UserCommandOutcome } from '@relavium/core';
@@ -1666,10 +1667,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
         // message; a bare `!` or an absent runner falls through to a normal message send.
         const trimmed = action.line.trim();
-        const parsed =
+        const shellLine =
           props.runShellCommand !== undefined && isShellLine(trimmed)
-            ? tokenizeCommand(trimmed.slice(1))
+            ? parseShellLine(trimmed.slice(1))
             : undefined;
+        if (shellLine?.kind === 'unterminated_quote') {
+          // An open quote is refused, never run to the end of the line (ADR-0118 §3). The line stays in the editor so
+          // the person can close the quote; nothing is sent to the model.
+          props.store.note(SHELL_UNTERMINATED_QUOTE_NOTICE);
+          return;
+        }
+        const parsed = shellLine?.kind === 'command' ? shellLine.cmd : undefined;
         if (parsed !== undefined) {
           historyRef.current = recordHistory(historyRef.current, action.line);
           applyEditor(() => emptyEditor());

@@ -20,6 +20,7 @@ import {
   SessionAskRecordSchema,
   type SessionAskRecord,
   type ToolActionClass,
+  argvMatchesCommandLine,
 } from '@relavium/shared';
 
 import {
@@ -806,7 +807,7 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   }
 
   if (def.policy.spawnsProcess && target.command !== undefined) {
-    if (!commandAllowed(target.command, ctx.toolPolicy)) {
+    if (!commandAllowed(target.command, target.argv, ctx.toolPolicy)) {
       throw new ToolPolicyError(
         def.id,
         'command_not_allowed',
@@ -822,14 +823,25 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   // SSRF range-block runs inside the host egress capability. No engine allowlist check here.
 }
 
-function commandAllowed(command: string, policy: import('@relavium/shared').ToolPolicy): boolean {
-  const exact = policy.allowedCommands ?? [];
-  if (exact.includes(command)) {
-    return true; // exact match (ADR-0029(a)) — `git` never authorizes `git push --force`
+function commandAllowed(
+  command: string,
+  argv: readonly string[] | undefined,
+  policy: import('@relavium/shared').ToolPolicy,
+): boolean {
+  // An exact entry is a COMMAND LINE: it is split by the shared tokenizer and compared with the call's argv element by
+  // element, so `cat a b` admits `["cat","a","b"]` and never `["cat","a b"]` (ADR-0118 §3, amending ADR-0029(a)) — and `git`
+  // still never authorizes `git push --force`. A target without an argv is one program name, which fails closed.
+  const callArgv = argv ?? [command];
+  for (const entry of policy.allowedCommands ?? []) {
+    if (argvMatchesCommandLine(callArgv, entry)) {
+      return true;
+    }
   }
+  // Opt-in globs stay string-level over the space-joined command (so they cannot tell one argument with a space
+  // from two — the reason they are the riskier field).
   for (const glob of policy.allowedCommandGlobs ?? []) {
     if (globMatch(glob, command)) {
-      return true; // opt-in glob
+      return true;
     }
   }
   return false; // empty/absent ⇒ deny-all (symmetry with allowedDomains)

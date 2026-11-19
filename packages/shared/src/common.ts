@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+import { CHAT_LIMITS, type ChatLimitKey } from './chat-limits.js';
+import { isUsableCommandLine } from './command-line.js';
+
 /**
  * Generic Zod primitives reused across the domain schemas. These are internal
  * building blocks — they are intentionally **not** re-exported from `index.ts`
@@ -23,6 +26,16 @@ export const kebabIdSchema = z
 
 /** A non-empty string. */
 export const nonEmptyString = z.string().min(1);
+
+/**
+ * One exact `allowedCommands` / `allowed_commands` entry: a command line that tokenizes to at least one token and
+ * leaves no quote open ([ADR-0118](../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3).
+ * An entry is authored text a person can fix, so a bad one is a loud strict-config error rather than a silent
+ * non-match. The message is a fixed string: it never echoes the rejected value.
+ */
+export const commandLineEntry = z.string().min(1).refine(isUsableCommandLine, {
+  message: 'must be a command line with balanced quotes (single or double) and at least one token',
+});
 
 /**
  * An identifier referenceable from `{{inputs.<name>}}` / `{{ctx.<key>}}` (`workflow.inputs[].name`,
@@ -104,3 +117,10 @@ export const findDuplicates = (values: readonly string[]): string[] => {
   }
   return [...duplicates];
 };
+
+/**
+ * One chat limit, bounded by {@link CHAT_LIMITS} (ADR-0136 §1): an integer in its inclusive bounds. The messages are
+ * zod's fixed ones, which state the bound and never echo the rejected value.
+ */
+export const chatLimit = (key: ChatLimitKey) =>
+  z.number().int().min(CHAT_LIMITS[key].min).max(CHAT_LIMITS[key].max);

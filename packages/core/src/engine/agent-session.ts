@@ -48,7 +48,7 @@ import {
 } from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
-import { collectAgentCeilingIssues } from '../limits.js';
+import { collectAgentCeilingIssues, collectTurnLimitIssues } from '../limits.js';
 import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
@@ -723,8 +723,18 @@ export class AgentSession {
     this.#context = params.context;
     this.#deps = params.deps;
     this.#maxTokensEstimate = params.deps.maxTokensEstimate;
+    // The host-supplied turn limits are ADMITTED, never clamped (ADR-0136 §1): outside its published bound a value is a
+    // rejection naming the field. A resume re-reads the same host configuration, not a frozen agent file, so it admits
+    // them too — a bad limit is the host's to fix, and nothing persisted depends on it.
+    const turnLimitIssues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
+      params.deps.maxTurns,
+      turnLimitIssues,
+    );
+    if (turnLimitIssues.length > 0) throw new WorkflowGraphError(turnLimitIssues);
     const max = params.deps.maxTurns;
-    this.#maxTurns = max === undefined || max <= 0 ? DEFAULT_SESSION_MAX_TURNS : max;
+    this.#maxTurns = max === undefined ? DEFAULT_SESSION_MAX_TURNS : max;
     this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
   }
 

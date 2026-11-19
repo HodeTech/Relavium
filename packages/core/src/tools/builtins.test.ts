@@ -311,12 +311,21 @@ describe('web_search url construction + endpoint validation', () => {
 });
 
 describe('built-in policy targets', () => {
-  it('run_command resolves the full command string for the allowlist', () => {
+  it('run_command resolves the argv for the exact allowlist and the joined string for globs', () => {
     const target = tool('run_command');
     expect(
       target.policyTarget?.(target.parseArgs({ command: 'npm', args: ['run', 'build'] })),
     ).toEqual({
       command: 'npm run build',
+      argv: ['npm', 'run', 'build'],
+    });
+  });
+
+  it('run_command keeps an argument with a space as ONE argv element (ADR-0118 §3)', () => {
+    const target = tool('run_command');
+    expect(target.policyTarget?.(target.parseArgs({ command: 'cat', args: ['a b'] }))).toEqual({
+      command: 'cat a b', // the joined string cannot tell this from `cat a` + `b` …
+      argv: ['cat', 'a b'], // … the argv can
     });
   });
 

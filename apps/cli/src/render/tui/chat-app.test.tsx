@@ -1,7 +1,7 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 import { cleanup, render as renderCapture } from 'ink-testing-library';
 import { useStdout } from 'ink';
-import type { ReactElement } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ClipboardOutcome } from '../clipboard.js';
@@ -62,6 +62,8 @@ function mountChat(
   opts: {
     onSuspend?: () => void;
     onActivated?: (flushNotice: () => Promise<void>) => void | Promise<void>;
+    onSubmit?: (message: string, display?: string) => Promise<void>;
+    runShellCommand?: ComponentProps<typeof ChatApp>['runShellCommand'];
   } = {},
 ): ReturnType<typeof render> {
   // Self-policing fixture (2.6.C): this helper mounts INLINE, so its store must carry the INLINE bound — the pairing
@@ -71,13 +73,14 @@ function mountChat(
   return render(
     <ChatApp
       store={store}
-      onSubmit={async () => {}}
+      onSubmit={opts.onSubmit ?? (async () => {})}
       shouldStop={() => false}
       onExit={() => {}}
       onError={() => {}}
       onModeChange={() => {}}
       {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
       {...(opts.onActivated === undefined ? {} : { onActivated: opts.onActivated })}
+      {...(opts.runShellCommand === undefined ? {} : { runShellCommand: opts.runShellCommand })}
     />,
   );
 }
@@ -180,6 +183,35 @@ describe('ChatApp mounted disclosure surface (ADR-0098)', () => {
     store.tick();
     await settleFrames();
     expect(onActivated).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ChatApp `!` shell line (ADR-0118 §3)', () => {
+  it('refuses a line with an open quote: nothing runs, nothing is sent, the person is told why', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const ran: string[] = [];
+    const sent: string[] = [];
+    const { lastFrame, stdin } = mountChat(store, {
+      runShellCommand: (command) => {
+        ran.push(command);
+        return Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' });
+      },
+      onSubmit: (message) => {
+        sent.push(message);
+        return Promise.resolve();
+      },
+    });
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().length > 0);
+    stdin.write('!echo "oops');
+    await waitFor(() => frame().includes('!echo "oops'));
+    stdin.write('\r');
+    await waitFor(() => frame().includes('a quote is still open'));
+    // The old tokenizer ran this as `echo oops`; what runs must be what was typed, so nothing runs, nothing goes to
+    // the model, and the line stays in the editor so the quote can be closed.
+    expect(ran).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(frame()).toContain('!echo "oops');
   });
 });
 

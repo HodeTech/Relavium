@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import {
+  commandLineEntry,
   findDuplicates,
   interpolationNameSchema,
   kebabIdSchema,
@@ -561,7 +562,7 @@ export type ContextEntry = z.infer<typeof ContextEntrySchema>;
  */
 export const ToolPolicySchema = z
   .object({
-    allowedCommands: z.array(nonEmptyString).optional(),
+    allowedCommands: z.array(commandLineEntry).optional(),
     allowedCommandGlobs: z.array(nonEmptyString).optional(),
     allowedDomains: z.array(nonEmptyString).optional(),
   })

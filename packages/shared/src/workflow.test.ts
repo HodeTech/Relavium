@@ -535,6 +535,13 @@ describe('WorkflowSchema', () => {
     expect(accepts(withWorkflow({ tools: { allowedCommands: ['git status'] } }))).toBe(true);
   });
 
+  it('rejects a tool-policy allowedCommands entry with an open quote (ADR-0118 §3)', () => {
+    expect(accepts(withWorkflow({ tools: { allowedCommands: ['echo "a b'] } }))).toBe(false);
+    expect(accepts(withWorkflow({ tools: { allowedCommands: ['echo "a b"'] } }))).toBe(true);
+    // Globs stay free text.
+    expect(accepts(withWorkflow({ tools: { allowedCommandGlobs: ['echo "*'] } }))).toBe(true);
+  });
+
   it('accepts and round-trips workflow.metadata (the session-export transcript anchor, ADR-0026)', () => {
     const exported = withWorkflow({
       metadata: {

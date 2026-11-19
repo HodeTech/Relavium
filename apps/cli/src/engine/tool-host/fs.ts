@@ -160,9 +160,10 @@ class FsReadBudgetError extends HostCapabilityError {}
  * **scope-tier escape** ("the path escapes the allowed filesystem scope") passes `recoverable: true`, so on the
  * `recoverToolFailures` surface (chat / Home / one-shot `agent run`) it is fed back as a correctable tool result
  * and the model can adapt to an in-bounds path (conversational recovery). The **confidentiality** refusal (a
- * secret/credential store read), the protected
- * -path write, and the symlink/hard-link refusals stay fatal — feeding those back would leak a probe oracle or
- * risk nothing useful.
+ * secret/credential store read), the protected-path write decided after resolution or by the credential arm, and the
+ * symlink/hard-link refusals stay fatal — feeding those back would leak a probe oracle or risk nothing useful.
+ * The second throw that opts in (ADR-0118) is the **lexical protected-path arm**
+ * ({@link PROTECTED_PATH_REFUSAL}): decided from the path text alone, so its text is the same for every target state.
  */
 export class FsScopeDeniedError extends HostDeniedError {
   constructor(message: string, opts?: { recoverable?: boolean }) {
@@ -919,11 +920,23 @@ const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
  * WITHOUT triggering the throw — the two share exactly one protected-paths definition.
  */
 export function isProtectedPath(absoluteTarget: string): boolean {
+  return isProtectedLexicalPath(absoluteTarget) || isSensitiveReadPath(absoluteTarget);
+}
+
+/**
+ * The **lexical** arm of {@link isProtectedPath}: a `.git`/`.relavium`/`.ssh` directory segment, a host-owned stage
+ * component, or a startup/config basename. It is decided from the path TEXT alone, so its outcome is the same for every
+ * state of the target (it exists or not, a link or a file) and a refusal built on it carries no probe oracle — which
+ * is the test [ADR-0117](../../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md) sets for a
+ * refusal that may return to the model. The credential-store arm ({@link isSensitiveReadPath}) and every check made
+ * after a path is resolved stay fatal.
+ */
+export function isProtectedLexicalPath(absoluteTarget: string): boolean {
   for (const segment of absoluteTarget.split(/[\\/]/)) {
     if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) return true;
   }
   const base = absoluteTarget.split(/[\\/]/).at(-1) ?? '';
-  return PROTECTED_RC_BASENAMES.has(foldPathComponent(base)) || isSensitiveReadPath(absoluteTarget);
+  return PROTECTED_RC_BASENAMES.has(foldPathComponent(base));
 }
 
 /** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */
@@ -938,6 +951,26 @@ function assertNotProtectedPath(absoluteTarget: string, policy?: FsPathPolicy): 
     throw new FsScopeDeniedError(
       'write_file: refusing to write a protected directory, credential store or shell startup file',
     );
+  }
+}
+
+/**
+ * The model-facing refusal of the lexical protected-path arm: ONE fixed text, naming neither the protected list nor
+ * the target, so it is the same for every target state ([ADR-0117](../../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md) §2).
+ */
+export const PROTECTED_PATH_REFUSAL =
+  'write_file: this path is protected and cannot be written; choose a different path';
+
+/**
+ * The FIRST protected-path check of a write, made on the lexical target before any filesystem resolution: the
+ * lexical arm ({@link isProtectedLexicalPath}) is a refusal the model can answer, so it is `recoverable` and returns
+ * to the model with a fixed text. Everything the lexical text does not decide (a credential store, a canonical path
+ * that only resolution reveals) is checked afterwards by {@link assertNotProtectedPath} and stays fatal.
+ */
+function assertLexicalPathNotProtected(lexicalTarget: string, policy?: FsPathPolicy): void {
+  const views = policy === undefined ? [lexicalTarget] : fsPolicyFloorPaths(policy, lexicalTarget);
+  if (views.some(isProtectedLexicalPath)) {
+    throw new FsScopeDeniedError(PROTECTED_PATH_REFUSAL, { recoverable: true });
   }
 }
 
@@ -1228,7 +1261,8 @@ async function prepareWrite(
   const nativeFloor = await captureNativeRuntimeWriteFloor();
   const lexical = lexicalTarget(config, request.path);
   nativeFloor.assertPath(lexical);
-  assertNotProtectedPath(lexical, config.pathPolicy);
+  assertLexicalPathNotProtected(lexical, config.pathPolicy); // recoverable: returns to the model (ADR-0118)
+  assertNotProtectedPath(lexical, config.pathPolicy); // a credential store (the other arm): fatal
   assertNotSensitiveReadPath(lexical, config.pathPolicy);
   const inScope = buildScopeChecker(config);
   const parent = dirname(lexical);

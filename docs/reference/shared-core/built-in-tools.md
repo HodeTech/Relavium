@@ -297,7 +297,7 @@ satisfies this by requiring an answer on every question's own acknowledged frame
 
 A skip closes questions for the rest of the turn. That is enforced inside the tool from per-turn state (`skipped`) on the dispatch
 context the session builds once per turn, so every surface behaves alike. There is **no count of cards per turn**: a turn is already
-bounded by the engine (16 tool rounds, 16 calls per response), a call carries up to four questions, and the person holds an instant,
+bounded by the engine (a limit on tool rounds that is a checkpoint a person can continue past, [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md), under an absolute backstop of 256 rounds; 16 calls per response), a call carries up to four questions, and the person holds an instant,
 turn-wide circuit breaker — `Ctrl+S` ends every further question this turn. A fixed ceiling would only stop a task that genuinely needs more
 answers. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
 §1 each one **resets** the correction budget.
@@ -483,6 +483,7 @@ table is their canonical description, so the two must change together.
 | `mode` | This action is not available in the current mode *(+ ` (<mode label>)`, e.g. `plan mode is read-only`)*. Nothing was run or changed. Describe what you would do, so the user can switch modes or do it themselves. |
 | `unavailable` | No one is available to approve this action in this session, so it was not run. Nothing was changed. Continue without it, or describe what you would have done. |
 | repeat | The user already declined an identical call in this turn, so it was not run again. Nothing was run or changed. Propose something different, or ask the user what they prefer. |
+| protected path *(a write the host refuses from the path text alone)* | `write_file: this path is protected and cannot be written; choose a different path`. A fixed string (`PROTECTED_PATH_REFUSAL` in `apps/cli/src/engine/tool-host/fs.ts`) that names neither the protected list nor the target, so it is the same whether or not the target exists. |
 
 A repeat is the same tool name with the same canonical arguments within one turn.
 Each returned refusal counts toward the correction budget, which counts
@@ -490,6 +491,16 @@ Each returned refusal counts toward the correction budget, which counts
 success resets it (ADR-0131 §1). A refusal after an effect was admitted, a
 saved-result delivery, a revoked starting-`auto` authority and the wiring faults stay
 fatal.
+
+**Which protected-path refusals return.** Only the **lexical arm**: a write whose
+path *text* names a protected directory (`.git`, `.relavium`, `.ssh`, the host's own
+staging directory) or a shell startup or config file. It is decided before any
+filesystem resolution, so its outcome cannot depend on the target's state
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md);
+ADR-0117's test). A refusal by the **credential-store arm** (`.env`, `.npmrc`,
+`.aws`, `.docker/config.json`, credential dotfiles), and one that only resolution
+reveals (a link into a protected directory), stay **fatal**: saying so would tell the
+model which paths hold credentials or which names are links.
 
 ## Tool result bounding
 

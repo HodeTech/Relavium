@@ -383,7 +383,7 @@ persister writes the interruption row **iff** the event carries `interruption`.
 |---|---|---|
 | `stopReason: 'aborted'`, no error | `aborted` | absent |
 | `error.code = tool_denied` | `denied` | absent |
-| `error.code = turn_limit` from a within-turn limit (the `maxToolTurns` guard, the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
+| `error.code = turn_limit` from a within-turn limit (the tool-round limit or its checkpoint "stop", the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
 | any other classified error | `failed` | the `ErrorCode` literal |
 
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
@@ -514,13 +514,15 @@ criteria, custom-endpoint downgrade and admission-release evidence; the
 ### Hard turn cap
 
 A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine
-default **50**, overridable at construction; **0/absent ⇒ the default**). It is **distinct** from two other
+default **50**, overridable at construction within **1 to 1,000**; **absent ⇒ the default**, and a value
+outside the bounds is refused at session construction, never clamped —
+[ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §1). It is **distinct** from two other
 limits and must not be conflated with either: `[chat].max_messages` (a history-**trim** threshold that
 silently *continues* the session — [config-spec.md](config-spec.md)) and the turn core's **within-turn**
-`maxToolTurns` tool-loop guard. A `sendMessage` past the cap ends **loudly, with no egress**:
+tool-round limits ([below](#within-turn-limits-and-the-checkpoint)). A `sendMessage` past the cap ends **loudly, with no egress**:
 `session:turn_completed` carries `stopReason: 'error'` + `error.code: 'turn_limit'`
 ([sse-event-schema.md](sse-event-schema.md#error-code-taxonomy)) — never a silent stop; the within-turn
-`maxToolTurns` guard surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
+tool-round limit surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
 knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config field onto it at construction
 time — that surface field was added in build-phase 2 (workstream **2.M**); see the `[chat]` block in
 [config-spec.md](config-spec.md).
@@ -581,6 +583,18 @@ Compaction estimates the prospective summary/history projection before installin
 terminal cancellation after the provider-supplied estimator. A cancellation during that estimator
 retains the previous history and summary. Ordinary estimator failure remains best-effort; the existing
 EA7 late-abort no-op after successful summarisation remains unchanged.
+
+### Within-turn limits and the checkpoint
+
+Three numbers bound the work of one turn, and only the first is the hard turn cap above. They are the chat's limits; a workflow agent node and a one-shot `agent run` keep the engine's own defaults (16 and 3). The configuration keys, defaults and bounds are in [config-spec.md](config-spec.md#chat-limits); the decision is [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md).
+
+- **The round limit** counts tool rounds the turn has *dispatched*. The check is made when the model has asked for another round and the limit has been reached, **before that round runs**: a round the model asked for is held, not run, so a limit never lets a round's effects land in a turn whose result the model will not see. A turn therefore makes at most `limit + 1` provider calls and dispatches at most `limit` rounds.
+  - **Where nobody can answer** (no host hook: a workflow node, `agent run`, a plain or `--json` chat) the limit is a hard stop: the turn ends with `error.code: 'turn_limit'` (`SessionDeps.limits.maxToolTurns`).
+  - **Where a person can answer** the host wires `AgentTurnLimits.onToolRoundLimit`. At each interval (`checkpointToolTurns`, default 32 in a chat) the engine calls it with the rounds dispatched and the interval, with **no provider call, lease or admission held**: an unanswered checkpoint is a stopped spend and there is no timeout. `'continue'` runs the held round and grants one more interval; `'stop'` ends the turn with `turn_limit`; an abort while it is open takes the usual cancellation path, and a late answer does not undo it. A continued turn still stops at the absolute constant `ABSOLUTE_TOOL_ROUNDS` (256 rounds, so at most 257 provider calls and 4,096 tool calls at 16 per response), asked of nobody.
+  - `continue` grants rounds, not money: a configured cost cap still governs every provider call, and a turn that continues into it ends with `budget_exceeded`.
+  - No event and no history field carries the checkpoint: the host owns the question and the answer, so a resumed transcript shows the same `turn_limit` interruption either way.
+- **The correction budget** (`maxToolCorrections`, default 3) counts consecutive rounds in which no call ran to a result ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)); the turn ends with `tool_failed` in the round that would be the *(N+1)*th, so with 3 a model gets three corrections. A checkpoint does not reset it.
+- **Admission.** The session refuses a host-supplied limit outside its published bound (`CHAT_LIMITS` in `@relavium/shared`) when it is constructed.
 
 ## Session context
 

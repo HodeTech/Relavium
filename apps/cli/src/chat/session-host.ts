@@ -39,7 +39,7 @@ import {
   type ProviderId,
 } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient } from '@relavium/mcp';
-import { UsageCoverageFold, type UsageCoverageSnapshot } from '@relavium/shared';
+import { CHAT_LIMITS, UsageCoverageFold, type UsageCoverageSnapshot } from '@relavium/shared';
 import type {
   AbortSignalLike,
   AgentSessionRecord,
@@ -869,7 +869,15 @@ function buildSessionRuntime(
     // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
-    limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+    // The chat limits are configurable within published bounds (ADR-0136): `[chat]` and the operator's `[preferences]`,
+    // resolved with a repository able only to lower them. `max_tool_turns` is the HARD STOP here; the checkpoint
+    // that asks a person to continue (`checkpoint_tool_turns`) is wired with the card that can ask.
+    limits: {
+      ...DEFAULT_AGENT_TURN_LIMITS,
+      maxToolTurns: opts.chat.maxToolTurns ?? CHAT_LIMITS.max_tool_turns.default,
+      maxToolCorrections: opts.chat.maxToolCorrections ?? CHAT_LIMITS.max_tool_corrections.default,
+      recoverToolFailures: true,
+    },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     // Context compaction (ADR-0062): auto_compact / compact_threshold govern measured automatic compaction, and
     // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the

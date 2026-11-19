@@ -782,8 +782,20 @@ export interface ToolDef<Args = unknown, Result = unknown> {
 
 /** What the registry's guardrail check inspects for a tool — a resolved command and/or an outbound URL. */
 export interface PolicyTarget {
-  /** The resolved command string the `allowedCommands` allowlist matches EXACTLY (ADR-0029(a)). */
+  /**
+   * The resolved command as ONE space-joined string: what `allowedCommandGlobs` match and what a diagnostic may name.
+   * It is **not** what an exact `allowedCommands` entry is compared with — see {@link PolicyTarget.argv}: two different
+   * argvs can join to the same string (`["cat","a b"]` and `["cat a","b"]`).
+   */
   readonly command?: string;
+  /**
+   * The command as an argv — the program and its literal arguments, spawned without a shell. An exact
+   * `allowedCommands` entry is split by the shared tokenizer and compared with this **element by element**
+   * ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3, amending
+   * ADR-0029(a)). Absent on a hand-built target: the registry then treats `command` as a single program name, which
+   * can only ever match a one-token entry, never a longer one (it fails closed).
+   */
+  readonly argv?: readonly string[];
   /** The outbound URL the `allowedDomains` exact-FQDN allowlist + SSRF policy applies to (ADR-0029(d)). */
   readonly url?: string;
   /**

@@ -69,8 +69,9 @@ import {
 import {
   commandLine,
   isShellLine,
+  parseShellLine,
+  SHELL_UNTERMINATED_QUOTE_NOTICE,
   shellDenyHint,
-  tokenizeCommand,
   type ShellCommand,
 } from './shell.js';
 import { reduceHomeKey, type HomeKey } from './home-input.js';
@@ -1634,10 +1635,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
     const trimmed = line.trim();
     if (managementCommand(trimmed)) return;
-    const parsed =
+    const shellLine =
       active.runShellCommand !== undefined && isShellLine(trimmed)
-        ? tokenizeCommand(trimmed.slice(1))
+        ? parseShellLine(trimmed.slice(1))
         : undefined;
+    if (shellLine?.kind === 'unterminated_quote') {
+      // An open quote is refused, never run to the end of the line (ADR-0118 §3); the line stays in the editor.
+      active.store.note(SHELL_UNTERMINATED_QUOTE_NOTICE);
+      return;
+    }
+    const parsed = shellLine?.kind === 'command' ? shellLine.cmd : undefined;
     if (parsed !== undefined) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });

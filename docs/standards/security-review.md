@@ -874,10 +874,14 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   It never receives a provider key or any secret. Treat its output (stdout/stderr/exit code)
   as untrusted input.
 - **`run_command` matches exactly by default.** *(Security tightening — ADR-0029(a).)* An
-  `allowedCommands` entry is matched **exactly** against the resolved command — not as a
-  prefix or substring — so `git` does not authorize `git push --force` or `gitleaks`.
-  Glob/wildcard matching is **opt-in** via `allowedCommandGlobs`; the plain list is
-  exact-only.
+  `allowedCommands` entry is a command line, split into tokens by one quote-aware tokenizer
+  and matched **exactly, element by element**, against the resolved argv — not as a prefix,
+  a substring or a joined string — so `git` does not authorize `git push --force` or
+  `gitleaks`, and `cat a b` does not authorize `cat "a b"` (one argument with a space)
+  ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3).
+  Glob/wildcard matching is **opt-in** via `allowedCommandGlobs`, matched against the
+  space-joined argv and so unable to tell one argument with a space from two; the plain list
+  is exact-only. An entry with an open quote is rejected at load, never a silent non-match.
 - **Node `tools:` narrow-only, never escalate.** *(Security tightening — ADR-0029(b).)* A
   workflow agent-node's `tools:` may only **restrict** the agent's granted toolset, never
   add to it. A node listing a tool the agent was not granted is refused when the **run plan is built** — a

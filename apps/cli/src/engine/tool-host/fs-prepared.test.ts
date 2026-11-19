@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FileWritten, FsPreparedWrite } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createNodeFsCapability, FsScopeDeniedError } from './fs.js';
+import { createNodeFsCapability, FsScopeDeniedError, PROTECTED_PATH_REFUSAL } from './fs.js';
 import * as nativeMetadata from './fs-native-metadata.js';
 
 let root: string;
@@ -422,6 +422,70 @@ it('a createDirs write without any link keeps the lexical card path and succeeds
       await prepared.release();
     }
   }
+});
+
+// Which protected-path refusals return to the model (ADR-0117, ADR-0118). The rule is ADR-0117's test: a refusal returns
+// only if its text is the SAME for every target state. The lexical protected-directory and startup-file arm is decided
+// from the path text alone; the credential-store arm and anything only resolution reveals stay fatal.
+describe('a protected-path write: which refusal returns to the model', () => {
+  const write = (path: string) =>
+    ({ kind: 'write', path, content: 'x', createDirs: true }) as const;
+
+  async function refusal(path: string): Promise<FsScopeDeniedError> {
+    const err: unknown = await host().prepareWrite!(write(path)).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(FsScopeDeniedError);
+    return err as FsScopeDeniedError;
+  }
+
+  it.each([
+    '.git/config',
+    '.git/hooks/pre-commit',
+    '.bashrc',
+    '.ssh/authorized_keys',
+    '.relavium/x',
+  ])('the lexical arm (%s) is recoverable and says one fixed text', async (path) => {
+    const err = await refusal(path);
+    expect(err.recoverable).toBe(true);
+    expect(err.message).toBe(PROTECTED_PATH_REFUSAL);
+    expect(err.code).toBe('tool_denied');
+    expect(err.retryable).toBe(false);
+  });
+
+  it('says the same words whether or not the target exists (no probe oracle)', async () => {
+    const missing = await refusal('.git/config');
+    await mkdir(join(root, '.git'));
+    await writeFile(join(root, '.git', 'config'), 'existing');
+    const existing = await refusal('.git/config');
+    expect(existing.message).toBe(missing.message);
+    expect(existing.recoverable).toBe(missing.recoverable);
+    // The refusal never names the protected list or the target.
+    expect(missing.message).not.toMatch(/\.git|\.ssh|\.relavium|credential|startup/);
+  });
+
+  it.each(['.env', '.npmrc', '.aws/credentials', '.docker/config.json'])(
+    'the credential-store arm (%s) stays fatal',
+    async (path) => {
+      const err = await refusal(path);
+      expect(err.recoverable).toBe(false);
+      expect(err.message).not.toBe(PROTECTED_PATH_REFUSAL);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'a refusal only resolution reveals (a link into a protected directory) stays fatal',
+    async () => {
+      await mkdir(join(root, '.git'));
+      await symlink(join(root, '.git'), join(root, 'innocent'), 'dir');
+      // The lexical path `innocent/config` is ordinary: only the canonical `.git/config` is protected, and saying so
+      // would tell the model that `innocent` is a link — which depends on the target's state.
+      const err = await refusal('innocent/config');
+      expect(err.recoverable).toBe(false);
+      expect(err.message).not.toBe(PROTECTED_PATH_REFUSAL);
+    },
+  );
 });
 
 // Consent honesty (PR #99 security sitting F1): a card must name the path that is WRITTEN. An existing parent was

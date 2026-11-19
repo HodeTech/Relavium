@@ -2018,8 +2018,71 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
+  it('threads [chat].max_tool_turns into the session as the hard stop: the round the model asks for past it is held, not run (ADR-0136)', async () => {
+    // Three rounds are asked for; with a limit of 1 the first runs and the second is HELD, so the turn ends with
+    // turn_limit after two provider calls and ONE tool dispatch (before ADR-0136 the second round ran too).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 1 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'turn_limit',
+      );
+      expect(requests).toHaveLength(2);
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(1);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('threads [chat].max_tool_corrections: a zero budget ends the turn on the first round in which nothing ran (ADR-0136)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'missing.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'missing.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolCorrections: 0 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read a file that is not there');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'tool_failed',
+      );
+      expect(requests).toHaveLength(1); // the default of 3 would have given the model more rounds
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
-    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure',
+    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure, and the refusal returns to the model (ADR-0117, ADR-0118)',
     async (existing) => {
       const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
       const protectedDir = join(workspace, '.git');
@@ -2032,17 +2095,19 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       const remember = vi.spyOn(ApprovalCache.prototype, 'rememberAlways');
       const native = vi.spyOn(nativeMetadata, 'loadNativeMetadataProtocol');
       try {
+        const { providers, requests } = capturingResolver([
+          callWithArgs('c1', 'write_file', {
+            path: '.git/config',
+            content: 'protected-write-payload-canary',
+          }),
+          textTurn('I cannot write there; I will choose another path.'),
+        ]);
         const built = await build({
           cwd: workspace,
           operatorHomeDir: workspace,
           outputStoreFactory: () => Promise.resolve(undefined),
           agentRef: writeAgent(['write_file']),
-          providers: scriptedResolver([
-            callWithArgs('c1', 'write_file', {
-              path: '.git/config',
-              content: 'protected-write-payload-canary',
-            }),
-          ]),
+          providers,
         });
         let claims = 0;
         built.attachEffectJournal((correlation) => {
@@ -2063,12 +2128,18 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         built.session.cancel();
         const events = await built.recordedEvents;
         const completed = events.find((event) => event.type === 'session:turn_completed');
-        const failure = completed?.type === 'session:turn_completed' ? completed.error : undefined;
-        expect(failure?.code).toBe('tool_denied');
-        expect(failure?.retryable).toBe(false);
-        expect(failure?.message).toBe(
-          'write_file: refusing to write a protected directory, credential store or shell startup file',
+        // The turn CONTINUES: a lexically protected path is a refusal the model can answer, not a dead end.
+        expect(completed?.type === 'session:turn_completed' ? completed.error : 'no event').toBe(
+          undefined,
         );
+        // The model's next request carries one fixed refusal text as an error result, naming no list and no target
+        // state — the same words whether or not `.git/config` exists.
+        expect(requests).toHaveLength(2);
+        const secondRequest = JSON.stringify(requests[1]?.messages);
+        expect(secondRequest).toContain(
+          'write_file: this path is protected and cannot be written; choose a different path',
+        );
+        expect(secondRequest).not.toContain('credential store');
         expect(prompt).not.toHaveBeenCalled();
         expect(store.getSnapshot().approval).toBeUndefined();
         expect(events.some((event) => event.type === 'agent:approval_requested')).toBe(false);

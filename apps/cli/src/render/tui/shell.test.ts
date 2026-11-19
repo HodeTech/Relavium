@@ -4,9 +4,16 @@ import {
   commandLine,
   formatCommandInjection,
   isShellLine,
+  parseShellLine,
   shellDenyHint,
-  tokenizeCommand,
+  type ShellCommand,
 } from './shell.js';
+
+/** The parsed command, or `undefined` when the line is empty or refused — the tests below say which. */
+function tokenizeCommand(rest: string): ShellCommand | undefined {
+  const parsed = parseShellLine(rest);
+  return parsed.kind === 'command' ? parsed.cmd : undefined;
+}
 
 describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
   it('isShellLine detects a leading `!`', () => {
@@ -37,12 +44,24 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
       command: 'git',
       args: ['commit', '-m', 'a message'],
     });
-    // A quoted EMPTY string is still a token; an unterminated quote runs to end of line.
+    // A quoted EMPTY string is still a token.
     expect(tokenizeCommand('cmd ""')).toEqual({ command: 'cmd', args: [''] });
-    expect(tokenizeCommand('cmd "unterminated')).toEqual({
-      command: 'cmd',
-      args: ['unterminated'],
+  });
+
+  it('parseShellLine REFUSES an open quote instead of running it to the end of the line (ADR-0118 §3)', () => {
+    // The old tokenizer turned `echo "oops` into `echo oops` and ran it; what runs must be what was typed.
+    expect(parseShellLine('cmd "unterminated')).toEqual({ kind: 'unterminated_quote' });
+    expect(parseShellLine("cmd 'x")).toEqual({ kind: 'unterminated_quote' });
+    expect(parseShellLine('cmd "it\'s')).toEqual({ kind: 'unterminated_quote' });
+    expect(parseShellLine('cmd "ok"')).toEqual({
+      kind: 'command',
+      cmd: { command: 'cmd', args: ['ok'] },
     });
+  });
+
+  it('parseShellLine distinguishes a bare `!` (a no-op) from a refusal', () => {
+    expect(parseShellLine('')).toEqual({ kind: 'empty' });
+    expect(parseShellLine('   ')).toEqual({ kind: 'empty' });
   });
 
   it('tokenizeCommand returns undefined for a bare `!` (empty rest)', () => {
@@ -50,9 +69,18 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
     expect(tokenizeCommand('   ')).toBeUndefined();
   });
 
-  it('commandLine reconstructs the resolved command string (for the deny hint + injection attr)', () => {
+  it('commandLine reconstructs a line that parses back to the same argv (for the deny hint + injection attr)', () => {
     expect(commandLine({ command: 'ls', args: ['-la'] })).toBe('ls -la');
     expect(commandLine({ command: 'git', args: [] })).toBe('git');
+    // An argument with a space is quoted, so `cat "a b"` and `cat a b` no longer read the same.
+    expect(commandLine({ command: 'cat', args: ['a b'] })).toBe("cat 'a b'");
+    expect(commandLine({ command: 'cat', args: ['a', 'b'] })).toBe('cat a b');
+    for (const cmd of [
+      { command: 'cat', args: ['a b', "it's", '', 'x"y'] },
+      { command: 'echo', args: ['$HOME', ';', '|'] },
+    ]) {
+      expect(tokenizeCommand(commandLine(cmd))).toEqual(cmd);
+    }
   });
 
   it('formatCommandInjection nonce-fences the output as untrusted <command> context (stderr appended)', () => {

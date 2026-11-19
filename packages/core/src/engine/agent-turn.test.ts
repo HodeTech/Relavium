@@ -14,9 +14,9 @@ import type {
   StreamChunk,
 } from '@relavium/llm';
 import type { ContentPart, DurableMediaPart } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { ADMISSION_CEILINGS } from '../limits.js';
+import { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS } from '../limits.js';
 import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
@@ -1677,6 +1677,263 @@ describe('runAgentTurn — tool loop', () => {
         }),
       ),
     ).rejects.toMatchObject({ code: 'turn_limit' });
+  });
+});
+
+describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', () => {
+  /** `n` model responses that each ask for one tool round. */
+  const toolRounds = (n: number): StreamChunk[][] =>
+    Array.from({ length: n }, (_, i) => [
+      { type: 'tool_call_start', id: `c${i}`, name: 'echo' },
+      { type: 'tool_call_end', id: `c${i}` },
+      STOP('tool_use'),
+    ]);
+
+  /** A provider wrapper that counts how many provider calls (streams) were started. */
+  function counted(scripts: StreamChunk[][]): { provider: LlmProvider; calls: () => number } {
+    const inner = scriptedProvider('anthropic', scripts);
+    let calls = 0;
+    return {
+      provider: {
+        ...inner,
+        stream: (req, signal) => {
+          calls += 1;
+          return inner.stream(req, signal);
+        },
+      },
+      calls: () => calls,
+    };
+  }
+
+  /** The default stub registry, counting the tool rounds it was asked to dispatch. */
+  function counting(): { registry: ToolRegistry; dispatched: () => number } {
+    const inner = stubRegistry();
+    let dispatched = 0;
+    return {
+      registry: {
+        ...inner,
+        dispatch: (call, ctx) => {
+          dispatched += 1;
+          return inner.dispatch(call, ctx);
+        },
+      },
+      dispatched: () => dispatched,
+    };
+  }
+
+  describe('where nobody can answer (a hard stop)', () => {
+    it('holds the round it refuses: nothing runs at the limit, and the turn ends with turn_limit', async () => {
+      const { provider, calls } = counted(toolRounds(40));
+      const { registry, dispatched } = counting();
+      const params = baseParams(provider, {
+        registry,
+        limits: { maxToolTurns: 2, maxToolCorrections: 3 },
+      });
+      await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'turn_limit' });
+      // Two rounds ran; the model asked for the third, and THAT round was held: at most `maxToolTurns + 1` provider
+      // calls, `maxToolTurns` dispatched rounds. (Before ADR-0136 the third round ran and its result was discarded.)
+      expect(dispatched()).toBe(2);
+      expect(calls()).toBe(3);
+    });
+
+    it('holds even the first round when the limit is zero', async () => {
+      const { provider } = counted(toolRounds(5));
+      const { registry, dispatched } = counting();
+      await expect(
+        runAgentTurn(
+          baseParams(provider, { registry, limits: { maxToolTurns: 0, maxToolCorrections: 3 } }),
+        ),
+      ).rejects.toMatchObject({ code: 'turn_limit' });
+      expect(dispatched()).toBe(0);
+    });
+  });
+
+  describe('where a person can answer (a checkpoint)', () => {
+    it('asks at each interval, runs the held round on continue, and stops on stop', async () => {
+      const { provider, calls } = counted(toolRounds(40));
+      const { registry, dispatched } = counting();
+      const asked: { rounds: number; interval: number }[] = [];
+      const answers = ['continue', 'continue', 'stop'] as const;
+      const params = baseParams(provider, {
+        registry,
+        limits: {
+          maxToolTurns: 16,
+          maxToolCorrections: 3,
+          checkpointToolTurns: 2,
+          onToolRoundLimit: (info) => {
+            asked.push(info);
+            return Promise.resolve(answers[asked.length - 1] ?? 'stop');
+          },
+        },
+      });
+      const failure = await runAgentTurn(params).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(AgentTurnError);
+      expect(failure).toMatchObject({ code: 'turn_limit' });
+      expect(failure instanceof AgentTurnError ? failure.message : '').toContain('checkpoint');
+      expect(asked).toEqual([
+        { rounds: 2, interval: 2 },
+        { rounds: 4, interval: 2 },
+        { rounds: 6, interval: 2 },
+      ]);
+      // Two "continue" answers let rounds 3-6 run; the "stop" held round 7: nothing of it ran.
+      expect(dispatched()).toBe(6);
+      expect(calls()).toBe(7);
+    });
+
+    it('resumes exactly the held round on continue, and finishes normally when the model then answers', async () => {
+      const scripts = [...toolRounds(2), [{ type: 'text_delta', text: 'done' } as const, STOP()]];
+      const { registry, dispatched } = counting();
+      let asked = 0;
+      const result = await runAgentTurn(
+        baseParams(scriptedProvider('anthropic', scripts), {
+          registry,
+          limits: {
+            maxToolTurns: 16,
+            maxToolCorrections: 3,
+            checkpointToolTurns: 1,
+            onToolRoundLimit: () => {
+              asked += 1;
+              return Promise.resolve('continue');
+            },
+          },
+        }),
+      );
+      expect(result.text).toBe('done');
+      expect(asked).toBe(1); // one checkpoint, at one round, for the second round the model asked for
+      expect(dispatched()).toBe(2); // the held round ran after the continue
+    });
+
+    it('uses maxToolTurns as the interval when no checkpoint interval is given', async () => {
+      const { provider } = counted(toolRounds(10));
+      const asked: number[] = [];
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            limits: {
+              maxToolTurns: 3,
+              maxToolCorrections: 3,
+              onToolRoundLimit: (info) => {
+                asked.push(info.rounds);
+                return Promise.resolve('stop');
+              },
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'turn_limit' });
+      expect(asked).toEqual([3]);
+    });
+
+    it('never passes the absolute backstop, however many times the person says continue', async () => {
+      const { provider, calls } = counted(toolRounds(300));
+      const { registry, dispatched } = counting();
+      const asked: number[] = [];
+      await expect(
+        runAgentTurn(
+          baseParams(provider, {
+            registry,
+            limits: {
+              maxToolTurns: 16,
+              maxToolCorrections: 3,
+              checkpointToolTurns: 100,
+              onToolRoundLimit: (info) => {
+                asked.push(info.rounds);
+                return Promise.resolve('continue');
+              },
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'turn_limit' });
+      // Asked at 100 and 200; at 256 rounds the model asked for the 257th and nothing is asked: the backstop ends it.
+      expect(asked).toEqual([100, 200]);
+      expect(dispatched()).toBe(ABSOLUTE_TOOL_ROUNDS);
+      expect(calls()).toBe(ABSOLUTE_TOOL_ROUNDS + 1);
+      // 256 rounds over a growing transcript is O(n²) work (about 4 s here); a loaded or instrumented run needs room,
+      // and an interval equal to the backstop reaches the very same `rounds >= ABSOLUTE_TOOL_ROUNDS` branch, so it needs no
+      // second 256-round run.
+    }, 60_000);
+
+    it('spends nothing while the question is open: no provider call and no round until it is answered', async () => {
+      const { provider, calls } = counted(toolRounds(10));
+      const { registry, dispatched } = counting();
+      let answer: (value: 'continue' | 'stop') => void = () => undefined;
+      let opened = false;
+      const turn = runAgentTurn(
+        baseParams(provider, {
+          registry,
+          limits: {
+            maxToolTurns: 16,
+            maxToolCorrections: 3,
+            checkpointToolTurns: 2,
+            onToolRoundLimit: () => {
+              opened = true;
+              return new Promise((resolve) => {
+                answer = resolve;
+              });
+            },
+          },
+        }),
+      );
+      const settled = turn.then(
+        () => 'resolved',
+        () => 'rejected',
+      );
+      await vi.waitFor(() => expect(opened).toBe(true));
+      const callsAtQuestion = calls();
+      const roundsAtQuestion = dispatched();
+      expect(roundsAtQuestion).toBe(2);
+      // Give the loop every chance to run on: an unanswered checkpoint must be a stopped spend.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(calls()).toBe(callsAtQuestion);
+      expect(dispatched()).toBe(roundsAtQuestion);
+      answer('stop');
+      expect(await settled).toBe('rejected');
+      expect(dispatched()).toBe(roundsAtQuestion); // "stop" ran nothing more
+    });
+
+    it('takes the cancellation path when the turn is aborted while the question is open', async () => {
+      const { provider } = counted(toolRounds(10));
+      const { registry, dispatched } = counting();
+      let aborted = false;
+      const signal = {
+        get aborted() {
+          return aborted;
+        },
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      };
+      let release: (value: 'continue') => void = () => undefined;
+      let opened = false;
+      const turn = runAgentTurn(
+        baseParams(provider, {
+          registry,
+          signal,
+          limits: {
+            maxToolTurns: 16,
+            maxToolCorrections: 3,
+            checkpointToolTurns: 1,
+            onToolRoundLimit: (_info, passed) => {
+              expect(passed).toBe(signal); // the hook gets the turn's own signal
+              opened = true;
+              return new Promise((resolve) => {
+                release = resolve;
+              });
+            },
+          },
+        }),
+      );
+      const settled = turn.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await vi.waitFor(() => expect(opened).toBe(true));
+      aborted = true; // the session is being ended ...
+      release('continue'); // ... and an answer arrives late: cancel wins over it
+      expect(await settled).toMatchObject({ code: 'cancelled' });
+      expect(dispatched()).toBe(1); // the held round never ran
+    });
   });
 });
 

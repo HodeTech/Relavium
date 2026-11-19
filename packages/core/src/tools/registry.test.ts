@@ -358,6 +358,67 @@ describe('ToolRegistry — run_command allowlist', () => {
     expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
   });
 
+  // ADR-0118 §3: an exact entry is a command line compared with the argv ELEMENT BY ELEMENT.
+  describe('element-wise exact matching', () => {
+    it('does not admit one argument with a space for two arguments (and the reverse)', async () => {
+      // The defect: both argvs joined to the same string, so the entry `cat a b` admitted all three.
+      const entry = { allowedCommands: ['cat a b'] };
+      const ok = await run({ command: 'cat', args: ['a', 'b'] }, entry);
+      expect((ok as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
+      for (const args of [
+        { command: 'cat', args: ['a b'] },
+        { command: 'cat a', args: ['b'] },
+      ]) {
+        const err = await rejectsWith<ToolPolicyError>(run(args, entry));
+        expect(err.reason).toBe('command_not_allowed');
+      }
+    });
+
+    it('does not admit a file whose NAME is a program plus its flag', async () => {
+      const err = await rejectsWith<ToolPolicyError>(
+        run({ command: './s/build.sh --release' }, { allowedCommands: ['./s/build.sh --release'] }),
+      );
+      expect(err.reason).toBe('command_not_allowed');
+    });
+
+    it('lets an entry typed with quotes match the argv it names', async () => {
+      const out = await run(
+        { command: 'cat', args: ['a b'] },
+        { allowedCommands: ['cat "a b"', "echo 'x y'"] },
+      );
+      expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(
+        true,
+      );
+      const err = await rejectsWith<ToolPolicyError>(
+        run({ command: 'cat', args: ['a', 'b'] }, { allowedCommands: ['cat "a b"'] }),
+      );
+      expect(err.reason).toBe('command_not_allowed');
+    });
+
+    it('never matches an entry with an open quote or an empty entry (fails closed)', async () => {
+      for (const entry of ['cat "a b', '   ']) {
+        const err = await rejectsWith<ToolPolicyError>(
+          run({ command: 'cat', args: ['a', 'b'] }, { allowedCommands: [entry] }),
+        );
+        expect(err.reason).toBe('command_not_allowed');
+      }
+    });
+
+    it('keeps a glob string-level: it cannot tell one argument with a space from two', async () => {
+      // Documented, opt-in and riskier — which is exactly why globs stay a separate field.
+      const policy = { allowedCommandGlobs: ['cat a *'] };
+      for (const args of [
+        { command: 'cat', args: ['a', 'b'] },
+        { command: 'cat', args: ['a b'] },
+      ]) {
+        const out = await run(args, policy);
+        expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(
+          true,
+        );
+      }
+    });
+  });
+
   it('denies by default when both allowlists are empty/absent', async () => {
     const err = await rejectsWith<ToolPolicyError>(run({ command: 'ls' }, {}));
     expect(err.reason).toBe('command_not_allowed');

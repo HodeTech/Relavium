@@ -1,7 +1,14 @@
 import { z } from 'zod';
 
 import { McpConnectTimeoutSchema } from './agent.js';
-import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import {
+  URL_HAS_CREDENTIALS,
+  chatLimit,
+  commandLineEntry,
+  nonEmptyString,
+  nonNegativeInt,
+  positiveInt,
+} from './common.js';
 import { validateDeclaredEnv } from './declared-env.js';
 import { FS_ROOT_LIMITS } from './fs-root-limits.js';
 export { FS_ROOT_LIMITS } from './fs-root-limits.js';
@@ -230,6 +237,12 @@ export const GlobalConfigSchema = z
         // ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue) — an empty Home is the
         // "first opens" signal the ADR wanted, without a durable counter. Cosmetic: it gates no feature.
         show_banner: z.boolean().optional(),
+        // The operator's base for the four chat limits (ADR-0136 §1): what a repository's `[chat]` values may not exceed.
+        // The same four keys as `[chat]`, hand-edited (no typed writer), each bounded by `CHAT_LIMITS`.
+        max_turns: chatLimit('max_turns').optional(),
+        max_tool_turns: chatLimit('max_tool_turns').optional(),
+        checkpoint_tool_turns: chatLimit('checkpoint_tool_turns').optional(),
+        max_tool_corrections: chatLimit('max_tool_corrections').optional(),
       })
       .strict()
       .optional(),
@@ -271,15 +284,23 @@ export const ChatConfigSchema = z
     // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
     // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per
     // config-spec.md `[chat]`). Enforced by the SAME `enforcePolicy(allowedCommands)` the workflow run_command uses.
-    allowed_commands: z.array(nonEmptyString).optional(),
+    allowed_commands: z.array(commandLineEntry).optional(),
     allowed_command_globs: z.array(nonEmptyString).optional(),
     // Hard session **turn cap** — the surface-mapped form of the engine knob `SessionDeps.maxTurns`
     // (a finite DoS fail-safe; engine default 50, absent ⇒ that default). This config field is a
-    // `positiveInt`, so 0 is rejected at parse and never reaches the engine's own `<= 0 ⇒ default` arm.
+    // integer in `CHAT_LIMITS.max_turns` (1 to 1,000, ADR-0136), so 0 and an unbounded value are rejected at parse and
+    // never reach the engine's own `<= 0 ⇒ default` arm.
     // A `sendMessage` past the cap ends loudly (`session:turn_completed` `turn_limit`, no egress).
     // DISTINCT from `max_messages` (a history-**trim** threshold that silently continues) and the
     // within-turn `maxToolTurns` guard.
-    max_turns: positiveInt.optional(),
+    max_turns: chatLimit('max_turns').optional(),
+    // The other chat limits (ADR-0136 §1). In a repository layer a value may only LOWER what the operator's global
+    // `[preferences]` (or, with none, the built-in default) allows: a larger `checkpoint_tool_turns` is a prompt a
+    // clone removes. That cross-layer rule is applied where the layers meet (`resolveChat`); each layer's own value is
+    // bounded here, and a breach is a rejection, never a clamp.
+    max_tool_turns: chatLimit('max_tool_turns').optional(),
+    checkpoint_tool_turns: chatLimit('checkpoint_tool_turns').optional(),
+    max_tool_corrections: chatLimit('max_tool_corrections').optional(),
     max_messages: positiveInt.optional(), // history-trim threshold — consumed by `/trim` + auto-compaction (ADR-0062)
     // Automatic context compaction (ADR-0062). `auto_compact` gates the after-turn threshold check (absent ⇒
     // enabled — the read site applies `?? true`); `compact_threshold` is the fraction of the model's context

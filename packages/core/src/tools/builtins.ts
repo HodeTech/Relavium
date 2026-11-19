@@ -746,8 +746,12 @@ const runCommandTool = defineBuiltin({
   // cwd / timeoutMs / env are pinned by config, never model-supplied.
   configOnlyParams: ['cwd', 'timeoutMs', 'env'],
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
-  // The resolved command the exact-match allowedCommands allowlist inspects (ADR-0029(a)).
-  policyTarget: (args) => ({ command: [args.command, ...(args.args ?? [])].join(' ') }),
+  // The command the allowlist inspects: the argv an exact entry is compared with element by element (ADR-0118 §3,
+  // amending ADR-0029(a)), and the joined string the opt-in globs read.
+  policyTarget: (args) => {
+    const argv = [args.command, ...(args.args ?? [])];
+    return { command: argv.join(' '), argv };
+  },
   // Tier 3 and unpromotable: `allowedCommands` is free-form, so the engine cannot know whether a given
   // command is idempotent — `terraform apply` and `ls` are the same shape to it (ADR-0080 §3).
   effect: () => 3,

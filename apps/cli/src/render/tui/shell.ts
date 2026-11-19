@@ -1,3 +1,5 @@
+import { quoteCommandLine, tokenizeCommandLine } from '@relavium/shared';
+
 import type { ChatMode } from '../../chat/chat-mode.js';
 import { frameUntrusted } from './injection.js';
 
@@ -23,67 +25,41 @@ export function isShellLine(line: string): boolean {
 }
 
 /**
- * Tokenize a `!`-shell line (WITHOUT the leading `!`) into argv, respecting single + double quotes but performing
- * NO shell expansion (no glob, no `$var`, no `;`/`|`/`&&` — those become literal argv characters, inert under
- * `shell:false`). Whitespace outside quotes separates tokens; a quote's contents (incl. spaces) stay ONE token; an
- * unterminated quote tolerantly runs to end of line. Returns `undefined` when there is no command token (a bare
- * `!` / `!   ` — the caller treats that as a no-op, not a shell run).
+ * What a `!`-shell line (WITHOUT the leading `!`) parses to. The grammar is the one shared command-line grammar
+ * (`tokenizeCommandLine` in `@relavium/shared`, [ADR-0118](../../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3):
+ * single and double quotes group, NO shell expansion (no glob, no `$var`, no `;`/`|`/`&&` — those are literal argv
+ * characters, inert under `shell:false`), whitespace outside quotes separates tokens.
+ *
+ * - `command` — a program and its argv, ready to run;
+ * - `empty` — no command token (a bare `!` or `!   `): a no-op, never a shell run and never a message;
+ * - `unterminated_quote` — the line ended inside a quote. The old tokenizer ran an open quote to the end of the line;
+ *   that changes what runs, so it is refused and the caller says why.
  */
-/** The mutable tokenizer state — `cur` is the open token (`started` distinguishes an empty quoted token `""` from
- *  no token); `quote` is the active quote char (in a quoted span) or `undefined`. */
-interface TokenizeState {
-  readonly tokens: string[];
-  cur: string;
-  started: boolean;
-  quote: "'" | '"' | undefined;
+export type ShellLineParse =
+  | { readonly kind: 'command'; readonly cmd: ShellCommand }
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'unterminated_quote' };
+
+/** The fixed, value-free message for a refused open quote. */
+export const SHELL_UNTERMINATED_QUOTE_NOTICE =
+  '! not run — a quote is still open. Close it (or remove it) and try again.';
+
+/** Parse the rest of a `!` line into a command, a no-op or a refusal. */
+export function parseShellLine(rest: string): ShellLineParse {
+  const parsed = tokenizeCommandLine(rest);
+  if (parsed.unterminatedQuote) return { kind: 'unterminated_quote' };
+  const [command, ...args] = parsed.tokens;
+  if (command === undefined || command.length === 0) return { kind: 'empty' };
+  return { kind: 'command', cmd: { command, args } };
 }
 
-const isTokenBreak = (ch: string): boolean =>
-  ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-
-/** Flush the open token (if any) to `tokens` and reset. */
-function flushToken(st: TokenizeState): void {
-  if (st.started) {
-    st.tokens.push(st.cur);
-    st.cur = '';
-    st.started = false;
-  }
-}
-
-/** Fold one character into the tokenizer: inside a quote it accumulates (or closes on the matching quote); outside,
- *  a quote opens a span, whitespace breaks a token, and anything else accumulates. */
-function stepTokenize(st: TokenizeState, ch: string): void {
-  if (st.quote !== undefined) {
-    if (ch === st.quote) st.quote = undefined;
-    else st.cur += ch;
-    st.started = true;
-    return;
-  }
-  if (ch === "'" || ch === '"') {
-    st.quote = ch;
-    st.started = true;
-    return;
-  }
-  if (isTokenBreak(ch)) {
-    flushToken(st);
-    return;
-  }
-  st.cur += ch;
-  st.started = true;
-}
-
-export function tokenizeCommand(rest: string): ShellCommand | undefined {
-  const st: TokenizeState = { tokens: [], cur: '', started: false, quote: undefined };
-  for (const ch of rest) stepTokenize(st, ch);
-  flushToken(st);
-  const [command, ...args] = st.tokens;
-  if (command === undefined || command.length === 0) return undefined;
-  return { command, args };
-}
-
-/** The resolved command string (binary + args joined) — for the allowlist-deny hint + the injection `cmd` attr. */
+/**
+ * The command as ONE line a person could paste back (`quoteCommandLine`): an argument with a space or a quote is
+ * quoted, so `cat "a b"` and `cat a b` read differently — for the allowlist-deny hint, the chip and the injection `cmd`
+ * attr.
+ */
 export function commandLine(cmd: ShellCommand): string {
-  return [cmd.command, ...cmd.args].join(' ');
+  return quoteCommandLine([cmd.command, ...cmd.args]);
 }
 
 /**
