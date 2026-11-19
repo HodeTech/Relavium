@@ -142,7 +142,7 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *
  * Process lifetime lives here (the controller owns the session lifetime):
  * - **Signals** — one handler for SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3), covering the Home, the in-Home chat,
- *   and MCP teardown: a clean Home exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink,
+ *   and MCP teardown: a clean Home exit (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) resolves exit 0; an EXTERNAL signal unmounts ink,
  *   tears the live chat down (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the
  *   conventional `128+signo` (`130` SIGINT / `143` SIGTERM / `129` SIGHUP / `131` SIGQUIT) so a shell pipeline still
  *   sees the interruption. A chat's own exit-code-4 is consumed by the controller loop, never leaked. Behind all of

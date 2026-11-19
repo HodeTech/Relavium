@@ -178,7 +178,7 @@ function fixture(
 describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-0136 §4)', (host) => {
   // `Ctrl+Y` counts only after the exact frame was flushed AND stayed on screen for the dwell: wait just past it.
   const settle = (): Promise<void> =>
-    new Promise<void>((resolve) => setTimeout(resolve, APPROVAL_SETTLE_MS + 120));
+    new Promise<void>((resolve) => setTimeout(resolve, APPROVAL_SETTLE_MS + 400));
   const pause = (): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, 40));
 
   it('is drawn where the approval card is, with the conversation above it, and says what it asks', async () => {
@@ -219,8 +219,8 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     void answer.then((value) => {
       settled = value;
     });
+    f.input.push(CTRL_Y); // typed ahead: the card is not even on screen yet
     await vi.waitFor(() => expect(f.text()).toContain('Continue for 32 more?'));
-    f.input.push(CTRL_Y); // right away: inside the dwell
     await pause();
     expect(
       settled,

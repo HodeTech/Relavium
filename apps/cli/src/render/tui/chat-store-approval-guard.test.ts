@@ -2441,3 +2441,33 @@ describe('approval answers are Ctrl chords (bare letters never answer)', () => {
     );
   });
 });
+
+describe('a sealed store cancels a pending approval; it does not reject it (ADR-0115 §2, ADR-0132 §4)', () => {
+  it('settles the hook with an AbortError, so a teardown that seals and aborts in one stack is recorded cancelled, never "declined"', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const pending = store.requestApproval(REQUEST, false);
+    let outcome: unknown = 'pending';
+    void pending.then(
+      (answer) => {
+        outcome = answer;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    store.sealToolPreviews();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(outcome).toMatchObject({ name: 'AbortError' });
+    expect(store.getSnapshot().approval).toBeUndefined();
+    expect(store.getSnapshot().review).toBeUndefined();
+  });
+
+  it('refuses a later approval on the sealed store as a cancellation too', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    store.sealToolPreviews();
+    await expect(store.requestApproval(REQUEST, false)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+  });
+});

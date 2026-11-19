@@ -280,6 +280,9 @@ export function createChatStore(
   let approval: PendingApproval | undefined;
   // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
+  // Cancels the in-flight approval the way an abort does (ADR-0132 §4's rule for a sealed store): the call is recorded cancelled,
+  // never told the person declined. Set and cleared with `settleApproval`.
+  let cancelPendingApproval: (() => void) | undefined;
   // The open `ask_user` card and the settle pair of its pending promise (ADR-0132).
   let question: QuestionCardState | undefined;
   let pendingQuestion:
@@ -521,7 +524,10 @@ export function createChatStore(
       review = undefined;
       acknowledgedReview = undefined;
       reviewPage = undefined;
-      settleApproval?.({ outcome: 'reject' });
+      // A sealed store is a teardown, and the person never decided: an approval still open is CANCELLED, as a question and a
+      // checkpoint are below, not rejected. (A rejection would be recorded as "the user declined" when the seal and the abort land
+      // in one stack, ADR-0115 §2.)
+      cancelPendingApproval?.();
       // A question still open when the store seals is a CANCEL, never a skip (ADR-0132 §4): the call must be recorded
       // cancelled and the turn left to its own ending, not told the person declined.
       if (pendingQuestion !== undefined) {
@@ -974,6 +980,7 @@ export function createChatStore(
           reviewPage = undefined;
           alwaysAsk = undefined;
           settleApproval = undefined;
+          cancelPendingApproval = undefined;
           state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
         };
@@ -989,6 +996,7 @@ export function createChatStore(
           clear();
           resolve(answer);
         };
+        cancelPendingApproval = onAbort;
         approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
         alwaysAsk = undefined;
         refusalNoted = false; // a card of its own gets its own note

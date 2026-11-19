@@ -503,6 +503,9 @@ async function dispatch(
   const projection = tier === undefined ? undefined : journalProjection(def, effective, ctx);
   const prepare = def.source === 'builtin' && def.policy.fsWrite === true ? def.prepare : undefined;
   let effectDispatched = false;
+  // The tool's own code has been handed the call (set once, just before it runs). A denial thrown before this point decided
+  // nothing about an effect, whatever the signal says by then (see the outer catch).
+  let dispatchStarted = false;
   let replayHit = false;
   let replayed: ReplayEnvelope | typeof NOT_REPLAYED = NOT_REPLAYED;
   let prepared: ToolPreparedCall | undefined;
@@ -593,6 +596,7 @@ async function dispatch(
         let output: unknown;
         try {
           if (prepared !== undefined) effectDispatched = true;
+          dispatchStarted = true;
           const dispatched = takeMediaAttachment(
             await (prepared === undefined ? def.dispatch(args, host, ctx) : prepared.dispatch(ctx)),
           );
@@ -682,6 +686,7 @@ async function dispatch(
       cause instanceof ToolDeniedByUserError &&
       cause.reason === 'user_rejected' &&
       !effectDispatched &&
+      !dispatchStarted &&
       !replayHit
     )
       throw cause;

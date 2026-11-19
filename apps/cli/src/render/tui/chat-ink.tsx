@@ -598,6 +598,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             </Box>
           )}
           {renderBusyLine()}
+          {/* The first Ctrl+C on a running turn interrupts it and arms: say so right here, because a turn that is slow to stop (a
+              hung tool) would otherwise show nothing at all. At an idle prompt the hint row below carries the same words. */}
+          {props.interruptArmed === true && (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              Interrupting · press Ctrl+C again to end the session
+            </Text>
+          )}
         </Box>
       )}
 
@@ -1249,8 +1256,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   };
 
   // Bracketed paste on ink 7's native `usePaste` channel (separate from `useInput`, ADR-0068) — the whole paste is
-  // ONE `text` event, so a multi-line block appends verbatim and a pasted approval token can never reach
-  // `reduceApprovalKey` and answer the fail-closed floor (ADR-0057). Dropped unless the compose buffer is the active
+  // ONE `text` event, so a multi-line block appends verbatim and a pasted approval token can never answer
+  // the fail-closed floor (ADR-0057). Dropped unless the compose buffer is the active
   // editable target (mirrors the keystroke gate + the Home's `pasteEditable`): no running turn / `!`-shell / submit
   // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
   // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
@@ -1281,7 +1288,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
 
-  // Ctrl+C reaches us (not the kernel) in raw mode: `applyInterrupt` below decides what it means (ADR-0115 §1).
   /**
    * Reduce one non-wheel mouse report into the selection (2.6.F Step 6). The viewport facts come from the measured
    * geometry (`top`/`left` — where the box sits in ink's frame) plus the LIVE wrap (`totalLines`/`height`), so a
@@ -1418,6 +1424,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         showInterruptHint(true);
         return 'consumed';
       case 'clear-text':
+        // The buffer is being consumed: a pending `@` mention read must not splice its marker into the now-empty draft.
+        submitGenRef.current += 1;
         applyEditor((current) => {
           if (current.text.length === 0) return current;
           historyRef.current = resetHistoryNav(historyRef.current);
@@ -2192,7 +2200,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
                 stdout: ctx.io.nativeStdout,
                 stderr: ctx.io.nativeStderr,
               }),
-          // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
+          // OUR /cancel (the second Ctrl+C) handler drives the cooperative cancel — never ink's process.exit.
           exitOnCtrlC: false,
           patchConsole: false,
           maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),

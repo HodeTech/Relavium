@@ -1785,6 +1785,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         showInterruptHint(true);
         return true;
       case 'clear-text':
+        submitEpoch += 1; // the buffer is consumed: a pending `@` mention read must not splice its marker into the empty draft
         history = resetHistoryNav(history);
         set({ input: emptyEditor() });
         return true;

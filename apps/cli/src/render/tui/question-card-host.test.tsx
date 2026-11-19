@@ -256,11 +256,20 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
       expect(f.store.getSnapshot().question?.field?.text).toBe('half a thought'),
     );
     await vi.waitFor(() => expect(f.text()).toContain('Esc closes · Ctrl+C stops the turn'));
+    const mark = f.output.frames.length; // only frames drawn AFTER the Esc count for the legend that follows
     f.input.push('\u001b'); // Esc: one level back, not out
     await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
     expect(f.store.getSnapshot().question, 'the call is still pending').toBeDefined();
     expect(f.store.getSnapshot().question?.entries[0]?.draft).toBeUndefined();
-    await vi.waitFor(() => expect(f.text()).toContain('Esc or Ctrl+C stops the turn'));
+    await vi.waitFor(() =>
+      expect(
+        f.output.frames
+          .slice(mark)
+          // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+          .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
+          .join(''),
+      ).toContain('Esc or Ctrl+C stops the turn'),
+    );
     f.input.push('1'); // and the card still answers
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['alpha.ts'] }] });
     expect(f.errors).toEqual([]);

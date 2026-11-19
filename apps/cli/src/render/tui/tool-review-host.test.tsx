@@ -102,10 +102,19 @@ function fixture(
     { approvalGuard },
   );
   const errors: unknown[] = [];
+  // What the host was asked to do with a key the card did not take: a mode change, a line sent to the model.
+  const modeChanges: string[] = [];
+  const submitted: string[] = [];
   const session = {
     store,
     sessionId: 's',
-    processLine: async () => {},
+    onModeChange: (mode: string) => {
+      modeChanges.push(mode);
+    },
+    processLine: (line: string) => {
+      submitted.push(line);
+      return Promise.resolve();
+    },
     shouldStop: () => false,
     stopReason: () => 'exit' as const,
     teardown: async () => {},
@@ -130,11 +139,16 @@ function fixture(
     host === 'chat'
       ? createElement(ChatApp, {
           store,
-          onSubmit: async () => {},
+          onSubmit: (message: string) => {
+            submitted.push(message);
+            return Promise.resolve();
+          },
           shouldStop: () => false,
           onExit: () => {},
           onError: (error) => errors.push(error),
-          onModeChange: () => {},
+          onModeChange: (mode: string) => {
+            modeChanges.push(mode);
+          },
           alternateScreen: alternate,
           ...ports,
         })
@@ -175,12 +189,15 @@ function fixture(
       await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    submitted.length = 0; // the Home's first message started the chat; only what comes after is under test
   };
   return {
     input,
     output,
     store,
     errors,
+    modeChanges,
+    submitted,
     ready,
     text: () => output.frames.join(''),
     /** The most recent complete frame (control sequences stripped) that contains `needle`. */
@@ -2124,10 +2141,19 @@ describe('answer chords in the real host', () => {
           'Esc stops the turn',
         );
         expect(frame).not.toContain('[Ctrl+N] Deny');
+        const mark = f.output.frames.length; // only frames drawn after the Esc count for the legend that follows
         await press(f, '\x1b'); // Esc: closes the box and rejects nothing
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(false));
         expect(outcome()).toBeUndefined();
-        await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+        await vi.waitFor(() =>
+          expect(
+            f.output.frames
+              .slice(mark)
+              // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+              .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
+              .join(''),
+          ).toContain('Esc stops the turn'),
+        );
       });
 
       it('edit_file: the same rows name file edits as the session-wide scope', async () => {
@@ -2317,6 +2343,10 @@ describe('answer chords in the real host', () => {
           expect(outcome(), `${JSON.stringify(key)} must not answer`).toBeUndefined();
         }
         const after = f.store.getSnapshot();
+        expect(f.modeChanges, 'Shift+Tab asked for no mode change').toEqual([]);
+        expect(f.submitted, 'nothing typed at the card reached the composer or the model').toEqual(
+          [],
+        );
         expect(after.mode).toBe(before.mode);
         expect(after.reasoningVisible).toBe(before.reasoningVisible);
         expect(after.approval, 'the call is still pending').toBeDefined();

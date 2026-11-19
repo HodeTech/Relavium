@@ -1,6 +1,6 @@
 /**
- * ADR-0132 §1, §7 at the COMMAND level: every path that builds a chat session hands it the question delegate exactly when
- * a card can answer, and binds the view store that draws it. The session builder and the card are tested elsewhere; this file
+ * ADR-0132 §1, §7 and ADR-0136 §2 at the COMMAND level: every path that builds a chat session hands it the question delegate AND
+ * the continue-checkpoint hook exactly when a card can answer (one boolean feeds both), and binds the view store that draws them. The session builder and the card are tested elsewhere; this file
  * pins the wiring between them on each path the person can reach — a fresh chat, `/clear`, a `/models` reseat, `chat resume`
  * — because a missing option or a missing `bind` on ONE of them leaves that path unable to ask while the others work.
  */
@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
-import type { AskUserDelegate, AskUserRequest } from '@relavium/core';
+import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
@@ -49,25 +49,43 @@ const REQUEST: AskUserRequest = {
   ],
 };
 
-/** Ask through the delegate the session was built with, and report whether it drew a card on THIS store. */
-async function askOn(
-  store: ChatStoreController,
-  delegate: AskUserDelegate | undefined,
-): Promise<'card' | 'no delegate' | 'unbound'> {
-  if (delegate === undefined) return 'no delegate';
-  const pending = delegate(REQUEST).then(
-    () => 'resolved' as const,
-    (error: unknown) => (error instanceof Error ? error : new Error(String(error))),
-  );
-  const drawn = store.getSnapshot().question?.request === REQUEST;
-  store.sealToolPreviews(); // cancel the question so the promise settles
-  const outcome = await pending;
-  if (drawn) return 'card';
-  void outcome; // an unbound port rejects with "no question card is bound"; either way no card was drawn on this store
-  return 'unbound';
+/** The two interactive options a session is built with (they come from one boolean). */
+interface InteractiveOptions {
+  readonly askUser?: AskUserDelegate | undefined;
+  readonly checkpoint?: ToolRoundLimitHook | undefined;
 }
 
-describe('the ask_user delegate on every build path (ADR-0132)', () => {
+/**
+ * Ask through the delegate AND the checkpoint hook the session was built with, and report whether each drew a card on THIS store.
+ * 'card' means both did; a half-wired path (one option without the other) is reported as such, never as a pass.
+ */
+async function askOn(
+  store: ChatStoreController,
+  options: InteractiveOptions,
+): Promise<
+  'card' | 'no delegate' | 'unbound' | 'question without checkpoint' | 'checkpoint without question'
+> {
+  const { askUser, checkpoint } = options;
+  if (askUser === undefined && checkpoint === undefined) return 'no delegate';
+  if (askUser === undefined) return 'checkpoint without question';
+  if (checkpoint === undefined) return 'question without checkpoint';
+  const questionAbort = new AbortController();
+  const asked = askUser(REQUEST, questionAbort.signal).catch(() => undefined);
+  const questionDrawn = store.getSnapshot().question?.request === REQUEST;
+  questionAbort.abort(); // cancel the question so the promise settles and the store is free for the next card
+  await asked;
+  const checkpointAbort = new AbortController();
+  const held = checkpoint({ rounds: 1, interval: 1 }, checkpointAbort.signal).catch(
+    () => undefined,
+  );
+  const checkpointDrawn = store.getSnapshot().checkpoint?.rounds === 1;
+  checkpointAbort.abort();
+  await held;
+  // An unbound port rejects ("no question card is bound" / "no checkpoint card is bound"): no card is drawn on this store.
+  return questionDrawn && checkpointDrawn ? 'card' : 'unbound';
+}
+
+describe('the ask_user delegate and the checkpoint hook on every build path (ADR-0132, ADR-0136)', () => {
   let cwd: string;
   let home: string;
   let client: DbClient;
@@ -102,8 +120,8 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
     const { io } = captureIo();
     let id = 0;
     const store = createSessionStore(client.db);
-    const fresh: (AskUserDelegate | undefined)[] = [];
-    const resumed: (AskUserDelegate | undefined)[] = [];
+    const fresh: InteractiveOptions[] = [];
+    const resumed: InteractiveOptions[] = [];
     const d: ChatCommandDeps = {
       ...inertTerminal,
       io: { ...io, stdoutIsTty: interactive },
@@ -113,23 +131,23 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
       uuid: () => `ask-wiring-${id++}`,
       drive,
       buildSession: (options) => {
-        fresh.push(options.askUser);
+        fresh.push({ askUser: options.askUser, checkpoint: options.checkpoint });
         return buildChatSession(options);
       },
       buildResumedSession: (options) => {
-        resumed.push(options.askUser);
+        resumed.push({ askUser: options.askUser, checkpoint: options.checkpoint });
         return buildResumedChatSession(options);
       },
     };
     return { d, fresh, resumed };
   }
 
-  it('a fresh interactive chat is given the delegate and its store is bound to it', async () => {
+  it('a fresh interactive chat is given the delegate and the checkpoint hook, and its store is bound to both', async () => {
     const seen: string[] = [];
     const f = dependencies(async (ctx) => {
       ctx.startSession();
       await ctx.onActivated?.(() => !ctx.shouldStop());
-      seen.push(await askOn(ctx.store, f.fresh.at(-1)));
+      seen.push(await askOn(ctx.store, f.fresh.at(-1) ?? {}));
       return { kind: 'exit' };
     });
     await chatCommand({ agent: undefined }, f.d);
@@ -140,14 +158,14 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
     ['plain (no TTY)', false, false],
     ['--json', false, true],
   ])(
-    'a %s chat is given NO delegate, so the model is never offered the tool',
+    'a %s chat is given NO delegate and NO checkpoint hook: the model is never offered the tool and the round limit stays a hard stop',
     async (_name, interactive, json) => {
       const seen: string[] = [];
       const f = dependencies(
         async (ctx) => {
           ctx.startSession();
           await ctx.onActivated?.(() => !ctx.shouldStop());
-          seen.push(await askOn(ctx.store, f.fresh.at(-1)));
+          seen.push(await askOn(ctx.store, f.fresh.at(-1) ?? {}));
           return { kind: 'exit' };
         },
         interactive,
@@ -165,7 +183,7 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
       drives += 1;
       ctx.startSession();
       await ctx.onActivated?.(() => !ctx.shouldStop());
-      seen.push(await askOn(ctx.store, f.fresh.at(-1)));
+      seen.push(await askOn(ctx.store, f.fresh.at(-1) ?? {}));
       return { kind: drives === 1 ? 'clear' : 'exit' };
     });
     await chatCommand({ agent: undefined }, f.d);
@@ -184,7 +202,7 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
         ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
         return { kind: ctx.stopReason() };
       }
-      seen.push(await askOn(ctx.store, f.resumed.at(-1)));
+      seen.push(await askOn(ctx.store, f.resumed.at(-1) ?? {}));
       return { kind: 'exit' };
     });
     await chatCommand({ agent: undefined }, f.d);
@@ -207,7 +225,7 @@ describe('the ask_user delegate on every build path (ADR-0132)', () => {
       const resumed = dependencies(async (ctx) => {
         ctx.startSession();
         await ctx.onActivated?.(() => !ctx.shouldStop());
-        seen.push(await askOn(ctx.store, resumed.resumed.at(-1)));
+        seen.push(await askOn(ctx.store, resumed.resumed.at(-1) ?? {}));
         return { kind: 'exit' };
       }, interactive);
       await chatResumeCommand(

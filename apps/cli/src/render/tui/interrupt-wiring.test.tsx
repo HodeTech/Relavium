@@ -175,6 +175,21 @@ describe('Ctrl+C while a turn runs', () => {
     await until(() => m.submitted.includes('/cancel'));
   });
 
+  it('a running turn acknowledges the first Ctrl+C on screen, so a turn that is slow to stop is not silent; Esc says nothing of the kind', async () => {
+    const m = mount();
+    await until(() => m.frame().length > 0);
+    m.store.apply(turnStarted);
+    await press(m, CTRL_C);
+    await until(() => m.frame().includes('Interrupting · press Ctrl+C again to end the session'));
+    expect(m.onAbort).toHaveBeenCalledTimes(1);
+    const calm = mount();
+    await until(() => calm.frame().length > 0);
+    calm.store.apply(turnStarted);
+    calm.h.stdin.write(ESC);
+    await vi.waitFor(() => expect(calm.onAbort).toHaveBeenCalledTimes(1));
+    expect(calm.frame()).not.toContain('Interrupting');
+  });
+
   it('Esc is the same abort and never arms: a Ctrl+C right after it is a first press', async () => {
     const m = mount();
     await until(() => m.frame().length > 0);
@@ -332,5 +347,5 @@ describe('the rows of the keymap the table drives through the standalone chat (A
     await press(m, CTRL_C);
     await until(() => m.frame().includes(HINT));
     await until(() => !m.frame().includes(HINT), INTERRUPT_ARM_WINDOW_MS + 1500); // the real hint timer takes it down
-  });
+  }, 15_000); // a real two-second timer: the default 5 s budget would turn a loaded machine into a failure
 });

@@ -1302,6 +1302,30 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(made.lines).toEqual([]);
     });
 
+    it('clearing a draft with Ctrl+C drops a pending `@` mention read: its marker must not come back into the cleared draft', async () => {
+      let resolveRead: (r: { content: string; sizeBytes: number }) => void = () => {};
+      const mentionReader: MentionReader = {
+        list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+        read: () =>
+          new Promise((resolve) => {
+            resolveRead = resolve;
+          }),
+      };
+      const made = makeSession({ mentionReader });
+      const { c } = await intoChat(made);
+      type(c, 'look at ');
+      c.handleKey('@', {});
+      await flush();
+      c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+      expect(c.getSnapshot().input.text).toBe('look at '); // the marker arrives when the read resolves
+      c.handleKey('c', CTRL_C); // clear the draft
+      expect(c.getSnapshot().input.text).toBe('');
+      resolveRead({ content: '// app.ts', sizeBytes: 9 });
+      await flush();
+      expect(c.getSnapshot().input.text, 'the late read did not splice its marker back').toBe('');
+      expect(c.getSnapshot().attachments, 'and queued no chip for it').toEqual([]);
+    });
+
     it('a paste is a key too: it ends the armed state, so a Ctrl+C after it is a first press that clears the pasted draft', async () => {
       const made = makeSession();
       const { c } = await intoChat(made);
@@ -1328,7 +1352,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(made.lines).toEqual(['/cancel']);
     });
 
-    it('interruptAnswered does nothing on the bare Home, after the Home has exited, or while a chat is tearing down', () => {
+    it('interruptAnswered does nothing on the bare Home or after the Home has exited', () => {
       const { c, onExit } = clocked();
       c.interruptAnswered();
       expect(c.getSnapshot().interruptArmed).toBe(false);

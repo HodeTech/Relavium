@@ -20,7 +20,7 @@ import {
   type DbClient,
 } from '@relavium/db';
 import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavium/shared';
-import type { AskUserDelegate, AskUserRequest } from '@relavium/core';
+import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { render as renderInk, type Instance } from 'ink';
@@ -1329,28 +1329,45 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         },
       ],
     };
+    // The question delegate AND the continue-checkpoint hook come from one option (ADR-0136 §2): both must draw their card on the
+    // store the Home put on screen, on the fresh build and on the reseat.
     const drawsACard = async (
       store: ChatStoreController | undefined,
-      delegate: AskUserDelegate | undefined,
+      wired:
+        | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+        | undefined,
     ): Promise<boolean> => {
-      if (store === undefined || delegate === undefined) return false;
-      const pending = delegate(askRequest).catch(() => undefined);
-      const drawn = store.getSnapshot().question?.request === askRequest;
-      store.sealToolPreviews();
-      await pending;
-      return drawn;
+      if (store === undefined || wired?.askUser === undefined || wired.checkpoint === undefined)
+        return false;
+      const questionAbort = new AbortController();
+      const asked = wired.askUser(askRequest, questionAbort.signal).catch(() => undefined);
+      const questionDrawn = store.getSnapshot().question?.request === askRequest;
+      questionAbort.abort();
+      await asked;
+      const checkpointAbort = new AbortController();
+      const held = wired
+        .checkpoint({ rounds: 1, interval: 1 }, checkpointAbort.signal)
+        .catch(() => undefined);
+      const checkpointDrawn = store.getSnapshot().checkpoint?.rounds === 1;
+      checkpointAbort.abort();
+      await held;
+      return questionDrawn && checkpointDrawn;
     };
-    let freshAsk: AskUserDelegate | undefined;
-    let reseatAsk: AskUserDelegate | undefined;
+    let freshAsk:
+      | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+      | undefined;
+    let reseatAsk:
+      | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+      | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
       buildSession: (options) => {
-        freshAsk = options.askUser;
+        freshAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
         return buildChatSession(options);
       },
       buildResumedSession: (options) => {
-        reseatAsk = options.askUser;
+        reseatAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
         return buildResumedChatSession(options);
       },
     });

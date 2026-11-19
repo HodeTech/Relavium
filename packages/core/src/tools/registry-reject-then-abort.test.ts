@@ -110,4 +110,61 @@ describe('a rejection followed at once by an abort is a denial, not a cancellati
     expect(error).toBeInstanceOf(ToolCancelledError);
     expect(spawned).toBe(0);
   });
+
+  describe('what the exception does NOT cover', () => {
+    const approveNow = () => Promise.resolve<ToolApprovalDecision>({ outcome: 'approve' });
+
+    it('once the effect slot has been admitted (a journaled tool), a refusal followed by an abort is a cancellation: the exception is for decisions made before any effect', async () => {
+      const controller = new AbortController();
+      const { host, spawned } = hostThatCounts();
+      const ctx = {
+        ...context(approveNow, controller.signal),
+        beforeDispatch: () => {
+          controller.abort();
+          throw new ToolDeniedByUserError('run_command', 'user_rejected', 'revoked', {
+            fatal: true,
+          });
+        },
+      } as ToolDispatchContext;
+      const error: unknown = await createToolRegistry({ tools: BUILTIN_TOOLS, host })
+        .dispatch(CALL, ctx)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ToolCancelledError);
+      expect(spawned()).toBe(0);
+    });
+
+    it('only a decided rejection is exempt: a wiring-fault refusal (no_approval_hook) followed by an abort is still a cancellation', async () => {
+      const controller = new AbortController();
+      const { host } = hostThatCounts();
+      const ctx = {
+        ...context(approveNow, controller.signal),
+        beforeDispatch: () => {
+          controller.abort();
+          throw new ToolDeniedByUserError('run_command', 'no_approval_hook', 'no hook');
+        },
+      } as ToolDispatchContext;
+      const error: unknown = await createToolRegistry({ tools: BUILTIN_TOOLS, host })
+        .dispatch(CALL, ctx)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ToolCancelledError);
+    });
+
+    it('a refusal thrown from INSIDE the tool, once it has been handed the call, is still a cancellation after an abort: the exception is for decisions made before the tool runs', async () => {
+      const controller = new AbortController();
+      const host = {
+        process: {
+          spawn: () => {
+            controller.abort();
+            return Promise.reject(
+              new ToolDeniedByUserError('run_command', 'user_rejected', 'from inside'),
+            );
+          },
+        },
+      } as unknown as ToolHost;
+      const error: unknown = await createToolRegistry({ tools: BUILTIN_TOOLS, host })
+        .dispatch(CALL, context(approveNow, controller.signal))
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ToolCancelledError);
+    });
+  });
 });

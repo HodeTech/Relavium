@@ -686,6 +686,33 @@ describe('prepared filesystem dispatch and retained delivery', () => {
     expect(effects.settle).not.toHaveBeenCalled();
     expect(f.release).toHaveBeenCalledOnce();
   });
+  it('a rejection of a saved delivery followed at once by an abort stays a cancellation: the effect was admitted earlier (ADR-0115 §2)', async () => {
+    const f = fixture();
+    const effects = port({
+      prepare: () => Promise.resolve({ outcome: 'replay', result: retained() }),
+    });
+    const controller = new AbortController();
+    await expect(
+      f.registry.dispatch(
+        f.call,
+        context({
+          effects,
+          signal: controller.signal,
+          approval: {
+            confirm: (_request, _signal, live) => {
+              if (live?.preview.kind !== 'saved-result')
+                return Promise.resolve({ outcome: 'approve' });
+              // The person rejects the saved delivery and the surface aborts the turn in the same stack.
+              const decision = Promise.resolve({ outcome: 'reject' as const });
+              controller.abort();
+              return decision;
+            },
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'cancelled' });
+    expect(f.execute).not.toHaveBeenCalled();
+  });
   it('a same-shaped edit refusal from execution is fatal and retains ambiguous effect evidence', async () => {
     const f = fixture();
     const effects = port();

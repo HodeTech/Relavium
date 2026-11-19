@@ -160,5 +160,7 @@ describe('which key is the interrupt', () => {
     expect(isInterruptKey('c', { ctrl: true, meta: true })).toBe(false); // Ctrl+Alt+C is another chord
     expect(isInterruptKey('d', { ctrl: true })).toBe(false);
     expect(isInterruptKey('', { ctrl: true })).toBe(false);
+    // An unrelated flag on the key does not change what it is (the old Home reducer had a test for a coincident `return`).
+    expect(isInterruptKey('c', { ctrl: true, return: true } as { ctrl: boolean })).toBe(true);
   });
 });

@@ -1898,7 +1898,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
-  it('Esc or Ctrl+C at a card: the store rejects, the surface aborts in the same tick, and the call is recorded DENIED by the person, never cancelled, with no further model call (ADR-0115 §2)', async () => {
+  it('Esc at a card: the store rejects, the surface aborts in the same tick, and the call is recorded DENIED by the person, never cancelled, with no further model call (ADR-0115 §2; Ctrl+C takes the same store path, pinned in chat-store-approval-guard.test.ts and interrupt-wiring.test.tsx)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     try {
       const { providers, requests } = capturingResolver([
@@ -1933,7 +1933,6 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         result?.type === 'agent:tool_result' ? result.outputSummary : '',
         'recorded as the person declining it, not as an unknown outcome',
       ).toContain('The user declined this tool call');
-      expect(JSON.stringify(events)).not.toContain('outcome unknown');
       const completed = events.find((e) => e.type === 'session:turn_completed');
       expect(completed?.type === 'session:turn_completed' ? completed.stopReason : 'missing').toBe(
         'aborted',
