@@ -334,24 +334,36 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenLastCalledWith(request, true, undefined, undefined);
   });
 
-  it('ask: a CONCRETE process preview (command) STILL caches "always" — pins isBlankPreview`s command check', async () => {
+  it('ask: a COMMAND is remembered for the session by its exact argv, never by tool id (ADR-0118 §2); a hand-built command request with no argv is not remembered', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
     );
-    const policy = buildTurnPolicy('ask', deps({ prompt }));
-    const procReq = req({
+    const cache = new ApprovalCache();
+    const policy = buildTurnPolicy('ask', deps({ prompt, cache, commandSessionGrants: true }));
+    const argv = ['ls', '-la'];
+    const withArgv = req({
       toolId: 'run_command',
       action: 'process',
       preview: { command: 'ls -la' },
+      argv,
     });
-    expect(await successful(policy.confirm!(procReq))).toEqual({ outcome: 'approve' });
-    expect(prompt).toHaveBeenNthCalledWith(1, procReq, true, undefined, undefined); // cacheable=true (a concrete command)
-    expect(
-      await policy.confirm!(
-        req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } }),
-      ),
-    ).toEqual({ outcome: 'approve' });
-    expect(prompt).toHaveBeenCalledTimes(1); // cached — a dropped `command` check would force a re-prompt here
+    const decision = await policy.confirm!(withArgv);
+    expect(prompt).toHaveBeenNthCalledWith(1, withArgv, true, undefined, undefined); // cacheable: the exact-argv session answer
+    if (decision.outcome !== 'approve') throw new Error('expected an approval');
+    decision.onDispatchSucceeded?.(); // the engine calls this after a real successful call
+    expect(cache.isAlways('run_command'), 'the tool id is never what is remembered').toBe(false);
+    expect(await policy.confirm!(withArgv)).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenCalledTimes(1); // the second identical call is cached
+    // Another argv asks again.
+    await policy.confirm!(
+      req({ toolId: 'run_command', action: 'process', preview: { command: 'ls' }, argv: ['ls'] }),
+    );
+    expect(prompt).toHaveBeenCalledTimes(2);
+    // A hand-built request with NO argv is asked every time and remembers nothing.
+    const bare = req({ toolId: 'run_command', action: 'process', preview: { command: 'ls -la' } });
+    const first = await policy.confirm!(bare);
+    if (first.outcome === 'approve') first.onDispatchSucceeded?.();
+    expect(cache.isAlways('run_command')).toBe(false);
   });
 
   it('ask: a BLANK-preview tool (mcp_call/web_search) NEVER caches "always" — no session-long blank check', async () => {

@@ -1,3 +1,6 @@
+import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import type { KeychainStore } from '../secrets/keychain.js';
+import { createCommandGrantStore, type CommandGrantStore } from '../permissions/command-grants.js';
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
@@ -20,7 +23,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { resumeHint } from '../chat/resume-hint.js';
 import { realpathSync } from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
 import {
   applyStandaloneDefault,
@@ -482,6 +485,8 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   readonly openModeSettings?: (
     currentMode: () => ChatMode,
     onCurrentMode: (mode: ChatMode) => void,
@@ -1637,7 +1642,11 @@ export function createChatModeControl(
     'session' | 'tools' | 'context' | 'agent' | 'fsPolicy' | 'startingMode'
   >,
   store: ChatStoreController,
-  opts?: { readonly interactive?: boolean },
+  opts?: {
+    readonly interactive?: boolean;
+    /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
+    readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
+  },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
   // NON-interactive driver (plain non-TTY, or `--json`) NOTHING answers it — `store.requestApproval` would
@@ -1659,6 +1668,10 @@ export function createChatModeControl(
     workspaceDir: built.context.workingDir,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
+    // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
+    ...(interactive && opts?.commandGrants !== undefined
+      ? { commandGrants: opts.commandGrants }
+      : {}),
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
   const initialMode = interactive ? (built.startingMode?.mode ?? store.getSnapshot().mode) : 'ask';
@@ -1771,6 +1784,48 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
 }
 
 /**
+ * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the session has no operator
+ * home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
+ * project root is the directory that holds the nearest `.relavium/` (else the working directory), resolved to its real path by the
+ * store, so two paths to one tree share grants and a fresh clone elsewhere shares none.
+ */
+/** The OS keychain, opened on first use: building a session must not touch it (a session that never asks about a command never does). */
+function lazyOsKeychain(): KeychainStore {
+  let opened: KeychainStore | undefined;
+  const store = (): KeychainStore => (opened ??= createOsKeychainStore());
+  return {
+    get: (account) => store().get(account),
+    set: (account, secret) => {
+      store().set(account, secret);
+    },
+    delete: (account) => store().delete(account),
+  };
+}
+
+function openCommandGrants(
+  built: Pick<BuiltChatSession, 'operatorHomeDir'>,
+  deps: Pick<ChatReplDeps, 'global' | 'keychain'>,
+  readLiveConfig: () => Pick<ReturnType<typeof loadResolvedConfig>, 'projectConfigDir'>,
+  store: Pick<ChatStoreController, 'notice'>,
+): CommandGrantStore | undefined {
+  const homeDir = built.operatorHomeDir;
+  if (homeDir === undefined) return undefined;
+  let projectRoot = deps.global.cwd;
+  try {
+    const projectConfigDir = readLiveConfig().projectConfigDir;
+    if (projectConfigDir !== undefined) projectRoot = dirname(projectConfigDir);
+  } catch {
+    // A config that cannot be read now fails its own load elsewhere; grants then key by the working directory.
+  }
+  return createCommandGrantStore({
+    homeDir,
+    projectRoot,
+    keychain: deps.keychain ?? lazyOsKeychain(),
+    notify: (message) => store.notice(message),
+  });
+}
+
+/**
  * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
  * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
  * between turns; an unknown slash warns; anything else is appended + persisted + sent as a turn. The cancel/stop
@@ -1826,7 +1881,13 @@ export function createChatLineHandler(
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
-  const modeControl = createChatModeControl(built, store, { interactive });
+  const commandGrants = interactive
+    ? openCommandGrants(built, deps, readLiveConfig, store)
+    : undefined;
+  const modeControl = createChatModeControl(built, store, {
+    interactive,
+    ...(commandGrants === undefined ? {} : { commandGrants }),
+  });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&
     (workOwner.signal.aborted || workOwner.invocation.registry.termination !== undefined);

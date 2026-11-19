@@ -45,6 +45,11 @@ export interface ChatModeEnv {
   readonly prompt: ApprovalPrompt;
   /** Whether an approval REQUEST targets a protected path — `auto` then falls back to a prompt (ADR-0057). */
   readonly isProtectedTarget: (request: ToolApprovalRequest) => boolean;
+  /** The remembered command grants of this project root (ADR-0118 §2): a command they cover is pre-approved, which is what lets
+   *  `auto` run it without a card. Absent ⇒ nothing is remembered. */
+  readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
+  /** Whether a command's card offers "this exact command for the session" (see {@link TurnPolicyDeps.commandSessionGrants}). */
+  readonly commandSessionGrants?: boolean;
 }
 
 export interface MakeChatModeEnvOptions {
@@ -59,6 +64,10 @@ export interface MakeChatModeEnvOptions {
   readonly fsPolicy?: FsPathPolicy;
   /** The REPL's interactive approval prompt. */
   readonly prompt: ApprovalPrompt;
+  /** The remembered command grants of this project root (ADR-0118 §2). */
+  readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
+  /** Whether a command's card offers "this exact command for the session". */
+  readonly commandSessionGrants?: boolean;
 }
 
 /** Build the session-scoped {@link ChatModeEnv} (pure — no policy is applied until {@link applyChatMode}). */
@@ -73,6 +82,10 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
     governed: governedToolIds(opts.tools),
     cache: new ApprovalCache(),
     prompt: opts.prompt,
+    ...(opts.commandGrants === undefined ? {} : { commandGrants: opts.commandGrants }),
+    ...(opts.commandSessionGrants === undefined
+      ? {}
+      : { commandSessionGrants: opts.commandSessionGrants }),
     // fs_write is the only action class with a path; egress/process have none, so they are never "protected"
     // (auto approves them directly). A relative path resolves against the session workspace — the SAME anchor
     // the fs jail uses — so the classification matches what the fs layer would enforce.
@@ -120,6 +133,10 @@ export function applyChatMode(
     prompt: env.prompt,
     cache: env.cache,
     isProtectedTarget: env.isProtectedTarget,
+    ...(env.commandGrants === undefined ? {} : { commandGrants: env.commandGrants }),
+    ...(env.commandSessionGrants === undefined
+      ? {}
+      : { commandSessionGrants: env.commandSessionGrants }),
     canAsk: interactive, // no TTY / no approver ⇒ the governed tools are hidden, as in plan
   });
   if (selection !== undefined && policy.confirm !== undefined)

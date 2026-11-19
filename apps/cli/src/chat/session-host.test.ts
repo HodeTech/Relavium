@@ -1290,6 +1290,81 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  describe('commands through the real session and mode control (ADR-0118 §1)', () => {
+    const ran = { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 };
+    async function sessionWith(
+      mode: 'ask' | 'auto',
+      options: { allowedCommands?: string[]; remembered?: readonly (readonly string[])[] } = {},
+    ) {
+      const spawn = vi.fn(() => Promise.resolve(ran));
+      const built = await build({
+        chat: { ...EMPTY_CHAT, allowedCommands: options.allowedCommands ?? [] },
+        toolHost: { process: { spawn } } as never,
+      });
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      const remembered = new Set((options.remembered ?? []).map((argv) => JSON.stringify(argv)));
+      const control = createChatModeControl(built, store, {
+        commandGrants: { matches: (argv) => remembered.has(JSON.stringify(argv)) },
+      });
+      control.onModeChange(mode);
+      built.session.start();
+      return { built, store, spawn };
+    }
+
+    it('auto: a remembered command runs WITHOUT a card', async () => {
+      const { built, store, spawn } = await sessionWith('auto', { remembered: [['echo', 'hi']] });
+      const outcome = await built.session.runUserCommand('echo', ['hi']);
+      expect(outcome.kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().approval, 'no card was published').toBeUndefined();
+    });
+
+    it('auto: a command the allowlist admits runs WITHOUT a card', async () => {
+      const { built, store, spawn } = await sessionWith('auto', { allowedCommands: ['echo hi'] });
+      expect((await built.session.runUserCommand('echo', ['hi'])).kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().approval).toBeUndefined();
+    });
+
+    it('auto: anything else raises a card (the hard edge), and declining it runs nothing and is the person’s denial, not an allowlist error', async () => {
+      const { built, store, spawn } = await sessionWith('auto');
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() =>
+        expect(store.getSnapshot().approval?.request.argv).toEqual(['echo', 'hi']),
+      );
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(false);
+      store.answerApproval({ outcome: 'reject' });
+      const outcome = await pending;
+      expect(outcome.kind).toBe('denied');
+      expect(outcome.kind === 'denied' && outcome.allowlist, 'a decision, not a config wall').toBe(
+        false,
+      );
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('ask: even an allowlisted command raises a card; approving it once runs it', async () => {
+      const { built, store, spawn } = await sessionWith('ask', { allowedCommands: ['echo hi'] });
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(true);
+      expect(spawn).not.toHaveBeenCalled();
+      store.answerApproval({ outcome: 'approve', scope: 'once' });
+      expect((await pending).kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('a remembered grant for a different argv does not cover this one', async () => {
+      const { built, store, spawn } = await sessionWith('auto', {
+        remembered: [['echo', 'hello']],
+      });
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      store.answerApproval({ outcome: 'reject' });
+      await pending;
+      expect(spawn).not.toHaveBeenCalled();
+    });
+  });
+
   it('createChatModeControl with interactive:false DENIES a governed dispatch without HANGING (High 9 deadlock)', async () => {
     // On a non-interactive driver (plain non-TTY / --json) nothing answers `requestApproval`. In `accept-edits`
     // (a mode that would prompt on a TTY) the reject-immediately prompt must DENY the write, not publish an
