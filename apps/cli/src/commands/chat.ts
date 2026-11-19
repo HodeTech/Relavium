@@ -1801,19 +1801,21 @@ function lazyOsKeychain(): KeychainStore {
 }
 
 /**
- * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the session has no operator
- * home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
+ * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the surface cannot ask or the
+ * session has no operator home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
  * project root is the directory that holds the nearest `.relavium/` (else the working directory), resolved to its real path by the
  * store, so two paths to one tree share grants and a fresh clone elsewhere shares none.
  */
-function openCommandGrants(
+export function openCommandGrants(
+  interactive: boolean,
   built: Pick<BuiltChatSession, 'operatorHomeDir'>,
   deps: Pick<ChatReplDeps, 'global' | 'keychain'>,
   readLiveConfig: () => Pick<ReturnType<typeof loadResolvedConfig>, 'projectConfigDir'>,
   store: Pick<ChatStoreController, 'notice'>,
 ): CommandGrantStore | undefined {
+  // A plain, `--json` or one-shot surface has no one who can answer a card, so it never reads or writes the store.
   const homeDir = built.operatorHomeDir;
-  if (homeDir === undefined) return undefined;
+  if (!interactive || homeDir === undefined) return undefined;
   let projectConfigDir: string | undefined;
   try {
     projectConfigDir = readLiveConfig().projectConfigDir;
@@ -1884,9 +1886,7 @@ export function createChatLineHandler(
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
-  const commandGrants = interactive
-    ? openCommandGrants(built, deps, readLiveConfig, store)
-    : undefined;
+  const commandGrants = openCommandGrants(interactive, built, deps, readLiveConfig, store);
   const modeControl = createChatModeControl(built, store, {
     interactive,
     ...(commandGrants === undefined ? {} : { commandGrants }),

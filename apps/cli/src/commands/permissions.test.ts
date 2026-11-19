@@ -200,7 +200,14 @@ describe('relavium permissions list', () => {
       const run = deps(project, json);
       permissionsListCommand(run.deps);
       // eslint-disable-next-line no-control-regex -- asserting that no control character reached the terminal
-      expect(run.out()).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f]/u);
+      const control = /[\u0000-\u0008\u000b-\u001f\u007f]/u;
+      expect(run.out()).not.toMatch(control);
+      // JSON escapes a control character on the wire, so the raw bytes prove nothing: what a consumer PARSES must be clean too.
+      if (json) {
+        const records = parseNdjson(run.out());
+        expect(records).toHaveLength(1);
+        expect(String(records[0]?.['grantedAt'])).not.toMatch(control);
+      }
     }
   });
 

@@ -326,21 +326,17 @@ function commandArgv(request: ToolApprovalRequest): readonly string[] | undefine
 }
 
 /**
- * A command is PRE-APPROVED when the allowlist admitted it, a remembered grant covers its exact argv, or the person approved this
- * exact argv earlier in this session (ADR-0118 §1). Only `auto` acts on that: `ask` and `accept-edits` keep asking for an
- * allowlisted or remembered command (an allowlist removes the unknown, not the person's per-call consent), and only an explicit
- * session answer given in THIS session removes their card.
+ * A command is PRE-APPROVED when the allowlist admitted it or a remembered grant covers its exact argv (ADR-0118 §1). Only `auto`
+ * acts on that: `ask` and `accept-edits` keep asking for an allowlisted or remembered command (an allowlist removes the unknown,
+ * not the person's per-call consent). An exact argv approved earlier in THIS session is honoured by {@link askAboutCommand} in every
+ * mode, which is what removes the card there.
  */
 function isPreApproved(
   request: ToolApprovalRequest,
   argv: readonly string[],
   deps: TurnPolicyDeps,
 ): boolean {
-  return (
-    request.commandAdmitted === true ||
-    deps.commandGrants?.matches(argv) === true ||
-    deps.cache.isAlwaysCommand(argv)
-  );
+  return request.commandAdmitted === true || deps.commandGrants?.matches(argv) === true;
 }
 
 /**
