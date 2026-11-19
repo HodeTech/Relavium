@@ -121,7 +121,7 @@ directory, the active file/selection, the git ref (for provenance), the FS-scope
 and session-scoped `{{ctx.*}}` variables. It is **auto-detected from the launching
 surface and overridable** by the user. The session reuses the **same** filesystem-scope
 tiers and the **same** `allowedCommands` policy a workflow uses — `fs_scope = sandboxed`
-and an empty-by-default command allowlist are the teeth that keep chat honest. The
+and an empty-by-default command allowlist (plus, where a person is present, the approval card for any command outside it) are the teeth that keep chat honest. The
 chat-mode defaults (`fs_scope`, the command allowlist, `default_model`, `max_messages`)
 live in the `[chat]` block of [../reference/contracts/config-spec.md](../reference/contracts/config-spec.md),
 which references those canonical homes rather than forking them. The full `SessionContext`

@@ -664,10 +664,10 @@ relavium permissions revoke --all [--json]
 ```
 
 Look at, and take back, the commands this project's operator chose to **Remember** in the chat
-([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2). `list`
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the card that offers *Remember* is MVP-4 step 4, so until then the list is empty). `list`
 shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
 command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
-whole file, for every project, and needs no keychain and no readable file. Both are local: they open no
+whole file, for every project, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
 database and make no network request. Success exits `0` (an empty list is not a fault); the other exit codes,
 the `--json` records and the failure table are in [command-permissions.md](command-permissions.md), the
 canonical home.

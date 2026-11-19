@@ -107,7 +107,7 @@ entire checklist with **no chat-specific exception**: provider keys stay in the 
 and are attached exactly as above (the chat surface holds only a key reference), the
 session runs under the same filesystem **scope tier**, `run_command` uses the same
 `allowedCommands` allowlist (exact-match, below), and no secret ever reaches the frontend.
-A chat-only relaxation of any rule here is a security violation, not a feature.
+A chat-only relaxation of any rule here is a security violation, not a feature — with the one exception [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) records: where a person is present, an allowlist miss for `run_command` is a request to them (a card), not a refusal, and nothing runs in `auto` without being pre-approved.
 
 - **Conversational content is the user's data, not a managed secret.** What the user types
   into a session and the model's replies are persisted in `history.db` (SQLCipher-encrypted on
@@ -129,7 +129,7 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   `.dockercfg` / … — never listed nor read) + the binary/size guards; a user typing `@path` replaces the
   `confirmAction` prompt, **never** the floor. `!`-shell runs through the **one** `run_command` boundary via the
   additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): the allowlist is judged first;
-  with no approval regime (a workflow, a headless surface) a miss is refused and an empty set disables `run_command`, and in an
+  in a workflow (no approval regime) the allowlist is the only authority, a miss is refused and an empty set disables `run_command`; a plain, `--json` or one-shot surface has a regime whose hook refuses every governed call and hides the tool, so nothing runs there; and in an
   interactive chat a miss reaches the mode-aware `confirmAction` as a request (`ask`/`accept-edits` show a card, `plan` refuses,
   `auto` shows a card unless the allowlist, a remembered grant or an earlier session answer pre-approved that exact argv —
   [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), then `spawn`/`shell:false` (no
@@ -1125,7 +1125,8 @@ whether a program runs on a user's machine, and a weakening is invisible from th
 filter (`ResolverCapabilities.readFile`) — which must jail to the workspace root and reject path
 traversal, a duty the pure engine delegates to each host**, **the CLI chat input layer — the `@`-mention
 read path, the `!`-shell `runUserCommand` boundary, the `[chat].allowed_commands` set, or the read-side
-confidentiality floor (`isSensitiveReadPath`) ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))**,
+confidentiality floor (`isSensitiveReadPath`) ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)); the remembered-command grant store and the command card
+([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [command-permissions.md](../reference/cli/command-permissions.md))**,
 node `tools:` narrowing or `secret`-typed input handling, prompt/tool-call construction, **media byte delivery (`read_media` /
 Range / upload) and the media `url` carrier**, the DB encryption path, or a new dependency. For
 **managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing
