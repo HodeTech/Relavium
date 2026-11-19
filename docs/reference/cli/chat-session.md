@@ -813,10 +813,11 @@ One keymap applies to every raw-mode interactive surface: the standalone chat, t
 | An **approval review** is open, on any screen (card, full view, call list) or with its reason or search box open | **Reject the call**, *then* interrupt the turn, then arm | End the session |
 | An **`ask_user` question** card is open (own-answer field included) | Stop the turn (the call is recorded cancelled, [ADR-0132](../../decisions/0132-the-model-can-ask-the-user-a-structured-question.md) §5), then arm | End the session |
 | A **continue checkpoint** is open ([below](#the-continue-checkpoint--mvp-4-adr-0136)) | Answer "stop" (the engine ends the turn itself), then arm | End the session |
-| A turn is running, or a `!` command | Interrupt it — the same abort `Esc` performs — then arm | End the session |
-| Idle, **text in the prompt** | Clear the text; **nothing is armed**, so one stray press cannot discard a draft *and* arm an exit | — |
+| A turn is running, or a `!` command | Interrupt it — the same abort `Esc` performs — then arm; a running turn also shows `Interrupting · press Ctrl+C again to end the session`, so a turn that is slow to stop acknowledges the press | End the session |
+| Idle, **text in the prompt** | Clear the text (pending `@` and `!` chips stay; `Esc` at an idle prompt is what discards them); **nothing is armed**, so one stray press cannot discard a draft *and* arm an exit. A pending `@` mention read is dropped with the text | — |
 | Idle, empty prompt | Arm, and the hint line reads `Press Ctrl+C again to end the session` | End the session |
 | A details view (`/details`, no approval pending) or any overlay (palette, picker, `@` mention, reverse search, confirmation) | Close it, as it always did; nothing is armed. A confirmation card treats `Ctrl+C` as cancel, never as confirm | — |
+| The chat has not finished activating (the standalone chat, before its first frame is acknowledged) | End the session at once: nothing is on screen yet that could be lost | — |
 | The Home, loaded (a draft stays where it is) | Arm; the hint reads `Press Ctrl+C again to exit` | Exit the Home (code 0) |
 | The Home, still loading | Exit at once: nothing is loaded and nothing can be lost | — |
 
@@ -836,7 +837,7 @@ The card is docked where the approval card sits, a yellow rule labelled `Checkpo
 
 | Key | Does |
 | --- | --- |
-| `Ctrl+Y` | **Continue**: runs the held round and raises the allowance by one more interval (never past the engine's absolute backstop). It spends, so it clears the approval card's guards (the exact frame flushed and on screen for 400 ms, the previous key 300 ms old, no foreign key in the last 1.5 s, no card resolved by a key in the last 2 s) and the card must be visible right now; a refused `Ctrl+Y` changes nothing and the card stays |
+| `Ctrl+Y` | **Continue**: runs the held round and raises the allowance by one more interval (never past the engine's absolute backstop). It spends, so it clears the approval card's input guards, unchanged (dwell, quiet gap, typeahead window and lockout: [above](#mvp-3-interaction-contract)), against the checkpoint's own frame, and the card must be visible right now; a refused `Ctrl+Y` changes nothing and the card stays |
 | `Ctrl+N`, `Esc` | **Stop here**: the hook answers "stop" and the turn ends with `turn_limit` (the held round never runs). Never delayed, valid on a card nobody has seen |
 | `Ctrl+C` | The same "stop", and the interrupt keymap is armed |
 | any other key | Consumed; typing at the card answers nothing |

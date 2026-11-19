@@ -10,7 +10,7 @@ The keymap is decided in one pure reducer and is covered by automated tests on e
 
 - A Windows 10 or 11 machine, a built `relavium` (the installed package or `node apps/cli/dist/index.js`), and a provider key in the Windows credential store.
 - **Two terminals**, one each from: Windows Terminal (PowerShell) and the legacy console host (`cmd.exe` in a classic conhost window). Repeat the checks in both; the answer can differ.
-- A throwaway directory as the working directory. Nothing below needs a real project.
+- A throwaway directory as the working directory. Row 10 needs a `.relavium/project.toml` in it (create the file; nothing else about a project is needed).
 - Use a small, quiet model; the turns below are one line each.
 
 ## Checks
@@ -30,7 +30,7 @@ Record, for each row: terminal, `PASS` or `FAIL`, and a short note (what you pre
 | 9 | Open a card, press `Ctrl+R` (the reason box), type a few characters, press `Esc`. | The box closes, the typed text is gone and the card is still waiting. A second `Esc` rejects and stops. |
 | 10 | Set `[chat].checkpoint_tool_turns = 1` in a project's `.relavium/project.toml` (see [config-spec.md](../reference/contracts/config-spec.md#chat-limits); a repository layer may only lower the value, so use a number below the default), ask for a task that needs several file reads. At the checkpoint card press `Ctrl+N`. | The turn ends, the held round did not run, and the summary line reads `stopped at a checkpoint after 1 tool round`. |
 | 11 | Repeat 10 and press `Ctrl+Y` once the card has been up for at least two seconds, with no other key pressed in that time. | The turn continues for one more interval. |
-| 12 | `relavium chat --json` (or set `CI=true` — `$env:CI='true'` in PowerShell, `set CI=true` in `cmd` — and run `relavium chat`), so the plain driver runs with no raw mode. While a turn runs, press `Ctrl+C` once. | This is a real SIGINT: the turn is cancelled, the session is saved, and the process exits with code 4. |
+| 12 | Run once with `relavium chat --json` and once with `CI=true` set (`$env:CI='true'` in PowerShell, `set CI=true` in `cmd`) and no flag, which selects the plain driver; neither uses raw mode. While a turn runs, press `Ctrl+C` once. | This is a real SIGINT in both: the turn is cancelled, the session is saved, and the process exits with code 4. |
 
 ## If `Ctrl+C` arrives as a signal
 
