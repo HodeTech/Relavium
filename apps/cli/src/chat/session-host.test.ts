@@ -1319,11 +1319,16 @@ describe('buildResumedChatSession (2.N)', () => {
       expect(store.getSnapshot().approval, 'no card was published').toBeUndefined();
     });
 
-    it('auto: a command the allowlist admits runs WITHOUT a card', async () => {
+    it('auto: a command only the repository’s allowlist admits STILL raises a card, and the card says where it stands', async () => {
       const { built, store, spawn } = await sessionWith('auto', { allowedCommands: ['echo hi'] });
-      expect((await built.session.runUserCommand('echo', ['hi'])).kind).toBe('ran');
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(true);
+      expect(store.getSnapshot().approval?.facts?.standing).toBe('allowlisted');
+      expect(spawn).not.toHaveBeenCalled();
+      store.answerApproval({ outcome: 'approve', scope: 'once' });
+      expect((await pending).kind).toBe('ran');
       expect(spawn).toHaveBeenCalledTimes(1);
-      expect(store.getSnapshot().approval).toBeUndefined();
     });
 
     it('auto: anything else raises a card (the hard edge), and declining it runs nothing and is the person’s denial, not an allowlist error', async () => {

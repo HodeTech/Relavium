@@ -180,6 +180,11 @@ export interface CommandOffers {
 /** Everything a command card needs besides the command itself. */
 export interface CommandCardFacts {
   readonly standing: CommandStanding;
+  /**
+   * The command is remembered but asks anyway in `auto`, because this session has approved a file write since (ADR-0118 §2): the
+   * write may have changed what it does. Only the card's standing row says so.
+   */
+  readonly filesChanged?: boolean | undefined;
   /** The command is a code carrier: its card says it runs code, and Remember is not offered. */
   readonly runsCode: boolean;
   /** An argument names a protected path: its card says so and the only answer that approves is Once. */
@@ -193,6 +198,8 @@ export interface CommandFactsInput {
   readonly argv: readonly string[];
   readonly commandAdmitted: boolean;
   readonly remembered: boolean;
+  /** `auto` asks about a remembered command because this session has approved a file write. */
+  readonly filesChanged?: boolean;
   readonly cwd: string;
   /** Whether the host offers a session answer at all (a delivered saved result, a blank preview or the headless path do not). */
   readonly sessionOffered: boolean;
@@ -213,6 +220,7 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
       : input.remembered
         ? 'remembered'
         : 'not-pre-approved',
+    filesChanged: input.filesChanged === true && input.remembered && !input.commandAdmitted,
     runsCode,
     protectedPath,
     cwd: input.cwd,

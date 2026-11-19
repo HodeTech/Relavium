@@ -143,6 +143,7 @@ describe('the facts and the answers a command card offers', () => {
   it('an ordinary unknown command: Once, Session and Remember', () => {
     expect(commandCardFacts(base)).toEqual({
       standing: 'not-pre-approved',
+      filesChanged: false,
       runsCode: false,
       protectedPath: false,
       cwd: '/work/project',

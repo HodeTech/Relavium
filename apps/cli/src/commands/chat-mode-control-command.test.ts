@@ -48,6 +48,7 @@ describe('the chat mode control, command card wiring', () => {
     const approval = m.store.getSnapshot().approval;
     expect(approval?.facts).toEqual({
       standing: 'not-pre-approved',
+      filesChanged: false,
       runsCode: false,
       protectedPath: false,
       cwd: m.workspace,

@@ -381,7 +381,7 @@ describe('revocation does not depend on file order, and one argv is one grant', 
     const grants = store();
     const listed = grants.list();
     expect(listed.ok && listed.grants.map((g) => g.id)).toEqual(['twin-a']);
-    expect(grants.revoke(1)).toMatchObject({ ok: true, id: 'twin-a' });
+    expect(grants.revoke(1)).toMatchObject({ ok: true, id: 'twin-a', ids: ['twin-a', 'twin-b'] });
     expect(grants.matches(['npm', 'test']), 'the twin did not keep the command approved').toBe(
       false,
     );
@@ -407,7 +407,13 @@ describe('revoking and listing', () => {
     await grants.remember(['npm', 'test']);
     await grants.remember(['git', 'status']);
     await grants.remember(['cat', 'a']);
-    expect(grants.revoke(2)).toEqual({ ok: true, id: 'grant-2', program: 'git', args: 1 });
+    expect(grants.revoke(2)).toEqual({
+      ok: true,
+      id: 'grant-2',
+      ids: ['grant-2'],
+      program: 'git',
+      args: 1,
+    });
     expect(grants.matches(['git', 'status'])).toBe(false);
     expect(grants.matches(['npm', 'test'])).toBe(true);
     const listed = grants.list();

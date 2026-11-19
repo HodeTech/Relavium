@@ -9,6 +9,7 @@ import {
   type ApprovalPrompt,
 } from './chat-mode.js';
 import type { ChatMode } from '@relavium/shared';
+import type { CommandCardFacts } from './command-facts.js';
 
 /**
  * ADR-0118 §1's table for commands, row by row, through the real mode policy: what each mode does with a command that the allowlist
@@ -31,6 +32,7 @@ interface Rig {
   readonly cache: ApprovalCache;
   readonly asked: () => number;
   readonly lastCacheable: () => boolean | undefined;
+  readonly facts: () => CommandCardFacts | undefined;
 }
 
 function rig(
@@ -64,6 +66,7 @@ function rig(
     cache,
     asked: () => prompt.mock.calls.length,
     lastCacheable: () => cacheable,
+    facts: () => prompt.mock.calls.at(-1)?.[4],
   };
 }
 
@@ -134,12 +137,19 @@ describe('plan refuses a command with the mode’s fixed text, which returns to 
   });
 });
 
-describe('auto has a hard edge: only a pre-approved command runs without a card (ADR-0118 §1)', () => {
-  it('an allowlisted command runs', async () => {
+describe('auto has a hard edge: only a command the OPERATOR pre-approved runs without a card (ADR-0118 §1, round 2 ruling)', () => {
+  it('an allowlisted command still shows a card: the list is the repository’s file, not the operator’s consent', async () => {
     const r = rig('auto');
     expect(await r.confirm(command(LS, true), undefined, undefined)).toEqual({
       outcome: 'approve',
     });
+    expect(r.asked()).toBe(1);
+    expect(r.facts()?.standing).toBe('allowlisted');
+  });
+
+  it('a command that is allowlisted AND remembered runs: the remembered grant is the operator’s', async () => {
+    const r = rig('auto', { remembered: [LS] });
+    await r.confirm(command(LS, true), undefined, undefined);
     expect(r.asked()).toBe(0);
   });
 
@@ -156,6 +166,68 @@ describe('auto has a hard edge: only a pre-approved command runs without a card 
     r.cache.rememberAlwaysCommand(LS);
     await r.confirm(command(LS, false), undefined, undefined);
     expect(r.asked()).toBe(0);
+  });
+
+  describe('after the session approved a file write (the security sitting’s ruling on ADR-0118 §2)', () => {
+    const WRITE: ToolApprovalRequest = {
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: 'package.json' },
+    };
+
+    it('a REMEMBERED command asks once, and the card says why', async () => {
+      const r = rig('auto', { remembered: [LS] });
+      await r.confirm(WRITE, undefined, undefined);
+      expect(r.cache.wrote).toBe(true);
+      await r.confirm(command(LS, false), undefined, undefined);
+      expect(r.asked()).toBe(1);
+      expect(r.facts()).toMatchObject({ standing: 'remembered', filesChanged: true });
+    });
+
+    it('before any write it runs unasked, and answering Session after the write ends the asking', async () => {
+      const r = rig('auto', {
+        remembered: [LS],
+        answer: { outcome: 'approve', scope: 'always' },
+        sessionGrants: true,
+      });
+      await r.confirm(command(LS, false), undefined, undefined);
+      expect(r.asked()).toBe(0);
+      await r.confirm(WRITE, undefined, undefined);
+      const decision = await r.confirm(command(LS, false), undefined, undefined);
+      expect(r.asked()).toBe(1);
+      if (decision.outcome !== 'approve') throw new Error('expected an approval');
+      decision.onDispatchSucceeded?.();
+      await r.confirm(command(LS, false), undefined, undefined);
+      expect(r.asked(), 'the session approval the person gave covers it from here on').toBe(1);
+    });
+
+    it('a session approval is not affected by a write: the person gave it knowingly', async () => {
+      const r = rig('auto');
+      r.cache.rememberAlwaysCommand(LS);
+      await r.confirm(WRITE, undefined, undefined);
+      await r.confirm(command(LS, false), undefined, undefined);
+      expect(r.asked()).toBe(0);
+    });
+
+    it('a write that was refused does not count, and a plan-mode refusal does not either', async () => {
+      const refused = rig('ask', { answer: { outcome: 'reject' } });
+      await refused.confirm(WRITE, undefined, undefined);
+      expect(refused.cache.wrote).toBe(false);
+      const plan = rig('plan');
+      await plan.confirm(WRITE, undefined, undefined);
+      expect(plan.cache.wrote).toBe(false);
+    });
+
+    it('a write accepted in accept-edits counts for a later auto turn of the same session', async () => {
+      const cache = new ApprovalCache();
+      const edits = buildTurnPolicy('accept-edits', {
+        governed: new Set(['run_command', 'write_file']),
+        prompt: vi.fn<ApprovalPrompt>(() => Promise.resolve({ outcome: 'reject' })),
+        cache,
+      });
+      await edits.confirm?.(WRITE, undefined, undefined);
+      expect(cache.wrote).toBe(true);
+    });
   });
 
   it('anything else asks, and a rejection refuses it', async () => {
@@ -347,6 +419,7 @@ describe('the command card: facts, offers and the Remember answer (ADR-0118 §1,
     await r.confirm(command(['npm', 'test'], false), undefined, undefined);
     expect(asked(r)).toEqual({
       standing: 'not-pre-approved',
+      filesChanged: false,
       runsCode: false,
       protectedPath: false,
       cwd: PROJECT,

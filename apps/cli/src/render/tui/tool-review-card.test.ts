@@ -485,7 +485,10 @@ describe('the command card chrome (ADR-0118 §1)', () => {
 
   it('says where the command stands, one row, in the person’s words', () => {
     expect(commandStandingRow(facts({ standing: 'allowlisted' }))).toBe(
-      'Standing: on your allowlist',
+      'Standing: on this project’s allowlist',
+    );
+    expect(commandStandingRow(facts({ standing: 'remembered', filesChanged: true }))).toBe(
+      'Standing: remembered for this project; asks because files changed this session',
     );
     expect(commandStandingRow(facts({ standing: 'remembered' }))).toBe(
       'Standing: remembered for this project',

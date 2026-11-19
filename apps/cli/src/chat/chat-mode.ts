@@ -56,7 +56,7 @@ export const MODE_DESCRIPTION: Record<ChatMode, string> = {
   plan: 'read-only — nothing is changed; the agent drafts a plan first',
   'accept-edits':
     'applies file edits without asking; still asks for commands and network; refuses protected paths',
-  auto: 'approves granted actions; scope and protected-path rules still apply',
+  auto: 'approves granted actions; a command still asks unless you remembered or approved it; scope and protected-path rules apply',
 };
 
 /** The fixed label the mode refusal carries to the model (ADR-0117 §2): the mode's name, never a target. */
@@ -140,6 +140,7 @@ export class ApprovalCache {
   readonly #always = new Set<string>();
   /** Commands approved for the rest of this session, keyed by their exact argv (see {@link isAlwaysCommand}). */
   readonly #commands = new Map<string, string | undefined>();
+  #wrote = false;
   /** Whether this tool id was previously "always"-approved this session. */
   isAlways(toolId: string): boolean {
     return this.#always.has(toolId);
@@ -175,22 +176,40 @@ export class ApprovalCache {
     return removed;
   }
   /** The commands approved for this session, in the order they were approved (`/permissions` numbers them from 1). */
-  commandApprovals(): readonly (readonly string[])[] {
-    const argvs: (readonly string[])[] = [];
-    for (const key of this.#commands.keys()) {
+  commandApprovals(): readonly SessionCommandApproval[] {
+    const approvals: SessionCommandApproval[] = [];
+    for (const [key, grantId] of this.#commands) {
       const parsed: unknown = JSON.parse(key);
       if (Array.isArray(parsed) && parsed.every((element) => typeof element === 'string'))
-        argvs.push(parsed);
+        approvals.push({ argv: parsed, remembered: grantId !== undefined });
     }
-    return argvs;
+    return approvals;
   }
-  /** Take back the session approval at the 1-based `index` of {@link commandApprovals}; the argv it was, or `undefined` when none. */
-  forgetCommandApproval(index: number): readonly string[] | undefined {
+  /** Take back the session approval at the 1-based `index` of {@link commandApprovals}; what it was, or `undefined` when none. */
+  forgetCommandApproval(index: number): SessionCommandApproval | undefined {
     const target = this.commandApprovals()[index - 1];
     if (target === undefined) return undefined;
-    this.#commands.delete(JSON.stringify(target));
+    this.#commands.delete(JSON.stringify(target.argv));
     return target;
   }
+  /**
+   * Note that this session approved a file write (ADR-0118 §2, the security sitting's ruling): from then on a REMEMBERED command no
+   * longer runs unasked in `auto`, because the write may have changed what the command does (`package.json`'s `test` script, a
+   * Makefile). A session approval of the exact argv, which the person gave knowingly, is not affected.
+   */
+  noteWrite(): void {
+    this.#wrote = true;
+  }
+  /** Whether {@link noteWrite} has been called in this session. */
+  get wrote(): boolean {
+    return this.#wrote;
+  }
+}
+
+/** A command approved for the rest of this session; `remembered` when a *Remember* made it (the project's grant also covers it). */
+export interface SessionCommandApproval {
+  readonly argv: readonly string[];
+  readonly remembered: boolean;
 }
 
 /**
@@ -376,17 +395,15 @@ function commandArgv(request: ToolApprovalRequest): readonly string[] | undefine
 }
 
 /**
- * A command is PRE-APPROVED when the allowlist admitted it or a remembered grant covers its exact argv (ADR-0118 §1). Only `auto`
- * acts on that: `ask` and `accept-edits` keep asking for an allowlisted or remembered command (an allowlist removes the unknown,
- * not the person's per-call consent). An exact argv approved earlier in THIS session is honoured by {@link askAboutCommand} in every
- * mode, which is what removes the card there.
+ * A command runs unasked in `auto` only when the OPERATOR pre-approved it: a remembered grant covers its exact argv (and this
+ * session has not written a file since, see {@link ApprovalCache.noteWrite}). The repository's own `[chat]` allowlist is not that
+ * (security sitting, MVP-4 step 4 round 2, ruled by the maintainer): a cloned repository could write `allowed_command_globs =
+ * ["*"]`, and a prompt-injected default agent would then run anything unasked. A listed command shows its card, with the standing
+ * "on this project's allowlist". `ask` and `accept-edits` ask for every command either way. An exact argv approved earlier in THIS
+ * session is honoured by {@link askAboutCommand} in every mode, which is what removes the card there.
  */
-function isPreApproved(
-  request: ToolApprovalRequest,
-  argv: readonly string[],
-  deps: TurnPolicyDeps,
-): boolean {
-  return request.commandAdmitted === true || deps.commandGrants?.matches(argv) === true;
+function isPreApproved(argv: readonly string[], deps: TurnPolicyDeps): boolean {
+  return deps.commandGrants?.matches(argv) === true && !deps.cache.wrote;
 }
 
 /** What a person is told when a Remember could not be written; fixed text, never a command, a path or a keychain message. */
@@ -412,6 +429,7 @@ async function askAboutCommand(
   deps: TurnPolicyDeps,
   signal: AbortSignalLike | undefined,
   live: ToolApprovalLiveContext | undefined,
+  filesChanged = false,
 ): Promise<ToolApprovalDecision> {
   if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
   const grants = deps.commandGrants;
@@ -421,6 +439,7 @@ async function askAboutCommand(
     argv,
     commandAdmitted: request.commandAdmitted === true,
     remembered: grants?.matches(argv) === true,
+    filesChanged,
     cwd: deps.commandCwd ?? '',
     sessionOffered: deps.commandSessionGrants === true && shown,
     rememberAvailable:
@@ -488,8 +507,20 @@ function askForClass(
     : askAboutCommand(request, argv, deps, signal, live);
 }
 
-/** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
+/**
+ * The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. A file write the hook
+ * approves is noted in the session's cache (ADR-0118 §2): after one, a remembered command asks once in `auto`.
+ */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
+  const decide = modeDecision(mode, deps);
+  return async (request, signal, live): Promise<ToolApprovalDecision> => {
+    const decision = await decide(request, signal, live);
+    if (decision.outcome === 'approve' && request.action === 'fs_write') deps.cache.noteWrite();
+    return decision;
+  };
+}
+
+function modeDecision(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   return async (request, signal, live): Promise<ToolApprovalDecision> => {
     switch (mode) {
       case 'plan':
@@ -519,9 +550,9 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         if (request.action === 'process') {
           const argv = commandArgv(request);
           if (argv === undefined) return askPerson(request, deps, signal, live);
-          return isPreApproved(request, argv, deps)
+          return isPreApproved(argv, deps)
             ? { outcome: 'approve' }
-            : askAboutCommand(request, argv, deps, signal, live);
+            : askAboutCommand(request, argv, deps, signal, live, deps.cache.wrote);
         }
         return { outcome: 'approve' };
       }

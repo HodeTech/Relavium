@@ -141,6 +141,8 @@ export type RevokeResult =
   | {
       readonly ok: true;
       readonly id: string;
+      /** Every record the grant was written as (two processes remembering one argv at once leave twins): all are withdrawn. */
+      readonly ids: readonly string[];
       /** What was withdrawn, so the confirmation names it: a number taken from an older list can name a different grant. */
       readonly program: string;
       readonly args: number;
@@ -604,6 +606,7 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     return {
       ok: true,
       id: target.id,
+      ids,
       program: target.program ?? UNNAMED_PROGRAM,
       args: target.args,
     };

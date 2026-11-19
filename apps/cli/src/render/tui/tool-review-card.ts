@@ -166,9 +166,12 @@ function keepEnd(text: string, width: number): string {
 export function commandStandingRow(facts: CommandCardFacts): string {
   switch (facts.standing) {
     case 'allowlisted':
-      return 'Standing: on your allowlist';
+      // The allowlist is the project's file, not the person's: `auto` asks about such a command all the same.
+      return 'Standing: on this project’s allowlist';
     case 'remembered':
-      return 'Standing: remembered for this project';
+      return facts.filesChanged === true
+        ? 'Standing: remembered for this project; asks because files changed this session'
+        : 'Standing: remembered for this project';
     default:
       return 'Standing: not pre-approved';
   }

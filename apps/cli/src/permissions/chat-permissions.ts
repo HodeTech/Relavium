@@ -1,3 +1,4 @@
+import type { SessionCommandApproval } from '../chat/chat-mode.js';
 import type { PermissionsRequest } from '../commands/repl-commands.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { findOnPath } from '../engine/find-on-path.js';
@@ -13,8 +14,8 @@ import { UNNAMED_PROGRAM, namedProgram, type CommandGrantStore } from './command
 
 /** What `/permissions` needs of the session's approvals: list them and take one back. */
 export interface SessionCommandApprovals {
-  readonly commandApprovals: () => readonly (readonly string[])[];
-  readonly forgetCommandApproval: (index: number) => readonly string[] | undefined;
+  readonly commandApprovals: () => readonly SessionCommandApproval[];
+  readonly forgetCommandApproval: (index: number) => SessionCommandApproval | undefined;
   /** Take back the session approvals a Remember created for this remembered grant; how many were withdrawn. */
   readonly forgetCommandsByGrant?: (grantId: string) => number;
 }
@@ -88,8 +89,11 @@ export async function chatPermissionsNotice(
       ? 'Approved for this session: none.'
       : `Approved for this session (${String(session.length)}):`,
   );
-  for (const [offset, argv] of session.entries())
-    lines.push(`  ${String(offset + 1)}. ${await sessionLabel(argv, findProgram)}`);
+  // An entry a Remember made is also in the project's list above, which is why withdrawing it here can change less than it says.
+  for (const [offset, approval] of session.entries())
+    lines.push(
+      `  ${String(offset + 1)}. ${await sessionLabel(approval.argv, findProgram)}${approval.remembered ? '  (also remembered)' : ''}`,
+    );
   lines.push(
     'Withdraw one with /permissions --revoke <number>, or /permissions --revoke --session <number> for a session approval.',
   );
@@ -106,15 +110,20 @@ async function revoke(
   const number = Number(request.number);
   if (request.session) {
     const gone = deps.session.forgetCommandApproval(number);
-    return gone === undefined
-      ? 'There is no session approval with that number. /permissions lists them.'
-      : `Withdrew session approval ${String(number)}: ${await sessionLabel(gone, findProgram)}. It asks again. The numbers have changed: /permissions lists them.`;
+    if (gone === undefined)
+      return 'There is no session approval with that number. /permissions lists them.';
+    // A session approval a Remember made sits next to a project grant: `auto` still runs the command unasked on that grant.
+    const still = gone.remembered
+      ? ' It is also remembered for this project, so auto mode still runs it unasked: /permissions --revoke <number> withdraws that.'
+      : '';
+    return `Withdrew session approval ${String(number)}: ${await sessionLabel(gone.argv, findProgram)}. It asks again.${still} The numbers have changed: /permissions lists them.`;
   }
   if (deps.grants === undefined) return 'Remembered commands are not available in this chat.';
   const result = deps.grants.revoke(number);
   if (result.ok) {
     // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked.
-    const dropped = deps.session.forgetCommandsByGrant?.(result.id) ?? 0;
+    let dropped = 0;
+    for (const id of result.ids) dropped += deps.session.forgetCommandsByGrant?.(id) ?? 0;
     return `Revoked remembered command ${String(number)}: ${sanitizeInline(result.program)}, ${plural(result.args)}.${dropped > 0 ? ' This chat’s session approval of it went too.' : ''} It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.`;
   }
   if (result.reason === 'no-such-grant')

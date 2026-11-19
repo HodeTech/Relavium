@@ -111,6 +111,30 @@ describe('/permissions lists', () => {
   );
 });
 
+describe('/permissions marks the session approvals a Remember made', () => {
+  it('lists them as also remembered, and an ordinary one without the mark', async () => {
+    const d = deps({
+      session: [['git', 'status']],
+      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
+      list: {
+        ok: true,
+        grants: [
+          {
+            id: 'grant-7',
+            index: 1,
+            program: 'npm',
+            args: 1,
+            grantedAt: '2026-11-19T10:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const text = await chatPermissionsNotice(request(), d);
+    expect(text).toContain('  1. git, 1 argument\n');
+    expect(text).toContain('  2. npm, 1 argument  (also remembered)');
+  });
+});
+
 describe('/permissions says what it did not understand instead of doing something else', () => {
   it.each([
     ['an unknown flag', { unknown: ['--revokee'], number: '2' }],
@@ -122,7 +146,7 @@ describe('/permissions says what it did not understand instead of doing somethin
   ])('%s gets the usage line and touches nothing', async (_what, change) => {
     const d = deps({
       session: [['npm', 'test']],
-      revoke: { ok: true, id: 'a', program: 'npm', args: 1 },
+      revoke: { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 },
     });
     const text = await chatPermissionsNotice(request(change), d);
     expect(text).toMatch(/^Usage: \/permissions lists/u);
@@ -133,7 +157,7 @@ describe('/permissions says what it did not understand instead of doing somethin
 
 describe('/permissions --revoke', () => {
   it('withdraws a remembered command by its number and says which one', async () => {
-    const d = deps({ revoke: { ok: true, id: 'a', program: 'npm', args: 1 } });
+    const d = deps({ revoke: { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 } });
     const text = await chatPermissionsNotice(request({ revoke: true, number: '2' }), d);
     expect(d.revoke).toHaveBeenCalledExactlyOnceWith(2);
     expect(text).toBe(
@@ -143,7 +167,7 @@ describe('/permissions --revoke', () => {
 
   it('a project revoke also withdraws the session approval its Remember created, and says so', async () => {
     const d = deps({
-      revoke: { ok: true, id: 'grant-7', program: 'npm', args: 1 },
+      revoke: { ok: true, id: 'grant-7', ids: ['grant-7'], program: 'npm', args: 1 },
       session: [['git', 'status']],
       linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
     });
@@ -160,12 +184,39 @@ describe('/permissions --revoke', () => {
 
   it('a project revoke of a grant no session approval came from says nothing about the session', async () => {
     const d = deps({
-      revoke: { ok: true, id: 'grant-8', program: 'npm', args: 1 },
+      revoke: { ok: true, id: 'grant-8', ids: ['grant-8'], program: 'npm', args: 1 },
       linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
     });
     const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
     expect(text).not.toContain('This chat’s session approval');
     expect(d.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
+  });
+
+  it('a project revoke withdraws the session approvals of every twin record of the grant', async () => {
+    const d = deps({
+      revoke: {
+        ok: true,
+        id: 'grant-7',
+        ids: ['grant-7', 'grant-7-twin'],
+        program: 'npm',
+        args: 1,
+      },
+      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7-twin' }],
+    });
+    const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
+    expect(text).toContain('This chat’s session approval of it went too.');
+    expect(d.cache.isAlwaysCommand(['npm', 'test'])).toBe(false);
+  });
+
+  it('withdrawing a session approval a Remember made says the project grant still covers it', async () => {
+    const d = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }] });
+    const text = await chatPermissionsNotice(
+      request({ revoke: true, session: true, number: '1' }),
+      d,
+    );
+    expect(text).toBe(
+      'Withdrew session approval 1: npm, 1 argument. It asks again. It is also remembered for this project, so auto mode still runs it unasked: /permissions --revoke <number> withdraws that. The numbers have changed: /permissions lists them.',
+    );
   });
 
   it('withdraws a session approval with --session, so the same command asks again', async () => {
@@ -240,10 +291,10 @@ describe('the session approvals of the approval cache', () => {
     cache.rememberAlwaysCommand(['cat', 'a b']);
     cache.rememberAlwaysCommand(['cat', 'a', 'b']);
     expect(cache.commandApprovals()).toEqual([
-      ['cat', 'a b'],
-      ['cat', 'a', 'b'],
+      { argv: ['cat', 'a b'], remembered: false },
+      { argv: ['cat', 'a', 'b'], remembered: false },
     ]);
-    expect(cache.forgetCommandApproval(1)).toEqual(['cat', 'a b']);
+    expect(cache.forgetCommandApproval(1)).toEqual({ argv: ['cat', 'a b'], remembered: false });
     expect(cache.isAlwaysCommand(['cat', 'a b'])).toBe(false);
     expect(cache.isAlwaysCommand(['cat', 'a', 'b'])).toBe(true);
     expect(cache.forgetCommandApproval(5)).toBeUndefined();
