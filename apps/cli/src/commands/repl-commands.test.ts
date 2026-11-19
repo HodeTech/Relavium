@@ -102,6 +102,19 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     });
     // A typo is carried to the handler so it can be reported, not dropped.
     expect((await run(['--revokee', '2']))?.unknown).toEqual(['--revokee']);
+    // The order does not matter, and a second number is carried as unknown rather than ignored.
+    expect(await run(['1', '--session', '--revoke'])).toEqual({
+      revoke: true,
+      session: true,
+      number: '1',
+      unknown: [],
+    });
+    expect(await run(['--revoke', '1', '2'])).toEqual({
+      revoke: true,
+      session: false,
+      number: '1',
+      unknown: ['2'],
+    });
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {

@@ -79,13 +79,14 @@ export const APPROVAL_TYPEAHEAD_MS = 1500;
  */
 export const APPROVAL_LOCKOUT_MS = 2000;
 /**
- * The session-wide grant (`Ctrl+G`) is a TWO-step answer, and the second step is a DIFFERENT key: the first `Ctrl+G` asks, and only
- * ENTER — no other key between, and pressed at least {@link APPROVAL_CONFIRM_MIN_MS} and at most
- * {@link APPROVAL_CONFIRM_MAX_MS} after the `Ctrl+G` — grants. A second `Ctrl+G` can never be the confirmation: the same key twice
- * is what a held key and its auto-repeat produce, whatever the gap between them (PR #99 security sitting H1, when the grant was
- * still a bare `a`, measured a gap-based second `a` granting at 350 ms per key, and a held `a` granting at its first
- * auto-repeat for initial delays of 375 ms to 1 s; the chord keeps that rule, and typing can no longer produce the first press). Any key between — including another `Ctrl+G` — cancels the question, and so does
- * an Enter that comes sooner than the minimum: an Enter that quick follows the letter as typing does, not as the reading of a
+ * The two wider grants are TWO-step answers, and the second step is a DIFFERENT key: the first `Ctrl+G` (this tool or command for the
+ * session) or `Ctrl+O` (this exact command for the project, ADR-0118 §1) asks, and only ENTER — no other key between, and pressed
+ * at least {@link APPROVAL_CONFIRM_MIN_MS} and at most {@link APPROVAL_CONFIRM_MAX_MS} after the chord — grants. A second press of
+ * the same chord can never be the confirmation: the same key twice is what a held key and its auto-repeat produce, whatever the
+ * gap between them (PR #99 security sitting H1, when the grant was still a bare `a`, measured a gap-based second `a` granting at
+ * 350 ms per key, and a held `a` granting at its first auto-repeat for initial delays of 375 ms to 1 s; the chord keeps that rule,
+ * and typing can no longer produce the first press). Any key between — including the other chord — cancels the question, and so
+ * does an Enter that comes sooner than the minimum: an Enter that quick follows the letter as typing does, not as the reading of a
  * prompt that has just changed.
  */
 export const APPROVAL_CONFIRM_MIN_MS = 800;
@@ -103,7 +104,7 @@ export interface ApprovalGuard {
   readonly typeaheadMs?: number;
   /** {@link APPROVAL_LOCKOUT_MS}. */
   readonly lockoutMs?: number;
-  /** Whether `Ctrl+G` needs the Enter confirmation (default true). `false` makes the first press grant, as before. */
+  /** Whether `Ctrl+G` and `Ctrl+O` need the Enter confirmation (default true). `false` makes the first press grant, as before. */
   readonly confirmAlways?: boolean;
 }
 export const DEFAULT_APPROVAL_GUARD: Required<ApprovalGuard> = Object.freeze({
@@ -129,7 +130,7 @@ export function resolveApprovalGuard(guard: ApprovalGuard | undefined): Required
 export type ApprovalRefusal = 'lockout' | 'typeahead' | 'quiet' | 'dwell';
 
 /**
- * Why an affirmative key (`Ctrl+Y`, `Ctrl+G`) does NOT count as the person's DELIBERATE answer, or `undefined` when it does. Every layer
+ * Why an affirmative key (`Ctrl+Y`, `Ctrl+G`, `Ctrl+O`) does NOT count as the person's DELIBERATE answer, or `undefined` when it does. Every layer
  * must pass (`0` switches one off):
  *  - dwell: the review's frame has been on screen for `settleMs` (a review whose frame was never acknowledged has not been
  *    on screen at all);

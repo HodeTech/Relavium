@@ -512,6 +512,15 @@ describe('the command card chrome (ADR-0118 §1)', () => {
     expect(commandFactRows(facts({ cwd: '' }))[1]).toBe('Runs in: (the workspace)');
   });
 
+  it('keeps the END of a long directory (the part that says where it is) and fits the row to the columns', () => {
+    const cwd = '/Users/someone/Documents/Projects/organisation/product/packages/service/src';
+    const row = commandFactRows(facts({ cwd }), 40)[1] ?? '';
+    expect(row.startsWith('Runs in: \u2026')).toBe(true);
+    expect(row.endsWith('service/src')).toBe(true);
+    expect([...row].length).toBeLessThanOrEqual(40);
+    expect(commandFactRows(facts({ cwd: '/work/project' }), 40)[1]).toBe('Runs in: /work/project');
+  });
+
   it('puts the fact rows first in the warnings, wrapped, and adds the generic lock sentence only when nothing else explains it', () => {
     const rows = cardWarnings({ ...warningInput, commandFacts: facts() });
     expect(rows).toEqual(['Standing: not pre-approved', 'Runs in: /work/project']);

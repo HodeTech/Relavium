@@ -86,8 +86,9 @@ function isChatMode(value: string): value is ChatMode {
 
 /**
  * The REPL's interactive answer to an approval prompt — RICHER than the engine's approve/reject because it
- * carries the once/always SCOPE (the engine only needs the final approve/reject). `always` is remembered for
- * the tool id for the rest of the session instance; `once` approves just this invocation.
+ * carries the SCOPE (the engine only needs the final approve/reject). `always` is remembered for the tool id for the rest of the
+ * session instance — for a command, for that exact argv; `once` approves just this invocation; `remember` (a command only, ADR-0118
+ * §1) writes the exact argv to the project's grants file and also acts as `always` for this session.
  */
 export type ApprovalAnswer =
   | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' | 'remember' }

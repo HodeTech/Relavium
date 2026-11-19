@@ -150,6 +150,9 @@ describe('an allowlist miss under an approval regime reaches the host (ADR-0118 
     );
     expect(seen[0]?.argv).toEqual(['ls']);
     expect(seen[0]?.commandAdmitted).toBe(false);
+    // The preview and its unscrubbed twin say the same one program, quoted as a command line is.
+    expect(seen[0]?.preview).toEqual({ command: 'ls' });
+    expect(seen[0]?.unredactedPreview).toEqual({ command: 'ls' });
   });
 
   it('says commandAdmitted true for a command the allowlist admits, and compares element by element', async () => {

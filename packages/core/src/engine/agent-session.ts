@@ -545,7 +545,7 @@ type PlanResult =
  *   type does NOT carry a `truncated` flag, which would describe a different, model-facing bounding pass over data
  *   the caller never receives). `exitCode` may be non-zero (a normal command failure, still `ran`).
  * - `denied` — refused BEFORE any side effect: `allowlist: true` ⇒ the command is not in `[chat].allowed_commands`
- *   (only a dispatch with no approval regime produces it; an interactive chat asks instead, ADR-0118 §1; the host shows the opt-in hint); `false` ⇒ an interactive approval reject / protected-path denial.
+ *   (only a dispatch with no approval regime produces it; an interactive chat asks instead, ADR-0118 §1); `false` ⇒ an interactive approval reject / protected-path denial.
  * - `failed` — a transient execution/wiring fault (a spawn error, a capability gap) — `message` is secret-free.
  * - `cancelled` — the session was cancelled/aborted mid-run.
  */

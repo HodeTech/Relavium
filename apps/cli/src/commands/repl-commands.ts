@@ -19,22 +19,22 @@ import { REASONING_EFFORTS } from '@relavium/shared';
 import { CHAT_MODES } from '../chat/chat-mode.js';
 import type { CommandEffect } from './manifest.js';
 
-/**
- * The lifecycle capabilities a {@link ReplCommand} can invoke — supplied by the surface (the chat REPL / the
- * Home). Each may be sync or async (`void | Promise<void>`): `help` opens the interactive `/` palette in 2.5.C
- * S3b, and later info commands (`/cost`, `/doctor`) read/probe asynchronously — so a capability's promise is
- * always awaited (see {@link ReplCommand.run}), never silently fire-and-forget.
- */
 /** What `/permissions` was asked: the list, or one numbered approval to withdraw (from the project's, or with `session` from this session's). */
 export interface PermissionsRequest {
   readonly revoke: boolean;
   readonly session: boolean;
   /** The raw number token, `undefined` when none was typed. */
   readonly number: string | undefined;
-  /** Any `--word` typed that this command does not know (a typo such as `--revokee`): reported, never ignored. */
+  /** Any other token typed (a typo such as `--revokee`, or a second number): reported, never ignored or guessed at. */
   readonly unknown: readonly string[];
 }
 
+/**
+ * The lifecycle capabilities a {@link ReplCommand} can invoke — supplied by the surface (the chat REPL / the
+ * Home). Each may be sync or async (`void | Promise<void>`): `help` opens the interactive `/` palette in 2.5.C
+ * S3b, and later info commands (`/cost`, `/doctor`) read/probe asynchronously — so a capability's promise is
+ * always awaited (see {@link ReplCommand.run}), never silently fire-and-forget.
+ */
 export interface ReplCommandContext {
   /** End the chat session cleanly (the REPL stops; exit code 4 in a standalone chat). */
   readonly exit: () => void | Promise<void>;
@@ -295,15 +295,21 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     ],
     // The number of the approval to withdraw: a FREE positional, validated by the handler.
     positional: { name: 'n', values: [] },
-    run: (ctx, args) =>
-      ctx.managePermissions({
+    run: (ctx, args) => {
+      const words = args.filter((token) => !token.startsWith('--'));
+      return ctx.managePermissions({
         revoke: args.includes('--revoke'),
         session: args.includes('--session'),
-        number: args.find((token) => !token.startsWith('--')),
-        unknown: args.filter(
-          (token) => token.startsWith('--') && token !== '--revoke' && token !== '--session',
-        ),
-      }),
+        number: words[0],
+        // A second number is not guessed at: `/permissions --revoke 1 2` would otherwise withdraw one and look as if it did both.
+        unknown: [
+          ...args.filter(
+            (token) => token.startsWith('--') && token !== '--revoke' && token !== '--session',
+          ),
+          ...words.slice(1),
+        ],
+      });
+    },
     availableIn: ['chat'],
   },
   {

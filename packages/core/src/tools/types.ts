@@ -515,7 +515,7 @@ export interface ToolApprovalRequest {
    * The command as an argv — the program and its literal arguments, spawned without a shell — for a request whose action is
    * `process`, else absent ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1).
    * The host's session cache and its remembered grants are keyed by this, element by element: `["cat","a b"]` and
-   * `["cat","a","b"]` are different commands although their display lines are alike.
+   * `["cat","a","b"]` are different commands, which is why the preview quotes the line and the card shows one row per element.
    *
    * **In-process only, and UNSCRUBBED** (it is the raw call, not a display projection): like {@link unredactedPreview} it is
    * absent from `agent:approval_requested`, whose body is built from the preview alone, and a host must not log, persist or
