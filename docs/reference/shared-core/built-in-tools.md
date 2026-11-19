@@ -292,17 +292,17 @@ satisfies this by requiring an answer on every question's own acknowledged frame
 | Answered | `{ "status": "answered", "answers": [{ "header", "selected": [<labels>], "other"? }] }` — one entry per question in order; `selected` is empty when only text of the person's own was given; `other` is present only when given, one line, secret-shaped runs masked |
 | Skipped (`Ctrl+S`) | `{ "status": "skipped", "message": "The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn." }` |
 | After a skip, same turn | `{ "status": "not_asked", "reason": "skipped_earlier", "message": "The user already skipped a question in this turn, so no question was shown. Continue with your best judgment, or ask in your reply." }` |
-| Stopped (`Esc`, `Ctrl-C`) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
+| Stopped (`Esc`, `Ctrl+C`; `Esc` first closes an open own-answer field) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
 | No delegate | the typed `tool_unavailable` (a throw, not a result; the tool is not offered in that case) |
 
 A skip closes questions for the rest of the turn. That is enforced inside the tool from per-turn state (`skipped`) on the dispatch
 context the session builds once per turn, so every surface behaves alike. There is **no count of cards per turn**: a turn is already
-bounded by the engine (a limit on tool rounds that becomes a checkpoint a person can continue past once the card is wired, [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md), under an absolute backstop of 256 rounds; 16 calls per response), a call carries up to four questions, and the person holds an instant,
+bounded by the engine (a limit on tool rounds that becomes a checkpoint a person can continue past, [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md), under an absolute backstop of 256 rounds; 16 calls per response), a call carries up to four questions, and the person holds an instant,
 turn-wide circuit breaker — `Ctrl+S` ends every further question this turn. A fixed ceiling would only stop a task that genuinely needs more
 answers. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
 §1 each one **resets** the correction budget.
-A session-ending cancel (`/cancel`, `Ctrl-C` outside a card, the process signals) and a crash roll the turn back
-(ADR-0119); only `Esc`/`Ctrl-C` **at the card** abort the turn and retain it.
+A session-ending cancel (`/cancel`, a second `Ctrl+C` inside the arming window, the process signals) and a crash roll the turn back
+(ADR-0119); only `Esc`/`Ctrl+C` **at the card** abort the turn and retain it.
 
 **Keys** (the card is routed before the composer and before `Shift+Tab`, and ignores choosing keys until its exact frame
 has been acknowledged visible — the approval card's measured-frame acknowledgement, keyed on a **frame the store mints** when the card
@@ -319,7 +319,8 @@ auto-repeating key cannot answer a question the person has not had time to read;
 | `Enter` | single-select: choose the highlighted option and move on; multi-select: **confirm** the question (needs a tick or text; otherwise a hint) and move on; on the `✎` row: open the field — except in a multi-select question whose text is already saved, where it confirms | non-empty: **save** the text. Single-select: it is the answer, move on. Multi-select: it is **saved and counts, but the question stays open** (a note says so) — the person may keep picking, and the next `Enter` confirms. Empty: back to the list and **clear** any saved text and draft | all answered: **send**. Otherwise: go to the first unanswered question with a note — a hole is never sent |
 | `Backspace` | on the `✎` row with saved text: reopen the field to edit it | deletes | — |
 | `Ctrl+S` | **skip the whole call**; answers given so far are discarded | skip | skip |
-| `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** | **stop the turn** |
+| `Esc` | **stop the turn** | **close the field** (the typed text discarded, the call still pending); a second `Esc` stops the turn | **stop the turn** |
+| `Ctrl+C` | **stop the turn** (and arm the interrupt keymap) | **stop the turn** | **stop the turn** |
 
 No bare letter is a command, so typing — including an `s` — never skips. A one-question call sends from the question itself (there is no
 Review tab); a call with several questions sends only from Review, so every answer can be seen and changed first.

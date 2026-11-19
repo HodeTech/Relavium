@@ -1,6 +1,6 @@
 # ADR-0115: One interrupt keymap for the interactive CLI
 
-- **Status**: Accepted — 2026-11-19, by the maintainer, after the revision recorded at the end and two independent document reviews. Implementation owed (MVP-4 step 2); the D64 rigor tier and a separate security sitting apply.
+- **Status**: Accepted — 2026-11-19, by the maintainer, after the revision recorded at the end and two independent document reviews. Implemented in MVP-4 step 2 (see the implementation note at the end); the D64 rigor tier and a separate security sitting apply, and the Windows evidence of §5 is collected by hand ([runbook](../runbooks/windows-interrupt-evidence.md)).
 - **Date**: 2026-11-05 (revised 2026-11-19)
 - **Supersedes, in part**: [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md) §3 — one sentence only: "`Esc` and `Ctrl-C` stop the turn", which the maintainer ruled on 2026-11-16 as "`Esc` stops the turn everywhere". Inside the question card's own-answer field `Esc` now closes the field first (§3 below). Every other state keeps the ruling.
 - **Amends**: [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) note 8 (the hint in a reason box) and the approval reject path (§2), and [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md) (the parenthetical about `Ctrl-C` during a `!` command). The search box's `Esc` is specified in [chat-session.md](../reference/cli/chat-session.md), not in an ADR.
@@ -264,3 +264,16 @@ criterion was added; the per-screen behaviour of an approval review is stated on
 unmodified-keys paragraph was removed because it described the retired prompt. A review on
 the same day corrected three attributions (the search box's `Esc` belongs to the chat
 reference, not to ADR-0134) and the claim that this ADR restates no behaviour.
+
+### Implementation note — 2026-11-19 (MVP-4 step 2)
+
+The keymap is `apps/cli/src/render/tui/interrupt-keymap.ts`, a pure reducer over an injected monotonic clock, with one named window constant. The standalone chat (`chat-ink.tsx`) and the Home controller (`home-controller.ts`) ask it for every `Ctrl+C`; neither keeps its own table. Details the decision leaves open:
+
+- **A card is not a context of its own in the Home.** An open approval or question implies a running turn, and the chat store settles it before the key reaches the controller (an approval as a *rejection*, §2), so the controller sees a running turn and the keymap's "work" row applies. The standalone chat passes the card result to the keymap explicitly. Both reach the same action.
+- **The store returns three results**, not two: `abort` (a card was settled as a stop and the surface aborts the turn), `stop-answered` (a `Ctrl+C` that answered a checkpoint "stop", which the engine ends itself, so the surface starts the interrupt window and aborts nothing) and `handled`. Reject-first is structural: the approval is settled inside the store before it returns `abort`, and a test reads the store at the moment the surface's abort runs.
+- **The Home with a draft arms and keeps the draft.** The table's "Home, loaded" row is taken literally; clearing a draft is the chat prompt's row.
+- **Before a chat has activated, `Ctrl+C` ends the session at once**: nothing is on screen yet that could be lost, and it preserves what the key did before.
+- **A key a card swallows still disarms.** The standalone chat disarms before routing; the Home host calls `disarmInterrupt()` when the store consumed a non-interrupt key.
+- **The legacy approval-prompt reducer and the older reason-draft path are deleted**: `reduceApprovalKey`, the `approve`, `reject` and `reject-with-reason` key actions, the `cancel` action (the keymap's now), the `approvalPending` parameter of `reduceChatKey`, the reason-draft state in both surfaces and the dead approval block in `ChatView`. A characterization test written before the deletion pins that no key a card leaves reaches a decision.
+- **The question card's stop row** reads `Esc closes · Ctrl+C stops the turn` while its own-answer field is open, so the legend does not promise what `Esc` no longer does there. `ask_user` now refuses any `[Ctrl+<letter>]` token and `[Esc]` in model text, so a chord a later card adds needs no list change.
+- **Signals.** The plain and `--json` drivers' first SIGINT reaching the in-flight turn is pinned by a test in each driver; it already held. The Windows evidence recipe is [windows-interrupt-evidence.md](../runbooks/windows-interrupt-evidence.md); the evidence itself is collected by hand and recorded in the phase register.

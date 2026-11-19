@@ -159,7 +159,7 @@ relavium                                          ← branded header (bold)
     coder · 3d ago
 
 > █                                                                 ← live prompt + cursor
-type a message to start a new chat · Ctrl-C to exit                 ← footer hint
+type a message to start a new chat · Ctrl+C twice to exit           ← footer hint (reads `Press Ctrl+C again to exit` once armed)
 ```
 
 - **Attention required** — pending **human gates first** (ordered by their paused run's `created_at DESC`, a glanceable proxy for start time), then **failed runs** (most-recent first). An **overdue** (expired) gate is escalated yellow → red. A run that is failed or human-gated is **lifted** into this section and **never repeated** in *Continue*.
@@ -176,9 +176,9 @@ The Home and the chat render as **one ink tree with conditional rendering** — 
 
 | Mode | What renders | Transition |
 | --- | --- | --- |
-| `home` | the management strip + the live prompt | a non-empty submit → `loading`; Ctrl-C → clean exit (`0`) |
+| `home` | the management strip + the live prompt | a non-empty submit → `loading`; `Ctrl+C` twice → clean exit (`0`) |
 | `loading` | the pending message echoed under `Starting chat…` | the deferred `buildChatSession` resolves → `chat`; it rejects → back to `home` with a banner |
-| `chat` | the live chat region ([chat-session.md](chat-session.md)) | the chat ends (`/exit` / `/cancel` / Ctrl-C) → back to a freshly-read `home` |
+| `chat` | the live chat region ([chat-session.md](chat-session.md)) | the chat ends (`/exit`, `/cancel`, or a second `Ctrl+C` inside the arming window) → back to a freshly-read `home` |
 
 The chat session is built **after** the ink mount (an explicit loading state), so the strip shows instantly and a slow or failed build degrades to the loading state / a Home banner rather than blocking the entry. A built chat reuses the **built-in default chat agent** over `[chat].default_model` (the mode-gated editing/search grant — see [chat-session.md](chat-session.md)); the Home does not bind a custom agent (`relavium chat --agent <ref>` is the path for that).
 
@@ -199,17 +199,17 @@ at its bound workspace and owns fresh approvals, read evidence and previews.
 | **`/mode`** (MVP-3) | configure the startup default | choose current mode or separately save a startup default | — |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
-| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`[esc]`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `[esc]` abort (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
+| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`[esc]`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `Esc`/`Ctrl+C` reject and stop the turn (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
 | **Ctrl+J** (2.5.D) | insert a newline (multi-line prompt) | insert a newline (idle) | ignored |
 | **↑ / ↓** (2.5.D) | — | recall prev/next submitted line (buffer edge) / move by line (mid-buffer) | — |
 | **Ctrl+R** (2.5.D) | — | reverse-incremental history search (chat only) | — |
 | **`@`** (2.5.D) | append (no completion in the bare Home) | at a word boundary, open dir-navigable **file completion** → insert a `@path` marker + queue a **chip** that expands to UNTRUSTED context at submit ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
 | **`!`** (2.5.D) | append | a leading `!` runs a **shell command** via the `[chat].allowed_commands` allowlist → mode-aware `confirmAction` → `spawn` (`shell:false`); output shown read-only + queued as a **chip** carrying UNTRUSTED context to the next message ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
 | **`Esc`** (2.5.D) | — | at an **idle** prompt with pending `@`/`!` chips, **discard them** (else mid-turn abort) | — |
-| **Ctrl-C** | **clean exit (`0`)** | **`/cancel`** → end the chat, return to Home | **bail out** (exit) |
+| **Ctrl+C** ([interrupt keymap](chat-session.md#the-interrupt-keymap--mvp-4-adr-0115)) | **arms** (the hint reads `Press Ctrl+C again to exit`, any draft stays); a **second** press inside 2 s → **clean exit (`0`)** | **interrupts** the running turn (the abort `Esc` performs) and arms; at an idle empty prompt it arms; with a draft it **clears the draft** and arms nothing; a **second** press inside 2 s → **`/cancel`**, end the chat, return to Home | **bail out** (exit at once: nothing is loaded and nothing can be lost) |
 | **Ctrl-D** (EOF) | **clean exit (`0`)** on an **empty** prompt (a non-empty buffer keeps it — no data loss) | — | **clean exit (`0`)** (the prompt is empty while building, so EOF bails the build like Ctrl-C) |
 
-Ctrl-C is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge). The reseat-less **mode keymap** (`Shift+Tab` + `/mode`) and the fail-closed **per-tool approval** landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); wired into the Home via the same `home-controller.ts` key routing — see [chat-session.md](chat-session.md)); the interactive `/` command palette landed in **2.5.C**. The **input ergonomics** (`Ctrl+J` multiline, `↑/↓` history + `Ctrl+R` search, readline motions) and the two data-moving affordances (`@`-mention file injection, `!`-shell command escape) landed in **2.5.D** ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the `@`/`!` semantics are the SAME as the standalone chat (see [chat-session.md](chat-session.md#input-ergonomics-25d-adr-0061)).
+`Ctrl+C` is **always** an escape — it is honored even in the `loading` state (so a hung build is never an unkillable wedge), and leaving the loaded Home or a chat takes two presses so one stray key cannot do it (`Ctrl+D` on an empty prompt still exits the Home at once). The reseat-less **mode keymap** (`Shift+Tab` + `/mode`) and the fail-closed **per-tool approval** landed in **2.5.E** ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md); wired into the Home via the same `home-controller.ts` key routing — see [chat-session.md](chat-session.md)); the interactive `/` command palette landed in **2.5.C**. The **input ergonomics** (`Ctrl+J` multiline, `↑/↓` history + `Ctrl+R` search, readline motions) and the two data-moving affordances (`@`-mention file injection, `!`-shell command escape) landed in **2.5.D** ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the `@`/`!` semantics are the SAME as the standalone chat (see [chat-session.md](chat-session.md#input-ergonomics-25d-adr-0061)).
 
 The **footer hint-bar** in 2.5.B was the single fixed line; the context-aware hint-bar (the two or three most-relevant keys per context) landed in **2.5.C**, and the always-visible **active-mode footer indicator** (`formatSessionFooterWithMode`) arrived with **2.5.E** (ADR-0057) — together they extend that fixed footer.
 
@@ -238,9 +238,9 @@ the root input owner stays mounted. The resume/reseat notice and retention order
 ## Minimum terminal size
 
 Below **80×24** the landing shows `Terminal too small (WxH) — resize to at least 80×24.`
-and a `Ctrl-C to exit` affordance. It suspends the management strip, prompt and overlays,
+and a `Ctrl+C twice to exit` affordance. It suspends the management strip, prompt and overlays,
 and refuses hidden typing, paste, Continue and palette activation using the live terminal
-geometry. Esc and Ctrl-C/Ctrl-D cancellation remain available. A resize restores the
+geometry. Esc and Ctrl+C/Ctrl-D cancellation remain available (`Ctrl+C` arms, then exits, as on the loaded Home). A resize restores the
 existing input and selection. The resize is observed on stdout's cross-platform `resize`
 event (backed by SIGWINCH on POSIX).
 
@@ -267,12 +267,12 @@ The invocation-backed Home shares **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
-| **Clean Home exit** | Ctrl-C / EOF in `home` mode | `0` |
+| **Clean Home exit** | a second `Ctrl+C` inside the arming window / `Ctrl+D` or EOF on an empty prompt in `home` mode | `0` |
 | **Signal-driven, without a stronger infrastructure fault** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT); infrastructure faults follow the [canonical precedence](commands.md#failure-classification-and-remedies) |
 
 An external signal stops admission and requests terminal restoration and cleanup of every actual host, including an in-flight build. Repeated signals share the original finite deadline and cannot restart cleanup or force an immediate second-signal exit. The physical exit backstop bounds the invocation; it does not certify terminal, MCP or database release. The shared database closes only after actual host/work settlement, and failed or held cleanup retains its owners and signal custody. Infrastructure faults may strengthen the final disposition; read the [canonical remedies](commands.md#failure-classification-and-remedies) before repeating uncertain work. The ownerless library compatibility path is not this product invocation lifecycle.
 
-A keyboard Ctrl-C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
+A keyboard Ctrl+C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it through the one interrupt keymap (Home: arm, then `0`; chat: interrupt and arm, then `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
 
 A chat launched from the Home has its **own** exit code `4` ([chat-session.md](chat-session.md)) — but inside the Home that `4` is **consumed by the mode loop** (a chat ending returns to Home), **never leaked**. The Home's own exit code is `0` on a clean exit. See the canonical [Exit codes](commands.md#exit-codes) table.
 
