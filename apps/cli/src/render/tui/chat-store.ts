@@ -666,6 +666,15 @@ export function createChatStore(
           break;
         }
         case 'abort':
+          // Reject FIRST (ADR-0115 §2): the pending call is settled as a rejection by the person — recorded as rejected, which is
+          // true, and never as "cancelled, state unknown" — BEFORE the surface signals the abort. The settle resolves the hook's
+          // promise and drops the store's own abort listener, so the abort that follows cannot turn it into a cancellation; the
+          // turn then stops at its next boundary without another model call. A bare `Esc` and a `Ctrl+C` take the same path.
+          if (settleApproval !== undefined) {
+            lastResolvedAt = now;
+            settleApproval({ outcome: 'reject' });
+            flush();
+          }
           return 'abort';
         case 'deny':
           lastResolvedAt = now;

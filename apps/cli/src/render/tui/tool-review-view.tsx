@@ -312,12 +312,15 @@ function buildFullChrome(
 /**
  * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn, Esc stops it. Inside a
  * modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model
- * only lets those states act on a frame the person can read — so only Esc is true there.
+ * only lets those states act on a frame the person can read — so only the two exits are true there: Esc closes the box and
+ * `Ctrl+C` stops the turn.
  */
 function reviewExitHint(review: ToolReviewState): string {
   if (review.kind !== 'approval') return 'Esc closes.';
   const modal = review.denial !== undefined || review.searching;
-  return modal ? 'Esc stops the turn.' : '[Ctrl+N] denies · Esc stops the turn.';
+  return modal
+    ? 'Esc closes the box · Ctrl+C stops the turn.'
+    : '[Ctrl+N] denies · Esc stops the turn.';
 }
 
 const RULE_LABEL = ' Approval needed ';
@@ -485,7 +488,9 @@ function ReviewCard({
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
           <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
-          <Text wrap="truncate-end">{'Enter denies and continues \u00b7 Esc stops the turn'}</Text>
+          <Text wrap="truncate-end">
+            {'Enter denies and continues \u00b7 Esc closes this box \u00b7 Ctrl+C stops the turn'}
+          </Text>
         </Box>
       ) : (
         keys.map((row, index) => <KeyRow key={`keys-${index}`} row={row} color={color} />)

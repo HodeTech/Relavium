@@ -171,7 +171,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(frame).toContain('2 ( ) beta.ts');
     expect(frame).toContain('\u270e Type your own answer');
     expect(frame).toContain('The first file'); // the highlighted option's description
-    expect(frame).toContain('Esc or Ctrl-C stops the turn');
+    expect(frame).toContain('Esc or Ctrl+C stops the turn');
     expect(frame).not.toMatch(/Approval needed|\[y\]|\[a\]|\[n\]/u);
     f.input.push('2');
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['beta.ts'] }] });
@@ -240,13 +240,39 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(f.errors).toEqual([]);
   });
 
+  it('Esc in the own-answer field closes the field and leaves the question open; the typed text is not kept (ADR-0115 §3)', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    const answer = f.store.requestQuestion(QUESTION);
+    await vi.waitFor(() => expect(f.text()).toContain('Question from the agent'));
+    await settle();
+    f.input.push('\u001b[B'); // down
+    f.input.push('\u001b[B'); // down: the own-answer row
+    await settle();
+    f.input.push('\r'); // open the field
+    await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeDefined());
+    f.input.push('half a thought');
+    await vi.waitFor(() =>
+      expect(f.store.getSnapshot().question?.field?.text).toBe('half a thought'),
+    );
+    await vi.waitFor(() => expect(f.text()).toContain('Esc closes · Ctrl+C stops the turn'));
+    f.input.push('\u001b'); // Esc: one level back, not out
+    await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
+    expect(f.store.getSnapshot().question, 'the call is still pending').toBeDefined();
+    expect(f.store.getSnapshot().question?.entries[0]?.draft).toBeUndefined();
+    await vi.waitFor(() => expect(f.text()).toContain('Esc or Ctrl+C stops the turn'));
+    f.input.push('1'); // and the card still answers
+    expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['alpha.ts'] }] });
+    expect(f.errors).toEqual([]);
+  });
+
   it('draws the refusal on a terminal below 80×24, and no key chooses there', async () => {
     const f = fixture(host, true, false);
     f.resize(60, 20);
     await f.ready();
     const answer = f.store.requestQuestion(QUESTION);
     await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc or Ctrl-C/u);
+    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc or Ctrl\+C/u);
     f.input.push('1');
     f.input.push('s');
     await settle();

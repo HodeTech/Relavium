@@ -118,7 +118,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
           {tooSmallMessage(cols, rows)}
         </Text>
         <Text {...dimProps(color)} wrap="truncate-end">
-          Ctrl-C to exit
+          Ctrl+C to exit
         </Text>
       </Box>
     );
@@ -335,12 +335,12 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               (which surfaces Ctrl+J for a newline). */}
           <Text {...dimProps(color)} wrap="truncate-end">
             {props.continueSessionId !== undefined
-              ? '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl-C exit'
+              ? '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit'
               : editor.text.length === 0
                 ? snapshot.recentSessions.length > 0
-                  ? '/ commands · ↓ Continue · type a message to chat · Ctrl-C exit'
-                  : '/ for commands · type a message to start a chat · Ctrl-C to exit'
-                : 'Enter to start the chat · Ctrl+J newline · Ctrl-C to exit'}
+                  ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
+                  : '/ for commands · type a message to start a chat · Ctrl+C twice to exit'
+                : 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit'}
           </Text>
         </Box>
       )}

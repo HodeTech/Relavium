@@ -331,12 +331,16 @@ describe('what the card says', () => {
       '↑↓ move · Enter choose · type your own · ←→ questions · Ctrl+S skip all',
     );
     expect(first[0]).not.toMatch(/\bs skip/); // no bare letter is a command
-    expect(first[1]).toBe('Esc or Ctrl-C stops the turn');
+    expect(first[1]).toBe('Esc or Ctrl+C stops the turn');
     const second = projectQuestionCard({ ...state, index: 1 }, COLUMNS).keys[0];
     expect(second).toBe('↑↓ move · Space tick · Enter continue · ←→ questions · Ctrl+S skip all');
-    const inField = projectQuestionCard({ ...state, field: { text: '', cursor: 0 } }, COLUMNS)
-      .keys[0];
-    expect(inField).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    const fieldKeys = projectQuestionCard(
+      { ...state, field: { text: '', cursor: 0 } },
+      COLUMNS,
+    ).keys;
+    expect(fieldKeys[0]).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    // With the field open Esc closes it first (ADR-0115 §3), so the stop row stops promising that Esc stops the turn.
+    expect(fieldKeys[1]).toBe('Esc closes · Ctrl+C stops the turn');
     const review = projectQuestionCard({ ...state, index: 2 }, COLUMNS).keys[0];
     expect(review).toBe('Enter send answers · ←→ questions · Ctrl+S skip all');
     // A one-question call has no tabs, so its legend does not mention them.
@@ -418,9 +422,9 @@ describe('answers guide, they do not block (ADR-0132 §6, security sitting)', ()
 
   it('says so on the stop row only where a write needs no card (accept-edits, auto)', () => {
     const state = initialQuestionCard(request);
-    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl-C stops the turn');
+    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl+C stops the turn');
     const guided = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
-    expect(guided).toBe('Esc or Ctrl-C stops the turn · an answer is guidance, not a veto');
+    expect(guided).toBe('Esc or Ctrl+C stops the turn · an answer is guidance, not a veto');
     expect(displayWidth(guided)).toBeLessThanOrEqual(COLUMNS - 2);
   });
 });

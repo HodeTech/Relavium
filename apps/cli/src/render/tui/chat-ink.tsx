@@ -572,7 +572,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
           flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
-          the honest Esc-to-cancel affordance (Esc aborts the command, keeping the session; Ctrl-C would end it). */}
+          the honest Esc-to-cancel affordance (Esc or the first Ctrl+C aborts the command, keeping the session; a second Ctrl+C
+          within two seconds ends it). */}
       {running && (
         <Box flexDirection="column">
           {state.liveToolCalls
@@ -615,8 +616,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
           {editor.text.length === 0
-            ? '/ for commands · /exit or Ctrl-C to end'
-            : 'Enter to send · Ctrl+J newline · Ctrl-C to end'}
+            ? '/ for commands · /exit or Ctrl+C twice to end'
+            : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft'}
         </Text>
       )}
 

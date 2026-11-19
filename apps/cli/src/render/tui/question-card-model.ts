@@ -7,7 +7,8 @@
  * The card is a small wizard. A call with several questions shows them as TABS the person can move between freely with
  * `←`/`→`, ending in a **Review** tab that lists every answer and sends them; a call with one question has no tabs and no
  * review. Typing anywhere on the list starts the own-answer field, so no bare letter is ever a command: the one command key is
- * `Ctrl+S` (skip). `Esc` and `Ctrl-C` ALWAYS stop the turn (as at an approval card, ADR-0115), and every other key is ignored
+ * `Ctrl+S` (skip). `Ctrl+C` ALWAYS stops the turn and `Esc` stops it unless an own-answer field is open, which it closes first (as at an approval
+ * card, ADR-0115), and every other key is ignored
  * until the card's exact frame has been acknowledged and has settled, so a key typed ahead of the card cannot choose. The person's
  * own text is one line, bounded, and a paste that would pass the bound is refused whole — never cut.
  */
@@ -391,8 +392,13 @@ export function reduceQuestionKey(
   key: ChatKey,
   visible: boolean,
 ): QuestionKeyAction {
-  if (key.escape === true || (key.ctrl === true && key.meta !== true && input === 'c'))
-    return { kind: 'stop' };
+  // `Ctrl+C` stops wherever the person is. `Esc` steps back one level (ADR-0115 §3): it closes an open own-answer field, the typed
+  // text discarded and the call still pending, and stops the turn only when there is nothing left to close.
+  if (key.ctrl === true && key.meta !== true && input === 'c') return { kind: 'stop' };
+  if (key.escape === true) {
+    if (state.field === undefined) return { kind: 'stop' };
+    return { kind: 'state', state: withEntry(state, { draft: undefined }, { field: undefined }) };
+  }
   if (!visible) return { kind: 'none' };
   // `Ctrl+S` skips the whole call. It is the ONLY command key: no bare letter is one, so typing never skips.
   if (key.ctrl === true && key.meta !== true && input === 's') return { kind: 'skip' };

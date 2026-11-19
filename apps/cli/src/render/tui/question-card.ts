@@ -54,7 +54,9 @@ export interface QuestionCardView {
 const RULE_LABEL = ' Question from the agent · not an approval ';
 const OWN_PLACEHOLDER = 'Type your own answer…';
 const OWN_DESCRIPTION = 'Just start typing — it is sent to the model.';
-const STOP_ROW = 'Esc or Ctrl-C stops the turn';
+const STOP_ROW = 'Esc or Ctrl+C stops the turn';
+/** With the own-answer field open `Esc` closes it first (ADR-0115 §3), so only `Ctrl+C` is the stop key there. */
+const FIELD_STOP_ROW = 'Esc closes · Ctrl+C stops the turn';
 /**
  * Said only where a write needs no card (`accept-edits`, `auto`): there an answer is the person's only lever and it is not a
  * veto — nothing in the card otherwise tells them the agent may still act (ADR-0132 §6).
@@ -232,7 +234,8 @@ function keyRows(
       width,
     );
   }
-  return [first, head(guideNote ? `${STOP_ROW}${GUIDE_NOTE}` : STOP_ROW, width)];
+  const stop = state.field !== undefined && !isReview(state) ? FIELD_STOP_ROW : STOP_ROW;
+  return [first, head(guideNote ? `${stop}${GUIDE_NOTE}` : stop, width)];
 }
 
 /** The Review tab: every answer on one row, the way it will be sent, and what to do next. */

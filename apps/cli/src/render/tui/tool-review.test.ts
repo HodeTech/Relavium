@@ -1925,13 +1925,58 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
       expect(press(card, input, CTRL), `ctrl+${input}`).toEqual({ kind: 'none' });
   });
 
-  it('Esc and Ctrl-C stop the turn — they are not answers, and they win over every other rule', () => {
+  it('Esc and Ctrl-C stop the turn at the card — they are not answers, and they win over every other rule (ADR-0115 §2)', () => {
     const card = answerable();
     expect(press(card, '', { escape: true })).toEqual({ kind: 'abort' });
     expect(press(card, 'c', CTRL)).toEqual({ kind: 'abort' });
-    expect(press(answerable(small(), { denial: 'x' }), '', { escape: true })).toEqual({
+    // The full view and the call list have their own way back (`[b]`); Esc there is still the stop key.
+    for (const screen of ['full', 'list'] as const)
+      expect(press(answerable(small(), { screen }), '', { escape: true }), screen).toEqual({
+        kind: 'abort',
+      });
+  });
+
+  it('Ctrl-C stops even inside a text box: it is the stop key everywhere, Esc is the one that steps back (ADR-0115 §3)', () => {
+    expect(press(answerable(small(), { denial: 'x' }), 'c', CTRL)).toEqual({ kind: 'abort' });
+    expect(press(answerable(small(), { searching: true, query: 'q' }), 'c', CTRL)).toEqual({
       kind: 'abort',
     });
+  });
+
+  it('Esc inside the reason box closes the box, discards what was typed and leaves the call pending', () => {
+    const boxed = answerable(small(), { denial: 'because', message: 'old note' });
+    const result = press(boxed, '', { escape: true });
+    expect(result.kind).toBe('state');
+    if (result.kind !== 'state') return;
+    expect(result.state.denial).toBeUndefined();
+    expect(result.state.message).toBe('');
+    expect(result.state.kind).toBe('approval'); // still an approval review: nothing was rejected, nothing aborted
+    // A second Esc, with no box open, now rejects and stops.
+    expect(press({ state: result.state, page: undefined }, '', { escape: true })).toEqual({
+      kind: 'abort',
+    });
+  });
+
+  it("Esc inside the full view's search box closes the box and keeps the full view", () => {
+    const searching = answerable(small(), { screen: 'full', searching: true, query: 'needle' });
+    const result = press(searching, '', { escape: true });
+    expect(result.kind).toBe('state');
+    if (result.kind !== 'state') return;
+    expect(result.state.searching).toBe(false);
+    expect(result.state.query).toBeUndefined();
+    expect(result.state.screen).toBe('full');
+    expect(press({ state: result.state, page: undefined }, '', { escape: true })).toEqual({
+      kind: 'abort',
+    });
+  });
+
+  it('Esc closes a details view as it always did, a search box included (a details view is not an approval)', () => {
+    const details = { state: initialToolReview('details', 'call'), page: undefined };
+    expect(press(details, '', { escape: true })).toEqual({ kind: 'close' });
+    expect(
+      press({ ...details, state: { ...details.state, searching: true } }, '', { escape: true }),
+    ).toEqual({ kind: 'close' });
+    expect(press(details, 'c', CTRL)).toEqual({ kind: 'close' });
   });
 });
 

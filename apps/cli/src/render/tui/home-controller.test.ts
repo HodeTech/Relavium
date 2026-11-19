@@ -571,10 +571,10 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     await expect(pending).resolves.toEqual({ outcome: 'approve', scope: 'once' });
   });
 
-  it('[Ctrl+R] then Esc stops the turn — the reason box has no way back; Esc is the abort path and never leaves a stuck prompt (Step 14)', async () => {
-    // The old reason capture could be cancelled with Esc back to the choices. The card's reason box has the card's own Esc: it
-    // STOPS THE TURN (`Enter denies and continues · Esc stops the turn`), which the Home hands to the controller as an Esc; with
-    // no `onAbort` wired, that Esc rejects the pending approval rather than leaving it hung.
+  it('[Ctrl+R] then Esc closes the reason box and leaves the call pending; a second Esc stops the turn (ADR-0115 §3)', async () => {
+    // The card's reason box has the card's own Esc: it closes the box and nothing is rejected. With no box open the next Esc is
+    // the stop key, which the Home hands to the controller as an abort; with no `onAbort` wired that rejects the pending
+    // approval rather than leaving it hung.
     const made = makeSession();
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -596,7 +596,10 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     hostKey(c, made.store, 'r', CHORD); // open the reason box
     expect(made.store.getSnapshot().review?.denial).toBe('');
-    hostKey(c, made.store, '', { escape: true }); // Esc: the card reports `abort`; no onAbort → the pending approval is rejected
+    hostKey(c, made.store, '', { escape: true }); // Esc closes the box
+    expect(made.store.getSnapshot().review?.denial).toBeUndefined();
+    expect(made.store.getSnapshot().approval, 'closing the box rejects nothing').toBeDefined();
+    hostKey(c, made.store, '', { escape: true }); // the card reports `abort`; no onAbort → the pending approval is rejected
     await expect(pending).resolves.toEqual({ outcome: 'reject' });
     expect(made.store.getSnapshot().approval).toBeUndefined();
   });

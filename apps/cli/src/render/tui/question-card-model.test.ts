@@ -85,24 +85,58 @@ const submitted = (result: { action: QuestionKeyAction }) => {
 /** Move the highlight to the own-answer row of a three-option question. */
 const toOwnRow = downs(OPTIONS.length);
 
-describe('the stop keys (ADR-0132 §3, ADR-0115)', () => {
-  it.each([
-    ['Esc', '', K.esc],
-    ['Ctrl-C', 'c', K.ctrl],
-  ])(
-    '%s stops the turn from the list, the field, the review tab and before the frame is acknowledged',
-    (_n, input, key) => {
-      const two = initialQuestionCard(requestOf(single, single));
-      const inField = run(two, ['x']).state;
-      expect(inField.field).toBeDefined();
-      const onReview = run(two, [K.right, K.right]).state;
-      expect(isReview(onReview)).toBe(true);
-      for (const state of [two, inField, onReview]) {
-        expect(reduceQuestionKey(state, input, key, true).kind).toBe('stop');
-        expect(reduceQuestionKey(state, input, key, false).kind).toBe('stop');
-      }
-    },
-  );
+describe('the stop keys (ADR-0132 §3, ADR-0115 §1 and §3)', () => {
+  it('Ctrl+C stops the turn from the list, the field, the review tab and before the frame is acknowledged', () => {
+    const two = initialQuestionCard(requestOf(single, single));
+    const inField = run(two, ['x']).state;
+    expect(inField.field).toBeDefined();
+    const onReview = run(two, [K.right, K.right]).state;
+    expect(isReview(onReview)).toBe(true);
+    for (const state of [two, inField, onReview]) {
+      expect(reduceQuestionKey(state, 'c', K.ctrl, true).kind).toBe('stop');
+      expect(reduceQuestionKey(state, 'c', K.ctrl, false).kind).toBe('stop');
+    }
+  });
+
+  it('Esc stops the turn from the list, the review tab and before the frame is acknowledged', () => {
+    const two = initialQuestionCard(requestOf(single, single));
+    const onReview = run(two, [K.right, K.right]).state;
+    for (const state of [two, onReview]) {
+      expect(reduceQuestionKey(state, '', K.esc, true).kind).toBe('stop');
+      expect(reduceQuestionKey(state, '', K.esc, false).kind).toBe('stop');
+    }
+  });
+
+  it('Esc in the own-answer field closes the field, discards what was typed and leaves the call pending (ADR-0115 §3)', () => {
+    const two = initialQuestionCard(requestOf(single, single));
+    const inField = run(two, ['x', 'y']).state;
+    expect(inField.field?.text).toBe('xy');
+    for (const visible of [true, false]) {
+      const result = reduceQuestionKey(inField, '', K.esc, visible);
+      if (result.kind !== 'state') throw new Error(`expected a state, got ${result.kind}`);
+      expect(result.state.field, 'the field is closed').toBeUndefined();
+      expect(
+        result.state.entries[0]?.draft,
+        'the typed text is discarded, not kept as a draft',
+      ).toBeUndefined();
+      expect(result.state.entries[0]?.own, 'nothing was accepted').toBeUndefined();
+      expect(result.state.index, 'the person is where they were').toBe(inField.index);
+      // A second Esc, with no field left to close, stops the turn.
+      expect(reduceQuestionKey(result.state, '', K.esc, true).kind).toBe('stop');
+    }
+  });
+
+  it('Esc keeps text the person had already ACCEPTED: only the open edit is discarded', () => {
+    const accepted = run(initialQuestionCard(requestOf(multi)), ['x', K.enter]).state;
+    expect(accepted.entries[0]?.own).toBe('x');
+    const editing = run(accepted, ['y']).state; // typing reopens the field on the saved text
+    expect(editing.field?.text).toBe('xy');
+    const closed = reduceQuestionKey(editing, '', K.esc, true);
+    if (closed.kind !== 'state') throw new Error(`expected a state, got ${closed.kind}`);
+    expect(closed.state.field).toBeUndefined();
+    expect(closed.state.entries[0]?.own).toBe('x');
+    expect(closed.state.entries[0]?.draft).toBeUndefined();
+  });
 
   it('every other Ctrl or Alt chord does nothing (the card is not a shell)', () => {
     const start = initialQuestionCard(requestOf(single));

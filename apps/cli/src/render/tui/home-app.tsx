@@ -803,7 +803,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {sanitizeInline(state.pendingMessage)}
         </Text>
         <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat… · Ctrl-C to cancel
+          Starting chat… · Ctrl+C to cancel
         </Text>
         {nativeAcknowledgement && (
           <NativePromptView

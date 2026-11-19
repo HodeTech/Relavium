@@ -363,8 +363,18 @@ export function reduceToolReviewKey(
   cacheable: boolean,
   callCount: number,
 ): ReviewKeyAction {
-  if (key.escape || (key.ctrl && !key.meta && input === 'c'))
+  // `Ctrl+C` stops, everywhere (ADR-0115 §1): it rejects the approval and stops the turn, or closes a details view. `Esc` steps
+  // back ONE level (§3): inside the reason box or the search box of an approval it closes the box and returns to where it opened,
+  // the typed text discarded, the call still pending; only with no box open does it reject the call and stop the turn.
+  if (key.ctrl && !key.meta && input === 'c')
     return { kind: state.kind === 'approval' ? 'abort' : 'close' };
+  if (key.escape) {
+    if (state.kind !== 'approval') return { kind: 'close' };
+    if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });
+    if (state.searching)
+      return reviewChange(state, { searching: false, query: undefined, message: '' });
+    return { kind: 'abort' };
+  }
   if (key.ctrl || key.meta) {
     // A chord answers only an approval card, and never where a text field owns the keyboard: inside the reason box or the
     // search box (or the call list) a chord is not an answer, whatever the letter.

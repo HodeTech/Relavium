@@ -1737,14 +1737,18 @@ describe('deny and navigation stay immediate', () => {
     expect(r.store.getSnapshot().review?.screen).toBe('card');
   });
 
-  it('lets Esc and Ctrl-C stop the turn at once', () => {
+  it('lets Esc and Ctrl+C stop the turn at once, each on a card of its own, and rejects the call first (ADR-0115 §2)', () => {
     const r = rig();
     r.open('card');
     r.show();
     at(1);
     expect(r.key('', { escape: true })).toBe('abort');
+    expect(r.pending(), 'the rejection is settled before the abort is signalled').toBe(false);
+    r.open('card two');
+    r.show();
     at(2);
     expect(r.key('c', { ctrl: true })).toBe('abort');
+    expect(r.pending()).toBe(false);
   });
 });
 

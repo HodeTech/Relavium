@@ -2312,17 +2312,35 @@ describe('answer chords in the real host', () => {
         expect(f.errors).toEqual([]);
       });
 
-      it('Esc in the reason box stops the turn — the box says so, and the typed reason is not sent', async () => {
+      it('Esc in the reason box closes the box and rejects nothing; a second Esc stops the turn without the typed reason (ADR-0115 §3)', async () => {
         const f = fixture(host, true, false);
         await f.ready();
         const { outcome } = await open(f, request, poemPreview(2), 'reason-esc');
         await press(f, CTRL_R);
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
         await type(f, 'later');
-        expect(f.lastFrameWith('Reason to deny:') ?? '').toContain('Esc stops the turn');
+        const boxed = f.lastFrameWith('Reason to deny:') ?? '';
+        expect(boxed, 'the box says what Esc does in it').toContain('Esc closes this box');
+        expect(boxed, '...and that Ctrl+C is the stop here').toContain('Ctrl+C stops the turn');
         expect(outcome()).toBeUndefined();
         await press(f, '\x1b');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBeUndefined());
+        expect(outcome(), 'closing the box leaves the call pending').toBeUndefined();
+        expect(f.store.getSnapshot().approval).toBeDefined();
+        await press(f, '\x1b');
         // The harness wires no abort handler, so the host turns the stop into a plain rejection of the call.
+        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
+        expect(f.errors).toEqual([]);
+      });
+
+      it('Ctrl+C in the reason box rejects the call at once and drops the typed reason (ADR-0115 §1)', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'reason-ctrl-c');
+        await press(f, CTRL_R);
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
+        await type(f, 'later');
+        await press(f, '\x03');
         await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
         expect(f.errors).toEqual([]);
       });
