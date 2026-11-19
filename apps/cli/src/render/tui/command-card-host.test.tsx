@@ -12,7 +12,7 @@ import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import type { ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
-import { createChatStore } from './chat-store.js';
+import { UNSHOWABLE_COMMAND_REASON, createChatStore } from './chat-store.js';
 import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
 import { createHomeController } from './home-controller.js';
@@ -220,7 +220,9 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 Â
     const frame = f.lastFrameWith('Standing: not pre-approved') ?? '';
     expect(frame).toContain('Run npm test');
     expect(frame).toContain('Runs in: /work/project');
-    expect(frame).toContain('[Ctrl+Y] Allow   [Ctrl+G] This session   [Ctrl+O] Remember');
+    expect(frame).toContain(
+      '[Ctrl+Y] Allow once   [Ctrl+G] Allow for this session   [Ctrl+O] Remember',
+    );
     expect(frame).toContain('[v] Full view');
     expect(frame).not.toContain('Allow all');
     for (const row of frame.split('\n')) expect(row.length, row).toBeLessThanOrEqual(80);
@@ -247,7 +249,7 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 Â
     const f = fixture(host, true, false);
     await f.ready();
     const session = open(f, ['npm', 'test'], facts());
-    await vi.waitFor(() => expect(f.text()).toContain('[Ctrl+G] This session'));
+    await vi.waitFor(() => expect(f.text()).toContain('[Ctrl+G] Allow for this session'));
     await settle();
     f.input.push(CTRL_G);
     await vi.waitFor(() =>
@@ -273,7 +275,8 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 Â
     );
     await vi.waitFor(() => expect(f.text()).toContain('Runs code'));
     const frame = f.lastFrameWith('Runs code') ?? '';
-    expect(frame).not.toContain('Remember');
+    expect(frame).not.toContain('[Ctrl+O]');
+    expect(frame.replace(/\n {2}/gu, ' ')).toContain('Remember is not offered');
     await settle();
     f.input.push(CTRL_O);
     await pause();
@@ -293,8 +296,8 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 Â
     );
     await vi.waitFor(() => expect(f.text()).toContain('Names a protected path'));
     const frame = f.lastFrameWith('Names a protected path') ?? '';
-    expect(frame).toContain('only \u201cAllow\u201d for this one call is offered');
-    expect(frame).toContain('[Ctrl+Y] Allow');
+    expect(frame.replace(/\n {2}/gu, ' ')).toContain('Only \u201cAllow once\u201d is offered');
+    expect(frame).toContain('[Ctrl+Y] Allow once');
     expect(frame).not.toContain('[Ctrl+G]');
     expect(frame).not.toContain('[Ctrl+O]');
     await settle();
@@ -365,7 +368,9 @@ describe.each(['chat', 'home'] as const)(
       await new Promise<void>((resolve) => setTimeout(resolve, 1000));
       expect(answers, 'nothing approved the unshowable command').toEqual([]);
       f.input.push(CTRL_N);
-      await vi.waitFor(() => expect(answers).toEqual([{ outcome: 'reject' }]));
+      await vi.waitFor(() =>
+        expect(answers).toEqual([{ outcome: 'reject', reason: UNSHOWABLE_COMMAND_REASON }]),
+      );
     });
   },
 );

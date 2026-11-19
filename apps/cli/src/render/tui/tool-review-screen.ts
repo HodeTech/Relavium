@@ -261,7 +261,7 @@ export function fullNavLegend(input: NavLegendInput): readonly string[] {
 /** The grants row the card shows, then the refusals: the same words, minus the keys that only exist on the card, plus the way back. */
 export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
   const rows = cardKeyRows(input);
-  if (input.confirmAlways === true) return rows;
+  if (input.confirmAlways === true || input.confirmRemember === true) return rows;
   // The full view names what is owed in its warning row; the row here only says that Allow is off, not the card's generic cause.
   return [
     input.inspected ? rows[0] : '(Allow is locked — see the warning above)',

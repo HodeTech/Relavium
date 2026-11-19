@@ -33,10 +33,13 @@ function deps(options: {
     revoke,
   };
 }
-const request = (change: Partial<{ revoke: boolean; session: boolean; number: string }> = {}) => ({
+const request = (
+  change: Partial<{ revoke: boolean; session: boolean; number: string; unknown: string[] }> = {},
+) => ({
   revoke: false,
   session: false,
   number: undefined,
+  unknown: [] as string[],
   ...change,
 });
 
@@ -68,8 +71,8 @@ describe('/permissions lists', () => {
         '  1. npm  (1 argument)  remembered 2026-11-19T12:00:00.000Z',
         '  2. (unnamed program)  (3 arguments)  remembered 2026-11-19T12:05:00.000Z',
         'Approved for this session (2):',
-        '  1. git  (2 arguments)',
-        '  2. (unnamed program)  (1 argument)',
+        '  1. git, 2 arguments',
+        '  2. (unnamed program), 1 argument',
         'Withdraw one with /permissions --revoke <number>, or /permissions --revoke --session <number> for a session approval.',
       ].join('\n'),
     );
@@ -100,7 +103,7 @@ describe('/permissions lists', () => {
         deps({ list: { ok: false, reason }, session: [['npm', 'test']] }),
       );
       expect(text).toContain(phrase);
-      expect(text).toContain('1. npm  (1 argument)');
+      expect(text).toContain('1. npm, 1 argument');
     },
   );
 });
@@ -126,7 +129,9 @@ describe('/permissions --revoke', () => {
       request({ revoke: true, session: true, number: '1' }),
       d,
     );
-    expect(text).toBe('Withdrew session approval 1: git  (1 argument). It asks again.');
+    expect(text).toBe(
+      'Withdrew session approval 1: git, 1 argument. It asks again. The numbers have changed: /permissions lists them.',
+    );
     expect(d.cache.isAlwaysCommand(['git', 'status'])).toBe(false);
     expect(d.cache.isAlwaysCommand(['npm', 'test']), 'the other one stays').toBe(true);
     expect(d.revoke).not.toHaveBeenCalled();

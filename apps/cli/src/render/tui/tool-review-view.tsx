@@ -193,7 +193,9 @@ export function ToolReviewHost(
       <Text>
         {identity?.valid === false
           ? 'Review unavailable — the tool identity does not fit; enlarge terminal.'
-          : 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'}{' '}
+          : review.facts !== undefined && review.document?.valid === false
+            ? 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.'
+            : 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'}{' '}
         {reviewExitHint(review)}
       </Text>
     );
@@ -350,7 +352,8 @@ function approvalRule(columns: number): string {
 /** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
 function keyTone(part: string, color: boolean): Record<string, unknown> {
   if (!color) return {};
-  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]') return { color: 'green', bold: true };
+  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]' || part === '[Ctrl+O]')
+    return { color: 'green', bold: true };
   if (part === '[Ctrl+N]') return { color: 'red', bold: true };
   if (part === 'Esc') return { color: 'yellow', bold: true };
   // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
@@ -390,6 +393,24 @@ function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): Reac
 /** Strip a framing label (`target `, `tool `) from a projected row: it is generated text, never source. */
 function withoutLabel(row: string, label: string): string {
   return row.startsWith(`${label} `) ? row.slice(label.length + 1) : row;
+}
+
+/** A call's fields on the card, as the full view draws them: a name in bold, a value indented under it (a bare value just indented). */
+function cardRowText(
+  row: string,
+  label: string | undefined,
+  kind: ReviewPage['kinds'][number],
+): string {
+  if (label === 'field name') return withoutLabel(row, label);
+  if (label === 'field value') return `  ${withoutLabel(row, label)}`;
+  return cardBodyRow(row, kind);
+}
+function cardRowProps(
+  label: string | undefined,
+  kind: ReviewPage['kinds'][number],
+  color: boolean,
+): Record<string, unknown> {
+  return label === 'field name' ? { bold: true } : rowTone(kind, color);
 }
 
 /** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
@@ -456,6 +477,7 @@ function ReviewCard({
     linesNotShown: page?.hiddenLines ?? 0,
     columns: Math.max(1, columns - 2),
     commandFacts: review.facts,
+    denialOpen: review.denial !== undefined,
   });
   const keys = cardKeyRows({
     inspected,
@@ -481,8 +503,8 @@ function ReviewCard({
       {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
         return (
-          <Text key={key} {...rowTone(kind, color)}>
-            {cardBodyRow(row, kind) || ' '}
+          <Text key={key} {...cardRowProps(page?.labels[index], kind, color)}>
+            {cardRowText(row, page?.labels[index], kind) || ' '}
           </Text>
         );
       })}
@@ -497,7 +519,15 @@ function ReviewCard({
         )}
       </Box>
       {warnings.map((warning, index) => (
-        <Text key={`warn-${index}`} {...colorProps(color, 'yellow')}>
+        // A warning is yellow; a plain fact (a command's standing and directory) is dimmed, so the one row that matters stands out.
+        <Text
+          key={`warn-${index}`}
+          {...(review.facts !== undefined &&
+          !warning.startsWith('\u26a0') &&
+          !warning.startsWith(' ')
+            ? dimProps(color)
+            : colorProps(color, 'yellow'))}
+        >
           {warning}
         </Text>
       ))}

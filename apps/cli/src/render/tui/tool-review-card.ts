@@ -144,6 +144,8 @@ export interface CardWarningInput {
   readonly columns: number;
   /** A command's standing, directory and warnings (ADR-0118 §1): drawn before the other warnings. Absent for any other call. */
   readonly commandFacts?: CommandCardFacts | undefined;
+  /** The denial reason box is open: a command's plain rows (standing, directory) give way to it; its warnings stay. */
+  readonly denialOpen?: boolean | undefined;
 }
 
 /** `text` cut to `width` display columns from the FRONT, keeping its end (the part of a path that names where it is). */
@@ -177,17 +179,26 @@ export function commandStandingRow(facts: CommandCardFacts): string {
  * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, but it is
  * still shown through the one-line sanitizer.
  */
-export function commandFactRows(facts: CommandCardFacts, columns = 76): readonly string[] {
+export function commandFactRows(
+  facts: CommandCardFacts,
+  columns = 76,
+  compact = false,
+): readonly string[] {
   const label = 'Runs in: ';
-  const rows = [
-    commandStandingRow(facts),
-    `${label}${keepEnd(sanitizeInline(facts.cwd) || '(the workspace)', Math.max(8, columns - label.length))}`,
-  ];
+  // While the reason box is open the card has no room to spare: the warnings stay, the two plain rows go (the box is for typing).
+  const rows = compact
+    ? []
+    : [
+        commandStandingRow(facts),
+        `${label}${keepEnd(sanitizeInline(facts.cwd) || '(the workspace)', Math.max(8, columns - label.length))}`,
+      ];
   if (facts.runsCode)
-    rows.push('\u26a0 Runs code: this command can run other commands or inline code.');
+    rows.push(
+      '\u26a0 Runs code: this can run other commands or inline code. Remember is not offered.',
+    );
   if (facts.protectedPath)
     rows.push(
-      '\u26a0 Names a protected path: only \u201cAllow\u201d for this one call is offered.',
+      '\u26a0 Names a protected path; its output would go to the model. Only \u201cAllow once\u201d is offered.',
     );
   return rows;
 }
@@ -217,7 +228,9 @@ export function wrapWords(text: string, width: number): readonly string[] {
 export function cardWarnings(input: CardWarningInput): readonly string[] {
   const { document } = input;
   const warnings: string[] =
-    input.commandFacts === undefined ? [] : [...commandFactRows(input.commandFacts, input.columns)];
+    input.commandFacts === undefined
+      ? []
+      : [...commandFactRows(input.commandFacts, input.columns, input.denialOpen === true)];
   const factRows = warnings.length;
   // The lock sentence is the instruction for getting Allow back, so it is only true until the person has
   // inspected: afterwards the key rows offer Allow, and a warning that still says "locked" would contradict them
@@ -249,7 +262,9 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   if (document !== undefined && document.preview.diff === undefined && linesNotShown > 0) {
     // The same slot, the same way out as the diff warning above: the full view lists the rest, and no Allow-all is offered.
     warnings.push(
-      `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
+      input.commandFacts === undefined
+        ? `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`
+        : `\u26a0 ${linesNotShown} row${linesNotShown === 1 ? '' : 's'} of this command ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v]; This session and Remember are offered where every row is on screen.`,
     );
   }
   const diff = document?.preview.diff;
@@ -312,21 +327,23 @@ export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
   if (input.confirmRemember === true)
     return [
       'Press Enter to remember this exact command for this project',
-      'Any other key cancels \u00b7 Esc stops the turn',
+      'Enter confirms \u00b7 any other key cancels the question \u00b7 Esc stops the turn',
     ];
   if (input.confirmAlways === true)
     return [
       input.command === true
         ? 'Press Enter to allow this exact command for this session'
         : `Press Enter to allow all ${input.scope} this session`,
-      'Any other key cancels \u00b7 Esc stops the turn',
+      input.command === true
+        ? 'Enter confirms \u00b7 any other key cancels the question \u00b7 Esc stops the turn'
+        : 'Any other key cancels \u00b7 Esc stops the turn',
     ];
   const session =
     input.command === true
-      ? '   [Ctrl+G] This session'
+      ? '   [Ctrl+G] Allow for this session'
       : `   [Ctrl+G] Allow all ${input.scope} this session`;
   const grants = input.inspected
-    ? `[Ctrl+Y] Allow${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Remember' : ''}`
+    ? `[Ctrl+Y] Allow${input.command === true ? ' once' : ''}${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Remember' : ''}`
     : input.command === true
       ? '(Allow is locked until you read the whole command)'
       : '(Allow is locked until you inspect the change)';

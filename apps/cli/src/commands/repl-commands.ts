@@ -31,6 +31,8 @@ export interface PermissionsRequest {
   readonly session: boolean;
   /** The raw number token, `undefined` when none was typed. */
   readonly number: string | undefined;
+  /** Any `--word` typed that this command does not know (a typo such as `--revokee`): reported, never ignored. */
+  readonly unknown: readonly string[];
 }
 
 export interface ReplCommandContext {
@@ -298,6 +300,9 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
         revoke: args.includes('--revoke'),
         session: args.includes('--session'),
         number: args.find((token) => !token.startsWith('--')),
+        unknown: args.filter(
+          (token) => token.startsWith('--') && token !== '--revoke' && token !== '--session',
+        ),
       }),
     availableIn: ['chat'],
   },

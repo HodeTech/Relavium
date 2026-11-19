@@ -15,6 +15,8 @@ import { UNNAMED_PROGRAM, namedProgram, type CommandGrantStore } from './command
 export interface SessionCommandApprovals {
   readonly commandApprovals: () => readonly (readonly string[])[];
   readonly forgetCommandApproval: (index: number) => readonly string[] | undefined;
+  /** Take back the session approvals a Remember created for this remembered grant; how many were withdrawn. */
+  readonly forgetCommandsByGrant?: (grantId: string) => number;
 }
 
 export interface ChatPermissionsDeps {
@@ -28,6 +30,9 @@ export interface ChatPermissionsDeps {
 /** The number a person types: a plain decimal from 1, at most six digits. */
 const NUMBER = /^[1-9][0-9]{0,5}$/u;
 
+const USAGE =
+  'Usage: /permissions lists · /permissions --revoke <number> withdraws a remembered command · /permissions --revoke --session <number> withdraws a session approval.';
+
 const plural = (count: number): string =>
   `${String(count)} ${count === 1 ? 'argument' : 'arguments'}`;
 
@@ -35,7 +40,7 @@ async function sessionLabel(
   argv: readonly string[],
   findProgram: (name: string) => Promise<string | undefined>,
 ): Promise<string> {
-  return `${sanitizeInline((await namedProgram(argv[0], findProgram)) ?? UNNAMED_PROGRAM)}  (${plural(Math.max(0, argv.length - 1))})`;
+  return `${sanitizeInline((await namedProgram(argv[0], findProgram)) ?? UNNAMED_PROGRAM)}, ${plural(Math.max(0, argv.length - 1))}`;
 }
 
 const PROJECT_FAILURES: Readonly<Record<string, string>> = {
@@ -51,6 +56,12 @@ export async function chatPermissionsNotice(
   deps: ChatPermissionsDeps,
 ): Promise<string> {
   const findProgram = deps.findProgram ?? findOnPath;
+  // A typo is reported, never quietly turned into a list: `/permissions --revokee 2` must not look like it worked.
+  if (
+    request.unknown.length > 0 ||
+    (!request.revoke && (request.session || request.number !== undefined))
+  )
+    return USAGE;
   if (request.revoke) return revoke(request, deps, findProgram);
   const lines: string[] = [];
   if (deps.grants === undefined) {
@@ -97,12 +108,15 @@ async function revoke(
     const gone = deps.session.forgetCommandApproval(number);
     return gone === undefined
       ? 'There is no session approval with that number. /permissions lists them.'
-      : `Withdrew session approval ${String(number)}: ${await sessionLabel(gone, findProgram)}. It asks again.`;
+      : `Withdrew session approval ${String(number)}: ${await sessionLabel(gone, findProgram)}. It asks again. The numbers have changed: /permissions lists them.`;
   }
   if (deps.grants === undefined) return 'Remembered commands are not available in this chat.';
   const result = deps.grants.revoke(number);
-  if (result.ok)
-    return `Revoked remembered command ${String(number)}: ${sanitizeInline(result.program)}, ${plural(result.args)}. It asks again the next time it is needed. The numbers have changed: /permissions lists them.`;
+  if (result.ok) {
+    // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked.
+    const dropped = deps.session.forgetCommandsByGrant?.(result.id) ?? 0;
+    return `Revoked remembered command ${String(number)}: ${sanitizeInline(result.program)}, ${plural(result.args)}.${dropped > 0 ? ' This chat’s session approval of it went too.' : ''} It asks again the next time it is needed. The numbers have changed: /permissions lists them.`;
+  }
   if (result.reason === 'no-such-grant')
     return 'There is no remembered command with that number. /permissions lists them.';
   return PROJECT_FAILURES[result.reason] ?? 'The revoke did not happen.';

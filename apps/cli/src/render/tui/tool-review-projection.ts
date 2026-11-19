@@ -152,6 +152,8 @@ function analyseDiffSide(diff: object, side: DiffSide, text: string): TextAnalys
 }
 
 const documents = new WeakMap<ToolPreview, ReviewDocument>();
+/** The same previews built with every mask required (a command's), cached apart so the two never answer for each other. */
+const strictDocuments = new WeakMap<ToolPreview, ReviewDocument>();
 
 /**
  * Whether a preview can no longer change, so a document built from it stays true for as long as the preview
@@ -181,15 +183,25 @@ function isImmutablePreview(preview: ToolPreview): boolean {
  * every field for secrets, which is the cost of the review (260 ms per MiB), so the one preview that is shown as
  * a tool event, then as a card, then as details is built once: the document is kept for the frozen preview.
  */
-export function createReviewDocument(preview: ToolPreview): ReviewDocument {
-  const known = documents.get(preview);
+/**
+ * `requireAllMasks` makes EVERY masked span a requirement the person must reveal and see before an affirmative answer counts, not
+ * only the ones that hold characters a credential does not (ADR-0118 §1): a command is the one call whose arguments can carry a
+ * credential into a process, and a program name or an argument that is nothing but a mask is not something to approve unseen.
+ */
+export function createReviewDocument(
+  preview: ToolPreview,
+  options?: { readonly requireAllMasks?: boolean },
+): ReviewDocument {
+  const strict = options?.requireAllMasks === true;
+  const cache = strict ? strictDocuments : documents;
+  const known = cache.get(preview);
   if (known !== undefined) return known;
-  const built = buildReviewDocument(preview);
-  if (isImmutablePreview(preview)) documents.set(preview, built);
+  const built = buildReviewDocument(preview, strict);
+  if (isImmutablePreview(preview)) cache.set(preview, built);
   return built;
 }
 
-function buildReviewDocument(preview: ToolPreview): ReviewDocument {
+function buildReviewDocument(preview: ToolPreview, requireAllMasks: boolean): ReviewDocument {
   const invalid = (): ReviewDocument => ({
     valid: false,
     preview: { kind: preview.kind, fields: [] },
@@ -230,7 +242,8 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   };
   if (preview.target !== undefined) fieldLines(add(preview.target), 'target');
   for (const item of preview.fields) {
-    fieldLines(add(item.name), 'field name');
+    // A field with no name is a bare value (a command's arguments): one line, not a blank name line above it.
+    if (item.name !== '') fieldLines(add(item.name), 'field name');
     fieldLines(add(item.value), 'field value');
   }
   let changedBytes = 0,
@@ -246,7 +259,9 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   const cardBytes = indexRemainingBytes(lines, fields, (line) => line.cardSkip !== true);
   const fullLines = indexRemainingLines(lines, (line) => line.fullSkip !== true);
   const fullBytes = indexRemainingBytes(lines, fields, (line) => line.fullSkip !== true);
-  const required = requiredInspectionRanges(lines, fields, masks);
+  const required = requireAllMasks
+    ? masks.map(({ field, start, end }): SourceRange => ({ field, start, end }))
+    : requiredInspectionRanges(lines, fields, masks);
   return {
     valid: required.length <= 8192,
     preview,

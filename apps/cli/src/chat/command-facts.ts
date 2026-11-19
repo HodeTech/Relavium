@@ -68,7 +68,12 @@ const FIND_EXEC_FLAGS: ReadonlySet<string> = new Set(['-exec', '-execdir', '-ok'
 
 /** The program's base name, compared case-folded and without a trailing `.exe` (`C:\Tools\Python.EXE` is `python`). */
 export function programName(program: string): string {
-  const base = (program.split(/[\\/]/u).at(-1) ?? '').toLowerCase();
+  // Windows ignores a trailing dot or space and an alternate data stream suffix (`cmd.exe.`, `cmd.exe `, `cmd.exe::$DATA`), so a
+  // name written that way must not hide a shell from the table.
+  const base = (program.split(/[\\/]/u).at(-1) ?? '')
+    .toLowerCase()
+    .replace(/:.*$/u, '')
+    .replace(/[. ]+$/u, '');
   return base.endsWith('.exe') ? base.slice(0, -4) : base;
 }
 
@@ -158,7 +163,13 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
     cwd: input.cwd,
     offers: {
       session: input.sessionOffered && !protectedPath,
-      remember: input.rememberAvailable && !runsCode && !protectedPath,
+      // Nothing to remember for a command already pre-approved (on the allowlist or remembered): `auto` runs it as it is.
+      remember:
+        input.rememberAvailable &&
+        !runsCode &&
+        !protectedPath &&
+        !input.commandAdmitted &&
+        !input.remembered,
     },
   };
 }

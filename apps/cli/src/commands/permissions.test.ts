@@ -263,7 +263,7 @@ describe('relavium permissions revoke', () => {
     const run = deps();
     expect(permissionsRevokeCommand({ all: false, index: 1 }, run.deps)).toBe(EXIT_CODES.success);
     expect(run.out()).toBe(
-      'Revoked remembered command 1: npm, 1 argument. It asks again the next time it is needed. The numbers have changed: `relavium permissions list` shows them.\n',
+      'Revoked remembered command 1: npm, 1 argument. It asks again the next time it is needed; a chat that is already open keeps a session approval of it until you withdraw that with /permissions --revoke --session. The numbers have changed: `relavium permissions list` shows them.\n',
     );
     const fresh = storeFor(project);
     expect(fresh.matches(['npm', 'test'])).toBe(false);

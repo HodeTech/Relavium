@@ -64,7 +64,7 @@ describe('the chat mode control, command card wiring', () => {
     expect(await decision).toMatchObject({ outcome: 'approve' });
     expect(remember).toHaveBeenCalledExactlyOnceWith(['npm', 'test']);
     expect(notices(m).join('\n')).toContain(
-      'was not remembered because the remembered-commands file could not be written',
+      'Allowed once, but not remembered: the remembered-commands file could not be written',
     );
   });
 });

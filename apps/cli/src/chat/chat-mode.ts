@@ -138,7 +138,7 @@ export function nonInteractiveApprovalPrompt(context: string): ApprovalPrompt {
 export class ApprovalCache {
   readonly #always = new Set<string>();
   /** Commands approved for the rest of this session, keyed by their exact argv (see {@link isAlwaysCommand}). */
-  readonly #commands = new Set<string>();
+  readonly #commands = new Map<string, string | undefined>();
   /** Whether this tool id was previously "always"-approved this session. */
   isAlways(toolId: string): boolean {
     return this.#always.has(toolId);
@@ -157,13 +157,26 @@ export class ApprovalCache {
     return this.#commands.has(JSON.stringify(argv));
   }
   /** Remember one exact argv for the remainder of this session instance. */
-  rememberAlwaysCommand(argv: readonly string[]): void {
-    this.#commands.add(JSON.stringify(argv));
+  rememberAlwaysCommand(argv: readonly string[], grantId?: string): void {
+    this.#commands.set(JSON.stringify(argv), grantId);
+  }
+  /**
+   * Take back the session approvals that a *Remember* created for the remembered grant `grantId`, so withdrawing that grant makes the
+   * command ask again in THIS chat too (the session approval a Remember adds would otherwise keep it running). The number withdrawn.
+   */
+  forgetCommandsByGrant(grantId: string): number {
+    let removed = 0;
+    for (const [key, id] of this.#commands) {
+      if (id !== grantId) continue;
+      this.#commands.delete(key);
+      removed += 1;
+    }
+    return removed;
   }
   /** The commands approved for this session, in the order they were approved (`/permissions` numbers them from 1). */
   commandApprovals(): readonly (readonly string[])[] {
     const argvs: (readonly string[])[] = [];
-    for (const key of this.#commands) {
+    for (const key of this.#commands.keys()) {
       const parsed: unknown = JSON.parse(key);
       if (Array.isArray(parsed) && parsed.every((element) => typeof element === 'string'))
         argvs.push(parsed);
@@ -213,7 +226,7 @@ export interface CommandGrantsPort {
   readonly canRemember?: () => { readonly ok: boolean };
   readonly remember?: (
     argv: readonly string[],
-  ) => Promise<{ readonly ok: boolean; readonly reason?: string }>;
+  ) => Promise<{ readonly ok: boolean; readonly reason?: string; readonly id?: string }>;
 }
 
 /** The inputs {@link buildTurnPolicy} needs beyond the mode itself — the session-scoped consent machinery. */
@@ -418,6 +431,7 @@ async function askAboutCommand(
   const answer = await deps.prompt(request, facts.offers.session, signal, live, facts);
   if (answer.outcome === 'reject') return toDecision(answer, request, deps.cache, false);
   let scope = answer.scope;
+  let grantId: string | undefined;
   // A session answer the card did not offer is floored to Once by `toDecision` (it caches only when `offers.session`).
   if (scope === 'remember') {
     if (!facts.offers.remember || grants?.remember === undefined) {
@@ -426,14 +440,22 @@ async function askAboutCommand(
       const written = await grants.remember(argv);
       if (written.ok) {
         scope = 'always'; // remembered for the project, and for the rest of this session too
+        grantId = written.id;
+        deps.notify?.('Remembered for this project. /permissions lists it and takes it back.');
       } else {
         const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
-        deps.notify?.(`That command ran once; it was not remembered because ${why}.`);
+        deps.notify?.(`Allowed once, but not remembered: ${why}.`);
         scope = 'once';
       }
     }
   }
-  return toDecision({ outcome: 'approve', scope }, request, deps.cache, facts.offers.session);
+  return toDecision(
+    { outcome: 'approve', scope },
+    request,
+    deps.cache,
+    facts.offers.session,
+    grantId,
+  );
 }
 
 /**
@@ -520,6 +542,7 @@ function toDecision(
   request: ToolApprovalRequest,
   cache: ApprovalCache,
   allowAlwaysCache: boolean,
+  grantId?: string,
 ): ToolApprovalDecision {
   if (answer.outcome === 'reject') {
     return {
@@ -535,7 +558,10 @@ function toDecision(
     const argv = request.argv;
     return argv === undefined
       ? { outcome: 'approve' }
-      : { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlwaysCommand(argv) };
+      : {
+          outcome: 'approve',
+          onDispatchSucceeded: () => cache.rememberAlwaysCommand(argv, grantId),
+        };
   }
   return { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlways(request.toolId) };
 }

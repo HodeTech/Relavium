@@ -742,17 +742,15 @@ const runCommandTool = defineBuiltin({
   // cwd / timeoutMs / env are pinned by config, never model-supplied.
   configOnlyParams: ['cwd', 'timeoutMs', 'env'],
   // What the approval card shows (ADR-0118 §1): the WHOLE command as one quoted line, so a command too long for the card is a
-  // shortened target and Allow stays locked until the person has read it in full, and one row per argument, each delimited so a
-  // leading or trailing space stays visible. The pinned working directory, the standing and the warnings are the host's.
+  // shortened target and Allow stays locked until the person has read it in full, and one row per argument (the program first), so a
+  // right-to-left argument cannot be drawn past its neighbour and a trailing space is marked. The pinned working directory, the standing and the warnings are the host's.
   preview: (args) => {
     const argv = [args.command, ...(args.args ?? [])];
     return {
       kind: 'operation',
       target: quoteCommandLine(argv),
-      fields: argv.map((value, index) => ({
-        name: index === 0 ? 'program' : `argument ${String(index)}`,
-        value,
-      })),
+      // Bare values, one per row: the first is the program, the rest its arguments in order.
+      fields: argv.map((value) => ({ name: '', value })),
     };
   },
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },

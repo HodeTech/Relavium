@@ -400,7 +400,12 @@ export function reduceToolReviewKey(
   }
   const modal = reduceModalReviewKey(state, input, key, visible, callCount);
   if (modal !== undefined) return modal;
-  if (input === 'v' && state.screen === 'card')
+  // A command the review cannot hold has nothing to open: its full view would be the same refusal on a blank screen.
+  if (
+    input === 'v' &&
+    state.screen === 'card' &&
+    !(state.facts !== undefined && state.document?.valid === false)
+  )
     return reviewChange(state, {
       screen: 'full',
       // The full view opens where the card does — on the first change — unless the target the card shortened must be read
@@ -452,7 +457,10 @@ export function isAffirmativeReviewKey(
     state.screen !== 'list' &&
     state.denial === undefined &&
     !state.searching &&
-    (answer === 'allow' || answer === 'always' || answer === 'remember')
+    // `Ctrl+O` belongs to a command card only: on any other card it stays the foreign key it always was.
+    (answer === 'allow' ||
+      answer === 'always' ||
+      (answer === 'remember' && state.facts !== undefined))
   );
 }
 
@@ -570,6 +578,7 @@ export function toolReviewPage(
         linesNotShown,
         columns: Math.max(1, columns - 2),
         commandFacts: state.facts,
+        denialOpen: state.denial !== undefined,
       }).length +
       (state.denial === undefined ? CARD_KEY_ROWS : cardDenialExtraRows(denialRows) + 1) +
       (state.message === '' ? 0 : 1);

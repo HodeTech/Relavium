@@ -502,7 +502,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
     expect(both).toHaveLength(4);
     expect(both[2]).toContain('Runs code');
     expect(both[3]).toContain('Names a protected path');
-    expect(both[3]).toContain('only “Allow” for this one call is offered');
+    expect(both[3]).toContain('Only “Allow once” is offered');
   });
 
   it('strips terminal controls from the directory, and names the workspace when none was given', () => {
@@ -540,13 +540,15 @@ describe('the command card chrome (ADR-0118 §1)', () => {
   it('words the grants for THIS exact command, and offers Ctrl+O only when it is offered', () => {
     const base = { inspected: true, cacheable: true, scope: 'run_command calls', command: true };
     expect(cardKeyRows({ ...base, remember: true })).toEqual([
-      '[Ctrl+Y] Allow   [Ctrl+G] This session   [Ctrl+O] Remember',
+      '[Ctrl+Y] Allow once   [Ctrl+G] Allow for this session   [Ctrl+O] Remember',
       '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full view   Esc stops the turn',
     ]);
     expect(cardKeyRows({ ...base, remember: false })[0]).toBe(
-      '[Ctrl+Y] Allow   [Ctrl+G] This session',
+      '[Ctrl+Y] Allow once   [Ctrl+G] Allow for this session',
     );
-    expect(cardKeyRows({ ...base, cacheable: false, remember: false })[0]).toBe('[Ctrl+Y] Allow');
+    expect(cardKeyRows({ ...base, cacheable: false, remember: false })[0]).toBe(
+      '[Ctrl+Y] Allow once',
+    );
   });
 
   it('asks the two questions in their own words, and keeps the cancel hint on the second row', () => {
@@ -560,7 +562,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       }),
     ).toEqual([
       'Press Enter to allow this exact command for this session',
-      'Any other key cancels · Esc stops the turn',
+      'Enter confirms · any other key cancels the question · Esc stops the turn',
     ]);
     expect(
       cardKeyRows({
@@ -573,7 +575,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       }),
     ).toEqual([
       'Press Enter to remember this exact command for this project',
-      'Any other key cancels · Esc stops the turn',
+      'Enter confirms · any other key cancels the question · Esc stops the turn',
     ]);
   });
 

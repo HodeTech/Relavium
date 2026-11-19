@@ -84,6 +84,10 @@ import {
 /** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
  *  `Ctrl+G` allow for the session, `Ctrl+N` deny, `Ctrl+R` deny with a reason (a reject carrying WHY, via the
  *  `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop the turn (ADR-0115 §2). */
+/** What the model is told when its command was too large for the approval card to show (no command content). */
+export const UNSHOWABLE_COMMAND_REASON =
+  'The command has more arguments, or a longer argument, than the approval card can show, so it was not approved. Run it as smaller commands.';
+
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   readonly live?: ToolApprovalLiveContext;
@@ -826,9 +830,12 @@ export function createChatStore(
         case 'deny':
           lastResolvedAt = now;
           settleApproval?.(
-            action.reason === undefined
-              ? { outcome: 'reject' }
-              : { outcome: 'reject', reason: action.reason },
+            action.reason !== undefined
+              ? { outcome: 'reject', reason: action.reason }
+              : review.facts !== undefined && review.document?.valid === false
+                ? // A command too large for the card is told so, in fixed words (never the command), so it does not retry the same line.
+                  { outcome: 'reject', reason: UNSHOWABLE_COMMAND_REASON }
+                : { outcome: 'reject' },
           );
           flush();
           break;
@@ -1040,7 +1047,7 @@ export function createChatStore(
         review = initialToolReview(
           'approval',
           live?.callId,
-          createReviewDocument(live?.preview ?? fallback),
+          createReviewDocument(live?.preview ?? fallback, { requireAllMasks: facts !== undefined }),
           facts,
         );
         signal?.addEventListener('abort', onAbort);
@@ -1206,6 +1213,13 @@ function noteOnly(before: ToolReviewState, action: ReviewKeyAction): boolean {
   return Object.keys(was).every((name) => name === 'message' || was[name] === now[name]);
 }
 
+/** What a tool row shows as its target: the preview's, except a command's, which is its program alone. */
+function rowTarget(event: Extract<ToolLiveEvent, { phase: 'preview' }>): string | undefined {
+  return event.toolId === 'run_command'
+    ? (event.preview.fields[0]?.value ?? event.preview.target)
+    : event.preview.target;
+}
+
 function boundedDisplayText(source: string, limit: number): string {
   const text = sanitizeUntrustedInline(source);
   if (text.length <= limit) return text;
@@ -1239,9 +1253,11 @@ function updateToolDisplay(
     }
     return {
       ...next,
-      ...(event.preview.target === undefined
+      // A command's row names the PROGRAM only, as it always did: its arguments can carry a credential, and the card (which gates
+      // secret-shaped spans behind a reveal) is where they are shown. The details view reads them from the retained document.
+      ...(rowTarget(event) === undefined
         ? {}
-        : { target: boundedDisplayText(event.preview.target, 512) }),
+        : { target: boundedDisplayText(rowTarget(event) ?? '', 512) }),
       ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
       ...(document === undefined ? {} : { document }),
     };

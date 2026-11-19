@@ -82,13 +82,26 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       await REPL_COMMANDS_BY_NAME.get('permissions')?.run(spy.ctx, args);
       return vi.mocked(spy.ctx.managePermissions).mock.calls[0]?.[0];
     };
-    expect(await run([])).toEqual({ revoke: false, session: false, number: undefined });
-    expect(await run(['--revoke', '2'])).toEqual({ revoke: true, session: false, number: '2' });
+    expect(await run([])).toEqual({
+      revoke: false,
+      session: false,
+      number: undefined,
+      unknown: [],
+    });
+    expect(await run(['--revoke', '2'])).toEqual({
+      revoke: true,
+      session: false,
+      number: '2',
+      unknown: [],
+    });
     expect(await run(['--revoke', '--session', '1'])).toEqual({
       revoke: true,
       session: true,
       number: '1',
+      unknown: [],
     });
+    // A typo is carried to the handler so it can be reported, not dropped.
+    expect((await run(['--revokee', '2']))?.unknown).toEqual(['--revokee']);
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {
