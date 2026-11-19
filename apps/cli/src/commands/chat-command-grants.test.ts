@@ -109,7 +109,7 @@ describe('the chat’s remembered command grants', () => {
     expect(fromSubdirectory?.matches(['npm', 'test'])).toBe(true);
   });
 
-  it('fall back to the working directory when the home cannot be resolved safely, instead of failing the session', () => {
+  it('fall back to the working directory when the home cannot be resolved safely, and the store is still usable', async () => {
     const missingHome = join(home, 'no', 'such', 'home');
     const grants = openCommandGrants(
       true,
@@ -117,7 +117,11 @@ describe('the chat’s remembered command grants', () => {
       { global: GLOBAL(project), keychain },
       notice(),
     );
-    expect(grants?.matches(['npm', 'test'])).toBe(false); // a usable store that matches nothing, not a throw
+    expect(grants).toBeDefined();
+    expect(grants?.matches(['npm', 'test'])).toBe(false);
+    // Not a throw and not a dead store: it can remember and match, keyed by the working directory.
+    expect(await grants?.remember(['npm', 'test'])).toMatchObject({ ok: true });
+    expect(grants?.matches(['npm', 'test'])).toBe(true);
   });
 
   it('report an unreadable file once, on the session’s notice channel, naming the recovery', async () => {

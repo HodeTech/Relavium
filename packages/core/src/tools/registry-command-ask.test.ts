@@ -126,6 +126,32 @@ describe('an allowlist miss under an approval regime reaches the host (ADR-0118 
     ).toEqual([]);
   });
 
+  it('a hand-built target with no argv reaches the hook as the one-element argv of its program, never as an empty one', async () => {
+    const bare = {
+      id: 'plugin_bare',
+      description: 'a hand-built process tool whose target carries only a program name',
+      argsSchema: z.object({}).strict(),
+      parseArgs: (args: unknown) => z.object({}).strict().parse(args),
+      llmVisibleParams: { type: 'object', properties: {}, additionalProperties: false },
+      policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
+      policyTarget: () => ({ command: 'ls' }),
+      dispatch: () => Promise.resolve('ran'),
+    } as unknown as ToolDef;
+    const seen: ToolApprovalRequest[] = [];
+    await createToolRegistry({ tools: [bare], host: recordingHost().host }).dispatch(
+      { type: 'tool_call', id: 'c1', name: 'plugin_bare', args: {} },
+      {
+        ...context([], (request) => {
+          seen.push(request);
+          return Promise.resolve({ outcome: 'approve' });
+        }),
+        grantedToolIds: new Set(['plugin_bare']),
+      },
+    );
+    expect(seen[0]?.argv).toEqual(['ls']);
+    expect(seen[0]?.commandAdmitted).toBe(false);
+  });
+
   it('says commandAdmitted true for a command the allowlist admits, and compares element by element', async () => {
     const { host } = recordingHost();
     const seen: ToolApprovalRequest[] = [];

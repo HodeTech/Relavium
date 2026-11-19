@@ -205,6 +205,21 @@ describe('relavium permissions list', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a directory that cannot be inspected is an unreadable store (exit 2), never an empty list',
+    async () => {
+      await storeFor(project).remember(['npm', 'test']);
+      chmodSync(dirname(file()), 0o000);
+      try {
+        const failure = refusal(() => permissionsListCommand(deps().deps));
+        expect(failure.code).toBe('config_error');
+        expect(failure.exitCode).toBe(EXIT_CODES.invalidInvocation);
+      } finally {
+        chmodSync(dirname(file()), 0o700);
+      }
+    },
+  );
+
   it('a locked keychain is a clean exit-2 refusal that names the way out and leaks nothing', () => {
     keychain.locked = true;
     const failure = refusal(() => permissionsListCommand(deps().deps));
@@ -248,7 +263,7 @@ describe('relavium permissions revoke', () => {
     const run = deps();
     expect(permissionsRevokeCommand({ all: false, index: 1 }, run.deps)).toBe(EXIT_CODES.success);
     expect(run.out()).toBe(
-      'Revoked remembered command 1 (npm, 1 argument); it asks again the next time it is needed. The numbers have changed: `relavium permissions list` shows them.\n',
+      'Revoked remembered command 1: npm, 1 argument. It asks again the next time it is needed. The numbers have changed: `relavium permissions list` shows them.\n',
     );
     const fresh = storeFor(project);
     expect(fresh.matches(['npm', 'test'])).toBe(false);
@@ -374,6 +389,66 @@ describe('relavium permissions revoke', () => {
     expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
     expect(readFileSync(target, 'utf8')).toBe('keep me');
     expect(existsSync(file())).toBe(false);
+  });
+
+  it('--all forgets the digest key as well, and still works when the keychain is locked', async () => {
+    await storeFor(project).remember(['npm', 'test']);
+    expect(keychain.entries.size).toBe(1);
+    expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
+    expect(
+      keychain.entries.size,
+      'the key went with the file, so a restored copy would not verify',
+    ).toBe(0);
+    await storeFor(project).remember(['npm', 'test']);
+    keychain.locked = true;
+    expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
+    expect(existsSync(file())).toBe(false);
+  });
+
+  it('--all says what it did, in both forms, including that there was nothing to remove', () => {
+    const human = deps();
+    permissionsRevokeCommand({ all: true }, human.deps);
+    expect(human.out()).toBe('There were no remembered commands to remove.\n');
+    const json = deps(project, true);
+    permissionsRevokeCommand({ all: true }, json.deps);
+    expect(parseNdjson(json.out())).toEqual([{ action: 'revoke-all', removed: false }]);
+  });
+
+  it('--all with a directory at the path is a storage failure (exit 1): it cannot be removed as a file', () => {
+    mkdirSync(file(), { recursive: true });
+    const failure = refusal(() => permissionsRevokeCommand({ all: true }, deps().deps));
+    expect(failure.code).toBe('storage_unavailable');
+    expect(failure.exitCode).toBe(EXIT_CODES.workflowFailed);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    '--all removes a read-only file from a writable directory, and with no file in an unwritable directory there is nothing to remove',
+    async () => {
+      await storeFor(project).remember(['npm', 'test']);
+      chmodSync(file(), 0o400);
+      expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
+      expect(existsSync(file())).toBe(false);
+      chmodSync(dirname(file()), 0o500);
+      try {
+        const run = deps();
+        expect(permissionsRevokeCommand({ all: true }, run.deps)).toBe(EXIT_CODES.success);
+        expect(run.out()).toBe('There were no remembered commands to remove.\n');
+      } finally {
+        chmodSync(dirname(file()), 0o700);
+      }
+    },
+  );
+
+  it('the revoke confirmation names what was withdrawn, with the right plural and for a program it could not name', async () => {
+    const grants = storeFor(project);
+    await grants.remember(['npm']);
+    await grants.remember(['./deploy.sh', '--prod', '--force']);
+    const second = deps();
+    permissionsRevokeCommand({ all: false, index: 2 }, second.deps);
+    expect(second.out()).toContain(': (unnamed program), 2 arguments.');
+    const first = deps();
+    permissionsRevokeCommand({ all: false, index: 1 }, first.deps);
+    expect(first.out()).toContain(': npm, 0 arguments.');
   });
 
   it('--json answers with one record naming what was done', async () => {

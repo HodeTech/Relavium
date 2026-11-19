@@ -326,11 +326,11 @@ export interface FsListOpts {
 
 export interface ProcessCapability {
   /**
-   * Spawn an already-allowlist-checked command with `shell: false`. The HOST resolves the executable
+   * Spawn an already-authorized command (the allowlist admitted it, or in an interactive chat the person approved it) with `shell: false`. The HOST resolves the executable
    * (platform PATH lookup) and supplies the platform-minimal base env, merging ONLY `declaredEnv`
    * under an audited allowlist — never the full ambient `process.env`. The engine cannot build a
    * platform base env (it is platform-free), so env construction is the host's job; the engine
-   * supplies the policy (the allowlist-checked command + the declared vars). stdout/stderr are
+   * supplies the policy (the authorized command + the declared vars). stdout/stderr are
    * untrusted.
    */
   spawn(

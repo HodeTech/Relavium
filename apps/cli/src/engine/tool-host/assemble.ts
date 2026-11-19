@@ -123,7 +123,7 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
       ...(opts.scratch === undefined ? {} : { scratch: opts.scratch }),
     }),
     // The process arm itself has no read-only notion — chat-safety rests ENTIRELY on the policy layer above:
-    // the allowlist, which an unattended dispatch (a workflow, a headless surface) still enforces alone, and, in an interactive chat,
+    // the allowlist, which a workflow (no approval regime) still enforces alone, and, in a chat,
     // the mode-aware approval hook, where a command outside the allowlist is a card or a refusal (ADR-0118 §1). `git_status` exposes
     // no model-controlled command. Loosening the chat `allowedCommands` in a future profile is a security-review trigger.
     process: createNodeProcessCapability({

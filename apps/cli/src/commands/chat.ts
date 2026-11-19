@@ -363,7 +363,7 @@ export interface ChatDriveContext {
   readonly mentionReader?: MentionReader;
   /**
    * Run a USER-invoked `!`-shell command (2.5.D step 5, ADR-0061) through the session's `runUserCommand` — the one
-   * `run_command` boundary (allowlist BEFORE approval → mode-aware `confirmAction` → hardened process arm). The
+   * `run_command` boundary (allowlist judged first; a miss reaches the mode-aware `confirmAction` as a request, ADR-0118 §1 → hardened process arm). The
    * caller pre-tokenizes the line into `command` + `args`. Present on an interactive (TTY, non-`--json`) session;
    * the driver injects the classified output as UNTRUSTED context / renders the actionable deny hint. Absent ⇒ a
    * plain/`--json` driver treats a leading `!` as a literal message (no shell escape).

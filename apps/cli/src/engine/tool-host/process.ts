@@ -23,8 +23,8 @@ import {
 
 /**
  * The Node host **mechanism** half of the `ToolHost.process` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
- * the engine owns the policy — the allowlist-checked command — the host owns the spawn, [ADR-0037](../../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
- * It backs `git_status` (and `run_command` / `git_commit`, for a command the allowlist admitted or, in an interactive chat, the person approved).
+ * the engine owns the policy — the authorized command — the host owns the spawn, [ADR-0037](../../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
+ * It backs `git_status` (and `run_command` / `git_commit`, for a command the allowlist admitted; in an interactive chat also a `run_command` the person approved).
  *
  * The discipline is [built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md) §Subprocess
  * environment + [tool-registry.md](../../../../../docs/reference/shared-core/tool-registry.md):

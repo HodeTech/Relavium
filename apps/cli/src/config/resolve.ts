@@ -73,7 +73,7 @@ export interface ResolvedChatConfig {
   /** `[chat] strict_cost_cap` (ADR-0071 §K7) — refuse a turn on a model we cannot price. Default false. */
   readonly strictCostCap: boolean;
   /** `[chat].allowed_commands` — the `!`-shell exact-match allowlist (→ engine `allowedCommands`; ADR-0061).
-   *  Absent/empty ⇒ `!`-shell disabled (the `empty ⇒ disabled` symmetry; no chat-specific relaxation). */
+   *  Absent/empty ⇒ nothing is pre-approved (ADR-0118 §1: a command then asks, or is refused where no one can answer). */
   readonly allowedCommands: ChatConfig['allowed_commands'];
   /** `[chat].allowed_command_globs` — the opt-in glob form of the `!`-shell allowlist (→ `allowedCommandGlobs`). */
   readonly allowedCommandGlobs: ChatConfig['allowed_command_globs'];

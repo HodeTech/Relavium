@@ -869,9 +869,9 @@ function buildSessionRuntime(
       emit({ ...event, ...accountingFields() });
     },
     // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
-    // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
-    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
-    // "empty/absent ⇒ run_command disabled"). Extended with the `[chat].allowed_commands` `!`-shell allowlist
+    // default: today it is `{}` (gated tools deny-all; nothing pre-approved via an empty allowedCommands — a
+    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`:
+    // where no one can answer a card `run_command` is disabled, and in an interactive chat a command asks). Extended with the `[chat].allowed_commands` `!`-shell allowlist
     // (ADR-0061) — see `chatToolPolicy` above. A 2.5.E/ADR-0057 per-mode allowlist flows through automatically.
     toolPolicy: chatToolPolicy,
     ...(opts.askUser === undefined ? {} : { askUser: opts.askUser }),

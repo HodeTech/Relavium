@@ -257,8 +257,9 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
  * (`max_cost_microcents` + `on_exceed`) enforced by the same governor as a workflow budget (ADR-0028), and — since
  * 2.5.D ([ADR-0061](../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — its own
  * `allowed_commands` / `allowed_command_globs` gating the `!`-shell escape (mapping to the engine's camelCase
- * `allowedCommands` / `allowedCommandGlobs`). **Empty/absent ⇒ `!`-shell is disabled** (the `empty ⇒ disabled`
- * symmetry security-review.md pins) — there is NO chat-specific relaxation of the command allowlist.
+ * `allowedCommands` / `allowedCommandGlobs`). **Empty/absent ⇒ nothing is pre-approved** (a command then asks, or is
+ * refused where no one can answer, [ADR-0118](../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)
+ * §1) — there is NO curated default and no chat-specific relaxation of what the allowlist pre-approves.
  */
 export const ChatConfigSchema = z
   .object({

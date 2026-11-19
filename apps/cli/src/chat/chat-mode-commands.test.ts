@@ -172,6 +172,21 @@ describe('auto has a hard edge: only a pre-approved command runs without a card 
     expect(r.asked()).toBe(1);
   });
 
+  it('a command request whose admitted flag is ABSENT is not pre-approved: auto asks', async () => {
+    const r = rig('auto');
+    await r.confirm(
+      {
+        toolId: 'run_command',
+        action: 'process',
+        preview: { command: 'ls -la' },
+        argv: ['ls', '-la'],
+      },
+      undefined,
+      undefined,
+    );
+    expect(r.asked()).toBe(1);
+  });
+
   it.each([false, true])(
     'a command request that does not carry its argv asks, even with commandAdmitted %s: it cannot be judged pre-approved',
     async (admitted) => {

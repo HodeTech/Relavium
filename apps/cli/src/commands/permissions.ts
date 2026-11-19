@@ -64,12 +64,12 @@ function unavailable(reason: CommandGrantUnavailable | 'full', homeDir: string):
     case 'full':
       return new CliError(
         'config_error',
-        'The remembered-command file is at its size bound, so another line cannot be added to it. `relavium permissions revoke --all` removes it.',
+        'The remembered-command file is at its line or size bound, so another line cannot be added to it. `relavium permissions revoke --all` removes it.',
       );
     case 'no-key':
       return new CliError(
         'invalid_invocation',
-        'The OS keychain is not available, so the remembered commands cannot be read. Unlock it and retry; `relavium permissions revoke --all` removes them without it.',
+        'The OS keychain is not available (or holds an unusable entry), so the remembered commands cannot be read. Unlock it and retry, or run `relavium permissions revoke --all` to start over: it removes the file and clears the entry.',
       );
     case 'unreadable':
       return new CliError(
@@ -135,9 +135,10 @@ export function permissionsRevokeCommand(
   deps: PermissionsDeps,
 ): ExitCode {
   if (args.all) {
-    // The recovery needs no project root, no keychain and no readable file, so it opens none of them.
+    // The recovery needs no project root and no readable file. It also forgets the digest key (best effort: a locked keychain is
+    // ignored), so an older copy of the file restored later stops validating.
     const homeDir = homeOf(deps);
-    const removed = removeCommandGrantsFile(homeDir);
+    const removed = removeCommandGrantsFile(homeDir, deps.keychain ?? createOsKeychainStore());
     if (!removed.ok) throw unavailable(removed.reason, homeDir);
     if (deps.global.json) {
       writeRecords(deps, [{ action: 'revoke-all', removed: removed.removed }]);
@@ -181,7 +182,7 @@ export function permissionsRevokeCommand(
   } else {
     write(
       deps,
-      `Revoked remembered command ${args.index} (${sanitizeInline(revoked.program)}, ${revoked.args} ${revoked.args === 1 ? 'argument' : 'arguments'}); it asks again the next time it is needed. The numbers have changed: \`relavium permissions list\` shows them.\n`,
+      `Revoked remembered command ${args.index}: ${sanitizeInline(revoked.program)}, ${revoked.args} ${revoked.args === 1 ? 'argument' : 'arguments'}. It asks again the next time it is needed. The numbers have changed: \`relavium permissions list\` shows them.\n`,
     );
   }
   return EXIT_CODES.success;
