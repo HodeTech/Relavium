@@ -1,6 +1,7 @@
 import type { ToolPreview } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import {
   CARD_KEY_ROWS,
   CARD_LOCKOUT_NOTE,
@@ -12,6 +13,8 @@ import {
   cardStats,
   cardVerb,
   cardWarnings,
+  commandFactRows,
+  commandStandingRow,
   wrapWords,
 } from './tool-review-card.js';
 import { createReviewDocument } from './tool-review-projection.js';
@@ -459,5 +462,148 @@ describe('cardScopePhrase', () => {
     expect(cardScopePhrase('edit_file')).toBe('file edits');
     expect(cardScopePhrase('http_request')).toBe('http_request calls');
     expect([...cardScopePhrase('x'.repeat(40))].length).toBeLessThanOrEqual(22);
+  });
+});
+
+describe('the command card chrome (ADR-0118 §1)', () => {
+  const facts = (change: Partial<CommandCardFacts> = {}): CommandCardFacts => ({
+    standing: 'not-pre-approved',
+    runsCode: false,
+    protectedPath: false,
+    cwd: '/work/project',
+    offers: { session: true, remember: true },
+    ...change,
+  });
+  const warningInput = {
+    document: undefined,
+    shortenedTarget: false,
+    targetHiddenBytes: 0,
+    inspected: true,
+    changesNotShown: 0,
+    columns: 78,
+  };
+
+  it('says where the command stands, one row, in the person’s words', () => {
+    expect(commandStandingRow(facts({ standing: 'allowlisted' }))).toBe(
+      'Standing: on your allowlist',
+    );
+    expect(commandStandingRow(facts({ standing: 'remembered' }))).toBe(
+      'Standing: remembered for this project',
+    );
+    expect(commandStandingRow(facts())).toBe('Standing: not pre-approved');
+  });
+
+  it('shows the standing and the directory, and the two warnings only when they apply', () => {
+    expect(commandFactRows(facts())).toEqual([
+      'Standing: not pre-approved',
+      'Runs in: /work/project',
+    ]);
+    const both = commandFactRows(facts({ runsCode: true, protectedPath: true }));
+    expect(both).toHaveLength(4);
+    expect(both[2]).toContain('Runs code');
+    expect(both[3]).toContain('Names a protected path');
+    expect(both[3]).toContain('only “Allow” for this one call is offered');
+  });
+
+  it('strips terminal controls from the directory, and names the workspace when none was given', () => {
+    expect(commandFactRows(facts({ cwd: '/work/\u001b[31mevil\u0007' }))[1]).toBe(
+      'Runs in: /work/evil',
+    );
+    expect(commandFactRows(facts({ cwd: '' }))[1]).toBe('Runs in: (the workspace)');
+  });
+
+  it('puts the fact rows first in the warnings, wrapped, and adds the generic lock sentence only when nothing else explains it', () => {
+    const rows = cardWarnings({ ...warningInput, commandFacts: facts() });
+    expect(rows).toEqual(['Standing: not pre-approved', 'Runs in: /work/project']);
+    const locked = cardWarnings({ ...warningInput, inspected: false, commandFacts: facts() });
+    expect(locked.at(-1)).toContain('Allow is locked');
+    const shortened = cardWarnings({
+      ...warningInput,
+      inspected: false,
+      shortenedTarget: true,
+      targetHiddenBytes: 90,
+      commandFacts: facts(),
+    });
+    expect(shortened.filter((row) => row.includes('locked'))).toHaveLength(1);
+    expect(shortened.join(' ')).toContain('Target shortened');
+  });
+
+  it('wraps a long directory to the card width and never leaves a row wider than it', () => {
+    const rows = cardWarnings({
+      ...warningInput,
+      columns: 40,
+      commandFacts: facts({ cwd: `/${'very-long-directory-name/'.repeat(8)}` }),
+    });
+    for (const row of rows) expect(row.length).toBeLessThanOrEqual(40);
+  });
+
+  it('words the grants for THIS exact command, and offers Ctrl+O only when it is offered', () => {
+    const base = { inspected: true, cacheable: true, scope: 'run_command calls', command: true };
+    expect(cardKeyRows({ ...base, remember: true })).toEqual([
+      '[Ctrl+Y] Allow   [Ctrl+G] This session   [Ctrl+O] Remember',
+      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full view   Esc stops the turn',
+    ]);
+    expect(cardKeyRows({ ...base, remember: false })[0]).toBe(
+      '[Ctrl+Y] Allow   [Ctrl+G] This session',
+    );
+    expect(cardKeyRows({ ...base, cacheable: false, remember: false })[0]).toBe('[Ctrl+Y] Allow');
+  });
+
+  it('asks the two questions in their own words, and keeps the cancel hint on the second row', () => {
+    expect(
+      cardKeyRows({
+        inspected: true,
+        cacheable: true,
+        scope: 's',
+        command: true,
+        confirmAlways: true,
+      }),
+    ).toEqual([
+      'Press Enter to allow this exact command for this session',
+      'Any other key cancels · Esc stops the turn',
+    ]);
+    expect(
+      cardKeyRows({
+        inspected: true,
+        cacheable: true,
+        scope: 's',
+        command: true,
+        remember: true,
+        confirmRemember: true,
+      }),
+    ).toEqual([
+      'Press Enter to remember this exact command for this project',
+      'Any other key cancels · Esc stops the turn',
+    ]);
+  });
+
+  it('locks every approving answer behind reading the whole command', () => {
+    expect(
+      cardKeyRows({
+        inspected: false,
+        cacheable: true,
+        scope: 's',
+        command: true,
+        remember: true,
+      })[0],
+    ).toBe('(Allow is locked until you read the whole command)');
+  });
+
+  it('keeps a non-command card exactly as it was: no Ctrl+O, the tool’s own grant words, Full diff', () => {
+    expect(cardKeyRows({ inspected: true, cacheable: true, scope: 'file writes' })).toEqual([
+      '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+    ]);
+  });
+
+  it('every key row fits 80 columns with the longest command wording', () => {
+    for (const row of cardKeyRows({
+      inspected: true,
+      cacheable: true,
+      scope: 'x',
+      command: true,
+      remember: true,
+    }))
+      expect(row.length).toBeLessThanOrEqual(78);
   });
 });

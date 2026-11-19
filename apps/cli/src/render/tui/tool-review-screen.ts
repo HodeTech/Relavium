@@ -1,6 +1,13 @@
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { ToolDisplay } from './tool-display.js';
-import { cardKeyRows, endingsWarning, wrapWords, type CardKeyInput } from './tool-review-card.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
+import {
+  cardKeyRows,
+  commandFactRows,
+  endingsWarning,
+  wrapWords,
+  type CardKeyInput,
+} from './tool-review-card.js';
 import {
   escapeReviewCharacter,
   ROW_TOKENS_PER_COLUMN,
@@ -88,6 +95,8 @@ export interface FullWarningInput {
   readonly document: ReviewDocument | undefined;
   readonly pending: InspectionPending;
   readonly columns: number;
+  /** A command's standing, directory and warnings (ADR-0118 §1), shown above the locks on its full view too. */
+  readonly commandFacts?: CommandCardFacts | undefined;
 }
 
 /**
@@ -96,7 +105,10 @@ export interface FullWarningInput {
  * convention — the card's rule, from the card's function.
  */
 export function fullWarnings(input: FullWarningInput): readonly string[] {
-  const warnings: string[] = [];
+  const warnings: string[] =
+    input.kind === 'approval' && input.commandFacts !== undefined
+      ? [...commandFactRows(input.commandFacts, usableColumns(input.columns))]
+      : [];
   if (input.kind === 'approval') {
     if (input.pending.target) {
       // A target that hides a masked value is only "on screen" once that value is revealed too: say both keys.
@@ -286,6 +298,8 @@ export interface FullChromeInput {
   /** The card's key input, for an approval; absent for a details screen. */
   readonly keys: CardKeyInput | undefined;
   readonly searching: boolean;
+  /** A command's facts (ADR-0118 §1); absent for any other call. */
+  readonly commandFacts?: CommandCardFacts | undefined;
 }
 
 export interface FullChrome {
@@ -313,6 +327,7 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     document: input.document,
     pending: input.pending,
     columns: input.columns,
+    commandFacts: input.commandFacts,
   });
   const nav = fullNavLegend({ ...input.nav, columns: input.columns });
   const answers =

@@ -266,6 +266,21 @@ export function reviewScreen(
   };
 }
 
+/**
+ * What a command card adds to its answer rows (ADR-0118 §1): the grants are worded for THIS exact command, `Ctrl+O` is offered
+ * when the store can write one (and the page shows everything it would remember), and its question has its own sentence.
+ */
+function commandKeys(
+  snapshot: ChatStoreSnapshot,
+  review: ToolReviewState,
+  page: ReviewPage | undefined,
+): { command?: true; remember?: boolean; confirmRemember?: boolean } {
+  const facts = review.facts;
+  if (facts === undefined) return {};
+  const remember = reviewOffersAlways(review, page, facts.offers.remember);
+  return { command: true, remember, confirmRemember: snapshot.rememberConfirm && remember };
+}
+
 /** The full view's chrome for one frame: what `fullChrome` needs from the store, the review and the page being drawn. */
 function buildFullChrome(
   snapshot: ChatStoreSnapshot,
@@ -303,9 +318,11 @@ function buildFullChrome(
           cacheable,
           scope: escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
           confirmAlways: snapshot.alwaysConfirm && cacheable,
+          ...commandKeys(snapshot, review, page),
         }
       : undefined,
     searching: review.searching,
+    commandFacts: approval ? review.facts : undefined,
   });
 }
 
@@ -438,6 +455,7 @@ function ReviewCard({
     changesNotShown: page?.hiddenChanges ?? 0,
     linesNotShown: page?.hiddenLines ?? 0,
     columns: Math.max(1, columns - 2),
+    commandFacts: review.facts,
   });
   const keys = cardKeyRows({
     inspected,
@@ -447,6 +465,7 @@ function ReviewCard({
     confirmAlways:
       snapshot.alwaysConfirm &&
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
+    ...commandKeys(snapshot, review, page),
   });
   const cut = (page?.hiddenLines ?? 0) > 0;
   return (

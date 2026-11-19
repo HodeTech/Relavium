@@ -11,6 +11,8 @@ import type {
 } from '@relavium/core';
 import { CHAT_MODES, type AbortSignalLike, type ChatMode } from '@relavium/shared';
 
+import { commandCardFacts, type CommandCardFacts } from './command-facts.js';
+
 export { CHAT_MODES } from '@relavium/shared';
 export type { ChatMode } from '@relavium/shared';
 
@@ -88,7 +90,7 @@ function isChatMode(value: string): value is ChatMode {
  * the tool id for the rest of the session instance; `once` approves just this invocation.
  */
 export type ApprovalAnswer =
-  | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' }
+  | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' | 'remember' }
   | {
       readonly outcome: 'reject';
       readonly reason?: string;
@@ -102,12 +104,16 @@ export type ApprovalAnswer =
  * (offer "always"), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
  * REPL should grey out / omit the `always` choice rather than silently discard it). It is a UX signal only —
  * the `toDecision` floor still enforces the same rule if a prompt returns `always` anyway.
+ *
+ * For a command, `facts` is what its card says and offers (ADR-0118 §1): `always` then means THIS exact command for the
+ * session and `remember` means this exact command for this project; the hook narrows any answer the card did not offer.
  */
 export type ApprovalPrompt = (
   request: ToolApprovalRequest,
   cacheable: boolean,
   signal?: AbortSignalLike,
   live?: ToolApprovalLiveContext,
+  facts?: CommandCardFacts,
 ) => Promise<ApprovalAnswer>;
 
 /**
@@ -184,6 +190,15 @@ export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
   return out;
 }
 
+/** What the command rows need of the remembered-grants store: matching always, and writing when the card may offer Remember. */
+export interface CommandGrantsPort {
+  readonly matches: (argv: readonly string[]) => boolean;
+  readonly canRemember?: () => { readonly ok: boolean };
+  readonly remember?: (
+    argv: readonly string[],
+  ) => Promise<{ readonly ok: boolean; readonly reason?: string }>;
+}
+
 /** The inputs {@link buildTurnPolicy} needs beyond the mode itself — the session-scoped consent machinery. */
 export interface TurnPolicyDeps {
   readonly onToolLiveEvent?: ToolLiveObserver;
@@ -204,13 +219,17 @@ export interface TurnPolicyDeps {
    * The remembered command grants for this project root (ADR-0118 §2): a command that matches one is PRE-APPROVED, which is what
    * lets `auto` run it without a card. Absent ⇒ nothing is remembered. A store that cannot answer says `false`.
    */
-  readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
+  readonly commandGrants?: CommandGrantsPort;
   /**
-   * Whether the card offers "this exact command for the session" (ADR-0118 §1 "Session"). `false` ⇒ a command's card offers Once and
-   * Deny only. It is switched on together with the command card that words it truthfully; until then the generic card's
-   * session-wide answer would read as "all `run_command` calls", which it must not.
+   * Whether the card offers "this exact command for the session" and "remember it" (ADR-0118 §1 "Session", "Remember"). `false` ⇒
+   * a command's card offers Once and Deny only. Switched on together with the command card that words them truthfully: a card
+   * that did not would read a session answer as "all `run_command` calls", which it must not.
    */
   readonly commandSessionGrants?: boolean;
+  /** The directory a command runs in — the host's, shown on the card and the anchor of its protected-path check. */
+  readonly commandCwd?: string;
+  /** Where a note for the person goes (a Remember that could not be written). Never given a command. */
+  readonly notify?: (message: string) => void;
   /**
    * Whether the approval REQUEST targets a protected path, so `auto` falls back to a prompt rather than
    * auto-approving (ADR-0057). Absent ⇒ `auto` auto-approves every governed action (the fs-layer
@@ -339,9 +358,22 @@ function isPreApproved(
   return request.commandAdmitted === true || deps.commandGrants?.matches(argv) === true;
 }
 
+/** What a person is told when a Remember could not be written; fixed text, never a command, a path or a keychain message. */
+const REMEMBER_FAILURES: Readonly<Record<string, string>> = {
+  'no-key': 'the OS keychain is not available',
+  unreadable: 'the remembered-commands file could not be read',
+  unwritable: 'the remembered-commands file could not be written',
+  full: 'the remembered-commands file is full',
+};
+
 /**
- * Ask the person about a command. The session cache is keyed by the exact argv, never by tool id; an answer remembered for the
- * session is offered only when {@link TurnPolicyDeps.commandSessionGrants} is on, and never for a delivered saved result.
+ * Ask the person about a command. The session cache is keyed by the exact argv, never by tool id. The card is given the facts
+ * ADR-0118 §1 lists (standing, a code carrier, a protected path, the directory) and the answers it may offer, and the answer
+ * is narrowed to what was offered: a prompt that returns an answer the card did not offer gets Once, never more.
+ *
+ * *Remember* writes the grant at the moment of the answer (it is the person's consent to this exact command, not to its
+ * outcome) and then behaves as *Session* too, so the same command does not ask again in this session. A grant that cannot be
+ * written approves this call only and says why.
  */
 async function askAboutCommand(
   request: ToolApprovalRequest,
@@ -351,13 +383,40 @@ async function askAboutCommand(
   live: ToolApprovalLiveContext | undefined,
 ): Promise<ToolApprovalDecision> {
   if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
-  // The same rule `askPerson` has (#W15-12): no session answer over a preview reduced to redaction markers or a delivered saved result.
-  const cacheable =
-    deps.commandSessionGrants === true &&
-    live?.preview.kind !== 'saved-result' &&
-    !isBlankPreview(request.preview);
-  const answer = await deps.prompt(request, cacheable, signal, live);
-  return toDecision(answer, request, deps.cache, cacheable);
+  const grants = deps.commandGrants;
+  // The same rule `askPerson` has (#W15-12): no remembered answer over a preview reduced to redaction markers or a delivered saved result.
+  const shown = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
+  const facts = commandCardFacts({
+    argv,
+    commandAdmitted: request.commandAdmitted === true,
+    remembered: grants?.matches(argv) === true,
+    cwd: deps.commandCwd ?? '',
+    sessionOffered: deps.commandSessionGrants === true && shown,
+    rememberAvailable:
+      deps.commandSessionGrants === true &&
+      shown &&
+      grants?.remember !== undefined &&
+      grants.canRemember?.().ok === true,
+  });
+  const answer = await deps.prompt(request, facts.offers.session, signal, live, facts);
+  if (answer.outcome === 'reject') return toDecision(answer, request, deps.cache, false);
+  let scope = answer.scope;
+  if (scope === 'always' && !facts.offers.session) scope = 'once';
+  if (scope === 'remember') {
+    if (!facts.offers.remember || grants?.remember === undefined) {
+      scope = 'once';
+    } else {
+      const written = await grants.remember(argv);
+      if (written.ok) {
+        scope = 'always'; // remembered for the project, and for the rest of this session too
+      } else {
+        const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
+        deps.notify?.(`That command ran once; it was not remembered because ${why}.`);
+        scope = 'once';
+      }
+    }
+  }
+  return toDecision({ outcome: 'approve', scope }, request, deps.cache, facts.offers.session);
 }
 
 /**

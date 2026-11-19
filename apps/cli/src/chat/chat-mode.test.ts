@@ -348,7 +348,17 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
       argv,
     });
     const decision = await policy.confirm!(withArgv);
-    expect(prompt).toHaveBeenNthCalledWith(1, withArgv, true, undefined, undefined); // cacheable: the exact-argv session answer
+    expect(prompt).toHaveBeenNthCalledWith(
+      1,
+      withArgv,
+      true,
+      undefined,
+      undefined,
+      expect.objectContaining({
+        standing: 'not-pre-approved',
+        offers: { session: true, remember: false },
+      }),
+    ); // cacheable: the exact-argv session answer
     if (decision.outcome !== 'approve') throw new Error('expected an approval');
     decision.onDispatchSucceeded?.(); // the engine calls this after a real successful call
     expect(cache.isAlways('run_command'), 'the tool id is never what is remembered').toBe(false);

@@ -14,6 +14,7 @@ import {
   buildTurnPolicy,
   governedToolIds,
   type ApprovalPrompt,
+  type CommandGrantsPort,
   type ChatMode,
 } from './chat-mode.js';
 
@@ -47,9 +48,13 @@ export interface ChatModeEnv {
   readonly isProtectedTarget: (request: ToolApprovalRequest) => boolean;
   /** The remembered command grants of this project root (ADR-0118 §2): a command they cover is pre-approved, which is what lets
    *  `auto` run it without a card. Absent ⇒ nothing is remembered. */
-  readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
-  /** Whether a command's card offers "this exact command for the session" (see {@link TurnPolicyDeps.commandSessionGrants}). */
+  readonly commandGrants?: CommandGrantsPort;
+  /** Whether a command's card offers "this exact command for the session" and "remember it" (see {@link TurnPolicyDeps.commandSessionGrants}). */
   readonly commandSessionGrants?: boolean;
+  /** The directory a command runs in (the session workspace), shown on its card and the anchor of its protected-path check. */
+  readonly commandCwd: string;
+  /** Where a note for the person goes (a Remember that could not be written). */
+  readonly notify?: (message: string) => void;
 }
 
 export interface MakeChatModeEnvOptions {
@@ -65,9 +70,11 @@ export interface MakeChatModeEnvOptions {
   /** The REPL's interactive approval prompt. */
   readonly prompt: ApprovalPrompt;
   /** The remembered command grants of this project root (ADR-0118 §2). */
-  readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
-  /** Whether a command's card offers "this exact command for the session". */
+  readonly commandGrants?: CommandGrantsPort;
+  /** Whether a command's card offers "this exact command for the session" and "remember it". */
   readonly commandSessionGrants?: boolean;
+  /** Where a note for the person goes (a Remember that could not be written). */
+  readonly notify?: (message: string) => void;
 }
 
 /** Build the session-scoped {@link ChatModeEnv} (pure — no policy is applied until {@link applyChatMode}). */
@@ -86,6 +93,8 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
     ...(opts.commandSessionGrants === undefined
       ? {}
       : { commandSessionGrants: opts.commandSessionGrants }),
+    commandCwd: opts.workspaceDir,
+    ...(opts.notify === undefined ? {} : { notify: opts.notify }),
     // fs_write is the only action class with a path; egress/process have none, so they are never "protected"
     // (auto approves them directly). A relative path resolves against the session workspace — the SAME anchor
     // the fs jail uses — so the classification matches what the fs layer would enforce.
@@ -137,6 +146,8 @@ export function applyChatMode(
     ...(env.commandSessionGrants === undefined
       ? {}
       : { commandSessionGrants: env.commandSessionGrants }),
+    commandCwd: env.commandCwd,
+    ...(env.notify === undefined ? {} : { notify: env.notify }),
     canAsk: interactive, // no TTY / no approver ⇒ the governed tools are hidden, as in plan
   });
   if (selection !== undefined && policy.confirm !== undefined)

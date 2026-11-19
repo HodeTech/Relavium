@@ -294,3 +294,223 @@ describe('with no one to ask, nothing runs without a card, in any mode (ADR-0118
     },
   );
 });
+
+describe('the command card: facts, offers and the Remember answer (ADR-0118 §1, §2)', () => {
+  const PROJECT = '/work/project';
+
+  /** A rig whose prompt records the facts it was given and answers as told. */
+  function cardRig(options: {
+    readonly mode?: ChatMode;
+    readonly answer: ApprovalAnswer;
+    readonly store?: {
+      readonly matches?: (argv: readonly string[]) => boolean;
+      readonly canRemember?: () => { readonly ok: boolean };
+      readonly remember?: (
+        argv: readonly string[],
+      ) => Promise<{ readonly ok: boolean; readonly reason?: string }>;
+    };
+    readonly sessionGrants?: boolean;
+  }) {
+    const cache = new ApprovalCache();
+    const notes: string[] = [];
+    const prompt = vi.fn<ApprovalPrompt>(() => Promise.resolve(options.answer));
+    const policy = buildTurnPolicy(options.mode ?? 'ask', {
+      governed: new Set(['run_command']),
+      prompt,
+      cache,
+      commandSessionGrants: options.sessionGrants ?? true,
+      commandCwd: PROJECT,
+      notify: (message) => notes.push(message),
+      ...(options.store === undefined
+        ? {}
+        : {
+            commandGrants: {
+              matches: options.store.matches ?? (() => false),
+              ...(options.store.canRemember === undefined
+                ? {}
+                : { canRemember: options.store.canRemember }),
+              ...(options.store.remember === undefined ? {} : { remember: options.store.remember }),
+            },
+          }),
+    });
+    if (policy.confirm === undefined) throw new Error('a policy always has a confirm hook');
+    return { confirm: policy.confirm, prompt, cache, notes };
+  }
+  const writable = { canRemember: () => ({ ok: true }) };
+  const asked = (r: ReturnType<typeof cardRig>) => r.prompt.mock.calls[0]?.[4];
+
+  it('gives the card its facts: standing, directory, and the answers it may offer', async () => {
+    const r = cardRig({
+      answer: { outcome: 'approve', scope: 'once' },
+      store: { ...writable, remember: () => Promise.resolve({ ok: true }) },
+    });
+    await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(asked(r)).toEqual({
+      standing: 'not-pre-approved',
+      runsCode: false,
+      protectedPath: false,
+      cwd: PROJECT,
+      offers: { session: true, remember: true },
+    });
+    expect(r.prompt.mock.calls[0]?.[1], 'the cacheable flag is the session offer').toBe(true);
+  });
+
+  it.each([
+    [{ commandAdmitted: true }, 'allowlisted'],
+    [{ remembered: true }, 'remembered'],
+  ] as const)('says %j as the standing %s', async (change, standing) => {
+    const r = cardRig({
+      answer: { outcome: 'approve', scope: 'once' },
+      store: { matches: () => 'remembered' in change },
+    });
+    await r.confirm(command(['npm', 'test'], 'commandAdmitted' in change), undefined, undefined);
+    expect(asked(r)?.standing).toBe(standing);
+  });
+
+  it('Remember writes the grant for this exact argv, then behaves as Session: the same command does not ask again', async () => {
+    const remember = vi.fn(() => Promise.resolve({ ok: true }));
+    const r = cardRig({
+      answer: { outcome: 'approve', scope: 'remember' },
+      store: { ...writable, remember },
+    });
+    const decision = await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(remember).toHaveBeenCalledExactlyOnceWith(['npm', 'test']);
+    if (decision.outcome !== 'approve') throw new Error('expected an approval');
+    decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
+    expect(await r.confirm(command(['npm', 'test'], false), undefined, undefined)).toEqual({
+      outcome: 'approve',
+    });
+    expect(r.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['no-key', 'the OS keychain is not available'],
+    ['unwritable', 'could not be written'],
+    ['full', 'is full'],
+    ['unreadable', 'could not be read'],
+    [undefined, 'it could not be written'],
+  ])(
+    'a Remember that cannot be written (%s) approves this call once and says why, without the command',
+    async (reason, phrase) => {
+      const r = cardRig({
+        answer: { outcome: 'approve', scope: 'remember' },
+        store: {
+          ...writable,
+          remember: () =>
+            Promise.resolve({ ok: false, ...(reason === undefined ? {} : { reason }) }),
+        },
+      });
+      const decision = await r.confirm(
+        command(['npm', 'test', 'SECRET-ARG'], false),
+        undefined,
+        undefined,
+      );
+      expect(decision.outcome).toBe('approve');
+      if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+      expect(
+        r.cache.isAlwaysCommand(['npm', 'test', 'SECRET-ARG']),
+        'a failed Remember is not a Session either',
+      ).toBe(false);
+      expect(r.notes).toHaveLength(1);
+      expect(r.notes[0]).toContain(phrase);
+      expect(r.notes[0]).not.toContain('SECRET-ARG');
+    },
+  );
+
+  it('Remember is not offered without a store that can write, for a code carrier, or for a protected path; an answer that was not offered is Once', async () => {
+    const remember = vi.fn(() => Promise.resolve({ ok: true }));
+    const cases: readonly {
+      argv: readonly string[];
+      store: NonNullable<Parameters<typeof cardRig>[0]['store']>;
+      offers: unknown;
+    }[] = [
+      {
+        argv: ['npm', 'test'],
+        store: { matches: () => false },
+        offers: { session: true, remember: false },
+      },
+      {
+        argv: ['npm', 'test'],
+        store: { canRemember: () => ({ ok: false }), remember },
+        offers: { session: true, remember: false },
+      },
+      {
+        argv: ['bash', '-c', 'make'],
+        store: { ...writable, remember },
+        offers: { session: true, remember: false },
+      },
+      {
+        argv: ['cat', '.env'],
+        store: { ...writable, remember },
+        offers: { session: false, remember: false },
+      },
+    ];
+    for (const item of cases) {
+      const r = cardRig({ answer: { outcome: 'approve', scope: 'remember' }, store: item.store });
+      const decision = await r.confirm(command(item.argv, false), undefined, undefined);
+      expect(asked(r)?.offers).toEqual(item.offers);
+      if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+      expect(r.cache.isAlwaysCommand(item.argv)).toBe(false);
+    }
+    expect(remember, 'nothing was written for any of them').not.toHaveBeenCalled();
+  });
+
+  it('a Session answer to a card that did not offer it is Once: a protected path is answered once only', async () => {
+    const r = cardRig({ answer: { outcome: 'approve', scope: 'always' } });
+    const decision = await r.confirm(command(['cat', '.env'], false), undefined, undefined);
+    expect(asked(r)?.protectedPath).toBe(true);
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(['cat', '.env'])).toBe(false);
+  });
+
+  it('a code carrier is answered Once or Session, and says so', async () => {
+    const r = cardRig({
+      answer: { outcome: 'approve', scope: 'always' },
+      store: { ...writable, remember: () => Promise.resolve({ ok: true }) },
+    });
+    const decision = await r.confirm(
+      command(['env', 'FOO=1', 'make'], false),
+      undefined,
+      undefined,
+    );
+    expect(asked(r)?.runsCode).toBe(true);
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(['env', 'FOO=1', 'make'])).toBe(true);
+  });
+
+  it('a denial is a denial: nothing is written and nothing is remembered', async () => {
+    const remember = vi.fn(() => Promise.resolve({ ok: true }));
+    const r = cardRig({
+      answer: { outcome: 'reject', reason: 'no' },
+      store: { ...writable, remember },
+    });
+    expect(await r.confirm(command(['npm', 'test'], false), undefined, undefined)).toEqual({
+      outcome: 'reject',
+      reason: 'no',
+    });
+    expect(remember).not.toHaveBeenCalled();
+  });
+
+  it('with the session offer off the card offers neither Session nor Remember', async () => {
+    const r = cardRig({
+      answer: { outcome: 'approve', scope: 'once' },
+      sessionGrants: false,
+      store: { ...writable, remember: () => Promise.resolve({ ok: true }) },
+    });
+    await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(asked(r)?.offers).toEqual({ session: false, remember: false });
+  });
+
+  it('auto asks for an unknown command with the same facts, and Remember there also writes the grant', async () => {
+    const remember = vi.fn(() => Promise.resolve({ ok: true }));
+    const r = cardRig({
+      mode: 'auto',
+      answer: { outcome: 'approve', scope: 'remember' },
+      store: { ...writable, remember },
+    });
+    await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(asked(r)?.offers.remember).toBe(true);
+    expect(remember).toHaveBeenCalledOnce();
+  });
+});

@@ -1763,13 +1763,13 @@ describe('reviewAnswerKey — the answer keys are Ctrl chords, never a bare lett
 
   it('answers nothing for any other Ctrl letter or character (Ctrl+A/E/S/T/W/Z and the rest)', () => {
     for (const input of PRINTABLE) {
-      if ('ygnr'.includes(input)) continue;
+      if ('ygnor'.includes(input)) continue;
       expect(reviewAnswerKey(input, CTRL), `ctrl+${JSON.stringify(input)}`).toBeUndefined();
     }
     for (const input of ['a', 'e', 's', 't', 'w', 'z', 'c'])
       expect(reviewAnswerKey(input, CTRL), `ctrl+${input}`).toBeUndefined();
     // Only the exact one-letter chord Ink derives from the control byte: nothing empty, coalesced or upper-case.
-    for (const input of ['', 'yy', 'ny', 'Y', 'N', 'G', 'R'])
+    for (const input of ['', 'yy', 'ny', 'Y', 'N', 'G', 'R', 'O'])
       expect(reviewAnswerKey(input, CTRL), JSON.stringify(input)).toBeUndefined();
   });
 });

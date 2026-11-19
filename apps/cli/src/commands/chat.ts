@@ -80,6 +80,7 @@ import {
   parseMode,
   type ApprovalPrompt,
   type ChatMode,
+  type CommandGrantsPort,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import {
@@ -1650,7 +1651,7 @@ export function createChatModeControl(
   opts?: {
     readonly interactive?: boolean;
     /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
-    readonly commandGrants?: { readonly matches: (argv: readonly string[]) => boolean };
+    readonly commandGrants?: CommandGrantsPort;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1676,6 +1677,16 @@ export function createChatModeControl(
     // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
     ...(interactive && opts?.commandGrants !== undefined
       ? { commandGrants: opts.commandGrants }
+      : {}),
+    // The command card words "this exact command" for the session and for the project (ADR-0118 §1), so both are offered wherever
+    // a person can answer; a headless surface answers nothing and never reaches a card.
+    ...(interactive
+      ? {
+          commandSessionGrants: true,
+          notify: (message: string): void => {
+            store.notice(message);
+          },
+        }
       : {}),
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });

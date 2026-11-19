@@ -3,6 +3,7 @@ import {
   denialReasonDisclosure,
   sanitizeApprovalReason,
 } from './chat-projection.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import {
@@ -180,13 +181,17 @@ export interface ToolReviewState {
   readonly selected: number;
   readonly denial: string | undefined;
   readonly message: string;
+  /** A command's standing, directory, warnings and the answers its card offers (ADR-0118 §1); absent for any other call. */
+  readonly facts?: CommandCardFacts;
 }
 export function initialToolReview(
   kind: 'approval' | 'details',
   callId?: string,
   document?: ReviewDocument,
+  facts?: CommandCardFacts,
 ): ToolReviewState {
   return {
+    ...(facts === undefined ? {} : { facts }),
     kind,
     screen: initialReviewScreen(kind, document),
     callId,
@@ -318,7 +323,7 @@ export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage):
 }
 export type ReviewKeyAction =
   | { readonly kind: 'state'; readonly state: ToolReviewState }
-  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
+  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' | 'remember' }
   | { readonly kind: 'deny'; readonly reason?: string }
   | { readonly kind: 'abort' | 'copy' | 'close' | 'select' | 'none' };
 
@@ -334,10 +339,11 @@ export type ReviewKeyAction =
  *  - `Ctrl+Y` — allow this call once;
  *  - `Ctrl+G` — ask for the session-wide grant (a TWO-step answer: ENTER, never another chord, confirms — see
  *    {@link APPROVAL_CONFIRM_MIN_MS});
+ *  - `Ctrl+O` — a command card only: ask to remember this exact command for this project (a TWO-step answer, like `Ctrl+G`);
  *  - `Ctrl+N` — deny;
  *  - `Ctrl+R` — deny with a reason (opens the reason box on the card).
  */
-export type ReviewAnswer = 'allow' | 'always' | 'deny' | 'reason';
+export type ReviewAnswer = 'allow' | 'always' | 'remember' | 'deny' | 'reason';
 export function reviewAnswerKey(input: string, key: ChatKey): ReviewAnswer | undefined {
   if (key.ctrl !== true || key.meta === true) return undefined;
   switch (input) {
@@ -345,6 +351,8 @@ export function reviewAnswerKey(input: string, key: ChatKey): ReviewAnswer | und
       return 'allow';
     case 'g':
       return 'always';
+    case 'o':
+      return 'remember';
     case 'n':
       return 'deny';
     case 'r':
@@ -363,6 +371,7 @@ export function reduceToolReviewKey(
   page: ReviewPage | undefined,
   cacheable: boolean,
   callCount: number,
+  rememberOffered = false,
 ): ReviewKeyAction {
   // `Ctrl+C` stops, everywhere (ADR-0115 §1): it rejects the approval and stops the turn, or closes a details view. `Esc` steps
   // back ONE level (§3): inside the reason box or the search box of an approval it closes the box and returns to where it opened,
@@ -385,7 +394,9 @@ export function reduceToolReviewKey(
     // review (an unreadable identity, a terminal too small) must still be able to refuse it without stopping the
     // turn. Every answer that GRANTS something stays behind the visible frame.
     if (answer === 'deny') return { kind: 'deny' };
-    return visible ? reduceApprovalAnswer(state, answer, page, cacheable) : { kind: 'none' };
+    return visible
+      ? reduceApprovalAnswer(state, answer, page, cacheable, rememberOffered)
+      : { kind: 'none' };
   }
   const modal = reduceModalReviewKey(state, input, key, visible, callCount);
   if (modal !== undefined) return modal;
@@ -441,7 +452,7 @@ export function isAffirmativeReviewKey(
     state.screen !== 'list' &&
     state.denial === undefined &&
     !state.searching &&
-    (answer === 'allow' || answer === 'always')
+    (answer === 'allow' || answer === 'always' || answer === 'remember')
   );
 }
 
@@ -558,6 +569,7 @@ export function toolReviewPage(
         changesNotShown,
         linesNotShown,
         columns: Math.max(1, columns - 2),
+        commandFacts: state.facts,
       }).length +
       (state.denial === undefined ? CARD_KEY_ROWS : cardDenialExtraRows(denialRows) + 1) +
       (state.message === '' ? 0 : 1);
@@ -780,6 +792,7 @@ function reduceApprovalAnswer(
   answer: ReviewAnswer,
   page: ReviewPage | undefined,
   cacheable: boolean,
+  rememberOffered: boolean,
 ): ReviewKeyAction {
   if (answer === 'reason') {
     return state.screen === 'card' ? reviewChange(state, { denial: '' }) : { kind: 'none' };
@@ -788,9 +801,10 @@ function reduceApprovalAnswer(
   if (
     reviewInspected(state, page?.requiredTarget) &&
     page?.valid !== false &&
-    (answer === 'allow' || reviewOffersAlways(state, page, cacheable))
+    (answer === 'allow' ||
+      reviewOffersAlways(state, page, answer === 'remember' ? rememberOffered : cacheable))
   )
-    return { kind: 'approve', scope: answer === 'always' ? 'always' : 'once' };
+    return { kind: 'approve', scope: answer === 'allow' ? 'once' : answer };
   return { kind: 'none' };
 }
 

@@ -39,6 +39,7 @@ import {
 } from './question-card-model.js';
 import { questionTranscriptText } from './question-card-record.js';
 import { reduceCheckpointKey, type CheckpointCardState } from './checkpoint-card.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { ChatKey } from './chat-input.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { AbortSignalLike, Memory, ReasoningEffort } from '@relavium/shared';
@@ -88,6 +89,8 @@ export interface PendingApproval {
   readonly live?: ToolApprovalLiveContext;
   /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */
   readonly cacheable: boolean;
+  /** A command's standing, directory, warnings and the answers its card offers (ADR-0118 §1); absent for any other call. */
+  readonly facts?: CommandCardFacts;
 }
 
 /** The immutable snapshot the ink component reads each frame (a stable reference between flushes). */
@@ -117,6 +120,8 @@ export interface ChatStoreSnapshot {
    * card — a new review object — or five seconds ends it without any bookkeeping at those places.
    */
   readonly alwaysConfirm: boolean;
+  /** The first `Ctrl+O` was pressed and the card is waiting for ENTER to remember the command. */
+  readonly rememberConfirm: boolean;
   /**
    * The open `ask_user` card ([ADR-0132](../../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), if the
    * model asked the person a question. A NEW object on every change, so the measured-frame acknowledgement can tell one frame
@@ -326,7 +331,14 @@ export function createChatStore(
   let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
   let lastResolvedAt = Number.NEGATIVE_INFINITY;
   // The session-wide grant is a two-step answer: the review the first `Ctrl+G` was pressed on and when. ENTER confirms it.
-  let alwaysAsk: { readonly review: ToolReviewState; readonly at: number } | undefined;
+  // `scope` is which answer it asks: the session-wide `Ctrl+G`, or `Ctrl+O` (remember this command for this project).
+  let alwaysAsk:
+    | {
+        readonly review: ToolReviewState;
+        readonly at: number;
+        readonly scope: 'always' | 'remember';
+      }
+    | undefined;
   // Whether this card has already shown its one refusal note.
   let refusalNoted = false;
   const alwaysAsked = (now: number): boolean =>
@@ -350,6 +362,7 @@ export function createChatStore(
     approval,
     review,
     alwaysConfirm: false,
+    rememberConfirm: false,
     question,
     questionFrame,
     checkpoint,
@@ -367,7 +380,8 @@ export function createChatStore(
       reasoningVisible,
       approval,
       review,
-      alwaysConfirm: alwaysAsked(performance.now()),
+      alwaysConfirm: alwaysAsked(performance.now()) && alwaysAsk?.scope === 'always',
+      rememberConfirm: alwaysAsked(performance.now()) && alwaysAsk?.scope === 'remember',
       question,
       questionFrame,
       checkpoint,
@@ -686,6 +700,7 @@ export function createChatStore(
       }
       const calls = [...toolDisplays.values()];
       const cacheable = approval?.cacheable === true;
+      const rememberOffered = approval?.facts?.offers.remember === true;
       const visible = reviewVisible?.() === true;
       const action = reduceToolReviewKey(
         review,
@@ -695,6 +710,7 @@ export function createChatStore(
         reviewPage,
         cacheable,
         calls.length,
+        rememberOffered,
       );
       // What the guard compares THIS key against is what happened before it.
       const priorForeignKeyAt = lastForeignKeyAt;
@@ -711,17 +727,19 @@ export function createChatStore(
       const grant = mayConfirm
         ? reduceToolReviewKey(
             review,
-            'g',
+            asked.scope === 'remember' ? 'o' : 'g',
             { ctrl: true },
             visible,
             reviewPage,
             cacheable,
             calls.length,
+            rememberOffered,
           )
         : undefined;
       const confirmed =
         grant?.kind === 'approve' &&
-        grant.scope === 'always' &&
+        asked !== undefined &&
+        grant.scope === asked.scope &&
         approvalKeyRefusal(approvalGuard, {
           now,
           shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
@@ -741,8 +759,16 @@ export function createChatStore(
             // A key the card would act on once its frame is visible is the person using the card, not typing at it.
             (visible ||
               noteOnly(review, action) ||
-              reduceToolReviewKey(review, input, key, true, reviewPage, cacheable, calls.length)
-                .kind === 'none')))
+              reduceToolReviewKey(
+                review,
+                input,
+                key,
+                true,
+                reviewPage,
+                cacheable,
+                calls.length,
+                rememberOffered,
+              ).kind === 'none')))
       )
         lastForeignKeyAt = now;
       // A held key goes on being held: an affirmative key that arrives inside the lockout restarts it, so the key must be
@@ -762,7 +788,7 @@ export function createChatStore(
       }
       if (confirmed) {
         lastResolvedAt = now;
-        settleApproval?.({ outcome: 'approve', scope: 'always' });
+        settleApproval?.({ outcome: 'approve', scope: asked.scope });
         flush();
         return 'handled';
       }
@@ -807,9 +833,9 @@ export function createChatStore(
           flush();
           break;
         case 'approve': {
-          // A `Ctrl+G` that arrives while the question is open is the key that CANCELS it (above): it neither grants nor asks
-          // again, so a held or repeated `Ctrl+G` never keeps a confirmation alive for an Enter to land on.
-          if (asked !== undefined && action.scope === 'always') break;
+          // A `Ctrl+G` or `Ctrl+O` that arrives while the question is open is the key that CANCELS it (above): it neither grants nor
+          // asks again, so a held or repeated chord never keeps a confirmation alive for an Enter to land on.
+          if (asked !== undefined && action.scope !== 'once') break;
           // A key that is not a deliberate answer changes nothing and is consumed (never composer text).
           const refusal = approvalKeyRefusal(approvalGuard, {
             now,
@@ -822,9 +848,10 @@ export function createChatStore(
             refuse(refusal);
             break;
           }
-          if (action.scope === 'always' && approvalGuard.confirmAlways) {
-            // The session-wide grant takes two presses: this one only asks; ENTER, no other key between, grants.
-            alwaysAsk = { review, at: now };
+          if (action.scope !== 'once' && approvalGuard.confirmAlways) {
+            // A grant that outlasts this call (the session-wide one, or remembering a command) takes two presses: this one only
+            // asks; ENTER, no other key between, grants.
+            alwaysAsk = { review, at: now, scope: action.scope };
             flush();
             break;
           }
@@ -955,7 +982,7 @@ export function createChatStore(
       state = { ...state, compacting: false };
       flush();
     },
-    requestApproval: (request, cacheable, signal, live) =>
+    requestApproval: (request, cacheable, signal, live, facts) =>
       new Promise<ApprovalAnswer>((resolve, reject) => {
         // One overlay at a time, in BOTH directions: an approval under an open question card would be unreachable, because the
         // card consumes every key. (Tool calls dispatch sequentially, so this is unreachable today; the guard keeps it so.)
@@ -997,7 +1024,12 @@ export function createChatStore(
           resolve(answer);
         };
         cancelPendingApproval = onAbort;
-        approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
+        approval = {
+          request,
+          cacheable,
+          ...(live === undefined ? {} : { live }),
+          ...(facts === undefined ? {} : { facts }),
+        };
         alwaysAsk = undefined;
         refusalNoted = false; // a card of its own gets its own note
         state = approvalOpened(state, Date.now());
@@ -1009,6 +1041,7 @@ export function createChatStore(
           'approval',
           live?.callId,
           createReviewDocument(live?.preview ?? fallback),
+          facts,
         );
         signal?.addEventListener('abort', onAbort);
         flush(); // render the approval card
