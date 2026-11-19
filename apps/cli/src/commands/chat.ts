@@ -417,6 +417,8 @@ export interface ChatResolvedKeys {
 }
 
 export interface ChatCommandDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -459,6 +461,8 @@ export interface ChatResumeCommandArgs {
 }
 
 export interface ChatResumeCommandDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;

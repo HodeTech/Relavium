@@ -37,6 +37,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import { createCommandGrantStore } from '../permissions/command-grants.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   ABORTED_EFFECT_ATTENTION_NOTICE,
@@ -1089,6 +1090,95 @@ describe('chatCommand', () => {
     expect(out).toContain('Remembered commands are not available in this chat.');
     expect(out).toContain('Give the number to withdraw');
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  it('/permissions in an interactive chat lists and withdraws the real session approvals and remembered commands (ADR-0118 §2)', async () => {
+    const entries = new Map<string, string>();
+    const keychain = {
+      get: (account: string) => entries.get(account) ?? null,
+      set: (account: string, secret: string) => void entries.set(account, secret),
+      delete: (account: string) => entries.delete(account),
+    };
+    const seed = createCommandGrantStore({
+      homeDir: home,
+      projectRoot: cwd,
+      keychain,
+      findProgram: (name) => Promise.resolve(name === 'npm' ? '/usr/bin/npm' : undefined),
+    });
+    expect((await seed.remember(['npm', 'test'])).ok).toBe(true);
+    const { d } = deps(
+      [],
+      [
+        [
+          { type: 'tool_call_start', id: 'call-1', name: 'run_command' },
+          {
+            type: 'tool_call_delta',
+            id: 'call-1',
+            argsJsonDelta: JSON.stringify({ command: process.execPath, args: ['--version'] }),
+          },
+          { type: 'tool_call_end', id: 'call-1' },
+          stop('tool_use'),
+        ],
+        textTurn('Done.'),
+      ],
+    );
+    let notices: () => string[] = () => [];
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        keychain,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          notices = () =>
+            ctx.store
+              .getSnapshot()
+              .state.transcript.filter((entry) => entry.role === 'notice')
+              .map((entry) => entry.text);
+          const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
+          try {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            const turn = ctx.processLine('Run node --version');
+            await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
+            // The card names the session workspace and offers every answer (this is the production mode control).
+            expect(ctx.store.getSnapshot().approval?.facts?.offers).toEqual({
+              session: true,
+              remember: true,
+            });
+            expect(ctx.store.getSnapshot().approval?.facts?.cwd).toBe(cwd);
+            ctx.store.answerApproval({ outcome: 'approve', scope: 'always' }); // "this session"
+            await turn;
+            await ctx.processLine('/permissions');
+            const listing = notices().join('\n');
+            expect(listing).toContain('Remembered for this project (1):');
+            expect(listing).toContain('1. npm  (1 argument)');
+            expect(listing).toContain('Approved for this session (1):');
+            await ctx.processLine('/permissions --revoke --session 1');
+            expect(notices().join('\n')).toContain('Withdrew session approval 1');
+            await ctx.processLine('/permissions --revoke 1');
+            expect(notices().join('\n')).toContain(
+              'Revoked remembered command 1: npm, 1 argument.',
+            );
+            await ctx.processLine('/permissions');
+            expect(notices().at(-1)).toContain('Remembered for this project: none.');
+            expect(notices().at(-1)).toContain('Approved for this session: none.');
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          } finally {
+            off();
+          }
+        },
+      },
+    );
+    expect(
+      createCommandGrantStore({ homeDir: home, projectRoot: cwd, keychain }).matches([
+        'npm',
+        'test',
+      ]),
+      'the revoke reached the file',
+    ).toBe(false);
   });
 
   it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
