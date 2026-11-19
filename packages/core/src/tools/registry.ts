@@ -1086,12 +1086,34 @@ function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActio
   }
 }
 
+const REDACTED = '[redacted]';
+
+/**
+ * The scrubbed display line of a command. The line is shell-quoted (ADR-0118 §1), and quoting rewrites an embedded `'` as
+ * `'"'"'`, which breaks the `key='value'` context the detector reads: scrubbing the quoted line alone let `password='S'` through
+ * where the joined `psql password='S'` (what the display copy was before the line was quoted) masks it. So each element is
+ * scrubbed on its own, the quoted line is scrubbed again, and the joined line is the oracle: if it carries more masks than the
+ * quoted result, a span the old projection masked is not masked here, and every argument after the program is masked instead
+ * (over-masking is the safe direction: the in-process copy and the full card keep the real text for the person).
+ */
+function scrubbedCommandLine(target: PolicyTarget, quoted: string): string {
+  const argv = target.argv ?? [target.command ?? ''];
+  const elementwise = redactSecretShapedText(quoteCommandLine(argv.map(redactSecretShapedText)));
+  const scrubbedQuoted = redactSecretShapedText(quoted);
+  const masks = (text: string): number => text.split(REDACTED).length - 1;
+  const candidate = masks(scrubbedQuoted) > masks(elementwise) ? scrubbedQuoted : elementwise;
+  if (masks(redactSecretShapedText(argv.join(' '))) <= masks(candidate)) return candidate;
+  return argv.length > 1
+    ? quoteCommandLine([redactSecretShapedText(argv[0] ?? ''), REDACTED])
+    : candidate;
+}
+
 /** The DISPLAY copy: {@link rawPreviewFor}'s field selection with every string scrubbed. */
 function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   const raw = rawPreviewFor(action, target);
   return {
     ...(raw.path === undefined ? {} : { path: redactSecretShapedText(raw.path) }),
-    ...(raw.command === undefined ? {} : { command: redactSecretShapedText(raw.command) }),
+    ...(raw.command === undefined ? {} : { command: scrubbedCommandLine(target, raw.command) }),
     ...(raw.host === undefined ? {} : { host: redactSecretShapedText(raw.host) }),
   };
 }

@@ -9,6 +9,7 @@ import type {
   ToolHost,
 } from './types.js';
 import { createInMemoryEffectJournal } from '../engine/execution-host.js';
+import { redactSecretShapedText } from './bounding.js';
 
 /**
  * What the approval card is given for a command (ADR-0118 §1): the whole command as one quoted line (a shortened target locks
@@ -53,14 +54,15 @@ async function asked(
 }
 
 describe('the run_command approval preview (ADR-0118 §1)', () => {
-  it('target is the whole command as one quoted line, and every argument is its own row', async () => {
+  it('target is the whole command as one quoted line, and every argument is its own bare row', async () => {
     const { live } = await asked('cat', ['a b', 'c', '']);
     expect(live?.preview.target).toBe("cat 'a b' c ''");
+    // Bare values, the program first: a label would spend a row each on a card that has room for few.
     expect(live?.preview.fields).toEqual([
-      { name: 'program', value: 'cat' },
-      { name: 'argument 1', value: 'a b' },
-      { name: 'argument 2', value: 'c' },
-      { name: 'argument 3', value: '' },
+      { name: '', value: 'cat' },
+      { name: '', value: 'a b' },
+      { name: '', value: 'c' },
+      { name: '', value: '' },
     ]);
   });
 
@@ -81,7 +83,61 @@ describe('the run_command approval preview (ADR-0118 §1)', () => {
   it('a program with no arguments is a one-row command', async () => {
     const { live, request } = await asked('ls', []);
     expect(live?.preview.target).toBe('ls');
-    expect(live?.preview.fields).toEqual([{ name: 'program', value: 'ls' }]);
+    expect(live?.preview.fields).toEqual([{ name: '', value: 'ls' }]);
     expect(request.argv).toEqual(['ls']);
+  });
+});
+
+/**
+ * The display copy is scrubbed, and since the line is shell-quoted an embedded quote is rewritten (`'"'"'`), which broke the
+ * `key='value'` context the detector reads: half of these forms leaked in the quoted line and were masked in the joined one the
+ * display copy was before. The joined projection is the oracle: whatever IT masks, the quoted preview must mask too.
+ */
+describe('the event preview of a command masks everything the joined projection masks', () => {
+  const SECRET = 'S3cr3tValue9Zq';
+  const KEYS = ['token', 'password', 'api_key', 'PGPASSWORD', 'client_secret', 'secret', 'auth'];
+  const forms = [
+    ...KEYS.flatMap((key) => [
+      `${key}='${SECRET}'`,
+      `${key}="${SECRET}"`,
+      `${key}=${SECRET}`,
+      `--${key}='${SECRET}'`,
+      `--${key}=${SECRET}`,
+      `{'${key}': '${SECRET}'}`,
+      `{"${key}": "${SECRET}"}`,
+      `${key}: '${SECRET}'`,
+    ]),
+    `Authorization: Bearer ${SECRET}${SECRET}`,
+    `postgres://user:${SECRET}@db.example/app`,
+  ];
+
+  it('for every form the old projection masked', async () => {
+    let compared = 0;
+    for (const form of forms) {
+      const joined = redactSecretShapedText(['psql', form].join(' '));
+      if (!joined.includes('[redacted]') || joined.includes(SECRET)) continue; // the oracle masks nothing here: nothing to preserve
+      compared += 1;
+      const { request } = await asked('psql', [form]);
+      expect(request.preview.command, form).not.toContain(SECRET);
+      expect(request.preview.command, form).toContain('[redacted]');
+    }
+    expect(compared, 'the corpus exercised the oracle').toBeGreaterThan(40);
+  });
+
+  it('a secret in the program name or split from its key across two arguments is masked as well', async () => {
+    for (const [command, args] of [
+      [`./sk-ant-api03-${SECRET}${SECRET}${SECRET}`, ['--version']],
+      ['curl', ['--header', `Authorization: Bearer ${SECRET}${SECRET}`]],
+      ['tool', ['--password', SECRET]],
+    ] as const) {
+      const joined = redactSecretShapedText([command, ...args].join(' '));
+      const { request } = await asked(command, args);
+      if (!joined.includes(SECRET)) expect(request.preview.command).not.toContain(SECRET);
+    }
+  });
+
+  it('leaves an ordinary command readable', async () => {
+    const { request } = await asked('git', ['log', '--oneline', '-n', '5', 'a b']);
+    expect(request.preview.command).toBe("git log --oneline -n 5 'a b'");
   });
 });

@@ -47,8 +47,8 @@ const PREVIEW: ToolPreview = {
   kind: 'operation',
   target: 'npm test',
   fields: [
-    { name: 'program', value: 'npm' },
-    { name: 'argument 1', value: 'test' },
+    { name: '', value: 'npm' },
+    { name: '', value: 'test' },
   ],
 };
 const FACTS = (remember: boolean, session = true): CommandCardFacts => ({
