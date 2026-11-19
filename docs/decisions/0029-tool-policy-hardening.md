@@ -146,3 +146,5 @@ historical-content limits. Earlier decision-acceptance notes do not claim this
 later implementation landing. Other Wave 3 decisions and increments remain
 staged; this note does not close ADR-0112 policy work, whole-wave publication or
 merge. No historical ADR body is rewritten.
+
+> Amended 2026-11-19 by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3: an exact `allowedCommands` entry is split by one quote-aware tokenizer and compared to the call **element by element** (`PolicyTarget` carries the argv), so `cat a b` no longer admits `["cat","a b"]`. Globs stay string-level and opt-in; an open quote in an entry is a strict-config error.

@@ -276,3 +276,5 @@ abort clause's rollback is now withdrawn in the code for a turn the provider acc
 and its implementation note describe. An abort before any content, a session-ending cancel and the other exclusions it
 lists still roll the turn back.
 
+
+> Amended 2026-11-19 by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) and [ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md): the once/always cache is keyed by argv for `run_command`; an allowlist miss reaches the confirm hook as a request, not a thrown error, when an approval regime is present; `Esc` and `Ctrl+C` at a pending approval reject it before the abort ([ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) §2); and on a surface with a person the tool-round limit is a checkpoint that asks to continue ([ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)).

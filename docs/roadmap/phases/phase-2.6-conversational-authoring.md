@@ -618,18 +618,20 @@ last drill-down position.
   a session row resumes, a run row opens detail. The strip refreshes on an idle tick while the Home is
   open (today it is snapshot-static).
 - **Permission management** *(new — script execution + tool grants via slash commands)*: when an agent
-  issues a `run_command` for a not-yet-allowlisted command (e.g. `python analyze.py`, `node build.js`,
-  `curl -s https://...`), the interactive surface prompts the user with a typed, informative approval
-  card — not a generic allow/deny, but one that names the exact command and offers three grant scopes:
-  **(a) once** (this turn only), **(b) this session** (in-memory, gone on `/exit`), **(c) this project**
-  (writes to `.relavium/project.toml` `[chat].allowed_commands` via the ADR-0063 config-write contract).
-  A **global grant** (writes to `~/.relavium/config.toml`) is available via an explicit `/permissions`
-  slash command in the Home and chat. The `/permissions` command opens a management screen listing all
-  active grants (command allowlist, domain allowlist, MCP servers, egress endpoints) with add/remove
-  actions — the single pane for the user to audit and revoke what an agent has been granted. A
-  **`once`-granted** command is never persisted; a **session/project/global** grant writes the
-  appropriate config layer atomically. An allowlist whose *only* entry is default-approved (like the
-  curl/wget research item in 2.6.M) is surfaced here as a built-in grant that can be revoked.
+  issues a `run_command` for a command that is not pre-approved (e.g. `python analyze.py`, `node build.js`,
+  `curl -s https://...`), the interactive surface shows a typed, informative command card that names the exact
+  argv and offers **once**, **this session** (the exact argv, in memory, gone on `/exit`) and **remember**
+  (persisted for this project root). **Amended 2026-11-19 by [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md):**
+  a remembered grant is **never** written to `.relavium/project.toml` or to `config.toml`. It is an
+  operator-owned, append-only file, `~/.relavium/command-grants.ndjson`, holding a keyed digest of the argv
+  (never the command) under a keychain key, keyed by the project root, so a clone cannot carry a grant. The
+  first draft of this bullet (project grants in `project.toml`, global grants in `config.toml` through the
+  ADR-0063 primitive) is the design ADR-0118 rejects. MVP-4 ships the store, `relavium permissions
+  list|revoke` and the chat's `/permissions` (list and revoke the project's remembered grants and this
+  session's); **this workstream's Home screen** (a single pane across command grants, domain allowlists, MCP
+  servers and egress endpoints, with add/remove) is MVP-8's 2.6.G. A **`once`-granted** command is never
+  persisted. An allowlist whose *only* entry is default-approved (like the curl/wget research item in 2.6.M)
+  is surfaced there as a built-in grant that can be revoked.
 - **Liveness**: wire `engine.reconcile()` (never invoked today) on Home open and the browser/status reads,
   so crashed runs settle `run:failed{internal}` instead of showing as zombie `running` rows; expired gates
   settle per their timeout policy via 2.6.K's re-arm. Confirmed live by the review — `engine.reconcile()`
@@ -1381,11 +1383,11 @@ on 2026-11-08, when MVP-2 was re-planned around the Home
 | MVP-A8 | 2.6.M | **Truthful tool rows.** A failed tool call shows a failure mark, not ✓, and the assistant's text between tool calls stays visible. **Split 2026-11-08:** MVP-2 ships the mark; the text between tool calls lands with MVP-3's tool-call rendering v2. |
 | MVP-A9 | 2.6.M | **Ranged reads.** `read_file` takes line or byte ranges and bounded output spills to a wired `ToolHost.outputStore`; its model-visible description matches the CLI's binary refusal. |
 | MVP-A10 | 2.6.M | **Denials reach the model.** A user or guardrail denial returns to the model as a `tool_result` instead of ending the turn (ADR-0057 amendment, D67). |
-| MVP-A11 | 2.6.M | **Configurable, finite ceilings.** Tool rounds, correction attempts and the session turn limit are configurable with conservative defaults and stay finite (ADR-0086). |
+| MVP-A11 | 2.6.M | **Configurable, finite ceilings.** Tool rounds, correction attempts and the session turn limit are configurable with conservative defaults and stay finite (ADR-0086). *(Refined 2026-11-19 by [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md): on a surface with a person the round limit is a checkpoint that asks to continue (default every 32 rounds, an absolute backstop of 256); where nobody can answer it is a hard stop (default 16); a repository can only lower the limits.)* |
 | MVP-A12 | 2.6.E | **One keymap.** Ctrl+C interrupts the running turn, a second Ctrl+C ends the session, and Ctrl+C at a pending approval rejects it before anything else (keymap ADR, D68; supersedes the 2026-10-19 `/cancel` wording; approval-path sitting). |
 | MVP-A13 | 2.6.M | **`[chat].default_mode`.** The starting mode is configurable (default `ask`), with a one-time hint that Shift+Tab changes it (ADR-0057 amendment, D62). |
 | MVP-A14 | 2.6.M | **Default grant (D62).** The built-in agent gets the read, search and find tools, `write_file` and `edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) and `run_command` under MVP-A15; egress stays opt-in. Lands only after the approval diff; ADR-0057 amendment and security review. *(Updated 2026-11-16 by [ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md): the edit tools are offered in `ask` with a card on every call; `accept-edits` applies workspace file edits without a card; a repository config layer cannot choose `accept-edits`.)* |
-| MVP-A15 | 2.6.G | **`run_command` approval card (D63).** A non-allowlisted command prompts once / for the session / to remember; remembered grants live outside the repository, in operator-owned configuration keyed by project root; accept-edits keeps prompting for allowlisted commands; headless paths stay fail-closed; `!` uses the same card. New ADR amending ADR-0029(a)/0061/0063, and a security sitting. |
+| MVP-A15 | 2.6.G | **`run_command` approval card (D63).** A non-allowlisted command prompts once / for the session / to remember; remembered grants live outside the repository, in an operator-owned append-only file keyed by project root ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), 2026-11-19); accept-edits keeps prompting for allowlisted commands; headless paths stay fail-closed; `!` uses the same card. New ADR amending ADR-0029(a)/0061/0063, and a security sitting. |
 | MVP-A16 | 2.6.D | **Project instructions.** A project instructions file (`AGENTS.md`) and an environment block enter the system prompt under explicit provenance rules (new ADR; independent of ADR-0060's `{{ctx.*}}`). |
 | MVP-A17 | 2.6.E | **Session entry flags.** `relavium chat --model/--provider` and a one-shot prompt mode; headless stays fail-closed; both follow ADR-0110's compatibility rules. |
 | MVP-A18 | 2.6.B | **A minimal `relavium init`** scaffolds `.relavium/` instead of being a dead command. **Home-first (2026-11-08):** `/init` in the Home shares its core and shows what it will create before writing; the search for a project's `.relavium/` stops treating the global `~/.relavium` as a project folder ([MVP-2 plan](#mvp-2-plan--home-first-2026-11-08), decision 9). |
@@ -5929,6 +5931,8 @@ low-headroom tests. A scheduled `model-catalog` run was red on 2026-11-18 at 16:
 
 ### MVP-4 preparation — read-only analyses and the decisions they need (2026-11-18)
 
+> **Resolved 2026-11-19.** The maintainer decided the questions below and the three ADRs were revised or written the same day: [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) (K1, K2 and K4: `Esc` and `Ctrl+C` both reject first and stop at a card, only `Ctrl+C` arms the exit window, and `Esc` closes a card's text box before it stops the turn), [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) (K3, K7, Q1, Q3, Q4, Q7 and Q8: the full D63 answer set with Remember, the append-only grants file, element-wise allowlist entries, and `relavium permissions` plus `/permissions` in MVP-4) and [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) (Q5 and Q6, replaced: a continue checkpoint instead of a larger fixed ceiling; this ADR also took the number the UI/UX plan had claimed). The findings and the table below are kept as the analysis that led there; where they differ from the ADRs, the ADRs are the decision. The step plan was reduced from eleven steps to four (see [the implementation record](#mvp-4-implementation-record)).
+
 Two read-only analyses of MVP-4's planned work (the tools backend; the keymap and the command card) and two of the open items next to it (the approval-path refactors; the
 deferred CI decisions) were run on `development` after `origin/main` was merged (tree of `002dda58`). **No code changed and no test was run.** Anchors are read from the code
 as of that date; what is marked unverified was not checked. The recommendations below are not decisions. The findings on the items outside MVP-4 (native adapter, legacy approval
@@ -6015,3 +6019,16 @@ maintainer runs the minified bundle).
 `session.abort()` stops a `!` child; Windows raw-mode Ctrl-C and Ctrl-Break; whether the "Waiting for your answer" line is right for an approval opened by `!` with no turn running;
 a clash of `Ctrl+K`; what the headless path does with an allowlisted command (ADR-0130 §4 hides governed tools); whether the displayed argv would cross `agent:approval_requested`
 (`run-event.ts` is strict); the keychain prompt on first macOS access; the cost of a D64 round (not recorded in the docs read).
+
+### MVP-4 implementation record
+
+**Started 2026-11-19 on `development`.** The ADRs ([0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md), [0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)) were revised or written, reviewed and accepted before any code (the revisions and the review's dispositions are in each ADR's revision note and in the commit history). Four steps replace the eleven of the preparation table, because every step carries two review rounds and the eleven were not independent enough to justify that cost: B1, B2 and B3 touch disjoint files but share one review surface (the engine floor), I1, I2 and I4 are one keymap, B4, B5 and B7 are one grants backend, and I3 and B6 are one card and its wiring.
+
+| Step | Contents | Tier |
+|---|---|---|
+| 1. Engine floor | B1 element-wise allowlist (`PolicyTarget.argv`, shared tokenizer and quoter, open-quote refusal, the `!` path on the new tokenizer); B2 the lexical protected-path refusal returns to the model; B3 the four limits (bounds as data, `[preferences]` base and lower-only `[chat]`, the engine's checkpoint hook and the guard before dispatch, the absolute backstop); the reference-document updates for these | rigor |
+| 2. Interrupt keymap | I1 the legacy approval-prompt reducer and the older reason-draft path deleted behind characterization tests; I2 `interrupt-keymap.ts`, reject-first, `Esc` one level, the arming window, the plain and `--json` SIGINT pin, the strings; the checkpoint card; I4 the Windows evidence recipe | rigor and a security sitting |
+| 3. Command permissions backend | B4 the grants store and key; B5 the engine seam (the request's argv and flag, the interactive miss asks, the exact-argv session cache, the mode table); B7 revoke and list; `relavium permissions` | rigor and a security sitting |
+| 4. Command card and wiring | I3 the command card (argv rows, standing row, code-carrier and protected-path rows, the answers, the inspection lock); B6 `!` through the card, `run_command` and the new prompt in the default agent; the chat's `/permissions` | rigor and a security sitting |
+
+Each step ends with a review round, its fixes, a second review round and its fixes (agents: Sonnet and Haiku, Opus for the security-critical rounds, never Fable). After step 4: the whole gate, the remaining reference documents and the register, then the PR.

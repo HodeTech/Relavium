@@ -550,3 +550,5 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+> Note 2026-11-19: the append-only grant log of §5 (`wx` 0600 creation, one record per `appendFileSync`, tombstones, an unparseable line means no grants) is reused for remembered command grants ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2). The residual recorded here, that a revocation racing a grant resolves by file order, applies there too.

@@ -1,9 +1,9 @@
 # ADR-0118: A command outside the allowlist asks instead of failing
 
-- **Status**: Proposed — revised 2026-11-19 (see the revision note at the end). Awaiting the maintainer's acceptance.
+- **Status**: Accepted — 2026-11-19, by the maintainer, after the revision recorded at the end and two independent document reviews. Implementation owed (MVP-4 steps 1, 3 and 4); the D64 rigor tier and a separate security sitting apply.
 - **Date**: 2026-11-05 (revised 2026-11-06 after the PR #97 review; revised again 2026-11-19)
-- **Related**: [ADR-0006](0006-os-keychain-for-api-keys.md), [ADR-0029](0029-tool-policy-hardening.md) (a), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md), [ADR-0063](0063-cli-config-write-contract.md), [ADR-0084](0084-consent-before-a-local-mcp-spawn.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md), [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md), [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md), [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md), [D63](../roadmap/current.md#wave-gating-decisions), [MVP-A15](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
-- **Amends**: [ADR-0029](0029-tool-policy-hardening.md) (a) (an exact allowlist entry is compared element by element), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md) (the `!` escape's "allowlist before approval, refused otherwise"), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (`run_command` joins the default grant now), [ADR-0006](0006-os-keychain-for-api-keys.md) (the keychain holds one more secret).
+- **Amends**: [ADR-0029](0029-tool-policy-hardening.md) (a) (an exact allowlist entry is compared element by element), [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md) (the `!` escape's "allowlist before approval, refused otherwise", and the security reasoning it gave, answered below), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (the session cache for `run_command` is keyed by argv, and an allowlist miss reaches the host as a request), [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) (`run_command` joins the default grant now), [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md) (the allowlist-miss class is realized as a card or a fixed refusal), [ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md) (its table gains the command row), [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) note 12 (the command card adds one answer chord, Remember), and [ADR-0006](0006-os-keychain-for-api-keys.md) (the keychain holds one more secret).
+- **Related**: [ADR-0063](0063-cli-config-write-contract.md), [ADR-0084](0084-consent-before-a-local-mcp-spawn.md), [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [D63](../roadmap/current.md#wave-gating-decisions), [MVP-A15](../roadmap/phases/phase-2.6-conversational-authoring.md#cli-mvp-additions--2026-11-04)
 
 ## Context
 
@@ -25,7 +25,7 @@ it is a wall:
 
 - A command the user did not list in advance cannot run at all, even with the user watching
   and willing to approve it.
-- The refusal hint asks the user to edit a config file and restart.
+- The refusal hint asks the user to edit a config file.
 - [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)
   gives the built-in agent `run_command` only when this card lands, and the default agent's
   prompt still says it has no command execution.
@@ -33,15 +33,17 @@ it is a wall:
 Three defects the first version of this ADR did not know:
 
 - **The allowlist compares a string, not a command.** The policy target is
-  `[command, ...args].join(' ')`, so the exact entry `cat a b` admits both `["cat","a b"]`
-  and `["cat a","b"]`, and `./s/build.sh --release` admits a file literally named
-  `build.sh --release`. An entry typed with quotes never matches the tokenised `!` line.
+  `[command, ...args].join(' ')` (`PolicyTarget.command` is one string), so the exact entry
+  `cat a b` admits both `["cat","a b"]` and `["cat a","b"]`, and `./s/build.sh --release`
+  admits a file literally named `build.sh --release`. An entry typed with quotes never
+  matches the tokenised `!` line.
 - **The session cache is per tool id** (`ApprovalCache`). An answer for `run_command`
   would approve every later command in the session. "Session like ADR-0057's `[a]`" is
   therefore unsafe for commands.
-- **The global config writer is a read-modify-write with no lock** (ADR-0063). A concurrent
-  `relavium` process can silently restore a revoked grant, and a malformed grants section
-  would break every command's config load.
+- **The global config writer is a read-modify-write with no lock**
+  (`apps/cli/src/config/write.ts` records it: "last-writer-wins … no lock/CAS"). A
+  concurrent `relavium` process can silently restore a revoked grant, and a malformed grants
+  section would break every command's config load.
   [ADR-0084](0084-consent-before-a-local-mcp-spawn.md) §5 solved exactly this for MCP
   consent with an append-only NDJSON log, and rejected "a config layer".
 
@@ -93,14 +95,16 @@ that is not pre-approved. The default chat agent gets `run_command` when this la
   ([ADR-0130](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md) §4) and a call
   that names it anyway is refused with the fixed *unavailable* text, which returns to the
   model.
-- **A workflow's `run_command` is unchanged.** A workflow's allowlist stays the only
-  authority there, with no card and no remembered grants, and a miss still fails the node
-  with `command_not_allowed`. A workflow runs unattended.
+- **A workflow's `run_command` is unchanged in authority.** A workflow's allowlist stays
+  the only authority there, with no card and no remembered grants, and a miss still fails
+  the node with `command_not_allowed`. A workflow runs unattended. (Its exact entries are
+  compared element by element too, §3.)
 
 **How the allowlist miss reaches the host.** With an interactive approval regime present,
-the registry's command check no longer throws on a miss. It builds the approval request
-with the command's argv (in-process only, never on `agent:approval_requested`, whose
-preview object is strict) and a flag saying whether the allowlist admitted it, and the
+the registry's command check no longer throws on a miss. `PolicyTarget` gains the call's
+`argv` (`readonly string[]`, beside the string `command` that globs still read), and the
+approval request carries that argv (in-process only, never on `agent:approval_requested`,
+whose preview object is strict) and a flag saying whether the allowlist admitted it. The
 host's hook applies the table above. Without an approval regime the miss throws as today.
 This is how [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md) §1's "a command
 outside the allowlist" returns to the model: as a card, or as the fixed mode or
@@ -110,13 +114,39 @@ outside the allowlist" returns to the model: as a card, or as the fixed mode or
 
 - the argv, **one argument per row**, each delimited so a leading or trailing space stays
   visible, and spaces and quotes are unambiguous;
-- the working directory the command will run in (the jailed directory the host pins, never
+- the working directory the command will run in (the directory the host pins, never
   model-supplied);
 - one **standing** row: `on your allowlist`, `remembered for this project`, or `not
   pre-approved`, so a person can see when a repository's allowlist already trusts it;
-- a **shell warning** row when `argv[0]` is a shell (`sh`, `bash`, `zsh`, `dash`, `fish`,
-  `ksh`, `pwsh`, `powershell`, `cmd`, compared by base name): "starts a shell — what it is
-  given runs with your full authority". It is a warning only and never refuses a command.
+- when they apply, **two warning rows**, each worded as a fact and neither ever refusing a
+  command:
+  - **runs code** — the command is a *code carrier* (below);
+  - **names a protected path** — an argument, resolved lexically against the pinned working
+    directory, is a path the file tools' read floor would refuse (`isSensitiveReadPath`:
+    `.env`, `.ssh`, `.aws`, `.docker/config.json`, credential dotfiles, `.relavium`) or the
+    write floor protects (`isProtectedPath`). The card says so, and the command can then be
+    answered **Once only**.
+
+**Code carriers.** A closed table, applied to the argv, a speed bump for the card's honesty
+and **not a security boundary** (the boundary is the full argv on the card, exact-argv
+matching and `auto`'s hard edge). Names are compared by base name, case-folded, with a
+trailing `.exe` removed:
+
+- *shells*: `sh`, `bash`, `zsh`, `dash`, `fish`, `ksh`, `csh`, `tcsh`, `pwsh`, `powershell`,
+  `cmd`, in any invocation;
+- *interpreters given inline code*: `python`, `python3`, `node`, `deno`, `bun`, `perl`,
+  `ruby`, `php`, `lua`, `osascript`, when an argument is exactly `-c`, `-e`, `-E`, `-p`,
+  `-r`, `--eval`, `--command` or `--print` (`node build.js` and `python -m pytest` are not
+  flagged);
+- *wrappers that run another command*: `env`, `sudo`, `doas`, `xargs`, `nohup`, `nice`,
+  `timeout`, `time`, `stdbuf`, `exec`, `command`, `ssh`, `watch`, and `find` with `-exec`,
+  `-execdir`, `-ok` or `-okdir`. The wrapped command is not parsed; the wrapper itself is
+  flagged.
+
+A code carrier is answered **Once or Session only**: **Remember is not offered**. The table
+does not catch everything (`make`, `npm run`, a `git` alias, `awk`, `vim -c` or an interpreter
+not listed carry code too); it exists so that the common ways of hiding a script in one
+argument are named on the card, and the list lives in one place so it can grow.
 
 Everything is terminal-safe text, under the approval escape of
 [ADR-0120](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md): a control, a line
@@ -127,29 +157,51 @@ labels and counts, and which the person must reveal before approving when it hol
 but credential characters. Masked spans aside, the card never offers an approving answer
 for a command it does not show in full: each argument is drawn on its own line, so
 right-to-left text in one cannot be drawn past another, and a command too long for the
-screen must be expanded (`[v]`) before it can be approved, exactly as ADR-0129 notes 6, 7
-and 10 require for a diff.
+screen must be expanded (`[v]`) before **any** approving answer is accepted. That is
+stricter than [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
+notes 6 and 10, which withhold only the session-wide answer for a partial view, and it
+follows note 7, which locks `[y]` for a shortened target.
 
-**The card's answers** (every answer is a chord typing cannot produce,
+**The card's answers** (every approving answer is a chord typing cannot produce,
 [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) note 12,
-behind the same input guards):
+behind the same input guards; this ADR adds exactly one chord to that note's four):
 
 - **Once** (`Ctrl+Y`). This invocation only.
 - **Session** (`Ctrl+G`, then Enter). This exact argv, matched element by element, for the
-  rest of this session instance. Held in memory, never persisted (§2).
+  rest of this session instance. Held in memory, never persisted (§2). Not offered when the
+  card names a protected path.
 - **Remember** (`Ctrl+O`, then Enter). Persist a grant for this exact argv and this project
-  root (§2). Offered only when the grant store is usable (§2), and **not offered for a
-  shell** (the shell warning's case), where Once and Session remain.
+  root (§2). Offered only when the grant store is usable (§2), when the command is not a
+  code carrier and when the card names no protected path.
 - **Deny** (`Ctrl+N`), and **Deny with a reason** (`Ctrl+R`). A denial returns to the model
   under [ADR-0117](0117-a-denied-tool-call-returns-to-the-model.md) with the person's
   words; an identical repeat in the same turn is refused without asking again.
-- **`Esc` and `Ctrl+C`** reject the card, then stop the turn, as
-  [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) defines.
+- **`Esc` and `Ctrl+C`**, at the card and outside a text box of it, reject the card and
+  stop the turn; inside a reason box `Esc` only closes the box
+  ([ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) §2 and §3).
 
 `Ctrl+O` is the proposed Remember chord; a clash in VS Code's terminal, tmux or Windows
 Terminal that the manual check finds changes the chord without a new ADR. The rule that
 does not change: a chord typing cannot produce, confirmed by Enter, and a bare letter
-answers nothing.
+answers nothing. The question card's refusal of chord tokens in model text covers it.
+
+**Why this changes ADR-0061's rule.** [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md)
+refused a runtime-approvable `run_command` for two reasons: it dissolves the `empty ⇒
+disabled` floor, and it brings back the `@`/`!` inconsistency, where `!cat .env` is approved
+once while `@.env` is refused outright because human consent alone is not trusted for
+credentials. This ADR keeps the first reason where it matters and answers the second
+openly.
+
+- *The floor.* What runs **without a person** keeps the allowlist as its only authority:
+  `auto`, headless and workflow runs are unchanged. Where a person is present the card
+  replaces the wall, because a wall nobody can open is the problem users met, and the card
+  shows the whole argv, so the consent is informed.
+- *The inconsistency.* It is **not** closed. A person who reads a card that names a
+  protected path can still approve `cat .env` once, and the credential then reaches the
+  provider as tool output. The card makes that a one-call, eyes-open decision with no
+  session or remembered grant, but it is a relaxation of what the `@` floor does, and this
+  ADR accepts it knowingly. The security sitting this ADR requires may overturn it by making
+  the card refuse such a command instead of warning.
 
 ### 2. Grants
 
@@ -167,10 +219,14 @@ the blanket answer, and the session cache for that tool is keyed by argv.
   the safe line serializer, the mode self-healed on every touch, a symlink refused, **no
   lock** (concurrent appends of the same grant are idempotent), **append-only with
   tombstones** (a later `revoked` line cancels an earlier grant and the effective set is
-  the fold). It is not `config.toml`, not a project file and not `history.db`.
+  the fold). It is not `config.toml`, not a project file and not `history.db`. A concurrent
+  revocation and re-grant of the same argv resolve by file order, the later line winning in
+  the fold (the residual ADR-0084 records for its own log).
 - **Keyed by the canonical project root.** The resolved real path, so two paths to one tree
   share grants and a fresh clone elsewhere shares none. The root is never written in clear:
-  a record carries a root digest (below).
+  a record carries a root digest (below). A grant is **root-scoped**: it does not bind the
+  working directory (the host pins it and the model cannot choose it) or the environment, so
+  the card's working-directory row is information, not part of the grant.
 - **What a record contains: never the command.** A command can carry a password or a
   token, and the
   [credential masking](../reference/shared-core/built-in-tools.md#finite-diagnostic-credential-masking)
@@ -200,31 +256,39 @@ the blanket answer, and the session cache for that tool is keyed by argv.
 - **The key.** 32 random bytes from `node:crypto`, generated on first use and kept in the OS
   keychain beside the provider keys ([ADR-0006](0006-os-keychain-for-api-keys.md)) under
   its own account; it never enters a file, a log or an event. First use reads the entry,
-  generates and stores one if absent, and **reads it back** so two processes that raced
-  adopt the same stored key. A grant made under a key that was then overwritten simply
-  fails to match and the card asks again (fail-closed). `packages/core` does not import
-  `node:crypto`: the digest, the store and the matching live in the CLI host.
+  and if it is absent generates one, stores it and reads it back. Two processes that race
+  there can each store a key and the later store wins, so a grant written under the
+  overwritten key never matches again: the card asks again, which is the fail-closed
+  outcome, and nothing else is lost. `packages/core` does not import `node:crypto`: the
+  digest, the store and the matching live in the CLI host.
 - **Failure modes.** A keychain that is absent, locked or denied means **Remember is not
   offered** and the card offers Once, Session and Deny; existing grants cannot be verified
   and count as none. **Any unparseable line makes the whole store "no grants" for that
-  invocation, and is reported once** (naming the file): skipping a bad line is the tempting
-  answer and the wrong one, because a truncated line may be a tombstone, and dropping it
-  would resurrect a revoked grant. This is the ADR-0084 rule; the first version's "a
-  malformed grant file is a visible configuration error" is withdrawn, because a grants file
-  must not be able to break every command's start.
-- **Bounds.** At most 64 live grants per root and 1,024 in total, and a bounded line count
-  and file size; a write that would exceed a bound is refused with a message and Remember
-  is not offered until grants are revoked. `relavium permissions revoke --all` removes the
-  file, so a full store always has a recovery that does not need a text editor.
+  invocation, and is reported once** (one line naming the file and the revoke-all
+  recovery): skipping a bad line is the tempting answer and the wrong one, because a
+  truncated line may be a tombstone, and dropping it would resurrect a revoked grant. This
+  is the ADR-0084 rule; the first version's "a malformed grant file is a visible
+  configuration error" is withdrawn, because a grants file is machine state that must not
+  be able to break every command's start. (An authored allowlist entry is different: it is
+  authored text, and §3 treats it as strict config.)
+- **Bounds.** At most 64 live grants per root and 1,024 live grants in total, and a file of
+  at most 8,192 lines and 2 MiB (tombstones included). A write that would exceed a bound is
+  refused with a message and Remember is not offered until grants are revoked; a file that
+  already exceeds one is read as "no grants" and reported. `relavium permissions revoke
+  --all` removes the file, so a full store always has a recovery that does not need a text
+  editor.
 - **What a grant does not bind.** It binds the argv, not what the program reads or which
-  file `argv[0]` resolves to. "Remember `npm test`" keeps approving `npm test` after a
-  model edits `package.json`'s `test` script, and in `auto` such an edit is itself approved
-  (`package.json` is not a protected path,
+  file `argv[0]` resolves to, and **this is a decision of this ADR, not a deferral**. "Remember
+  `npm test`" keeps approving `npm test` after a model edits `package.json`'s `test` script,
+  and in `auto` such an edit is itself approved (`package.json` is not a protected path,
   [ADR-0116](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)).
-  A remembered grant therefore extends to whatever the files under the root make that
-  program do. That is the same exposure a repository allowlist entry has today; the
-  security sitting examines both, and whether a remembered grant should still ask once in
-  `auto` after the session has written under the root.
+  A bare name resolves through the user's own `PATH`, whose directories the file tools'
+  jail does not let a model write into by default, so binding the resolved path would add a prompt
+  every time the user switches a runtime without closing a hole the model can reach. A
+  remembered grant therefore extends to whatever the files under the root make that program
+  do. That is the same exposure a repository allowlist entry has today; the approval-path
+  security sitting examines both, and may overturn this by making a remembered grant ask
+  once in `auto` after the session has written under the root.
 - **Revocation and listing.** `relavium permissions list` shows the current project's
   remembered grants (an index, the label, the date) and `relavium permissions revoke
   <index>` appends a tombstone; the chat's `/permissions` shows the same list plus this
@@ -233,9 +297,11 @@ the blanket answer, and the session cache for that tool is keyed by argv.
   for them is MVP-8's (workstream 2.6.G) and the phase document's `/permissions` bullet is
   amended to say so.
 
-The exact keys, bounds and file layout live in
-[config-spec.md](../reference/contracts/config-spec.md). The card's rendering contract
-lives with the approval-preview contract (phase 2.6 ADR row 9).
+The grant store's format, bounds and commands live in one new reference,
+`docs/reference/cli/command-permissions.md`, modelled on the MCP grant store section of
+[mcp-integration.md](../reference/shared-core/mcp-integration.md); [config-spec.md](../reference/contracts/config-spec.md)
+holds only the config keys. The card's rendering contract lives with the approval-preview
+contract (phase 2.6 ADR row 9).
 
 ### 3. What "exact" means: the allowlist grammar
 
@@ -245,21 +311,27 @@ An exact allowlist entry is compared to the call **element by element**, not as 
 - An exact `allowed_commands` entry is split into tokens by one shared, quote-aware
   tokenizer: whitespace separates tokens; single and double quotes group (a quote's
   contents, spaces included, stay one token; adjacent quoted and unquoted spans join); there
-  are no escapes and no expansion (`$x`, `*`, `;` and `|` are literal characters). The `!`
-  escape's own tokenizer is this one, so a line the user types and an entry the user writes
-  mean the same thing.
+  are no escapes and no expansion (`$x`, `*`, `;` and `|` are literal characters). The
+  tokenizer reports whether a quote was left open.
 - The entry matches when its tokens equal the argv, element for element. `cat a b` therefore
   matches `["cat","a","b"]` and no longer matches `["cat","a b"]`, and `./s/build.sh
   --release` no longer matches the file named `build.sh --release`.
-- **An entry the tokenizer cannot split** (an unterminated quote, or an empty entry) is a
-  configuration error at load, in the strict-config style
-  ([ADR-0033](0033-strict-config-files-amends-0023.md)), not a silent non-match.
+- **An open quote is refused everywhere, never tolerated.** The tokenizer's old behaviour
+  (an open quote runs to the end of the line) is dropped: a `!` line with an open quote is
+  not run and says why, and an `allowed_commands` entry with one, or an empty entry, is a
+  configuration error at load in the strict-config style
+  ([ADR-0033](0033-strict-config-files-amends-0023.md)). A config entry is authored text
+  that a person can fix and that fails loudly the way every other config value does; a grants
+  file is machine state and degrades to "no grants" instead (§2).
 - **Globs stay string-level, and opt-in.** `allowed_command_globs` are matched against the
   space-joined argv, so a glob cannot tell one argument with a space from two. That is the
   reason globs are the riskier field and stay so; the documentation says it.
 - The same `ToolPolicy.allowedCommands` is the workflow `run_command`'s allowlist, so the
-  workflow path gets the same element-wise comparison. An entry that matched two different
-  argvs before now matches one; no entry that matched exactly one argv changes.
+  workflow path gets the same element-wise comparison. An entry containing no quote
+  character that matched exactly one argv still matches exactly that one; an entry that
+  matched two different argvs now matches one; and an entry with quote characters, which
+  could not match a tokenised line before, now can. The product has no deployed users to
+  migrate (maintainer, 2026-11-19), so there is no transition period.
 - The tokenizer and its inverse (a quoter that emits a line that parses back to the same
   argv, used wherever the product shows a command line a person could paste) live in
   `packages/core/src/tools/command-line.ts`, pure and platform-free; the CLI imports them.
@@ -281,14 +353,17 @@ approved path and a refusal when the card is declined.
 ### 5. What this amends
 
 - **ADR-0061.** The `!` escape's "allowlist before approval, refused otherwise" becomes §1's
-  table. Hardened spawn (`shell: false`, literal argv), the command jail, the busy and abort
-  affordances and the injected-output rules are unchanged.
+  table, for the reasons given in §1. Hardened spawn (`shell: false`, literal argv), the
+  command jail, the busy and abort affordances and the injected-output rules are unchanged.
 - **ADR-0029 (a).** Exact entries are compared element by element (§3). Globs are unchanged.
+- **ADR-0057.** The once/always cache is keyed by argv for `run_command`; an allowlist miss
+  reaches the host's hook as a request instead of a thrown error when a regime is present.
 - **ADR-0063.** Unchanged. Remembered grants are **not** a second write target of the config
   primitive: they use ADR-0084's append-only protocol, for the reasons in Context.
 - **ADR-0006.** The keychain holds one more secret: the grant digest key.
 - **ADR-0116.** `run_command` joins the default grant here (§4).
 - **ADR-0117.** The allowlist-miss class is realized as §1 describes.
+- **ADR-0129 note 12.** The command card has one more answer chord, `Ctrl+O`.
 - **ADR-0130.** Its table gains the command row of §1; nothing else in it changes.
 
 Each amended ADR gets a dated amendment note pointing here when this is accepted.
@@ -309,28 +384,32 @@ Each amended ADR gets a dated amendment note pointing here when this is accepted
   not recognize would be written in plaintext.
 - **Store a plain hash of the command.** Rejected. A short password is recoverable from an
   unkeyed digest by trying candidates; the keychain key makes that require the key.
+- **Bind the resolved executable path into the grant.** Rejected (§2, "What a grant does not
+  bind"): it prompts on every runtime switch and closes nothing a model can reach.
 - **Let `auto` approve any command.** Rejected. `run_command` has no argument
   confidentiality floor, so an approval-free arbitrary command is an approval-free
   exfiltration path for a prompt-injected model.
 - **Keep the card out of `!`.** Rejected. Two command paths with different consent rules are
   harder to reason about. The cost of one card is small.
-- **Offer Remember for a shell command.** Rejected. A remembered `bash -c "<script>"` runs
+- **Offer Remember for a code carrier.** Rejected. A remembered `bash -c "<script>"` runs
   silently in `auto` in every later session; the person loses nothing important by
-  answering Once or Session.
-- **Refuse shell commands outright.** Rejected. A person may legitimately want one, and the
-  card shows the whole script; the warning row and the missing Remember are proportionate.
+  answering Once or Session. The table is a speed bump, not a boundary, and says so.
+- **Refuse code carriers, or commands naming a protected path, outright.** Not taken: a
+  person may legitimately want one, the card shows the whole argv, and a refusal heuristic
+  with known bypasses would promise more than it delivers. The warning rows and the Once-only
+  rule are proportionate; the security sitting may tighten them.
 
 ## Consequences
 
 ### Positive
 
 - A command the user is willing to run can run, with the exact argv on screen, masked secret
-  spans aside. The config edit and restart are no longer needed.
+  spans aside. The config edit is no longer needed.
 - The allowlist compares commands, not strings: the `["cat a","b"]` collision is closed for
   the workflow path too.
 - A remembered grant serves one operator on one tree and never travels with the repository,
-  survives concurrent processes, and holds no command text beyond the name of an executable
-  found on the `PATH`.
+  survives concurrent processes without losing a line, and holds no command text beyond the
+  name of an executable found on the `PATH`.
 - `auto` keeps a hard edge: only pre-approved commands run without a prompt.
 - A headless path still never runs anything it was not configured to run.
 - The default agent can rename, move and delete through a reviewed card instead of saying it
@@ -343,18 +422,45 @@ Each amended ADR gets a dated amendment note pointing here when this is accepted
 - A repository's own allowlist still pre-approves commands for `auto`, as it does today. This
   ADR does not widen that, but it does not remove it either. The security sitting has to
   examine it, and closing it would be a separate decision.
+- A person can approve `cat .env` once and send a credential to the provider (§1). The card
+  names the path and withholds every grant, and the sitting may turn the warning into a
+  refusal.
+- The code-carrier table is incomplete by construction and will need maintenance.
 - Remember needs the OS keychain; without it the card offers Once, Session and Deny only, and
   a first macOS access may show a keychain prompt.
 - The revocation view cannot show a remembered command's arguments, only its program (or
   `(unnamed program)`), argument count and date.
 - A grant binds the argv, not the files the program interprets nor the binary `argv[0]`
   resolves to, so in `auto` a model that can edit those files can change what a remembered
-  command does.
+  command does (§2, a decision, not a deferral).
 - The card is a new approval surface. It needs the approval-path security sitting D63
   requires: exact rendering, no hidden affirmative key, no truncated approval, and a
   grant store that cannot be forged or resurrected.
 - An allowlist entry with an unbalanced quote now stops the config load instead of silently
-  matching nothing.
+  matching nothing, and a `!` line with an open quote is refused instead of run.
+
+### Landing obligations
+
+- New reference `docs/reference/cli/command-permissions.md`: the grant store (file, protocol,
+  record, digest, key, bounds, failure modes), the code-carrier table and the
+  `relavium permissions` commands.
+- [config-spec.md](../reference/contracts/config-spec.md): `allowed_commands` is compared
+  element by element and its tokenizer; the strict error for an open quote; the sentence that
+  `[chat]` does not define its own allowlist and the "`!`-shell allowlist" wording, which now
+  also gates the model's `run_command`.
+- [chat-session.md](../reference/cli/chat-session.md): the mode table's command row, the
+  card, the answers and the standing row; the `!` section. [tool-registry.md](../reference/shared-core/tool-registry.md):
+  `PolicyTarget.argv`, the request's argv and flag, the per-tool approval seam.
+  [built-in-tools.md](../reference/shared-core/built-in-tools.md): `run_command`.
+  [commands.md](../reference/cli/commands.md): `relavium permissions` and `/permissions`.
+  [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md): the element-wise
+  match. [security-review.md](../standards/security-review.md): the grant store joins the
+  mandatory-review triggers.
+- Dated amendment notes on ADR-0006, 0029, 0057, 0061, 0063 (not a write target), 0084
+  (pattern reused), 0116, 0117, 0129 and 0130.
+- The phase document's 2.6.G "Permission management" bullet, the D63 row, MVP-A15 and the
+  MVP-4 entry of [current.md](../roadmap/current.md): grants are not written to
+  `project.toml` or `config.toml`, and the Home's screen is MVP-8's.
 
 ### Revision note — 2026-11-19
 
@@ -365,8 +471,12 @@ ADR-0130 (a card in `ask`, a refusal in `plan`, headless hides the tool); "only 
 keys answer" is replaced by the chord rule; "Session like ADR-0057's `[a]`" is replaced by an
 exact-argv session grant, because that cache is per tool id; remembered grants moved from the
 global config to an ADR-0084-style append-only file, with the root also digested and bound
-into the grant digest, a bounded file, a recovery command and a read-back of the key; the
-allowlist grammar (§3), the shell warning and the no-Remember-for-shells rule, the
-standing row, the `permissions` commands and the default agent's prompt were added; and the
-decision that an allowlist miss reaches the host as a request rather than a thrown error was
-recorded, so ADR-0117's allowlist class needs no denial of its own.
+into the grant digest, numbered bounds, a recovery command and a read-back of the key; the
+allowlist grammar (§3, with `PolicyTarget.argv` and the open-quote rule), the code-carrier
+table and the protected-path warning, the no-Remember rule for code carriers, the standing
+row, the `permissions` commands and the default agent's prompt were added; the answer to
+ADR-0061's security reasoning and the decision not to bind the executable path were written
+down; and the decision that an allowlist miss reaches the host as a request rather than a
+thrown error was recorded, so ADR-0117's allowlist class needs no denial of its own. A
+review on the same day tightened the code-carrier rule (it had named shells only, which
+`env sh -c` and `python -c` bypass), completed the Amends list and corrected two citations.

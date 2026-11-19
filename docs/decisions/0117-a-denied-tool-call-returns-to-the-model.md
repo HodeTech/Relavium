@@ -171,3 +171,5 @@ keeps fatal because their wording could depend on the target; separating the two
 classes and designing the allowlist-miss text belong with MVP-4's `run_command`
 card ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)).
 
+
+> Amended 2026-11-19 by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and [ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md): §1's "a command outside the allowlist" is realized as a command card, or as the fixed mode or *unavailable* refusal, never as a denial class that names the allowlist; the protected-path refusal that returns is the lexical directory and rc-file arm only (credential-store and post-resolution refusals stay fatal); and §3's ceilings are configurable within published bounds.

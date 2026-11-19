@@ -158,10 +158,10 @@ flowchart TD
 | 0112 | [Chat network grants and onboarding state are operator-owned](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) | Accepted | 2026-10-15 |
 | 0113 | [Secret-derived context keeps provenance at public sinks](0113-secret-derived-context-keeps-provenance-at-public-sinks.md) | Accepted | 2026-10-15 |
 | 0114 | [In-house markdown rendering for the chat transcript](0114-in-house-markdown-rendering-for-the-chat-transcript.md) | Accepted | 2026-11-05 |
-| 0115 | [One interrupt keymap for the interactive CLI](0115-one-interrupt-keymap-for-the-interactive-cli.md) | Proposed (revised 2026-11-19) | 2026-11-05 |
+| 0115 | [One interrupt keymap for the interactive CLI](0115-one-interrupt-keymap-for-the-interactive-cli.md) | Accepted | 2026-11-05 |
 | 0116 | [The built-in chat agent can edit, and the starting mode is configurable](0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Accepted | 2026-11-05 |
 | 0117 | [A denied tool call returns to the model](0117-a-denied-tool-call-returns-to-the-model.md) | Accepted | 2026-11-05 |
-| 0118 | [A command outside the allowlist asks instead of failing](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) | Proposed (revised 2026-11-19) | 2026-11-05 |
+| 0118 | [A command outside the allowlist asks instead of failing](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) | Accepted | 2026-11-05 |
 | 0119 | [An interrupted turn stays in the session as a content-free marker](0119-an-interrupted-turn-stays-as-a-content-free-marker.md) | Accepted | 2026-11-05 |
 | 0120 | [The toolbelt grows, and a tool call shows what it does](0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) | Accepted | 2026-11-05 |
 | 0121 | [Pre-1.0 releases publish the smoke-verified package-test tarball](0121-pre-1-0-releases-publish-the-smoke-verified-package-test-tarball.md) | Proposed | 2026-11-05 |
@@ -179,7 +179,7 @@ flowchart TD
 | 0133 | [An `ask_user` question and its answer are kept with the session](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) | Accepted | 2026-11-16 |
 | 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
 | 0135 | [Concurrent processes on one operator home wait for the allocation claim](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md) | Accepted | 2026-11-18 |
-| 0136 | [A turn asks to continue at a checkpoint instead of dying at a ceiling](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) | Proposed | 2026-11-19 |
+| 0136 | [A turn asks to continue at a checkpoint instead of dying at a ceiling](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) | Accepted | 2026-11-19 |
 
 ## Creating a new ADR
 

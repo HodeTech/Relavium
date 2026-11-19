@@ -187,3 +187,5 @@ future feature, deferral or claim of merge-commit execution.
 ## Amendments — 2026-11-17 (PR #99 review)
 
 > **Amended 2026-11-17.** The "implementation pending" status above has since landed: the starting-mode preference was implemented with MVP-3 Step 3 (see `docs/reference/contracts/config-spec.md`, Starting chat mode — MVP-3). Final-head gates remain with the maintainer.
+
+> Note 2026-11-19 ([ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2): remembered command grants are **not** a write target of this primitive. A last-writer-wins read-modify-write could resurrect a revoked grant and a malformed section would break every command's config load, so they use the append-only protocol of ADR-0084 in `~/.relavium/command-grants.ndjson`.

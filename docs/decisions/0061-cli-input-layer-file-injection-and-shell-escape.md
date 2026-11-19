@@ -370,3 +370,5 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+> Amended 2026-11-19 by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md): a `!` command that is not pre-approved shows the same command card as the model's `run_command` (the actionable allowlist hint is retired; the security reasoning above is answered in [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1); the tokenizer refuses an open quote instead of running to the end of the line; and `Ctrl-C` during a `!` command interrupts it as `Esc` does, instead of ending the session.
