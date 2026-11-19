@@ -12,6 +12,7 @@ import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import {
+  type ApprovalGuard,
   APPROVAL_CONFIRM_MAX_MS,
   APPROVAL_CONFIRM_MIN_MS,
   APPROVAL_TYPEAHEAD_MS,
@@ -58,8 +59,13 @@ const FACTS = (remember: boolean, session = true): CommandCardFacts => ({
   offers: { session, remember },
 });
 
-function rig(facts: CommandCardFacts | undefined) {
-  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+function rig(facts: CommandCardFacts | undefined, guard?: ApprovalGuard) {
+  const store = createChatStore(
+    false,
+    undefined,
+    INLINE_TRANSCRIPT_BOUND,
+    guard === undefined ? undefined : { approvalGuard: guard },
+  );
   const answers: unknown[] = [];
   void store
     .requestApproval(
@@ -200,8 +206,14 @@ describe('Ctrl+O on a command card', () => {
 });
 
 describe('Ctrl+O is behind every guard of ADR-0129 notes 9 to 11, not only the dwell', () => {
-  it('a Ctrl+O 100 ms after another key is refused (the quiet gap)', () => {
-    const r = rig(FACTS(true));
+  it('a Ctrl+O 100 ms after another key is refused (the quiet gap, isolated: it is the only layer on)', () => {
+    const r = rig(FACTS(true), {
+      settleMs: 0,
+      quietMs: 300,
+      typeaheadMs: 0,
+      lockoutMs: 0,
+      confirmAlways: true,
+    });
     at(1000);
     r.key('x'); // any key, foreign or not
     at(1100);
