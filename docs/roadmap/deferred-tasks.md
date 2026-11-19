@@ -1684,9 +1684,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   (795), so do it with the next notice change. (6) An unpaired surrogate in the person's own text now fails the turn as a host fault instead of
   silently dropping the record; the CLI cannot produce one (input is decoded from UTF-8), so it matters only to a future host.
   *(low · apps/cli/src/render/tui, packages/core/src/engine/turn-receipts.ts, packages/core/src/tools/ask-user.ts)*
-- [ ] **ADR-0117 — return a protected-path refusal and a command outside the allowlist.** The protected-path
-  predicate also covers credential stores, which the rule keeps fatal; split the two and design the
-  allowlist-miss text with MVP-4's `run_command` card. *(medium · apps/cli/src/engine/tool-host/fs.ts)*
+- [ ] **ADR-0117 — return a protected-path refusal.** The protected-path predicate also covers credential stores,
+  which the rule keeps fatal; split the two so a refused protected path can return to the model while a credential
+  store stays fatal. *(The allowlist-miss half is closed: a command outside the allowlist is a card since MVP-4 step 4,
+  and the `!` escape's config-line hint is retired.)* *(medium · apps/cli/src/engine/tool-host/fs.ts)*
 - [ ] **ADR-0131 — clip a spill read's line range too.** `session-output-store.ts` still refuses a line range
   whose end is past the last line; align it with `read_file`'s clip. *(low · apps/cli/src/engine/tool-host/session-output-store.ts)*
 - [ ] **ADR-0129 follow-ups.** A terminal bell or notification when a card waits while the terminal is

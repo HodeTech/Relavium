@@ -162,9 +162,10 @@ Neither is reachable by the model: the manifest is a CLI projection, not a tool.
 
 ## The command card
 
-A command that is not pre-approved reaches the person as the approval card the chat already has
+A command reaches the person as the approval card the chat already has
 ([chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): docked, bounded, every affirmative
-chord behind the dwell, quiet, typeahead and lockout guards), with the additions of
+chord behind the dwell, quiet, typeahead and lockout guards) — in `ask` and `accept-edits` every command, even an allowlisted
+or remembered one, and in `auto` a command nothing pre-approved — with the additions of
 [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1. The `!` escape and a model's
 `run_command` reach the same card; the `!` escape no longer sends anyone to a config file.
 
@@ -174,26 +175,31 @@ chord behind the dwell, quiet, typeahead and lockout guards), with the additions
   (`cat 'a b'`) and `["cat","a","b"]` (`cat a b`) never read alike, a leading or trailing space and an empty argument are
   visible, and a line too long for the title rows is a **shortened target**, which keeps **every approving answer locked**
   until the person has read it all in the full view (`[v]`).
-- One body row per argument (`program`, `argument 1`, …), so each is delimited on its own line.
+- One bare row per argument, the program first (the rows carry no labels), so each is delimited on its own line. A command
+  whose rows do not all fit the card (about five elements at 80×24) says `⚠ N rows of this command are not shown — press [v]`
+  and offers only *Once* there; the full view lists every row and offers every answer the command may have.
 - `Standing: on your allowlist | remembered for this project | not pre-approved`, and `Runs in: <directory>` (the
   session workspace the host pins; never model-supplied), then the warnings that apply, each worded as a fact and neither ever
   refusing a command:
   `⚠ Runs code` (a *code carrier*, below) and `⚠ Names a protected path`.
-- Secret-shaped spans are masked, labelled and counted by the existing masking and must be revealed before approving, exactly
-  as on a file card; control characters, line separators and invisible code points show as visible escapes.
+- Secret-shaped spans are masked, labelled and counted by the existing masking. On a command card **every** masked span must be
+  revealed and displayed before an approving answer counts (a file card requires only the flagged ones), because a masked
+  argument is exactly where a command could hide what it does. Control characters, line separators and invisible code points
+  show as visible escapes (`<U+001B>`), never as terminal controls.
 - The same rows head the command's **full view**.
 - A command with more than 63 arguments, or any argument or the quoted line over 4,096 characters, cannot be shown in full;
-  its card is blocked (Deny and Esc only).
+  its card is **blocked**: it says `A command is waiting, but it is too large for this card to show …`, no approving answer
+  counts, `Ctrl+N` (and `Esc`) still answer, and the denial tells the model, in fixed words, to run it as smaller commands.
 
 **The answers** (each affirmative one is a Ctrl chord typing cannot produce):
 
 | Answer | Key | Offered when |
 |--------|-----|--------------|
-| Once | `Ctrl+Y` | always (once every requirement to read it is met) |
-| This session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command |
-| Remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, and the page shows the whole command |
-| Deny / Deny with a reason | `Ctrl+N` / `Ctrl+R` | always; a denial returns to the model with the person's words |
-| Stop | `Esc` or `Ctrl+C` | always; rejects the call and stops the turn |
+| Once | `Ctrl+Y` | a card that can be shown; locked until every requirement to read it is met (a shortened target, a masked span) |
+| This session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command (the card, or the full view) |
+| Remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not already pre-approved (on the allowlist or remembered), and the page shows the whole command |
+| Deny / Deny with a reason | `Ctrl+N` / `Ctrl+R` | always, even on a blocked card; a denial returns to the model with the person's words |
+| Stop | `Esc` or `Ctrl+C` | always; rejects the call and stops the turn (only `Ctrl+C` also starts the exit window) |
 
 *This session* approves this **exact argv** for the rest of this session instance (in memory, gone on `/exit`, and it asks
 again after a resume). *Remember* writes the grant at the moment of the answer — it is consent to the command, not to its
@@ -201,9 +207,19 @@ outcome — and then behaves as *This session* too, so the same command does not
 cannot be written approves this call only and the chat says why, in fixed words that never contain the command. An answer
 the card did not offer is narrowed to *Once* by the hook, whatever the prompt returned.
 
+The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions
+--revoke` withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
+`relavium permissions revoke`, or another chat) until the person withdraws it there with `/permissions --revoke --session`, and
+the revoke's message says so.
+
+A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
+allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node
+cannot run a command until the person writes the allowlist, as it is for the network tools and their allowed domains.
+
 **Code carriers.** A closed table over the argv, a speed bump that names the common ways of hiding a script in one argument
 and **not a security boundary** (the boundary is the full command on the card, exact-argv matching and `auto`'s hard edge).
-Names are compared by base name, case-folded, with a trailing `.exe` removed. The table lives in
+Names are compared by base name, case-folded, with a trailing `.exe`, a Windows alternate-stream suffix (`:…`) and trailing
+dots or spaces removed (`cmd.exe.` is `cmd`). The table lives in
 `apps/cli/src/chat/command-facts.ts`:
 
 - *shells* — `sh`, `bash`, `zsh`, `dash`, `fish`, `ksh`, `csh`, `tcsh`, `pwsh`, `powershell`, `cmd` — in any invocation;
@@ -214,12 +230,12 @@ Names are compared by base name, case-folded, with a trailing `.exe` removed. Th
   `exec`, `command`, `ssh`, `watch`, and `find` with `-exec`, `-execdir`, `-ok` or `-okdir`; the wrapped command is not
   parsed, the wrapper is flagged.
 
-A code carrier is answered Once or This session: Remember is not offered. The table does not catch everything (`make`,
+A code carrier is answered Once or This session: Remember is not offered, and its card says so. The table does not catch everything (`make`,
 `npm run`, a `git` alias, `awk`, `vim -c` carry code too).
 
-**A protected path.** An argument — and the value of a `--flag=value` — resolved lexically against the working directory is
+**A protected path.** An argument — and the text after the first `=` of any argument (`--flag=value`, `KEY=value`) — resolved lexically against the working directory is
 a path the file tools' read floor would refuse (`.env`, `.ssh`, `.aws`, `.docker/config.json`, credential dotfiles,
-`.relavium`) or the write floor protects (`.git`, startup files). The card says so and the only answer that approves is
+`.relavium`) or the write floor protects (`.git`, startup files). The card says so (`⚠ Names a protected path; its output would go to the model`) and the only answer that approves is
 *Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
 
 **In the chat: `/permissions`.**
@@ -231,7 +247,8 @@ a path the file tools' read floor would refuse (`.env`, `.ssh`, `.aws`, `.docker
 ```
 
 The two lists are numbered separately and show the same labels as `relavium permissions list` — a program's name only where it
-could be named without risking a credential, the argument count and, for a remembered command, the date — and never an
-argument. A confirmation names what it withdrew, because the numbers close up. On a plain, `--json` or one-shot chat, which has
+could be named without risking a credential, the argument count (`npm, 1 argument`) and, for a remembered command only, the
+date — and never an argument. The number is a plain decimal from 1; a typo, `--session` or a number without `--revoke`, or a
+second number gets the usage line instead of a guess. A confirmation names what it withdrew, because the numbers close up. On a plain, `--json` or one-shot chat, which has
 no store and no one to ask, `/permissions` says remembered commands are not available. The Home's full screen for grants,
 domain allowlists and MCP servers is MVP-8's.

@@ -199,7 +199,7 @@ at its bound workspace and owns fresh approvals, read evidence and previews.
 | **`/mode`** (MVP-3) | configure the startup default | choose current mode or separately save a startup default | — |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
-| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`Esc`/`Ctrl+C`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `Esc`/`Ctrl+C` reject and stop the turn (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
+| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+O`/`Ctrl+N`/`Ctrl+R`/`Esc`/`Ctrl+C`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+O` (then Enter, a command card only) remember for the project · `Ctrl+N` no · `Ctrl+R` no, with a reason · `Esc`/`Ctrl+C` reject and stop the turn (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
 | **Ctrl+J** (2.5.D) | insert a newline (multi-line prompt) | insert a newline (idle) | ignored |
 | **↑ / ↓** (2.5.D) | — | recall prev/next submitted line (buffer edge) / move by line (mid-buffer) | — |
 | **Ctrl+R** (2.5.D) | — | reverse-incremental history search (chat only) | — |

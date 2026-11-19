@@ -441,8 +441,8 @@ ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-pl
   `[redacted]` — which reads as "we protected you" rather than "you cannot see this". Bounded, where no one can answer, by
   `allowedCommands`/`allowedCommandGlobs` being deny-all by default; in an interactive chat a command outside them reaches the
   card ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), so there the bound is the
-  card itself — the generic card shows the scrubbed `command` string until step 4's command card (the full argv, one argument per
-  row, a masked span revealed before approving) — and the fs/egress floors, but real; surfacing "this was redacted" to the prompt
+  card itself — the command card shows the whole command as one quoted line and every argument on its own row, and every masked
+  span must be revealed before an approving answer counts — and the fs/egress floors, but real; surfacing "this was redacted" to the prompt
   is an open follow-up.
 
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
