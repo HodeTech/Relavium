@@ -2025,6 +2025,8 @@ describe('ToolRegistry — the live row of a refusal that returns to the model',
     );
     expect(JSON.stringify(completed)).not.toContain('because I said so');
     expect(completed).toEqual([expect.objectContaining({ outcome: 'denied' })]);
+    // No summary AT ALL: the user's message text is not a fixed refusal text, even though the rejection is recoverable.
+    expect(completed[0]).not.toHaveProperty('summary');
   });
 });
 

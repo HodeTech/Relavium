@@ -2595,9 +2595,10 @@ async function driveAgentTurn(
 
       // The model asked for another round of tools and `toolTurn` rounds have been dispatched. At the limit the round is
       // HELD, not run: with nobody to ask the turn ends here, and with a person the answer decides (ADR-0136 §2–§3).
-      // `!(a < b)`, not `a >= b`: a non-numeric limit then FAILS CLOSED (the check fires) instead of never firing. A held
-      // response the dispatch below would refuse anyway (no call, or too many) is refused by it, not asked about.
-      if (!(toolTurn < allowedRounds) && isDispatchableRound(turn.content)) {
+      // `allowedRounds` is always a clamped number (`initialRoundAllowance` turns a NaN into 0), so a non-numeric limit fails
+      // closed here. A held response the dispatch below would refuse anyway (no call, or too many) is refused by it, not
+      // asked about.
+      if (toolTurn >= allowedRounds && isDispatchableRound(turn.content)) {
         allowedRounds = await resolveRoundLimit(params, toolTurn, interval);
       }
 
