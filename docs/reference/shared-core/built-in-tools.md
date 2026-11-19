@@ -247,7 +247,7 @@ admitted); uses any space but the ordinary one; builds one character (grapheme) 
 has leading or trailing whitespace; or begins with a marker a list could draw (`1.`, `2)`, `[x]`, `[ ]`, `( )`, a bullet). The
 host's own drawing is refused **anywhere** in the string, not only at its start — the cursor `›`, the own-answer glyph `✎`, the
 field cursor `█`, the box-drawing range `─`–`╿` (including the gutter `│`), the tick shapes `(•)`, `( )`, `[x]`, `[ ]`, and the
-approval card's key tokens `[Ctrl+Y]`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]` and `[v]` (and the single-letter tokens `[y]`, `[a]`, `[n]`, `[c]` the card drew before its answers became chords) — because a question is hard-wrapped and a forged row can start at any
+key tokens a card draws: `[v]`, any `[Ctrl+<letter>]` in any case (`[Ctrl+Y]`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]`, `[Ctrl+O]`, `[Ctrl+S]`, `[Ctrl+C]`, `[ctrl+g]`, … — so a chord a later card adds needs no list change) and `[Esc]` (and the single-letter tokens `[y]`, `[a]`, `[n]`, `[c]` the card drew before its answers became chords) — because a question is hard-wrapped and a forged row can start at any
 byte. A **label** must also be unique within its question after NFC, trimming, whitespace collapse and a locale-independent
 lower-casing (`toLowerCase`; no `ß`/`ς` folding), must not fold to `other`, must not contain `type your own`, and must not begin
 with `✎`. Look-alike letters (a Cyrillic `а`) are not detected — [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)

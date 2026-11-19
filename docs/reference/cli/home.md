@@ -73,7 +73,7 @@ existing chat history stays mounted while a setup card owns input. Native cards
 require finite integer geometry of at least 80×24 and a fully visible current
 card. Input and preference publication wait through resize until that card is
 measured and flushed; a new snapshot or geometry change invalidates old evidence.
-Esc/Ctrl-C closes the flow without leaving Home. Skipping leaves a persistent setup row;
+Esc/Ctrl+C closes the flow without leaving Home. Skipping leaves a persistent setup row;
 Enter on an empty prompt or `/providers` opens it again. `/providers` is also
 available in the in-Home chat, with connect/login/key discovery terms. Standalone
 chat keeps its own palette and runs the shared setup before its normal host.
@@ -125,7 +125,7 @@ native host. Other shell scaffolding/gate prompts retain their existing contract
 **Accepted on development, MVP-2 step 3 (2026-11-10).**
 `/init` is available in the landing and Home-chat palettes. Its card lists the
 exact three directories before writing and defaults to **No**. Only an explicit
-Yes creates them; Esc/Ctrl-C closes the card and keeps Home/chat. The existing
+Yes creates them; Esc/Ctrl+C closes the card and keeps Home/chat. The existing
 native input owner, complete-card visibility and resize/cancellation checks apply,
 including at each directory publication. Existing chat history stays mounted.
 
@@ -159,7 +159,7 @@ relavium                                          ← branded header (bold)
     coder · 3d ago
 
 > █                                                                 ← live prompt + cursor
-type a message to start a new chat · Ctrl+C twice to exit           ← footer hint (reads `Press Ctrl+C again to exit` once armed)
+/ for commands · type a message to start a chat · Ctrl+C twice to exit   ← footer hint (reads `Press Ctrl+C again to exit` once armed)
 ```
 
 - **Attention required** — pending **human gates first** (ordered by their paused run's `created_at DESC`, a glanceable proxy for start time), then **failed runs** (most-recent first). An **overdue** (expired) gate is escalated yellow → red. A run that is failed or human-gated is **lifted** into this section and **never repeated** in *Continue*.
@@ -199,7 +199,7 @@ at its bound workspace and owns fresh approvals, read evidence and previews.
 | **`/mode`** (MVP-3) | configure the startup default | choose current mode or separately save a startup default | — |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
-| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`[esc]`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `Esc`/`Ctrl+C` reject and stop the turn (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
+| **`Ctrl+Y`/`Ctrl+G`/`Ctrl+N`/`Ctrl+R`/`Esc`/`Ctrl+C`** (2.5.E; chords since PR #99) | — | **answer a pending per-tool approval** — `Ctrl+Y` once · `Ctrl+G` (then Enter) always · `Ctrl+N` no · `Ctrl+R` no, with a reason · `Esc`/`Ctrl+C` reject and stop the turn (the card owns the keyboard; a bare letter answers nothing, so typing can never resolve it) | — |
 | **Ctrl+J** (2.5.D) | insert a newline (multi-line prompt) | insert a newline (idle) | ignored |
 | **↑ / ↓** (2.5.D) | — | recall prev/next submitted line (buffer edge) / move by line (mid-buffer) | — |
 | **Ctrl+R** (2.5.D) | — | reverse-incremental history search (chat only) | — |
