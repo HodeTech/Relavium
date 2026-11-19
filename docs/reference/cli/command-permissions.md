@@ -2,7 +2,7 @@
 
 > Last updated: 2026-11-19
 
-- **Status**: Reference — the grant store and `relavium permissions` are implemented on `development` (MVP-4 step 3). The card that asks, *Session* and *Remember* as answers, and the chat's `/permissions` are step 4 and are marked below; until then nothing writes a grant.
+- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 and 4).
 - **Surface**: CLI (`relavium permissions`, the chat's command card, `!`)
 - **Scope**: A person's "Remember this command" answers, kept on one machine. Not the `[chat]` allowlist (config), not a workflow's allowlist, not MCP consent.
 - **Related**: [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md), [commands.md](commands.md), [chat-session.md](chat-session.md), [keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [mcp-integration.md](../shared-core/mcp-integration.md#the-grant-store), [security-review.md](../../standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs)
@@ -15,7 +15,7 @@ command without a card, while `ask` and `accept-edits` still show one, because a
 *unknown*, not the person's per-call consent. This page is the canonical home for the store's format,
 bounds and commands; the decision and its reasoning are
 [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2, and the card
-that offers *Remember* is specified by ADR-0118 §1 until step 4's reference lands.
+that offers *Remember* is [the command card](#the-command-card) below.
 
 ## What a grant is, and is not
 
@@ -160,10 +160,78 @@ relavium permissions revoke --all [--json]
 `list` is a `read` and `revoke` a `destructive` entry of the [command manifest](commands.md#command-manifest).
 Neither is reachable by the model: the manifest is a CLI projection, not a tool.
 
-## In the chat _(step 4)_
+## The command card
 
-The command card offers *Session* (this exact argv, in memory), and *Remember* (`Ctrl+O` then Enter, proposed
-in ADR-0118 §1) when the store reports it can write, the command is not a code carrier and the card names no
-protected path; the chat's `/permissions` lists and revokes the same grants plus the session's own. Until
-the card lands **nothing writes a grant and no session answer is offered**: the store, the mode logic that
-honours a grant and the two commands above are in place and tested, and the surface that asks is not.
+A command that is not pre-approved reaches the person as the approval card the chat already has
+([chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): docked, bounded, every affirmative
+chord behind the dwell, quiet, typeahead and lockout guards), with the additions of
+[ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1. The `!` escape and a model's
+`run_command` reach the same card; the `!` escape no longer sends anyone to a config file.
+
+**What the card shows.**
+
+- The title `Run <the whole command as one quoted line>`: the argv joined by the shared quoter, so `["cat","a b"]`
+  (`cat 'a b'`) and `["cat","a","b"]` (`cat a b`) never read alike, a leading or trailing space and an empty argument are
+  visible, and a line too long for the title rows is a **shortened target**, which keeps **every approving answer locked**
+  until the person has read it all in the full view (`[v]`).
+- One body row per argument (`program`, `argument 1`, …), so each is delimited on its own line.
+- `Standing: on your allowlist | remembered for this project | not pre-approved`, and `Runs in: <directory>` (the
+  session workspace the host pins; never model-supplied), then the warnings that apply, each worded as a fact and neither ever
+  refusing a command:
+  `⚠ Runs code` (a *code carrier*, below) and `⚠ Names a protected path`.
+- Secret-shaped spans are masked, labelled and counted by the existing masking and must be revealed before approving, exactly
+  as on a file card; control characters, line separators and invisible code points show as visible escapes.
+- The same rows head the command's **full view**.
+- A command with more than 63 arguments, or any argument or the quoted line over 4,096 characters, cannot be shown in full;
+  its card is blocked (Deny and Esc only).
+
+**The answers** (each affirmative one is a Ctrl chord typing cannot produce):
+
+| Answer | Key | Offered when |
+|--------|-----|--------------|
+| Once | `Ctrl+Y` | always (once every requirement to read it is met) |
+| This session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command |
+| Remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, and the page shows the whole command |
+| Deny / Deny with a reason | `Ctrl+N` / `Ctrl+R` | always; a denial returns to the model with the person's words |
+| Stop | `Esc` or `Ctrl+C` | always; rejects the call and stops the turn |
+
+*This session* approves this **exact argv** for the rest of this session instance (in memory, gone on `/exit`, and it asks
+again after a resume). *Remember* writes the grant at the moment of the answer — it is consent to the command, not to its
+outcome — and then behaves as *This session* too, so the same command does not ask again in this chat. A Remember that
+cannot be written approves this call only and the chat says why, in fixed words that never contain the command. An answer
+the card did not offer is narrowed to *Once* by the hook, whatever the prompt returned.
+
+**Code carriers.** A closed table over the argv, a speed bump that names the common ways of hiding a script in one argument
+and **not a security boundary** (the boundary is the full command on the card, exact-argv matching and `auto`'s hard edge).
+Names are compared by base name, case-folded, with a trailing `.exe` removed. The table lives in
+`apps/cli/src/chat/command-facts.ts`:
+
+- *shells* — `sh`, `bash`, `zsh`, `dash`, `fish`, `ksh`, `csh`, `tcsh`, `pwsh`, `powershell`, `cmd` — in any invocation;
+- *interpreters given inline code* — `python`, `python3`, `node`, `deno`, `bun`, `perl`, `ruby`, `php`, `lua`, `osascript` —
+  when an argument is exactly `-c`, `-e`, `-E`, `-p`, `-r`, `--eval`, `--command` or `--print` (`node build.js` and
+  `python -m pytest` are not flagged);
+- *wrappers that run another command* — `env`, `sudo`, `doas`, `xargs`, `nohup`, `nice`, `timeout`, `time`, `stdbuf`,
+  `exec`, `command`, `ssh`, `watch`, and `find` with `-exec`, `-execdir`, `-ok` or `-okdir`; the wrapped command is not
+  parsed, the wrapper is flagged.
+
+A code carrier is answered Once or This session: Remember is not offered. The table does not catch everything (`make`,
+`npm run`, a `git` alias, `awk`, `vim -c` carry code too).
+
+**A protected path.** An argument — and the value of a `--flag=value` — resolved lexically against the working directory is
+a path the file tools' read floor would refuse (`.env`, `.ssh`, `.aws`, `.docker/config.json`, credential dotfiles,
+`.relavium`) or the write floor protects (`.git`, startup files). The card says so and the only answer that approves is
+*Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
+
+**In the chat: `/permissions`.**
+
+```text
+/permissions                      list what is remembered for this project and approved for this session
+/permissions --revoke <number>    withdraw a remembered command
+/permissions --revoke --session <number>   withdraw a session approval, so the same command asks again
+```
+
+The two lists are numbered separately and show the same labels as `relavium permissions list` — a program's name only where it
+could be named without risking a credential, the argument count and, for a remembered command, the date — and never an
+argument. A confirmation names what it withdrew, because the numbers close up. On a plain, `--json` or one-shot chat, which has
+no store and no one to ask, `/permissions` says remembered commands are not available. The Home's full screen for grants,
+domain allowlists and MCP servers is MVP-8's.
