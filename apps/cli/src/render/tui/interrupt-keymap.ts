@@ -21,7 +21,8 @@ export const INTERRUPT_ARM_WINDOW_MS = 2000;
  * - `work` — a model turn or a `!` command is running.
  * - `prompt` — nothing is running; `hasText` says whether the composer holds a draft.
  * - `overlay` — a details view, palette, picker, `@` mention, reverse search or a confirmation card is open.
- * - `home` — the bare Home, with no chat; `loading` is true until it has read its first snapshot.
+ * - `home` — the Home with no chat on screen; `loading` is true while the first message's chat is being built (nothing is loaded
+ *   yet and nothing can be lost), false for the loaded Home.
  */
 export type InterruptContext =
   | { readonly kind: 'card' }

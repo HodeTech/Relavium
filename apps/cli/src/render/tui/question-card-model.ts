@@ -21,6 +21,8 @@ import {
 } from '@relavium/core';
 import { stripTerminalControls } from '@relavium/shared/terminal-safe';
 
+import { isInterruptKey } from './interrupt-keymap.js';
+
 import {
   applyEditorAction,
   editorFromText,
@@ -394,7 +396,7 @@ export function reduceQuestionKey(
 ): QuestionKeyAction {
   // `Ctrl+C` stops wherever the person is. `Esc` steps back one level (ADR-0115 §3): it closes an open own-answer field, the typed
   // text discarded and the call still pending, and stops the turn only when there is nothing left to close.
-  if (key.ctrl === true && key.meta !== true && input === 'c') return { kind: 'stop' };
+  if (isInterruptKey(input, key)) return { kind: 'stop' };
   if (key.escape === true) {
     if (state.field === undefined) return { kind: 'stop' };
     return { kind: 'state', state: withEntry(state, { draft: undefined }, { field: undefined }) };

@@ -277,6 +277,39 @@ function ChatRegion(
 }
 
 /**
+ * One key through the Home host's card pipeline, in the order the host runs it. Exported so the controller tests drive the very
+ * routing the host does instead of keeping a copy of it.
+ *
+ * Any key but `Ctrl+C` ends the armed interrupt state first, whatever consumes it afterwards (ADR-0115 §1). Then the chat store's
+ * cards get the key: the card owns every answer key. A card that stopped on it has already been settled (an approval as a
+ * REJECTION, before the abort: ADR-0115 §2), so a `Ctrl+C` it reports as `abort` goes on to the controller as itself and the keymap
+ * arms or ends the session, while an `Esc` is the plain stop and reaches the controller as an Esc, which never arms. A `Ctrl+C` that
+ * answered a checkpoint "stop" aborts nothing (the engine ends the turn itself, ADR-0136 §2) but starts the window all the same.
+ * Returns whether the key was consumed.
+ */
+export function routeKeyThroughCards(
+  controller: Pick<HomeController, 'handleKey' | 'interruptAnswered' | 'disarmInterrupt'>,
+  store: Pick<ChatStoreController, 'handleReviewInput'> | undefined,
+  input: string,
+  key: Parameters<HomeController['handleKey']>[1],
+): boolean {
+  const interrupt = isInterruptKey(input, key);
+  if (!interrupt) controller.disarmInterrupt();
+  const action = store?.handleReviewInput(input, key);
+  if (action === 'handled') return true;
+  if (action === 'stop-answered') {
+    controller.interruptAnswered();
+    return true;
+  }
+  if (action === 'abort') {
+    if (interrupt) controller.handleKey(input, key);
+    else controller.handleKey('\u001b', { escape: true });
+    return true;
+  }
+  return false;
+}
+
+/**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
  * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
  * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
@@ -440,7 +473,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
   // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
   // viewport, so those fall straight through. Gated on NO keyboard-owning overlay (palette / search / mention /
-  // model-picker / effort-picker / reason-capture) — mirroring ChatApp's after-overlays ordering, so an overlay that
+  // model-picker / effort-picker) — mirroring ChatApp's after-overlays ordering, so an overlay that
   // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
   // no force-follow is needed (parity with `ChatApp`).
   const noOverlay =
@@ -585,7 +618,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 
   /**
    * Consume a mouse report, if `input` is one. Returns `true` when it was — the caller must then type NOTHING: a
-   * report's raw bytes must never reach the Home prompt, the `/` palette filter, or the `[c]` reason capture. That is
+   * report's raw bytes must never reach the Home prompt, the `/` palette filter, or a card. That is
    * true in EVERY mode and behind EVERY overlay; only the ROUTING is gated on the chat owning the screen.
    */
   const consumeMouseReport = (input: string): boolean => {
@@ -598,7 +631,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       altChat &&
       props.nativePrompt?.getSnapshot().active !== true &&
       controller.getSnapshot().session?.store.getSnapshot().review === undefined &&
-      controller.getSnapshot().session?.store.getSnapshot().question === undefined
+      controller.getSnapshot().session?.store.getSnapshot().question === undefined &&
+      controller.getSnapshot().session?.store.getSnapshot().checkpoint === undefined
     ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
@@ -685,27 +719,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
-    const reviewStore = controller.getSnapshot().session?.store;
-    const reviewAction = reviewStore?.handleReviewInput(input, key);
-    if (reviewAction === 'handled') {
-      // A card took the key; it still ends the armed interrupt state, unless it is the interrupt itself (a details view that
-      // closes on `Ctrl+C` is a first press that arms nothing).
-      if (!isInterruptKey(input, key)) controller.disarmInterrupt();
+    if (routeKeyThroughCards(controller, controller.getSnapshot().session?.store, input, key))
       return;
-    }
-    if (reviewAction === 'stop-answered') {
-      // A `Ctrl+C` that answered a checkpoint "stop": the engine ends the turn itself (ADR-0136 §2), so nothing is aborted, but the
-      // interrupt window starts all the same (ADR-0115 §1).
-      controller.interruptAnswered();
-      return;
-    }
-    if (reviewAction === 'abort') {
-      // The card has been settled in the store (an approval as a REJECTION, before this abort: ADR-0115 §2). `Ctrl+C` goes on to
-      // the controller as itself, so the keymap arms or ends the session; `Esc` is the plain stop and never arms.
-      if (isInterruptKey(input, key)) controller.handleKey(input, key);
-      else controller.handleKey('\u001b', { escape: true });
-      return;
-    }
     if (routeHomeInput(input, key)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
@@ -823,7 +838,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {sanitizeInline(state.pendingMessage)}
         </Text>
         <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat… · Ctrl+C to cancel
+          Starting chat… · Ctrl+C to exit
         </Text>
         {nativeAcknowledgement && (
           <NativePromptView

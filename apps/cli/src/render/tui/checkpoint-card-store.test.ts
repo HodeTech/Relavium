@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { errorRecoveryHint, formatTurnSummary } from './chat-projection.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import {
   APPROVAL_LOCKOUT_MS,
@@ -91,40 +92,156 @@ const settle = async (): Promise<void> => {
   await Promise.resolve();
 };
 
+const TURN_STARTED_AT = (msAgo: number) =>
+  ({
+    type: 'session:turn_started',
+    sessionId: 's',
+    sequenceNumber: 1,
+    timestamp: new Date(Date.now() - msAgo).toISOString(),
+  }) as const;
+
+const TURN_LIMIT_ENDED = {
+  type: 'session:turn_completed',
+  sessionId: 's',
+  sequenceNumber: 2,
+  timestamp: '2026-11-19T11:00:00.000Z',
+  stopReason: 'error',
+  tokensUsed: { input: 1, output: 1 },
+  error: { code: 'turn_limit', message: 'stopped', retryable: false },
+} as const;
+
 describe('the card opens and says what it was told', () => {
-  it('publishes the rounds, the interval and the turn time with the person’s waits excluded, and holds the hook open', async () => {
+  it('publishes the rounds, the interval and the turn time so far, and holds the hook open', async () => {
     const r = rig();
-    r.store.apply({
-      type: 'session:turn_started',
-      sessionId: 's',
-      sequenceNumber: 1,
-      timestamp: new Date(performance.timeOrigin + performance.now() - 12_000).toISOString(),
-    });
-    // The wall clock and the event timestamps share the faked `Date`: 12 s of turn so far.
+    r.store.apply(TURN_STARTED_AT(12_000));
     r.open();
     const card = r.store.getSnapshot().checkpoint;
     expect(card?.rounds).toBe(32);
     expect(card?.interval).toBe(32);
-    expect(card?.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(card?.elapsedMs, '12 s of turn so far, exactly').toBe(12_000);
     expect(r.store.getSnapshot().checkpointFrame).toBeDefined();
     await settle();
-    expect(r.answer(), 'nothing settles it but the person: there is no timeout').toBeUndefined();
-    at(10 * 60_000);
+    expect(r.answer(), 'nothing settles it but the person').toBeUndefined();
+  });
+
+  it('the person’s own wait is not the turn’s work: a second checkpoint after a five-minute wait counts only the working time', async () => {
+    const r = rig();
+    r.store.apply(TURN_STARTED_AT(12_000));
+    r.open(); // 12 s of work so far
+    at(5 * 60_000);
+    r.key('y', CTRL); // five minutes later the person says continue
     await settle();
-    expect(r.answer(), 'ten minutes later it is still the same stopped spend').toBeUndefined();
+    expect(r.answer()).toBe('continue');
+    at(5 * 60_000 + 3_000); // three more seconds of work
+    r.open();
+    expect(r.store.getSnapshot().checkpoint?.elapsedMs, '12 s + 3 s of work, not 5 min 15 s').toBe(
+      15_000,
+    );
+  });
+
+  it('there is no timeout: no timer is armed, and ten minutes of fake time later the hook is still pending', async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers(); // everything faked this time, timers included
+    const r = rig();
+    r.open();
+    expect(vi.getTimerCount(), 'opening the card arms no timer').toBe(0);
+    vi.advanceTimersByTime(10 * 60_000);
+    await settle();
+    expect(r.answer()).toBeUndefined();
+    expect(r.rejected()).toBeUndefined();
     expect(r.store.getSnapshot().checkpoint).toBeDefined();
   });
 
-  it('refuses a second overlay and an open approval: one card at a time, both directions', async () => {
+  it('refuses a second checkpoint and any other overlay while one is open: one card at a time, in BOTH directions', async () => {
     const r = rig();
     r.open();
     await expect(r.store.requestCheckpoint(INFO)).rejects.toMatchObject({ name: 'AbortError' });
+    // The reverse: an approval or a question asked while a checkpoint is open is refused, so it can never be an unreachable card.
+    await expect(
+      r.store.requestApproval(
+        { toolId: 'write_file', action: 'fs_write', preview: {}, unredactedPreview: {} },
+        false,
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(
+      r.store.requestQuestion({
+        questions: [
+          {
+            header: 'Pick',
+            question: 'Which?',
+            multiSelect: false,
+            options: [
+              { label: 'a', description: 'first' },
+              { label: 'b', description: 'second' },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(r.store.getSnapshot().approval).toBeUndefined();
+    expect(r.store.getSnapshot().question).toBeUndefined();
+    // And the other way round: a checkpoint under an approval or a question.
     const other = rig();
     void other.store.requestApproval(
       { toolId: 'write_file', action: 'fs_write', preview: {}, unredactedPreview: {} },
       false,
     );
     await expect(other.store.requestCheckpoint(INFO)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('a stop is remembered for the turn’s summary, a continue is not (ADR-0136 §2)', () => {
+  const lastSummary = (r: Rig) => {
+    const entry = r.store.getSnapshot().state.transcript.at(-1);
+    return entry?.role === 'assistant' ? entry.summary : undefined;
+  };
+
+  it('after a "stop" the turn’s turn_limit summary says the person stopped, and the next turn does not inherit it', async () => {
+    const r = rig();
+    r.store.apply(TURN_STARTED_AT(1_000));
+    r.open();
+    r.key('n', CTRL);
+    await settle();
+    r.store.apply(TURN_LIMIT_ENDED);
+    expect(lastSummary(r)?.stoppedAtCheckpoint).toBe(32);
+    expect(formatTurnSummary(lastSummary(r)!)).toContain(
+      'stopped at a checkpoint after 32 tool rounds',
+    );
+    expect(
+      errorRecoveryHint('turn_limit', undefined, lastSummary(r)),
+      'the hint says who stopped it',
+    ).toContain('You stopped the turn at a checkpoint');
+    // A later turn that ends at the hard stop is a plain limit again.
+    r.store.apply({ ...TURN_STARTED_AT(1_000), sequenceNumber: 3 });
+    r.store.apply({ ...TURN_LIMIT_ENDED, sequenceNumber: 4 });
+    expect(lastSummary(r)?.stoppedAtCheckpoint).toBeUndefined();
+    expect(formatTurnSummary(lastSummary(r)!)).toContain('error: turn_limit');
+  });
+
+  it('a "continue" leaves no mark: a turn that later ends at the hard stop is a plain limit', async () => {
+    const r = rig();
+    r.store.apply(TURN_STARTED_AT(1_000));
+    r.open();
+    at(APPROVAL_SETTLE_MS + 1);
+    r.key('y', CTRL);
+    await settle();
+    expect(r.answer()).toBe('continue');
+    r.store.apply(TURN_LIMIT_ENDED);
+    expect(lastSummary(r)?.stoppedAtCheckpoint).toBeUndefined();
+    expect(formatTurnSummary(lastSummary(r)!)).toContain('error: turn_limit');
+  });
+
+  it('a mark is only worn by a turn_limit: a stop followed by some other ending says nothing about a checkpoint', async () => {
+    const r = rig();
+    r.store.apply(TURN_STARTED_AT(1_000));
+    r.open();
+    r.key('n', CTRL);
+    await settle();
+    r.store.apply({
+      ...TURN_LIMIT_ENDED,
+      error: { code: 'provider_unavailable', message: 'down', retryable: true },
+    });
+    expect(lastSummary(r)?.stoppedAtCheckpoint).toBeUndefined();
   });
 });
 
@@ -264,6 +381,38 @@ describe('Ctrl+Y spends, so it clears the approval guards (ADR-0136 §4)', () =>
   });
 });
 
+describe('the guards that need a timeline of their own (ADR-0136 §4)', () => {
+  it('the same frame acknowledged again does not restart the dwell: every host render acknowledges it (a running turn flushes every frame)', async () => {
+    const r = rig();
+    r.open(); // acknowledged at once
+    at(APPROVAL_SETTLE_MS - 50);
+    r.show(); // the same frame, as a spinner re-render does
+    r.show();
+    at(APPROVAL_SETTLE_MS + 1);
+    r.key('y', CTRL);
+    await settle();
+    expect(
+      r.answer(),
+      'the first acknowledgement counts; a repeat must not push the dwell out',
+    ).toBe('continue');
+  });
+
+  it('the quiet gap counts on its own: a key that arrives 20 ms after a refused one is refused, and one past the gap counts', async () => {
+    const r = rig();
+    r.open();
+    at(APPROVAL_SETTLE_MS - 10);
+    r.key('y', CTRL); // refused by the dwell, and NOT typing evidence
+    at(APPROVAL_SETTLE_MS + 10); // the dwell has run; only the gap since the previous key is short
+    r.key('y', CTRL);
+    await settle();
+    expect(r.answer(), 'a held key spends nothing: the previous key was 20 ms ago').toBeUndefined();
+    at(APPROVAL_SETTLE_MS + 10 + APPROVAL_QUIET_MS + 1);
+    r.key('y', CTRL);
+    await settle();
+    expect(r.answer()).toBe('continue');
+  });
+});
+
 describe('an abort or a seal is a cancellation, never an answer', () => {
   it('an abort while the card is open closes it and rejects the hook with an AbortError', async () => {
     const r = rig();
@@ -296,16 +445,25 @@ describe('an abort or a seal is a cancellation, never an answer', () => {
     await expect(r.store.requestCheckpoint(INFO)).rejects.toMatchObject({ name: 'AbortError' });
   });
 
-  it('removes its abort listener once answered: a late abort changes nothing', async () => {
+  it('removes its abort listener once answered: the same handler that was added is taken off again', async () => {
     const r = rig();
-    const controller = new AbortController();
-    r.open({ signal: controller.signal });
+    const added: unknown[] = [];
+    const removed: unknown[] = [];
+    const signal = {
+      aborted: false,
+      addEventListener: (_type: string, handler: unknown) => {
+        added.push(handler);
+      },
+      removeEventListener: (_type: string, handler: unknown) => {
+        removed.push(handler);
+      },
+    };
+    void r.store.requestCheckpoint(INFO, signal);
+    expect(added).toHaveLength(1);
+    expect(removed).toHaveLength(0);
     r.key('n', CTRL);
     await settle();
-    controller.abort();
-    await settle();
-    expect(r.answer()).toBe('stop');
-    expect(r.rejected()).toBeUndefined();
+    expect(removed, 'answering takes the listener off').toEqual(added);
   });
 });
 

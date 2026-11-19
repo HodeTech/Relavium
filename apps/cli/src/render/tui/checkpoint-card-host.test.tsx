@@ -200,6 +200,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
   it('Ctrl+Y continues once the frame has settled, and answers the engine’s hook with "continue"', async () => {
     const f = fixture(host, true, false);
     await f.ready();
+    f.store.apply(TURN_STARTED); // a running turn flushes every frame, so the card is re-acknowledged all the time
     const answer = f.store.requestCheckpoint(INFO);
     await vi.waitFor(() => expect(f.text()).toContain('Continue for 32 more?'));
     await settle();
@@ -212,6 +213,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
   it('a Ctrl+Y typed ahead of the card, before its frame settled, spends nothing', async () => {
     const f = fixture(host, true, false);
     await f.ready();
+    f.store.apply(TURN_STARTED); // a running turn flushes every frame, so the card is re-acknowledged all the time
     const answer = f.store.requestCheckpoint(INFO);
     let settled: unknown;
     void answer.then((value) => {

@@ -257,6 +257,14 @@ export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
   ];
 }
 
+/**
+ * The two answer rows while the full view's search box is open (ADR-0115 §3). The box owns the keyboard: a chord is not an answer in
+ * it and `b` is typing, so the card's rows would name keys that do nothing. `Esc` closes the box and `Ctrl+C` is what stops the turn.
+ */
+export function fullSearchRows(): readonly [string, string] {
+  return ['Enter finds · Esc closes the search box', 'Ctrl+C stops the turn'];
+}
+
 /** The sentence ADR-0129 §5 moved from the card to the full view. */
 export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or permission denials.';
 /** The one line a details screen ends on. */
@@ -307,7 +315,8 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     columns: input.columns,
   });
   const nav = fullNavLegend({ ...input.nav, columns: input.columns });
-  const answers = input.keys === undefined ? [] : fullAnswerRows(input.keys);
+  const answers =
+    input.keys === undefined ? [] : input.searching ? fullSearchRows() : fullAnswerRows(input.keys);
   const note = input.kind === 'approval' ? FULL_PROTECTED_NOTE : DETAILS_CLOSE_NOTE;
   const rows =
     header.length +

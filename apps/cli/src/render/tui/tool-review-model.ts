@@ -4,6 +4,7 @@ import {
   sanitizeApprovalReason,
 } from './chat-projection.js';
 import type { ChatKey } from './chat-input.js';
+import { isInterruptKey } from './interrupt-keymap.js';
 import {
   CARD_KEY_ROWS,
   CARD_MAX_BODY_ROWS,
@@ -366,8 +367,7 @@ export function reduceToolReviewKey(
   // `Ctrl+C` stops, everywhere (ADR-0115 §1): it rejects the approval and stops the turn, or closes a details view. `Esc` steps
   // back ONE level (§3): inside the reason box or the search box of an approval it closes the box and returns to where it opened,
   // the typed text discarded, the call still pending; only with no box open does it reject the call and stop the turn.
-  if (key.ctrl && !key.meta && input === 'c')
-    return { kind: state.kind === 'approval' ? 'abort' : 'close' };
+  if (isInterruptKey(input, key)) return { kind: state.kind === 'approval' ? 'abort' : 'close' };
   if (key.escape) {
     if (state.kind !== 'approval') return { kind: 'close' };
     if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });

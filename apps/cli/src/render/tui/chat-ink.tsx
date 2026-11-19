@@ -186,8 +186,9 @@ import type { SessionViewState, TranscriptEntry } from './session-view-model.js'
  * the ONLY place `ink`/React are imported on the chat path, so the command core stays framework-free.
  *
  * RAW-MODE NOTE: unlike `RunApp`, `ChatApp` uses `useInput`, so `ink` puts the terminal in RAW mode and the
- * kernel no longer translates Ctrl-C → SIGINT. The command's SIGINT handler therefore can't see it — the
- * ChatApp handles Ctrl-C itself (→ `/cancel`). (Re-verify cancel on a real TTY when changing the input.)
+ * kernel no longer translates Ctrl+C → SIGINT. The command's SIGINT handler therefore can't see it — the
+ * ChatApp handles Ctrl+C itself, through the one interrupt keymap (ADR-0115): the first press interrupts, clears or arms, and
+ * only a second inside the window ends the session (`/cancel`). (Re-verify on a real TTY when changing the input.)
  */
 
 function TranscriptLine(
@@ -731,6 +732,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }, INTERRUPT_ARM_WINDOW_MS);
     interruptTimer.current.unref();
   };
+  // Any key but `Ctrl+C` ends the armed state at once (ADR-0115 §1): a key a card swallows, a scroll key and a paste included.
+  const disarmInterrupt = (): void => {
+    if (interruptRef.current.armedAt === undefined) return;
+    interruptRef.current = pressOtherKey();
+    showInterruptHint(false);
+  };
   useEffect(
     () => () => {
       if (interruptTimer.current !== undefined) clearTimeout(interruptTimer.current);
@@ -1252,6 +1259,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (!activationReady.current) return;
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
+    disarmInterrupt();
     const snap = props.store.getSnapshot();
     // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped — never the composer.
     if (snap.question !== undefined) {
@@ -1445,7 +1453,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
-    // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
+    // so its raw bytes can never type into the prompt, the `/` palette filter, or a card. The wheel
     // only SCROLLS when no overlay owns the keyboard (parity with the Home + the Step-4b-2 overlay gate).
     if (props.alternateScreen === true) {
       const read = mouseReaderRef.current.read(char);
@@ -1454,6 +1462,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         const overlayOwnsKeyboard =
           props.store.getSnapshot().review !== undefined ||
           props.store.getSnapshot().question !== undefined ||
+          props.store.getSnapshot().checkpoint !== undefined ||
           paletteRef.current !== undefined ||
           searchRef.current !== undefined ||
           mentionRef.current !== undefined ||
@@ -1473,11 +1482,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return; // CONSUMED in every state — a mouse report's raw bytes must never type into the prompt
       }
     }
-    // Any key but `Ctrl+C` ends the armed state at once (ADR-0115 §1), including a key a card swallows.
-    if (!interrupt && interruptRef.current.armedAt !== undefined) {
-      interruptRef.current = pressOtherKey();
-      showInterruptHint(false);
-    }
+    if (!interrupt) disarmInterrupt();
     const reviewAction = props.store.handleReviewInput(char, key);
     if (reviewAction === 'handled') return;
     if (interrupt) {
@@ -1582,7 +1587,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       applyPalette(step.state);
       return;
     }
-    // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
+    // A pending approval OWNS the keyboard (never opens the palette): the card has taken every key before this point.
     const approvalPending = props.store.getSnapshot().approval !== undefined;
     // Open the palette on a literal '/' at an idle, EMPTY prompt — the discovery entry point (never mid-approval).
     if (
@@ -1638,8 +1643,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     // Alt-screen transcript SCROLL (2.6.F Step 4b-2): PgUp/PgDn/Ctrl+Home/Ctrl+End reduce the scroll state against
     // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
-    // scrollback, so these keys fall through to the editor there. The overlays + the `[c]` reason capture `return`
-    // ABOVE this, so they keep their keys; a plain pending approval is still REACHED here (it is consumed by
+    // scrollback, so these keys fall through to the editor there. The overlays `return` ABOVE this, so they keep
+    // their keys; a plain pending approval is still REACHED here (it is consumed by
     // reduceChatKey below), which is safe because scroll keys never overlap the Ctrl+Y/Ctrl+G/Ctrl+N answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {

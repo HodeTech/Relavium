@@ -58,6 +58,7 @@ import {
   appendWarning,
   approvalClosed,
   approvalOpened,
+  checkpointStopped,
   initialSessionViewState,
   reduceSessionEvent,
   reduceToolLiveEvent,
@@ -79,9 +80,9 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as a `Ctrl+Y yes / Ctrl+G always / Ctrl+N no / Ctrl+R reason / [esc] abort`
- *  prompt (ADR-0057, EA3/EA5). `[c]` opens the typed-reason capture (Step 14) — a reject carrying WHY, via the
- *  `ToolApprovalDecision.reject.reason` seam. */
+/** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
+ *  `Ctrl+G` allow for the session, `Ctrl+N` deny, `Ctrl+R` deny with a reason (a reject carrying WHY, via the
+ *  `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop the turn (ADR-0115 §2). */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   readonly live?: ToolApprovalLiveContext;
@@ -219,8 +220,9 @@ export interface ChatStoreController extends ChatStore {
   bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
   /**
    * The checkpoint hook the session is given on an interactive driver (ADR-0136 §2): publish the checkpoint card and RESOLVE with
-   * the person's answer. Honors the abort signal: an abort while open REJECTS with an `AbortError` (the usual cancellation path),
-   * and so does a sealed store. At most one overlay is pending at a time.
+   * the person's answer. Honors the abort signal: an abort while open REJECTS with an `AbortError`, and so does a sealed store. The
+   * engine ends the turn as a cancellation when its own signal is aborted, and otherwise as a classified `turn_limit` stop (it fails
+   * closed either way). At most one overlay is pending at a time, in both directions.
    */
   requestCheckpoint: (
     info: ToolRoundCheckpoint,
@@ -488,7 +490,10 @@ export function createChatStore(
   const settleCheckpointWith = (answer: ToolRoundLimitDecision): void => {
     const settling = pendingCheckpoint;
     if (checkpoint === undefined || settling === undefined) return;
+    const rounds = checkpoint.rounds;
     clearCheckpoint();
+    // Remember a "stop" for the turn's summary line: the engine ends the turn with `turn_limit`, and the view says who stopped it.
+    if (answer === 'stop') state = checkpointStopped(state, rounds);
     settling.resolve(answer);
     flush();
   };
@@ -948,7 +953,12 @@ export function createChatStore(
       new Promise<ApprovalAnswer>((resolve, reject) => {
         // One overlay at a time, in BOTH directions: an approval under an open question card would be unreachable, because the
         // card consumes every key. (Tool calls dispatch sequentially, so this is unreachable today; the guard keeps it so.)
-        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
           reject(abortError());
           return;
         }
@@ -1004,7 +1014,12 @@ export function createChatStore(
     requestQuestion: (request, signal) =>
       new Promise<AskUserAnswer>((resolve, reject) => {
         // One overlay at a time, and never on a sealed store or an already-stopped turn: those are CANCELS.
-        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
           reject(abortError());
           return;
         }

@@ -220,7 +220,7 @@ describe('reduceChatKey while a turn runs — what can come out, with a card or 
     expect(reduceChatKey('', { tab: true, shift: true }, 'draft', true)).toEqual({
       kind: 'cycle-mode',
     });
-    // The toggle is exactly Ctrl without Meta: Alt+T and a bare t are not it.
+    // Alt+T and a bare t are not the toggle.
     expect(reduceChatKey('t', { meta: true }, '', true)).toEqual({ kind: 'none' });
     expect(reduceChatKey('t', KEY, '', true)).toEqual({ kind: 'none' });
   });

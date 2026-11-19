@@ -1925,18 +1925,25 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
       expect(press(card, input, CTRL), `ctrl+${input}`).toEqual({ kind: 'none' });
   });
 
-  it('Esc and Ctrl-C stop the turn at the card — they are not answers, and they win over every other rule (ADR-0115 §2)', () => {
+  it('Esc and Ctrl+C stop the turn at the card — they are not answers, and they win over every other rule (ADR-0115 §2)', () => {
     const card = answerable();
     expect(press(card, '', { escape: true })).toEqual({ kind: 'abort' });
     expect(press(card, 'c', CTRL)).toEqual({ kind: 'abort' });
     // The full view and the call list have their own way back (`[b]`); Esc there is still the stop key.
-    for (const screen of ['full', 'list'] as const)
+    for (const screen of ['full', 'list'] as const) {
       expect(press(answerable(small(), { screen }), '', { escape: true }), screen).toEqual({
         kind: 'abort',
       });
+      expect(press(answerable(small(), { screen }), 'c', CTRL), `${screen} Ctrl+C`).toEqual({
+        kind: 'abort',
+      });
+    }
+    // The interrupt matcher is shared with every card: either case of the letter is the same key, and Alt+C is not an interrupt.
+    expect(press(card, 'C', CTRL)).toEqual({ kind: 'abort' });
+    expect(press(card, 'c', { ctrl: true, meta: true })).toEqual({ kind: 'none' });
   });
 
-  it('Ctrl-C stops even inside a text box: it is the stop key everywhere, Esc is the one that steps back (ADR-0115 §3)', () => {
+  it('Ctrl+C stops even inside a text box: it is the stop key everywhere, Esc is the one that steps back (ADR-0115 §3)', () => {
     expect(press(answerable(small(), { denial: 'x' }), 'c', CTRL)).toEqual({ kind: 'abort' });
     expect(press(answerable(small(), { searching: true, query: 'q' }), 'c', CTRL)).toEqual({
       kind: 'abort',

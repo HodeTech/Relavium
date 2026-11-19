@@ -264,7 +264,7 @@ export interface HomeControllerDeps {
   readonly now?: () => number;
   /** Original Home invocation; observe publication before local recovery and retain entered doctor work. */
   readonly workOwner?: Pick<InvocationWorkOwner, 'enter' | 'failure'>;
-  /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
+  /** The Home exited cleanly (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
   /** An unexpected error escaping a chat turn (a re-thrown turn-core bug) — `driveHome` tears down + propagates. */
   readonly onError: (err: unknown) => void;
@@ -530,7 +530,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           void fresh.teardown().catch(() => undefined); // exited mid-build ⇒ reap the just-built fresh session
           return;
         }
-        // Guard a SUPERSEDING /clear: a mid-build Ctrl-C→/cancel re-routes to a SECOND clearChat(old) (the old
+        // Guard a SUPERSEDING /clear: a mid-build second Ctrl+C → /cancel re-routes to a SECOND clearChat(old) (the old
         // handler's stopReason is sticky-'clear'), starting a second build. If an earlier build already swapped a
         // fresh session in (state.session !== old), reap THIS now-superseded build instead of swapping it in and
         // leaking the earlier fresh session's MCP child. Mirrors the failure arm's `state.session === old` guard.
@@ -1716,7 +1716,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (armed && !exiting) {
       interruptTimer = setTimeout(() => {
         interruptTimer = undefined;
-        if (!exiting && state.interruptArmed) set({ interruptArmed: false });
+        if (exiting || !state.interruptArmed) return;
+        // A timer callback has no input handler around it to route a listener's failure, so it is routed here.
+        try {
+          set({ interruptArmed: false });
+        } catch (error) {
+          failHome(error);
+        }
       }, INTERRUPT_ARM_WINDOW_MS);
       interruptTimer.unref();
     }
@@ -1983,10 +1989,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
+      disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
-      // and the `[c]` reason capture. Type-ahead behind a busy/overlay state is deferred (2.5.B).
+      // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;

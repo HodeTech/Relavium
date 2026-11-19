@@ -2108,6 +2108,28 @@ describe('answer chords in the real host', () => {
         expect(rest).toBe(KEYS_ROW_2);
       });
 
+      it('the full view with its search box open names what the keys do there: Esc closes the box, Ctrl+C stops the turn (ADR-0115 §3)', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'rows-search');
+        await press(f, 'v');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+        await pause(30);
+        await press(f, '/');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(true));
+        await vi.waitFor(() => expect(f.lastFrameWith('Esc closes the search box')).toBeDefined());
+        const frame = f.lastFrameWith('Esc closes the search box') ?? '';
+        expect(frame).toContain('Ctrl+C stops the turn');
+        expect(frame, 'the card’s legend would name keys that do nothing in the box').not.toContain(
+          'Esc stops the turn',
+        );
+        expect(frame).not.toContain('[Ctrl+N] Deny');
+        await press(f, '\x1b'); // Esc: closes the box and rejects nothing
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(false));
+        expect(outcome()).toBeUndefined();
+        await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      });
+
       it('edit_file: the same rows name file edits as the session-wide scope', async () => {
         const f = fixture(host, true, false);
         await f.ready();

@@ -20,6 +20,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { routeKeyThroughCards } from './home-app.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@relavium/shared';
@@ -139,10 +140,9 @@ function showApprovalCard(store: ChatStoreController): void {
 }
 
 /**
- * One key through the Home host's pipeline (`home-app.tsx`): EVERY key is offered to the session store's approval card first —
- * the card owns every answer key — and the controller is handed only what the card did not take; an Esc the card reports as
- * `abort` reaches the controller as an Esc. The ink-free controller never answers an approval itself (its legacy reducer returns
- * `none`), so a test that wants an answer must send it through the card, exactly as the host does.
+ * One key through the Home host's pipeline: the very routing `RootApp` runs (`routeKeyThroughCards`, exported from `home-app.tsx` so
+ * this is not a copy of it) and then the controller for what no card took. The ink-free controller never answers an approval
+ * itself, so a test that wants an answer must send it through the card, exactly as the host does.
  */
 function hostKey(
   c: HomeController,
@@ -150,12 +150,7 @@ function hostKey(
   input: string,
   key: HostKey = {},
 ): void {
-  const action = store.handleReviewInput(input, key);
-  if (action === 'handled') return;
-  if (action === 'abort') {
-    c.handleKey('\u001b', { escape: true });
-    return;
-  }
+  if (routeKeyThroughCards(c, store, input, key)) return;
   c.handleKey(input, key);
 }
 
@@ -1181,6 +1176,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().input.text).toBe('draft');
       expect(c.getSnapshot().interruptArmed).toBe(true);
       expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('c', CTRL_C);
+      expect(
+        onExit,
+        'the second press inside the window exits, draft or not',
+      ).toHaveBeenCalledTimes(1);
     });
 
     it('while the first message is still building (loading) Ctrl+C exits at once: nothing is loaded and nothing can be lost', () => {
@@ -1203,9 +1203,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(c.getSnapshot().interruptArmed).toBe(true);
       expect(made.lines).toEqual([]);
       at(300);
-      c.handleKey('c', CTRL_C);
-      c.handleKey('c', CTRL_C); // guarded: cancelFired
+      c.handleKey('c', CTRL_C); // ends the chat
       expect(made.lines).toEqual(['/cancel']);
+      // Another pair of presses must not fire a second /cancel: the end is already under way (the latch). The first of the pair is a
+      // fresh interrupt (it aborts the session's work and arms), the second ends the session again, and only the latch stops it.
+      c.handleKey('c', CTRL_C);
+      at(400);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines, 'one /cancel, however many presses').toEqual(['/cancel']);
     });
 
     it('while a turn runs the first Ctrl+C is the abort Esc performs and keeps the session; the second ends it', async () => {
@@ -1243,6 +1248,97 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('c', CTRL_C); // an empty prompt now: this is the FIRST press
       expect(made.lines).toEqual([]);
       expect(c.getSnapshot().interruptArmed).toBe(true);
+    });
+
+    it('a `!` command running is interrupted by the first Ctrl+C, the way Esc does, and the second ends the session (ADR-0061 amendment)', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({
+        onAbort,
+        runShellCommand: () => new Promise<UserCommandOutcome>(() => undefined), // a command that never finishes
+      });
+      const { c, at } = await intoChat(made);
+      type(c, '!sleep 1000');
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().shellBusy, 'the command is running').toBe(true);
+      c.handleKey('c', CTRL_C);
+      expect(onAbort, 'interrupts the command instead of clearing or arming').toHaveBeenCalledTimes(
+        1,
+      );
+      expect(made.lines).toEqual([]);
+      at(500);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines).toEqual(['/cancel']);
+    });
+
+    it('a submit in flight (a compaction, a reseat) is work too: the first Ctrl+C interrupts it', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, onProcess: () => new Promise<void>(() => undefined) });
+      const { c } = await intoChat(made);
+      type(c, 'next question');
+      c.handleKey('', ENTER); // processLine never settles: submitBusy stays set
+      expect(c.getSnapshot().submitBusy).toBe(true);
+      c.handleKey('c', CTRL_C);
+      expect(onAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it('every keyboard-owning overlay closes on Ctrl+C and arms nothing: the reverse search and the `@` mention too', async () => {
+      const mentionReader: MentionReader = {
+        list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+        read: () => Promise.resolve({ content: 'x', sizeBytes: 1 }),
+      };
+      const made = makeSession({ mentionReader });
+      const { c } = await intoChat(made);
+      c.handleKey('r', CHORD); // Ctrl+R opens the reverse search
+      expect(c.getSnapshot().search).toBeDefined();
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().search).toBeUndefined();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('@', {});
+      await flush();
+      expect(c.getSnapshot().mention).toBeDefined();
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().mention).toBeUndefined();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      expect(made.lines).toEqual([]);
+    });
+
+    it('a paste is a key too: it ends the armed state, so a Ctrl+C after it is a first press that clears the pasted draft', async () => {
+      const made = makeSession();
+      const { c } = await intoChat(made);
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      c.handlePaste('pasted text');
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().input.text, 'the draft is cleared, the session is not ended').toBe('');
+      expect(made.lines).toEqual([]);
+    });
+
+    it('a Ctrl+C a checkpoint consumed as its own answer starts the window without aborting, and a second ends the chat', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, running: true });
+      const { c } = await intoChat(made);
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      expect(
+        onAbort,
+        'the answer is what stops the turn; nothing is aborted',
+      ).not.toHaveBeenCalled();
+      c.interruptAnswered();
+      expect(made.lines).toEqual(['/cancel']);
+    });
+
+    it('interruptAnswered does nothing on the bare Home, after the Home has exited, or while a chat is tearing down', () => {
+      const { c, onExit } = clocked();
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      c.handleKey('c', CTRL_C); // exits
+      expect(onExit).toHaveBeenCalledTimes(1);
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed, 'nothing is armed after the Home has exited').toBe(
+        false,
+      );
     });
 
     it('the arming hint comes down by itself when the window runs out', () => {
@@ -1558,7 +1654,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     await flush();
     expect(onError).toHaveBeenCalledTimes(1); // failHome fired once
 
-    c.handleKey('c', CTRL_C); // a later Ctrl-C must NOT re-settle (exiting is already true)
+    c.handleKey('c', CTRL_C);
+    c.handleKey('c', CTRL_C); // a later pair of Ctrl+C must NOT re-settle (exiting is already true)
     expect(onExit).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
   });
@@ -2135,6 +2232,94 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('', { escape: true });
       expect(onAbort).toHaveBeenCalledTimes(1);
       expect(store.getSnapshot().approval).not.toBeUndefined(); // the fallback did NOT answer it — onAbort owns the abort
+    });
+
+    describe('the Home host routes a Ctrl+C at a card through the keymap (ADR-0115 §1, §2; the host routing itself)', () => {
+      const withCard = async (onAbort: () => void) => {
+        const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+          approvalGuard: ROUTE_ONLY_GUARD,
+        });
+        const made = makeSession({ onAbort, store });
+        const c = await inChat(made);
+        store.apply(TURN_STARTED); // a card is only ever open inside a running turn
+        return { store, made, c };
+      };
+
+      it('Ctrl+C at an approval rejects the call first, aborts the turn and arms; the second Ctrl+C ends the chat', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        const pending = store.requestApproval(approvalReq, true);
+        showApprovalCard(store);
+        hostKey(c, store, 'c', CTRL_C);
+        await expect(pending).resolves.toEqual({ outcome: 'reject' });
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        expect(made.lines).not.toContain('/cancel');
+        hostKey(c, store, 'c', CTRL_C);
+        expect(made.lines).toContain('/cancel');
+      });
+
+      it('Esc at an approval rejects and aborts the same way, and arms nothing', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        const pending = store.requestApproval(approvalReq, true);
+        showApprovalCard(store);
+        hostKey(c, store, '', { escape: true });
+        await expect(pending).resolves.toEqual({ outcome: 'reject' });
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(false);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(made.lines, 'Esc armed nothing, so this Ctrl+C ended nothing').not.toContain(
+          '/cancel',
+        );
+      });
+
+      it('Ctrl+C at an ask_user question stops the turn and arms', async () => {
+        const onAbort = vi.fn();
+        const { store, c } = await withCard(onAbort);
+        const asked = store.requestQuestion({
+          questions: [
+            {
+              header: 'Pick',
+              question: 'Which?',
+              multiSelect: false,
+              options: [
+                { label: 'a', description: 'first' },
+                { label: 'b', description: 'second' },
+              ],
+            },
+          ],
+        });
+        void asked.catch(() => undefined);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+      });
+
+      it('a key the card swallows still disarms: Ctrl+C, a key at a card, Ctrl+C are two first presses', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        store.apply(TURN_COMPLETED); // an idle prompt: the first Ctrl+C only arms
+        hostKey(c, store, 'c', CTRL_C);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        store.apply({ ...TURN_STARTED, sequenceNumber: 3 });
+        const pending = store.requestApproval(approvalReq, true);
+        void pending.catch(() => undefined);
+        showApprovalCard(store);
+        hostKey(c, store, 'x'); // the card takes it: typing at a card
+        expect(c.getSnapshot().interruptArmed, 'a swallowed key ends the armed state').toBe(false);
+        expect(made.lines).not.toContain('/cancel');
+      });
+
+      it('a key nothing consumes (a scroll key the host handles itself) still ends the armed state: the routing disarms first', async () => {
+        const { store, c } = await withCard(() => undefined);
+        store.apply(TURN_COMPLETED);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        // `routeKeyThroughCards` is the first thing every non-mouse key meets, so it disarms even when nothing consumes the key.
+        expect(routeKeyThroughCards(c, store, '', { pageUp: true })).toBe(false);
+        expect(c.getSnapshot().interruptArmed).toBe(false);
+      });
     });
 
     it('a pending approval intercepts keys: `/` stays closed, a bare `y` answers nothing and `[Ctrl+Y]` approves-once', async () => {

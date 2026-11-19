@@ -15,6 +15,7 @@
 
 import { formatElapsed } from './format.js';
 import type { ChatKey } from './chat-input.js';
+import { isInterruptKey } from './interrupt-keymap.js';
 
 /** What the open card says: the rounds dispatched, the rounds a "continue" grants, and the turn's working time so far. */
 export interface CheckpointCardState {
@@ -40,8 +41,7 @@ export type CheckpointKeyAction =
  * them depends on the card having been seen: a stop is never refused.
  */
 export function reduceCheckpointKey(input: string, key: ChatKey): CheckpointKeyAction {
-  if (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'c')
-    return { kind: 'interrupt' };
+  if (isInterruptKey(input, key)) return { kind: 'interrupt' };
   if (key.escape === true) return { kind: 'stop' };
   if (key.ctrl === true && key.meta !== true) {
     if (input === 'n') return { kind: 'stop' };

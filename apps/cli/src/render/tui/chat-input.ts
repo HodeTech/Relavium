@@ -111,7 +111,7 @@ function reduceKill(char: string, key: ChatKey): EditorEditAction | undefined {
 
 /**
  * Map one keystroke to a SHARED editor edit/motion action, or `undefined` when it is not an editor key (so the
- * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
+ * surface reducer handles its own keys — plain `Return`, `Shift+Tab`, …; `Ctrl+C` is the interrupt keymap's). This is the ONE home for the
  * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
  * the two surfaces can never drift. `Shift+Enter` / `Ctrl+J` insert a newline (delegating cursor motions to
  * {@link reduceCursorMotion} and kills to {@link reduceKill}); Backspace (and the terminal Delete key, which ink
