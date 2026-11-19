@@ -191,7 +191,7 @@ describe('the session cache is keyed by the exact argv, never by tool id (ADR-01
     expect(decision.outcome).toBe('approve');
     // Not remembered until the dispatch SUCCEEDED (the engine calls this after a real, successful, non-replay call).
     expect(r.cache.isAlwaysCommand(['cat', 'a b'])).toBe(false);
-    decision.outcome === 'approve' && decision.onDispatchSucceeded?.();
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
     expect(r.cache.isAlwaysCommand(['cat', 'a b'])).toBe(true);
     expect(r.cache.isAlwaysCommand(['cat', 'a', 'b']), 'one argument with a space is not two').toBe(
       false,
@@ -206,7 +206,8 @@ describe('the session cache is keyed by the exact argv, never by tool id (ADR-01
     const r = rig('ask', { answer: { outcome: 'approve', scope: 'always' } }); // commandSessionGrants off
     const decision = await r.confirm(command(LS, false), undefined, undefined);
     expect(r.lastCacheable()).toBe(false);
-    decision.outcome === 'approve' && decision.onDispatchSucceeded?.();
+    expect(decision.outcome).toBe('approve');
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
     expect(r.cache.isAlwaysCommand(LS)).toBe(false);
   });
 
@@ -228,7 +229,8 @@ describe('the session cache is keyed by the exact argv, never by tool id (ADR-01
       preview: { command: 'ls' },
     };
     const decision = await r.confirm(request, undefined, undefined);
-    decision.outcome === 'approve' && decision.onDispatchSucceeded?.();
+    expect(decision.outcome).toBe('approve');
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
     expect(r.cache.isAlways('run_command')).toBe(false);
   });
 });

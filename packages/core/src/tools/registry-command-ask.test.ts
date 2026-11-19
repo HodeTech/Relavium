@@ -52,7 +52,7 @@ function context(
     effects: createInMemoryEffectJournal({ kind: 'run', runId: 'r', nodeId: 'n1', attempt: 1 }),
     effectSlot: 0,
     ...(regime ? { approval: confirm === undefined ? {} : { confirm } } : {}),
-  } as ToolDispatchContext;
+  };
 }
 
 describe('an allowlist miss under an approval regime reaches the host (ADR-0118 §1)', () => {
@@ -70,6 +70,26 @@ describe('an allowlist miss under an approval regime reaches the host (ADR-0118 
     expect(seen[0]?.argv).toEqual(['cat', 'a b', 'c']);
     expect(seen[0]?.commandAdmitted).toBe(false);
     expect(spawned()).toEqual([['cat', 'a b', 'c']]);
+  });
+
+  it('hands the host a frozen argv: a hook that mutates it cannot change what is spawned', async () => {
+    const { host, spawned } = recordingHost();
+    let attempt: unknown = 'not attempted';
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('ls', ['-la']),
+      context([], (request) => {
+        expect(Object.isFrozen(request.argv)).toBe(true);
+        try {
+          (request.argv as string[])[0] = 'rm';
+          attempt = 'mutated';
+        } catch (error) {
+          attempt = error;
+        }
+        return Promise.resolve({ outcome: 'approve' });
+      }),
+    );
+    expect(attempt).toBeInstanceOf(TypeError);
+    expect(spawned()).toEqual([['ls', '-la']]);
   });
 
   it('says commandAdmitted true for a command the allowlist admits, and compares element by element', async () => {

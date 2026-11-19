@@ -1299,7 +1299,7 @@ describe('buildResumedChatSession (2.N)', () => {
       const spawn = vi.fn(() => Promise.resolve(ran));
       const built = await build({
         chat: { ...EMPTY_CHAT, allowedCommands: options.allowedCommands ?? [] },
-        toolHost: { process: { spawn } } as never,
+        toolHost: { process: { spawn } },
       });
       const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const remembered = new Set((options.remembered ?? []).map((argv) => JSON.stringify(argv)));
