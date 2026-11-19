@@ -50,8 +50,9 @@ function fixture(
   const session = {
     store,
     sessionId: 's',
-    processLine: async (line: string) => {
+    processLine: (line: string) => {
       submitted.push(line);
+      return Promise.resolve();
     },
     shouldStop: () => false,
     stopReason: () => 'exit' as const,
@@ -77,8 +78,9 @@ function fixture(
     host === 'chat'
       ? createElement(ChatApp, {
           store,
-          onSubmit: async (message: string) => {
+          onSubmit: (message: string) => {
             submitted.push(message);
+            return Promise.resolve();
           },
           shouldStop: () => false,
           onExit: () => {},

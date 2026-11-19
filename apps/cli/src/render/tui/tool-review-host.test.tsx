@@ -1236,7 +1236,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       expect(await answer).toEqual({ outcome: 'reject' });
     });
 
-    it('says only that Esc stops the turn while a denial reason is being typed, and Ctrl+N stays inert', async () => {
+    it('says only what Esc and Ctrl+C do while a denial reason is being typed, and Ctrl+N stays inert', async () => {
       const f = fixture(host, true, false);
       await f.ready();
       let answered = false;
@@ -1255,14 +1255,15 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('Esc stops the turn.');
+      // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
+      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
       expect(hint(f)).not.toContain('[Ctrl+N] denies');
       f.input.push(CTRL_N);
       await settle();
       expect(answered, 'what the hint does not promise, the key does not do').toBe(false);
     });
 
-    it('says only that Esc stops the turn while the full view is searching, and Ctrl+N stays inert', async () => {
+    it('says only what Esc and Ctrl+C do while the full view is searching, and Ctrl+N stays inert', async () => {
       const f = fixture(host, true, false);
       await f.ready();
       let answered = false;
@@ -1284,7 +1285,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('Esc stops the turn.');
+      // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
+      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
       expect(hint(f)).not.toContain('[Ctrl+N] denies');
       f.input.push(CTRL_N);
       await settle();

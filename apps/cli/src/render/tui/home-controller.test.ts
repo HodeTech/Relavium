@@ -1183,7 +1183,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(onExit).not.toHaveBeenCalled();
     });
 
-    it('while the first message is still building (loading) Ctrl+C exits at once: nothing is loaded and nothing can be lost', async () => {
+    it('while the first message is still building (loading) Ctrl+C exits at once: nothing is loaded and nothing can be lost', () => {
       const k = clocked({ startChat: () => new Promise<HomeChatSession>(() => undefined) });
       type(k.c, 'hi');
       k.c.handleKey('', ENTER);
