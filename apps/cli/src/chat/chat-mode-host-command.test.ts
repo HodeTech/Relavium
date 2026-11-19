@@ -82,3 +82,27 @@ describe('the chat-mode host passes the command card its context', () => {
     expect(w.notes[0]).toContain('could not be written');
   });
 });
+
+describe('where no one can answer, run_command is not advertised (ADR-0118 §4)', () => {
+  it('a non-interactive host hides the governed tools from the model, as plan does', () => {
+    const policies: { advertise?: (id: string) => boolean }[] = [];
+    const env = makeChatModeEnv({
+      interactive: false,
+      session: { setTurnPolicy: (policy) => void policies.push(policy as never) },
+      tools: [
+        {
+          id: 'run_command',
+          policy: { spawnsProcess: true, fsScoped: false, requiresGateApproval: false },
+          policyTarget: () => ({ kind: 'process', command: 'npm' }),
+        } as never,
+        { id: 'read_file', policy: { fsScoped: true } } as never,
+      ],
+      workspaceDir: '/work/project',
+      prompt: () => Promise.resolve({ outcome: 'reject' }),
+    });
+    applyChatMode(env, 'ask');
+    const advertise = policies.at(-1)?.advertise;
+    expect(advertise?.('run_command'), 'hidden').toBe(false);
+    expect(advertise?.('read_file'), 'a plain read stays').toBe(true);
+  });
+});

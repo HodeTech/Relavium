@@ -514,3 +514,137 @@ describe('the command card: facts, offers and the Remember answer (ADR-0118 §1,
     expect(remember).toHaveBeenCalledOnce();
   });
 });
+
+describe('the command card hook, round 1 test review: what reaches the prompt and what a Remember is linked to', () => {
+  const store = (
+    overrides: {
+      remember?: () => Promise<{ ok: boolean; reason?: string; id?: string }>;
+      canRemember?: () => { ok: boolean };
+    } = {},
+  ) => ({
+    matches: () => false,
+    canRemember: overrides.canRemember ?? (() => ({ ok: true })),
+    remember: overrides.remember ?? (() => Promise.resolve({ ok: true, id: 'grant-7' })),
+  });
+  function make(
+    answer: ApprovalAnswer,
+    grants: ReturnType<typeof store> | { matches: () => boolean },
+  ) {
+    const cache = new ApprovalCache();
+    const prompt = vi.fn<ApprovalPrompt>(() => Promise.resolve(answer));
+    const policy = buildTurnPolicy('ask', {
+      governed: new Set(['run_command']),
+      prompt,
+      cache,
+      commandSessionGrants: true,
+      commandCwd: '/work/project',
+      commandGrants: grants,
+    });
+    return { confirm: policy.confirm!, prompt, cache };
+  }
+
+  it('hands the prompt the abort signal and the live preview it was given', async () => {
+    const r = make({ outcome: 'approve', scope: 'once' }, store());
+    const controller = new AbortController();
+    const live = {
+      callId: 'c',
+      preview: { kind: 'operation', target: 'npm test', fields: [] },
+    } as const;
+    await r.confirm(command(['npm', 'test'], false), controller.signal, live);
+    expect(r.prompt.mock.calls[0]?.[2]).toBe(controller.signal);
+    expect(r.prompt.mock.calls[0]?.[3]).toBe(live);
+  });
+
+  it('Remember is not offered over a preview that shows nothing, or a delivered saved result', async () => {
+    const blank = make({ outcome: 'approve', scope: 'remember' }, store());
+    await blank.confirm(
+      {
+        toolId: 'run_command',
+        action: 'process',
+        preview: { command: '[redacted]' },
+        argv: ['x'],
+        commandAdmitted: false,
+      },
+      undefined,
+      undefined,
+    );
+    expect(blank.prompt.mock.calls[0]?.[4]?.offers).toEqual({ session: false, remember: false });
+    const saved = make({ outcome: 'approve', scope: 'remember' }, store());
+    await saved.confirm(command(['npm', 'test'], false), undefined, {
+      callId: 'c',
+      preview: { kind: 'saved-result', fields: [] },
+    });
+    expect(saved.prompt.mock.calls[0]?.[4]?.offers).toEqual({ session: false, remember: false });
+  });
+
+  it('a store that cannot say it can write, or has no remember, never offers Remember', async () => {
+    const noCheck = make(
+      { outcome: 'approve', scope: 'once' },
+      { matches: () => false, remember: () => Promise.resolve({ ok: true }) },
+    );
+    await noCheck.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(noCheck.prompt.mock.calls[0]?.[4]?.offers.remember).toBe(false);
+    const noRemember = make(
+      { outcome: 'approve', scope: 'once' },
+      { matches: () => false, canRemember: () => ({ ok: true }) },
+    );
+    await noRemember.confirm(command(['npm', 'test'], false), undefined, undefined);
+    expect(noRemember.prompt.mock.calls[0]?.[4]?.offers.remember).toBe(false);
+  });
+
+  it('a Remember is linked to its grant, so withdrawing the grant withdraws this chat’s session approval of it', async () => {
+    const r = make({ outcome: 'approve', scope: 'remember' }, store());
+    const decision = await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
+    expect(r.cache.forgetCommandsByGrant('another-grant')).toBe(0);
+    expect(r.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
+    expect(r.cache.forgetCommandsByGrant('grant-7')).toBe(1);
+    expect(r.cache.isAlwaysCommand(['npm', 'test']), 'it asks again now').toBe(false);
+  });
+
+  it('a plain Session answer is not linked to any grant: withdrawing a grant leaves it', async () => {
+    const r = make({ outcome: 'approve', scope: 'always' }, store());
+    const decision = await r.confirm(command(['npm', 'test'], false), undefined, undefined);
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.forgetCommandsByGrant('grant-7')).toBe(0);
+    expect(r.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
+  });
+
+  it('a remember answer on a card that is not a command’s caches nothing: it is only ever Once there', async () => {
+    const cache = new ApprovalCache();
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'remember' }),
+    );
+    const policy = buildTurnPolicy('ask', { governed: new Set(['fs_write']), prompt, cache });
+    const decision = await policy.confirm!(
+      {
+        toolId: 'write_file',
+        action: 'fs_write',
+        preview: { path: 'a.txt' },
+        unredactedPreview: { path: 'a.txt' },
+      },
+      undefined,
+      undefined,
+    );
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(cache.isAlways('write_file')).toBe(false);
+  });
+
+  it('a success tells the person where it went, and a failure says it was allowed once', async () => {
+    const notes: string[] = [];
+    const cache = new ApprovalCache();
+    const policy = buildTurnPolicy('ask', {
+      governed: new Set(['run_command']),
+      prompt: () => Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'remember' }),
+      cache,
+      commandSessionGrants: true,
+      commandGrants: store(),
+      notify: (message) => notes.push(message),
+    });
+    await policy.confirm!(command(['npm', 'test'], false), undefined, undefined);
+    expect(notes).toEqual([
+      'Remembered for this project. /permissions lists it and takes it back.',
+    ]);
+  });
+});

@@ -126,3 +126,17 @@ describe('buildDefaultChatAgent', () => {
     }
   });
 });
+
+describe('the default agent’s command prompt says who decides (ADR-0118 §4, round 1 test review)', () => {
+  const prompt = buildDefaultChatAgent(DEFAULT_CHAT_MODEL).system_prompt;
+  it('a refusal is final for that call: it explains and asks, and does not look for another way', () => {
+    expect(prompt).toContain(
+      'explain that and ask what they would like instead of trying another way to run it',
+    );
+  });
+  it('auto mode runs only a command the person already approved', () => {
+    expect(prompt).toContain(
+      'except in auto mode where only a command they already approved runs without asking',
+    );
+  });
+});

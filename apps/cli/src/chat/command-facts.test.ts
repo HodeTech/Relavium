@@ -182,3 +182,67 @@ describe('the facts and the answers a command card offers', () => {
     });
   });
 });
+
+describe('the protected-path check reads an argument that carries an = (round 1 test review)', () => {
+  const cwd = '/work/project';
+  it.each([
+    [['dd', 'if=.env']], // a bare key=value, not only a --flag=value
+    [['tool', '--config=sub/../.env']],
+    [['tool', '.ssh/id=rsa']], // the whole argument is a path that happens to contain an =
+  ])('%j names one', (argv) => {
+    expect(namesProtectedPath(argv, cwd)).toBe(true);
+  });
+
+  it.each([
+    [['tool', 'mode=production']],
+    [['tool', 'a=b=c']],
+    [['tool', '=']],
+    [['tool', '--x=']],
+  ])('%j does not', (argv) => {
+    expect(namesProtectedPath(argv, cwd)).toBe(false);
+  });
+
+  it('a protected working directory makes an empty-looking argument protected too, and an empty value is skipped', () => {
+    expect(namesProtectedPath(['tool', '--x='], '/home/me/.ssh')).toBe(true);
+    expect(namesProtectedPath(['tool', 'ok'], '/home/me/.ssh')).toBe(true);
+  });
+});
+
+describe('a Windows spelling of a program name does not hide a shell (round 1 security sitting)', () => {
+  it.each([
+    'cmd.exe.',
+    'cmd.exe ',
+    'CMD.EXE',
+    'cmd.exe::$DATA',
+    'C:\\Windows\\System32\\cmd.exe...',
+    'powershell.exe ',
+  ])('%j is the shell cmd/powershell', (program) => {
+    expect(codeCarrier([program, '/c', 'dir'])).toBe('shell');
+  });
+  it('and an ordinary name with a dot is not a carrier', () => {
+    expect(codeCarrier(['build.sh'])).toBeUndefined();
+    expect(programName('node_modules/.bin/tsc.')).toBe('tsc');
+  });
+});
+
+describe('Remember is not offered for a command that is already pre-approved', () => {
+  const base = {
+    argv: ['npm', 'test'],
+    commandAdmitted: false,
+    remembered: false,
+    cwd: '/work/project',
+    sessionOffered: true,
+    rememberAvailable: true,
+  };
+  it('on the allowlist or already remembered: Session is still offered, Remember is not', () => {
+    expect(commandCardFacts({ ...base, commandAdmitted: true }).offers).toEqual({
+      session: true,
+      remember: false,
+    });
+    expect(commandCardFacts({ ...base, remembered: true }).offers).toEqual({
+      session: true,
+      remember: false,
+    });
+    expect(commandCardFacts(base).offers.remember).toBe(true);
+  });
+});
