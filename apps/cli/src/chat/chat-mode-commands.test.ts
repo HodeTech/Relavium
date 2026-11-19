@@ -704,7 +704,7 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     expect(cache.isAlways('write_file')).toBe(false);
   });
 
-  it('a success tells the person where it went, and a failure says it was allowed once', async () => {
+  it('a success tells the person where it went and that auto will run it unasked', async () => {
     const notes: string[] = [];
     const cache = new ApprovalCache();
     const policy = buildTurnPolicy('ask', {
