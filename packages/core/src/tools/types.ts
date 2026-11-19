@@ -511,6 +511,24 @@ export interface ToolApprovalRequest {
    * is what makes an unredacted copy safe to hand out at all.
    */
   readonly unredactedPreview?: ToolActionPreview;
+  /**
+   * The command as an argv — the program and its literal arguments, spawned without a shell — for a request whose action is
+   * `process`, else absent ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1).
+   * The host's session cache and its remembered grants are keyed by this, element by element: `["cat","a b"]` and
+   * `["cat","a","b"]` are different commands although their display lines are alike.
+   *
+   * **In-process only, and UNSCRUBBED** (it is the raw call, not a display projection): like {@link unredactedPreview} it is
+   * absent from `agent:approval_requested`, whose body is built from the preview alone, and a host must not log, persist or
+   * forward it. A credential may sit in an argument, which is why a grant stores a keyed digest of it and never the text.
+   */
+  readonly argv?: readonly string[];
+  /**
+   * Whether the `[chat]` command allowlist admitted this call. Present only for a `process` request. Under an interactive
+   * approval regime an allowlist MISS no longer ends the turn: it reaches the host's hook with this `false`, and the host
+   * decides (a card, or a refusal that returns to the model). Without a regime — a workflow — a miss still throws
+   * `command_not_allowed` and never gets here.
+   */
+  readonly commandAdmitted?: boolean;
 }
 
 /** The host's verdict. An optional reject explanation enters the error; embedding hosts own input protection

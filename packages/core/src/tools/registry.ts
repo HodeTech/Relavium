@@ -843,7 +843,13 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   }
 
   if (def.policy.spawnsProcess && target.command !== undefined) {
-    if (!commandAllowed(target.command, target.argv, ctx.toolPolicy)) {
+    // Under an interactive approval regime a miss is the HOST's decision (ADR-0118 §1): it reaches the confirm hook as a request
+    // carrying `commandAdmitted: false`, and a regime with no hook still fails closed there (`no_approval_hook`). Without a regime
+    // — a workflow runs unattended — the allowlist stays the only authority and a miss throws, as it always did.
+    if (
+      ctx.approval === undefined &&
+      !commandAllowed(target.command, target.argv, ctx.toolPolicy)
+    ) {
       throw new ToolPolicyError(
         def.id,
         'command_not_allowed',
@@ -857,6 +863,22 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   }
   // egress 'search' / 'mcp' reach a CONFIGURED provider/server (not an allowedDomains allowlist); the
   // SSRF range-block runs inside the host egress capability. No engine allowlist check here.
+}
+
+/**
+ * What a `process` request adds for the host: the raw argv (never scrubbed, in-process only) and whether the allowlist admitted
+ * the call (ADR-0118 §1). Nothing for any other action class.
+ */
+function commandRequestFields(
+  action: ToolActionClass,
+  target: PolicyTarget,
+  ctx: ToolDispatchContext,
+): { readonly argv?: readonly string[]; readonly commandAdmitted?: boolean } {
+  if (action !== 'process' || target.command === undefined) return {};
+  return {
+    argv: Object.freeze([...(target.argv ?? [target.command])]),
+    commandAdmitted: commandAllowed(target.command, target.argv, ctx.toolPolicy),
+  };
 }
 
 function commandAllowed(
@@ -918,6 +940,7 @@ async function confirmDispatch(
     toolId: def.id,
     action,
     preview: previewFor(action, target),
+    ...commandRequestFields(action, target, ctx),
     // The same field selection, UNSCRUBBED, for CLASSIFICATION only (see the field's own doc). In-process:
     // it never reaches the event, so `preview` stays the one thing crossing the observability boundary.
     unredactedPreview: rawPreviewFor(action, target),

@@ -871,17 +871,24 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
 
   // --- ordering + cancellation ---
 
-  it('runs the enforcePolicy floor BEFORE approval — a denied run_command never reaches the prompt', async () => {
-    const confirm = approving();
-    const err = await rejectsWith<ToolPolicyError>(
+  it('an allowlist miss under an approval regime REACHES the prompt as an unadmitted request (ADR-0118 §1); the floors that stay before approval are tested beside it', async () => {
+    // Amended from "a denied run_command never reaches the prompt": the command allowlist is now the host's decision when a person can
+    // answer. The request carries the argv and `commandAdmitted: false`; the full contract is in registry-command-ask.test.ts. The
+    // other policy floors (the human-gate and the HTTPS/domain allowlist) still run before any prompt.
+    const asked: ToolApprovalRequest[] = [];
+    const confirm = vi.fn((request: ToolApprovalRequest) => {
+      asked.push(request);
+      return Promise.resolve({ outcome: 'reject' as const });
+    });
+    const err = await rejectsWith<ToolDeniedByUserError>(
       registry().dispatch(
         call('run_command', { command: 'rm', args: ['-rf', '/'] }),
-        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ deny-all
+        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ nothing is pre-approved
       ),
     );
-    expect(err).toBeInstanceOf(ToolPolicyError);
-    expect(err.reason).toBe('command_not_allowed');
-    expect(confirm).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ argv: ['rm', '-rf', '/'], commandAdmitted: false });
   });
 
   it('classifies an abort raised while prompting (hook throws AbortError) as cancelled, not a denial', async () => {
