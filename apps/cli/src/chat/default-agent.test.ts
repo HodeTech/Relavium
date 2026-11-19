@@ -136,7 +136,7 @@ describe('the default agent’s command prompt says who decides (ADR-0118 §4, r
   });
   it('auto mode runs only a command the person already approved', () => {
     expect(prompt).toContain(
-      'except in auto mode where only a command they already approved runs without asking',
+      'except in auto mode where only a command they remembered or approved for the session runs without asking',
     );
   });
 });

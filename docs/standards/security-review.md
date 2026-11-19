@@ -131,7 +131,7 @@ A chat-only relaxation of any rule here is a security violation, not a feature �
   additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): the allowlist is judged first;
   in a workflow (no approval regime) the allowlist is the only authority, a miss is refused and an empty set disables `run_command`; a plain, `--json` or one-shot surface has a regime whose hook refuses every governed call and hides the tool, so nothing runs there; and in an
   interactive chat a miss reaches the mode-aware `confirmAction` as a request (`ask`/`accept-edits` show a card, `plan` refuses,
-  `auto` shows a card unless the allowlist, a remembered grant or an earlier session answer pre-approved that exact argv —
+  `auto` shows a card unless a remembered grant (and no file write approved since) or an earlier session answer pre-approved that exact argv; the repository's allowlist is not a pre-approval there —
   [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), then `spawn`/`shell:false` (no
   metachar expansion). **`[chat].allowed_commands` defaults EMPTY, pre-approving nothing** — a non-empty chat default is the
   "chat-specific relaxation" this section forbids (`run_command` has no argument/file floor, so even a read-only default
@@ -953,8 +953,8 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   root and no readable file. The store defends against forgery (the HMAC), torn writes and replay;
   it does **not** defend against a process running as the same user that deletes lines or the file,
   and the labels are display text the HMAC does not cover. The mode behavior (`ask` and
-  `accept-edits` still show the card for a remembered command, `auto` runs only a pre-approved
-  one) is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
+  `accept-edits` still show the card for a remembered command, `auto` runs only a remembered
+  one, and asks once after a file write) is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
   headless paths and workflows never read the store. The format, bounds and failure table are
   [command-permissions.md](../reference/cli/command-permissions.md).
 - **The command card shows the whole command, and the answers it offers are the narrowest that fit.** *(ADR-0118 §1; MVP-4

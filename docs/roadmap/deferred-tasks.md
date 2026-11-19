@@ -1684,6 +1684,13 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   (795), so do it with the next notice change. (6) An unpaired surrogate in the person's own text now fails the turn as a host fault instead of
   silently dropping the record; the CLI cannot produce one (input is decoded from UTF-8), so it matters only to a future host.
   *(low · apps/cli/src/render/tui, packages/core/src/engine/turn-receipts.ts, packages/core/src/tools/ask-user.ts)*
+- [ ] **MVP-4 step 4 round 2: lows left open on the command card.** (1) Strong right-to-left letters in an argument can be reordered
+  within the one-line title by a terminal that applies bidi (VTE, Konsole), so `mv <heb1> <heb2>` may read swapped on the title while
+  each row below shows its argument whole; *Once* needs only the title. Cure: when an argument holds a strong RTL letter, require every
+  row on screen for *Once* too (a new rule, so a decision). (2) `/permissions` lists a session approval without the time it was given.
+  (3) A card with `Standing: remembered for this project` in `ask` does not say why it still asks, or point to `/permissions`.
+  (4) The chat names a remembered file `remembered-commands file` and the CLI `remembered-command file`; the list headers differ
+  between the chat and `relavium permissions list`. *(low · apps/cli/src/render/tui/tool-review-card.ts, apps/cli/src/permissions)*
 - [ ] **ADR-0117 — return a protected-path refusal.** The protected-path predicate also covers credential stores,
   which the rule keeps fatal; split the two so a refused protected path can return to the model while a credential
   store stays fatal. *(The allowlist-miss half is closed: a command outside the allowlist is a card since MVP-4 step 4,

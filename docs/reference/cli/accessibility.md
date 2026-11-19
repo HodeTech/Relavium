@@ -92,6 +92,15 @@ tool summaries, while private preview/reveal buffers remain in the live view.
 These properties do not add assistive-technology semantics to the full-screen
 renderer.
 
+**MVP-4 step 4 (2026-11-19): the command card** carries the same properties, in words
+and not in colour: its standing, directory and warnings are plain rows (`⚠` plus
+the sentence; colour only emphasises), a locked answer is missing from the key row
+and the lock is explained in a sentence, the open two-step question is the card's
+plainest text and says that any other key cancels and allows nothing, a note says
+when an Enter came outside its window, and a control character or an empty argument
+shows as an escape or `(empty)` instead of nothing. The contract is
+[command-permissions.md](command-permissions.md#the-command-card).
+
 ## See also
 
 - [home.md](home.md) · [chat-session.md](chat-session.md) — the two interactive surfaces.
