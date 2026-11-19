@@ -28,6 +28,22 @@ const CTRL_Y = '\x19';
 const CTRL_N = '\x0e';
 const CTRL_C = '\x03';
 const INFO = { rounds: 32, interval: 32 };
+/** A checkpoint is only ever asked inside a running turn, so these tests start one: that is what makes a stray abort visible. */
+const TURN_ENDED = {
+  type: 'session:turn_completed',
+  sessionId: 's',
+  sequenceNumber: 2,
+  timestamp: '2026-11-19T00:00:01.000Z',
+  stopReason: 'error',
+  tokensUsed: { input: 0, output: 0 },
+  error: { code: 'turn_limit', message: 'The turn stopped at a checkpoint.', retryable: false },
+} as const;
+const TURN_STARTED = {
+  type: 'session:turn_started',
+  sessionId: 's',
+  sequenceNumber: 1,
+  timestamp: '2026-11-19T00:00:00.000Z',
+} as const;
 
 function fixture(
   host: 'chat' | 'home',
@@ -248,6 +264,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
   it('Esc stops the turn as an answer, and arms nothing', async () => {
     const f = fixture(host, true, false);
     await f.ready();
+    f.store.apply(TURN_STARTED);
     const answer = f.store.requestCheckpoint(INFO);
     await vi.waitFor(() => expect(f.text()).toContain('Checkpoint'));
     f.input.push('\u001b');
@@ -263,11 +280,14 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
   it('Ctrl+C stops the turn as an answer and starts the interrupt window; a second one inside it ends the session', async () => {
     const f = fixture(host, true, false);
     await f.ready();
+    f.store.apply(TURN_STARTED);
     const answer = f.store.requestCheckpoint(INFO);
     await vi.waitFor(() => expect(f.text()).toContain('Checkpoint'));
     f.input.push(CTRL_C);
     expect(await answer, 'an answer, not an abort: the engine ends the turn itself').toBe('stop');
     expect(f.aborts.count, 'nothing was aborted: the answer is what ends the turn').toBe(0);
+    // The engine ends the turn itself on a "stop" (turn_limit); the idle prompt then shows the armed hint.
+    f.store.apply(TURN_ENDED);
     await vi.waitFor(() => expect(f.text()).toContain('Press Ctrl+C again'));
     expect(f.submitted).toEqual([]);
     f.input.push(CTRL_C);
