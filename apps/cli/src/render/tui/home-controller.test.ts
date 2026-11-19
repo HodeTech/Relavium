@@ -672,6 +672,44 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe(''); // the buffer stays clean — the stale inject was dropped
   });
 
+  it('an open-quote `!` line that is refused leaves a pending `@` mention read alone: the buffer was not consumed (ADR-0118 §3)', async () => {
+    let resolveRead: (r: { content: string; sizeBytes: number }) => void = () => {};
+    const mentionReader: MentionReader = {
+      list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+      read: () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+    };
+    const made = makeSession({
+      mentionReader,
+      runShellCommand: () => Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' }),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    type(c, '!echo "oops ');
+    c.handleKey('@', {});
+    await flush();
+    c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+    c.handleKey('', ENTER); // submit `!echo "oops @app.ts`: an open quote, refused, NOT consumed
+    expect(c.getSnapshot().input.text).toContain('!echo "oops');
+
+    // The read resolves AFTER the refused submit. The buffer is still there, so the mention must still inject — a refusal
+    // that bumped the submit epoch would drop it silently while leaving its marker in the editor.
+    resolveRead({ content: '// app.ts', sizeBytes: 9 });
+    await flush();
+    expect(c.getSnapshot().attachments).toEqual([expect.objectContaining({ kind: 'file' })]);
+  });
+
   it('a `!`-shell line runs the command (not a message) and carries the output as a pending chip that expands at the next submit (2.5.D step 5 / ADR-0061 chip model)', async () => {
     const ran: UserCommandOutcome = {
       kind: 'ran',

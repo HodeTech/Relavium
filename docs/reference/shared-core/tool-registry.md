@@ -569,7 +569,7 @@ while everything else ends the turn. Two disjoint sources set it:
   `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
   is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
   the payload write), and the CLI `fs` arm's **lexical protected-path arm** (`FsScopeDeniedError` with the fixed `PROTECTED_PATH_REFUSAL`, decided from the path text alone before any resolution — see [built-in-tools.md](built-in-tools.md#refusals-that-return-to-the-model)). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included, until [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) lands), an egress **SSRF** denial, and the fs
-  **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding those back would re-deny,
+  **confidentiality** (secret-store read) / post-resolution protected-path / symlink refusals — feeding those back would re-deny,
   risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
   `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path
   and the same round-bounded feedback already existed for an idempotent not-found read.)

@@ -64,6 +64,9 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
   it('parseShellLine distinguishes a bare `!` (a no-op) from a refusal', () => {
     expect(parseShellLine('')).toEqual({ kind: 'empty' });
     expect(parseShellLine('   ')).toEqual({ kind: 'empty' });
+    // A line whose program token is EMPTY names nothing to run: it is `empty`, never a command with an empty program.
+    expect(parseShellLine('""')).toEqual({ kind: 'empty' });
+    expect(parseShellLine("'' x")).toEqual({ kind: 'empty' });
   });
 
   it('tokenizeCommand returns undefined for a bare `!` (empty rest)', () => {
@@ -96,6 +99,8 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
       { command: 'grep', args: ['a\\tb', 'f'] }, // a literal backslash then `tb`, NOT a tab
       { command: 'dir', args: ['C:\\Users\\x y'] },
       { command: 'echo', args: ['', 'both \' and "'] },
+      { command: 'echo', args: ['a' + String.fromCharCode(0x7f) + 'b'] }, // DEL: JSON leaves it raw, TOML rejects it raw
+      { command: 'echo', args: ['a' + String.fromCharCode(1) + 'b'] },
     ];
     for (const cmd of cases) {
       const hint = shellDenyHint(cmd, true, 'ask');

@@ -94,36 +94,41 @@ function admitted(selectors: readonly string[] | undefined = undefined): FsPathP
   return selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, selectors);
 }
 
-describe.skipIf(process.platform === 'win32')(
-  'the lexical protected-path refusal under the host scratch root decides from the path text alone (ADR-0117)',
-  () => {
-    it('says the same recoverable words whatever the scratch subtree holds', async () => {
-      const fs = assembled(admitted());
-      // `sym` is a symlink and `file` a file inside the scratch root: the inspecting floor would throw a fatal policy
-      // error for either, but the refusal that RETURNS to the model must not depend on that state.
-      symlinkSync(workspace, join(scratch, 'sym'), 'dir');
-      writeFileSync(join(scratch, 'file'), 'not a directory');
-      const refusals: FsScopeDeniedError[] = [];
-      for (const name of ['absent', 'sym', 'file']) {
-        const error: unknown = await fs.prepareWrite!({
-          kind: 'write',
-          path: join(scratch, name, '.git', 'config'),
-          content: 'x',
-          createDirs: true,
-        }).then(
-          () => undefined,
-          (e: unknown) => e,
-        );
-        expect(error, name).toBeInstanceOf(FsScopeDeniedError);
-        refusals.push(error as FsScopeDeniedError);
-      }
-      for (const refusal of refusals) {
-        expect(refusal.recoverable).toBe(true);
-        expect(refusal.message).toBe(PROTECTED_PATH_REFUSAL);
-      }
-    });
-  },
-);
+describe('the lexical protected-path refusal under the host scratch root decides from the path text alone (ADR-0117)', () => {
+  /** The recoverable refusal of a protected write at `<scratch>/<name>/.git/config`. */
+  async function refusalAt(name: string): Promise<FsScopeDeniedError> {
+    const fs = assembled(admitted());
+    const error: unknown = await fs.prepareWrite!({
+      kind: 'write',
+      path: join(scratch, name, '.git', 'config'),
+      content: 'x',
+      createDirs: true,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error, name).toBeInstanceOf(FsScopeDeniedError);
+    return error as FsScopeDeniedError;
+  }
+
+  it('says the same recoverable words whatever the scratch subtree holds (absent, a plain file)', async () => {
+    // A plain file where a directory is expected: the inspecting floor would throw a fatal policy error, but the refusal that
+    // RETURNS to the model must not depend on that state.
+    writeFileSync(join(scratch, 'file'), 'not a directory');
+    for (const name of ['absent', 'file']) {
+      const refusal = await refusalAt(name);
+      expect(refusal.recoverable, name).toBe(true);
+      expect(refusal.message, name).toBe(PROTECTED_PATH_REFUSAL);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('and for a symlinked component too', async () => {
+    symlinkSync(workspace, join(scratch, 'sym'), 'dir');
+    const refusal = await refusalAt('sym');
+    expect(refusal.recoverable).toBe(true);
+    expect(refusal.message).toBe(PROTECTED_PATH_REFUSAL);
+  });
+});
 
 describe.each(['sandboxed', 'project'] as const)('scratch plus policy in %s', (tier) => {
   it.each(['absent', 'empty', 'narrow'] as const)(

@@ -281,7 +281,7 @@ export const ChatConfigSchema = z
       )
       .max(FS_ROOT_LIMITS.count)
       .optional(),
-    // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
+    // Command allowlist (ADR-0061, ADR-0118 §3): each `allowed_commands` entry is a command line compared with the argv element by element + opt-in glob patterns
     // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per
     // config-spec.md `[chat]`). Enforced by the SAME `enforcePolicy(allowedCommands)` the workflow run_command uses.
     allowed_commands: z.array(commandLineEntry).optional(),

@@ -120,6 +120,17 @@ import type {
 import type { NodeStreamEvent } from './node-executor.js';
 import type { CompletedTurnSpan, SessionResumeState } from './session-resume.js';
 
+/** The turn limits without the checkpoint: a turn that can never ask a person (compaction) keeps the hard stop. */
+function withoutCheckpoint(limits: AgentTurnLimits): AgentTurnLimits {
+  return {
+    maxToolTurns: limits.maxToolTurns,
+    maxToolCorrections: limits.maxToolCorrections,
+    ...(limits.recoverToolFailures === undefined
+      ? {}
+      : { recoverToolFailures: limits.recoverToolFailures }),
+  };
+}
+
 /** The default hard turn cap when {@link SessionDeps.maxTurns} is omitted — a finite DoS fail-safe. */
 export const DEFAULT_SESSION_MAX_TURNS = 50;
 
@@ -735,7 +746,8 @@ export class AgentSession {
     if (turnLimitIssues.length > 0) throw new WorkflowGraphError(turnLimitIssues);
     const max = params.deps.maxTurns;
     this.#maxTurns = max === undefined ? DEFAULT_SESSION_MAX_TURNS : max;
-    this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
+    // A frozen COPY of what was admitted: the host's own object can be changed later, and that must not reach the loop unchecked.
+    this.#limits = Object.freeze({ ...(params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS) });
   }
 
   /**
@@ -1662,7 +1674,8 @@ export class AgentSession {
       signal,
       registry: this.#deps.registry,
       dispatchContext: this.#buildDispatchContext(new Set(), undefined),
-      limits: this.#limits,
+      // Compaction offers no tools, so it never asks a person anything: it keeps the bounds but not the checkpoint hook.
+      limits: withoutCheckpoint(this.#limits),
       ...(this.#maxTokensEstimate === undefined
         ? {}
         : { maxTokensEstimate: this.#maxTokensEstimate }),

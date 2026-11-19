@@ -1875,7 +1875,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   workspace-local `--config` (ADR-0112) would start the next `/clear`, reseat or restart without a card for edits: give `accept-edits` the same
   global-source check, and give a repository `accept-edits` an actionable `OperatorConfigError` instead of the generic enum message (`load.ts` ~72).
   (3) A repository's `[chat].allowed_commands` and globs still widen what an operator's own `auto` runs without a card (it needs an agent that grants
-  `run_command`; ADR-0118, still Proposed, records it). (4) `reduceApprovalKey` in `chat-input.ts` mapped `y`, `a`, `1` and `2` to an approve with no
+  `run_command`; ADR-0118, Accepted 2026-11-19, records it). (4) `reduceApprovalKey` in `chat-input.ts` mapped `y`, `a`, `1` and `2` to an approve with no
   visibility gate and was unreachable — **since 2026-11-17 it answers nothing** (only Esc and the Ctrl+T reasoning toggle); the dead legacy prompt around it is its own entry below; `agent:approval_requested` is still published for plan refusals,
   headless refusals and auto-approved writes with no card (ADR-0130 amendment 4). (5) A masked substring in a target does not lock Allow (conforms to
   ADR-0120; consider requiring a reveal for any mask in the target field); typing in the denial-reason box can drop characters typed in the same tick (`reviewPage`

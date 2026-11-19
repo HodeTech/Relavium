@@ -351,7 +351,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete registry test file the journal-identity control runs. */
-const REGISTRY_CASES = 116;
+const REGISTRY_CASES = 127;
 /** The complete scrubber test file every LLM diagnostic control runs. */
 const LLM_SCRUB_CASES = 224;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {

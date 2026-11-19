@@ -362,7 +362,7 @@ test('secrets workload corrections retain independent complete-count and reader-
       'core-summary-escape-view',
       'core-summary-pem-markers',
     ].map((id) => [id, ['packages/core/src/tools/bounding.test.ts'], 234]),
-    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 116],
+    ['core-unsettled-refusal', ['packages/core/src/tools/registry.test.ts'], 127],
     ...[
       'diagnostic-joined-before-masking',
       'diagnostic-joined-original-boundary',

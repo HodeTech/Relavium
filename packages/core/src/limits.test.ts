@@ -415,6 +415,24 @@ describe('the chat turn limits (ADR-0136)', () => {
     ]);
   });
 
+  it('refuses a REQUIRED limit that is absent (an untyped caller), while an optional one may be', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: undefined as never, maxToolCorrections: 3 },
+      undefined,
+      issues,
+    );
+    collectTurnLimitIssues(
+      { maxToolTurns: 16, maxToolCorrections: undefined as never },
+      undefined,
+      issues,
+    );
+    expect(issues.map((i) => i.field)).toEqual(['maxToolTurns', 'maxToolCorrections']);
+    const optionalOnly: GraphIssue[] = [];
+    collectTurnLimitIssues({ maxToolTurns: 16, maxToolCorrections: 3 }, undefined, optionalOnly);
+    expect(optionalOnly).toEqual([]);
+  });
+
   it('keeps the published defaults equal to the engine defaults they must agree with', () => {
     // Two sources of one number: the published chat default and the engine constant a surface falls back to.
     expect(CHAT_LIMITS.max_tool_turns.default).toBe(DEFAULT_AGENT_TURN_LIMITS.maxToolTurns);

@@ -2087,6 +2087,38 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
+  it('keeps the engine correction budget for a one-shot `agent run` too: a zero chat budget is not read (ADR-0136 §1)', async () => {
+    // A chat with `maxToolCorrections: 0` ends on the first failing round (the test below). A one-shot keeps 3, so the model gets a
+    // second request after the failed read.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'missing.txt' }),
+        textTurn('done'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolCorrections: 0 },
+        oneShot: true,
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read a file that is not there');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(
+        completed?.type === 'session:turn_completed' ? completed.error : 'none',
+      ).toBeUndefined();
+      expect(requests).toHaveLength(2);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('threads [chat].max_tool_corrections: a zero budget ends the turn on the first round in which nothing ran (ADR-0136)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     try {

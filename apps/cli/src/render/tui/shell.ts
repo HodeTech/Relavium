@@ -64,6 +64,15 @@ export function commandLine(cmd: ShellCommand): string {
 }
 
 /**
+ * A TOML basic string for `text`. JSON string escapes are valid TOML basic-string escapes, with one gap: JSON leaves U+007F
+ * (DEL) raw and TOML rejects it, so it is escaped here too. (A lone surrogate cannot be written in TOML at all; it cannot
+ * come from a terminal line, and a pasted entry that fails to parse fails loud at load, never admitting anything.)
+ */
+function tomlBasicString(text: string): string {
+  return JSON.stringify(text).replaceAll('\u007f', '\\u007f');
+}
+
+/**
  * The ACTIONABLE, secret-free deny message (ADR-0061 — "never a dead 'denied'"). An `allowlist` miss shows the
  * exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `plan` mode floor (offer
  * the Shift+Tab switch) or a user decline. The command string is the user's OWN typed input (already visible +
@@ -75,7 +84,7 @@ export function shellDenyHint(cmd: ShellCommand, allowlist: boolean, mode: ChatM
     // The suggested entry is shown as a TOML basic string, so what a person pastes parses back to exactly this line: the line is
     // already shell-quoted (`quoteCommandLine`), and a backslash or a double quote in it must be escaped for TOML
     // (JSON string escapes are valid TOML basic-string escapes).
-    return `! ${line}: not allowed. Add ${JSON.stringify(line)} to [chat].allowed_commands to enable it.`;
+    return `! ${line}: not allowed. Add ${tomlBasicString(line)} to [chat].allowed_commands to enable it.`;
   }
   if (mode === 'plan') {
     return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.`;

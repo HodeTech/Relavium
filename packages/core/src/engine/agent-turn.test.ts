@@ -14,7 +14,7 @@ import type {
   StreamChunk,
 } from '@relavium/llm';
 import type { ContentPart, DurableMediaPart } from '@relavium/shared';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS } from '../limits.js';
 import { initialRoundAllowance } from './agent-turn.js';
@@ -1722,6 +1722,15 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
     };
   }
 
+  /** A promise that settles when `open()` is called: a deterministic replacement for polling. */
+  function deferred(): { promise: Promise<void>; open: () => void } {
+    let open: () => void = () => undefined;
+    const promise = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { promise, open };
+  }
+
   describe('where nobody can answer (a hard stop)', () => {
     it('holds the round it refuses: nothing runs at the limit, and the turn ends with turn_limit', async () => {
       const { provider, calls } = counted(toolRounds(40));
@@ -1935,7 +1944,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
           if (at >= 0) listeners.splice(at, 1);
         },
       };
-      let opened = false;
+      const opened = deferred();
       const turn = runAgentTurn(
         baseParams(provider, {
           registry,
@@ -1945,7 +1954,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
             maxToolCorrections: 3,
             checkpointToolTurns: 1,
             onToolRoundLimit: () => {
-              opened = true;
+              opened.open();
               return new Promise<'continue'>(() => undefined); // a host that never answers and ignores the signal
             },
           },
@@ -1955,7 +1964,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
         () => undefined,
         (error: unknown) => error,
       );
-      await vi.waitFor(() => expect(opened).toBe(true));
+      await opened.promise;
       aborted = true;
       for (const listener of [...listeners]) listener();
       expect(await settled).toMatchObject({ code: 'cancelled' });
@@ -2070,6 +2079,99 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
       expect(asked).toBe(0); // the person was never asked to continue something that could not run
     });
 
+    it('treats a response with EXACTLY the per-response ceiling of calls as a round like any other: held at the limit, asked at a checkpoint', async () => {
+      // The boundary of `isDispatchableRound`: 16 calls is the most the dispatch accepts, so it is a real round. If it were
+      // misread as undispatchable the hold would be skipped and a model that always sends 16 calls would never reach a limit.
+      const wide = (n: number): StreamChunk[] => [
+        ...Array.from({ length: ADMISSION_CEILINGS.toolCallsPerResponse }, (_, i) => [
+          { type: 'tool_call_start' as const, id: `w${String(n)}-${String(i)}`, name: 'echo' },
+          { type: 'tool_call_end' as const, id: `w${String(n)}-${String(i)}` },
+        ]).flat(),
+        STOP('tool_use'),
+      ];
+      const scripts = [...toolRounds(1), wide(2), wide(3)];
+
+      const hardStop = counting();
+      await expect(
+        runAgentTurn(
+          baseParams(scriptedProvider('anthropic', scripts), {
+            registry: hardStop.registry,
+            limits: { maxToolTurns: 1, maxToolCorrections: 3 },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'turn_limit' });
+      expect(hardStop.dispatched()).toBe(1); // the first round's one call; the 16-call round was held, not run
+
+      let asked = 0;
+      await expect(
+        runAgentTurn(
+          baseParams(scriptedProvider('anthropic', scripts), {
+            limits: {
+              maxToolTurns: 16,
+              maxToolCorrections: 3,
+              checkpointToolTurns: 1,
+              onToolRoundLimit: () => {
+                asked += 1;
+                return Promise.resolve('stop');
+              },
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'turn_limit' });
+      expect(asked).toBe(1);
+    });
+
+    it('does not call the hook with a signal that has already been aborted, so a host listening only for the event cannot wait forever', async () => {
+      let aborted = false;
+      const signal = {
+        get aborted() {
+          return aborted;
+        },
+        // The abort lands while the turn is registering its listener, i.e. BEFORE the hook is called: the event has already
+        // fired by the time a host could subscribe.
+        addEventListener: () => {
+          aborted = true;
+        },
+        removeEventListener: () => undefined,
+      };
+      let called = false;
+      const failure = await runAgentTurn(
+        baseParams(counted(toolRounds(5)).provider, {
+          signal,
+          limits: {
+            maxToolTurns: 16,
+            maxToolCorrections: 3,
+            checkpointToolTurns: 1,
+            onToolRoundLimit: () => {
+              called = true;
+              return Promise.resolve('continue');
+            },
+          },
+        }),
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(failure).toMatchObject({ code: 'cancelled' });
+      expect(called).toBe(false);
+    });
+
+    it('stops a turn whose limits are not numbers at all (an untyped caller): the guard fails closed instead of running unbounded', async () => {
+      for (const maxToolTurns of [undefined, 'abc', {}, null]) {
+        const { provider } = counted(toolRounds(5));
+        const { registry, dispatched } = counting();
+        await expect(
+          runAgentTurn(
+            baseParams(provider, {
+              registry,
+              limits: { maxToolTurns: maxToolTurns as never, maxToolCorrections: 3 },
+            }),
+          ),
+        ).rejects.toMatchObject({ code: 'turn_limit' });
+        expect(dispatched()).toBe(0);
+      }
+    });
+
     it('stops where nobody can answer when the interval is unusable (zero, negative or NaN), never loops or asks', async () => {
       for (const checkpointToolTurns of [0, -3, Number.NaN]) {
         let asked = 0;
@@ -2107,7 +2209,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
       const { provider, calls } = counted(toolRounds(10));
       const { registry, dispatched } = counting();
       let answer: (value: 'continue' | 'stop') => void = () => undefined;
-      let opened = false;
+      const opened = deferred();
       const turn = runAgentTurn(
         baseParams(provider, {
           registry,
@@ -2116,7 +2218,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
             maxToolCorrections: 3,
             checkpointToolTurns: 2,
             onToolRoundLimit: () => {
-              opened = true;
+              opened.open();
               return new Promise((resolve) => {
                 answer = resolve;
               });
@@ -2128,7 +2230,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
         () => 'resolved',
         () => 'rejected',
       );
-      await vi.waitFor(() => expect(opened).toBe(true));
+      await opened.promise;
       const callsAtQuestion = calls();
       const roundsAtQuestion = dispatched();
       expect(roundsAtQuestion).toBe(2);
@@ -2153,7 +2255,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
         removeEventListener: () => undefined,
       };
       let release: (value: 'continue') => void = () => undefined;
-      let opened = false;
+      const opened = deferred();
       const turn = runAgentTurn(
         baseParams(provider, {
           registry,
@@ -2164,7 +2266,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
             checkpointToolTurns: 1,
             onToolRoundLimit: (_info, passed) => {
               expect(passed).toBe(signal); // the hook gets the turn's own signal
-              opened = true;
+              opened.open();
               return new Promise((resolve) => {
                 release = resolve;
               });
@@ -2176,7 +2278,7 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
         () => undefined,
         (error: unknown) => error,
       );
-      await vi.waitFor(() => expect(opened).toBe(true));
+      await opened.promise;
       aborted = true; // the session is being ended ...
       release('continue'); // ... and an answer arrives late: cancel wins over it
       expect(await settled).toMatchObject({ code: 'cancelled' });
@@ -2209,6 +2311,23 @@ describe('initialRoundAllowance — the clamp that makes the backstop hold for a
     expect(
       initialRoundAllowance({ ...base, onToolRoundLimit: hook, checkpointToolTurns: 1000 }),
     ).toBe(ABSOLUTE_TOOL_ROUNDS);
+  });
+
+  it('fails closed on a value that is not a number at all, not only on NaN', () => {
+    for (const value of [undefined, 'abc', {}, null, [], true]) {
+      expect(initialRoundAllowance({ ...base, maxToolTurns: value as never })).toBe(0);
+    }
+    // An ABSENT checkpoint interval (undefined or null) legitimately falls back to maxToolTurns; any other non-number is not
+    // an interval at all.
+    for (const value of ['abc', {}, [], true]) {
+      expect(
+        initialRoundAllowance({
+          ...base,
+          onToolRoundLimit: hook,
+          checkpointToolTurns: value as never,
+        }),
+      ).toBe(0);
+    }
   });
 
   it('fails closed on a non-numeric or negative limit', () => {

@@ -165,8 +165,16 @@ export function collectTurnLimitIssues(
   maxTurns: number | undefined,
   issues: GraphIssue[],
 ): void {
-  const check = (field: string, value: number | undefined, key: ChatLimitKey): void => {
-    if (value === undefined || isChatLimitInBounds(key, value)) return;
+  const check = (
+    field: string,
+    value: number | undefined,
+    key: ChatLimitKey,
+    required = false,
+  ): void => {
+    // An optional field may be absent; a REQUIRED one (`maxToolTurns`, `maxToolCorrections`) may not, or the loop would run on
+    // a limit it does not have. `undefined` fails the bounds check below, which is what makes it an issue.
+    if (value === undefined && !required) return;
+    if (value !== undefined && isChatLimitInBounds(key, value)) return;
     const { min, max } = CHAT_LIMITS[key];
     issues.push({
       field,
@@ -174,8 +182,8 @@ export function collectTurnLimitIssues(
       kind: 'ceiling_exceeded',
     });
   };
-  check('maxToolTurns', limits.maxToolTurns, 'max_tool_turns');
-  check('maxToolCorrections', limits.maxToolCorrections, 'max_tool_corrections');
+  check('maxToolTurns', limits.maxToolTurns, 'max_tool_turns', true);
+  check('maxToolCorrections', limits.maxToolCorrections, 'max_tool_corrections', true);
   check('checkpointToolTurns', limits.checkpointToolTurns, 'checkpoint_tool_turns');
   check('maxTurns', maxTurns, 'max_turns');
 }

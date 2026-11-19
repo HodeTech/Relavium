@@ -116,7 +116,8 @@ export type ToolRoundLimitHook = (
   signal: AbortSignalLike,
 ) => Promise<ToolRoundLimitDecision>;
 // The engine does NOT trust the hook to settle: it races the hook against the turn's abort, treats a rejection or throw as a
-// stop (fail closed, classified) and anything other than the literal `'continue'` as a stop (ADR-0136 §2).
+// stop (fail closed, classified) and anything other than the literal `'continue'` as a stop (ADR-0136 §2). The hook is only
+// called with a signal that is not yet aborted; a host that listens for the `abort` event still sees any later abort.
 
 /**
  * Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob.
@@ -1505,7 +1506,9 @@ export function initialRoundAllowance(limits: AgentTurnLimits): number {
     limits.onToolRoundLimit === undefined
       ? limits.maxToolTurns
       : (limits.checkpointToolTurns ?? limits.maxToolTurns);
-  if (Number.isNaN(requested)) return 0;
+  // Anything that is not a usable number — NaN, but also `undefined`, a string or an object from an untyped caller, all of which
+  // make `Math.min` return NaN — is zero: the turn stops before any round instead of running unbounded.
+  if (typeof requested !== 'number' || Number.isNaN(requested)) return 0;
   return Math.min(Math.max(requested, 0), ABSOLUTE_TOOL_ROUNDS);
 }
 
@@ -1526,13 +1529,21 @@ async function askToContinue(
   signal: AbortSignalLike,
 ): Promise<unknown> {
   throwIfAborted(signal);
-  let onAbort: (() => void) | undefined;
+  let rejectAborted: (error: unknown) => void = () => undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(new AgentTurnError('cancelled', 'the run was cancelled', false));
-    signal.addEventListener('abort', onAbort);
+    rejectAborted = reject;
   });
   aborted.catch(() => undefined); // a rejection nobody raced is not an unhandled rejection
-  const answer = Promise.resolve().then(() => hook(info, signal)); // a synchronous throw becomes a rejection too
+  const onAbort = (): void =>
+    rejectAborted(new AgentTurnError('cancelled', 'the run was cancelled', false));
+  signal.addEventListener('abort', onAbort);
+  // The hook runs in a later microtask, so an abort that arrives in between is checked AGAIN right before the call: a host
+  // that only listens for the `abort` event would otherwise be handed a signal whose event already fired and wait forever.
+  // A synchronous throw becomes a rejection too.
+  const answer = Promise.resolve().then(() => {
+    throwIfAborted(signal);
+    return hook(info, signal);
+  });
   answer.catch(() => undefined); // a late rejection after the abort won the race is not unhandled either
   try {
     const decision = await Promise.race([answer, aborted]);
@@ -1547,7 +1558,7 @@ async function askToContinue(
       false,
     );
   } finally {
-    if (onAbort !== undefined) signal.removeEventListener('abort', onAbort);
+    signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -2595,10 +2606,10 @@ async function driveAgentTurn(
 
       // The model asked for another round of tools and `toolTurn` rounds have been dispatched. At the limit the round is
       // HELD, not run: with nobody to ask the turn ends here, and with a person the answer decides (ADR-0136 §2–§3).
-      // `allowedRounds` is always a clamped number (`initialRoundAllowance` turns a NaN into 0), so a non-numeric limit fails
-      // closed here. A held response the dispatch below would refuse anyway (no call, or too many) is refused by it, not
-      // asked about.
-      if (toolTurn >= allowedRounds && isDispatchableRound(turn.content)) {
+      // `!(a < b)`, not `a >= b`, as belt and braces: whatever `allowedRounds` ever holds, a comparison that is not true
+      // means "the limit is reached" and fails closed, instead of a NaN making the check never fire. A held response the
+      // dispatch below would refuse anyway (no call, or too many) is refused by it, not asked about.
+      if (!(toolTurn < allowedRounds) && isDispatchableRound(turn.content)) {
         allowedRounds = await resolveRoundLimit(params, toolTurn, interval);
       }
 

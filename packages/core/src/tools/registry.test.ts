@@ -397,9 +397,13 @@ describe('ToolRegistry — run_command allowlist', () => {
     });
 
     it('never matches an entry with an open quote or an empty entry (fails closed)', async () => {
-      for (const entry of ['cat "a b', '   ']) {
+      // The argv is built so that, were the open quote tolerated, the entry's tokens would EQUAL it: only the guard refuses.
+      for (const [entry, args] of [
+        ['cat "a b', ['a b']],
+        ['   ', []],
+      ] as const) {
         const err = await rejectsWith<ToolPolicyError>(
-          run({ command: 'cat', args: ['a', 'b'] }, { allowedCommands: [entry] }),
+          run({ command: 'cat', args: [...args] }, { allowedCommands: [entry] }),
         );
         expect(err.reason).toBe('command_not_allowed');
       }
@@ -2009,6 +2013,17 @@ describe('ToolRegistry — the live row of a refusal that returns to the model',
         summary: 'this path is protected and cannot be written',
       }),
     ]);
+  });
+
+  it('adds no summary for a recoverable failure that is not a denial (its text is a host message, possibly with a path)', async () => {
+    const completed = await liveEventsFor(
+      new ToolExecutionError('read_file', 'ENOENT: /home/u/secret-project/notes.txt', undefined, {
+        recoverable: true,
+      }),
+    );
+    expect(completed).toEqual([expect.objectContaining({ outcome: 'failure' })]);
+    expect(completed[0]).not.toHaveProperty('summary');
+    expect(JSON.stringify(completed)).not.toContain('secret-project');
   });
 
   it('adds no summary for a fatal denial (its text never reaches the model, so it is not a row reason)', async () => {

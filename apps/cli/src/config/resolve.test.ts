@@ -133,6 +133,22 @@ describe('resolveConfig', () => {
       },
     );
 
+    it('treats zero as a real value for max_tool_corrections, not as "absent": an operator base of 0, a repository 0 over a workspace value', () => {
+      // Zero is legal for this limit only (the first round in which nothing ran ends the turn). A `||` instead of `??` anywhere in
+      // the resolution would read it as unset and fall through to a higher limit.
+      const strict: GlobalConfig = { preferences: { max_tool_corrections: 0 } };
+      expect(resolveConfig({ global: strict }).chat.maxToolCorrections).toBe(0);
+      expect(() =>
+        resolveConfig({ global: strict, project: { chat: { max_tool_corrections: 1 } } }),
+      ).toThrow(/max_tool_corrections is 1 in the project config, above this machine's limit of 0/);
+      expect(
+        resolveConfig({
+          project: { chat: { max_tool_corrections: 0 } },
+          workspace: { chat: { max_tool_corrections: 2 } },
+        }).chat.maxToolCorrections,
+      ).toBe(0);
+    });
+
     it('an operator may LOWER a limit below the default, and a repository can then not exceed that', () => {
       const global: GlobalConfig = { preferences: { max_tool_turns: 10 } };
       expect(resolveConfig({ global }).chat.maxToolTurns).toBe(10);
