@@ -32,6 +32,8 @@ const invocations: readonly (readonly string[])[] = [
   ['provider', 'remove-key', 'openai'],
   ['provider', 'test', 'openai'],
   ['media', 'prune-temporaries'],
+  ['permissions', 'list'],
+  ['permissions', 'revoke', '1'],
 ];
 
 describe('MVP-2 invalid positional grammar', () => {

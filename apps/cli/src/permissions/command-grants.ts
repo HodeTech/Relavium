@@ -125,6 +125,11 @@ export type RevokeResult =
   | { readonly ok: true; readonly id: string }
   | { readonly ok: false; readonly reason: CommandGrantUnavailable | 'no-such-grant' };
 
+/** `removed: false` means there was no file to remove; a file that could not be removed is a failure, never "nothing to remove". */
+export type RevokeAllResult =
+  | { readonly ok: true; readonly removed: boolean }
+  | { readonly ok: false; readonly reason: 'unwritable' };
+
 /** The grant store for ONE project root. */
 export interface CommandGrantStore {
   /** Whether a remembered grant covers exactly this argv under this root. A store that cannot answer says `false`. */
@@ -140,7 +145,7 @@ export interface CommandGrantStore {
   /** Withdraw the grant at the 1-based index of {@link list} by appending a tombstone. */
   revoke: (index: number) => RevokeResult;
   /** Remove the whole file: the recovery that needs no text editor. Every root's grants go. */
-  revokeAll: () => { readonly removed: boolean };
+  revokeAll: () => RevokeAllResult;
 }
 
 export interface CommandGrantStoreDeps {
@@ -155,6 +160,14 @@ export interface CommandGrantStoreDeps {
   readonly newId?: () => string;
   /** Resolve a bare program name on the PATH, as the spawn would. Injected so a test needs no real PATH. */
   readonly findProgram?: (name: string) => Promise<string | undefined>;
+}
+
+/**
+ * The project root remembered grants are keyed by: the directory that holds the nearest `.relavium/` (else the working
+ * directory). One function for the chat session and `relavium permissions`, so a grant made in one is the grant the other lists.
+ */
+export function commandGrantRoot(cwd: string, projectConfigDir: string | undefined): string {
+  return projectConfigDir === undefined ? cwd : dirname(projectConfigDir);
 }
 
 /** The canonical root: the resolved real path, so two paths to one tree share grants. Falls back to the resolved path. */
@@ -382,9 +395,11 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
 
   const list = (): ListResult => {
     const state = readKey();
-    if (state.kind !== 'ready') return { ok: false, reason: 'no-key' };
+    if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
     const folded = readFold();
     if (!folded.ok) return { ok: false, reason: 'unreadable' };
+    // No key yet means no grant was ever written under this machine's key: the honest answer is an empty list, not a fault.
+    if (state.kind === 'absent') return { ok: true, grants: [] };
     const root = rootDigest(state.key, canonical);
     return {
       ok: true,
@@ -411,13 +426,16 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     return { ok: true, id: target.id };
   };
 
-  const revokeAll = (): { readonly removed: boolean } => {
+  const revokeAll = (): RevokeAllResult => {
+    if (lstatOrUndefined(path) === undefined) return { ok: true, removed: false };
     try {
-      if (!existsSync(path) && lstatOrUndefined(path) === undefined) return { removed: false };
       unlinkSync(path);
-      return { removed: true };
+      return { ok: true, removed: true };
     } catch {
-      return { removed: false };
+      // Lost a race with another remover, or a permission refusal: only the file's absence now tells them apart.
+      return lstatOrUndefined(path) === undefined
+        ? { ok: true, removed: false }
+        : { ok: false, reason: 'unwritable' };
     }
   };
 

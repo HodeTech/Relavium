@@ -1,5 +1,6 @@
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
@@ -365,12 +366,41 @@ describe('revoking and listing', () => {
     await grants.remember(['npm', 'test']);
     appendFileSync(file(), '\nnot json\n');
     expect(grants.list().ok).toBe(false);
-    expect(grants.revokeAll()).toEqual({ removed: true });
+    expect(grants.revokeAll()).toEqual({ ok: true, removed: true });
     expect(existsSync(file())).toBe(false);
-    expect(grants.revokeAll()).toEqual({ removed: false });
+    expect(grants.revokeAll()).toEqual({ ok: true, removed: false });
     expect(grants.list()).toEqual({ ok: true, grants: [] });
     expect((await grants.remember(['npm', 'test'])).ok, 'and the store works again').toBe(true);
   });
+
+  it('list is empty, not a fault, before any grant was ever made (no key exists yet); a locked keychain still says no-key', () => {
+    expect(keychain.entries.size).toBe(0);
+    expect(store().list()).toEqual({ ok: true, grants: [] });
+    expect(keychain.entries.size, 'a read never generates the key').toBe(0);
+    keychain.failure = 'throws';
+    expect(store().list()).toEqual({ ok: false, reason: 'no-key' });
+  });
+
+  it('list with no key yet still reports an unreadable file, so the recovery is offered', () => {
+    mkdirSync(dirname(file()), { recursive: true });
+    writeFileSync(file(), 'not json\n');
+    expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'revokeAll that cannot remove the file says so, never "nothing to remove"',
+    async () => {
+      const grants = store();
+      await grants.remember(['npm', 'test']);
+      chmodSync(dirname(file()), 0o500); // the directory refuses the unlink
+      try {
+        expect(grants.revokeAll()).toEqual({ ok: false, reason: 'unwritable' });
+        expect(existsSync(file())).toBe(true);
+      } finally {
+        chmodSync(dirname(file()), 0o700);
+      }
+    },
+  );
 });
 
 describe('bounds (ADR-0118 §2)', () => {

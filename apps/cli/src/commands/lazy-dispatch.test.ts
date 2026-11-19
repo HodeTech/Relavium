@@ -92,11 +92,17 @@ describe('finite lazy route boundary (ADR-0111)', () => {
     const advertised = COMMAND_DESCRIPTORS.flatMap((descriptor) =>
       descriptor.executorId === undefined ? [] : [descriptor.executorId],
     );
-    expect(LAZY_COMMAND_IDS).toHaveLength(25);
-    expect(new Set(LAZY_COMMAND_IDS).size).toBe(25);
+    expect(LAZY_COMMAND_IDS).toHaveLength(27);
+    expect(new Set(LAZY_COMMAND_IDS).size).toBe(27);
     expect([...LAZY_COMMAND_IDS].sort()).toEqual([...advertised].sort());
     expect([...LAZY_COMMAND_IDS].sort()).toEqual(
-      [...PRICED, ...UNPRICED, 'media.prune-temporaries'].sort(),
+      [
+        ...PRICED,
+        ...UNPRICED,
+        'media.prune-temporaries',
+        'permissions.list',
+        'permissions.revoke',
+      ].sort(),
     );
     expect(events).toEqual([]);
   });

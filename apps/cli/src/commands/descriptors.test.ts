@@ -29,7 +29,7 @@ function expectDeepFrozen(value: unknown): void {
 }
 
 describe('descriptor authority and legacy compatibility (ADR-0110 Step 6)', () => {
-  it('retains all 24 literal pre-refactor model entries, order, annotations and strict schemas', () => {
+  it('retains all 24 literal pre-refactor model entries, order, annotations and strict schemas (then init and the MVP-4 permissions entries)', () => {
     expect(legacyFixture).toHaveLength(24);
     const expected = [
       ...legacyFixture,
@@ -38,6 +38,33 @@ describe('descriptor authority and legacy compatibility (ADR-0110 Step 6)', () =
         label: 'Init',
         description: 'Initialize a .relavium/ directory in the current project.',
         effect: 'write',
+      },
+      // MVP-4 (ADR-0118): the remembered-command review, appended after the 24 that predate the descriptor authority.
+      {
+        id: 'permissions.list',
+        label: 'List remembered commands',
+        description:
+          'List the commands remembered for this project: program name, argument count and date, never the command itself.',
+        effect: 'read',
+      },
+      {
+        id: 'permissions.revoke',
+        label: 'Revoke remembered commands',
+        description:
+          'Stop trusting one remembered command by its number in the list, or every remembered command with --all.',
+        args: [
+          {
+            name: 'number',
+            type: 'string',
+            description: 'the number shown by `permissions list` (omit with --all)',
+          },
+          {
+            name: 'all',
+            type: 'boolean',
+            description: 'forget every remembered command, for every project',
+          },
+        ],
+        effect: 'destructive',
       },
     ];
     expect(legacyManifestEntries().slice(0, 24)).toEqual(legacyFixture);
@@ -66,14 +93,14 @@ describe('descriptor authority and legacy compatibility (ADR-0110 Step 6)', () =
     const ids = COMMAND_DESCRIPTORS.flatMap((entry) =>
       entry.executorId === undefined ? [] : [entry.executorId],
     );
-    expect(ids).toHaveLength(25);
+    expect(ids).toHaveLength(27);
     expect(new Set(ids).size).toBe(ids.length);
     expect([...ids].sort()).toEqual([...DISPATCHABLE_COMMAND_IDS].sort());
     expect(
       COMMAND_DESCRIPTORS.filter((entry) => entry.executorId === undefined).map(
         (entry) => entry.path,
       ),
-    ).toEqual([['agent'], ['budget'], ['provider'], ['media']]);
+    ).toEqual([['agent'], ['budget'], ['provider'], ['media'], ['permissions']]);
     expectDeepFrozen(COMMAND_DESCRIPTORS);
     expectDeepFrozen(GLOBAL_OPTION_DESCRIPTORS);
   });

@@ -1,6 +1,10 @@
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
-import { createCommandGrantStore, type CommandGrantStore } from '../permissions/command-grants.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
@@ -23,7 +27,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { resumeHint } from '../chat/resume-hint.js';
 import { realpathSync } from 'node:fs';
-import { dirname, isAbsolute } from 'node:path';
+import { isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
 import {
   applyStandaloneDefault,
@@ -1783,12 +1787,6 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
   return undefined;
 }
 
-/**
- * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the session has no operator
- * home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
- * project root is the directory that holds the nearest `.relavium/` (else the working directory), resolved to its real path by the
- * store, so two paths to one tree share grants and a fresh clone elsewhere shares none.
- */
 /** The OS keychain, opened on first use: building a session must not touch it (a session that never asks about a command never does). */
 function lazyOsKeychain(): KeychainStore {
   let opened: KeychainStore | undefined;
@@ -1802,6 +1800,12 @@ function lazyOsKeychain(): KeychainStore {
   };
 }
 
+/**
+ * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the session has no operator
+ * home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
+ * project root is the directory that holds the nearest `.relavium/` (else the working directory), resolved to its real path by the
+ * store, so two paths to one tree share grants and a fresh clone elsewhere shares none.
+ */
 function openCommandGrants(
   built: Pick<BuiltChatSession, 'operatorHomeDir'>,
   deps: Pick<ChatReplDeps, 'global' | 'keychain'>,
@@ -1810,16 +1814,15 @@ function openCommandGrants(
 ): CommandGrantStore | undefined {
   const homeDir = built.operatorHomeDir;
   if (homeDir === undefined) return undefined;
-  let projectRoot = deps.global.cwd;
+  let projectConfigDir: string | undefined;
   try {
-    const projectConfigDir = readLiveConfig().projectConfigDir;
-    if (projectConfigDir !== undefined) projectRoot = dirname(projectConfigDir);
+    projectConfigDir = readLiveConfig().projectConfigDir;
   } catch {
     // A config that cannot be read now fails its own load elsewhere; grants then key by the working directory.
   }
   return createCommandGrantStore({
     homeDir,
-    projectRoot,
+    projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
     keychain: deps.keychain ?? lazyOsKeychain(),
     notify: (message) => store.notice(message),
   });

@@ -73,6 +73,8 @@ import {
 import { runCommand, type RunCommandArgs } from './run.js';
 import { statusCommand } from './status.js';
 import { pruneTemporariesCommand } from './media.js';
+import { permissionsListCommand, permissionsRevokeCommand } from './permissions.js';
+import { buildPermissionsRevokeArgs } from './permissions-input.js';
 import { buildMediaPruneArgs } from './media-input.js';
 
 /**
@@ -846,6 +848,12 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   [
     'media.prune-temporaries',
     (input, ctx) => pruneTemporariesCommand(buildMediaPruneArgs(input), ctx),
+  ],
+  ['permissions.list', (_input, ctx) => Promise.resolve(permissionsListCommand(ctx))],
+  [
+    'permissions.revoke',
+    (input, ctx) =>
+      Promise.resolve(permissionsRevokeCommand(buildPermissionsRevokeArgs(input), ctx)),
   ],
   ['run', executeRun],
   ['chat', executeChat],
