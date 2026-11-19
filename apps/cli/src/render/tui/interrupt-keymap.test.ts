@@ -4,6 +4,7 @@ import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
   isArmed,
+  isInterruptKey,
   pressInterrupt,
   pressOtherKey,
   type InterruptAction,
@@ -148,5 +149,16 @@ describe('what the first press does NOT do', () => {
       // A second press right after is therefore ANOTHER first press, never an exit.
       expect(pressInterrupt(first.state, context, 1001).action).not.toBe('end-session');
     }
+  });
+});
+
+describe('which key is the interrupt', () => {
+  it('is Ctrl+C, in either case, and no other chord', () => {
+    expect(isInterruptKey('c', { ctrl: true })).toBe(true);
+    expect(isInterruptKey('C', { ctrl: true })).toBe(true);
+    expect(isInterruptKey('c', {})).toBe(false); // a bare letter is typing
+    expect(isInterruptKey('c', { ctrl: true, meta: true })).toBe(false); // Ctrl+Alt+C is another chord
+    expect(isInterruptKey('d', { ctrl: true })).toBe(false);
+    expect(isInterruptKey('', { ctrl: true })).toBe(false);
   });
 });

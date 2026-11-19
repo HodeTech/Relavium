@@ -179,7 +179,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
     }
   });
 
-  it('suspends hidden palette confirmation while keeping Esc and Ctrl-C available', async () => {
+  it('suspends hidden palette confirmation while keeping Esc and Ctrl+C available', async () => {
     const h = mount(alternate, false);
     try {
       await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
@@ -195,6 +195,10 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       expect(h.pickSession).not.toHaveBeenCalled();
       h.input.push('\x1b');
       await vi.waitFor(() => expect(h.controller.getSnapshot().palette).toBeUndefined());
+      // Ctrl+C is the first press of the two that leave the Home (ADR-0115 §1): it arms, the second one exits.
+      h.input.push('\x03');
+      await vi.waitFor(() => expect(h.controller.getSnapshot().interruptArmed).toBe(true));
+      expect(h.onExit).not.toHaveBeenCalled();
       h.input.push('\x03');
       await vi.waitFor(() => expect(h.onExit).toHaveBeenCalledTimes(1));
     } finally {

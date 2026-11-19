@@ -323,9 +323,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         releaseJoin();
         if (ui.controller.getSnapshot().mode === 'chat') {
           ui.controller.handleKey('c', CTRL_C);
+          ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
         }
         ui.controller.handleKey('c', CTRL_C);
+        ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await running;
       }
       expect(closeMcp).toHaveBeenCalledOnce();
@@ -382,9 +384,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     } finally {
       if (ui.controller.getSnapshot().mode === 'chat') {
         ui.controller.handleKey('c', CTRL_C);
+        ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
       }
       ui.controller.handleKey('c', CTRL_C);
+      ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await running;
     }
   });
@@ -499,6 +503,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(home.controller.getSnapshot().notice).toContain('another directory');
       expect(build).toHaveBeenCalledTimes(1);
       home.controller.handleKey('c', { ctrl: true });
+      home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
       expect(await running).toBe(0);
     },
   );
@@ -563,8 +568,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         expect(f.registry.termination !== undefined).toBe(faulted);
         if (!faulted) {
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           await flush();
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         }
         expect(await running).toBe(faulted ? 9 : 0);
         expect(hits).toBe(faulted ? 1 : 0);
@@ -658,6 +665,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     if (props === undefined) throw new Error('the injected render was never invoked');
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success); // the throwing unmount did not corrupt the clean exit
     expect(closeSpy).toHaveBeenCalledTimes(1); // …and the db was still closed
   });
@@ -670,6 +678,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
     props.controller.handleKey('c', CTRL_C); // Ctrl-C on the Home ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
 
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(closeSpy).toHaveBeenCalledTimes(1);
@@ -694,6 +703,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const drivePromise = driveHome(deps);
     if (captured === undefined) throw new Error('the injected render was never invoked');
     captured.controller.handleKey('c', CTRL_C);
+    captured.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
 
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(client.sqlite.open).toBe(false);
@@ -745,6 +755,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured();
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
     };
 
@@ -793,6 +804,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const done = driveHome(deps);
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C); // clean Home exit ⇒ driveHome resolves
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await done;
       return alt;
     };
@@ -821,6 +833,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(snap.attention.gates).toEqual([]);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -882,6 +895,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -934,8 +948,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(2);
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
   });
@@ -980,6 +996,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(session.store.getSnapshot().review?.kind).toBe('details');
     session.store.closeDetails();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
     expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
     expect(session.store.getSnapshot().review).toBeUndefined();
@@ -991,6 +1008,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await running).toBe(EXIT_CODES.success);
   });
 
@@ -1033,6 +1051,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(invocation.registry.activeOwners).toBe(6);
       expect(props.controller.getSnapshot().session).toBe(original); // first replacement still initializes
       props.controller.handleKey('c', CTRL_C); // sticky /clear starts a second replacement
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await vi.waitFor(() => expect(permits).toHaveLength(2));
       expect(invocation.registry.activeOwners).toBe(8);
       permits[1]?.(); // second replacement wins while both native creations remain live
@@ -1044,9 +1063,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(props.controller.getSnapshot().session).toBe(winner);
       await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
       await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       expect(await drivePromise).toBe(EXIT_CODES.success);
     } finally {
       for (const permit of permits) permit();
@@ -1092,8 +1113,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     }
     expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   }, 10000);
 
@@ -1160,6 +1183,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           props.controller.handleKey('', { escape: true });
           expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           expect(await drive).toBe(0);
         }
       } finally {
@@ -1167,6 +1191,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', { escape: true });
         props.controller.handleKey('', { escape: true });
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await drive;
       }
       expect(close).toHaveBeenCalledOnce();
@@ -1235,8 +1260,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     }
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1278,8 +1305,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(builtProviders.at(-1)).toBeUndefined();
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1347,8 +1376,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1445,6 +1476,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     // The durable row's agent snapshot updates to the switched model after the reseated session ends.
     props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     const full = createSessionStore(client.db).loadFull(sessionId);
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8');
@@ -1452,6 +1484,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']); // the single carried exchange
 
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1698,8 +1731,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(displayedReplies()).toBe(1); // reseat never reprints the earlier exchange
         }
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await flush();
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         expect(await running).toBe(0);
       } finally {
         instance?.unmount();
@@ -1762,8 +1797,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(errs.join('')).not.toContain('UNPRICED-MID-BUILD'); // …and it was NOT written to stderr
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1804,6 +1841,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(outros.some((o) => o.includes('all set'))).toBe(true);
 
     props.controller.handleKey('c', CTRL_C); // clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1866,6 +1904,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
 
     expect(beforeWizardSettles).toEqual([
@@ -1971,6 +2010,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2040,6 +2080,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2129,6 +2170,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2166,6 +2208,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(closeSpy).not.toHaveBeenCalled();
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2237,6 +2280,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(select).not.toHaveBeenCalled(); // no wizard on a keyed run
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2371,8 +2415,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const assistant = transcript.find((e) => e.role === 'assistant');
 
       props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await flush();
       props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
       return assistant?.text ?? '';
     };
@@ -2490,8 +2536,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       JSON.stringify(client.sqlite.prepare('SELECT content FROM session_messages').all()),
     ).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await driving;
   });
 
@@ -2762,8 +2810,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(errs.join('')).not.toContain('budget warning');
 
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await flush();
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
     });
   });
@@ -2776,6 +2826,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
       return props;
     };

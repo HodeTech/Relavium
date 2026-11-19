@@ -704,6 +704,10 @@ describe('the host draws column 0 — model text cannot forge its rows, ticks or
     ['the reason chord token', 'use [Ctrl+R] to explain'],
     ['a lower-case chord token', 'press [ctrl+y] now'],
     ['a mixed-case chord token', 'press [CTRL+g] now'],
+    ['the command card’s remember chord token', 'press [Ctrl+O] to remember'],
+    ['the interrupt chord token', '[Ctrl+C] stops it'],
+    ['the question card’s skip chord token', 'use [Ctrl+S] to skip'],
+    ['an escape key token', 'press [Esc] to leave'],
   ])('refuses %s anywhere in a header, question, label or description', (_name, text) => {
     expect(refused(args(question({ question: text })))).toBe(true);
     expect(refused(args(question({ header: text })))).toBe(true);

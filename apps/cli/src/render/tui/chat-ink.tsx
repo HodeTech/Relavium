@@ -1,6 +1,7 @@
 import type { ToolDisplay } from './tool-display.js';
 import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
+import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { ownSessionSubscriber } from '../../chat/session-presentation.js';
 import {
@@ -77,9 +78,17 @@ import {
   insertAtCursor,
   pasteIsEditable,
   reduceChatKey,
-  reduceEditorMotion,
   type EditorState,
 } from './chat-input.js';
+import {
+  DISARMED,
+  INTERRUPT_ARM_WINDOW_MS,
+  isInterruptKey,
+  pressInterrupt,
+  pressOtherKey,
+  type InterruptContext,
+  type InterruptState,
+} from './interrupt-keymap.js';
 import {
   foldMentionKey,
   mentionOpensAt,
@@ -129,16 +138,12 @@ import {
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
-  formatApprovalTarget,
   formatBusyLine,
   formatReasoningPanel,
   formatSessionFooterWithMode,
   formatToolCall,
   liveScrollGeometry,
   reasoningLabelActive,
-  sanitizeApprovalReason,
-  denialReasonDisclosure,
-  sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
@@ -169,7 +174,7 @@ import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { attemptClipboardWrite, type ClipboardWriter } from '../clipboard.js';
 import { MarkdownText } from './markdown-text.js';
 import type { MarkdownStream } from '../markdown/index.js';
-import type { ChatStoreController, PendingApproval } from './chat-store.js';
+import type { ChatStoreController } from './chat-store.js';
 import { assertRenderStoreAgree } from './session-view-model.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
@@ -307,8 +312,6 @@ interface ChatViewProps {
   /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
    *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
   readonly reasoningVisible: boolean;
-  /** An in-flight per-tool approval — when set, the `Ctrl+Y/Ctrl+G/Ctrl+N` prompt replaces the idle prompt. */
-  readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
   /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — renders a transient "Sent to terminal clipboard" toast above the footer,
@@ -324,9 +327,8 @@ interface ChatViewProps {
    *  cosmetic (parity with `nowMs`); the owner passes `process.stdout.columns` (ChatApp) or its resize-tracked
    *  width (the Home). Absent ⇒ the formatter's 80-col fallback. `| undefined` for the createElement passthrough. */
   readonly columns?: number | undefined;
-  /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
-   *  approval prompt shows the reason input instead of the `Ctrl+Y/Ctrl+G/Ctrl+N` hint. `| undefined` ⇒ the normal prompt. */
-  readonly reasonDraft?: EditorState | undefined;
+  /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the session, and the idle hint says so. */
+  readonly interruptArmed?: boolean | undefined;
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
    *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
@@ -386,7 +388,6 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     mode,
     reasoningEffort,
     reasoningVisible,
-    approval,
     paletteOpen,
   } = props;
   const attachments = props.attachments ?? [];
@@ -615,9 +616,11 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {editor.text.length === 0
-            ? '/ for commands · /exit or Ctrl+C twice to end'
-            : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft'}
+          {props.interruptArmed === true
+            ? 'Press Ctrl+C again to end the session'
+            : editor.text.length === 0
+              ? '/ for commands · /exit or Ctrl+C twice to end'
+              : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft'}
         </Text>
       )}
 
@@ -629,44 +632,6 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
           {state.warnings.map((w) => `⚠ ${stripTerminalControls(w)}`).join('\n')}
         </Text>
-      )}
-
-      {/* The per-tool approval prompt (ADR-0057) — shown mid-turn when a governed dispatch awaits consent. It
-          is answered by the docked card (`handleReviewInput`, which owns every key): Ctrl+Y once, Ctrl+G always (only
-          when the answer is cacheable — accept-edits, not auto's protected-path fallback), Ctrl+N no, Esc aborts. This block renders
-          only for an approval with NO card, which the store never creates (it always opens a card), so it is dead text kept
-          truthful until the legacy prompt is deleted. */}
-      {approval !== undefined && (
-        <Box flexDirection="column">
-          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-            {`Approve ${sanitizeInline(approval.request.toolId)}${
-              formatApprovalTarget(approval.request).length > 0
-                ? ` → ${formatApprovalTarget(approval.request)}`
-                : ''
-            }?`}
-          </Text>
-          {props.reasonDraft !== undefined ? (
-            // The `[c]` typed-reason capture (Step 14): a hint + the buffer echoed SANITIZED (bidi/control-stripped,
-            // one line) with a block cursor. Enter denies WITH this reason; Esc cancels back to the choices below.
-            <Box flexDirection="column">
-              <Text {...dimProps(color)}>
-                {denialReasonDisclosure(props.columns ?? props.viewport?.cols ?? 80).join('\n')}
-              </Text>
-              <Text {...dimProps(color)} wrap="truncate-end">
-                Enter to send · Esc to cancel
-              </Text>
-              <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-                {`> ${sanitizeInline(props.reasonDraft.text)}█`}
-              </Text>
-            </Box>
-          ) : (
-            <Text {...dimProps(color)}>
-              {approval.cacheable
-                ? 'Ctrl+Y yes   Ctrl+G always   Ctrl+N no   Ctrl+R reason   [esc] abort'
-                : 'Ctrl+Y yes   Ctrl+N no   Ctrl+R reason   [esc] abort'}
-            </Text>
-          )}
-        </Box>
       )}
 
       {/* The copy-on-select confirmation (2.6.F Step 6i) — a transient pill above the footer, auto-dismissed by the
@@ -730,7 +695,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mode,
     reasoningEffort,
     reasoningVisible,
-    approval,
     review,
     toolDisplays,
     markdown,
@@ -751,6 +715,28 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEditor(value);
   };
   const cancelFired = useRef(false);
+  // The one interrupt keymap (ADR-0115 §1). `interruptRef` is its whole state (when it was armed, on the monotonic clock);
+  // `interruptArmed` only drives the footer hint, and the timer takes the hint down when the window runs out.
+  const interruptRef = useRef<InterruptState>(DISARMED);
+  const [interruptArmed, setInterruptArmed] = useState(false);
+  const interruptTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const showInterruptHint = (armed: boolean): void => {
+    if (interruptTimer.current !== undefined) clearTimeout(interruptTimer.current);
+    interruptTimer.current = undefined;
+    setInterruptArmed(armed);
+    if (!armed) return;
+    interruptTimer.current = setTimeout(() => {
+      interruptTimer.current = undefined;
+      setInterruptArmed(false);
+    }, INTERRUPT_ARM_WINDOW_MS);
+    interruptTimer.current.unref();
+  };
+  useEffect(
+    () => () => {
+      if (interruptTimer.current !== undefined) clearTimeout(interruptTimer.current);
+    },
+    [],
+  );
   // The copy-on-select confirmation toast (2.6.F Step 6i) — `flashCopied` on a `written` outcome, rendered as a
   // transient pill by `ChatView` (not a transcript entry, so the selection never shifts).
   const { copied, flashCopied } = useCopiedToast();
@@ -844,15 +830,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const applyEffortPicker = (next: EffortPickerState | undefined): void => {
     effortPickerRef.current = next;
     setEffortPicker(next);
-  };
-  // The `[c]` typed-reason capture (Step 14) — a small keyboard-owning buffer opened FROM a pending approval to
-  // record WHY the user denies. `undefined` ⇒ closed (the normal Ctrl+Y/Ctrl+G/Ctrl+N prompt). React-local + ref-shadowed
-  // (survives a coalesced stdin chunk, like the other submodes); only ever open while an approval is pending.
-  const [reasonDraft, setReasonDraft] = useState<EditorState | undefined>(undefined);
-  const reasonDraftRef = useRef<EditorState | undefined>(undefined);
-  const applyReasonDraft = (next: EditorState | undefined): void => {
-    reasonDraftRef.current = next;
-    setReasonDraft(next);
   };
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
@@ -1290,15 +1267,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mentionOpen: mentionRef.current !== undefined,
       modelPickerOpen: modelPickerRef.current !== undefined,
       effortPickerOpen: effortPickerRef.current !== undefined,
-      reasonCaptureOpen: reasonDraftRef.current !== undefined,
       approvalPending: snap.approval !== undefined || snap.review !== undefined,
     });
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
 
-  // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
-  // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
+  // Ctrl+C reaches us (not the kernel) in raw mode: `applyInterrupt` below decides what it means (ADR-0115 §1).
   /**
    * Reduce one non-wheel mouse report into the selection (2.6.F Step 6). The viewport facts come from the measured
    * geometry (`top`/`left` — where the box sits in ink's frame) plus the LIVE wrap (`totalLines`/`height`), so a
@@ -1384,6 +1359,75 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       .catch(props.onError);
   };
 
+  // `/cancel` at most once: a held `Ctrl+C` would otherwise fire redundant turns.
+  const cancelOnce = (): void => {
+    if (cancelFired.current) return;
+    cancelFired.current = true;
+    submit('/cancel');
+  };
+  // What `Esc` does mid-turn: abort the turn and keep the session. A host wired without `onAbort` still must not leave a
+  // pending approval hanging, so it rejects it directly: the stop key is never dead at a decision.
+  const abortTurn = (): void => {
+    if (props.onAbort !== undefined) props.onAbort();
+    else if (props.store.getSnapshot().approval !== undefined)
+      props.store.answerApproval({ outcome: 'reject' });
+  };
+  // Where the person is when they press `Ctrl+C`, read from the refs and the store so a coalesced chunk sees what an earlier key
+  // of the same chunk just changed. An open card is `card`; the details view closes inside the store and never reaches here.
+  const interruptContext = (cardStopped: boolean): InterruptContext => {
+    if (cardStopped) return { kind: 'card' };
+    if (
+      paletteRef.current !== undefined ||
+      searchRef.current !== undefined ||
+      mentionRef.current !== undefined ||
+      modelPickerRef.current !== undefined ||
+      effortPickerRef.current !== undefined
+    )
+      return { kind: 'overlay' };
+    const busy =
+      props.store.getSnapshot().state.status === 'running' ||
+      shellBusyRef.current ||
+      submitBusyRef.current;
+    return busy ? { kind: 'work' } : { kind: 'prompt', hasText: editorRef.current.text.length > 0 };
+  };
+  const applyInterrupt = (
+    cardResult: 'abort' | 'stop-answered' | undefined,
+  ): 'consumed' | 'overlay' => {
+    const decision = pressInterrupt(
+      interruptRef.current,
+      interruptContext(cardResult !== undefined),
+      performance.now(),
+    );
+    interruptRef.current = decision.state;
+    switch (decision.action) {
+      case 'end-session':
+        if (cardResult === 'abort') abortTurn();
+        showInterruptHint(false);
+        cancelOnce();
+        return 'consumed';
+      case 'stop-and-arm':
+        if (cardResult !== 'stop-answered') abortTurn();
+        showInterruptHint(true);
+        return 'consumed';
+      case 'clear-text':
+        applyEditor((current) => {
+          if (current.text.length === 0) return current;
+          historyRef.current = resetHistoryNav(historyRef.current);
+          return emptyEditor();
+        });
+        return 'consumed';
+      case 'arm-hint':
+        showInterruptHint(true);
+        return 'consumed';
+      case 'close-overlay':
+        return 'overlay';
+      case 'exit-now':
+        // The Home's loading state; a chat has none, but the rule is the same: nothing to lose, leave.
+        cancelOnce();
+        return 'consumed';
+    }
+  };
+
   useInput((char, key) => {
     if (!acceptsInput()) return;
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
@@ -1393,7 +1437,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.onSuspend?.();
       return;
     }
-    if (!activationReady.current && !(key.ctrl && char.toLowerCase() === 'c')) return;
+    const interrupt = isInterruptKey(char, key);
+    // Before activation only the interrupt is live, and it ends the session: nothing is on screen yet that could be lost.
+    if (!activationReady.current) {
+      if (interrupt) cancelOnce();
+      return;
+    }
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
@@ -1405,7 +1454,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         const overlayOwnsKeyboard =
           props.store.getSnapshot().review !== undefined ||
           props.store.getSnapshot().question !== undefined ||
-          reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
           searchRef.current !== undefined ||
           mentionRef.current !== undefined ||
@@ -1425,11 +1473,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return; // CONSUMED in every state — a mouse report's raw bytes must never type into the prompt
       }
     }
+    // Any key but `Ctrl+C` ends the armed state at once (ADR-0115 §1), including a key a card swallows.
+    if (!interrupt && interruptRef.current.armedAt !== undefined) {
+      interruptRef.current = pressOtherKey();
+      showInterruptHint(false);
+    }
     const reviewAction = props.store.handleReviewInput(char, key);
     if (reviewAction === 'handled') return;
-    if (reviewAction === 'abort') {
-      if (props.onAbort !== undefined) props.onAbort();
-      else props.store.answerApproval({ outcome: 'reject' });
+    if (interrupt) {
+      // A card that stopped on this key has already been settled: an approval as a REJECTION, before the abort (ADR-0115 §2), and
+      // a checkpoint as the answer "stop", which ends the turn itself (ADR-0136 §2), so nothing is aborted for it.
+      if (applyInterrupt(reviewAction) === 'consumed') return;
+      // Otherwise an overlay is open and closes itself on `Ctrl+C` below, arming nothing.
+    } else if (reviewAction === 'abort') {
+      abortTurn();
       return;
     }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
@@ -1440,35 +1497,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
       submitBusyRef.current;
-    // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
-    // pending approval, so if that approval settled out-of-band (an external abort while typing) the capture is
-    // stale: drop it. Else `Esc` CANCELS back to the Ctrl+Y/Ctrl+G/Ctrl+N prompt (the approval is STILL pending — not an
-    // abort); plain `Enter` submits the reject with the sanitized+bounded reason; every other key edits the buffer
-    // (Ctrl-C / a non-edit chord is a harmless no-op, matching the approval floor's keyboard ownership). Read the
-    // REF so a coalesced same-chunk key sees a just-applied open/edit. The floor is unchanged — this only enriches
-    // a reject; a governed dispatch still cannot proceed without an explicit decision.
-    const openReason = reasonDraftRef.current;
-    if (openReason !== undefined) {
-      if (props.store.getSnapshot().approval === undefined) {
-        applyReasonDraft(undefined); // the approval vanished — discard the orphaned capture
-        return;
-      }
-      if (key.escape === true) {
-        applyReasonDraft(undefined); // cancel the reason; the approval stays pending (Ctrl+Y/Ctrl+G/Ctrl+N again)
-        return;
-      }
-      if (key.return === true && key.shift !== true) {
-        applyReasonDraft(undefined);
-        const reason = sanitizeApprovalReason(openReason.text);
-        props.store.answerApproval(
-          reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
-        );
-        return;
-      }
-      const edit = reduceEditorMotion(char, key);
-      if (edit !== undefined) applyReasonDraft(applyEditorAction(openReason, edit));
-      return;
-    }
     // The open `/models` reseat picker owns every key (ADR-0059) — checked FIRST (mutually exclusive with the other
     // submodes; it only opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied
     // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
@@ -1624,14 +1652,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       }
     }
-    const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
+    const action = reduceChatKey(char, key, editorRef.current.text, isRunning);
     switch (action.kind) {
-      case 'cancel':
-        if (!cancelFired.current) {
-          cancelFired.current = true;
-          submit('/cancel');
-        }
-        return;
       case 'append':
       case 'backspace':
       case 'newline':
@@ -1714,26 +1736,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         props.store.toggleReasoning();
         return;
       case 'abort':
-        // Esc — mid-turn abort (keeps the session; distinct from Ctrl-C /cancel). `onAbort` aborts the turn,
-        // whose signal also rejects any in-flight approval. If `onAbort` is absent (a driver/test wired without
-        // it), a PENDING approval would otherwise hang — reject it directly so Esc is never a dead key at a
-        // decision (parity with home-controller.ts's handleChatKey).
-        if (props.onAbort !== undefined) {
-          props.onAbort();
-        } else if (props.store.getSnapshot().approval !== undefined) {
-          props.store.answerApproval({ outcome: 'reject' });
-        }
-        return;
-      case 'approve':
-        props.store.answerApproval({ outcome: 'approve', scope: action.scope });
-        return;
-      case 'reject':
-        props.store.answerApproval({ outcome: 'reject' });
-        return;
-      case 'reject-with-reason':
-        // `[c]` — open the typed-reason capture; the next keys fill it, then submit rejects WITH the reason
-        // (Step 14). The approval stays pending until then; the capture handler above owns the keyboard while open.
-        applyReasonDraft(emptyEditor());
+        // Esc — the mid-turn abort: it stops the turn and keeps the session, and never arms (ADR-0115 §2).
+        abortTurn();
         return;
       case 'none':
         return;
@@ -1829,13 +1833,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           mode={mode}
           reasoningEffort={reasoningEffort}
           reasoningVisible={reasoningVisible}
-          approval={review === undefined ? approval : undefined}
           attachments={attachments}
           busyCommand={busyCommand}
           // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
           columns={windowSize.columns}
           viewport={viewport}
-          reasonDraft={reasonDraft}
+          interruptArmed={interruptArmed}
           copied={copied}
           paletteOpen={
             palette !== undefined ||
@@ -1856,6 +1859,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         />
         {/* The docked `ask_user` question card (ADR-0132): where the approval card sits, and never both at once. */}
         <QuestionCardHost
+          store={props.store}
+          size={{ cols: windowSize.columns, rows: windowSize.rows }}
+          hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
+          color={color}
+        />
+        {/* The docked continue checkpoint (ADR-0136 §4): the same place, and never together with another card. */}
+        <CheckpointCardHost
           store={props.store}
           size={{ cols: windowSize.columns, rows: windowSize.rows }}
           hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}

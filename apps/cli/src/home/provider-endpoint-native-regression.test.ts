@@ -205,6 +205,7 @@ it('Home discloses its pinned adapter origin before validation despite another p
   } finally {
     props?.nativePrompt?.input('', { ...key, escape: true });
     props?.controller.handleKey('c', { ctrl: true });
+    props?.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     await running;
     f.close();
   }

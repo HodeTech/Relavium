@@ -2280,6 +2280,29 @@ describe('answer chords in the real host', () => {
       });
     });
 
+    describe('the card owns every key: what the retired approval prompt once mapped reaches nothing', () => {
+      // Characterization written before the legacy approval-prompt reducer and the older reason-draft path were deleted: the live
+      // path never reached them while a card was open, and this pins that it still does not.
+      it('Shift+Tab, Ctrl+T, Tab and a typed line change no mode, no panel and no composer, and answer nothing', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'characterize');
+        const before = f.store.getSnapshot();
+        for (const key of ['\x1b[Z', '\x14', '\t', 'what now?', '\r']) {
+          await press(f, key);
+          expect(outcome(), `${JSON.stringify(key)} must not answer`).toBeUndefined();
+        }
+        const after = f.store.getSnapshot();
+        expect(after.mode).toBe(before.mode);
+        expect(after.reasoningVisible).toBe(before.reasoningVisible);
+        expect(after.approval, 'the call is still pending').toBeDefined();
+        expect(after.review?.denial, 'no reason box opened').toBeUndefined();
+        expect(f.errors).toEqual([]);
+        await press(f, CTRL_N);
+        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
+      });
+    });
+
     describe('Ctrl+R opens the reason box on the card, and the box owns the keyboard', () => {
       it('opens it on the card screen, takes letters and chords as typing, and Enter denies with the typed reason', async () => {
         const f = fixture(host, true, false);

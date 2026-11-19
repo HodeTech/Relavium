@@ -2052,6 +2052,79 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
+  it('wires the checkpoint hook from the interactive surface: it is asked at `checkpoint_tool_turns`, "continue" runs the held round and "stop" ends the turn (ADR-0136 §2)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const asked: Array<{ rounds: number; interval: number }> = [];
+      const answers: Array<'continue' | 'stop'> = ['continue', 'stop'];
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c4', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        // The hard stop is far away; the checkpoint is every round, so it is the hook that decides.
+        chat: { ...EMPTY_CHAT, maxToolTurns: 16, checkpointToolTurns: 1 },
+        checkpoint: (info) => {
+          asked.push({ rounds: info.rounds, interval: info.interval });
+          return Promise.resolve(answers.shift() ?? 'stop');
+        },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      // Asked before the second round (1 dispatched) and before the third (2 dispatched); the second answer stops it.
+      expect(asked).toEqual([
+        { rounds: 1, interval: 1 },
+        { rounds: 2, interval: 1 },
+      ]);
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(2);
+      expect(requests).toHaveLength(3);
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'turn_limit',
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('without a checkpoint hook (a surface nobody can answer at) `max_tool_turns` is the hard stop and `checkpoint_tool_turns` is not read (ADR-0136 §1)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 2, checkpointToolTurns: 1 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(2);
+      expect(requests).toHaveLength(3);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('keeps the engine bounds for a one-shot `agent run`: the chat limits are not read (ADR-0136 §1)', async () => {
     // An operator's raised [preferences] limit must never reach an unattended run, and a project's lowered one is a chat
     // matter too: with `maxToolTurns: 1` a chat holds the second round, a one-shot (16) runs all three.

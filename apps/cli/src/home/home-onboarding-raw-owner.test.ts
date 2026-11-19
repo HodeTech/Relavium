@@ -207,6 +207,7 @@ it.each(scenarios)('Home retains the original onboarding raw-mode fault: %s', as
     await tick();
     await tick();
     props?.controller.handleKey('c', { ctrl: true });
+    props?.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     expect(await running).toBe(unexpected ? 9 : 0);
     expect(input.isRaw).toBe(false);
     expect(closes).toBe(1);
@@ -225,6 +226,7 @@ it.each(scenarios)('Home retains the original onboarding raw-mode fault: %s', as
     answer(Symbol('cancel'));
     await tick();
     props?.controller.handleKey('c', { ctrl: true });
+    props?.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     unmount();
     await running;
     vi.restoreAllMocks();

@@ -3997,6 +3997,41 @@ describe('drivePlain', () => {
     await done;
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
   });
+
+  it('the FIRST SIGINT reaches the turn that is in flight, not only the reader: it finalizes while the line is still being processed (ADR-0115 §4)', async () => {
+    const stdin = new PassThrough();
+    const { ctx } = await plainCtx(stdin);
+    let release: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const finalize = vi.fn();
+    const blocked: ChatDriveContext = {
+      ...ctx,
+      processLine: () => {
+        started = true;
+        return inFlight; // a turn that has not finished
+      },
+      finalize,
+    };
+    const before = process.listeners('SIGINT').slice();
+    const done = drivePlain(blocked);
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    stdin.write('a long turn\n');
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(finalize, 'nothing has asked the session to stop yet').not.toHaveBeenCalled();
+    handler('SIGINT');
+    expect(
+      finalize,
+      'the turn is still in flight, and the signal has already reached it',
+    ).toHaveBeenCalledTimes(1);
+    release();
+    await done;
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('makePlainPrinter', () => {
@@ -4350,5 +4385,41 @@ describe('driveJson (2.Q)', () => {
     handler('SIGINT'); // invoke directly (not process.emit) — it closes the readline, ending the loop
     await done;
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
+  });
+
+  it('the FIRST SIGINT reaches the turn that is in flight, not only the reader (ADR-0115 §4)', async () => {
+    const stdin = new PassThrough();
+    const { ctx } = await jsonCtx(stdin);
+    let release: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const finalize = vi.fn();
+    const blocked: ChatDriveContext = {
+      ...ctx,
+      processLine: () => {
+        started = true;
+        return inFlight;
+      },
+      finalize,
+    };
+    const before = process.listeners('SIGINT').slice();
+    const done = driveJson(blocked);
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    stdin.write('a long turn\n');
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(finalize).not.toHaveBeenCalled();
+    handler('SIGINT');
+    expect(
+      finalize,
+      'the turn is still in flight, and the signal has already reached it',
+    ).toHaveBeenCalledTimes(1);
+    release();
+    await done;
+    // The stream's own finally finalizes again (idempotent), so only the moment of the signal is counted above.
+    expect(finalize).toHaveBeenCalled();
   });
 });

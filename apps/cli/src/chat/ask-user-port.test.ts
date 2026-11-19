@@ -29,8 +29,14 @@ describe('the ask-user port (ADR-0132 §7)', () => {
 
   it('routes to whichever store is bound when the question is asked, passing the request and the signal', async () => {
     const answer: AskUserAnswer = { kind: 'skipped' };
-    const first = { requestQuestion: vi.fn(() => Promise.resolve(answer)) };
-    const second = { requestQuestion: vi.fn(() => Promise.resolve(answer)) };
+    const first = {
+      requestQuestion: vi.fn(() => Promise.resolve(answer)),
+      requestCheckpoint: vi.fn(() => Promise.resolve('stop' as const)),
+    };
+    const second = {
+      requestQuestion: vi.fn(() => Promise.resolve(answer)),
+      requestCheckpoint: vi.fn(() => Promise.resolve('stop' as const)),
+    };
     const port = createAskUserPort();
     const delegate = port.delegate; // stable: the session holds this reference for its whole life
     port.bind(first);
@@ -43,9 +49,35 @@ describe('the ask-user port (ADR-0132 §7)', () => {
     expect(first.requestQuestion).toHaveBeenCalledTimes(1);
   });
 
-  it('askUserOption gives the delegate only to a surface that can answer', () => {
+  it('askUserOption gives the delegate and the checkpoint hook only to a surface that can answer', () => {
     const port = createAskUserPort();
-    expect(askUserOption(port, true)).toEqual({ askUser: port.delegate });
+    expect(askUserOption(port, true)).toEqual({
+      askUser: port.delegate,
+      checkpoint: port.checkpoint,
+    });
     expect(askUserOption(port, false)).toEqual({});
+  });
+
+  it('a checkpoint reached before any store is bound is a rejection, which the engine ends as a classified stop: it fails closed', async () => {
+    const port = createAskUserPort();
+    await expect(
+      port.checkpoint({ rounds: 32, interval: 32 }, new AbortController().signal),
+    ).rejects.toThrow(/no checkpoint card is bound/);
+  });
+
+  it('routes a checkpoint to the bound store with the info and the turn signal, and returns its answer', async () => {
+    const host = {
+      requestQuestion: vi.fn(() => Promise.resolve({ kind: 'skipped' } as const)),
+      requestCheckpoint: vi.fn(() => Promise.resolve('continue' as const)),
+    };
+    const port = createAskUserPort();
+    const hook = port.checkpoint; // stable for the session's life
+    port.bind(host);
+    const controller = new AbortController();
+    await expect(hook({ rounds: 32, interval: 32 }, controller.signal)).resolves.toBe('continue');
+    expect(host.requestCheckpoint).toHaveBeenCalledWith(
+      { rounds: 32, interval: 32 },
+      controller.signal,
+    );
   });
 });

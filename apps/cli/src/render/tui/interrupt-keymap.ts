@@ -87,6 +87,17 @@ export function pressInterrupt(
   }
 }
 
+/**
+ * Whether a raw key is `Ctrl+C`. Raw mode delivers it as the key (the kernel no longer turns it into SIGINT), as ink's `useInput`
+ * parses it: the letter with `ctrl` set. A key with `meta` set is a different chord and is not an interrupt.
+ */
+export function isInterruptKey(
+  input: string,
+  key: { readonly ctrl?: boolean; readonly meta?: boolean },
+): boolean {
+  return key.ctrl === true && key.meta !== true && input.toLowerCase() === 'c';
+}
+
 /** Any key that is not `Ctrl+C` ends the armed state at once: a `Ctrl+C` long after an interrupt starts over. */
 export function pressOtherKey(): InterruptState {
   return DISARMED;

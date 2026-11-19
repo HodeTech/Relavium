@@ -1,6 +1,7 @@
 import { createMeasuredFrameAcknowledgement } from './measured-frame-acknowledgement.js';
 import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
+import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
@@ -28,6 +29,7 @@ import {
   type TranscriptAcknowledgement,
 } from './transcript-acknowledgement.js';
 import type { EditorState } from './chat-input.js';
+import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
@@ -153,8 +155,8 @@ function ChatRegion(
     shellCommand: string | undefined;
     historyEntries: readonly string[];
     attachments: readonly PendingAttachment[];
-    /** The in-flight `[c]` typed-reason capture buffer (Step 14) — shows the reason input in the approval prompt. */
-    reasonDraft: EditorState | undefined;
+    /** The interrupt keymap is armed (ADR-0115 §1) — the idle hint then says a second `Ctrl+C` ends the chat. */
+    interruptArmed: boolean;
     /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — forwarded to `ChatView`'s toast. */
     copied: boolean;
     /** Reserve bounded screen space for the active native card without unmounting Static. */
@@ -175,7 +177,6 @@ function ChatRegion(
     mode,
     reasoningEffort,
     reasoningVisible,
-    approval,
     review,
     toolDisplays,
     markdown,
@@ -212,12 +213,11 @@ function ChatRegion(
         mode={mode}
         reasoningEffort={reasoningEffort}
         reasoningVisible={reasoningVisible}
-        approval={review === undefined ? approval : undefined}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
         viewport={viewport}
-        reasonDraft={props.reasonDraft}
+        interruptArmed={props.interruptArmed}
         copied={props.copied}
         paletteOpen={
           props.palette !== undefined ||
@@ -237,6 +237,13 @@ function ChatRegion(
       />
       {/* The docked `ask_user` question card (ADR-0132) — where the approval card sits, never both at once. */}
       <QuestionCardHost
+        store={props.store}
+        size={props.reviewSize}
+        hasCustody={props.reviewCustody}
+        color={color}
+      />
+      {/* The docked continue checkpoint (ADR-0136 §4) — the same place, never together with another card. */}
+      <CheckpointCardHost
         store={props.store}
         size={props.reviewSize}
         hasCustody={props.reviewCustody}
@@ -442,7 +449,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.reasonDraft === undefined &&
     !prompt.active &&
     !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
@@ -681,9 +687,23 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (consumeMouseReport(input)) return;
     const reviewStore = controller.getSnapshot().session?.store;
     const reviewAction = reviewStore?.handleReviewInput(input, key);
-    if (reviewAction === 'handled') return;
+    if (reviewAction === 'handled') {
+      // A card took the key; it still ends the armed interrupt state, unless it is the interrupt itself (a details view that
+      // closes on `Ctrl+C` is a first press that arms nothing).
+      if (!isInterruptKey(input, key)) controller.disarmInterrupt();
+      return;
+    }
+    if (reviewAction === 'stop-answered') {
+      // A `Ctrl+C` that answered a checkpoint "stop": the engine ends the turn itself (ADR-0136 §2), so nothing is aborted, but the
+      // interrupt window starts all the same (ADR-0115 §1).
+      controller.interruptAnswered();
+      return;
+    }
     if (reviewAction === 'abort') {
-      controller.handleKey('\u001b', { escape: true });
+      // The card has been settled in the store (an approval as a REJECTION, before this abort: ADR-0115 §2). `Ctrl+C` goes on to
+      // the controller as itself, so the keymap arms or ends the session; `Esc` is the plain stop and never arms.
+      if (isInterruptKey(input, key)) controller.handleKey(input, key);
+      else controller.handleKey('\u001b', { escape: true });
       return;
     }
     if (routeHomeInput(input, key)) return;
@@ -769,7 +789,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
                 }
               : undefined
           }
-          reasonDraft={state.reasonDraft}
+          interruptArmed={state.interruptArmed}
           shellBusy={state.shellBusy}
           submitBusy={state.submitBusy}
           shellCommand={state.shellCommand}
@@ -850,6 +870,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
           noticePage={noticePage}
+          interruptArmed={state.interruptArmed}
         />
       )}
       {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (

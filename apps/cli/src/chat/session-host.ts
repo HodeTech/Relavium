@@ -27,6 +27,7 @@ import {
   type ToolDef,
   type ToolHost,
   type ToolRegistry,
+  type ToolRoundLimitHook,
   ToolExecutionError,
   unwiredEffectJournal,
 } from '@relavium/core';
@@ -117,6 +118,12 @@ export interface BuildChatSessionOptions {
    * value, so the engine's advertise gate and the CLI's cannot disagree. Absent ⇒ the tool is never offered.
    */
   readonly askUser?: AskUserDelegate;
+  /**
+   * The continue checkpoint ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)):
+   * present only on a surface with a person who can answer, from the same boolean as {@link askUser}. With it a turn pauses every
+   * `checkpoint_tool_turns` rounds and asks; without it `max_tool_turns` is a hard stop.
+   */
+  readonly checkpoint?: ToolRoundLimitHook;
   /** Resolved operator home, explicitly supplied by production surfaces. */
   readonly operatorHomeDir?: string;
   /** Explicit resource factory for hermetic embeddings and tests. */
@@ -371,6 +378,7 @@ type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'startingMode'
   | 'askUser'
+  | 'checkpoint'
   | 'chat'
   | 'oneShot'
   | 'maxTokensEstimate'
@@ -871,8 +879,9 @@ function buildSessionRuntime(
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
     // The chat limits are configurable within published bounds (ADR-0136): `[chat]` and the operator's `[preferences]`,
-    // resolved with a repository able only to lower them. `max_tool_turns` is the HARD STOP here; the checkpoint
-    // that asks a person to continue (`checkpoint_tool_turns`) is wired with the card that can ask.
+    // resolved with a repository able only to lower them. `max_tool_turns` is the HARD STOP where nobody can answer; where a
+    // person can (`opts.checkpoint`, wired by the interactive surfaces only) the turn pauses every `checkpoint_tool_turns`
+    // rounds and asks to continue, under the engine's absolute backstop.
     // A one-shot `agent run` is unattended and not a chat session: it keeps the engine's own bounds (16 and 3) and reads
     // none of these keys, so an operator's raised `[preferences]` limit never reaches a CI job.
     limits:
@@ -884,6 +893,13 @@ function buildSessionRuntime(
             maxToolCorrections:
               opts.chat.maxToolCorrections ?? CHAT_LIMITS.max_tool_corrections.default,
             recoverToolFailures: true,
+            ...(opts.checkpoint === undefined
+              ? {}
+              : {
+                  onToolRoundLimit: opts.checkpoint,
+                  checkpointToolTurns:
+                    opts.chat.checkpointToolTurns ?? CHAT_LIMITS.checkpoint_tool_turns.default,
+                }),
           },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     // Context compaction (ADR-0062): auto_compact / compact_threshold govern measured automatic compaction, and
@@ -1376,6 +1392,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
   | 'startingMode'
   | 'askUser'
+  | 'checkpoint'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'operatorHomeDir'

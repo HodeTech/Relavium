@@ -7,6 +7,8 @@ import {
   type ToolApprovalRequest,
   type ToolApprovalLiveContext,
   type ToolLiveEvent,
+  type ToolRoundCheckpoint,
+  type ToolRoundLimitDecision,
 } from '@relavium/core';
 
 import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
@@ -36,6 +38,7 @@ import {
   type QuestionCardState,
 } from './question-card-model.js';
 import { questionTranscriptText } from './question-card-record.js';
+import { reduceCheckpointKey, type CheckpointCardState } from './checkpoint-card.js';
 import type { ChatKey } from './chat-input.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { AbortSignalLike, Memory, ReasoningEffort } from '@relavium/shared';
@@ -125,6 +128,13 @@ export interface ChatStoreSnapshot {
    * those needs its own proof that the frame was flushed, and a blocked card recovers when the terminal grows.
    */
   readonly questionFrame: object | undefined;
+  /**
+   * The open continue-checkpoint card ([ADR-0136](../../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)
+   * §4), if the turn has used its interval of tool rounds and is waiting for the person. Host-authored fixed text and numbers only.
+   */
+  readonly checkpoint: CheckpointCardState | undefined;
+  /** Identity of the frame the checkpoint card is showing: fresh when it opens and when the terminal is resized or resumed. */
+  readonly checkpointFrame: object | undefined;
   readonly toolDisplays: ReadonlyMap<string, ToolDisplay>;
   readonly tick: number;
   readonly color: boolean;
@@ -146,7 +156,16 @@ export interface ChatStoreController extends ChatStore {
   bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
   bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
   acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
-  handleReviewInput: (input: string, key: ChatKey) => 'abort' | 'handled' | undefined;
+  /**
+   * The single keyboard owner of every card. `'abort'`: a card was settled as a stop and the surface must now abort the turn (an
+   * approval was already rejected, ADR-0115 §2). `'stop-answered'`: a `Ctrl+C` answered a checkpoint with "stop" (the engine ends
+   * the turn itself), so the surface starts the interrupt window and aborts nothing. `'handled'`: the key was consumed.
+   * `undefined`: no card took it.
+   */
+  handleReviewInput: (
+    input: string,
+    key: ChatKey,
+  ) => 'abort' | 'stop-answered' | 'handled' | undefined;
 
   /** Bind the frozen instance policy before the session receives input. */
   setMemoryPolicy: (memory: Readonly<Memory> | undefined) => void;
@@ -198,6 +217,19 @@ export interface ChatStoreController extends ChatStore {
   pasteIntoQuestion: (text: string) => boolean;
   /** Bind whether the question card's exact frame has been acknowledged visible (the host component owns the measurement). */
   bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
+  /**
+   * The checkpoint hook the session is given on an interactive driver (ADR-0136 §2): publish the checkpoint card and RESOLVE with
+   * the person's answer. Honors the abort signal: an abort while open REJECTS with an `AbortError` (the usual cancellation path),
+   * and so does a sealed store. At most one overlay is pending at a time.
+   */
+  requestCheckpoint: (
+    info: ToolRoundCheckpoint,
+    signal?: AbortSignalLike,
+  ) => Promise<ToolRoundLimitDecision>;
+  /** Bind whether the checkpoint card's exact frame has been acknowledged visible (the host component owns the measurement). */
+  bindCheckpointVisibility: (visible: (() => boolean) | undefined) => void;
+  /** The host flushed the checkpoint card's exact `frame`: from now the dwell before `Ctrl+Y` counts. A stale frame is ignored. */
+  acknowledgeCheckpointFrame: (frame: object) => void;
 }
 
 /**
@@ -264,6 +296,18 @@ export function createChatStore(
   // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
   const questionAcceptsKeys = (): boolean =>
     questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
+  // The open continue-checkpoint card and the settle pair of its pending promise (ADR-0136).
+  let checkpoint: CheckpointCardState | undefined;
+  let pendingCheckpoint:
+    | {
+        readonly resolve: (answer: ToolRoundLimitDecision) => void;
+        readonly reject: (reason: Error) => void;
+      }
+    | undefined;
+  let checkpointVisible: (() => boolean) | undefined;
+  let checkpointFrame: object | undefined;
+  // When the checkpoint's current frame was acknowledged (monotonic), `undefined` while it has not been: `Ctrl+Y` waits for it.
+  let checkpointShownAt: number | undefined;
   let review: ToolReviewState | undefined;
   // What makes an affirmative approval key a DELIBERATE one (PR #99 security sitting E1 and the corrective sitting G1): the
   // review whose frame was acknowledged last and when, when the previous key of any kind arrived, when the last FOREIGN key
@@ -303,6 +347,8 @@ export function createChatStore(
     alwaysConfirm: false,
     question,
     questionFrame,
+    checkpoint,
+    checkpointFrame,
     toolDisplays,
     tick: tickCount,
     color,
@@ -319,6 +365,8 @@ export function createChatStore(
       alwaysConfirm: alwaysAsked(performance.now()),
       question,
       questionFrame,
+      checkpoint,
+      checkpointFrame,
       toolDisplays,
       tick: tickCount,
       color,
@@ -428,6 +476,23 @@ export function createChatStore(
     flush();
   };
 
+  /** Close the checkpoint card; the person's wait is not the turn's work. */
+  const clearCheckpoint = (): void => {
+    checkpoint = undefined;
+    checkpointFrame = undefined;
+    checkpointShownAt = undefined;
+    pendingCheckpoint = undefined;
+    state = approvalClosed(state, Date.now());
+  };
+  /** Settle the open checkpoint with the person's answer: it goes to the engine's hook and nowhere else (no event, no history field). */
+  const settleCheckpointWith = (answer: ToolRoundLimitDecision): void => {
+    const settling = pendingCheckpoint;
+    if (checkpoint === undefined || settling === undefined) return;
+    clearCheckpoint();
+    settling.resolve(answer);
+    flush();
+  };
+
   return {
     applyToolLiveEvent: (event) => {
       if (sealed) return;
@@ -462,6 +527,12 @@ export function createChatStore(
         state = approvalClosed(state, Date.now());
         rejecting.reject(abortError());
       }
+      // The same for a checkpoint: a store sealed under an open card is a cancellation of the turn, not an answer.
+      if (pendingCheckpoint !== undefined) {
+        const rejecting = pendingCheckpoint;
+        clearCheckpoint();
+        rejecting.reject(abortError());
+      }
       flush();
     },
     openDetails: () => {
@@ -487,6 +558,13 @@ export function createChatStore(
       // A resize or a resume from suspend: the open question's frame must be measured and flushed again.
       if (question !== undefined) {
         mintQuestionFrame();
+        flush();
+      }
+      // The checkpoint too: the frame is minted anew and its dwell starts over, so a card the person has not seen since the
+      // resize cannot be continued by a key already in flight.
+      if (checkpoint !== undefined) {
+        checkpointFrame = {};
+        checkpointShownAt = undefined;
         flush();
       }
       if (review !== undefined) {
@@ -555,6 +633,38 @@ export function createChatStore(
           case 'none':
             break;
         }
+        return 'handled';
+      }
+      // An open checkpoint card owns the keyboard (ADR-0136 §4). A stop is an answer to the engine's hook, never delayed and never
+      // an abort; `Ctrl+Y` spends, so it clears the same guards an approval's affirmative key does; every other key is typing at a
+      // card, which is a foreign key.
+      if (checkpoint !== undefined) {
+        const action = reduceCheckpointKey(input, key);
+        if (action.kind === 'stop' || action.kind === 'interrupt') {
+          lastResolvedAt = now;
+          settleCheckpointWith('stop');
+          return action.kind === 'interrupt' ? 'stop-answered' : 'handled';
+        }
+        if (action.kind === 'continue') {
+          const refusal = approvalKeyRefusal(approvalGuard, {
+            now,
+            shownAt: checkpointShownAt,
+            previousKeyAt,
+            lastForeignKeyAt,
+            lastResolvedAt,
+          });
+          // It also has to be on screen right now: custody lost (Ctrl-Z, a closed output) makes the frame unseen again.
+          if (refusal === undefined && checkpointVisible?.() === true) {
+            lastResolvedAt = now;
+            settleCheckpointWith('continue');
+            return 'handled';
+          }
+          // A held key goes on being held: an affirmative key inside the lockout restarts it, as at an approval card.
+          if (approvalGuard.lockoutMs > 0 && now - lastResolvedAt < approvalGuard.lockoutMs)
+            lastResolvedAt = now;
+          return 'handled';
+        }
+        lastForeignKeyAt = now;
         return 'handled';
       }
       if (review === undefined) {
@@ -945,6 +1055,59 @@ export function createChatStore(
     },
     bindQuestionVisibility: (visible) => {
       questionVisible = visible;
+    },
+    requestCheckpoint: (info, signal) =>
+      new Promise<ToolRoundLimitDecision>((resolve, reject) => {
+        // One overlay at a time, and never on a sealed store or an already-stopped turn: those are CANCELS.
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
+          reject(abortError());
+          return;
+        }
+        if (signal?.aborted === true) {
+          reject(abortError());
+          return;
+        }
+        const onAbort = (): void => {
+          if (pendingCheckpoint === undefined) return;
+          clearCheckpoint();
+          reject(abortError());
+          flush();
+        };
+        signal?.addEventListener('abort', onAbort);
+        pendingCheckpoint = {
+          resolve: (answer) => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve(answer);
+          },
+          reject: (reason) => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(reason);
+          },
+        };
+        const opened = Date.now();
+        // The turn's working time so far, the person's own waits excluded (as the busy line counts it).
+        const elapsedMs =
+          state.turnStartedAtMs === undefined
+            ? 0
+            : Math.max(0, opened - state.turnStartedAtMs - state.approvalWaitMs);
+        checkpoint = { rounds: info.rounds, interval: info.interval, elapsedMs };
+        checkpointFrame = {};
+        checkpointShownAt = undefined;
+        state = approvalOpened(state, opened);
+        flush();
+      }),
+    bindCheckpointVisibility: (visible) => {
+      checkpointVisible = visible;
+    },
+    acknowledgeCheckpointFrame: (frame) => {
+      if (checkpoint === undefined || frame !== checkpointFrame || checkpointShownAt !== undefined)
+        return;
+      checkpointShownAt = performance.now();
     },
   };
 }

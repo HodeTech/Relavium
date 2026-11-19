@@ -129,6 +129,9 @@ describe('Home activation owns disclosure evidence (ADR-0098)', () => {
         expect(rows()).toHaveLength(1);
         expect(c.getSnapshot().submitBusy).toBe(true);
         if (ending === 'tearing down') {
+          // The first Ctrl+C stops the work and arms; the second, inside the window, ends the chat (ADR-0115 §1).
+          c.handleKey('c', { ctrl: true });
+          expect(made.teardown).not.toHaveBeenCalled();
           c.handleKey('c', { ctrl: true });
           await vi.waitFor(() => expect(made.teardown).toHaveBeenCalledTimes(1));
         } else stopped = true;

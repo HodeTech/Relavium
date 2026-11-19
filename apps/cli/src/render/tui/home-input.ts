@@ -4,8 +4,8 @@ import { reduceEditorMotion, type EditorEditAction } from './chat-input.js';
  * The Home-mode key reducer for the bare-invocation Home (2.5.B / ADR-0054) — the read-only-strip counterpart of
  * {@link reduceChatKey}. Like the chat reducer it is a PURE `(char, key) → action` mapping so the keystroke
  * contract is unit-tested without mounting ink; `HomeController` folds the action into its plain prompt-buffer
- * field. Home mode has no "running" notion (the strip is read-only): Ctrl-C exits the Home, Return submits the
- * buffer (the caller reads the latest committed value), and every buffer edit / cursor motion comes from the
+ * field. Home mode has no "running" notion (the strip is read-only): Return submits the buffer (the caller reads the latest
+ * committed value), `Ctrl+C` is the interrupt keymap's (`interrupt-keymap.ts`, ADR-0115) and never reaches this reducer, and every buffer edit / cursor motion comes from the
  * SHARED {@link reduceEditorMotion} so the Home prompt and the chat prompt can never drift (2.5.D step 2).
  */
 
@@ -24,18 +24,16 @@ export interface HomeKey {
   readonly end?: boolean;
 }
 
-/** A single Home keystroke's effect: exit the Home, submit the prompt, a shared editor edit/motion, or nothing. */
+/** A single Home keystroke's effect: submit the prompt, a shared editor edit/motion, or nothing. */
 export type HomeKeyAction =
   | EditorEditAction
-  | { readonly kind: 'exit' }
   | { readonly kind: 'submit' }
   | { readonly kind: 'none' };
 
-/** Map one keystroke to its Home action. Ctrl-C → exit; then the shared editor edit/motion contract
+/** Map one keystroke to its Home action: the shared editor edit/motion contract
  *  ({@link reduceEditorMotion} — printable append, backspace, Ctrl+J newline, cursor/word/line motions, kills);
  *  a plain Return (which that helper declines) → submit; everything else → none. */
 export function reduceHomeKey(char: string, key: HomeKey): HomeKeyAction {
-  if (key.ctrl === true && char === 'c') return { kind: 'exit' };
   const edit = reduceEditorMotion(char, key);
   if (edit !== undefined) return edit;
   if (key.return === true) return { kind: 'submit' };
