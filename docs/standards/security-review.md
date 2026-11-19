@@ -128,10 +128,14 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   confidentiality floor (`isSensitiveReadPath`: `.ssh` / `.env*` / `.aws` / `.docker/config.json` / `.envrc` /
   `.dockercfg` / … — never listed nor read) + the binary/size guards; a user typing `@path` replaces the
   `confirmAction` prompt, **never** the floor. `!`-shell runs through the **one** `run_command` boundary via the
-  additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): `enforcePolicy(allowedCommands)`
-  **before** `confirmAction`, then `spawn`/`shell:false` (no metachar expansion). **`[chat].allowed_commands` defaults
-  EMPTY ⇒ `!`-shell disabled** — a non-empty chat default is the "chat-specific relaxation" this section forbids
-  (`run_command` has no argument/file floor, so even a read-only default reopens `!cat .env`). Both inject their
+  additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): the allowlist is judged first;
+  with no approval regime (a workflow, a headless surface) a miss is refused and an empty set disables `run_command`, and in an
+  interactive chat a miss reaches the mode-aware `confirmAction` as a request (`ask`/`accept-edits` show a card, `plan` refuses,
+  `auto` shows a card unless the allowlist, a remembered grant or an earlier session answer pre-approved that exact argv —
+  [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), then `spawn`/`shell:false` (no
+  metachar expansion). **`[chat].allowed_commands` defaults EMPTY, pre-approving nothing** — a non-empty chat default is the
+  "chat-specific relaxation" this section forbids (`run_command` has no argument/file floor, so even a read-only default
+  reopens `!cat .env`). Both inject their
   bytes as **UNTRUSTED, nonce-fenced, bounded** context. **Editing the chat `allowed_commands` set, the input-layer
   boundary reuse, or the read-side confidentiality floor is a mandatory-review trigger** (below).
 
@@ -934,19 +938,23 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
 
 - **A remembered command grant is a keyed digest of one exact argv under one project root, kept
   by the operator, and never the command.** *(ADR-0118 §2; MVP-4.)* The store is
-  `~/.relavium/command-grants.ndjson` (`0600`, append-only with tombstones, a symlink refused), never
-  a repository file, so a clone cannot arrive pre-trusted. A record carries HMAC-SHA256 digests under
-  a per-installation key held in the OS keychain — the key is generated on the first write, never on
-  a read, and never enters a file, a log or an event — and a label (program name, argument count,
-  date) in which the program is named only when `argv[0]` is a bare name that resolves on the `PATH`.
-  A review confirms: no argument, path or free-text `argv[0]` reaches the file, `relavium permissions
-  list` or a log; the grant digest binds the root digest and length-prefixes every element; **any
-  unparseable line makes the whole store read as "no grants"** (skipping it could resurrect a
-  revoked grant); a locked keychain means *nothing matches* and *Remember is not offered*; the
-  bounds hold; `revoke --all` needs no key and no readable file. A grant removes the *unknown*, not
-  the person's per-call consent: `ask` and `accept-edits` still show the card for a remembered
-  command, `auto` runs only a pre-approved one, and headless paths and workflows never read the
-  store. The format, bounds and failure table are
+  `~/.relavium/command-grants.ndjson` (`0600`, append-only with tombstones), never a repository
+  file, so a clone cannot arrive pre-trusted. A record carries HMAC-SHA256 digests under a
+  per-installation key held in the OS keychain — generated on the first write, never on a read, and
+  never in a file, a log or an event — and a label (program name, argument count, ISO time) in which
+  the program is named only when `argv[0]` is a bare name that resolves on the `PATH`. A review
+  confirms: no argument, path or free-text `argv[0]` reaches the file, `relavium permissions list`
+  or a log; the grant digest binds the root digest and length-prefixes every element; **any
+  unparseable line, a symlink or non-regular file at the path, or a bound passed on read makes the
+  whole store read as "no grants"**; a revocation holds wherever it sits in the file (a replayed or
+  reordered grant line stays revoked) and withdraws every record of its argv; a locked keychain
+  means *nothing matches* and *Remember is not offered*; `revoke --all` needs no key, no project
+  root and no readable file. The store defends against forgery (the HMAC), torn writes and replay;
+  it does **not** defend against a process running as the same user that deletes lines or the file,
+  and the labels are display text the HMAC does not cover. The mode behavior (`ask` and
+  `accept-edits` still show the card for a remembered command, `auto` runs only a pre-approved
+  one) is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
+  headless paths and workflows never read the store. The format, bounds and failure table are
   [command-permissions.md](../reference/cli/command-permissions.md).
 
 ### Expression sandbox (`condition` / `transform` / `merge_fn`)

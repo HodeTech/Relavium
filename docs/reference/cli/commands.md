@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-20
+> Last updated: 2026-11-19
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -667,11 +667,10 @@ Look at, and take back, the commands this project's operator chose to **Remember
 ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2). `list`
 shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
 command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
-whole file, for every project, and needs neither the keychain nor a readable file. Both are local, open no
-database and make no network request. Success exits `0` (an empty list is not a fault); a bad or unknown
-number, a locked keychain or an unreadable file exits `2`; a store that cannot be written exits `1`; failed
-output exits `9`. The store's format, bounds and failure table are in
-[command-permissions.md](command-permissions.md).
+whole file, for every project, and needs no keychain and no readable file. Both are local: they open no
+database and make no network request. Success exits `0` (an empty list is not a fault); the other exit codes,
+the `--json` records and the failure table are in [command-permissions.md](command-permissions.md), the
+canonical home.
 
 ### `relavium media prune-temporaries`
 
