@@ -961,9 +961,11 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   (`["cat","a b"]` and `["cat","a","b"]` read differently on the card, in the event preview and in the in-process copy);
   a line too long for the title rows is a shortened target, so every approving answer stays locked until the full view has
   been read, and a command the review document cannot hold (over 63 arguments, or a value over 4,096 characters) is a blocked
-  card, never an approvable one; *This session* and *Remember* are withheld while the page does not show the whole command,
-  and for a command that names a protected path (Once only); *Remember* is also withheld for a code carrier and when the store
-  cannot write; `Ctrl+O` is a two-step answer behind the same dwell, quiet, typeahead and lockout guards as `Ctrl+G`; the hook
+  card, never an approvable one; every masked span of a command must be revealed and displayed before an approving answer counts
+  (a file card requires only the flagged ones); *This session* and *Remember* are withheld while the page does not show the whole
+  command, and for a command that names a protected path (Once only); *Remember* is also withheld for a code carrier, for a
+  command already on the allowlist or remembered, and when the store cannot write; a Remember's session approval is linked to its
+  grant, so a revoke withdraws it; `Ctrl+O` is a two-step answer behind the same dwell, quiet, typeahead and lockout guards as `Ctrl+G`; the hook
   narrows any answer the card did not offer to Once; a Remember that cannot be written approves the call once and says why
   without the command; the code-carrier table and the protected-path check are warnings, never refusals, and are not the
   boundary.
