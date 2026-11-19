@@ -609,6 +609,23 @@ describe('bounds (ADR-0118 §2)', () => {
     expect(removeCommandGrantsFile(home)).toEqual({ ok: true, removed: true });
   });
 
+  it('a revoke needs room for its tombstone bytes: a file within 1,024 bytes of the size bound refuses it', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    const pad = (size: number): void => {
+      const current = statSync(file()).size;
+      appendFileSync(file(), '\n'.repeat(size - current));
+    };
+    pad(COMMAND_GRANT_LIMITS.bytes - 1023);
+    const before = text();
+    expect(store().revoke(1)).toEqual({ ok: false, reason: 'full' });
+    expect(text()).toBe(before);
+    rmSync(file());
+    await store().remember(['npm', 'test']);
+    pad(COMMAND_GRANT_LIMITS.bytes - 1024);
+    expect(store().revoke(1)).toMatchObject({ ok: true });
+  });
+
   it('the machine-wide total is exact (the 1,024th passes) and a root keeps its own quota when another is full', async () => {
     const key = useKey();
     const fillRoot = (root: string, n: number, tag: string): string[] =>
