@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-11-18 — the register is now three files, every checklist entry carries one of three markers, and a stale-entry sweep reworded or closed the entries listed in [Sweep of 2026-11-18](deferred-tasks-history.md#sweep-of-2026-11-18). PR #99 (MVP-3) is merged to `main`; the CLI MVP still comes first (maintainer, 2026-10-26) and Wave 3 Steps 9c–19 stay pending, not declined. The header text that stood here before is kept in the [closed record](deferred-tasks-history.md#earlier-file-headers-verbatim).
+> Last updated: 2026-11-19 — PR #100 (native adapter Inc 1, CI once per commit, the narrowed coverage run) is merged to `main`; the native adapter entry, the C4 entry and the PR #99 merge CI observations carry the update. 2026-11-18 — the register is now three files, every checklist entry carries one of three markers, and a stale-entry sweep reworded or closed the entries listed in [Sweep of 2026-11-18](deferred-tasks-history.md#sweep-of-2026-11-18). PR #99 (MVP-3) is merged to `main`; the CLI MVP still comes first (maintainer, 2026-10-26) and Wave 3 Steps 9c–19 stay pending, not declined. The header text that stood here before is kept in the [closed record](deferred-tasks-history.md#earlier-file-headers-verbatim).
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md)
 - **Register files**: [deferred-tasks-parked.md](deferred-tasks-parked.md) · [deferred-tasks-history.md](deferred-tasks-history.md)
@@ -114,7 +114,9 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
   trigger set, the group and `cancel-in-progress`); Y2/C3 as the coverage narrowing (commit `63123bd9`); C5, C6 and C7 are dropped, not deferred; Y4/Y5 stay deferred and are the only
   part of this entry still open. `enforce_admins` was not asked and is unchanged. **Not yet proved:** that a development -> main PR is satisfied by the `push` run alone — it rests on
   GitHub's rule that required checks attach to the head SHA by name, and the first real PR after this change is the evidence; if the merge box shows the checks as missing, restore
-  `pull_request` and keep the rest. *(low · tools/ci, .github/workflows/ci.yml)*
+  `pull_request` and keep the rest.
+  **Evidence (2026-11-19, PR #100).** The premise held: at head `2ce6a252` the pull request was `CLEAN` and `MERGEABLE` with no `pull_request` run, its three required checks satisfied by the `push` run alone. The maintainer then pushed a docs-only head and merged ten seconds later
+  with that head's run unfinished, so that merge went ahead with required checks pending (admins are not enforced, as in PR #99); it shows nothing about a pending head, and `enforce_admins` remains unasked. *(low · tools/ci, .github/workflows/ci.yml)*
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
 
@@ -1735,7 +1737,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   reason under seven days); ADR-0128's dated notes (`0128` ~267, `agent-session-spec.md` ~361) still say its reviews are owed and need checking against
   the MVP-3c rounds; `native-assets.json` publishes Rust test names. (8) Delivery lows from the review's section 3.7 (a `Cargo.lock`↔notices heading
   check, 8 native legs on every docs-only PR, npm and PnP consumers, a `prepublishOnly` gate, `cargo audit`). *(low · various)*
-- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 (four independent review rounds, the fourth without blocker or high; the maintainer's reading of ADR-0135, a security sitting on the last delta and the eight-target CI are owed); Inc 2 and Inc 3 open.** Measured on the built addon
+- [ ] **Native adapter increment — concurrent processes on one operator home ARE supported (maintainer, 2026-11-17). Inc 1 implemented 2026-11-18 and merged to `main` in PR #100 (`1e71f652`; four independent review rounds, the fourth without blocker or high; all eight native legs green on `2ce6a252`; the maintainer's reading of ADR-0135 and a security sitting on the delta since round 4, which includes the Linux parent-snapshot change, are still owed); Inc 2 and Inc 3 open.** Measured on the built addon
   (macOS; throwaway probes of 2026-11-17, not kept): (a) the allocation and cleanup locks are one nonblocking try; two concurrent writers made 27 of 60 writes fail at stage (`changed:not_needed`)
   and 3 end `possibly_published:uncertain` with the target already written. Fix: bounded retry on EWOULDBLOCK only for the reserve and cleanup locks, inside
   the existing 2 s budget and the cancellation flag; `recover`'s per-record claim stays one-shot (a failed claim there means a live producer). (b) N-1:
@@ -1815,7 +1817,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   async call); the concurrency test waited with `Promise.all`; ADR-0126's amendment still said cleanups are never refused beyond the waiter limit; ADR-0135's wording of the cap and its Related field; docs (the merge
   checkpoint's two CI observations, the CI provenance paragraph, the coverage prose, the moved register entries and one stale status). SonarCloud's gate failed on one condition, `new_security_rating` B, from
   S4036 (`spawn('perl')` resolved through `PATH` in a probe; now `/usr/bin/perl`); its remaining new items are minor: `await` in loops (S9382) is the sequential protocol of the probes and is left, and
-  `inspectOpened`'s cognitive complexity (S3776, 21 of 15) now has its checks in two small pure functions (SonarCloud re-scores it on the next push; not claimed until then). *Left, with reasons:* none of the review findings was rejected outright; the reviewers' multi-process probe
+  `inspectOpened`'s cognitive complexity (S3776, 21 of 15) now has its checks in two small pure functions (re-scored on 2026-11-19: S3776 is gone at `2ce6a252`). *Left, with reasons:* none of the review findings was rejected outright; the reviewers' multi-process probe
   and the Windows execution stay below.
   **PR #100, second push run (2026-11-18, found by the CI run, not by review).** The concurrent-writers end-to-end test failed once on Linux at *prepare*, not at the allocation claim: the Linux
   parent snapshot compared the destination directory's ctime across its policy reads, and a directory's ctime also moves when another writer creates, renames or removes an entry in it, so writers
@@ -1842,7 +1844,11 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   evidence, not a proof); a reservation beyond the grace behind a holder in another process is still refused as before (a distinct "busy" result retried by the host without holding a thread stays an option);
   closing the producer's reservation handle after the pin removes it (a possible Windows hardening); the exported `recoverMetadataStaging` has no product caller although every native stage runs a recovery pass
   first; sibling `open_nofollow(&entry.path())` sites in cleanup paths were reviewed and left alone; the retired-index check is made once per operation. *Owed:* the maintainer's reading of ADR-0135, a separate
-  security sitting on the delta since round 3 and all eight native legs green on the final head. *(medium · apps/cli/native/fs-metadata, apps/cli/src/engine/tool-host/fs-stage-inventory.ts)*
+  security sitting on the delta since round 3 and all eight native legs green on the final head.
+  **Update (2026-11-19, PR #100 merged as `1e71f652`).** CI run `44402914088` on `2ce6a252` passed all 29 jobs, including all eight native legs (Linux gnu and musl, macOS and Windows, x86_64 and aarch64), so the last of those three is met. The head that was merged,
+  `639134b2`, differs from it only in `tools/native-fs/README.md`; its own run was still in progress when the maintainer merged ten seconds after the push, so no completed run exists on it. Still owed: the reading and the security sitting, whose
+  delta is everything after round 4 (the held-link-count scan check, the nonce bound of 384, the `capture_parent` double read, the reader's pure-function extraction); the Inc 1 status above stays the record of what shipped.
+  *(medium · apps/cli/native/fs-metadata, apps/cli/src/engine/tool-host/fs-stage-inventory.ts)*
 - [ ] **Entries leaked by a crashed producer are never reclaimed, so repeated crashes can fill the 128 inventory slots and refuse every native write (found 2026-11-18 by a security sitting; pre-existing, not changed by Inc 1).**
   An independent run of 40 SIGKILLs of a three-writer process left 84 retained entries (28 `.prepare`, 50 `.reserved`, 6 `.record`) and three recovery passes removed none; a rerun with 15 kills left 39 and removed 1.
   Recovery retains every `.reserved` and `.prepare` and every `.record` whose stage it cannot prove; some retained `.record`s belong to dead producers whose stage directory is already gone (killed between the
@@ -1922,7 +1928,7 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
 
 ### PR #99 merge CI observations (2026-11-18)
 
-- [ ] **The required `coverage` job stopped at its 45-minute limit on PR #99's final head, in both runs (2026-11-18) — analysed the same day; the narrowing is applied and awaits its first CI run.** The `pull_request`
+- [x] **The required `coverage` job stopped at its 45-minute limit on PR #99's final head, in both runs (2026-11-18) — analysed the same day; the narrowing is applied and closed by its first CI runs (2026-11-19).** The `pull_request`
   run `44222406356` (job started 02:58:01) and the `push` run `44222399222` (started 02:54:03) each ended exactly 45 minutes after their own start, with the annotation
   "The job has exceeded the maximum execution time of 45m0s" and the step "Engine coverage floor" cancelled. It was not a hang (the log shows test files completing
   normally seconds before the stop) and not a manual cancel (the two stops are four minutes apart, each at its start plus 45:00). The job took 26 to 38 minutes in
@@ -1944,8 +1950,8 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   pins, which the narrowing makes unnecessary; do not remove `--maxWorkers=1` (commit `122e8189` made it on purpose, "retaining every case, threshold and native concurrency assertion"; its footer cites ADR-0111, whose title is about the lazy packaged runtime, so the commit message is the only recorded reason). Hot spots if more is needed
   later: `tool-review-host.test.tsx` (about 120 s on every runner) and `packages/db/src/session-usage-scale.test.ts` (one test, 91-215 s). It matters because a required check
   that cannot finish blocks every PR, and since the speed-up it is the longest job. **Applied (maintainer chose it 2026-11-18; commit `63123bd9`):** `tools/coverage-gate/run.mjs` passes `--dir packages`, the pin test expects it (mutation-checked) and the real
-  `pnpm coverage:enforced` entry passed under the CI environment (407 files, 4 min 50 s, same figures). **Open:** close this entry when the first CI run on `development` shows the
-  job's own duration and a green result. *(medium · .github/workflows/ci.yml,
+  `pnpm coverage:enforced` entry passed under the CI environment (407 files, 4 min 50 s, same figures). **Closed 2026-11-19:** the first CI runs on `development` after the change show the job's own duration and a green result: 10 min 56 s in run `44395981912` (`cf5ad1d3`) and 12 min 25 s in run `44402914088` (`2ce6a252`), against 26 to 45+ minutes before. The step ran 407 test files (11,214 tests passed, 11 skipped; the earlier job ran 917 files) and `llm` read 97.80 lines and 95.72 branches, the figures of the `002dda58` run. The apps tests keep running in `ci-work`, and the
+  hot spots named above stay a possible later optimization, not an open item. *(medium · .github/workflows/ci.yml,
   tools/coverage-gate)*
 - [ ] **One secrets-control shard's verify step hit a 10-second test limit on `main`'s merge run (2026-11-18); rate measured at about 1 in 27 job runs.** In the `push` run `44232410834` of the merge
   commit `002dda58` (its tree is identical to `bb6f1671`'s), `Wave 2 secrets causal controls (shard 1 of 3)` failed about two minutes in, at step "Verify causal outcome and worker
@@ -1959,4 +1965,10 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   The case sits under the approved `LOW-1` deferral above (fixed 5 s bounds inside 10 s cases; "a loaded runner produces red without a defect"); its trigger, a recorded failure that names the bound that fired, is now met for the 10 s case bound on Linux. The retune is the coupled set
   (case bound, readiness poll, watchdog), so raise the outer case bound together with a measurement of which phase stalled, not alone. **Re-run (2026-11-18):** attempt 2 of the failed job
   passed (started 15:45 UTC, 35 min 49 s), the `ci` aggregate followed (16:21 UTC) and the run's conclusion is `success`, so `main`'s three required checks are green again.
-  Second occurrence is the trigger to retune; until then the entry stays open as a measured low. *(low · tools/cli-package/smoke)*
+  Second occurrence is the trigger to retune; until then the entry stays open as a measured low. **Update (2026-11-19):** PR #100's CI review raised this test's case bound to 30 s (`6f20bd2e`, with a comment); the bound was raised alone, not
+  together with the readiness poll and the watchdog, and the stalled phase is still not measured, so the retune above is only half made. No second timeout of this test has been recorded since. *(low · tools/cli-package/smoke)*
+- [ ] **The scheduled `model-catalog` run was red on 2026-11-18 at 16:02Z: the live DeepSeek effort test hit its five-second default (found 2026-11-19 while reviewing the repository's runs; unrelated to PR #100).** Run `44342569457` (a `schedule` run on `002dda58`),
+  job `effort conformance (live)`: `packages/llm/src/conformance/effort.conformance.test.ts` > `deepseek-v4-pro accepts every tier the catalog claims (low, medium, high, max)` failed with "Test timed out in 5000ms" (the run's other 543 tests passed). The test makes one real
+  provider request per distinct wire tier in a loop and has no timeout of its own, so it runs under the five-second default; it is a live network probe, so its duration is the provider's. The same workflow's scheduled runs passed on 2026-11-12 to 2026-11-17 except one on 2026-11-16 (15:29Z), which failed in a different job
+  (`shipped-price-change guard`) that was not read here; that is two red runs of eight, with different causes, so no rate is claimed for this one. None of the file's four live cases (Anthropic, OpenAI, Gemini, DeepSeek) sets a timeout, so the other three have only not exceeded five seconds yet. Candidate fix: give the live cases a budget sized to their request count
+  (the probe-tier count times a per-request bound) and keep the five-second default for the offline test. *(low · packages/llm/src/conformance, .github/workflows/models-catalog.yml)*

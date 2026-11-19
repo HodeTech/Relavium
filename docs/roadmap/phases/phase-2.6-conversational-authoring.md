@@ -5873,7 +5873,7 @@ What the PR carried, each with its own record:
 
 **Still not claimed.** A manual look in real terminals (VS Code, iTerm, tmux, Windows Terminal) for `v`, `/details`, `p` and the answer chords (the ADR-0069 width
 assumption); a fifth review round on ADR-0134's last fixes (the maintainer chose the reviewers' own reproductions); the native adapter findings of the 2026-11-17 review,
-which are their own increment; and the seven open cognitive-complexity findings. The remaining low items are in [deferred-tasks.md](../deferred-tasks.md).
+which are their own increment (Inc 1 landed in PR #100, see the [PR #100 merge checkpoint](#pr-100-merge-checkpoint-2026-11-18)); and the seven open cognitive-complexity findings. The remaining low items are in [deferred-tasks.md](../deferred-tasks.md).
 
 This checkpoint closes MVP-3, MVP-3b, MVP-3c and MVP-3d's implementation, review, security and maintainer gates, except for the coverage evidence above. Pending-gate
 wording ("final-head CI, scanner or maintainer acceptance is owed") in the dated records above is historical and is superseded by this checkpoint.
@@ -5881,6 +5881,51 @@ wording ("final-head CI, scanner or maintainer acceptance is owed") in the dated
 **MVP-4 is next** under [the existing execution order](../current.md#next-work--the-cli-mvp); [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)
 and [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) are still Proposed and need the maintainer's acceptance before it starts.
 Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.
+
+### PR #100 merge checkpoint (2026-11-18)
+
+**Merged to `main`; this is not an MVP step.** The maintainer merged [PR #100](https://github.com/HodeTech/Relavium/pull/100)
+("fix(cli): wait for the native allocation claim (ADR-0135) and run CI once per commit") on 2026-11-18 at 23:54:00Z (2026-11-19 02:54 in the maintainer's time zone) as
+`1e71f6525a6d5ed871b7e4d684fd9ccda068f10c` (parents `002dda58`, the PR #99 merge, and `639134b2`). Its Git tree, `cac99bc37ba8c947a0ea5ce94068994e235d6e84`, is
+identical to head `639134b2`'s, so `development` was fast-forwarded to the merge commit and the two branches have the same content. The PR carried 28 non-merge commits (35 files,
++6,249 −3,030 lines). npm still serves `0.1.1`; the D59 release guard is unchanged. The work was done between MVP-3 and MVP-4 on purpose: the maintainer chose the native
+adapter's first increment and the two CI decisions before MVP-4 starts (the register owns the reasoning).
+
+What the PR carried, each with its record in [deferred-tasks.md](../deferred-tasks.md) unless a link says otherwise:
+
+- [x] **Native adapter Inc 1 — [ADR-0135](../../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md).** Concurrent processes on one operator home
+  wait for the staging inventory's allocation claim instead of failing (a 2 ms poll, a waiter limit of pool size minus one, a 100 ms or 500 ms grace); the Rust scan and the TypeScript
+  inventory reader skip an uncommitted entry that vanishes; N-2, N-3 and N-7. Four independent review rounds ran before the PR; the fourth had no blocker or high finding.
+- [x] **Two Linux-only defects the first Linux CI runs found,** neither visible on macOS: a held inventory entry at link count zero is proof that it is gone (Linux lowers the count
+  before the name leaves the directory cache; the name-only check failed 25 of 60 local runs), and `capture_parent` compares the parent's policy twice instead of the directory's
+  `ctime` (a `ctime` moves with any entry created beside the file). The scan's nonce bound is 384, the entry bound minus the lock, not a fixed slack. Each has a test that fails without it and a
+  mutation check.
+- [x] **CI decisions C4 and Y2/C3 (maintainer, 2026-11-18).** `push` on `main` and `development` plus `workflow_dispatch`, no `pull_request` trigger (`48ea618a`, with a pin test), so a commit
+  runs CI once; the enforced coverage run covers `packages/` only (`63123bd9`). C5, C6 and C7 were dropped; Y4/Y5 stay deferred.
+- [x] **A CI failure review and its fixes.** Of 14 red `ci` runs between 2026-11-12 and 2026-11-18 the review sorted the causes; a Windows-only wider case budget for two cold-start tests, a
+  30-second bound for the copy-heavy installed-CLI test, and a developer recipe for reproducing a Linux native leg locally
+  ([tools/native-fs/README.md](../../../tools/native-fs/README.md#reproducing-a-linux-leg-on-a-macos-or-windows-machine)) came out of it.
+- [x] **The MVP-4 preparation analyses** (the next section), the register split into three files with a stale-entry sweep, and two SonarCloud items on the PR's own code (S4036 and S3776).
+
+**Final-head evidence, and what it does not show.**
+
+- CI run `44402914088` on `2ce6a252` ran 29 jobs and **all 29 succeeded**, including the three required checks (`lint · typecheck · test`, `engine coverage floor (llm, mcp)`, `windows · db
+  concurrency + filesystem + headless smoke`) and all eight native legs. The first run with the narrowed coverage (`cf5ad1d3`, run `44395981912`) took the coverage job 10 min 56 s, this one 12 min 25 s
+  (it took 26 to 45+ minutes before), so the 45-minute limit that PR #99 hit is not close. At that head the PR was `CLEAN` and `MERGEABLE` with only `push` runs, which is the premise of C4: required
+  checks attach to the head SHA by name, so a `push` run satisfies a development→main PR.
+- SonarCloud's quality gate was OK on `2ce6a252`, with the S4036 and S3776 findings of earlier pushes gone. Its remaining new items are six minor S9382 findings (`await` in a loop) in the concurrency probes, which are sequential on
+  purpose and were left as they are. The analysis of the merge commit on `main` had not run when this was written, so no result is recorded for it.
+- **No completed CI run exists on the final head.** The head `639134b2` differs from `2ce6a252` only in `tools/native-fs/README.md` (22 lines of documentation), but the maintainer merged ten seconds
+  after its push, while its run (`44424575691`) was still in progress, and the merge commit's own `push` run (`44424607930`) had also not finished when this was written. The required checks were
+  therefore pending at the merge (admins are not enforced, as for PR #99); this checkpoint does not turn that into a pass.
+
+**Still owed, not claimed.** A separate security sitting (D64) on the `capture_parent` change and on the ADR-0135 delta since round 4 (both touch the filesystem-write path); the maintainer's
+reading of ADR-0135; a multi-process probe kept in the repository (the writers run in one process on separate file descriptions); Linux musl, Windows and the other targets are evidenced only by the
+eight-target CI (a Windows scan meeting a delete-pending entry is not claimed); Inc 2 (Linux and Windows parity) and Inc 3 (SAFETY comments), each its own increment; an ADR for reclaiming entries that
+a crashed producer leaked (found by a security sitting; pre-existing); four installed-CLI and shard failures of 2026-11-15 and 2026-11-16 that the CI review did not re-investigate; and a watch list of
+low-headroom tests. A scheduled `model-catalog` run was red on 2026-11-18 at 16:02Z (the live DeepSeek effort test hit its five-second default; the same workflow also failed once on 2026-11-16, in a different job that was not read) and is unrelated to the PR.
+
+**MVP-4 is next,** unchanged from the checkpoint above: ADR-0115 and ADR-0118 first, then the decisions in the next section.
 
 ### MVP-4 preparation — read-only analyses and the decisions they need (2026-11-18)
 

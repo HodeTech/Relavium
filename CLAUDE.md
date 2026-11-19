@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-18): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-19): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -71,7 +71,12 @@ security sittings are recorded in the phase register. The [MVP-3 merge checkpoin
 observations: the required `coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head
 coverage run exists (the merge commit's identical tree passed it in 41 min 10 s); and one acceptance-tool test hit its 10-second
 limit in the first attempt of the merge commit's push run, which a re-run (attempt 2, success) cleared. SonarCloud's gate is OK on
-the PR and on `main`. **MVP-4 is next**, with
+the PR and on `main`. **PR #100 (`1e71f652`, merged 2026-11-18) then put the native adapter's first increment on `main`** (concurrent
+processes on one operator home wait for the staging inventory's allocation claim instead of failing a write,
+[ADR-0135](docs/decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) with CI once per commit and a coverage run narrowed to
+`packages/`. Its final-head run `2ce6a252` passed all 29 jobs; the docs-only final head `639134b2` was merged before its own run finished, so no
+completed run exists on it, and a separate security sitting on the Linux parent-snapshot change is still owed (the
+[PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 is next**, with
 [ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
 [ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) still to be accepted. npm still
 serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).

@@ -22,7 +22,7 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status (2026-11-18): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
+**Status (2026-11-19): the CLI MVP comes first.** Phases 1, 2 and 2.5 are complete (`relavium@0.1.1` is
 published); Phase 2.6.5 is complete with approved deferrals (49/51, PR #92). Phase 2.5.5's Waves 0–2 and Wave 3
 Steps 1–8 are merged (PR #94, PR #95), and Steps 9a.1–9b.2 and NI are accepted and on `main` since the
 `development`→`main` checkpoint (PR #96, 2026-11-04). On 2026-10-26
@@ -39,6 +39,9 @@ modes, an interrupted turn that stays as a marker, `ask_user`, Ctrl-chord approv
 The [MVP-3 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) owns the evidence and its two CI observations: the required
 `coverage` job stopped at its 45-minute limit on the final head in both runs, so no green final-head coverage run exists (the merge
 commit's identical tree passed it); and one acceptance-tool test timed out in the first attempt of the merge commit's push run, which a re-run cleared.
+PR #100 (`1e71f652`, merged 2026-11-18) then put the native adapter's first increment on `main` (concurrent processes on one operator home wait for the allocation claim, ADR-0135),
+with CI once per commit and a coverage run narrowed to `packages/`; a separate security sitting on its Linux parent-snapshot change is still owed
+([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18)).
 MVP-4 is next, with ADR-0115 and ADR-0118 still to be accepted. CLAUDE.md carries the full summary.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and

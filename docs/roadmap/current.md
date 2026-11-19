@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-18
+> Last updated: 2026-11-19
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -36,19 +36,20 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). **MVP-4 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). Between MVP-3 and MVP-4 the native adapter's first increment (concurrent processes on one operator home, [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) and two CI decisions also landed on `main` (PR #100, 2026-11-18). **MVP-4 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `002dda58`: the fourth `development`→`main` checkpoint, [PR #99](https://github.com/HodeTech/Relavium/pull/99), merged 2026-11-18 after MVP-3, MVP-3b, MVP-3c and MVP-3d. Its tree is identical to `development`'s head `bb6f1671`, which is one merge commit behind. The [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records closure and its two CI observations (the final head's `coverage` job hit its 45-minute limit; one acceptance-tool test timed out once in the merge commit's push run, which a re-run cleared); the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
-| Open CI observations | The required `coverage` job did not complete on PR #99's final head (stopped at its 45-minute limit in both runs; it took 26–38 minutes before), and one acceptance-tool test timed out once in a secrets-control shard on `main`'s merge run. Both are open items in [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); neither is classified as flaky without a measured rate |
+| Branches | `main` is at `1e71f652`: the fifth `development`→`main` checkpoint, [PR #100](https://github.com/HodeTech/Relavium/pull/100), merged 2026-11-18 at 23:54Z (2026-11-19 in the maintainer's time zone). It carried the native adapter's Inc 1 ([ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)), the CI decisions C4 (CI runs once per commit: `push` on `main` and `development`, no `pull_request` trigger) and Y2/C3 (the enforced coverage run covers `packages/` only), the CI failure review's fixes and the MVP-4 preparation analyses. Its tree is identical to `development`'s head `639134b2`, and `development` was fast-forwarded to the merge commit, so the two branches have the same content. The [PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records the evidence and what is still owed; the [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) and the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
+| Open CI observations | PR #100's final-head run `44402914088` (`2ce6a252`) passed all 29 jobs, and the narrowed `coverage` job took 10–12 minutes (it took 26–45+ before), so PR #99's limit observation is closed. Open: no completed CI run exists on `639134b2` (the docs-only final head, merged ten seconds after its push) or, when this was written, on the merge commit; one acceptance-tool test timed out once in a secrets-control shard on `main`'s PR #99 merge run (its case bound is 30 s now, the cause is not measured); a scheduled `model-catalog` live effort test hit its five-second default on 2026-11-18. See [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); none is classified as flaky without a measured rate |
 
 ### What a CLI user meets today
 
 The published npm package remains `0.1.1`; the following describes the current
-`main` checkout after PR #99. MVP-1 supplies visible run outputs, run ids, liveness
+`main` checkout after PR #100. MVP-1 supplies visible run outputs, run ids, liveness
 and useful missing-key handling. MVP-2 adds readable Markdown and wrapping, native
 provider setup and key management, safe project initialization, and searchable
-session discovery/resume with visible history. MVP-3 makes the chat agent able to edit.
+session discovery/resume with visible history. MVP-3 makes the chat agent able to edit. Several `relavium` processes on one operator home can now write at the same time: each
+waits its turn for the staging inventory instead of failing a write (PR #100, ADR-0135).
 
 The built-in chat agent starts in `ask`: it asks before an effect, `plan` only reads,
 `accept-edits` accepts file edits and `auto` is unchanged
@@ -69,6 +70,11 @@ owns delivered scope and acceptance evidence; the
 owns MVP-2's.
 
 ## Next work — the CLI MVP
+
+**PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 has not started.** The
+[PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records what it carried, the final-head evidence (29 of 29 jobs green on `2ce6a252`;
+no completed run on the docs-only final head) and what is still owed: a separate security sitting on the `capture_parent` change and the delta since round 4, the maintainer's reading of ADR-0135,
+and Inc 2 and Inc 3 of the native adapter.
 
 **PR #99 merged (2026-11-18): MVP-3, MVP-3b, MVP-3c and MVP-3d are complete on `main`.** The
 [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records what the PR carried, its
@@ -243,7 +249,7 @@ first run exposed; the chord change was verified afterwards (19,945 tests: 19,92
 blocker, high or medium finding. The [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)
 owns the details and what is not claimed. The native adapter findings are their own
 increment after this round (its first part, concurrent processes on one operator home, was
-done on 2026-11-18 ahead of MVP-4 under
+done on 2026-11-18 ahead of MVP-4 and merged in PR #100 under
 [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md);
 the [register](deferred-tasks.md) owns the evidence and what is still owed); the PR's final-head checks and the maintainer's acceptance
 are recorded in the merge checkpoint.
@@ -774,7 +780,9 @@ Finished work is recorded in its register; this page no longer restates it.
   merged 2026-11-11 in PR #98; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
   closes the four-step implementation and correction records. MVP-3, with MVP-3b, MVP-3c and MVP-3d, merged
   2026-11-18 in PR #99; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
-  closes the implementation, review, security and maintainer gates and records its two CI observations.
+  closes the implementation, review, security and maintainer gates and records its two CI observations. PR #100
+  (merged 2026-11-18) carried the native adapter's Inc 1 (ADR-0135) and the CI decisions C4 and Y2/C3 between MVP-3 and MVP-4; its
+  [merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records the evidence and what is still owed.
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and
   [phase 2.5](phases/phase-2.5-cli-consolidation.md).
 - **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):** the
