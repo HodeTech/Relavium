@@ -14,6 +14,7 @@ import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import {
   APPROVAL_CONFIRM_MAX_MS,
   APPROVAL_CONFIRM_MIN_MS,
+  APPROVAL_TYPEAHEAD_MS,
   toolReviewPage,
 } from './tool-review-model.js';
 
@@ -69,13 +70,22 @@ function rig(facts: CommandCardFacts | undefined) {
       facts,
     )
     .then((answer) => answers.push(answer));
-  const review = store.getSnapshot().review;
-  if (review === undefined) throw new Error('the card did not open');
-  store.bindReviewVisibility(() => store.getSnapshot().review === review);
-  store.acknowledgeReviewFrame(review, toolReviewPage(review, 80, 24));
+  // The host flushes a frame for every review object the store publishes (a refusal note replaces it) and the frame it flushed is
+  // the one that counts as visible: `show` is that flush.
+  let shown: unknown;
+  store.bindReviewVisibility(() => shown !== undefined && store.getSnapshot().review === shown);
+  const show = (): void => {
+    const current = store.getSnapshot().review;
+    if (current === undefined) return;
+    shown = current;
+    store.acknowledgeReviewFrame(current, toolReviewPage(current, 80, 24));
+  };
+  if (store.getSnapshot().review === undefined) throw new Error('the card did not open');
+  show();
   return {
     store,
     answers,
+    show,
     chord: (letter: string) => String(store.handleReviewInput(letter, { ctrl: true })),
     enter: () => String(store.handleReviewInput('', { return: true })),
     key: (input: string) => String(store.handleReviewInput(input, {})),
@@ -186,5 +196,73 @@ describe('Ctrl+O on a command card', () => {
     session.enter();
     await flush();
     expect(session.answers).toEqual([{ outcome: 'approve', scope: 'always' }]);
+  });
+});
+
+describe('Ctrl+O is behind every guard of ADR-0129 notes 9 to 11, not only the dwell', () => {
+  it('a Ctrl+O 100 ms after another key is refused (the quiet gap)', () => {
+    const r = rig(FACTS(true));
+    at(1000);
+    r.key('x'); // any key, foreign or not
+    at(1100);
+    r.chord('o');
+    expect(r.snapshot().rememberConfirm).toBe(false);
+    r.show(); // the refusal note replaced the review; the host flushes the new frame
+    at(2700);
+    r.chord('o');
+    expect(r.snapshot().rememberConfirm, 'a deliberate press later is counted').toBe(true);
+  });
+
+  it('a Ctrl+O within the typeahead window of a foreign key is refused', () => {
+    const r = rig(FACTS(true));
+    at(1000);
+    r.key('x');
+    at(1000 + APPROVAL_TYPEAHEAD_MS - 200);
+    r.chord('o');
+    expect(r.snapshot().rememberConfirm).toBe(false);
+    r.show();
+    at(1000 + APPROVAL_TYPEAHEAD_MS - 200 + APPROVAL_TYPEAHEAD_MS + 100);
+    r.chord('o');
+    expect(r.snapshot().rememberConfirm).toBe(true);
+  });
+
+  it('a Ctrl+O within the lockout after a card was resolved by a key is refused, and a held key restarts the window', () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    let shown: ReturnType<typeof store.getSnapshot>['review'];
+    store.bindReviewVisibility(() => shown !== undefined && store.getSnapshot().review === shown);
+    const show = (): void => {
+      shown = store.getSnapshot().review;
+      if (shown === undefined) throw new Error('the card did not open');
+      store.acknowledgeReviewFrame(shown, toolReviewPage(shown, 80, 24));
+    };
+    const open = (): void => {
+      void store
+        .requestApproval(
+          REQUEST,
+          true,
+          undefined,
+          { callId: 'call', preview: PREVIEW },
+          FACTS(true),
+        )
+        .catch(() => undefined);
+      show();
+    };
+    open();
+    at(1000);
+    store.handleReviewInput('y', { ctrl: true }); // allow once: the card is resolved by a key
+    open(); // the next card opens at once
+    at(1000 + 700);
+    store.handleReviewInput('o', { ctrl: true });
+    expect(store.getSnapshot().rememberConfirm, 'inside the 2 s lockout').toBe(false);
+    show();
+    at(1000 + 700 + 1500); // the refused key restarted the window, so 1.5 s later is still inside it
+    store.handleReviewInput('o', { ctrl: true });
+    expect(store.getSnapshot().rememberConfirm, 'a held key keeps the next card locked').toBe(
+      false,
+    );
+    show();
+    at(1000 + 700 + 1500 + 2100);
+    store.handleReviewInput('o', { ctrl: true });
+    expect(store.getSnapshot().rememberConfirm).toBe(true);
   });
 });
