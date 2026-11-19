@@ -106,6 +106,9 @@ describe('the digests', () => {
       grantDigest(key, root, ['cat', 'a', 'b']),
       grantDigest(key, root, ['cat', 'a', 'b', '']),
       grantDigest(key, root, ['cat', 'ab']),
+      // The same count and the same concatenated bytes: only the per-element length tells them apart.
+      grantDigest(key, root, ['ab', 'c']),
+      grantDigest(key, root, ['a', 'bc']),
     ];
     expect(new Set(digests).size).toBe(digests.length);
   });
@@ -225,6 +228,28 @@ describe('what the file holds (ADR-0118 §2)', () => {
       expect(statSync(file()).mode & 0o777).toBe(0o600);
       expect(statSync(join(home, '.relavium')).mode & 0o777).toBe(0o700);
     }
+  });
+
+  it('names a program by its SHAPE first: free text is never named even when a lookup would resolve it', async () => {
+    const grants = store(project, { findProgram: () => Promise.resolve('/anywhere/resolves') });
+    for (const first of [
+      'PGPASSWORD=hunter2',
+      './build.sh',
+      '/usr/bin/git',
+      'a b',
+      'user@host',
+      'x'.repeat(65),
+      'a:b',
+    ])
+      await grants.remember([first, 'arg']);
+    await grants.remember(['npm', 'arg']);
+    const listed = grants.list();
+    expect(listed.ok && listed.grants.map((g) => g.program)).toEqual([
+      ...Array<string>(7).fill(UNNAMED_PROGRAM),
+      'npm',
+    ]);
+    expect(text()).not.toContain('hunter2');
+    expect(text()).not.toContain('user@host');
   });
 
   it('labels a program only when argv[0] is a bare name that resolves on the PATH', async () => {
