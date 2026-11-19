@@ -1077,6 +1077,26 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/permissions on a headless chat says there are no remembered commands to show, and never ends the session (ADR-0118 §2)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/permissions', '/permissions --revoke 1', '/permissions --revoke', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('Remembered for this project: not available in this chat.');
+    expect(out).toContain('Approved for this session: none.');
+    expect(out).toContain('Remembered commands are not available in this chat.');
+    expect(out).toContain('Give the number to withdraw');
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
+    const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/permissions: takes a single n value');
+  });
+
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
     const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);

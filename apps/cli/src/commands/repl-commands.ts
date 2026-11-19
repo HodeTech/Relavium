@@ -25,6 +25,14 @@ import type { CommandEffect } from './manifest.js';
  * S3b, and later info commands (`/cost`, `/doctor`) read/probe asynchronously — so a capability's promise is
  * always awaited (see {@link ReplCommand.run}), never silently fire-and-forget.
  */
+/** What `/permissions` was asked: the list, or one numbered approval to withdraw (from the project's, or with `session` from this session's). */
+export interface PermissionsRequest {
+  readonly revoke: boolean;
+  readonly session: boolean;
+  /** The raw number token, `undefined` when none was typed. */
+  readonly number: string | undefined;
+}
+
 export interface ReplCommandContext {
   /** End the chat session cleanly (the REPL stops; exit code 4 in a standalone chat). */
   readonly exit: () => void | Promise<void>;
@@ -49,6 +57,12 @@ export interface ReplCommandContext {
   readonly toggleReasoning: () => void | Promise<void>;
   /** Open the interactive, read-only list of this instance's recent tool calls. */
   readonly openDetails: () => void | Promise<void>;
+  /**
+   * `/permissions` (ADR-0118 §2) — list the commands remembered for this project and the ones approved for this session, and
+   * with `--revoke` withdraw one by its number (`--session` for the session's own). Neither list shows a command's arguments.
+   * Chat-only: the bare Home has no session, and its full screen for grants is MVP-8's.
+   */
+  readonly managePermissions: (request: PermissionsRequest) => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -257,6 +271,34 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Summarise the conversation so far to reclaim context (spends tokens).',
     effect: 'write',
     run: (ctx) => ctx.compactHistory(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'permissions',
+    label: 'Permissions',
+    description:
+      'List the commands remembered for this project and approved for this session; /permissions --revoke <n> withdraws one.',
+    // `read` for the bare form. `--revoke` removes an approval (it only ever makes the chat ask MORE), but it is opt-in by typing
+    // it, exactly like `/cost --release`: the palette submits the bare form.
+    effect: 'read',
+    args: [
+      {
+        flag: '--revoke',
+        description: 'Withdraw the numbered approval (the project’s remembered list by default).',
+      },
+      {
+        flag: '--session',
+        description: 'With --revoke: the number is among this session’s approvals.',
+      },
+    ],
+    // The number of the approval to withdraw: a FREE positional, validated by the handler.
+    positional: { name: 'n', values: [] },
+    run: (ctx, args) =>
+      ctx.managePermissions({
+        revoke: args.includes('--revoke'),
+        session: args.includes('--session'),
+        number: args.find((token) => !token.startsWith('--')),
+      }),
     availableIn: ['chat'],
   },
   {

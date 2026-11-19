@@ -160,6 +160,23 @@ export class ApprovalCache {
   rememberAlwaysCommand(argv: readonly string[]): void {
     this.#commands.add(JSON.stringify(argv));
   }
+  /** The commands approved for this session, in the order they were approved (`/permissions` numbers them from 1). */
+  commandApprovals(): readonly (readonly string[])[] {
+    const argvs: (readonly string[])[] = [];
+    for (const key of this.#commands) {
+      const parsed: unknown = JSON.parse(key);
+      if (Array.isArray(parsed) && parsed.every((element) => typeof element === 'string'))
+        argvs.push(parsed);
+    }
+    return argvs;
+  }
+  /** Take back the session approval at the 1-based `index` of {@link commandApprovals}; the argv it was, or `undefined` when none. */
+  forgetCommandApproval(index: number): readonly string[] | undefined {
+    const target = this.commandApprovals()[index - 1];
+    if (target === undefined) return undefined;
+    this.#commands.delete(JSON.stringify(target));
+    return target;
+  }
 }
 
 /**

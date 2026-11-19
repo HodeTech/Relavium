@@ -1,6 +1,10 @@
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import {
+  chatPermissionsNotice,
+  type SessionCommandApprovals,
+} from '../permissions/chat-permissions.js';
+import {
   commandGrantRoot,
   createCommandGrantStore,
   type CommandGrantStore,
@@ -1615,6 +1619,8 @@ export interface ChatModeControl {
    * next turn. The tier is still per-model gated at send, so on a non-reasoning model the footer stays clear.
    */
   readonly onSetEffort: (effort: ReasoningEffort) => void;
+  /** The commands approved for this session (the exact-argv memory of the mode policy), for `/permissions` (ADR-0118 §2). */
+  readonly commandApprovals: SessionCommandApprovals;
 }
 
 /**
@@ -1715,6 +1721,7 @@ export function createChatModeControl(
     store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
   }
   return {
+    commandApprovals: modeEnv.cache,
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
     },
@@ -2025,6 +2032,15 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
+    // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
+    managePermissions: async (request) => {
+      emitOutput(
+        await chatPermissionsNotice(request, {
+          grants: commandGrants,
+          session: modeControl.commandApprovals,
+        }),
+      );
+    },
     showCost: (release = false) => {
       try {
         // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
@@ -2344,6 +2360,7 @@ export function createChatLineHandler(
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
+    commandApprovals: modeControl.commandApprovals,
   };
 }
 

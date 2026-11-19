@@ -26,6 +26,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, numbe
     help: vi.fn(),
     showWorkflows: vi.fn(),
     showCost: vi.fn(),
+    managePermissions: vi.fn(),
     runDoctor: vi.fn(),
     setMode: vi.fn(),
     setReasoningEffort: vi.fn(),
@@ -65,6 +66,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',
@@ -72,6 +74,21 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'edit',
       'copy',
     ]);
+  });
+
+  it('/permissions passes what was typed: the bare list, --revoke with its number, and --session', async () => {
+    const run = async (args: readonly string[]) => {
+      const spy = spyContext();
+      await REPL_COMMANDS_BY_NAME.get('permissions')?.run(spy.ctx, args);
+      return vi.mocked(spy.ctx.managePermissions).mock.calls[0]?.[0];
+    };
+    expect(await run([])).toEqual({ revoke: false, session: false, number: undefined });
+    expect(await run(['--revoke', '2'])).toEqual({ revoke: true, session: false, number: '2' });
+    expect(await run(['--revoke', '--session', '1'])).toEqual({
+      revoke: true,
+      session: true,
+      number: '1',
+    });
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {
@@ -95,6 +112,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['export', 'exportSession'],
       ['workflows', 'showWorkflows'],
       ['cost', 'showCost'],
+      ['permissions', 'managePermissions'],
       ['doctor', 'runDoctor'],
       ['mode', 'setMode'],
       ['effort', 'setReasoningEffort'],
@@ -134,7 +152,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /trim, /clear, /models, /scrollback, /edit, /copy',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /permissions, /trim, /clear, /models, /scrollback, /edit, /copy',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -153,6 +171,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cancel',
       'workflows',
       'cost',
+      'permissions',
       'doctor',
       'mode',
       'effort',
@@ -185,6 +204,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',
@@ -205,6 +225,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',

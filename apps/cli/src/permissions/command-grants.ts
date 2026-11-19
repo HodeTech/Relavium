@@ -657,7 +657,7 @@ function unreadableMessage(path: string, why: string, recovery: string = REVOKE_
 }
 
 /** The program's bare name, only when it is a bare name that resolves on the PATH; else `undefined` (ADR-0118 §2). */
-async function namedProgram(
+export async function namedProgram(
   first: string | undefined,
   findProgram: (name: string) => Promise<string | undefined>,
 ): Promise<string | undefined> {

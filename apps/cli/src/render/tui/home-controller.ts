@@ -1318,6 +1318,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
+    managePermissions: () => undefined, // `/permissions` is chat-only (ADR-0118 §2); the Home's full screen for grants is MVP-8's
     openDetails: () => undefined,
     setMode: (argument) => {
       managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
