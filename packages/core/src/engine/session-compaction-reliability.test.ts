@@ -1077,6 +1077,7 @@ describe('a compaction turn never opens a checkpoint (ADR-0136)', () => {
     // checkpoint hook wired on the session, a compaction turn that carried it would ask the PERSON to continue, in the middle of
     // a compaction nobody sees as a tool loop.
     let asked = 0;
+    let summaryPasses = 0;
     const h = fixture({
       auto: false,
       window: 12000,
@@ -1095,6 +1096,7 @@ describe('a compaction turn never opens a checkpoint (ADR-0136)', () => {
         stream: async function* (request): AsyncGenerator<StreamChunk> {
           await Promise.resolve();
           if (request.maxTokens === 4096) {
+            summaryPasses += 1;
             yield { type: 'tool_call_start', id: 'c1', name: 'echo' };
             yield { type: 'tool_call_end', id: 'c1' };
             yield {
@@ -1115,6 +1117,6 @@ describe('a compaction turn never opens a checkpoint (ADR-0136)', () => {
     });
     await h.session.compact().catch(() => undefined);
     expect(asked).toBe(0);
-    expect(h.counts().summaryCalls).toBeGreaterThan(0); // the compaction really ran
+    expect(summaryPasses).toBeGreaterThan(0); // the compaction really ran (the override bypasses the fixture's own counters)
   });
 });
