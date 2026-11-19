@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
+import type {
+  SessionStreamHandleEvent,
+  ToolApprovalLiveContext,
+  ToolApprovalRequest,
+} from '@relavium/core';
 import { vi } from 'vitest';
 
 import type { CommandGrantsPort } from '../chat/chat-mode.js';
@@ -38,7 +42,13 @@ export interface RealModeControl {
   readonly policyPushes: () => number;
   /** The turn policy the session holds now (the last one pushed), whose `confirm` is what decides a governed call. */
   readonly policy: () =>
-    | { readonly confirm?: (request: ToolApprovalRequest) => Promise<unknown> }
+    | {
+        readonly confirm?: (
+          request: ToolApprovalRequest,
+          signal?: undefined,
+          live?: ToolApprovalLiveContext,
+        ) => Promise<unknown>;
+      }
     | undefined;
   readonly workspace: string;
   readonly dispose: () => Promise<void>;

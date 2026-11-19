@@ -1,4 +1,4 @@
-import type { ToolApprovalRequest } from '@relavium/core';
+import type { ToolApprovalLiveContext, ToolApprovalRequest } from '@relavium/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { realModeControl, type RealModeControl } from './chat-mode-control.test-support.js';
@@ -15,6 +15,18 @@ const REQUEST: ToolApprovalRequest = {
   unredactedPreview: { command: 'npm test' },
   argv: ['npm', 'test'],
   commandAdmitted: false,
+};
+/** What the registry hands the hook for `run_command`: the call's id and its preview (a command card is drawn from it). */
+const LIVE: ToolApprovalLiveContext = {
+  callId: 'call',
+  preview: {
+    kind: 'operation',
+    target: 'npm test',
+    fields: [
+      { name: '', value: 'npm' },
+      { name: '', value: 'test' },
+    ],
+  },
 };
 const made: RealModeControl[] = [];
 afterEach(async () => {
@@ -43,7 +55,7 @@ const notices = (m: RealModeControl): string[] =>
 describe('the chat mode control, command card wiring', () => {
   it('opens the card with the session workspace, the standing and every offer', async () => {
     const m = await control(vi.fn(() => Promise.resolve({ ok: true })));
-    const decision = m.policy()?.confirm?.(REQUEST);
+    const decision = m.policy()?.confirm?.(REQUEST, undefined, LIVE);
     void decision?.catch(() => undefined);
     const approval = m.store.getSnapshot().approval;
     expect(approval?.facts).toEqual({
@@ -60,7 +72,7 @@ describe('the chat mode control, command card wiring', () => {
   it('a Remember that cannot be written approves the call once and says why on the notice channel', async () => {
     const remember = vi.fn(() => Promise.resolve({ ok: false, reason: 'unwritable' }));
     const m = await control(remember);
-    const decision = m.policy()?.confirm?.(REQUEST);
+    const decision = m.policy()?.confirm?.(REQUEST, undefined, LIVE);
     m.store.answerApproval({ outcome: 'approve', scope: 'remember' });
     expect(await decision).toMatchObject({ outcome: 'approve' });
     expect(remember).toHaveBeenCalledExactlyOnceWith(['npm', 'test']);
