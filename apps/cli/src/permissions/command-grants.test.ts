@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
@@ -453,6 +453,10 @@ describe('revoking and listing', () => {
     expect(grants.list().ok).toBe(false);
     expect(grants.revokeAll()).toEqual({ ok: true, removed: true });
     expect(existsSync(file())).toBe(false);
+    expect(
+      keychain.entries.has(COMMAND_GRANTS_KEY_ACCOUNT),
+      'the store’s own revokeAll forgets the key too',
+    ).toBe(false);
     expect(grants.revokeAll()).toEqual({ ok: true, removed: false });
     expect(grants.list()).toEqual({ ok: true, grants: [] });
     expect((await grants.remember(['npm', 'test'])).ok, 'and the store works again').toBe(true);
@@ -1111,13 +1115,9 @@ describe('an unreadable path is never read as an empty store (round 2)', () => {
     'a case-variant spelling of the project root shares its grants where the file system folds case',
     async () => {
       await store().remember(['npm', 'test']);
-      const variant = project.replace(/[a-z]/u, (c) => c.toUpperCase());
-      if (
-        variant === project ||
-        !existsSync(variant) ||
-        lstatSync(variant).ino !== lstatSync(project).ino
-      )
-        return; // a case-sensitive file system
+      // The last segment only: a symlink in the leading path (macOS /var) would be resolved and hide the difference.
+      const variant = join(dirname(project), basename(project).replace(/^r/u, 'R'));
+      if (!existsSync(variant) || lstatSync(variant).ino !== lstatSync(project).ino) return; // a case-sensitive file system
       expect(store(variant).matches(['npm', 'test'])).toBe(true);
     },
   );
