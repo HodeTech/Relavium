@@ -47,6 +47,7 @@ function fixture(
   );
   const errors: unknown[] = [];
   const submitted: string[] = [];
+  const aborts = { count: 0 };
   const session = {
     store,
     sessionId: 's',
@@ -56,6 +57,9 @@ function fixture(
     },
     shouldStop: () => false,
     stopReason: () => 'exit' as const,
+    onAbort: () => {
+      aborts.count += 1;
+    },
     teardown: async () => {},
   };
   const controller = createHomeController({
@@ -86,6 +90,9 @@ function fixture(
           onExit: () => {},
           onError: (error) => errors.push(error),
           onModeChange: () => {},
+          onAbort: () => {
+            aborts.count += 1;
+          },
           alternateScreen: alternate,
           ...ports,
         })
@@ -134,6 +141,7 @@ function fixture(
     store,
     errors,
     submitted,
+    aborts,
     ready,
     text: () => output.frames.join(''),
     /** The most recent complete frame (control sequences stripped) that contains `needle`. */
@@ -244,6 +252,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     await vi.waitFor(() => expect(f.text()).toContain('Checkpoint'));
     f.input.push('\u001b');
     expect(await answer).toBe('stop');
+    expect(f.aborts.count, 'Esc answers; it does not abort').toBe(0);
     await pause();
     expect(f.text()).not.toContain('Press Ctrl+C again');
     f.input.push(CTRL_C); // a first press again
@@ -258,6 +267,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     await vi.waitFor(() => expect(f.text()).toContain('Checkpoint'));
     f.input.push(CTRL_C);
     expect(await answer, 'an answer, not an abort: the engine ends the turn itself').toBe('stop');
+    expect(f.aborts.count, 'nothing was aborted: the answer is what ends the turn').toBe(0);
     await vi.waitFor(() => expect(f.text()).toContain('Press Ctrl+C again'));
     expect(f.submitted).toEqual([]);
     f.input.push(CTRL_C);
