@@ -14,6 +14,7 @@ import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent
 import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
 import { BudgetPauseError } from './budget-governor.js';
 import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { markUntrusted } from '../tools/untrusted.js';
 import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const text = (value: string): LlmMessage => ({
@@ -1082,6 +1083,22 @@ describe('a compaction turn never opens a checkpoint (ADR-0136)', () => {
       auto: false,
       window: 12000,
       deps: {
+        // A registry that runs the call, so the loop reaches its limit instead of failing on the first round.
+        registry: {
+          has: () => false,
+          list: () => [],
+          dispatch: (call) =>
+            Promise.resolve({
+              output: 'OK',
+              truncated: false,
+              mediaAttachments: markUntrusted([]),
+              toolResult: markUntrusted({ type: 'tool_result', toolCallId: call.id, result: 'OK' }),
+              events: {
+                call: { toolId: call.name, toolInput: {} },
+                result: { toolId: call.name, success: true, outputSummary: 'OK' },
+              },
+            }),
+        },
         limits: {
           maxToolTurns: 1,
           maxToolCorrections: 3,
