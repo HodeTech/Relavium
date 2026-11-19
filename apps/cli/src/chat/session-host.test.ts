@@ -1898,6 +1898,53 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  it('Esc or Ctrl+C at a card: the store rejects, the surface aborts in the same tick, and the call is recorded DENIED by the person, never cancelled, with no further model call (ADR-0115 §2)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+        textTurn('this model call must never happen'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        agentRef: writeAgent(['write_file']),
+        providers,
+      });
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      createChatModeControl(built, store); // ask mode: the write waits on a real card
+      built.session.start();
+      const turn = built.session.sendMessage('write a file');
+      await vi.waitFor(
+        () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+        { timeout: 5000 },
+      );
+      // What the surface does for an Esc or a Ctrl+C: the store settles the approval as a REJECTION and returns 'abort', and
+      // the surface signals the abort, all in one synchronous stack.
+      expect(store.handleReviewInput('', { escape: true })).toBe('abort');
+      built.session.abort();
+      await turn;
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const result = events.find((e) => e.type === 'agent:tool_result');
+      expect(result?.type === 'agent:tool_result' ? result.success : 'missing').toBe(false);
+      expect(
+        result?.type === 'agent:tool_result' ? result.outputSummary : '',
+        'recorded as the person declining it, not as an unknown outcome',
+      ).toContain('The user declined this tool call');
+      expect(JSON.stringify(events)).not.toContain('outcome unknown');
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.stopReason : 'missing').toBe(
+        'aborted',
+      );
+      expect(requests, 'the abort stopped the turn: no second model call').toHaveLength(1);
+      expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('createChatModeControl seeds the store effort from the agent + onSetEffort pushes a no-reseat override (ADR-0066)', async () => {
     const built = await build({
       chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },

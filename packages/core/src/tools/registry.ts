@@ -673,6 +673,18 @@ async function dispatch(
     }
   } catch (cause) {
     if (cause instanceof ToolCancelledError) throw cause;
+    // A rejection the person DECIDED stays a denial even when an abort follows it in the same tick (ADR-0115 §2). The CLI settles
+    // the approval as a rejection and then signals the abort in one synchronous stack, so by the time this code runs the signal is
+    // already aborted; without this the call would be recorded cancelled, "execution state unknown", which is false: the decision
+    // was made before any effect was admitted, so nothing ran and the record can say so. The turn still ends at its next boundary
+    // (the abort is already signalled), and an APPROVE that lands after an abort is untouched: it still cancels (confirmDispatch).
+    if (
+      cause instanceof ToolDeniedByUserError &&
+      cause.reason === 'user_rejected' &&
+      !effectDispatched &&
+      !replayHit
+    )
+      throw cause;
     if (isAbort(cause, ctx)) throw new ToolCancelledError(def.id, cause);
     if (cause instanceof ToolDispatchError) {
       if ((effectDispatched || replayHit) && (cause.retryable || cause.recoverable)) {
