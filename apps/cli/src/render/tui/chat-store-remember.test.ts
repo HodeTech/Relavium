@@ -135,7 +135,8 @@ describe('Ctrl+O on a command card', () => {
       r.chord('o');
       at(1000 + APPROVAL_CONFIRM_MIN_MS - 200);
       interrupt(r);
-      at(1000 + APPROVAL_CONFIRM_MIN_MS + 100);
+      // Late enough that an Enter would confirm a question ASKED AGAIN by the interrupting key, so this fails if it asked again.
+      at(1000 + APPROVAL_CONFIRM_MIN_MS - 200 + APPROVAL_CONFIRM_MIN_MS + 100);
       r.enter();
       await flush();
       expect(r.answers, 'nothing was remembered').toEqual([]);

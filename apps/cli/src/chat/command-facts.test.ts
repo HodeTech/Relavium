@@ -119,6 +119,12 @@ describe('a protected path named in an argument (resolved lexically against the 
     expect(namesProtectedPath(['cat', 'x/../y'], '/work/project')).toBe(false);
   });
 
+  it('is resolved against the directory the command RUNS in: id_rsa inside .ssh is protected there and not in a plain directory', () => {
+    expect(namesProtectedPath(['cat', 'id_rsa'], '/home/me/.ssh')).toBe(true);
+    expect(namesProtectedPath(['cat', 'config'], '/work/project/.git')).toBe(true);
+    expect(namesProtectedPath(['cat', 'id_rsa'], '/home/me/keys')).toBe(false);
+  });
+
   it('ignores an argument with a NUL byte instead of throwing', () => {
     expect(namesProtectedPath(['cat', 'a\0.env'], cwd)).toBe(false);
   });

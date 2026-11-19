@@ -418,7 +418,7 @@ async function askAboutCommand(
   const answer = await deps.prompt(request, facts.offers.session, signal, live, facts);
   if (answer.outcome === 'reject') return toDecision(answer, request, deps.cache, false);
   let scope = answer.scope;
-  if (scope === 'always' && !facts.offers.session) scope = 'once';
+  // A session answer the card did not offer is floored to Once by `toDecision` (it caches only when `offers.session`).
   if (scope === 'remember') {
     if (!facts.offers.remember || grants?.remember === undefined) {
       scope = 'once';
