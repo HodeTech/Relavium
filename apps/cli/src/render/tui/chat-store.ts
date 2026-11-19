@@ -28,7 +28,7 @@ import {
   type ReviewKeyAction,
   type ToolReviewState,
 } from './tool-review-model.js';
-import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -84,9 +84,12 @@ import {
 /** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
  *  `Ctrl+G` allow for the session, `Ctrl+N` deny, `Ctrl+R` deny with a reason (a reject carrying WHY, via the
  *  `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop the turn (ADR-0115 §2). */
-/** What the model is told when its command was too large for the approval card to show (no command content). */
+/**
+ * What the model is told when its command was too large for the approval card to show (no command content). It is the host's own
+ * limit, not the person's decision, so it travels as a `mode` refusal with this fixed label and not as the person's words.
+ */
 export const UNSHOWABLE_COMMAND_REASON =
-  'The command has more arguments, or a longer argument, than the approval card can show, so it was not approved. Run it as smaller commands.';
+  'this command is too large for the approval card to show; run it as smaller commands';
 
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
@@ -788,6 +791,11 @@ export function createChatStore(
       // The question ends at the next key that is not its confirming Enter — typing, a held `Ctrl+G`, an early Enter, anything.
       if (!confirmed && alwaysAsk !== undefined) {
         alwaysAsk = undefined;
+        // An Enter outside its window is the likeliest silent failure (it follows the chord by a moment): say nothing was granted.
+        if (key.return === true && review !== undefined && action.kind !== 'abort') {
+          review = { ...review, message: CARD_ENTER_NOTE };
+          reviewPage = undefined;
+        }
         if (action.kind !== 'abort') flush();
       }
       if (confirmed) {
@@ -834,7 +842,7 @@ export function createChatStore(
               ? { outcome: 'reject', reason: action.reason }
               : review.facts !== undefined && review.document?.valid === false
                 ? // A command too large for the card is told so, in fixed words (never the command), so it does not retry the same line.
-                  { outcome: 'reject', reason: UNSHOWABLE_COMMAND_REASON }
+                  { outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON }
                 : { outcome: 'reject' },
           );
           flush();

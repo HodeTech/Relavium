@@ -569,7 +569,9 @@ export function toolReviewPage(
     const cardChrome =
       CARD_RULE_ROWS +
       Math.max(1, target?.rows.length ?? 0) +
-      1 +
+      // The tool-identity row: a command card has none (its title already says `Run`, and its warnings say what is not shown),
+      // which is the row it needs for its facts.
+      (state.facts === undefined ? 1 : 0) +
       cardWarnings({
         document,
         shortenedTarget,
@@ -582,7 +584,9 @@ export function toolReviewPage(
         denialOpen: state.denial !== undefined,
       }).length +
       (state.denial === undefined ? CARD_KEY_ROWS : cardDenialExtraRows(denialRows) + 1) +
-      (state.message === '' ? 0 : 1);
+      // A command card keeps the note's row free from its first frame: a refusal note must not take a row from the command and with
+      // it the answers that are offered only while every row is on screen.
+      (state.message === '' && state.facts === undefined ? 0 : 1);
     return Math.min(CARD_MAX_BODY_ROWS, cardRowBudget(rows) - cardChrome);
   };
   const fullRows = fullBodyRows(

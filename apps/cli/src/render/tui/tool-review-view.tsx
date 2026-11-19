@@ -378,7 +378,17 @@ function keyed<T>(
   });
 }
 
-function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
+function KeyRow({
+  row,
+  color,
+  question = false,
+}: Readonly<{ row: string; color: boolean; question?: boolean }>): ReactElement {
+  if (question)
+    return (
+      <Text wrap="truncate-end" bold>
+        {row}
+      </Text>
+    );
   return (
     <Text wrap="truncate-end">
       {keyed(keyLabelParts(row), (part) => part).map(({ key, item: part }) => (
@@ -402,7 +412,7 @@ function cardRowText(
   kind: ReviewPage['kinds'][number],
 ): string {
   if (label === 'field name') return withoutLabel(row, label);
-  if (label === 'field value') return `  ${withoutLabel(row, label)}`;
+  if (label === 'field value') return `  ${withoutLabel(row, label) || '(empty)'}`;
   return cardBodyRow(row, kind);
 }
 function cardRowProps(
@@ -462,7 +472,12 @@ function ReviewCard({
       ]
     : targetRows.length === 0
       ? [`${verb} ${inputDisplay(sanitizeUntrustedInline(toolId))}`]
-      : targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `  ${row}`));
+      : targetRows.map((row, index) =>
+          index === 0
+            ? `${verb} ${row}`
+            : // A command's title wraps under its own first word, so a continuation of the line is not mistaken for an argument's row below.
+              `${' '.repeat(review.facts === undefined ? 2 : verb.length + 1)}${row}`,
+        );
   const identityText = withoutLabel(identity?.rows[0] ?? '', 'tool');
   const stats = cardStats(document);
   // The lock is read from the page being drawn (its shortened target), not only from the state an acknowledged
@@ -479,7 +494,7 @@ function ReviewCard({
     commandFacts: review.facts,
     denialOpen: review.denial !== undefined,
   });
-  const keys = cardKeyRows({
+  const keyInput = {
     inspected,
     cacheable: reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     scope: escaped(cardScopePhrase(toolId)),
@@ -488,7 +503,9 @@ function ReviewCard({
       snapshot.alwaysConfirm &&
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     ...commandKeys(snapshot, review, page),
-  });
+  };
+  const keys = cardKeyRows(keyInput);
+  const questionOpen = keyInput.confirmAlways || keyInput.confirmRemember === true;
   const cut = (page?.hiddenLines ?? 0) > 0;
   return (
     <>
@@ -508,16 +525,18 @@ function ReviewCard({
           </Text>
         );
       })}
-      <Box justifyContent="space-between">
-        <Text {...dimProps(color)}>
-          {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
-        </Text>
-        {cut && (
+      {review.facts === undefined && (
+        <Box justifyContent="space-between">
           <Text {...dimProps(color)}>
-            {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
+            {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
           </Text>
-        )}
-      </Box>
+          {cut && (
+            <Text {...dimProps(color)}>
+              {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
+            </Text>
+          )}
+        </Box>
+      )}
       {warnings.map((warning, index) => (
         // A warning is yellow; a plain fact (a command's standing and directory) is dimmed, so the one row that matters stands out.
         <Text
@@ -542,7 +561,15 @@ function ReviewCard({
           </Text>
         </Box>
       ) : (
-        keys.map((row, index) => <KeyRow key={`keys-${index}`} row={row} color={color} />)
+        keys.map((row, index) => (
+          <KeyRow
+            key={`keys-${index}`}
+            row={row}
+            color={color}
+            // The question a wider grant asks is what the person must read now: its first row is the card's plainest text.
+            question={index === 0 && questionOpen}
+          />
+        ))
       )}
       {review.message !== '' && <Text>{escaped(review.message)}</Text>}
     </>

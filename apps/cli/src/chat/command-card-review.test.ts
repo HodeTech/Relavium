@@ -153,8 +153,8 @@ describe('the full view of a command carries its facts and the Remember question
       columns: 80,
       commandFacts: { ...FACTS, runsCode: true, protectedPath: true },
     });
-    expect(rows[0]).toBe('Standing: not pre-approved');
-    expect(rows[1]).toBe('Runs in: /work/project');
+    // One row while the directory still has room to say where it is.
+    expect(rows[0]).toBe('Standing: not pre-approved · Runs in: /work/project');
     expect(rows.join(' ')).toContain('Runs code');
     expect(rows.join(' ')).toContain('Names a protected path');
   });
@@ -190,8 +190,8 @@ describe('the full view of a command carries its facts and the Remember question
       confirmRemember: true,
     };
     expect(fullAnswerRows(keys)).toEqual([
-      'Press Enter to remember this exact command for this project',
-      'Enter confirms · any other key cancels the question · Esc stops the turn',
+      'Press Enter to allow this exact command now and remember it for this project',
+      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
     ]);
     const chrome = fullChrome({
       kind: 'approval',
@@ -206,7 +206,7 @@ describe('the full view of a command carries its facts and the Remember question
       searching: false,
       commandFacts: FACTS,
     });
-    expect(chrome.warnings[0]).toBe('Standing: not pre-approved');
+    expect(chrome.warnings[0]).toBe('Standing: not pre-approved · Runs in: /work/project');
     expect(chrome.answers).toEqual(fullAnswerRows(keys));
   });
 });

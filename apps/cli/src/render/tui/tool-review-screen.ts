@@ -279,6 +279,9 @@ export function fullSearchRows(): readonly [string, string] {
 
 /** The sentence ADR-0129 §5 moved from the card to the full view. */
 export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or permission denials.';
+/** A command card's full view says the opposite of that sentence: a command is not held to the file tools' path rules. */
+export const FULL_COMMAND_NOTE =
+  'Approving runs exactly this command; file-tool path rules do not limit it.';
 /** The one line a details screen ends on. */
 export const DETAILS_CLOSE_NOTE =
   '[b] Back to the list   Esc closes · viewing never executes a tool';
@@ -332,7 +335,12 @@ export function fullChrome(input: FullChromeInput): FullChrome {
   const nav = fullNavLegend({ ...input.nav, columns: input.columns });
   const answers =
     input.keys === undefined ? [] : input.searching ? fullSearchRows() : fullAnswerRows(input.keys);
-  const note = input.kind === 'approval' ? FULL_PROTECTED_NOTE : DETAILS_CLOSE_NOTE;
+  const note =
+    input.kind !== 'approval'
+      ? DETAILS_CLOSE_NOTE
+      : input.commandFacts === undefined
+        ? FULL_PROTECTED_NOTE
+        : FULL_COMMAND_NOTE;
   const rows =
     header.length +
     (input.hasTarget ? 1 : 0) +

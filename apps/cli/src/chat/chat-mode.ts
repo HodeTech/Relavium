@@ -406,6 +406,14 @@ function isPreApproved(argv: readonly string[], deps: TurnPolicyDeps): boolean {
   return deps.commandGrants?.matches(argv) === true && !deps.cache.wrote;
 }
 
+function throwIfAborted(signal: AbortSignalLike | undefined): void {
+  if (signal?.aborted === true) {
+    const error = new Error('the approval was cancelled');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
 /** What a person is told when a Remember could not be written; fixed text, never a command, a path or a keychain message. */
 const REMEMBER_FAILURES: Readonly<Record<string, string>> = {
   'no-key': 'the OS keychain is not available',
@@ -457,11 +465,23 @@ async function askAboutCommand(
     if (!facts.offers.remember || grants?.remember === undefined) {
       scope = 'once';
     } else {
+      // A call cancelled while the person was answering (Esc, Ctrl+C) leaves no standing grant behind: the registry reads a throw
+      // under an aborted signal as the cancellation it is.
+      throwIfAborted(signal);
       const written = await grants.remember(argv);
+      if (written.ok && signal?.aborted === true) {
+        // The write finished as the call was cancelled: the grant stands, so say so instead of the success notice.
+        deps.notify?.(
+          'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.',
+        );
+        throwIfAborted(signal);
+      }
       if (written.ok) {
         scope = 'always'; // remembered for the project, and for the rest of this session too
         grantId = written.id;
-        deps.notify?.('Remembered for this project. /permissions lists it and takes it back.');
+        deps.notify?.(
+          'Allowed now and remembered for this project. Auto mode will run it without asking; ask mode still asks. /permissions lists it and takes it back.',
+        );
       } else {
         const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
         deps.notify?.(`Allowed once, but not remembered: ${why}.`);

@@ -717,7 +717,7 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     });
     await policy.confirm!(command(['npm', 'test'], false), undefined, undefined);
     expect(notes).toEqual([
-      'Remembered for this project. /permissions lists it and takes it back.',
+      'Allowed now and remembered for this project. Auto mode will run it without asking; ask mode still asks. /permissions lists it and takes it back.',
     ]);
   });
 });

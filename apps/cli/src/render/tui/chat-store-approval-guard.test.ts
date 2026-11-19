@@ -29,7 +29,7 @@ import {
   DEFAULT_APPROVAL_GUARD,
   type ApprovalGuard,
 } from './tool-review-model.js';
-import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 
 const START = Date.parse('2026-11-17T10:00:00.000Z');
@@ -890,6 +890,22 @@ describe('the session-wide Ctrl+G is asked with Ctrl+G and granted only by Enter
     },
   );
 
+  it('an Enter that comes too early says nothing was allowed; any other key that ends the question says nothing', () => {
+    const early = rig({ confirmAlways: true });
+    ask(early);
+    at(ASKED_AT + APPROVAL_CONFIRM_MIN_MS - 100);
+    enter(early);
+    expect(early.note()).toBe(CARD_ENTER_NOTE);
+    const other = rig({ confirmAlways: true });
+    ask(other);
+    at(ASKED_AT + 300);
+    other.key('x');
+    expect(
+      other.note(),
+      'a key that is not Enter needs no note: the card already says it cancels',
+    ).toBe('');
+  });
+
   it('counts the minimum to the millisecond', async () => {
     const early = rig({ confirmAlways: true });
     ask(early);
@@ -920,7 +936,10 @@ describe('the session-wide Ctrl+G is asked with Ctrl+G and granted only by Enter
       late.store.getSnapshot().alwaysConfirm,
       'and the prompt is gone at once, without waiting for another repaint',
     ).toBe(false);
+    // The Enter that came too late says nothing was allowed; the host draws that note, and a card is answerable once it is shown.
+    expect(late.note()).toBe(CARD_ENTER_NOTE);
     // The press is over: a new first Ctrl+G asks again, and ITS Enter grants.
+    late.show();
     at(ASKED_AT + APPROVAL_CONFIRM_MAX_MS + 100);
     late.chord('g');
     expect(late.store.getSnapshot().alwaysConfirm, 'it is a new first press').toBe(true);

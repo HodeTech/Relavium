@@ -188,21 +188,22 @@ export function commandFactRows(
   compact = false,
 ): readonly string[] {
   const label = 'Runs in: ';
-  // While the reason box is open the card has no room to spare: the warnings stay, the two plain rows go (the box is for typing).
-  const rows = compact
-    ? []
-    : [
-        commandStandingRow(facts),
-        `${label}${keepEnd(sanitizeInline(facts.cwd) || '(the workspace)', Math.max(8, columns - label.length))}`,
-      ];
+  const rows: string[] = [];
+  // While the reason box is open the card has no room to spare: the warnings stay, the plain rows go (the box is for typing).
+  if (!compact) {
+    const standing = commandStandingRow(facts);
+    const directory = sanitizeInline(facts.cwd) || '(the workspace)';
+    // One row when the directory still has room to say where it is (it keeps its END), else two: a row saved is a row of the command.
+    const separator = ' \u00b7 ';
+    const room = columns - displayWidth(standing) - separator.length - label.length;
+    if (room >= 24) rows.push(`${standing}${separator}${label}${keepEnd(directory, room)}`);
+    else rows.push(standing, `${label}${keepEnd(directory, Math.max(8, columns - label.length))}`);
+  }
+  // One row each: the key that is not offered is already missing from the legend, so these say why in few words.
   if (facts.runsCode)
-    rows.push(
-      '\u26a0 Runs code: this can run other commands or inline code. Remember is not offered.',
-    );
+    rows.push('\u26a0 Runs code: a shell, an inline script or a wrapper. Remember is not offered.');
   if (facts.protectedPath)
-    rows.push(
-      '\u26a0 Names a protected path; its output would go to the model. Only \u201cAllow once\u201d is offered.',
-    );
+    rows.push('\u26a0 Names a protected path (its output goes to the model). Allow once only.');
   return rows;
 }
 
@@ -267,7 +268,11 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     warnings.push(
       input.commandFacts === undefined
         ? `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`
-        : `\u26a0 ${linesNotShown} row${linesNotShown === 1 ? '' : 's'} of this command ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v]; This session and Remember are offered where every row is on screen.`,
+        : `\u26a0 ${linesNotShown} row${linesNotShown === 1 ? '' : 's'} of this command ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v]${
+            input.commandFacts.offers.session || input.commandFacts.offers.remember
+              ? '; This session and Remember are offered only while every row is on screen.'
+              : '.'
+          }`,
     );
   }
   const diff = document?.preview.diff;
@@ -292,6 +297,9 @@ export const CARD_TYPEAHEAD_NOTE =
   'Keys were typed just before this answer — wait a moment, then press again.';
 export const CARD_LOCKOUT_NOTE =
   'This card opened right after your last answer — wait, then press again.';
+/** An Enter that came before the question could be read, or after it had lapsed: the question is gone and nothing was granted. */
+export const CARD_ENTER_NOTE =
+  'Too early or too late for Enter — nothing was allowed. Press the key again.';
 
 /** How a tool's `[Ctrl+G]` scope reads: what "always" would cover, in the person's words. */
 export function cardScopePhrase(toolId: string): string {
@@ -329,8 +337,8 @@ export interface CardKeyInput {
 export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
   if (input.confirmRemember === true)
     return [
-      'Press Enter to remember this exact command for this project',
-      'Enter confirms \u00b7 any other key cancels the question \u00b7 Esc stops the turn',
+      'Press Enter to allow this exact command now and remember it for this project',
+      'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn',
     ];
   if (input.confirmAlways === true)
     return [
@@ -338,15 +346,15 @@ export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
         ? 'Press Enter to allow this exact command for this session'
         : `Press Enter to allow all ${input.scope} this session`,
       input.command === true
-        ? 'Enter confirms \u00b7 any other key cancels the question \u00b7 Esc stops the turn'
+        ? 'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn'
         : 'Any other key cancels \u00b7 Esc stops the turn',
     ];
   const session =
     input.command === true
-      ? '   [Ctrl+G] Allow for this session'
+      ? '   [Ctrl+G] Allow this session'
       : `   [Ctrl+G] Allow all ${input.scope} this session`;
   const grants = input.inspected
-    ? `[Ctrl+Y] Allow${input.command === true ? ' once' : ''}${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Remember' : ''}`
+    ? `[Ctrl+Y] Allow${input.command === true ? ' once' : ''}${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Allow + remember' : ''}`
     : input.command === true
       ? '(Allow is locked until you read the whole command)'
       : '(Allow is locked until you inspect the change)';

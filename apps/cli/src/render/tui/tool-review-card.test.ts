@@ -498,21 +498,31 @@ describe('the command card chrome (ADR-0118 §1)', () => {
 
   it('shows the standing and the directory, and the two warnings only when they apply', () => {
     expect(commandFactRows(facts())).toEqual([
-      'Standing: not pre-approved',
-      'Runs in: /work/project',
+      'Standing: not pre-approved · Runs in: /work/project',
     ]);
     const both = commandFactRows(facts({ runsCode: true, protectedPath: true }));
-    expect(both).toHaveLength(4);
-    expect(both[2]).toContain('Runs code');
-    expect(both[3]).toContain('Names a protected path');
-    expect(both[3]).toContain('Only “Allow once” is offered');
+    expect(both).toHaveLength(3);
+    expect(both[1]).toContain('Runs code');
+    expect(both[1]).toContain('Remember is not offered');
+    expect(both[2]).toContain('Names a protected path');
+    expect(both[2]).toContain('Allow once only');
+    // Each is one row at the card's width: a row spared is a row of the command.
+    for (const row of commandFactRows(facts({ runsCode: true, protectedPath: true }), 78))
+      expect(row.length).toBeLessThanOrEqual(78);
+  });
+
+  it('falls back to two rows when the directory would have no room to say where it is', () => {
+    expect(commandFactRows(facts({ standing: 'remembered', filesChanged: true }), 78)).toEqual([
+      'Standing: remembered for this project; asks because files changed this session',
+      'Runs in: /work/project',
+    ]);
   });
 
   it('strips terminal controls from the directory, and names the workspace when none was given', () => {
-    expect(commandFactRows(facts({ cwd: '/work/\u001b[31mevil\u0007' }))[1]).toBe(
+    expect(commandFactRows(facts({ cwd: '/work/\u001b[31mevil\u0007' }))[0]).toContain(
       'Runs in: /work/evil',
     );
-    expect(commandFactRows(facts({ cwd: '' }))[1]).toBe('Runs in: (the workspace)');
+    expect(commandFactRows(facts({ cwd: '' }))[0]).toContain('Runs in: (the workspace)');
   });
 
   it('keeps the END of a long directory (the part that says where it is) and fits the row to the columns', () => {
@@ -522,11 +532,15 @@ describe('the command card chrome (ADR-0118 §1)', () => {
     expect(row.endsWith('service/src')).toBe(true);
     expect([...row].length).toBeLessThanOrEqual(40);
     expect(commandFactRows(facts({ cwd: '/work/project' }), 40)[1]).toBe('Runs in: /work/project');
+    // Wide enough for both, the standing and the end of the directory share one row.
+    const wide = commandFactRows(facts({ cwd }), 100)[0] ?? '';
+    expect(wide.startsWith('Standing: not pre-approved \u00b7 Runs in: ')).toBe(true);
+    expect(wide.endsWith('service/src')).toBe(true);
   });
 
   it('puts the fact rows first in the warnings, wrapped, and adds the generic lock sentence only when nothing else explains it', () => {
     const rows = cardWarnings({ ...warningInput, commandFacts: facts() });
-    expect(rows).toEqual(['Standing: not pre-approved', 'Runs in: /work/project']);
+    expect(rows).toEqual(['Standing: not pre-approved · Runs in: /work/project']);
     const locked = cardWarnings({ ...warningInput, inspected: false, commandFacts: facts() });
     expect(locked.at(-1)).toContain('Allow is locked');
     const shortened = cardWarnings({
@@ -552,11 +566,11 @@ describe('the command card chrome (ADR-0118 §1)', () => {
   it('words the grants for THIS exact command, and offers Ctrl+O only when it is offered', () => {
     const base = { inspected: true, cacheable: true, scope: 'run_command calls', command: true };
     expect(cardKeyRows({ ...base, remember: true })).toEqual([
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow for this session   [Ctrl+O] Remember',
+      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember',
       '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full view   Esc stops the turn',
     ]);
     expect(cardKeyRows({ ...base, remember: false })[0]).toBe(
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow for this session',
+      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session',
     );
     expect(cardKeyRows({ ...base, cacheable: false, remember: false })[0]).toBe(
       '[Ctrl+Y] Allow once',
@@ -574,7 +588,7 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       }),
     ).toEqual([
       'Press Enter to allow this exact command for this session',
-      'Enter confirms · any other key cancels the question · Esc stops the turn',
+      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
     ]);
     expect(
       cardKeyRows({
@@ -586,8 +600,8 @@ describe('the command card chrome (ADR-0118 §1)', () => {
         confirmRemember: true,
       }),
     ).toEqual([
-      'Press Enter to remember this exact command for this project',
-      'Enter confirms · any other key cancels the question · Esc stops the turn',
+      'Press Enter to allow this exact command now and remember it for this project',
+      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
     ]);
   });
 
