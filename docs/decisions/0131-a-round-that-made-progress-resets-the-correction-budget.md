@@ -90,3 +90,7 @@ adds no data to events or history, and it contains no argument or result text.
   reported range make that explicit; a model that ignores it reasons from
   fewer lines than it believes. The read-before-edit rule still limits an edit to
   what was delivered.
+
+## Amendment — 2026-11-19
+
+§1 says a model that keeps failing "ends the turn after the same three rounds" and "on the third consecutive round". The code counts the budget as exceeded when the count passes it (`next > maxToolCorrections`), so with the default 3 the model is given three corrections and the **fourth** consecutive round in which no call ran to a result ends the turn with `tool_failed`. The code was right and the wording was off by one; behaviour is unchanged. [ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) makes the budget configurable (`[chat].max_tool_corrections`, 1 to 10) and states the rule in those terms.

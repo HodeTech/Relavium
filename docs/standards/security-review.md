@@ -1041,7 +1041,10 @@ security invariants** a review must confirm are:
   an in-bounds path — the floor still denies every attempt (no bypass; the bounded workspace-boundary
   signal a probing model could gather is accepted, matching the pre-existing not-found-read feedback).
   Every OTHER `tool_denied` — confidentiality (secret-store read), protected-path, symlink/hard-link,
-  egress-SSRF, and user/guardrail — stays FATAL. The authoritative enumeration of which denials are
+  egress-SSRF and a guardrail — stays FATAL, **except the person's own rejection, a mode refusal and the
+  headless *unavailable* refusal, which return as one fixed text per class**
+  ([ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md), MVP-3b; a text never depends on the
+  target's state, so it is no probe oracle). The authoritative enumeration of which denials are
   `recoverable` and which stay fatal (and why) is the canonical `recoverable` note in
   [tool-registry.md §error taxonomy](../reference/shared-core/tool-registry.md#error-taxonomy) — not
   restated here.
