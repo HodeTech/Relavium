@@ -1368,12 +1368,12 @@ async function chatResumeCommandBody(
       // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
       // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
       // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
-      // silently trapped — distinct from the per-turn engine error. The effective cap mirrors the engine's
-      // `undefined/≤0 ⇒ default` rule (config validation already rejects a non-positive max_turns).
+      // silently trapped — distinct from the per-turn engine error. The effective cap is the resolved `max_turns`, else
+      // the published default (config validation rejects a value outside 1 to 1,000).
       const cap = config.chat.maxTurns ?? DEFAULT_SESSION_MAX_TURNS;
       if (turns >= cap) {
         deps.io.writeErr(
-          `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
+          `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise max_turns under [preferences] in your global config to continue it (a project's [chat].max_turns can only lower it).\n`,
         );
       }
     } catch (err) {

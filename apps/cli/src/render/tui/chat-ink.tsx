@@ -1663,7 +1663,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         });
         return;
       case 'submit': {
-        submitGenRef.current += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
         // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
         // message; a bare `!` or an absent runner falls through to a normal message send.
         const trimmed = action.line.trim();
@@ -1673,10 +1672,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             : undefined;
         if (shellLine?.kind === 'unterminated_quote') {
           // An open quote is refused, never run to the end of the line (ADR-0118 §3). The line stays in the editor so
-          // the person can close the quote; nothing is sent to the model.
+          // the person can close the quote, nothing is sent to the model, and — because the buffer is NOT cleared —
+          // a pending `@` mention read is left alone (the generation is bumped only where the buffer is consumed).
           props.store.note(SHELL_UNTERMINATED_QUOTE_NOTICE);
           return;
         }
+        submitGenRef.current += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
         const parsed = shellLine?.kind === 'command' ? shellLine.cmd : undefined;
         if (parsed !== undefined) {
           historyRef.current = recordHistory(historyRef.current, action.line);

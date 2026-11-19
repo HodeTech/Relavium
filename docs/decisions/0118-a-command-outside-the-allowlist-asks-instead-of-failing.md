@@ -480,3 +480,7 @@ down; and the decision that an allowlist miss reaches the host as a request rath
 thrown error was recorded, so ADR-0117's allowlist class needs no denial of its own. A
 review on the same day tightened the code-carrier rule (it had named shells only, which
 `env sh -c` and `python -c` bypass), completed the Amends list and corrected two citations.
+
+### Implementation note — 2026-11-19 (MVP-4 step 1)
+
+Where the pieces landed: the tokenizer, its inverse quoter and `argvMatchesCommandLine` are in `packages/shared/src/command-line.ts`, **not** `packages/core/src/tools/command-line.ts` as §3 says, because the config and workflow schemas validate allowlist entries with the same function and `@relavium/shared` is the one package all three depend on. `PolicyTarget.argv` is in core. An entry is refused at load when it has an open quote, no token or an empty program token; the loader prints a fixed message for exactly that issue and never echoes the entry. The `!` escape refuses an open quote and leaves the line in the editor. The interim deny hint (retired when the card lands) shows its suggested entry as a TOML basic string so a pasted line parses back to the typed argv.

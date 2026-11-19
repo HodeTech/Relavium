@@ -2052,6 +2052,41 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
+  it('keeps the engine bounds for a one-shot `agent run`: the chat limits are not read (ADR-0136 §1)', async () => {
+    // An operator's raised [preferences] limit must never reach an unattended run, and a project's lowered one is a chat
+    // matter too: with `maxToolTurns: 1` a chat holds the second round, a one-shot (16) runs all three.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+        textTurn('done'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 1, maxToolCorrections: 0 },
+        oneShot: true,
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it three times');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(
+        completed?.type === 'session:turn_completed' ? completed.error : 'none',
+      ).toBeUndefined();
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(3);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('threads [chat].max_tool_corrections: a zero budget ends the turn on the first round in which nothing ran (ADR-0136)', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
     try {
@@ -2140,6 +2175,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
           'write_file: this path is protected and cannot be written; choose a different path',
         );
         expect(secondRequest).not.toContain('credential store');
+        expect(secondRequest).toContain('"isError":true'); // it comes back as an ERROR result the model can answer
         expect(prompt).not.toHaveBeenCalled();
         expect(store.getSnapshot().approval).toBeUndefined();
         expect(events.some((event) => event.type === 'agent:approval_requested')).toBe(false);

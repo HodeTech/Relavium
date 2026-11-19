@@ -15,7 +15,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FileWritten, FsPreparedWrite } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createNodeFsCapability, FsScopeDeniedError, PROTECTED_PATH_REFUSAL } from './fs.js';
+import {
+  createNodeFsCapability,
+  FsScopeDeniedError,
+  isProtectedLexicalPath,
+  isProtectedPath,
+  PROTECTED_PATH_REFUSAL,
+} from './fs.js';
 import * as nativeMetadata from './fs-native-metadata.js';
 
 let root: string;
@@ -486,6 +492,82 @@ describe('a protected-path write: which refusal returns to the model', () => {
       expect(err.message).not.toBe(PROTECTED_PATH_REFUSAL);
     },
   );
+});
+
+// The predicate that decides what may return to the model is tested directly, not only through the union `isProtectedPath`:
+// a spelling that moved from the lexical arm to the credential arm would keep the union true and silently change what
+// the model is told.
+describe('isProtectedLexicalPath (the arm that may return to the model)', () => {
+  const at = (...parts: string[]) => join('/work', ...parts);
+  it.each([
+    ['.git/config', at('.git', 'config')],
+    ['an upper-case directory', at('.GIT', 'config')],
+    ['a trailing-dot directory', at('.git.', 'config')],
+    ['a nested protected directory', at('a', 'b', '.ssh', 'id_rsa')],
+    ['.relavium', at('.relavium', 'x')],
+    ['a shell startup file', at('.bashrc')],
+    ['a startup file with a trailing dot', at('.bashrc.')],
+    ['a startup file by an NTFS stream spelling', at('.zshrc::$DATA')],
+    ['.gitconfig (also a credential-store member)', at('.gitconfig')],
+    ['the host stage directory', at('.relavium-fs-stage-v1', 'x')],
+  ])('%s is in the lexical arm', (_name, path) => {
+    expect(isProtectedLexicalPath(path)).toBe(true);
+    expect(isProtectedPath(path)).toBe(true);
+  });
+
+  it.each([
+    ['an ordinary source file', at('src', 'app.ts')],
+    ['.gitignore', at('.gitignore')],
+    ['a directory that only starts like a protected one', at('.github', 'workflows', 'ci.yml')],
+    ['.env (credential arm only)', at('.env')],
+    ['.aws/credentials (credential arm only)', at('.aws', 'credentials')],
+    ['a stage-prefixed sibling (credential arm only)', at('.relavium-fs-stage-v1.abc', 'x')],
+  ])('%s is NOT in the lexical arm', (_name, path) => {
+    expect(isProtectedLexicalPath(path)).toBe(false);
+  });
+
+  it('keeps the credential-only arm inside the union, so it is still refused (fatally)', () => {
+    for (const path of [
+      at('.env'),
+      at('.aws', 'credentials'),
+      at('.relavium-fs-stage-v1.abc', 'x'),
+    ]) {
+      expect(isProtectedPath(path)).toBe(true);
+      expect(isProtectedLexicalPath(path)).toBe(false);
+    }
+  });
+});
+
+describe('a refused protected-path write leaves nothing behind and covers an edit too', () => {
+  it('creates no directory when a createDirs write is refused', async () => {
+    await expect(
+      host().prepareWrite!({
+        kind: 'write',
+        path: '.git/hooks/pre-commit',
+        content: 'x',
+        createDirs: true,
+      }),
+    ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    expect(await readdir(root)).toEqual([]);
+  });
+
+  it('refuses an edit of a protected file with the same recoverable text', async () => {
+    await mkdir(join(root, '.git'));
+    await writeFile(join(root, '.git', 'config'), 'before');
+    const err: unknown = await host().prepareWrite!({
+      kind: 'edit',
+      path: '.git/config',
+      oldString: 'before',
+      newString: 'after',
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(FsScopeDeniedError);
+    expect((err as FsScopeDeniedError).recoverable).toBe(true);
+    expect((err as FsScopeDeniedError).message).toBe(PROTECTED_PATH_REFUSAL);
+    expect(await readFile(join(root, '.git', 'config'), 'utf8')).toBe('before');
+  });
 });
 
 // Consent honesty (PR #99 security sitting F1): a card must name the path that is WRITTEN. An existing parent was

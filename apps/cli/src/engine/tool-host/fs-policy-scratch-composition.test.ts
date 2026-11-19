@@ -17,7 +17,7 @@ import type { FsCapability, FsScopeTier } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assembleToolEnv } from './assemble.js';
-import { createNodeFsCapability } from './fs.js';
+import { createNodeFsCapability, FsScopeDeniedError, PROTECTED_PATH_REFUSAL } from './fs.js';
 import {
   admitInvocationFsGrants,
   createFsPathPolicy,
@@ -93,6 +93,37 @@ function assembled(
 function admitted(selectors: readonly string[] | undefined = undefined): FsPathPolicy {
   return selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, selectors);
 }
+
+describe.skipIf(process.platform === 'win32')(
+  'the lexical protected-path refusal under the host scratch root decides from the path text alone (ADR-0117)',
+  () => {
+    it('says the same recoverable words whatever the scratch subtree holds', async () => {
+      const fs = assembled(admitted());
+      // `sym` is a symlink and `file` a file inside the scratch root: the inspecting floor would throw a fatal policy
+      // error for either, but the refusal that RETURNS to the model must not depend on that state.
+      symlinkSync(workspace, join(scratch, 'sym'), 'dir');
+      writeFileSync(join(scratch, 'file'), 'not a directory');
+      const refusals: FsScopeDeniedError[] = [];
+      for (const name of ['absent', 'sym', 'file']) {
+        const error: unknown = await fs.prepareWrite!({
+          kind: 'write',
+          path: join(scratch, name, '.git', 'config'),
+          content: 'x',
+          createDirs: true,
+        }).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error, name).toBeInstanceOf(FsScopeDeniedError);
+        refusals.push(error as FsScopeDeniedError);
+      }
+      for (const refusal of refusals) {
+        expect(refusal.recoverable).toBe(true);
+        expect(refusal.message).toBe(PROTECTED_PATH_REFUSAL);
+      }
+    });
+  },
+);
 
 describe.each(['sandboxed', 'project'] as const)('scratch plus policy in %s', (tier) => {
   it.each(['absent', 'empty', 'narrow'] as const)(

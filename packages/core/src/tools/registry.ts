@@ -157,6 +157,23 @@ function failedLiveOutcome(error: unknown): 'unknown' | 'denied' | 'failure' {
   return 'failure';
 }
 
+/**
+ * What a person may be shown of a refusal that RETURNS to the model: its fixed text, so a denied row is not a bare mark with
+ * no reason. Only a recoverable denial qualifies — the engine already hands that exact text to the model, and by
+ * [ADR-0117](../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md) it is one fixed string per class, naming
+ * no policy and no target. A user rejection is excluded: its explanation is the person's own typed words, not a refusal text.
+ */
+function returnedRefusalSummary(error: unknown): string | undefined {
+  if (error instanceof ToolDeniedByUserError) return undefined;
+  if (
+    error instanceof ToolDispatchError &&
+    error.recoverable &&
+    error.runErrorCode === 'tool_denied'
+  )
+    return error.message;
+  return undefined;
+}
+
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegistry {
   const tools = new Map<ToolId, ToolDef>();
@@ -188,11 +205,13 @@ export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegi
         });
         return result;
       } catch (error) {
+        const summary = returnedRefusalSummary(error);
         observe(ctx, {
           phase: 'completed',
           callId,
           toolId: toolCall.name,
           outcome: failedLiveOutcome(error),
+          ...(summary === undefined ? {} : { summary }),
         });
         throw error;
       }

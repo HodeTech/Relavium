@@ -117,7 +117,9 @@ export function quoteCommandLine(argv: readonly string[]): string {
  */
 export function isUsableCommandLine(entry: string): boolean {
   const parsed = tokenizeCommandLine(entry);
-  return !parsed.unterminatedQuote && parsed.tokens.length > 0;
+  // The program is the first token and cannot be empty: `''` or `'' x` tokenizes but could never name anything to run,
+  // so accepting it would be the silent non-match this check exists to remove.
+  return !parsed.unterminatedQuote && parsed.tokens.length > 0 && parsed.tokens[0] !== '';
 }
 
 /**
@@ -131,3 +133,12 @@ export function argvMatchesCommandLine(argv: readonly string[], entry: string): 
   if (parsed.tokens.length !== argv.length) return false;
   return parsed.tokens.every((token, index) => token === argv[index]);
 }
+
+/**
+ * The fixed, value-free message and issue marker for an allowlist entry that is not a command line. A config loader that
+ * must not print `issue.message` (it can echo a rejected value for other codes) recognizes this one issue by its marker
+ * and prints the fixed text, so a person with an open quote is told the quote is the problem.
+ */
+export const COMMAND_LINE_ENTRY_ISSUE = 'command_line_entry';
+export const COMMAND_LINE_ENTRY_MESSAGE =
+  'must be a command line with balanced quotes (single or double), at least one token and a non-empty program';

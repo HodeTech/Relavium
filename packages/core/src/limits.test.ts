@@ -12,6 +12,8 @@ import { CHAT_LIMITS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { buildRunPlan } from './dag.js';
+import { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
+import { DEFAULT_SESSION_MAX_TURNS } from './engine/agent-session.js';
 import { WorkflowGraphError, type GraphIssue } from './errors.js';
 import {
   ABSOLUTE_TOOL_ROUNDS,
@@ -396,6 +398,30 @@ describe('the chat turn limits (ADR-0136)', () => {
     // Each message names the field, the value and the bound.
     expect(issues[3]?.message).toContain('1001');
     expect(issues[3]?.message).toContain('1 to 1000');
+  });
+
+  it('rejects a fraction and NaN, which a range comparison alone would let through', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: 2.5, maxToolCorrections: Number.NaN, checkpointToolTurns: 1.5 },
+      Number.NaN,
+      issues,
+    );
+    expect(issues.map((i) => i.field)).toEqual([
+      'maxToolTurns',
+      'maxToolCorrections',
+      'checkpointToolTurns',
+      'maxTurns',
+    ]);
+  });
+
+  it('keeps the published defaults equal to the engine defaults they must agree with', () => {
+    // Two sources of one number: the published chat default and the engine constant a surface falls back to.
+    expect(CHAT_LIMITS.max_tool_turns.default).toBe(DEFAULT_AGENT_TURN_LIMITS.maxToolTurns);
+    expect(CHAT_LIMITS.max_tool_corrections.default).toBe(
+      DEFAULT_AGENT_TURN_LIMITS.maxToolCorrections,
+    );
+    expect(CHAT_LIMITS.max_turns.default).toBe(DEFAULT_SESSION_MAX_TURNS);
   });
 
   it('admits the inclusive bounds, and a zero correction budget the engine already supports', () => {

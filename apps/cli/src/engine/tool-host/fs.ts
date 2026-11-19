@@ -51,6 +51,7 @@ import {
   composeFsPathPolicyScratch,
   createFsPathPolicy,
   fsPolicyFloorPaths,
+  fsPolicyLexicalFloorPaths,
   fsPolicyScopeRoots,
   fsPolicyWorkspace,
   FsPolicyError,
@@ -162,7 +163,7 @@ class FsReadBudgetError extends HostCapabilityError {}
  * and the model can adapt to an in-bounds path (conversational recovery). The **confidentiality** refusal (a
  * secret/credential store read), the protected-path write decided after resolution or by the credential arm, and the
  * symlink/hard-link refusals stay fatal — feeding those back would leak a probe oracle or risk nothing useful.
- * The second throw that opts in (ADR-0118) is the **lexical protected-path arm**
+ * The second throw that opts in (ADR-0117's 2026-11-19 amendment and implementation note) is the **lexical protected-path arm**
  * ({@link PROTECTED_PATH_REFUSAL}): decided from the path text alone, so its text is the same for every target state.
  */
 export class FsScopeDeniedError extends HostDeniedError {
@@ -968,7 +969,9 @@ export const PROTECTED_PATH_REFUSAL =
  * that only resolution reveals) is checked afterwards by {@link assertNotProtectedPath} and stays fatal.
  */
 function assertLexicalPathNotProtected(lexicalTarget: string, policy?: FsPathPolicy): void {
-  const views = policy === undefined ? [lexicalTarget] : fsPolicyFloorPaths(policy, lexicalTarget);
+  // The views are the lexical ones: no scratch-subtree `lstat`, so the outcome is a function of the path text alone.
+  const views =
+    policy === undefined ? [lexicalTarget] : fsPolicyLexicalFloorPaths(policy, lexicalTarget);
   if (views.some(isProtectedLexicalPath)) {
     throw new FsScopeDeniedError(PROTECTED_PATH_REFUSAL, { recoverable: true });
   }
@@ -1261,7 +1264,7 @@ async function prepareWrite(
   const nativeFloor = await captureNativeRuntimeWriteFloor();
   const lexical = lexicalTarget(config, request.path);
   nativeFloor.assertPath(lexical);
-  assertLexicalPathNotProtected(lexical, config.pathPolicy); // recoverable: returns to the model (ADR-0118)
+  assertLexicalPathNotProtected(lexical, config.pathPolicy); // recoverable: returns to the model (ADR-0117 amendment)
   assertNotProtectedPath(lexical, config.pathPolicy); // a credential store (the other arm): fatal
   assertNotSensitiveReadPath(lexical, config.pathPolicy);
   const inScope = buildScopeChecker(config);

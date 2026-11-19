@@ -207,6 +207,7 @@ describe('ChatApp `!` shell line (ADR-0118 §3)', () => {
     await waitFor(() => frame().includes('!echo "oops'));
     stdin.write('\r');
     await waitFor(() => frame().includes('a quote is still open'));
+    expect(frame()).toContain('a quote is still open'); // waitFor only polls: assert what the person was told
     // The old tokenizer ran this as `echo oops`; what runs must be what was typed, so nothing runs, nothing goes to
     // the model, and the line stays in the editor so the quote can be closed.
     expect(ran).toEqual([]);

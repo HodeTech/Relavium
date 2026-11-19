@@ -79,12 +79,12 @@ describe('quoteCommandLine is the inverse of the tokenizer', () => {
     ['$HOME', '*', '|', ';', '&&', '\\'],
     ['PGPASSWORD=secret', 'psql'],
     ['unicode ✓', 'ünï'],
-    [' ', '‮', '​'],
+    [String.fromCharCode(0x2028), String.fromCharCode(0x202e), String.fromCharCode(0x200b)],
   ];
 
-  it.each(cases.map((argv) => [JSON.stringify(argv), argv] as const))(
-    'round-trips %s',
-    (_name, argv) => {
+  it.each(cases.map((argv, index) => [index, argv] as const))(
+    'round-trips case %i',
+    (_index, argv) => {
       const line = quoteCommandLine(argv);
       const parsed = tokenizeCommandLine(line);
       expect(parsed.unterminatedQuote).toBe(false);
@@ -159,5 +159,13 @@ describe('isUsableCommandLine', () => {
     expect(isUsableCommandLine('echo "a b')).toBe(false);
     expect(isUsableCommandLine('   ')).toBe(false);
     expect(isUsableCommandLine('')).toBe(false);
+  });
+
+  it('refuses an entry whose program token is empty — it tokenizes but could never name anything to run', () => {
+    expect(isUsableCommandLine("''")).toBe(false);
+    expect(isUsableCommandLine('""')).toBe(false);
+    expect(isUsableCommandLine("'' x")).toBe(false);
+    // An empty ARGUMENT after a real program is a legitimate entry.
+    expect(isUsableCommandLine("echo ''")).toBe(true);
   });
 });

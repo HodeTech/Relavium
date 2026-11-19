@@ -76,9 +76,11 @@ processes on one operator home wait for the staging inventory's allocation claim
 [ADR-0135](docs/decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) with CI once per commit and a coverage run narrowed to
 `packages/`. Its final-head run `2ce6a252` passed all 29 jobs; the docs-only final head `639134b2` was merged before its own run finished, so no
 completed run exists on it, and a separate security sitting on the Linux parent-snapshot change is still owed (the
-[PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 is next**, with
-[ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
-[ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) still to be accepted. npm still
+[PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 is in progress on `development`** (started 2026-11-19), with
+[ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
+[ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
+[ADR-0136](docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) accepted and four steps planned (the
+[implementation record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress). npm still
 serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).

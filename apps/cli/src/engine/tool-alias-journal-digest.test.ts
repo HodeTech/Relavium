@@ -13,7 +13,7 @@ import {
   createEffectJournalStore,
   runMigrations,
 } from '@relavium/db';
-import type { EffectDispatchPort } from '@relavium/shared';
+import { quoteCommandLine, type EffectDispatchPort } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -852,7 +852,7 @@ describe.each(['separate', 'inline', 'numeric'] as const)('PR #95 credential arg
         config: {},
         toolPolicy: {
           allowedCommands: [argv('4'), argv('5'), argv('5', 'other')].map((args) =>
-            ['synthetic-publish', ...args].join(' '),
+            quoteCommandLine(['synthetic-publish', ...args]),
           ),
         },
         fsScope: 'sandboxed',

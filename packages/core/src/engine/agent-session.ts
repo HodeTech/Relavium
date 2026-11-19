@@ -354,7 +354,7 @@ export interface SessionDeps {
   readonly askUser?: AskUserDelegate;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits?: AgentTurnLimits;
-  /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); 0/absent ⇒ the default. */
+  /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); absent ⇒ the default. An integer 1 to 1,000: a value outside the bounds (0 included) is refused at construction, never clamped (ADR-0136 §1). */
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;

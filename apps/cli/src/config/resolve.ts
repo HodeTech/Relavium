@@ -41,9 +41,10 @@ export interface ResolvedChatConfig {
   readonly fsScope: ChatConfig['fs_scope'];
   /** Optional selectors inside the invocation's independently admitted grants (ADR-0105). */
   readonly extraRoots?: ChatConfig['extra_roots'];
-  /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
-   *  a `positiveInt`, so 0 is rejected at the config layer, never reaching the engine's `<= 0 ⇒ default` arm);
-   *  DISTINCT from `maxMessages` (a history-trim threshold) and the within-turn `maxToolTurns` guard. */
+  /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ default 50; an integer 1 to
+   *  1,000 — anything else is rejected at the config layer and again at session admission, never clamped; resolved with
+   *  {@link resolveChatLimit}, so a repository may only lower it); DISTINCT from `maxMessages` (a history-trim
+   *  threshold) and the within-turn tool-round limits. */
   readonly maxTurns: ChatConfig['max_turns'];
   /** `[chat].max_tool_turns` — tool rounds in a turn WHERE NOBODY CAN ANSWER (a hard stop; ADR-0136). Absent ⇒ the
    *  published default (16). Resolved with {@link resolveChatLimit}: a repository layer may only lower it. */

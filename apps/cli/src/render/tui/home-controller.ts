@@ -1632,18 +1632,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
   // form in the transcript, and clear exactly the consumed attachments.
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
-    submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
     const trimmed = line.trim();
-    if (managementCommand(trimmed)) return;
     const shellLine =
       active.runShellCommand !== undefined && isShellLine(trimmed)
         ? parseShellLine(trimmed.slice(1))
         : undefined;
     if (shellLine?.kind === 'unterminated_quote') {
-      // An open quote is refused, never run to the end of the line (ADR-0118 §3); the line stays in the editor.
+      // An open quote is refused, never run to the end of the line (ADR-0118 §3); the line stays in the editor and, since
+      // the buffer is NOT cleared, a pending mention read is left alone (the epoch is bumped only where it is consumed).
       active.store.note(SHELL_UNTERMINATED_QUOTE_NOTICE);
       return;
     }
+    submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
+    if (managementCommand(trimmed)) return;
     const parsed = shellLine?.kind === 'command' ? shellLine.cmd : undefined;
     if (parsed !== undefined) {
       history = recordHistory(history, line);

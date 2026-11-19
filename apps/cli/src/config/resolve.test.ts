@@ -1,6 +1,7 @@
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { CliError } from '../process/errors.js';
 import { resolveConfig } from './resolve.js';
 
 describe('resolveConfig', () => {
@@ -115,15 +116,34 @@ describe('resolveConfig', () => {
             ),
           );
         }
-        // The message tells the person where to raise it, and is exit-2 invalid config.
-        try {
-          resolveConfig({ project: { chat: { [key]: dflt + 1 } } });
-          expect.unreachable();
-        } catch (error) {
-          expect(String((error as Error).message)).toContain(`[preferences] ${key}`);
-        }
+        // It is exit-2 invalid config (a CliError), and the message tells the person where to raise it.
+        const refusal: unknown = (() => {
+          try {
+            resolveConfig({ project: { chat: { [key]: dflt + 1 } } });
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+        expect(refusal).toBeInstanceOf(CliError);
+        expect(refusal instanceof CliError ? refusal.code : '').toBe('invalid_invocation');
+        expect(refusal instanceof CliError ? refusal.message : '').toContain(
+          `[preferences] ${key}`,
+        );
       },
     );
+
+    it('an operator may LOWER a limit below the default, and a repository can then not exceed that', () => {
+      const global: GlobalConfig = { preferences: { max_tool_turns: 10 } };
+      expect(resolveConfig({ global }).chat.maxToolTurns).toBe(10);
+      expect(
+        resolveConfig({ global, project: { chat: { max_tool_turns: 10 } } }).chat.maxToolTurns,
+      ).toBe(10);
+      // 12 is below the default (16) but above this machine's own limit (10): refused, not clamped.
+      expect(() => resolveConfig({ global, project: { chat: { max_tool_turns: 12 } } })).toThrow(
+        /max_tool_turns is 12 in the project config, above this machine's limit of 10/,
+      );
+    });
 
     it('a value above the operator base is refused even when a higher-precedence layer shadows it', () => {
       const global: GlobalConfig = { preferences: { max_tool_turns: 20 } };

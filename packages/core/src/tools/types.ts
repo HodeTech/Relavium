@@ -476,7 +476,7 @@ export interface MediaReadAccess {
 export interface ToolActionPreview {
   /** fs_write — the resolved target path. */
   readonly path?: string;
-  /** process — the resolved command string (what `allowedCommands` matched). */
+  /** process — the resolved command, space-joined for display (what the opt-in globs match; an exact entry is compared with the argv). */
   readonly command?: string;
   /** egress — the target host ONLY (never the full URL / query string, never a secret). */
   readonly host?: string;
@@ -719,8 +719,8 @@ export interface ToolDef<Args = unknown, Result = unknown> {
   /**
    * Tells the registry WHERE this tool's guardrail target lives in the effective args, so the engine
    * enforces the allowlist generically without guessing a field. A `spawnsProcess` tool returns the
-   * resolved `command` string (the full string the `allowedCommands` allowlist matches exactly); an
-   * `http` egress tool returns the `url`. A pre-approved tool (e.g. `git_status`) returns neither and
+   * resolved command — its `argv` (compared element by element with each exact `allowedCommands` entry) and the
+   * space-joined `command` string (read by `allowedCommandGlobs`); an `http` egress tool returns the `url`. A pre-approved tool (e.g. `git_status`) returns neither and
    * the generic allowlist check is skipped. Omitted ⇒ no target (e.g. `os` / delegate tools).
    */
   readonly policyTarget?: (args: Args) => PolicyTarget;

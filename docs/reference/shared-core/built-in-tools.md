@@ -474,8 +474,9 @@ a one-shot `agent run`) and never in a workflow node. There is **one fixed text 
 class, identical for every target state**; the only variable parts are the user's own
 typed words and the mode's fixed label, both bounded to 300 code points with
 control characters, bidirectional overrides and line separators flattened to a
-space. The code owns the strings in `packages/core/src/engine/denial-text.ts`; this
-table is their canonical description, so the two must change together.
+space. The code owns the strings in `packages/core/src/engine/denial-text.ts` (and, for the
+protected-path row, `apps/cli/src/engine/tool-host/fs.ts`); this table is their canonical
+description, so the two must change together.
 
 | Class | Model-facing text |
 |---|---|
@@ -495,12 +496,14 @@ fatal.
 **Which protected-path refusals return.** Only the **lexical arm**: a write whose
 path *text* names a protected directory (`.git`, `.relavium`, `.ssh`, the host's own
 staging directory) or a shell startup or config file. It is decided before any
-filesystem resolution, so its outcome cannot depend on the target's state
-([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md);
-ADR-0117's test). A refusal by the **credential-store arm** (`.env`, `.npmrc`,
+filesystem resolution (the host's scratch subtree is not even inspected), so its outcome cannot depend on the target's
+state ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), 2026-11-19 implementation note;
+ADR-0117's own test). A refusal by the **credential-store arm** (`.env`, `.npmrc`,
 `.aws`, `.docker/config.json`, credential dotfiles), and one that only resolution
 reveals (a link into a protected directory), stay **fatal**: saying so would tell the
-model which paths hold credentials or which names are links.
+model which paths hold credentials or which names are links. (`.ssh`, `.relavium` and
+`.gitconfig` are members of both predicates; the lexical check runs first, so a write to them
+returns.)
 
 ## Tool result bounding
 

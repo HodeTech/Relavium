@@ -77,7 +77,9 @@ interface ToolDef<Args = unknown, Result = unknown> {
    * `allowedCommandGlobs`); an `http` egress tool returns the `url`. Omitted ⇒ no target
    * (the generic allowlist check is skipped — e.g. a pre-approved `git_status` or an `os`/delegate tool).
    * SECURITY: a `spawnsProcess` / `egress:'http'` tool that omits this has its allowlist check silently
-   * skipped (fail-open) — supply it, or pin the model-controlled args as config-only.
+   * skipped (fail-open) — supply it, or pin the model-controlled args as config-only. A target that supplies a
+   * `command` but no `argv` fails CLOSED: the registry treats `command` as one program name, so a multi-token
+   * entry can never match it.
    */
   readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; argv?: readonly string[]; url?: string; path?: string }
 
@@ -562,11 +564,11 @@ while everything else ends the turn. Two disjoint sources set it:
   effect), stamped at the wrap from `governedAction`; a governed / side-effecting failure stays `false` (fail-fast,
   so the model never re-attempts a non-idempotent side effect — a half-run command, a POST that may have landed).
 - A **SCOPE denial** (Step 14) — a `tool_denied` refused BEFORE any side effect, so it is safe to feed back and the
-  model can adapt to an in-bounds path (the floor still denies every attempt). Exactly two SCOPE denials carry it: the engine's
+  model can adapt to an in-bounds path (the floor still denies every attempt). Exactly three refusals decided before any side effect carry it (two scope denials and the lexical protected-path arm): the engine's
   `ToolPolicyError('media_scope_denied')`, and the CLI `fs` arm's **pure scope-tier escape** (`FsScopeDeniedError`
   `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
   is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
-  the payload write). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included, until [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) lands), an egress **SSRF** denial, and the fs
+  the payload write), and the CLI `fs` arm's **lexical protected-path arm** (`FsScopeDeniedError` with the fixed `PROTECTED_PATH_REFUSAL`, decided from the path text alone before any resolution — see [built-in-tools.md](built-in-tools.md#refusals-that-return-to-the-model)). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included, until [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) lands), an egress **SSRF** denial, and the fs
   **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding those back would re-deny,
   risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
   `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path

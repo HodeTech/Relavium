@@ -31,7 +31,8 @@ export function isShellLine(line: string): boolean {
  * characters, inert under `shell:false`), whitespace outside quotes separates tokens.
  *
  * - `command` — a program and its argv, ready to run;
- * - `empty` — no command token (a bare `!` or `!   `): a no-op, never a shell run and never a message;
+ * - `empty` — no command token (a bare `!` or `!   `): never a shell run. The callers fall through and send it as an
+ *   ordinary message, as they always have;
  * - `unterminated_quote` — the line ended inside a quote. The old tokenizer ran an open quote to the end of the line;
  *   that changes what runs, so it is refused and the caller says why.
  */
@@ -71,7 +72,10 @@ export function commandLine(cmd: ShellCommand): string {
 export function shellDenyHint(cmd: ShellCommand, allowlist: boolean, mode: ChatMode): string {
   const line = commandLine(cmd);
   if (allowlist) {
-    return `! ${line}: not allowed. Add "${line}" to [chat].allowed_commands to enable it.`;
+    // The suggested entry is shown as a TOML basic string, so what a person pastes parses back to exactly this line: the line is
+    // already shell-quoted (`quoteCommandLine`), and a backslash or a double quote in it must be escaped for TOML
+    // (JSON string escapes are valid TOML basic-string escapes).
+    return `! ${line}: not allowed. Add ${JSON.stringify(line)} to [chat].allowed_commands to enable it.`;
   }
   if (mode === 'plan') {
     return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.`;

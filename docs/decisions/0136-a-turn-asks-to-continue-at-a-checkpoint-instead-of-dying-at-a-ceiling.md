@@ -264,3 +264,15 @@ The checkpoint is a small docked card, a sibling of the approval card
   are configurable) and [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md)
   §5; the troubleshooting runbook's "three consecutive rounds" sentence is corrected already.
 - The phase document's MVP-A11 row and the MVP-4 entry of [current.md](../roadmap/current.md).
+
+### Implementation note — 2026-11-19 (MVP-4 step 1)
+
+The engine side is implemented; the card and the host wiring of the hook are step 2. Details the decision leaves open:
+
+- The engine does not trust the hook. It is raced against the turn's abort, so a host that never settles it cannot hang the turn and an abort wins over any answer; a rejection or a throw is a classified `turn_limit` stop; and only the literal `'continue'` continues, so `undefined` from a buggy host is a stop.
+- `info.interval` is what a "continue" will actually grant: the interval, or what is left of the 256-round backstop at the last checkpoint.
+- A held response the dispatch would refuse anyway (no call, or more than the per-response ceiling) is not asked about; the dispatch's own refusal ends the turn.
+- A non-numeric or negative limit fails closed (a NaN stops the turn before any round), so the backstop holds for a direct caller that bypasses session admission.
+- The resolver names the **layer** in its error, not the file, because it sees parsed configs; §1's "names the file" is read that way.
+- A one-shot `agent run` keeps the engine's bounds in the host (`session-host.ts`), because it builds its session through the same host as a chat.
+- A refusal that returns to the model now also carries its fixed text on the live tool row's completed event, so `/details` can say why a row is denied; a person's own rejection never does.

@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 import { CHAT_LIMITS, type ChatLimitKey } from './chat-limits.js';
-import { isUsableCommandLine } from './command-line.js';
+import {
+  COMMAND_LINE_ENTRY_ISSUE,
+  COMMAND_LINE_ENTRY_MESSAGE,
+  isUsableCommandLine,
+} from './command-line.js';
 
 /**
  * Generic Zod primitives reused across the domain schemas. These are internal
@@ -33,9 +37,13 @@ export const nonEmptyString = z.string().min(1);
  * An entry is authored text a person can fix, so a bad one is a loud strict-config error rather than a silent
  * non-match. The message is a fixed string: it never echoes the rejected value.
  */
-export const commandLineEntry = z.string().min(1).refine(isUsableCommandLine, {
-  message: 'must be a command line with balanced quotes (single or double) and at least one token',
-});
+export const commandLineEntry = z
+  .string()
+  .min(1)
+  .refine(isUsableCommandLine, {
+    message: COMMAND_LINE_ENTRY_MESSAGE,
+    params: { relavium: COMMAND_LINE_ENTRY_ISSUE },
+  });
 
 /**
  * An identifier referenceable from `{{inputs.<name>}}` / `{{ctx.<key>}}` (`workflow.inputs[].name`,

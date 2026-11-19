@@ -71,7 +71,7 @@ owns MVP-2's.
 
 ## Next work — the CLI MVP
 
-**PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 has not started.** The
+**PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 started on `development` on 2026-11-19 (see its entry under [Next work](#next-work--the-cli-mvp)).** The
 [PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records what it carried, the final-head evidence (29 of 29 jobs green on `2ce6a252`;
 no completed run on the docs-only final head) and what is still owed: a separate security sitting on the `capture_parent` change and the delta since round 4, the maintainer's reading of ADR-0135,
 and Inc 2 and Inc 3 of the native adapter.
@@ -82,9 +82,10 @@ final-head evidence and its two CI observations: the required `coverage` job sto
 final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed; the merge commit's identical
 tree passed `coverage` in 41 min 10 s); and one acceptance-tool test hit its 10-second limit in the first attempt of the merge
 commit's push run, which a re-run cleared. SonarCloud's gate is OK on the PR and on `main`. The dated blocks below keep the wording they had when written; where they say
-final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 is next**, and
-[ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
-[ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) must be accepted before it starts.
+final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 is in progress**: [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
+[ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
+[ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) were revised or written and accepted on 2026-11-19, and its four steps are recorded in the
+[implementation record](phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record).
 
 **Manual-test correction (2026-11-15): implementation and local review complete.**
 The reported pre-correction code rejected the observed project parent's
@@ -470,8 +471,8 @@ MVP-1, MVP-2 and MVP-3 (with MVP-3b/3c/3d) are complete on `main`. The next impl
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115 and
-0121 (and 0118 for MVP-4, 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0117 and ADR-0119 were accepted 2026-11-16). ADR-0116/0120 are accepted; MVP-3
+the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0121
+(and 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0115, ADR-0117, ADR-0118, ADR-0119 and ADR-0136 are accepted). ADR-0116/0120 are accepted; MVP-3
 keeps their pre-build design and post-implementation security gates. All open
 obligations are in [deferred-tasks.md](deferred-tasks.md).
 
