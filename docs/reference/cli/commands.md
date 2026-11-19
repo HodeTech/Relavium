@@ -162,6 +162,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium models refresh --catalog` | Metadata only — the models.dev catalog. **Needs no provider key.** |
 | `relavium models pricing <model>` | Hand-enter a user price for a model the registry does not know, so the cost cap enforces it. See [`relavium models`](#relavium-models). |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
+| `relavium permissions list` / `revoke <number>\|--all` | Review and take back the commands remembered for this project. See [`relavium permissions`](#relavium-permissions). |
 
 ## Command manifest
 
@@ -180,7 +181,7 @@ The **command manifest** is a derived, alias-free projection of the CLI descript
 }
 ```
 
-- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (`provider.remove-key` and `media.prune-temporaries`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
+- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (`provider.remove-key`, `media.prune-temporaries` and `permissions.revoke`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
 - **`modeScope`** lists the chat modes a command appears in (omit ⇒ all). The mode values (`ask` / `plan` / `accept-edits` / `auto`) are defined in [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E); 2.5.C ships the field with `omit = all`.
 - A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description** (command + each option), so `commander`, the `executeCommand` table, and `--help --json` stay byte-consistent.
 
@@ -653,6 +654,24 @@ and `relavium budget resume`, including their non-interactive execution-resume p
 `relavium budget resume <runId> --abort` does not start MCP servers. Human-gate decisions resume
 workflow execution and use the same MCP consent rules; the interactive chat family answers at the
 prompt instead.
+
+### `relavium permissions`
+
+```bash
+relavium permissions list [--json]
+relavium permissions revoke <number> [--json]
+relavium permissions revoke --all [--json]
+```
+
+Look at, and take back, the commands this project's operator chose to **Remember** in the chat
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2). `list`
+shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
+command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
+whole file, for every project, and needs neither the keychain nor a readable file. Both are local, open no
+database and make no network request. Success exits `0` (an empty list is not a fault); a bad or unknown
+number, a locked keychain or an unreadable file exits `2`; a store that cannot be written exits `1`; failed
+output exits `9`. The store's format, bounds and failure table are in
+[command-permissions.md](command-permissions.md).
 
 ### `relavium media prune-temporaries`
 

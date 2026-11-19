@@ -932,6 +932,23 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   against, is [mcp-integration.md](../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract)
   ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md)).
 
+- **A remembered command grant is a keyed digest of one exact argv under one project root, kept
+  by the operator, and never the command.** *(ADR-0118 §2; MVP-4.)* The store is
+  `~/.relavium/command-grants.ndjson` (`0600`, append-only with tombstones, a symlink refused), never
+  a repository file, so a clone cannot arrive pre-trusted. A record carries HMAC-SHA256 digests under
+  a per-installation key held in the OS keychain — the key is generated on the first write, never on
+  a read, and never enters a file, a log or an event — and a label (program name, argument count,
+  date) in which the program is named only when `argv[0]` is a bare name that resolves on the `PATH`.
+  A review confirms: no argument, path or free-text `argv[0]` reaches the file, `relavium permissions
+  list` or a log; the grant digest binds the root digest and length-prefixes every element; **any
+  unparseable line makes the whole store read as "no grants"** (skipping it could resurrect a
+  revoked grant); a locked keychain means *nothing matches* and *Remember is not offered*; the
+  bounds hold; `revoke --all` needs no key and no readable file. A grant removes the *unknown*, not
+  the person's per-call consent: `ask` and `accept-edits` still show the card for a remembered
+  command, `auto` runs only a pre-approved one, and headless paths and workflows never read the
+  store. The format, bounds and failure table are
+  [command-permissions.md](../reference/cli/command-permissions.md).
+
 ### Expression sandbox (`condition` / `transform` / `merge_fn`)
 
 `condition`, `transform`, and a custom `merge_fn` evaluate author-supplied JavaScript. Per

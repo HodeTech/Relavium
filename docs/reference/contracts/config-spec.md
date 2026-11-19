@@ -105,6 +105,7 @@ See the [staging custody and layout contract](../cli/native-filesystem-metadata.
   ipc.json           # desktop loopback server discovery (port, authToken, pid) — see ipc-contract.md
   history.db         # cross-project run history (SQLite; desktop: SQLCipher, CLI: unencrypted + 0600/0700 OS perms — ADR-0050) — see shared-core/database-schema.md
   secrets.enc        # RESERVED encrypted-file key fallback (deferred past v1.0; Argon2id KDF) — see keychain-and-secrets.md
+  command-grants.ndjson  # remembered `run_command` grants: keyed digests, append-only (0600) — NOT configuration; see ../cli/command-permissions.md
 ```
 
 Automatic global `tmp/` provisioning is removed; existing directories are not deleted. Ordinary chat has no production scratch allocator. The host-only [scratch descriptor prerequisite](../shared-core/built-in-tools.md#host-issued-scratch) supports the future [Phase 2.6.N artifact-store producer](../../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage).
