@@ -175,7 +175,18 @@ function fixture(
     patchConsole: false,
     alternateScreen: alternate,
   });
+  // A card still open when the fixture is torn down is cancelled by the sealed store (it rejects, ADR-0115), and a test that
+  // dropped the promise, or chained a `then` on it, would fail the whole run with an unhandled rejection. During teardown only,
+  // that cancellation is therefore left unsettled; a rejection DURING a test (an abort the test asked for) passes through.
+  let tearingDown = false;
+  const requestApproval = store.requestApproval;
+  store.requestApproval = (...args) =>
+    requestApproval(...args).catch((cause: unknown) => {
+      if (tearingDown) return new Promise<never>(() => undefined);
+      throw cause;
+    });
   cleanups.push(() => {
+    tearingDown = true;
     store.sealToolPreviews();
     instance.unmount();
     input.destroy();
