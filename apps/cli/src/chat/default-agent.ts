@@ -8,8 +8,9 @@ import { CliError } from '../process/errors.js';
  * without `--agent`, the session binds a synthesized agent over `[chat].default_model` so the REPL is a
  * zero-config conversation (chat-session.md, ADR-0024). ADR-0116 grants local reading, discovery and
  * reviewable editing; the current mode, approval, scope and protected-path floors govern every write.
- * Command execution, egress and ambient OS tools require an explicitly bound agent. Missing host
- * capabilities remain fail-closed.
+ * ADR-0118 adds `run_command`: every command is the person's decision (a card in `ask` and `accept-edits`, refused in
+ * `plan`, a card in `auto` unless it was already approved), and it is not advertised at all where no one can answer.
+ * Egress and ambient OS tools require an explicitly bound agent. Missing host capabilities remain fail-closed.
  */
 
 /** The zero-config chat model when neither `--agent` nor `[chat].default_model` names one (config-spec.md). */
@@ -28,14 +29,20 @@ const DEFAULT_CHAT_SYSTEM_PROMPT =
   'Before editing or appending, read the relevant current file content during the same turn. Use exact, ' +
   'unambiguous replacements and inspect tool results; never claim an edit succeeded without evidence. ' +
   'If a tool or write is unavailable or refused, explain that plainly rather than trying another way around ' +
-  'the restriction. You have no command execution, network or ambient OS tools. ' +
+  'the restriction. You can run a program with the run_command tool: give the executable and its arguments, ' +
+  'exactly as they should be passed, because there is no shell (no pipes, redirects, globs or variables). ' +
+  'Every command is shown to the user and needs their approval, except in auto mode where only a command ' +
+  'they already approved runs without asking; plan mode cannot run commands. If a command is refused, ' +
+  'explain that and ask what they would like instead of trying another way to run it. ' +
+  'You have no network or ambient OS tools. ' +
   'When a request is ambiguous and the user can answer with a choice, use the ask_user tool if it is available; ' +
   'otherwise ask a brief clarifying question in plain text.';
 
 /**
  * ADR-0116's editing/search grant, enabled after the prepared-write approval surface (ADR-0120).
  * Mode, scope and confidentiality floors still narrow this grant at dispatch.
- * Command execution, egress and ambient OS tools remain opt-in through an authored agent.
+ * `run_command` is in the grant since ADR-0118: its card shows the whole command. Egress and ambient OS tools remain opt-in
+ * through an authored agent.
  */
 export const DEFAULT_CHAT_TOOLS: readonly string[] = [
   'read_file',
@@ -45,6 +52,8 @@ export const DEFAULT_CHAT_TOOLS: readonly string[] = [
   'find_files',
   'write_file',
   'edit_file',
+  // ADR-0118: a program and its arguments, run without a shell. Governed (never advertised where no one can answer a card).
+  'run_command',
   // ADR-0132: a structured question to the person. Not a governed action and never a permission; it is offered only
   // where the driver wired a question card, so the grant is inert on a non-interactive surface.
   'ask_user',

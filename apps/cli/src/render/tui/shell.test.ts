@@ -1,5 +1,3 @@
-import { tokenizeCommandLine } from '@relavium/shared';
-import { parse as parseToml } from 'smol-toml';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -88,32 +86,6 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
     }
   });
 
-  it('shellDenyHint suggests an entry that pastes into TOML and parses back to EXACTLY the typed argv', () => {
-    // The hint shows the line as a TOML basic string. A double quote, a single quote or a backslash in an argument used to
-    // break the TOML (or, for a backslash, silently turn into a different character and admit an argv the person never saw).
-    const cases: readonly ShellCommand[] = [
-      { command: 'git', args: ['status'] },
-      { command: 'cat', args: ['a b'] },
-      { command: 'cat', args: ["it's"] },
-      { command: 'grep', args: ['say "hi"', 'f'] },
-      { command: 'grep', args: ['a\\tb', 'f'] }, // a literal backslash then `tb`, NOT a tab
-      { command: 'dir', args: ['C:\\Users\\x y'] },
-      { command: 'echo', args: ['', 'both \' and "'] },
-      { command: 'echo', args: ['a' + String.fromCharCode(0x7f) + 'b'] }, // DEL: JSON leaves it raw, TOML rejects it raw
-      { command: 'echo', args: ['a' + String.fromCharCode(1) + 'b'] },
-    ];
-    for (const cmd of cases) {
-      const hint = shellDenyHint(cmd, true, 'ask');
-      const quoted = /Add (".*") to \[chat\]\.allowed_commands/.exec(hint)?.[1];
-      expect(quoted, hint).toBeDefined();
-      const entry = parseToml(`entry = ${quoted ?? ''}`)['entry'];
-      expect(entry, hint).toBe(commandLine(cmd));
-      const reparsed = tokenizeCommandLine(typeof entry === 'string' ? entry : '');
-      expect(reparsed.unterminatedQuote).toBe(false);
-      expect(reparsed.tokens).toEqual([cmd.command, ...cmd.args]);
-    }
-  });
-
   it('formatCommandInjection nonce-fences the output as untrusted <command> context (stderr appended)', () => {
     const cmd = { command: 'ls', args: ['-la'] };
     expect(formatCommandInjection(cmd, 0, 'a.ts\nb.ts', '', 'N')).toBe(
@@ -132,11 +104,12 @@ describe('!-shell input model (2.5.D step 5, ADR-0061)', () => {
   describe('shellDenyHint — never a dead "denied" (ADR-0061)', () => {
     const cmd = { command: 'rm', args: ['-rf', '/'] };
 
-    it('an allowlist miss names the exact [chat].allowed_commands line to add', () => {
-      // The allowlist branch wins regardless of mode (it is checked BEFORE approval).
+    it('an allowlist miss no longer sends the person to a config file: it says plainly that the command is not allowed here', () => {
+      // The allowlist branch wins regardless of mode; an interactive chat never produces one (it asks), ADR-0118 §1.
       const hint = shellDenyHint(cmd, true, 'auto');
-      expect(hint).toContain('[chat].allowed_commands');
-      expect(hint).toContain('rm -rf /'); // the user's own typed command — echoing adds no exposure
+      expect(hint).toBe('! rm -rf /: not run — it is not allowed here.');
+      expect(hint).not.toContain('allowed_commands');
+      expect(hint).not.toContain('Add ');
     });
 
     it('a mode-floor deny in plan offers the Shift+Tab switch', () => {

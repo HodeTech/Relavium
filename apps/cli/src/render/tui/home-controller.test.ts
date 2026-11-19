@@ -803,7 +803,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(noted).toBe(true);
   });
 
-  it('a denied `!`-shell command injects NOTHING and surfaces the actionable allowlist hint (2.5.D step 5)', async () => {
+  it('a denied `!`-shell command injects NOTHING and says plainly that it is not allowed, without sending the person to a config file (2.5.D step 5, ADR-0118)', async () => {
     const made = makeSession({
       runShellCommand: () =>
         Promise.resolve({ kind: 'denied', allowlist: true, message: 'not allowed' }),
@@ -823,11 +823,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().input.text).toBe(''); // nothing injected — the command was denied before any side effect
-    // The store carries an actionable, secret-free hint naming the exact allowed_commands line to add.
-    const warned = made.store
-      .getSnapshot()
-      .state.warnings.some((w) => w.includes('allowed_commands') && w.includes('rm -rf /'));
-    expect(warned).toBe(true);
+    // The store carries a secret-free note: the person's own command, and no config key (an interactive chat asks instead).
+    const warnings = made.store.getSnapshot().state.warnings;
+    expect(warnings.some((w) => w.includes('rm -rf /') && w.includes('not allowed here'))).toBe(
+      true,
+    );
+    expect(warnings.some((w) => w.includes('allowed_commands'))).toBe(false);
   });
 
   it('a bare `!` (no command) falls through to a normal message send', async () => {

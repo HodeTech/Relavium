@@ -54,6 +54,7 @@ describe('buildDefaultChatAgent', () => {
       'find_files',
       'write_file',
       'edit_file',
+      'run_command',
       'ask_user',
     ]);
     expect(agent.system_prompt).toContain('same turn');
@@ -64,9 +65,15 @@ describe('buildDefaultChatAgent', () => {
     );
     expect(agent.system_prompt).toContain('In ask mode each write needs the user');
     expect(agent.system_prompt).toContain('plan mode is read-only');
-    // No command / commit / egress / ambient OS grant.
+    // ADR-0118: the prompt says what a command is and who decides it, and no longer claims there is no command execution.
+    expect(agent.system_prompt).toContain('run_command');
+    expect(agent.system_prompt).toContain('there is no shell');
+    expect(agent.system_prompt).toContain('needs their approval');
+    expect(agent.system_prompt).toContain('plan mode cannot run commands');
+    expect(agent.system_prompt).not.toContain('no command execution');
+    expect(agent.system_prompt).toContain('You have no network or ambient OS tools');
+    // ADR-0118: a command is granted (every one is the person's decision); no commit / egress / ambient OS grant.
     for (const dangerous of [
-      'run_command',
       'git_commit',
       'http_request',
       'web_search',

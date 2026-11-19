@@ -65,28 +65,16 @@ export function commandLine(cmd: ShellCommand): string {
 }
 
 /**
- * A TOML basic string for `text`. JSON string escapes are valid TOML basic-string escapes, with one gap: JSON leaves U+007F
- * (DEL) raw and TOML rejects it, so it is escaped here too. (A lone surrogate cannot be written in TOML at all; it cannot
- * come from a terminal line, and a pasted entry that fails to parse fails loud at load, never admitting anything.)
- */
-function tomlBasicString(text: string): string {
-  return JSON.stringify(text).replaceAll('\u007f', '\\u007f');
-}
-
-/**
- * The ACTIONABLE, secret-free deny message (ADR-0061 — "never a dead 'denied'"). An `allowlist` miss (only a dispatch with no
- * approval regime produces one: an interactive chat asks instead, ADR-0118 §1) shows the exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `plan` mode floor (offer
- * the Shift+Tab switch) or a user decline. The command string is the user's OWN typed input (already visible +
- * history-recallable), so echoing it adds no exposure.
+ * The secret-free deny message (ADR-0061 — "never a dead 'denied'"). A mode/approval deny is either the `plan` mode floor (offer
+ * the Shift+Tab switch) or a user decline. An allowlist miss is no longer a failure that tells the person to edit a config file
+ * ([ADR-0118](../../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1): in an interactive
+ * chat it is a card they answer, so the only way to reach `allowlist` here is a dispatch with no approval regime, which a chat
+ * with a keyboard never is; the sentence says so plainly and names no config key. The command string is the user's OWN typed
+ * input (already visible + history-recallable), so echoing it adds no exposure.
  */
 export function shellDenyHint(cmd: ShellCommand, allowlist: boolean, mode: ChatMode): string {
   const line = commandLine(cmd);
-  if (allowlist) {
-    // The suggested entry is shown as a TOML basic string, so what a person pastes parses back to exactly this line: the line is
-    // already shell-quoted (`quoteCommandLine`), and a backslash or a double quote in it must be escaped for TOML
-    // (JSON string escapes are valid TOML basic-string escapes).
-    return `! ${line}: not allowed. Add ${tomlBasicString(line)} to [chat].allowed_commands to enable it.`;
-  }
+  if (allowlist) return `! ${line}: not run — it is not allowed here.`;
   if (mode === 'plan') {
     return `! ${line}: not run — plan mode is read-only. Switch to ask, accept-edits or auto (Shift+Tab) to run it.`;
   }
