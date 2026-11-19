@@ -328,3 +328,44 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 ย
     expect(answers, 'no approving answer counted while the command was unread').toEqual([]);
   });
 });
+
+describe.each(['chat', 'home'] as const)(
+  'a command the review document cannot hold %s (ADR-0118 ยง1)',
+  (host) => {
+    const settle = (): Promise<void> =>
+      new Promise<void>((resolve) => setTimeout(resolve, APPROVAL_SETTLE_MS + 400));
+
+    it.each([
+      [
+        'more than 63 arguments',
+        ['echo', ...Array.from({ length: 70 }, (_, i) => `a${String(i)}`)],
+      ],
+      ['an argument over 4,096 characters', ['echo', 'x'.repeat(5000)]],
+    ])('%s is a blocked card: no approving answer counts, Deny still does', async (_what, argv) => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      const answers: unknown[] = [];
+      void f.store
+        .requestApproval(
+          request(argv),
+          true,
+          undefined,
+          { callId: 'call', preview: preview(argv) },
+          facts(),
+        )
+        .then((answer) => answers.push(answer))
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(f.store.getSnapshot().approval).toBeDefined());
+      await settle();
+      for (const chord of [CTRL_Y, CTRL_G, CTRL_O]) {
+        f.input.push(chord);
+        await new Promise<void>((resolve) => setTimeout(resolve, 450));
+      }
+      f.input.push('\r');
+      await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      expect(answers, 'nothing approved the unshowable command').toEqual([]);
+      f.input.push(CTRL_N);
+      await vi.waitFor(() => expect(answers).toEqual([{ outcome: 'reject' }]));
+    });
+  },
+);
