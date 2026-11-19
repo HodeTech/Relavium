@@ -21,6 +21,7 @@ import {
   type SessionAskRecord,
   type ToolActionClass,
   argvMatchesCommandLine,
+  quoteCommandLine,
 } from '@relavium/shared';
 
 import {
@@ -1057,7 +1058,11 @@ function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActio
     case 'fs_write':
       return target.path === undefined ? {} : { path: target.path };
     case 'process':
-      return target.command === undefined ? {} : { command: target.command };
+      // The command as ONE quoted line (ADR-0118 §1): `["cat","a b"]` and `["cat","a","b"]` must not read alike, which the joined
+      // `target.command` cannot tell apart. A hand-built target without an argv is one program name.
+      return target.command === undefined
+        ? {}
+        : { command: quoteCommandLine(target.argv ?? [target.command]) };
     case 'egress': {
       if (target.url === undefined) {
         return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough

@@ -18,6 +18,7 @@ import {
   type SessionAskRecord,
   utf8ByteLength,
   extractHttpsHost,
+  quoteCommandLine,
 } from '@relavium/shared';
 import { z } from 'zod';
 
@@ -704,11 +705,6 @@ const listDirectoryTool = defineBuiltin({
 
 const runCommandTool = defineBuiltin({
   id: 'run_command',
-  preview: (args) => ({
-    kind: 'operation',
-    target: args.command,
-    fields: [{ name: 'args', value: JSON.stringify(args.args ?? []) }],
-  }),
   description:
     'Run an authorized executable directly, without a shell; return its output and exit code.',
   args: z
@@ -745,6 +741,20 @@ const runCommandTool = defineBuiltin({
   },
   // cwd / timeoutMs / env are pinned by config, never model-supplied.
   configOnlyParams: ['cwd', 'timeoutMs', 'env'],
+  // What the approval card shows (ADR-0118 §1): the WHOLE command as one quoted line, so a command too long for the card is a
+  // shortened target and Allow stays locked until the person has read it in full, and one row per argument, each delimited so a
+  // leading or trailing space stays visible. The pinned working directory, the standing and the warnings are the host's.
+  preview: (args) => {
+    const argv = [args.command, ...(args.args ?? [])];
+    return {
+      kind: 'operation',
+      target: quoteCommandLine(argv),
+      fields: argv.map((value, index) => ({
+        name: index === 0 ? 'program' : `argument ${String(index)}`,
+        value,
+      })),
+    };
+  },
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
   // The command the allowlist inspects: the argv an exact entry is compared with element by element (ADR-0118 §3,
   // amending ADR-0029(a)), and the joined string the opt-in globs read.
