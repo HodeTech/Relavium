@@ -1,15 +1,16 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
+  accessSync,
   appendFileSync,
   chmodSync,
   closeSync,
-  existsSync,
+  constants,
+  fstatSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   realpathSync,
-  statSync,
   unlinkSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -32,8 +33,9 @@ import type { KeychainStore } from '../secrets/keychain.js';
  * The file protocol is [ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §5's, for the same reasons:
  * created `wx` with mode `0600` (owner-only from the first byte), one bounded record per `appendFileSync` with a LEADING newline
  * (so a process killed mid-append cannot weld its partial line onto the next record), the mode self-healed on every touch, a
- * symlink refused, NO lock (concurrent appends of the same grant are idempotent), and append-only with tombstones (a later
- * `revoked` line cancels an earlier grant, and the effective set is the fold).
+ * symlink or a non-regular file refused (for reads as well as writes), NO lock, and append-only with tombstones. A `revoked` line
+ * cancels the grant with that id wherever it appears in the file, so replaying an old grant line cannot bring it back; two records
+ * for one argv (two processes that remembered it at the same moment) are ONE grant, and revoking it tombstones both.
  *
  * **Fail closed, never skip.** Any unparseable line makes the WHOLE store "no grants" for the invocation, reported once. Skipping
  * a bad line is the tempting answer and the wrong one: a truncated line may be a tombstone, and dropping it would resurrect a grant
@@ -71,6 +73,9 @@ const BARE_PROGRAM = /^[A-Za-z0-9._+-]{1,64}$/u;
 /** What a label says when the program cannot be named without risking a credential. */
 export const UNNAMED_PROGRAM = '(unnamed program)';
 
+/** What `toISOString()` writes. A free-text time would let a hand-edited line put a newline or an escape into a listing. */
+const ISO_TIME = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/u);
+
 const GrantRecordSchema = z
   .object({
     v: z.literal(1),
@@ -79,7 +84,7 @@ const GrantRecordSchema = z
     grant: z.string().regex(HEX_DIGEST),
     program: z.string().regex(BARE_PROGRAM).optional(),
     args: z.number().int().min(0).max(100_000),
-    at: z.string().min(1).max(64),
+    at: ISO_TIME,
   })
   .strict();
 type GrantRecord = z.infer<typeof GrantRecordSchema>;
@@ -88,7 +93,7 @@ const TombstoneSchema = z
   .object({
     v: z.literal(1),
     revoked: z.string().regex(/^[0-9a-zA-Z-]{1,64}$/u),
-    at: z.string().min(1).max(64),
+    at: ISO_TIME,
   })
   .strict();
 
@@ -122,8 +127,18 @@ export type ListResult =
   | { readonly ok: false; readonly reason: CommandGrantUnavailable };
 
 export type RevokeResult =
-  | { readonly ok: true; readonly id: string }
-  | { readonly ok: false; readonly reason: CommandGrantUnavailable | 'no-such-grant' };
+  | {
+      readonly ok: true;
+      readonly id: string;
+      /** What was withdrawn, so the confirmation names it: a number taken from an older list can name a different grant. */
+      readonly program: string;
+      readonly args: number;
+    }
+  | {
+      readonly ok: false;
+      /** `full`: the tombstone would pass the line or size bound; only `revoke --all` recovers. */
+      readonly reason: CommandGrantUnavailable | 'no-such-grant' | 'full';
+    };
 
 /** `removed: false` means there was no file to remove; a file that could not be removed is a failure, never "nothing to remove". */
 export type RevokeAllResult =
@@ -173,7 +188,8 @@ export function commandGrantRoot(cwd: string, projectConfigDir: string | undefin
 /** The canonical root: the resolved real path, so two paths to one tree share grants. Falls back to the resolved path. */
 export function canonicalRoot(projectRoot: string): string {
   try {
-    return realpathSync(projectRoot);
+    // `.native` canonicalizes case and 8.3 names on case-insensitive file systems; the JS version keeps the spelling it was given.
+    return realpathSync.native(projectRoot);
   } catch {
     return resolve(projectRoot);
   }
@@ -210,9 +226,14 @@ function sameDigest(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+/** A live grant, with the ids of any OTHER records for the same argv (two processes that remembered it at the same moment). */
+interface LiveGrant extends GrantRecord {
+  readonly twins: readonly string[];
+}
+
 interface Fold {
-  /** Live grants in file order. */
-  readonly grants: readonly GrantRecord[];
+  /** Live grants in file order, one per argv. */
+  readonly grants: readonly LiveGrant[];
   readonly lines: number;
   readonly bytes: number;
 }
@@ -277,24 +298,47 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     }
   };
 
-  const readFold = (): ReadFold => {
-    if (!existsSync(path)) return { ok: true, fold: { grants: [], lines: 0, bytes: 0 } };
-    let text: string;
-    let bytes: number;
+  /**
+   * Read the file as a regular file only: opened without following a symlink and without blocking, then checked on the descriptor, so a
+   * symlink, a FIFO or a device at the path reads as "unreadable" instead of being followed or hanging the approval hook.
+   */
+  const readText = ():
+    | { readonly text: string; readonly bytes: number }
+    | 'absent'
+    | 'unreadable' => {
+    if (lstatOrUndefined(path) === undefined) return 'absent';
+    let fd: number | undefined;
     try {
-      bytes = statSync(path).size;
-      if (bytes > COMMAND_GRANT_LIMITS.bytes) {
-        report(unreadableMessage(path, 'it is larger than the size bound'));
-        return { ok: false };
+      fd = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      );
+      const info = fstatSync(fd);
+      if (!info.isFile()) {
+        report(unreadableMessage(path, 'it is not a regular file'));
+        return 'unreadable';
       }
-      text = readFileSync(path, 'utf8');
+      if (info.size > COMMAND_GRANT_LIMITS.bytes) {
+        report(unreadableMessage(path, 'it is larger than the size bound'));
+        return 'unreadable';
+      }
+      return { text: readFileSync(fd, 'utf8'), bytes: info.size };
     } catch {
-      report(unreadableMessage(path, 'it cannot be read'));
-      return { ok: false };
+      report(unreadableMessage(path, 'it cannot be read, or it is a symbolic link'));
+      return 'unreadable';
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
-    const live = new Map<string, GrantRecord>();
+  };
+
+  const readFold = (): ReadFold => {
+    const read = readText();
+    if (read === 'absent') return { ok: true, fold: { grants: [], lines: 0, bytes: 0 } };
+    if (read === 'unreadable') return { ok: false };
+    const records = new Map<string, GrantRecord>();
+    const revoked = new Set<string>();
     let lines = 0;
-    for (const line of text.split('\n')) {
+    for (const line of read.text.split('\n')) {
       if (line.trim() === '') continue; // the leading-newline framing and a trailing terminator
       lines += 1;
       if (lines > COMMAND_GRANT_LIMITS.lines) {
@@ -310,7 +354,7 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
       }
       const tombstone = TombstoneSchema.safeParse(raw);
       if (tombstone.success) {
-        live.delete(tombstone.data.revoked);
+        revoked.add(tombstone.data.revoked);
         continue;
       }
       const grant = GrantRecordSchema.safeParse(raw);
@@ -318,12 +362,33 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
         report(unreadableMessage(path, 'a line is not a grant or a revocation'));
         return { ok: false };
       }
-      live.set(grant.data.id, grant.data);
+      if (!records.has(grant.data.id)) records.set(grant.data.id, grant.data);
     }
-    return { ok: true, fold: { grants: [...live.values()], lines, bytes } };
+    // Revocation does not depend on file order: a replayed or reordered grant line stays revoked. Two live records for one argv are
+    // one grant (the first is kept, the other ids are its twins, so revoking it withdraws both).
+    const byDigest = new Map<string, { record: GrantRecord; twins: string[] }>();
+    for (const record of records.values()) {
+      if (revoked.has(record.id)) continue;
+      const seen = byDigest.get(record.grant);
+      if (seen === undefined) byDigest.set(record.grant, { record, twins: [] });
+      else seen.twins.push(record.id);
+    }
+    const grants = [...byDigest.values()].map(
+      ({ record, twins }): LiveGrant => ({ ...record, twins }),
+    );
+    const perRoot = new Map<string, number>();
+    for (const grant of grants) perRoot.set(grant.root, (perRoot.get(grant.root) ?? 0) + 1);
+    if (
+      grants.length > COMMAND_GRANT_LIMITS.total ||
+      [...perRoot.values()].some((count) => count > COMMAND_GRANT_LIMITS.perRoot)
+    ) {
+      report(unreadableMessage(path, 'it has more grants than the bound'));
+      return { ok: false };
+    }
+    return { ok: true, fold: { grants, lines, bytes: read.bytes } };
   };
 
-  const rootGrants = (fold: Fold, root: string): readonly GrantRecord[] =>
+  const rootGrants = (fold: Fold, root: string): readonly LiveGrant[] =>
     fold.grants.filter((grant) => sameDigest(grant.root, root));
 
   const matches = (argv: readonly string[]): boolean => {
@@ -351,18 +416,45 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     return { ok: true };
   };
 
+  /**
+   * Best effort, so the card does not offer Remember into a write that cannot succeed: an existing file must be a regular file the
+   * process can write, a missing one needs a directory (or the home, where it is created) the process can write. The write path
+   * re-checks everything, so a wrong answer here costs a notice, never a grant.
+   */
+  const writable = (): boolean => {
+    const info = lstatOrUndefined(path);
+    try {
+      if (info !== undefined) {
+        if (info.isSymbolicLink() || !info.isFile()) return false;
+        accessSync(path, constants.W_OK);
+        return true;
+      }
+      accessSync(
+        lstatOrUndefined(dirname(path)) === undefined ? deps.homeDir : dirname(path),
+        constants.W_OK,
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const canRemember = (): ReturnType<CommandGrantStore['canRemember']> => {
     const state = readKey();
     // An absent key can be generated at the first write; an unusable keychain cannot. The write path re-checks.
     if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
     const folded = readFold();
     if (!folded.ok) return { ok: false, reason: 'unreadable' };
+    if (!writable()) return { ok: false, reason: 'unwritable' };
     const root = state.kind === 'ready' ? rootDigest(state.key, canonical) : '0'.repeat(64); // no grants can exist without a key
     return room(folded.fold, root);
   };
 
   const remember = async (argv: readonly string[]): Promise<RememberResult> => {
     if (argv.length === 0) throw new RangeError('a command grant needs a program');
+    // The only await comes first: from the read of the file to the append nothing yields, so two calls in one process cannot both
+    // pass the "already remembered" check. Two PROCESSES still can; the fold treats the two records as one grant.
+    const program = await namedProgram(argv[0], findProgram);
     const key = ensureKey();
     if (key === undefined) return { ok: false, reason: 'no-key' };
     const folded = readFold();
@@ -375,7 +467,6 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     if (existing !== undefined) return { ok: true, id: existing.id, alreadyRemembered: true };
     const space = room(folded.fold, root);
     if (!space.ok) return space;
-    const program = await namedProgram(argv[0], findProgram);
     const record: GrantRecord = {
       v: 1,
       id: newId(),
@@ -414,32 +505,55 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
   };
 
   const revoke = (index: number): RevokeResult => {
-    const listed = list();
-    if (!listed.ok) return listed;
-    const target = listed.grants.find((grant) => grant.index === index);
+    const state = readKey();
+    if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
+    const folded = readFold();
+    if (!folded.ok) return { ok: false, reason: 'unreadable' };
+    if (state.kind === 'absent') return { ok: false, reason: 'no-such-grant' };
+    const target = rootGrants(folded.fold, rootDigest(state.key, canonical))[index - 1];
     if (target === undefined) return { ok: false, reason: 'no-such-grant' };
+    const ids = [target.id, ...target.twins];
+    // A tombstone is a line too. Remember leaves room for one (see `room`), but a store at its bound cannot take another line:
+    // better to say so than to push the file past the bound, where every grant in it would read as "no grants".
+    if (
+      folded.fold.lines + ids.length > COMMAND_GRANT_LIMITS.lines ||
+      folded.fold.bytes + ids.length * RECORD_BYTES_BOUND > COMMAND_GRANT_LIMITS.bytes
+    )
+      return { ok: false, reason: 'full' };
     try {
-      appendLine(path, { v: 1, revoked: target.id, at: now().toISOString() });
+      for (const id of ids) appendLine(path, { v: 1, revoked: id, at: now().toISOString() });
     } catch {
       return { ok: false, reason: 'unwritable' };
     }
-    return { ok: true, id: target.id };
+    return {
+      ok: true,
+      id: target.id,
+      program: target.program ?? UNNAMED_PROGRAM,
+      args: target.args,
+    };
   };
 
-  const revokeAll = (): RevokeAllResult => {
-    if (lstatOrUndefined(path) === undefined) return { ok: true, removed: false };
-    try {
-      unlinkSync(path);
-      return { ok: true, removed: true };
-    } catch {
-      // Lost a race with another remover, or a permission refusal: only the file's absence now tells them apart.
-      return lstatOrUndefined(path) === undefined
-        ? { ok: true, removed: false }
-        : { ok: false, reason: 'unwritable' };
-    }
-  };
+  const revokeAll = (): RevokeAllResult => removeCommandGrantsFile(deps.homeDir);
 
   return { matches, canRemember, remember, list, revoke, revokeAll };
+}
+
+/**
+ * Remove the whole file, for every project: the recovery that needs no key, no project root and no readable file. A file that
+ * cannot be removed is a failure, never "nothing to remove". An unlink removes a symlink itself, not what it points at.
+ */
+export function removeCommandGrantsFile(homeDir: string): RevokeAllResult {
+  const path = commandGrantsPath(homeDir);
+  if (lstatOrUndefined(path) === undefined) return { ok: true, removed: false };
+  try {
+    unlinkSync(path);
+    return { ok: true, removed: true };
+  } catch {
+    // Lost a race with another remover, or a permission refusal: only the file's absence now tells them apart.
+    return lstatOrUndefined(path) === undefined
+      ? { ok: true, removed: false }
+      : { ok: false, reason: 'unwritable' };
+  }
 }
 
 function unreadableMessage(path: string, why: string): string {

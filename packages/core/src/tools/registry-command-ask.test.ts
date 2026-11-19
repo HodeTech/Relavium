@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import { ToolDeniedByUserError, ToolPolicyError } from './errors.js';
@@ -7,6 +8,7 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   ToolCallPart,
+  ToolDef,
   ToolDispatchContext,
   ToolHost,
 } from './types.js';
@@ -90,6 +92,38 @@ describe('an allowlist miss under an approval regime reaches the host (ADR-0118 
     );
     expect(attempt).toBeInstanceOf(TypeError);
     expect(spawned()).toEqual([['ls', '-la']]);
+  });
+
+  it('a tool that spawns a process AND writes is classified as a write, so the hook never sees a command: the allowlist stays its authority', async () => {
+    const hybrid = {
+      id: 'plugin_hybrid',
+      description: 'a hand-built tool that is both a write and a process',
+      argsSchema: z.object({}).strict(),
+      parseArgs: (args: unknown) => z.object({}).strict().parse(args),
+      llmVisibleParams: { type: 'object', properties: {}, additionalProperties: false },
+      policy: { fsScoped: false, fsWrite: true, spawnsProcess: true, requiresGateApproval: false },
+      policyTarget: () => ({ command: 'rm', argv: ['rm', 'x'] }),
+      dispatch: () => Promise.resolve('ran'),
+    } as unknown as ToolDef;
+    const { host } = recordingHost();
+    const seen: ToolApprovalRequest[] = [];
+    const error: unknown = await createToolRegistry({ tools: [hybrid], host })
+      .dispatch(
+        { type: 'tool_call', id: 'c1', name: 'plugin_hybrid', args: {} },
+        {
+          ...context(['ls'], (request) => {
+            seen.push(request);
+            return Promise.resolve({ outcome: 'approve' });
+          }),
+          grantedToolIds: new Set(['plugin_hybrid']),
+        },
+      )
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ToolPolicyError);
+    expect(
+      seen,
+      'nothing was asked: a miss is not a card for a tool the hook sees as a write',
+    ).toEqual([]);
   });
 
   it('says commandAdmitted true for a command the allowlist admits, and compares element by element', async () => {

@@ -7,7 +7,8 @@ import { frameUntrusted } from './injection.js';
  * The `!`-shell escape input model (2.5.D step 5, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
  * A line starting with `!` is a USER-invoked shell command: the rest of the line is tokenized into argv (NO shell
  * metachar expansion — the process arm spawns with `shell:false`) and run through `AgentSession.runUserCommand`,
- * which enforces the `[chat].allowed_commands` allowlist (BEFORE approval) → the mode-aware `confirmAction` → the
+ * which judges the call against the `[chat].allowed_commands` allowlist (an interactive chat hands a miss to the mode-aware
+ * `confirmAction` as a request, ADR-0118 §1; an unattended dispatch refuses it) → the mode-aware `confirmAction` → the
  * hardened process arm. The output is injected as UNTRUSTED, nonce-fenced, byte+line-bounded context (the SAME
  * framing as `@`-mention, {@link injection.ts}). `!` is TTY-only — a plain / `--json` driver never intercepts it.
  */
@@ -73,8 +74,8 @@ function tomlBasicString(text: string): string {
 }
 
 /**
- * The ACTIONABLE, secret-free deny message (ADR-0061 — "never a dead 'denied'"). An `allowlist` miss shows the
- * exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `plan` mode floor (offer
+ * The ACTIONABLE, secret-free deny message (ADR-0061 — "never a dead 'denied'"). An `allowlist` miss (only a dispatch with no
+ * approval regime produces one: an interactive chat asks instead, ADR-0118 §1) shows the exact `[chat].allowed_commands` line to add; a mode/approval deny is either the `plan` mode floor (offer
  * the Shift+Tab switch) or a user decline. The command string is the user's OWN typed input (already visible +
  * history-recallable), so echoing it adds no exposure.
  */

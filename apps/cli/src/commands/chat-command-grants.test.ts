@@ -60,7 +60,6 @@ describe('the chat’s remembered command grants', () => {
       true,
       { operatorHomeDir: home },
       { global: GLOBAL(project), keychain },
-      () => ({ projectConfigDir: undefined }),
       notice(),
     );
     expect(grants?.matches(['npm', 'test'])).toBe(true);
@@ -75,7 +74,6 @@ describe('the chat’s remembered command grants', () => {
         false,
         { operatorHomeDir: home },
         { global: GLOBAL(project), keychain },
-        () => ({ projectConfigDir: undefined }),
         notice(),
       ),
     ).toBeUndefined();
@@ -84,13 +82,7 @@ describe('the chat’s remembered command grants', () => {
 
   it('are absent when the session has no operator home to keep them in', () => {
     expect(
-      openCommandGrants(
-        true,
-        {},
-        { global: GLOBAL(project), keychain },
-        () => ({ projectConfigDir: undefined }),
-        notice(),
-      ),
+      openCommandGrants(true, {}, { global: GLOBAL(project), keychain }, notice()),
     ).toBeUndefined();
   });
 
@@ -98,37 +90,34 @@ describe('the chat’s remembered command grants', () => {
     const subdirectory = join(project, 'packages', 'app');
     mkdirSync(subdirectory, { recursive: true });
     await remember(project, ['npm', 'test']);
-    const fromSubdirectory = openCommandGrants(
-      true,
-      { operatorHomeDir: home },
-      { global: GLOBAL(subdirectory), keychain },
-      () => ({ projectConfigDir: join(project, '.relavium') }),
-      notice(),
-    );
-    expect(fromSubdirectory?.matches(['npm', 'test'])).toBe(true);
-    // Without a project directory the working directory is the root, and a sibling tree shares nothing.
+    // No .relavium anywhere above: the working directory is the root, and a parent tree's grants are not this tree's.
     const fromCwd = openCommandGrants(
       true,
       { operatorHomeDir: home },
       { global: GLOBAL(subdirectory), keychain },
-      () => ({ projectConfigDir: undefined }),
       notice(),
     );
     expect(fromCwd?.matches(['npm', 'test'])).toBe(false);
-  });
-
-  it('fall back to the working directory when the config cannot be read now, instead of failing the session', async () => {
-    await remember(project, ['npm', 'test']);
-    const grants = openCommandGrants(
+    // With one, every directory below it shares the project's grants (what `relavium permissions` lists too).
+    mkdirSync(join(project, '.relavium'));
+    const fromSubdirectory = openCommandGrants(
       true,
       { operatorHomeDir: home },
-      { global: GLOBAL(project), keychain },
-      () => {
-        throw new Error('config unreadable');
-      },
+      { global: GLOBAL(subdirectory), keychain },
       notice(),
     );
-    expect(grants?.matches(['npm', 'test'])).toBe(true);
+    expect(fromSubdirectory?.matches(['npm', 'test'])).toBe(true);
+  });
+
+  it('fall back to the working directory when the home cannot be resolved safely, instead of failing the session', () => {
+    const missingHome = join(home, 'no', 'such', 'home');
+    const grants = openCommandGrants(
+      true,
+      { operatorHomeDir: missingHome },
+      { global: GLOBAL(project), keychain },
+      notice(),
+    );
+    expect(grants?.matches(['npm', 'test'])).toBe(false); // a usable store that matches nothing, not a throw
   });
 
   it('report an unreadable file once, on the session’s notice channel, naming the recovery', async () => {
@@ -139,7 +128,6 @@ describe('the chat’s remembered command grants', () => {
       true,
       { operatorHomeDir: home },
       { global: GLOBAL(project), keychain },
-      () => ({ projectConfigDir: undefined }),
       sink,
     );
     expect(grants?.matches(['npm', 'test'])).toBe(false);
@@ -160,7 +148,6 @@ describe('the chat’s remembered command grants', () => {
       true,
       { operatorHomeDir: home },
       { global: GLOBAL(project), keychain: locked },
-      () => ({ projectConfigDir: undefined }),
       notice(),
     );
     expect(grants?.matches(['npm', 'test'])).toBe(false);

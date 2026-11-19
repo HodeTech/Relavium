@@ -172,6 +172,21 @@ describe('auto has a hard edge: only a pre-approved command runs without a card 
     expect(r.asked()).toBe(1);
   });
 
+  it.each([false, true])(
+    'a command request that does not carry its argv asks, even with commandAdmitted %s: it cannot be judged pre-approved',
+    async (admitted) => {
+      const r = rig('auto');
+      const request: ToolApprovalRequest = {
+        toolId: 'run_command',
+        action: 'process',
+        preview: { command: 'rm -rf x' },
+        commandAdmitted: admitted,
+      };
+      await r.confirm(request, undefined, undefined);
+      expect(r.asked()).toBe(1);
+    },
+  );
+
   it('a non-command governed action keeps auto’s old rule: it is approved', async () => {
     const r = rig('auto');
     const request: ToolApprovalRequest = {
@@ -219,6 +234,25 @@ describe('the session cache is keyed by the exact argv, never by tool id (ADR-01
     } as unknown as ToolApprovalLiveContext;
     await r.confirm(command(LS, false), undefined, live);
     expect(r.lastCacheable()).toBe(false);
+  });
+
+  it('a command card never offers a session answer over a preview that shows nothing (all redaction markers)', async () => {
+    const r = rig('ask', { sessionGrants: true });
+    await r.confirm(
+      {
+        toolId: 'run_command',
+        action: 'process',
+        preview: { command: '[redacted]' },
+        unredactedPreview: { command: 'secret-token' },
+        argv: ['secret-token'],
+        commandAdmitted: false,
+      },
+      undefined,
+      undefined,
+    );
+    expect(r.lastCacheable()).toBe(false);
+    await r.confirm(command(LS, false), undefined, undefined);
+    expect(r.lastCacheable(), 'a readable preview is offered it').toBe(true);
   });
 
   it('a process request with no argv (hand-built) is asked, and remembered by nothing', async () => {

@@ -2,6 +2,7 @@ import {
   commandGrantRoot,
   commandGrantsPath,
   createCommandGrantStore,
+  removeCommandGrantsFile,
   type CommandGrantStore,
   type CommandGrantUnavailable,
 } from '../permissions/command-grants.js';
@@ -12,7 +13,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
-import { stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 
@@ -42,8 +43,12 @@ export interface PermissionsDeps {
   readonly keychain?: KeychainStore;
 }
 
+function homeOf(deps: PermissionsDeps): string {
+  return deps.homeDir ?? resolveHomeDir({});
+}
+
 function openStore(deps: PermissionsDeps): { store: CommandGrantStore; homeDir: string } {
-  const homeDir = deps.homeDir ?? resolveHomeDir({});
+  const homeDir = homeOf(deps);
   const projectConfigDir = findProjectConfigDir(deps.global.cwd, homeDir);
   const store = createCommandGrantStore({
     homeDir,
@@ -54,8 +59,13 @@ function openStore(deps: PermissionsDeps): { store: CommandGrantStore; homeDir: 
 }
 
 /** One refusal per reason, each naming the way out. None of them carries a command, a digest or a keychain message. */
-function unavailable(reason: CommandGrantUnavailable, homeDir: string): CliError {
+function unavailable(reason: CommandGrantUnavailable | 'full', homeDir: string): CliError {
   switch (reason) {
+    case 'full':
+      return new CliError(
+        'config_error',
+        'The remembered-command file is at its size bound, so another line cannot be added to it. `relavium permissions revoke --all` removes it.',
+      );
     case 'no-key':
       return new CliError(
         'invalid_invocation',
@@ -96,9 +106,9 @@ export function permissionsListCommand(deps: PermissionsDeps): ExitCode {
       listed.grants.map((grant) => ({
         index: grant.index,
         id: grant.id,
-        program: stripTerminalControls(grant.program),
+        program: sanitizeInline(grant.program),
         args: grant.args,
-        grantedAt: stripTerminalControls(grant.grantedAt),
+        grantedAt: sanitizeInline(grant.grantedAt),
       })),
     );
     return EXIT_CODES.success;
@@ -109,7 +119,7 @@ export function permissionsListCommand(deps: PermissionsDeps): ExitCode {
   }
   const lines = listed.grants.map((grant) => {
     const noun = grant.args === 1 ? 'argument' : 'arguments';
-    return `  ${grant.index}. ${stripTerminalControls(grant.program)}  (${grant.args} ${noun})  remembered ${stripTerminalControls(grant.grantedAt)}\n`;
+    return `  ${grant.index}. ${sanitizeInline(grant.program)}  (${grant.args} ${noun})  remembered ${sanitizeInline(grant.grantedAt)}\n`;
   });
   write(
     deps,
@@ -124,9 +134,10 @@ export function permissionsRevokeCommand(
   args: PermissionsRevokeArgs,
   deps: PermissionsDeps,
 ): ExitCode {
-  const { store, homeDir } = openStore(deps);
   if (args.all) {
-    const removed = store.revokeAll();
+    // The recovery needs no project root, no keychain and no readable file, so it opens none of them.
+    const homeDir = homeOf(deps);
+    const removed = removeCommandGrantsFile(homeDir);
     if (!removed.ok) throw unavailable(removed.reason, homeDir);
     if (deps.global.json) {
       writeRecords(deps, [{ action: 'revoke-all', removed: removed.removed }]);
@@ -140,6 +151,7 @@ export function permissionsRevokeCommand(
     }
     return EXIT_CODES.success;
   }
+  const { store, homeDir } = openStore(deps);
   if (args.index === undefined) {
     throw new CliError(
       'invalid_invocation',
@@ -157,11 +169,19 @@ export function permissionsRevokeCommand(
     throw unavailable(revoked.reason, homeDir);
   }
   if (deps.global.json) {
-    writeRecords(deps, [{ action: 'revoke', index: args.index, id: revoked.id }]);
+    writeRecords(deps, [
+      {
+        action: 'revoke',
+        index: args.index,
+        id: revoked.id,
+        program: sanitizeInline(revoked.program),
+        args: revoked.args,
+      },
+    ]);
   } else {
     write(
       deps,
-      `Revoked remembered command ${args.index}; it asks again the next time it is needed. The numbers have changed: \`relavium permissions list\` shows them.\n`,
+      `Revoked remembered command ${args.index} (${sanitizeInline(revoked.program)}, ${revoked.args} ${revoked.args === 1 ? 'argument' : 'arguments'}); it asks again the next time it is needed. The numbers have changed: \`relavium permissions list\` shows them.\n`,
     );
   }
   return EXIT_CODES.success;

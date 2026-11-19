@@ -123,8 +123,9 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
       ...(opts.scratch === undefined ? {} : { scratch: opts.scratch }),
     }),
     // The process arm itself has no read-only notion — chat-safety rests ENTIRELY on the policy layer above:
-    // the empty `allowedCommands` default denies `run_command`, and `git_status` exposes no model-controlled
-    // command. Loosening the chat `allowedCommands` in a future profile is therefore a security-review trigger.
+    // the allowlist, which an unattended dispatch (a workflow, a headless surface) still enforces alone, and, in an interactive chat,
+    // the mode-aware approval hook, where a command outside the allowlist is a card or a refusal (ADR-0118 §1). `git_status` exposes
+    // no model-controlled command. Loosening the chat `allowedCommands` in a future profile is a security-review trigger.
     process: createNodeProcessCapability({
       workspaceDir: opts.workspaceDir,
       ...(opts.nativeProcesses === undefined ? {} : { nativeProcesses: opts.nativeProcesses }),
@@ -152,7 +153,8 @@ export function assembleToolEnv(opts: AssembleToolEnvOptions): AssembledToolEnv 
           ),
         }),
   };
-  // Chat default: empty allowedCommands ⇒ `run_command` denied; `git_status` is pre-approved and exposes no
+  // Chat default: empty allowedCommands ⇒ nothing is pre-approved (an unattended dispatch refuses a command, an interactive chat
+  // asks, ADR-0118); `git_status` is pre-approved and exposes no
   // model-controlled command, so an empty allowlist never blocks it (ADR-0055). NOTE: this is inert today —
   // the chat path relies on the `AgentSession` default `{}` and the run path uses the workflow's per-node
   // policy; the `{ host, policy }` shape is the ADR-0055 seam that 2.5.E/ADR-0057 populates with per-mode

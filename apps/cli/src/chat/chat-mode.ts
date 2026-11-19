@@ -351,7 +351,11 @@ async function askAboutCommand(
   live: ToolApprovalLiveContext | undefined,
 ): Promise<ToolApprovalDecision> {
   if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
-  const cacheable = deps.commandSessionGrants === true && live?.preview.kind !== 'saved-result';
+  // The same rule `askPerson` has (#W15-12): no session answer over a preview reduced to redaction markers or a delivered saved result.
+  const cacheable =
+    deps.commandSessionGrants === true &&
+    live?.preview.kind !== 'saved-result' &&
+    !isBlankPreview(request.preview);
   const answer = await deps.prompt(request, cacheable, signal, live);
   return toDecision(answer, request, deps.cache, cacheable);
 }
@@ -411,9 +415,11 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         if (deps.isProtectedTarget?.(request) === true) {
           return askAboutProtectedTarget(request, deps, signal, live);
         }
-        // A COMMAND has a hard edge here (ADR-0118 §1): only a pre-approved one runs without a card.
-        const argv = commandArgv(request);
-        if (argv !== undefined) {
+        // A COMMAND has a hard edge here (ADR-0118 §1): only a pre-approved one runs without a card. A command request that does
+        // not carry its argv cannot be judged pre-approved, so it asks like any other unknown (never the blanket approval below).
+        if (request.action === 'process') {
+          const argv = commandArgv(request);
+          if (argv === undefined) return askPerson(request, deps, signal, live);
           return isPreApproved(request, argv, deps)
             ? { outcome: 'approve' }
             : askAboutCommand(request, argv, deps, signal, live);

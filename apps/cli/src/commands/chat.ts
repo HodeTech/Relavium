@@ -106,6 +106,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
+import { findProjectConfigDir } from '../config/paths.js';
 import {
   createStartingModeRuntime,
   startingModeConfigObserver,
@@ -1810,17 +1811,18 @@ export function openCommandGrants(
   interactive: boolean,
   built: Pick<BuiltChatSession, 'operatorHomeDir'>,
   deps: Pick<ChatReplDeps, 'global' | 'keychain'>,
-  readLiveConfig: () => Pick<ReturnType<typeof loadResolvedConfig>, 'projectConfigDir'>,
   store: Pick<ChatStoreController, 'notice'>,
 ): CommandGrantStore | undefined {
   // A plain, `--json` or one-shot surface has no one who can answer a card, so it never reads or writes the store.
   const homeDir = built.operatorHomeDir;
   if (!interactive || homeDir === undefined) return undefined;
+  // The same discovery `relavium permissions` runs, and nothing else: no config is re-read here (a re-read can disturb the
+  // starting-mode authority), and the project directory is found by walking up from the working directory.
   let projectConfigDir: string | undefined;
   try {
-    projectConfigDir = readLiveConfig().projectConfigDir;
+    projectConfigDir = findProjectConfigDir(deps.global.cwd, homeDir);
   } catch {
-    // A config that cannot be read now fails its own load elsewhere; grants then key by the working directory.
+    // A home that cannot be resolved safely fails its own load elsewhere; grants then key by the working directory.
   }
   return createCommandGrantStore({
     homeDir,
@@ -1886,7 +1888,7 @@ export function createChatLineHandler(
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
-  const commandGrants = openCommandGrants(interactive, built, deps, readLiveConfig, store);
+  const commandGrants = openCommandGrants(interactive, built, deps, store);
   const modeControl = createChatModeControl(built, store, {
     interactive,
     ...(commandGrants === undefined ? {} : { commandGrants }),

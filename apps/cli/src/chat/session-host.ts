@@ -572,10 +572,11 @@ function buildSessionRuntime(
       }),
   };
   // The chat `ToolPolicy` (ADR-0055's single source) extended with the `[chat].allowed_commands` /
-  // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒
-  // `run_command` denied (the secure `empty ⇒ disabled` symmetry). Threaded into `SessionDeps.toolPolicy`, it is
-  // what BOTH a model `run_command` (advertised only if the agent grants it) AND the user `!`-shell
-  // (`runUserCommand`) enforce — the ONE allowlist, never a chat-specific fork.
+  // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒ nothing is
+  // PRE-approved. Threaded into `SessionDeps.toolPolicy`, it is what BOTH a model `run_command` (advertised only if the agent
+  // grants it) AND the user `!`-shell (`runUserCommand`) are judged against — the ONE allowlist, never a chat-specific fork. An
+  // unattended dispatch (a workflow, a headless surface) still fails closed on a miss; an interactive chat hands the miss to the
+  // mode-aware approval hook as a request (ADR-0118 §1).
   const chatToolPolicy: ToolPolicy = {
     ...factoryEnv.policy,
     ...(opts.chat.allowedCommands === undefined

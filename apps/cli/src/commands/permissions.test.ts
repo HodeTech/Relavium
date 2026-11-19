@@ -6,11 +6,12 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   commandGrantsPath,
@@ -187,27 +188,20 @@ describe('relavium permissions list', () => {
     ]);
   });
 
-  it('a terminal control sequence in a hand-edited record is stripped from both outputs', async () => {
+  it('a hand-edited time carrying a newline or an escape makes the file unreadable: nothing of it is ever printed', async () => {
     await storeFor(project).remember(['npm', 'test']);
     writeFileSync(
       file(),
       readFileSync(file(), 'utf8').replace(
-        '"at":"2026-11-19T12:00:00.000Z"',
-        '"at":"\\u001b]0;pwned\\u0007\\u001b[31mred"',
+        /"at":"[^"]*"/u,
+        String.raw`"at":"\u001b]0;pwned\u0007\n  2. sudo  (0 arguments)"`,
       ),
     );
     for (const json of [false, true]) {
       const run = deps(project, json);
-      permissionsListCommand(run.deps);
-      // eslint-disable-next-line no-control-regex -- asserting that no control character reached the terminal
-      const control = /[\u0000-\u0008\u000b-\u001f\u007f]/u;
-      expect(run.out()).not.toMatch(control);
-      // JSON escapes a control character on the wire, so the raw bytes prove nothing: what a consumer PARSES must be clean too.
-      if (json) {
-        const records = parseNdjson(run.out());
-        expect(records).toHaveLength(1);
-        expect(String(records[0]?.['grantedAt'])).not.toMatch(control);
-      }
+      const failure = refusal(() => permissionsListCommand(run.deps));
+      expect(failure.code).toBe('config_error');
+      expect(run.out(), 'a refused listing prints no rows').toBe('');
     }
   });
 
@@ -254,7 +248,7 @@ describe('relavium permissions revoke', () => {
     const run = deps();
     expect(permissionsRevokeCommand({ all: false, index: 1 }, run.deps)).toBe(EXIT_CODES.success);
     expect(run.out()).toBe(
-      'Revoked remembered command 1; it asks again the next time it is needed. The numbers have changed: `relavium permissions list` shows them.\n',
+      'Revoked remembered command 1 (npm, 1 argument); it asks again the next time it is needed. The numbers have changed: `relavium permissions list` shows them.\n',
     );
     const fresh = storeFor(project);
     expect(fresh.matches(['npm', 'test'])).toBe(false);
@@ -270,6 +264,7 @@ describe('relavium permissions revoke', () => {
     const failure = refusal(() => permissionsRevokeCommand({ all: false, index: 2 }, deps().deps));
     expect(failure.exitCode).toBe(EXIT_CODES.invalidInvocation);
     expect(failure.message).toContain('relavium permissions list');
+    expect(failure.message, 'the number typed is not echoed').not.toMatch(/\d/u);
     expect(readFileSync(file(), 'utf8')).toBe(before);
   });
 
@@ -309,7 +304,7 @@ describe('relavium permissions revoke', () => {
     expect(failure.message).toContain('keychain');
   });
 
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     '--all that cannot remove the file is a storage failure, never "no remembered commands"',
     async () => {
       await storeFor(project).remember(['npm', 'test']);
@@ -325,11 +320,69 @@ describe('relavium permissions revoke', () => {
     },
   );
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a numbered revoke whose tombstone cannot be written is a storage failure (exit 1), never success and never “no such command”',
+    async () => {
+      await storeFor(project).remember(['npm', 'test']);
+      chmodSync(file(), 0o400);
+      try {
+        const failure = refusal(() =>
+          permissionsRevokeCommand({ all: false, index: 1 }, deps().deps),
+        );
+        expect(failure.code).toBe('storage_unavailable');
+        expect(failure.exitCode).toBe(EXIT_CODES.workflowFailed);
+        expect(
+          storeFor(project).matches(['npm', 'test']),
+          'the grant is still live, and the exit said so',
+        ).toBe(true);
+      } finally {
+        chmodSync(file(), 0o600);
+      }
+    },
+  );
+
+  it('a revoke the file has no room to record names the way out (exit 2) and changes nothing', async () => {
+    await storeFor(project).remember(['npm', 'test']);
+    const filler = Array.from({ length: 8191 }, (_, i) =>
+      JSON.stringify({ v: 1, revoked: `filler-${String(i)}`, at: '2026-11-19T00:00:00.000Z' }),
+    ).join('\n');
+    writeFileSync(file(), `${readFileSync(file(), 'utf8')}\n${filler}\n`); // 8,192 lines: the bound
+    const before = readFileSync(file(), 'utf8');
+    const failure = refusal(() => permissionsRevokeCommand({ all: false, index: 1 }, deps().deps));
+    expect(failure.code).toBe('config_error');
+    expect(failure.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(failure.message).toContain('relavium permissions revoke --all');
+    expect(readFileSync(file(), 'utf8')).toBe(before);
+  });
+
+  it('--all opens no keychain and needs no project root: it works where neither can be had', async () => {
+    await storeFor(project).remember(['npm', 'test']);
+    const touched = vi.spyOn(keychain, 'get');
+    const run = deps(project);
+    // A working directory that does not exist has no project root to find; the recovery must not care.
+    const there = { ...run.deps, global: globalOptions(join(project, 'does', 'not', 'exist')) };
+    expect(permissionsRevokeCommand({ all: true }, there)).toBe(EXIT_CODES.success);
+    expect(touched).not.toHaveBeenCalled();
+    expect(existsSync(file())).toBe(false);
+  });
+
+  it('--all removes a symlink at the path, not what it points at', () => {
+    const target = join(home, 'precious.txt');
+    writeFileSync(target, 'keep me');
+    mkdirSync(dirname(file()), { recursive: true });
+    symlinkSync(target, file());
+    expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
+    expect(readFileSync(target, 'utf8')).toBe('keep me');
+    expect(existsSync(file())).toBe(false);
+  });
+
   it('--json answers with one record naming what was done', async () => {
     await storeFor(project).remember(['npm', 'test']);
     const numbered = deps(project, true);
     permissionsRevokeCommand({ all: false, index: 1 }, numbered.deps);
-    expect(parseNdjson(numbered.out())).toEqual([{ action: 'revoke', index: 1, id: 'grant-1' }]);
+    expect(parseNdjson(numbered.out())).toEqual([
+      { action: 'revoke', index: 1, id: 'grant-1', program: 'npm', args: 1 },
+    ]);
     const everything = deps(project, true);
     permissionsRevokeCommand({ all: true }, everything.deps);
     expect(parseNdjson(everything.out())).toEqual([{ action: 'revoke-all', removed: true }]);

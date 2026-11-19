@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import {
   appendFileSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -23,6 +25,7 @@ import {
   commandGrantsPath,
   createCommandGrantStore,
   grantDigest,
+  removeCommandGrantsFile,
   rootDigest,
   type CommandGrantStore,
 } from './command-grants.js';
@@ -86,6 +89,38 @@ function store(
 
 const file = (): string => commandGrantsPath(home);
 const text = (): string => readFileSync(file(), 'utf8');
+const AT = '2026-11-19T00:00:00.000Z';
+/** chmod-based refusals do not hold for root (a container run) or on Windows. */
+const CAN_REFUSE = process.platform !== 'win32' && process.getuid?.() !== 0;
+const nonEmptyLines = (): string[] =>
+  text()
+    .split('\n')
+    .filter((line) => line !== '');
+/** A valid tombstone line for an id that names nothing: it costs a line and bytes, grants nothing and revokes nothing. */
+const filler = (index: number): string =>
+  JSON.stringify({ v: 1, revoked: `filler-${String(index)}`, at: AT });
+function writeFile(content: string): void {
+  mkdirSync(dirname(file()), { recursive: true });
+  writeFileSync(file(), content);
+}
+/** Make the keychain hold a usable key, as a previous session would have left it. */
+function useKey(): Buffer {
+  const key = Buffer.alloc(32, 5);
+  keychain.entries.set(COMMAND_GRANTS_KEY_ACCOUNT, key.toString('base64'));
+  return key;
+}
+/** A valid grant line for `root` (a canonical path string), as another session under this key would have written it. */
+function grantLine(key: Buffer, root: string, argv: readonly string[], id: string): string {
+  const digest = rootDigest(key, root);
+  return JSON.stringify({
+    v: 1,
+    id,
+    root: digest,
+    grant: grantDigest(key, digest, argv),
+    args: Math.max(0, argv.length - 1),
+    at: AT,
+  });
+}
 
 describe('the digests', () => {
   const key = Buffer.alloc(32, 7);
@@ -303,16 +338,63 @@ describe('the fold fails closed (ADR-0084 §5)', () => {
     expect(grants.matches(['npm', 'test'])).toBe(false);
   });
 
-  it('a revocation held back by a partial line is not lost: the next append starts on a fresh line', async () => {
+  it('a torn tail (a process killed mid-append) makes the store unreadable, and nothing is appended behind it', async () => {
     const grants = store();
     await grants.remember(['npm', 'test']);
-    appendFileSync(file(), '{"v":1,"revoked":"gr'); // a process killed mid-append: no terminator
-    // The next writer's LEADING newline keeps its record on its own line; the torn one makes the store unreadable, not welded.
-    appendFileSync(file(), '\n');
-    const lines = text()
-      .split('\n')
-      .filter((l) => l !== '');
-    expect(lines.at(-1)).toBe('{"v":1,"revoked":"gr');
+    appendFileSync(file(), '{"v":1,"revoked":"gr'); // no terminator
+    const before = text();
+    expect(grants.matches(['npm', 'test'])).toBe(false);
+    expect(await store().remember(['git', 'status'])).toEqual({ ok: false, reason: 'unreadable' });
+    expect(grants.revoke(1)).toEqual({ ok: false, reason: 'unreadable' });
+    expect(text(), 'a store that cannot be read is not appended to').toBe(before);
+  });
+
+  it('a grant time that is not an ISO instant is not a grant: a hand-edited line cannot carry a newline or an escape into a listing', async () => {
+    await store().remember(['npm', 'test']);
+    writeFile(text().replace(/"at":"[^"]*"/u, String.raw`"at":"x\n  2. sudo  (0 arguments)"`));
+    expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
+  });
+});
+
+describe('revocation does not depend on file order, and one argv is one grant', () => {
+  it('a replayed grant line stays revoked, and so does a tombstone placed above its grant', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    const grantRecord = nonEmptyLines()[0] ?? '';
+    grants.revoke(1);
+    expect(grants.matches(['npm', 'test'])).toBe(false);
+    appendFileSync(file(), `\n${grantRecord}\n`); // the same line again, after its tombstone
+    expect(store().matches(['npm', 'test']), 'a replayed line').toBe(false);
+    const tombstone = nonEmptyLines()[1] ?? '';
+    writeFile(`\n${tombstone}\n${grantRecord}\n`); // the tombstone moved above the grant
+    expect(store().matches(['npm', 'test']), 'a reordered tombstone').toBe(false);
+  });
+
+  it('two records for one argv (two processes remembered it at the same moment) are one listed grant, and one revoke withdraws both', () => {
+    const key = useKey();
+    writeFile(
+      `\n${grantLine(key, canonicalRoot(project), ['npm', 'test'], 'twin-a')}\n${grantLine(key, canonicalRoot(project), ['npm', 'test'], 'twin-b')}\n`,
+    );
+    const grants = store();
+    const listed = grants.list();
+    expect(listed.ok && listed.grants.map((g) => g.id)).toEqual(['twin-a']);
+    expect(grants.revoke(1)).toMatchObject({ ok: true, id: 'twin-a' });
+    expect(grants.matches(['npm', 'test']), 'the twin did not keep the command approved').toBe(
+      false,
+    );
+    expect(nonEmptyLines().filter((line) => line.includes('"revoked"'))).toHaveLength(2);
+  });
+
+  it('two overlapping remembers in one process make exactly one record', async () => {
+    const a = store();
+    const b = store();
+    const [first, second] = await Promise.all([
+      a.remember(['npm', 'test']),
+      b.remember(['npm', 'test']),
+    ]);
+    expect([first, second].filter((r) => r.ok && !r.alreadyRemembered)).toHaveLength(1);
+    expect([first, second].filter((r) => r.ok && r.alreadyRemembered)).toHaveLength(1);
+    expect(nonEmptyLines()).toHaveLength(1);
   });
 });
 
@@ -322,7 +404,7 @@ describe('revoking and listing', () => {
     await grants.remember(['npm', 'test']);
     await grants.remember(['git', 'status']);
     await grants.remember(['cat', 'a']);
-    expect(grants.revoke(2)).toEqual({ ok: true, id: 'grant-2' });
+    expect(grants.revoke(2)).toEqual({ ok: true, id: 'grant-2', program: 'git', args: 1 });
     expect(grants.matches(['git', 'status'])).toBe(false);
     expect(grants.matches(['npm', 'test'])).toBe(true);
     const listed = grants.list();
@@ -387,7 +469,7 @@ describe('revoking and listing', () => {
     expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
   });
 
-  it.skipIf(process.platform === 'win32')(
+  it.skipIf(!CAN_REFUSE)(
     'revokeAll that cannot remove the file says so, never "nothing to remove"',
     async () => {
       const grants = store();
@@ -435,17 +517,120 @@ describe('bounds (ADR-0118 §2)', () => {
     expect(await store().remember(['npm', 'test'])).toEqual({ ok: false, reason: 'full' });
   });
 
-  it('reads a file past the line bound or the size bound as “no grants”, and reports it once', async () => {
+  it('reads a file past the LINE bound as “no grants” at exactly the boundary: 8,192 lines read, 8,193 do not, blank lines are free', () => {
+    useKey();
+    const lines = (count: number): string =>
+      Array.from({ length: count }, (_, i) => filler(i)).join('\n');
+    writeFile(`\n${lines(COMMAND_GRANT_LIMITS.lines)}\n\n\n\n`);
+    expect(store().list(), 'the 8,192nd line, with blank lines around it').toEqual({
+      ok: true,
+      grants: [],
+    });
+    writeFile(`\n${lines(COMMAND_GRANT_LIMITS.lines + 1)}\n`);
+    expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain('more lines than the bound');
+  });
+
+  it('reads a file past the SIZE bound as “no grants” at exactly the boundary: 2 MiB reads, 2 MiB + 1 byte does not', () => {
+    useKey();
+    const padded = (size: number): string => {
+      const line = `\n${filler(0)}\n`;
+      return line + '\n'.repeat(size - Buffer.byteLength(line));
+    };
+    writeFile(padded(COMMAND_GRANT_LIMITS.bytes));
+    expect(statSync(file()).size).toBe(COMMAND_GRANT_LIMITS.bytes);
+    expect(store().list()).toEqual({ ok: true, grants: [] });
+    writeFile(padded(COMMAND_GRANT_LIMITS.bytes + 1));
+    const fresh = store();
+    expect(fresh.list()).toEqual({ ok: false, reason: 'unreadable' });
+    expect(messages.join()).toContain('larger than the size bound');
+  });
+
+  it('reads a file past the GRANT bounds as “no grants” too: 65 live grants for one root, or 1,025 in all', () => {
+    const key = useKey();
+    const forRoot = (n: number, root: string, offset = 0): string[] =>
+      Array.from({ length: n }, (_, i) =>
+        grantLine(key, root, ['cmd', String(i + offset)], `p${String(i + offset)}`),
+      );
+    writeFile(`\n${forRoot(COMMAND_GRANT_LIMITS.perRoot, canonicalRoot(project)).join('\n')}\n`);
+    expect(store().list().ok, '64 for a root').toBe(true);
+    writeFile(
+      `\n${forRoot(COMMAND_GRANT_LIMITS.perRoot + 1, canonicalRoot(project)).join('\n')}\n`,
+    );
+    expect(store().list(), '65 for a root').toEqual({ ok: false, reason: 'unreadable' });
+    const many = Array.from({ length: COMMAND_GRANT_LIMITS.total + 1 }, (_, i) =>
+      grantLine(key, `/r/${String(Math.floor(i / 60))}`, ['cmd', String(i)], `t${String(i)}`),
+    );
+    writeFile(`\n${many.join('\n')}\n`);
+    expect(store().list(), '1,025 in all').toEqual({ ok: false, reason: 'unreadable' });
+  });
+
+  it('refuses to ADD a line when the file would pass the line or size bound, with room for exactly one tombstone', async () => {
+    useKey();
+    const lines = (count: number): string =>
+      `\n${Array.from({ length: count }, (_, i) => filler(i)).join('\n')}\n`;
+    writeFile(lines(COMMAND_GRANT_LIMITS.lines - 2));
+    expect(store().canRemember(), '8,190 lines: the grant line fits').toEqual({ ok: true });
+    writeFile(lines(COMMAND_GRANT_LIMITS.lines - 1));
+    expect(store().canRemember(), '8,191 lines: only the tombstone slot is left').toEqual({
+      ok: false,
+      reason: 'full',
+    });
+    expect(await store().remember(['npm', 'test'])).toEqual({ ok: false, reason: 'full' });
+    const padded = (size: number): string => {
+      const line = `\n${filler(0)}\n`;
+      return line + '\n'.repeat(size - Buffer.byteLength(line));
+    };
+    writeFile(padded(COMMAND_GRANT_LIMITS.bytes - 1024));
+    expect(store().canRemember(), 'a grant record still fits under 2 MiB').toEqual({ ok: true });
+    writeFile(padded(COMMAND_GRANT_LIMITS.bytes - 1023));
+    expect(store().canRemember()).toEqual({ ok: false, reason: 'full' });
+  });
+
+  it('a revoke that would push the file past the line bound says so instead of making every grant unreadable', async () => {
     const grants = store();
     await grants.remember(['npm', 'test']);
-    appendFileSync(file(), '\n'.repeat(COMMAND_GRANT_LIMITS.lines + 5) + '{"v":1}\n');
-    expect(grants.matches(['npm', 'test'])).toBe(false);
+    const extra = (count: number): string =>
+      Array.from({ length: count }, (_, i) => filler(i)).join('\n');
+    appendFileSync(file(), `\n${extra(COMMAND_GRANT_LIMITS.lines - 2)}\n`); // 1 grant + 8,190 = 8,191 lines
+    expect(store().revoke(1)).toMatchObject({ ok: true }); // 8,192: exactly the bound
+    expect(store().list(), 'still readable at the bound').toEqual({ ok: true, grants: [] });
     rmSync(file());
-    writeFileSync(file(), ' '.repeat(COMMAND_GRANT_LIMITS.bytes + 1));
-    const fresh = store();
-    expect(fresh.matches(['npm', 'test'])).toBe(false);
-    expect(fresh.list()).toEqual({ ok: false, reason: 'unreadable' });
-    expect(messages.length).toBeGreaterThanOrEqual(1);
+    await store().remember(['npm', 'test']);
+    appendFileSync(file(), `\n${extra(COMMAND_GRANT_LIMITS.lines - 1)}\n`); // 8,192 lines
+    const before = text();
+    expect(store().revoke(1)).toEqual({ ok: false, reason: 'full' });
+    expect(text(), 'nothing was written').toBe(before);
+    expect(
+      store().matches(['npm', 'test']),
+      'the grant is still readable and live; --all is the recovery',
+    ).toBe(true);
+    expect(removeCommandGrantsFile(home)).toEqual({ ok: true, removed: true });
+  });
+
+  it('the machine-wide total is exact (the 1,024th passes) and a root keeps its own quota when another is full', async () => {
+    const key = useKey();
+    const fillRoot = (root: string, n: number, tag: string): string[] =>
+      Array.from({ length: n }, (_, i) =>
+        grantLine(key, root, ['cmd', String(i)], `${tag}${String(i)}`),
+      );
+    const others = Array.from({ length: 16 }, (_, r) =>
+      fillRoot(`/other/${String(r)}`, 60, `o${String(r)}-`),
+    ).flat();
+    writeFile(`\n${[...others, ...fillRoot('/full/root', 63, 'f')].join('\n')}\n`); // 16*60 + 63 = 1,023
+    expect(await store().remember(['npm', 'test'])).toMatchObject({ ok: true }); // the 1,024th
+    expect(await store().remember(['npm', 'again'])).toEqual({ ok: false, reason: 'full' });
+    writeFile(
+      `\n${fillRoot(canonicalRoot(project), COMMAND_GRANT_LIMITS.perRoot, 'p').join('\n')}\n`,
+    );
+    expect(store().canRemember(), 'this root is full').toEqual({ ok: false, reason: 'full' });
+    const otherRoot = mkdtempSync(join(tmpdir(), 'relavium-grants-other-'));
+    try {
+      expect(store(otherRoot).canRemember(), 'another root is not').toEqual({ ok: true });
+    } finally {
+      rmSync(otherRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -496,27 +681,123 @@ describe('the keychain (ADR-0118 §2, failure modes)', () => {
 });
 
 describe('the file protocol', () => {
-  it('refuses to write through a symlink at the grants path', async () => {
+  it('refuses a symlink at the grants path for reads AND writes: nothing is followed, nothing is written through it', async () => {
     const target = join(home, 'elsewhere.txt');
-    writeFileSync(target, ''); // an empty file reads as “no grants”, so only the write path can refuse
+    writeFileSync(target, ''); // an empty file would read as “no grants”, so only the refusal can explain a failure
     mkdirSync(join(home, '.relavium'), { recursive: true });
     symlinkSync(target, file());
-    const result = await store().remember(['npm', 'test']);
-    expect(result).toEqual({ ok: false, reason: 'unwritable' });
+    const grants = store();
+    expect(grants.matches(['npm', 'test'])).toBe(false);
+    expect(grants.list()).toEqual({ ok: false, reason: 'unreadable' });
+    expect(await grants.remember(['npm', 'test'])).toEqual({ ok: false, reason: 'unreadable' });
+    expect(grants.canRemember()).toEqual({ ok: false, reason: 'unreadable' });
     expect(readFileSync(target, 'utf8'), 'nothing was written through the link').toBe('');
+    expect(messages.join()).toContain('revoke --all');
+    // The recovery removes the link itself and leaves what it pointed at.
+    expect(removeCommandGrantsFile(home)).toEqual({ ok: true, removed: true });
+    expect(existsSync(target)).toBe(true);
+    expect(() => lstatSync(file())).toThrow();
   });
 
-  it('two stores appending in turn (two processes) lose no line and double-remember one grant harmlessly', async () => {
+  it('a symlink to a REAL grants file is not followed either: the same grants would otherwise be honoured through a link', async () => {
+    await store().remember(['npm', 'test']);
+    const real = join(home, 'real-grants.ndjson');
+    writeFileSync(real, readFileSync(file()));
+    rmSync(file());
+    symlinkSync(real, file());
+    expect(store().matches(['npm', 'test'])).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'a FIFO at the path is unreadable at once instead of blocking the approval hook',
+    () => {
+      mkdirSync(join(home, '.relavium'), { recursive: true });
+      execFileSync('mkfifo', [file()]);
+      const started = Date.now();
+      expect(store().matches(['npm', 'test'])).toBe(false);
+      expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
+      expect(Date.now() - started, 'it did not wait for a writer').toBeLessThan(2000);
+    },
+  );
+
+  it('a directory at the path is unreadable, and removing it as a file is a failure, not “nothing to remove”', () => {
+    mkdirSync(file(), { recursive: true });
+    expect(store().list()).toEqual({ ok: false, reason: 'unreadable' });
+    expect(removeCommandGrantsFile(home)).toEqual({ ok: false, reason: 'unwritable' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'creates the file owner-only and heals a looser mode on the next touch',
+    async () => {
+      const previous = process.umask(0);
+      try {
+        await store().remember(['npm', 'test']);
+        expect(
+          statSync(file()).mode & 0o777,
+          'created owner-only even with a permissive umask',
+        ).toBe(0o600);
+        chmodSync(file(), 0o644);
+        await store().remember(['git', 'status']);
+        expect(statSync(file()).mode & 0o777, 'healed').toBe(0o600);
+      } finally {
+        process.umask(previous);
+      }
+    },
+  );
+
+  it('two stores appending in turn (two processes) lose no line and remember one grant once', async () => {
     const a = store();
     const b = store();
     await a.remember(['npm', 'test']);
     await b.remember(['git', 'status']);
     await a.remember(['git', 'status']); // already there: idempotent
-    expect(
-      text()
-        .split('\n')
-        .filter((l) => l !== ''),
-    ).toHaveLength(2);
+    expect(nonEmptyLines()).toHaveLength(2);
     expect(a.matches(['git', 'status']) && b.matches(['npm', 'test'])).toBe(true);
   });
+});
+
+describe('canRemember and revoke when the store cannot be written', () => {
+  it('is offered on a machine that has never remembered anything: no key yet, no file yet', () => {
+    expect(keychain.entries.size).toBe(0);
+    expect(store().canRemember()).toEqual({ ok: true });
+    expect(keychain.entries.size, 'a check never generates the key').toBe(0);
+  });
+
+  it('is not offered for an unreadable file', () => {
+    writeFile('not json\n');
+    expect(store().canRemember()).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
+  it.skipIf(!CAN_REFUSE)(
+    'is not offered when the file or its directory cannot be written, and a revoke says unwritable',
+    async () => {
+      await store().remember(['npm', 'test']);
+      chmodSync(file(), 0o400);
+      try {
+        expect(store().canRemember()).toEqual({ ok: false, reason: 'unwritable' });
+        expect(await store().remember(['git', 'status'])).toEqual({
+          ok: false,
+          reason: 'unwritable',
+        });
+        const before = text();
+        expect(store().revoke(1)).toEqual({ ok: false, reason: 'unwritable' });
+        expect(text(), 'a revoke that could not be written changed nothing, and said so').toBe(
+          before,
+        );
+        expect(store().matches(['npm', 'test'])).toBe(true);
+      } finally {
+        chmodSync(file(), 0o600);
+      }
+      rmSync(file());
+      chmodSync(join(home, '.relavium'), 0o500);
+      try {
+        expect(store().canRemember(), 'no file yet and a directory that refuses').toEqual({
+          ok: false,
+          reason: 'unwritable',
+        });
+      } finally {
+        chmodSync(join(home, '.relavium'), 0o700);
+      }
+    },
+  );
 });

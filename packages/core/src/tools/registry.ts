@@ -846,10 +846,11 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
     // Under an interactive approval regime a miss is the HOST's decision (ADR-0118 §1): it reaches the confirm hook as a request
     // carrying `commandAdmitted: false`, and a regime with no hook still fails closed there (`no_approval_hook`). Without a regime
     // — a workflow runs unattended — the allowlist stays the only authority and a miss throws, as it always did.
-    if (
-      ctx.approval === undefined &&
-      !commandAllowed(target.command, target.argv, ctx.toolPolicy)
-    ) {
+    // "The host decides" only when the call WILL reach the hook as a `process` request: a tool that is also a write or an egress
+    // is classified by that first (see `governedAction`) and would arrive without an argv or an admitted flag, so for it the
+    // allowlist stays the authority.
+    const hostDecides = ctx.approval !== undefined && governedAction(def, target) === 'process';
+    if (!hostDecides && !commandAllowed(target.command, target.argv, ctx.toolPolicy)) {
       throw new ToolPolicyError(
         def.id,
         'command_not_allowed',

@@ -1430,8 +1430,9 @@ export class AgentSession {
   /**
    * Run a USER-invoked `!`-shell command (2.5.D, [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — the additive engine method that routes the shell escape through the ONE `run_command` boundary:
-   * `enforcePolicy(allowedCommands)` (the exact-match allowlist, enforced BEFORE approval) → the mode-aware
-   * `confirmAction` gate → the hardened process arm (`spawn`, `shell:false`). It reuses {@link #runTurn}'s
+   * `enforcePolicy(allowedCommands)` (the exact-match allowlist; under an approval regime a miss reaches the mode-aware
+   * `confirmAction` hook as a request instead of failing, ADR-0118 §1) → the `confirmAction` gate → the hardened process arm
+   * (`spawn`, `shell:false`). It reuses {@link #runTurn}'s
    * dispatch-context construction VERBATIM (`this.#turnPolicy`, the session `toolPolicy`, `fsScope`,
    * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
    * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
@@ -1460,7 +1461,7 @@ export class AgentSession {
       // The user-initiated `!` GRANTS `run_command` for THIS one-off dispatch (the user typed it — the grant is
       // implicit), regardless of whether the bound agent lists it in `tools`. This never reaches the model: it is a
       // direct dispatch, not a turn, so the model's granted/advertised set is untouched. The security gate stays the
-      // allowlist (`enforcePolicy`, BEFORE approval) + the mode-aware `confirmAction`, never this grant.
+      // allowlist (`enforcePolicy`) + the mode-aware `confirmAction`, never this grant.
       const grantedToolIds = new Set<ToolId>([...(this.#agent.tools ?? []), 'run_command']);
       const outcome = await this.#deps.registry.dispatch(toolCall, {
         ...this.#buildDispatchContext(grantedToolIds, this.#turnPolicy),
@@ -1496,8 +1497,8 @@ export class AgentSession {
     } catch (err) {
       if (err instanceof AgentTurnError) return { kind: 'failed', message: err.message };
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
-      // An allowlist MISS is a policy denial with `command_not_allowed` — the host shows the actionable
-      // `[chat].allowed_commands` hint; any other `tool_denied` (an approval reject / protected path) is a plain
+      // An allowlist MISS with no approval regime is a policy denial with `command_not_allowed` — the host shows the actionable
+      // `[chat].allowed_commands` hint (under a regime the miss is a request to the hook instead); any other `tool_denied` (an approval reject / protected path) is a plain
       // decline. Both messages are secret-free (the error classes never echo the resolved command value).
       if (err instanceof ToolPolicyError) {
         return {
