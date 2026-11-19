@@ -81,9 +81,6 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
- *  `Ctrl+G` allow for the session, `Ctrl+N` deny, `Ctrl+R` deny with a reason (a reject carrying WHY, via the
- *  `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop the turn (ADR-0115 §2). */
 /**
  * What the model is told when its command was too large for the approval card to show (no command content). It is the host's own
  * limit, not the person's decision, so it travels as a `mode` refusal with this fixed label and not as the person's words.
@@ -91,6 +88,10 @@ import {
 export const UNSHOWABLE_COMMAND_REASON =
   'this command is too large for the approval card to show; run it as smaller commands';
 
+/** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
+ *  `Ctrl+G` allow for the session, `Ctrl+O` (a command only) remember it for the project, `Ctrl+N` deny, `Ctrl+R` deny with a
+ *  reason (a reject carrying WHY, via the `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop
+ *  the turn (ADR-0115 §2). */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   readonly live?: ToolApprovalLiveContext;
@@ -1015,6 +1016,12 @@ export function createChatStore(
           reject(abortError());
           return;
         }
+        // A command card is built from the command's own preview. Without one there is nothing to show, and an empty card must not
+        // offer an answer (the built-in `run_command` always publishes one; a hand-built tool might not): refused, as too large to show.
+        if (facts !== undefined && live?.preview === undefined) {
+          resolve({ outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON });
+          return;
+        }
         const clear = (): void => {
           approval = undefined;
           review = undefined;
@@ -1221,11 +1228,17 @@ function noteOnly(before: ToolReviewState, action: ReviewKeyAction): boolean {
   return Object.keys(was).every((name) => name === 'message' || was[name] === now[name]);
 }
 
-/** What a tool row shows as its target: the preview's, except a command's, which is its program alone. */
+/**
+ * What a tool row shows as its target: the preview's, except a command's, which is its program and how many arguments it had (the
+ * arguments themselves may hold a credential, and the row stays in the transcript; `/details` and the card show them).
+ */
 function rowTarget(event: Extract<ToolLiveEvent, { phase: 'preview' }>): string | undefined {
-  return event.toolId === 'run_command'
-    ? (event.preview.fields[0]?.value ?? event.preview.target)
-    : event.preview.target;
+  if (event.toolId !== 'run_command') return event.preview.target;
+  const program = event.preview.fields[0]?.value ?? event.preview.target;
+  const count = event.preview.fields.length - 1;
+  return program === undefined || count <= 0
+    ? program
+    : `${program} (${String(count)} ${count === 1 ? 'argument' : 'arguments'})`;
 }
 
 function boundedDisplayText(source: string, limit: number): string {

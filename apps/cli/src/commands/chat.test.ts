@@ -1181,6 +1181,77 @@ describe('chatCommand', () => {
     ).toBe(false);
   });
 
+  it('a Remember answered on the real card writes the grant, leaves a linked session approval, and /permissions --revoke withdraws both (ADR-0118 §2)', async () => {
+    const entries = new Map<string, string>();
+    const keychain = {
+      get: (account: string) => entries.get(account) ?? null,
+      set: (account: string, secret: string) => void entries.set(account, secret),
+      delete: (account: string) => entries.delete(account),
+    };
+    const { d } = deps(
+      [],
+      [
+        [
+          { type: 'tool_call_start', id: 'call-1', name: 'run_command' },
+          {
+            type: 'tool_call_delta',
+            id: 'call-1',
+            argsJsonDelta: JSON.stringify({ command: process.execPath, args: ['--version'] }),
+          },
+          { type: 'tool_call_end', id: 'call-1' },
+          stop('tool_use'),
+        ],
+        textTurn('Done.'),
+      ],
+    );
+    let notices: () => string[] = () => [];
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        keychain,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          notices = () =>
+            ctx.store
+              .getSnapshot()
+              .state.transcript.filter((entry) => entry.role === 'notice')
+              .map((entry) => entry.text);
+          const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
+          try {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            const turn = ctx.processLine('Run node --version');
+            await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
+            ctx.store.answerApproval({ outcome: 'approve', scope: 'remember' });
+            await turn;
+            expect(notices().join('\n')).toContain('Allowed now and remembered for this project.');
+            await ctx.processLine('/permissions');
+            const listing = notices().at(-1) ?? '';
+            expect(listing).toContain('Remembered for this project (1):');
+            expect(listing).toContain('Approved for this session (1):');
+            expect(listing, 'the session entry says it is the Remember’s').toContain(
+              '(also remembered)',
+            );
+            await ctx.processLine('/permissions --revoke 1');
+            expect(notices().at(-1)).toContain('This chat’s session approval of it went too.');
+            await ctx.processLine('/permissions');
+            expect(notices().at(-1)).toContain('Approved for this session: none.');
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          } finally {
+            off();
+          }
+        },
+      },
+    );
+    expect(
+      createCommandGrantStore({ homeDir: home, projectRoot: cwd, keychain }).list(),
+      'the revoke reached the file',
+    ).toMatchObject({ ok: true, grants: [] });
+  });
+
   it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
     const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);

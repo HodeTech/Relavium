@@ -248,7 +248,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   }
   if (document !== undefined && document.required.length > 0) {
     const count = document.masks.length;
-    const values = `${count} masked value${count === 1 ? '' : 's'} in this change.`;
+    // A command's masked value can show up in two places (its quoted line and its own row), and it is not a "change".
+    const values = `${count} masked value${count === 1 ? '' : 's'} in this ${input.commandFacts === undefined ? 'change' : 'command'}.`;
     warnings.push(
       input.inspected
         ? `\u26a0 ${values}`

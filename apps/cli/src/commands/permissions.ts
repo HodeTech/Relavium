@@ -146,7 +146,7 @@ export function permissionsRevokeCommand(
       write(
         deps,
         removed.removed
-          ? 'Removed every remembered command, for every project.\n'
+          ? 'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws them with /permissions --revoke --session.\n'
           : 'There were no remembered commands to remove.\n',
       );
     }

@@ -1,4 +1,4 @@
-import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
+import { BUILTIN_TOOLS, type ToolApprovalRequest, type ToolPreview } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import { createReviewDocument } from '../render/tui/tool-review-projection.js';
@@ -34,6 +34,22 @@ describe('a command is one row per argument', () => {
   it('a field with no name is a bare value: one source line, no name line above it', () => {
     const document = createReviewDocument(bare(['git', 'status', '-s']), { requireAllMasks: true });
     expect(document.valid).toBe(true);
+    expect(document.lines.map((line) => line.label)).toEqual([
+      'target',
+      'field value',
+      'field value',
+      'field value',
+    ]);
+  });
+
+  it('the preview run_command really emits (core) is one the review document shows as a target and bare rows', () => {
+    const tool = BUILTIN_TOOLS.find((def) => def.id === 'run_command');
+    const emitted = tool?.preview?.({ command: 'cat', args: ['a b', ''] });
+    if (emitted === undefined) throw new Error('run_command has no approval preview');
+    const document = createReviewDocument(emitted, { requireAllMasks: true });
+    expect(document.valid).toBe(true);
+    expect(emitted.target).toBe("cat 'a b' ''");
+    expect(emitted.fields.every((field) => field.name === '')).toBe(true);
     expect(document.lines.map((line) => line.label)).toEqual([
       'target',
       'field value',
@@ -211,7 +227,7 @@ describe('the full view of a command carries its facts and the Remember question
   });
 });
 
-describe('the transcript row of a command names the program only', () => {
+describe('the transcript row of a command names the program and how many arguments it had, never the arguments', () => {
   const REQUEST_PREVIEW: ToolPreview = bare([
     'curl',
     '-H',
@@ -219,7 +235,7 @@ describe('the transcript row of a command names the program only', () => {
     'https://example.com',
   ]);
 
-  it('the target of the tool row is the program; the arguments live in the details document', () => {
+  it('the target of the tool row is the program and a count; the arguments live in the details document', () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     store.applyToolLiveEvent({ phase: 'started', callId: 'c1', toolId: 'run_command' });
     store.applyToolLiveEvent({
@@ -229,8 +245,26 @@ describe('the transcript row of a command names the program only', () => {
       preview: REQUEST_PREVIEW,
     });
     const display = store.getSnapshot().toolDisplays.get('c1');
-    expect(display?.target).toBe('curl');
+    expect(display?.target).toBe('curl (3 arguments)');
     expect(JSON.stringify(display?.target)).not.toContain('hunter2');
+  });
+
+  it('a command with one argument says so in the singular, and one with none is its program alone', () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    for (const [callId, argv] of [
+      ['c-one', ['git', 'status']],
+      ['c-none', ['ls']],
+    ] as const) {
+      store.applyToolLiveEvent({ phase: 'started', callId, toolId: 'run_command' });
+      store.applyToolLiveEvent({
+        phase: 'preview',
+        callId,
+        toolId: 'run_command',
+        preview: bare(argv),
+      });
+    }
+    expect(store.getSnapshot().toolDisplays.get('c-one')?.target).toBe('git (1 argument)');
+    expect(store.getSnapshot().toolDisplays.get('c-none')?.target).toBe('ls');
   });
 
   it('any other tool keeps its preview target', () => {
@@ -243,6 +277,28 @@ describe('the transcript row of a command names the program only', () => {
       preview: { kind: 'operation', target: 'src/app.ts', fields: [] },
     });
     expect(store.getSnapshot().toolDisplays.get('c2')?.target).toBe('src/app.ts');
+  });
+});
+
+describe('a command card with nothing to show is refused, not drawn empty', () => {
+  it('facts without a live preview resolve as the same host-limit refusal, and open no card', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const answer = await store.requestApproval(
+      {
+        toolId: 'run_command',
+        action: 'process',
+        preview: { command: 'x' },
+        argv: ['x'],
+        commandAdmitted: false,
+      },
+      true,
+      undefined,
+      undefined,
+      FACTS,
+    );
+    expect(answer).toMatchObject({ outcome: 'reject', denialClass: 'mode' });
+    expect(store.getSnapshot().approval).toBeUndefined();
+    expect(store.getSnapshot().review).toBeUndefined();
   });
 });
 
@@ -269,7 +325,10 @@ describe('a command card refused by the review is told so, in words that help', 
     store.handleReviewInput('n', { ctrl: true });
     await Promise.resolve();
     expect(answer).toMatchObject({ outcome: 'reject' });
+    expect(answer).toMatchObject({ denialClass: 'mode' });
     expect(JSON.stringify(answer)).toContain('smaller commands');
-    expect(JSON.stringify(answer)).not.toContain('"a"');
+    expect(JSON.stringify(answer), 'none of the 70 arguments reached the model').not.toMatch(
+      /a a a/u,
+    );
   });
 });

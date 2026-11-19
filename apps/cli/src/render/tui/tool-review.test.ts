@@ -1741,6 +1741,7 @@ describe('reviewAnswerKey — the answer keys are Ctrl chords, never a bare lett
     expect(reviewAnswerKey('g', CTRL)).toBe('always');
     expect(reviewAnswerKey('n', CTRL)).toBe('deny');
     expect(reviewAnswerKey('r', CTRL)).toBe('reason');
+    expect(reviewAnswerKey('o', CTRL), 'a command card’s Remember').toBe('remember');
   });
 
   it('answers nothing for a bare printable character — not y, g, n, r, a, c, a digit or an upper-case letter', () => {
@@ -2000,6 +2001,25 @@ describe('isAffirmativeReviewKey — only the Ctrl+Y / Ctrl+G chords are affirma
       expect(isAffirmativeReviewKey(state, 'y', CTRL)).toBe(true);
       expect(isAffirmativeReviewKey(state, 'g', CTRL)).toBe(true);
     }
+  });
+
+  it('counts Ctrl+O as affirmative on a command card only; anywhere else it is a foreign key like any other', () => {
+    const facts = {
+      standing: 'not-pre-approved',
+      runsCode: false,
+      protectedPath: false,
+      cwd: '/work',
+      offers: { session: true, remember: true },
+    } as const;
+    const command = initialToolReview(
+      'approval',
+      'call',
+      createReviewDocument(editedFilePreview(8, { 4: 'four' })),
+      facts,
+    );
+    for (const state of [command, { ...command, screen: 'full' as const }])
+      expect(isAffirmativeReviewKey(state, 'o', CTRL)).toBe(true);
+    expect(isAffirmativeReviewKey(card(), 'o', CTRL)).toBe(false);
   });
 
   it('is false for a bare letter or digit, a Ctrl+Alt chord, and the non-affirmative chords (Ctrl+N, Ctrl+R)', () => {

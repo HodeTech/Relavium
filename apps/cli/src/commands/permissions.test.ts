@@ -295,7 +295,9 @@ describe('relavium permissions revoke', () => {
     await storeFor(other).remember(['git', 'push']);
     const first = deps();
     expect(permissionsRevokeCommand({ all: true }, first.deps)).toBe(EXIT_CODES.success);
-    expect(first.out()).toBe('Removed every remembered command, for every project.\n');
+    expect(first.out()).toBe(
+      'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws them with /permissions --revoke --session.\n',
+    );
     expect(existsSync(file())).toBe(false);
     expect(storeFor(other).matches(['git', 'push'])).toBe(false);
     const second = deps();

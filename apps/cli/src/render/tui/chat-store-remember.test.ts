@@ -103,6 +103,27 @@ const flush = async (): Promise<void> => {
   await Promise.resolve();
 };
 
+describe('Ctrl+O on a card that is not a command’s', () => {
+  it('is a key the card has no use for: it starts no question and still counts as typing for the next answer', async () => {
+    const r = rig(undefined);
+    at(1000);
+    expect(r.chord('o')).toBe('handled');
+    expect(r.snapshot().rememberConfirm).toBe(false);
+    at(1400); // inside the typeahead window of the stray key
+    r.chord('y');
+    await flush();
+    expect(
+      r.answers,
+      'Ctrl+Y so soon after a stray key is refused, as after any foreign key',
+    ).toEqual([]);
+    r.show();
+    at(1400 + 1600);
+    r.chord('y');
+    await flush();
+    expect(r.answers).toEqual([{ outcome: 'approve', scope: 'once' }]);
+  });
+});
+
 describe('Ctrl+O on a command card', () => {
   it('the card carries the facts it was opened with', () => {
     const r = rig(FACTS(true));

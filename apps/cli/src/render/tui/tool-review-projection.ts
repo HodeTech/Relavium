@@ -182,8 +182,7 @@ function isImmutablePreview(preview: ToolPreview): boolean {
  * Source snapshots occur once; row indexes and masks refer to absolute original UTF-16 offsets. Building scans
  * every field for secrets, which is the cost of the review (260 ms per MiB), so the one preview that is shown as
  * a tool event, then as a card, then as details is built once: the document is kept for the frozen preview.
- */
-/**
+ *
  * `requireAllMasks` makes EVERY masked span a requirement the person must reveal and see before an affirmative answer counts, not
  * only the ones that hold characters a credential does not (ADR-0118 §1): a command is the one call whose arguments can carry a
  * credential into a process, and a program name or an argument that is nothing but a mask is not something to approve unseen.
