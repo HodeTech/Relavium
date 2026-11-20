@@ -113,25 +113,37 @@ describe('readPermissions', () => {
     expect(short[0]?.text).toBe('ls -la');
   });
 
-  it('never throws: a store or a cache that throws is said in a sentence, or an empty list', () => {
-    const throwing: PermissionsDeps = {
-      grants: {
-        list: () => {
-          throw new Error('boom');
-        },
-        revokeById: () => ({ ok: false, reason: 'no-such-grant' }),
-        matches: () => false,
+  it('keeps a row of exactly 400 characters whole and cuts one of 401 to 400 with an ellipsis', () => {
+    const argvOf = (length: number): readonly string[] => ['x'.repeat(length)];
+    const exactly = readPermissions(deps({ session: [argvOf(400)] })).session?.[0]?.text ?? '';
+    expect([...exactly]).toHaveLength(400);
+    expect(exactly.endsWith('…')).toBe(false);
+    const over = readPermissions(deps({ session: [argvOf(401)] })).session?.[0]?.text ?? '';
+    expect([...over]).toHaveLength(400);
+    expect(over.endsWith('…')).toBe(true);
+  });
+
+  it('says a store that throws in a sentence, and lets a cache that throws surface to the host, never an empty list that claims nothing is approved', () => {
+    const grants = {
+      list: () => {
+        throw new Error('boom');
       },
-      session: {
-        commandApprovals: () => {
-          throw new Error('boom');
-        },
-        forgetCommandApproval: () => undefined,
-      },
+      revokeById: () => ({ ok: false, reason: 'no-such-grant' }) as const,
+      matches: () => false,
     };
-    const snapshot = readPermissions(throwing);
-    expect(snapshot.project.ok).toBe(false);
-    expect(snapshot.session).toEqual([]);
+    const withStoreFault = readPermissions({ grants, session: new ApprovalCache() });
+    expect(withStoreFault.project).toEqual({
+      ok: false,
+      text: 'The remembered commands could not be read.',
+    });
+    expect(withStoreFault.session).toEqual([]);
+    const cache = {
+      commandApprovals: (): never => {
+        throw new Error('boom');
+      },
+      forgetCommandApproval: () => undefined,
+    };
+    expect(() => readPermissions({ grants: undefined, session: cache })).toThrow('boom');
   });
 
   it('masks a secret-shaped argument in a session row, as the card’s title does', () => {
@@ -157,6 +169,19 @@ describe('readPermissions', () => {
         text: PROJECT_FAILURES[reason],
       });
     }
+    expect(PROJECT_FAILURES['unreadable']).toBe(
+      'The remembered-commands file could not be read, so nothing in it is trusted. Running relavium permissions revoke --all removes it.',
+    );
+    expect(PROJECT_FAILURES['no-key']).toBe(
+      'The OS keychain is not available, so the remembered commands cannot be read.',
+    );
+    expect(PROJECT_FAILURES['unwritable']).toBe(
+      'The remembered-commands file could not be written, so nothing was withdrawn.',
+    );
+    expect(PROJECT_FAILURES['full']).toBe(
+      'The remembered-commands file has no room for a withdrawal. Running relavium permissions revoke --all removes it.',
+    );
+    expect(NOT_AVAILABLE).toBe('Remembered commands are not available in this chat.');
     // A terminal shows a backtick as a backtick: the sentences carry none.
     for (const sentence of Object.values(PROJECT_FAILURES)) expect(sentence).not.toContain('`');
     expect(readPermissions(deps({ noStore: true })).project).toEqual({
@@ -181,12 +206,12 @@ describe('withdrawProjectGrant', () => {
       linked: [{ argv: ['npm', 'test'], grantId: 'a-twin' }],
     });
     expect(withdrawProjectGrant(row, d)).toBe(
-      'Withdrawn, with its session approval. Auto mode asks about it again.',
+      'Withdrawn, with its session approval. The chat asks about it again.',
     );
     expect(d.cache.commandApprovals()).toEqual([]);
   });
 
-  it('does not promise a question while a plain session approval of the same command still stands: it runs unasked in auto', () => {
+  it('does not promise a question while a plain session approval of the same command still stands: it runs unasked in every mode', () => {
     const covered = new Set(['npm test']);
     const d = deps({ session: [['npm', 'test']], matches: (argv) => covered.has(argv.join(' ')) });
     d.revokeById.mockImplementation(() => {
@@ -194,9 +219,69 @@ describe('withdrawProjectGrant', () => {
       return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
     });
     expect(withdrawProjectGrant(row, d)).toBe(
-      'Withdrawn, but a session approval of it remains: auto mode still runs it unasked.',
+      'Withdrawn, but a session approval of it remains: it still runs unasked.',
     );
     expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['npm', 'test']]);
+  });
+
+  it('does not claim a session approval remains when it belongs to ANOTHER remembered command: only the approvals this grant covered count (security sitting 2, M2)', () => {
+    // Two grants: A (npm test), withdrawn here; B (git status), with its own approval in this chat. B's approval matches before and after.
+    const live = new Set(['npm test', 'git status']);
+    const d = deps({
+      linked: [{ argv: ['git', 'status'], grantId: 'b' }],
+      matches: (argv) => live.has(argv.join(' ')),
+    });
+    d.revokeById.mockImplementation(() => {
+      live.delete('npm test');
+      return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
+    });
+    expect(withdrawProjectGrant(row, d)).toBe('Withdrawn. Auto mode asks about it again.');
+    expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['git', 'status']]);
+    // And with a plain approval of A's own command standing beside B's, the answer does say so.
+    const live2 = new Set(['npm test', 'git status']);
+    const d2 = deps({
+      session: [['npm', 'test']],
+      linked: [{ argv: ['git', 'status'], grantId: 'b' }],
+      matches: (argv) => live2.has(argv.join(' ')),
+    });
+    d2.revokeById.mockImplementation(() => {
+      live2.delete('npm test');
+      return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
+    });
+    expect(withdrawProjectGrant(row, d2)).toBe(
+      'Withdrawn, but a session approval of it remains: it still runs unasked.',
+    );
+  });
+
+  it('an unrelated plain approval is not reported as remaining when the covered approval went with its grant', () => {
+    // The grant of `npm test` had a linked session approval (dropped with it); `git status` has an approval of its own, covered by nothing.
+    const live = new Set(['npm test']);
+    const d = deps({
+      linked: [{ argv: ['npm', 'test'], grantId: 'a' }],
+      session: [['git', 'status']],
+      matches: (argv) => live.has(argv.join(' ')),
+    });
+    d.revokeById.mockImplementation(() => {
+      live.clear();
+      return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
+    });
+    expect(withdrawProjectGrant(row, d)).toBe(
+      'Withdrawn, with its session approval. The chat asks about it again.',
+    );
+    expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['git', 'status']]);
+  });
+
+  it('compares approvals by every element of the argv: another command’s approval is not "its" approval', () => {
+    const live = new Set(['npm test']);
+    const d = deps({
+      session: [['npm', 'test', '--watch']], // a different argv: not covered by the grant of `npm test`
+      matches: (argv) => live.has(argv.join(' ')),
+    });
+    d.revokeById.mockImplementation(() => {
+      live.clear();
+      return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
+    });
+    expect(withdrawProjectGrant(row, d)).toBe('Withdrawn. Auto mode asks about it again.');
   });
 
   it('an unrelated session approval does not change the answer', () => {
@@ -212,11 +297,11 @@ describe('withdrawProjectGrant', () => {
   it('says in one short row why a withdrawal could not be written, and changes nothing', () => {
     for (const reason of ['unwritable', 'full', 'unreadable', 'no-key'] as const) {
       const text = withdrawProjectGrant(row, deps({ revokeById: { ok: false, reason } }));
-      expect(text.length).toBeLessThanOrEqual(70);
+      expect(text.length).toBeLessThanOrEqual(78);
       expect(text, reason).toBe(
         {
           unwritable: 'Could not write the withdrawal; nothing changed.',
-          full: 'No room in the file for a withdrawal; revoke --all clears it.',
+          full: 'No room in the file; relavium permissions revoke --all clears it.',
           unreadable: 'The remembered-commands file could not be read.',
           'no-key': 'The OS keychain is not available.',
         }[reason],
@@ -242,7 +327,7 @@ describe('withdrawSessionApproval', () => {
         { argv: ['cat', 'a', 'b'], text: 'cat a b', alsoRemembered: false },
         d,
       ),
-    ).toBe('Session approval withdrawn. Auto mode asks about it again.');
+    ).toBe('Session approval withdrawn. The chat asks about it again.');
     expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['cat', 'a b']]);
   });
 
@@ -250,12 +335,12 @@ describe('withdrawSessionApproval', () => {
     const row = { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true };
     const covered = deps({ session: [['npm', 'test']], matches: () => true });
     expect(withdrawSessionApproval(row, covered)).toBe(
-      'Session approval withdrawn. It is still remembered for this project.',
+      'Session approval withdrawn. It is still remembered: auto mode runs it unasked.',
     );
     // A Remember's link to a grant that has since been revoked elsewhere proves nothing: no grant covers it now.
     const gone = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'a' }], matches: () => false });
     expect(withdrawSessionApproval(row, gone)).toBe(
-      'Session approval withdrawn. Auto mode asks about it again.',
+      'Session approval withdrawn. The chat asks about it again.',
     );
   });
 
@@ -279,7 +364,7 @@ describe('createPermissionsPort', () => {
     const entry = { kind: 'session', row: snapshot.session?.[0] } as const;
     if (entry.row === undefined) throw new Error('expected a session row');
     expect(port.withdraw({ kind: 'session', row: entry.row })).toBe(
-      'Session approval withdrawn. Auto mode asks about it again.',
+      'Session approval withdrawn. The chat asks about it again.',
     );
     expect(port.load().session).toEqual([]);
   });

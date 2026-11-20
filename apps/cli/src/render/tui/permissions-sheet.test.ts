@@ -13,8 +13,10 @@ import {
   SHEET_LEGEND_ARMED,
   SHEET_LEGEND_EMPTY,
   SHEET_LEGEND_IDLE,
-  SHEET_QUIET_MS,
+  SHEET_CONFIRM_WINDOW_MS,
   SHEET_SETTLE_MS,
+  SHEET_TYPED_NOTE,
+  SHEET_WAIT_NOTE,
   SHEET_WINDOW,
   disarmPermissionsSheet,
   foldPermissionsSheetKey,
@@ -29,6 +31,7 @@ import {
   type PermissionsSheetStep,
 } from './permissions-sheet.js';
 import { SHEET_MAX_COLUMNS } from './sheet-frame.js';
+import { MAX_ROW_TEXT } from '../../permissions/chat-permissions.js';
 
 /** The `/permissions` sheet's pure half (ADR-0137 §2): the key ladder, its clock, and the lines. No terminal, no React. */
 const project = (
@@ -133,6 +136,23 @@ describe('the key ladder (ADR-0137 §2)', () => {
     expect(state.cursor).toBe(0);
   });
 
+  it('ArrowUp and ArrowDown move exactly one row', () => {
+    const five = open(
+      snapshot(
+        Array.from({ length: 5 }, (_, i) => project(`g${String(i)}`)),
+        [],
+      ),
+    );
+    let state = stateOf(press(five, '', { end: true }));
+    expect(state.cursor).toBe(4);
+    state = stateOf(press(state, '', ARROW_UP));
+    expect(state.cursor).toBe(3);
+    state = stateOf(press(state, '', ARROW_UP));
+    expect(state.cursor).toBe(2);
+    state = stateOf(press(state, '', ARROW_DOWN));
+    expect(state.cursor).toBe(3);
+  });
+
   it('Home and End go to the ends and the page keys move by a page, clamped', () => {
     const many = projectOnly(
       Array.from({ length: 30 }, (_, index) => project(`g${String(index)}`)),
@@ -141,11 +161,11 @@ describe('the key ladder (ADR-0137 §2)', () => {
     state = stateOf(press(state, '', { end: true }));
     expect(state.cursor).toBe(29);
     state = stateOf(press(state, '', { pageUp: true }));
-    expect(state.cursor).toBe(29 - (SHEET_WINDOW - 2));
+    expect(state.cursor).toBe(23); // a page is six rows
     state = stateOf(press(state, '', { home: true }));
     expect(state.cursor).toBe(0);
     state = stateOf(press(state, '', { pageDown: true }));
-    expect(state.cursor).toBe(SHEET_WINDOW - 2);
+    expect(state.cursor).toBe(6);
   });
 
   it('Esc closes an idle sheet, and so does Ctrl+C', () => {
@@ -174,36 +194,83 @@ describe('the key ladder (ADR-0137 §2)', () => {
     expect(stateOf(press(open(TWO_AND_ONE), 'd', {}, SETTLED, false)).armed).toBe(false);
   });
 
-  describe('the clock: a typed line is not a command (security sitting, step 5 round 1)', () => {
-    it('`d` does nothing until the sheet has been open for the settle time, and arms at it', () => {
+  describe('typed keys never arm: a typed line is not a command (security sittings, step 5 rounds 1 and 2)', () => {
+    it('pins the numbers the ADR and the docs state', () => {
+      expect(SHEET_SETTLE_MS).toBe(400);
+      expect(SHEET_CONFIRM_DWELL_MS).toBe(300);
+      expect(SHEET_CONFIRM_WINDOW_MS).toBe(10_000);
+    });
+
+    it('`d` does nothing until the sheet has been open for the settle time, says to wait, and arms at the settle time', () => {
       const fresh = open(TWO_AND_ONE);
-      expect(stateOf(press(fresh, 'd', {}, T0 + SHEET_SETTLE_MS - 1)).armed).toBe(false);
+      const early = press(fresh, 'd', {}, T0 + SHEET_SETTLE_MS - 1);
+      expect(stateOf(early).armed).toBe(false);
+      expect(stateOf(early).message).toBe(SHEET_WAIT_NOTE);
+      expect(
+        stateOf(early).typed,
+        'too soon is not typing: pressing it again after a moment arms',
+      ).toBe(false);
+      expect(stateOf(press(stateOf(early), 'd', {}, T0 + SHEET_SETTLE_MS)).armed).toBe(true);
       expect(stateOf(press(fresh, 'd', {}, T0 + SHEET_SETTLE_MS)).armed).toBe(true);
     });
 
-    it('`d` does nothing until the keyboard has been quiet, and any key, an arrow included, restarts the quiet', () => {
+    it('any key that is not navigation says the person may be typing: `d` then arms nothing until an arrow key, and says so', () => {
       let state = open(TWO_AND_ONE);
-      state = stateOf(press(state, '', ARROW_DOWN, SETTLED));
-      expect(stateOf(press(state, 'd', {}, SETTLED + SHEET_QUIET_MS - 1)).armed).toBe(false);
-      expect(stateOf(press(state, 'd', {}, SETTLED + SHEET_QUIET_MS)).armed).toBe(true);
-      // A refused `d` is itself a key: it restarts the quiet, so a typed `dd` cannot arm on the second press.
-      const refused = stateOf(press(state, 'd', {}, SETTLED + 100));
-      expect(refused.armed).toBe(false);
-      expect(refused.lastKeyAt).toBe(SETTLED + 100);
-      expect(stateOf(press(refused, 'd', {}, SETTLED + 200)).armed).toBe(false);
+      state = stateOf(press(state, 'x', {}, SETTLED));
+      expect(state.typed).toBe(true);
+      const refused = press(state, 'd', {}, SETTLED + 5_000);
+      expect(stateOf(refused).armed).toBe(false);
+      expect(stateOf(refused).message).toBe(SHEET_TYPED_NOTE);
+      expect(stateOf(refused).typed).toBe(true);
+      // An arrow key is a person choosing a row: after it, `d` is deliberate.
+      const chosen = stateOf(press(stateOf(refused), '', ARROW_DOWN, SETTLED + 5_100));
+      expect(chosen.typed).toBe(false);
+      expect(stateOf(press(chosen, 'd', {}, SETTLED + 5_101)).armed).toBe(true);
     });
 
-    it('a line typed after `/permissions` and Enter that ends in `d`, then Enter, withdraws nothing', () => {
-      let state = open(TWO_AND_ONE);
-      let at = T0 + 450; // the sheet has settled; the person keeps typing "run the build" a character every 120 ms
-      for (const char of 'run the build') {
-        const step = press(state, char, {}, at);
-        if (step.kind === 'close') throw new Error('typing closed the sheet');
-        state = step.state;
-        at += 120;
+    it('Enter at an idle sheet, Tab, a letter and a paste all count as typing (a Delete or Backspace is an arming key, and arms when nothing was typed)', () => {
+      for (const [input, key] of [
+        ['', ENTER],
+        ['', { tab: true }],
+        ['q', {}],
+      ] as const) {
+        const typed = stateOf(press(open(TWO_AND_ONE), input, key, SETTLED));
+        expect(typed.typed, JSON.stringify(key)).toBe(true);
+        expect(stateOf(press(typed, 'd', {}, SETTLED + 60_000)).armed).toBe(false);
       }
-      expect(state.armed, 'the last d came 120 ms after the l').toBe(false);
-      expect(press(state, '', ENTER, at).kind).toBe('state');
+      const pasted = disarmPermissionsSheet(open(TWO_AND_ONE));
+      expect(pasted.typed).toBe(true);
+      expect(stateOf(press(pasted, 'd', {}, SETTLED)).armed).toBe(false);
+    });
+
+    it('no typed line withdraws at ANY pace: 4,000 random typed streams ending in d and Enter, from instant to very slow, withdraw nothing', () => {
+      let seed = 1234567;
+      const next = (): number => {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+      };
+      const letters = 'abcdefghijklmnopqrstuvwxyz ';
+      for (let run = 0; run < 4_000; run += 1) {
+        let state = open(TWO_AND_ONE);
+        const pace = [5, 40, 110, 250, 380, 700, 2_500][Math.floor(next() * 7)] ?? 110;
+        let at = T0 + Math.floor(next() * 2_000);
+        const length = 1 + Math.floor(next() * 14);
+        const typed = Array.from(
+          { length },
+          () => letters[Math.floor(next() * letters.length)] ?? 'a',
+        );
+        typed.push('d');
+        const steps = [...typed.map((char) => [char, {}] as const)];
+        if (next() < 0.3) steps.push(['', { backspace: true }] as const);
+        steps.push(['', ENTER] as const);
+        for (const [input, key] of steps) {
+          at += Math.floor(pace * (0.5 + next()));
+          const step = press(state, input, key, at);
+          expect(step.kind, `run ${String(run)}`).not.toBe('withdraw');
+          if (step.kind === 'close') throw new Error('typing closed the sheet');
+          state = step.state;
+        }
+      }
     });
 
     it('a Delete key typed ahead and an Enter in the same instant withdraws nothing', () => {
@@ -212,13 +279,17 @@ describe('the key ladder (ADR-0137 §2)', () => {
       expect(press(typed, '', ENTER, T0 + 6).kind).toBe('state');
     });
 
-    it('Enter withdraws only after the question has been up for the dwell, and a hasty Enter drops it with a note', () => {
+    it('Enter withdraws only between the dwell and the window after the question, and an Enter outside it drops the question with a note', () => {
       const armed = armedAt();
       const early = press(armed, '', ENTER, CONFIRM_AT - 1);
       expect(early.kind).toBe('state');
       expect(stateOf(early).armed).toBe(false);
       expect(stateOf(early).message).toBe(SHEET_ENTER_NOTE);
       expect(press(armed, '', ENTER, CONFIRM_AT).kind).toBe('withdraw');
+      expect(press(armed, '', ENTER, SETTLED + SHEET_CONFIRM_WINDOW_MS).kind).toBe('withdraw');
+      const late = press(armed, '', ENTER, SETTLED + SHEET_CONFIRM_WINDOW_MS + 1);
+      expect(late.kind).toBe('state');
+      expect(stateOf(late).message).toBe(SHEET_ENTER_NOTE);
     });
 
     it('only an Enter with nothing held confirms: Meta+Enter (an Esc then Enter), Ctrl+Enter and Shift+Enter drop the question', () => {
@@ -237,7 +308,7 @@ describe('the key ladder (ADR-0137 §2)', () => {
 
   it('Enter withdraws an armed row: the step names the entry and the sheet comes back disarmed', () => {
     const second = stateOf(press(open(TWO_AND_ONE), '', ARROW_DOWN));
-    const armed = stateOf(press(second, 'd', {}, SETTLED + SHEET_QUIET_MS + 10));
+    const armed = stateOf(press(second, 'd', {}, SETTLED + 10));
     const step = press(armed, '', ENTER, armed.armedAt + SHEET_CONFIRM_DWELL_MS);
     expect(step.kind).toBe('withdraw');
     if (step.kind !== 'withdraw') return;
@@ -292,19 +363,20 @@ describe('the key ladder (ADR-0137 §2)', () => {
     expect(stateOf(small(ARROW_DOWN)).armed).toBe(false);
   });
 
-  it('a paste drops a waiting question, counts as a key for the quiet, and withdraws nothing', () => {
-    const after = disarmPermissionsSheet(armedAt(), CONFIRM_AT);
+  it('a paste drops a waiting question, counts as typing, and withdraws nothing', () => {
+    const after = disarmPermissionsSheet(armedAt());
     expect(after.armed).toBe(false);
-    expect(after.lastKeyAt).toBe(CONFIRM_AT);
-    const idle = disarmPermissionsSheet(open(TWO_AND_ONE), SETTLED);
+    expect(after.typed).toBe(true);
+    expect(after.message).toBe('');
+    const idle = disarmPermissionsSheet(open(TWO_AND_ONE));
     expect(idle.armed).toBe(false);
-    expect(idle.lastKeyAt).toBe(SETTLED);
+    expect(idle.typed).toBe(true);
   });
 
   it('ignores printable letters that are not the withdraw key', () => {
     const step = press(open(TWO_AND_ONE), 'q');
     expect(step.kind).toBe('state');
-    expect(stateOf(step)).toEqual({ ...open(TWO_AND_ONE), lastKeyAt: SETTLED });
+    expect(stateOf(step)).toEqual({ ...open(TWO_AND_ONE), typed: true });
   });
 });
 
@@ -361,11 +433,16 @@ describe('what is drawn', () => {
   });
 
   it('says what a grant is worth in each mode, never that plan runs anything, and every note fits one 80-column row', () => {
-    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'ask'))).toMatch(/only auto mode runs one unasked/u);
-    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'accept-edits'))).toMatch(
-      /only auto mode runs one unasked/u,
+    // A session approval removes the card in every mode that asks, so the note says so; a remembered command is what only `auto` runs unasked.
+    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'ask'))).toBe(
+      'Session-approved commands run unasked here; a remembered one still asks.',
     );
-    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'auto'))).toMatch(/asks once after a file write/u);
+    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'accept-edits'))).toBe(
+      'Session-approved commands run unasked here; a remembered one still asks.',
+    );
+    expect(sheetNote(open(TWO_AND_ONE, 'chat', 'auto'))).toBe(
+      'Auto runs approved commands; remembered ones ask once after a file write.',
+    );
     expect(sheetNote(open(TWO_AND_ONE, 'chat', 'plan'))).toBe(
       'Plan mode refuses every command; nothing here runs.',
     );
@@ -435,12 +512,16 @@ describe('what is drawn', () => {
   it('says what to do when nothing is remembered, per surface, and that nothing is approved for the session', () => {
     const chat = texts(open(snapshot([], []))).join(' ');
     expect(chat).toContain(
-      'Nothing is remembered for this project. Press Ctrl+O on a command card to remember one.',
+      'Nothing is remembered for this project. Press Ctrl+O on a command card, then Enter, to remember one.',
     );
     expect(chat).toContain('Nothing is approved for this session.');
+    // `plan` has no cards, so it has nothing to point at.
+    const plan = texts(open(snapshot([], []), 'chat', 'plan')).join(' ');
+    expect(plan).toContain('Nothing is remembered for this project.');
+    expect(plan).not.toContain('Ctrl+O');
     const bare = texts(open(projectOnly([]), 'project', undefined));
     expect(bare.join(' ')).toMatch(
-      /A command is remembered from its card in a chat \(Ctrl\+O\)\./u,
+      /A command is remembered from its card in a chat \(Ctrl\+O, then Enter\)\./u,
     );
   });
 
@@ -558,6 +639,12 @@ describe('what is drawn', () => {
     }
   });
 
+  it('pins the bounds the docs state: a 100-column cap, 400 characters a row, an eight-line window', () => {
+    expect(SHEET_MAX_COLUMNS).toBe(100);
+    expect(MAX_ROW_TEXT).toBe(400);
+    expect(SHEET_WINDOW).toBe(8);
+  });
+
   it('shows up to eight body lines when the terminal is tall enough, and never more', () => {
     const many = projectOnly(
       Array.from({ length: 30 }, (_, index) => project(`g${String(index)}`)),
@@ -656,6 +743,60 @@ describe('the markers count the rows they stand in for (step 5 round 1)', () => 
           expect(lines[below - 1]?.kind, `${name}, cursor ${String(cursor)}`).not.toBe('heading');
       }
     }
+  });
+
+  it('holds for EVERY shape from 0 to 20 remembered and 0 to 10 approved, every cursor, at three sizes: no empty marker, no lone heading, no dangling fragment', () => {
+    let frames = 0;
+    for (let remembered = 0; remembered <= 20; remembered += 1) {
+      for (let approved = 0; approved <= 10; approved += 1) {
+        const snap = snapshot(
+          Array.from({ length: remembered }, (_, i) => project(`g${String(i)}`)),
+          Array.from({ length: approved }, (_, i) => session(`cmd${String(i)}`)),
+        );
+        const total = remembered + approved;
+        for (const geometry of [
+          { columns: 80, terminalRows: 24 },
+          { columns: 100, terminalRows: 30 },
+          { columns: 120, terminalRows: 50 },
+        ]) {
+          for (let cursor = 0; cursor < Math.max(1, total); cursor += 1) {
+            const lines = permissionsSheetLines({ ...open(snap), cursor }, geometry);
+            frames += 1;
+            const where = `${String(remembered)}+${String(approved)} rows, ${String(geometry.terminalRows)} lines, cursor ${String(cursor)}`;
+            const rows = lines.filter((l) => l.kind === 'row' || l.kind === 'selected').length;
+            const counts = lines
+              .filter((l) => l.kind === 'marker')
+              .map((l) => Number(/\d+/u.exec(l.text)?.[0]));
+            for (const count of counts)
+              expect(count, `${where}: a marker counts nothing`).toBeGreaterThan(0);
+            expect(rows + counts.reduce((a, b) => a + b, 0), where).toBe(total);
+            if (total > 0)
+              expect(
+                lines.filter((l) => l.kind === 'selected'),
+                where,
+              ).toHaveLength(1);
+            const down = lines.findIndex((l) => l.kind === 'marker' && l.text.startsWith('▼'));
+            if (down > 0)
+              expect(lines[down - 1]?.kind, `${where}: a lone heading`).not.toBe('heading');
+            const up = lines.findIndex((l) => l.kind === 'marker' && l.text.startsWith('▲'));
+            if (up >= 0)
+              expect(lines[up + 1]?.kind, `${where}: a dangling fragment`).not.toBe('text');
+          }
+        }
+      }
+    }
+    expect(frames).toBeGreaterThan(4_000);
+  });
+
+  it('the first view of nothing remembered and four approved shows the heading and the whole sentence, with no marker above', () => {
+    const snap = snapshot(
+      [],
+      Array.from({ length: 4 }, (_, i) => session(`cmd${String(i)}`)),
+    );
+    const lines = permissionsSheetLines(open(snap), { columns: 80, terminalRows: 24 });
+    expect(lines.some((l) => l.text.startsWith('▲'))).toBe(false);
+    expect(lines[1]?.text).toBe('This project · remembered (0)');
+    expect(lines.map((l) => l.text).join(' ')).toContain('to remember one.');
   });
 
   it('says ▲ with the rows hidden above and ▼ with the rows hidden below on a long list', () => {

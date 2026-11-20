@@ -50,6 +50,8 @@ const afterDwell = (): Promise<void> => sleep(SHEET_CONFIRM_DWELL_MS + 80);
 const ESC = '\u001b';
 const CTRL_C = '\u0003';
 const ENTER = '\r';
+const DOWN = '\u001b[B';
+const UP = '\u001b[A';
 const WITHDRAWN = 'Withdrawn. Auto mode asks about it again.';
 
 function fakePort(initial: PermissionsSnapshot): {
@@ -253,7 +255,9 @@ describe('the permissions sheet in the standalone chat', () => {
     view.stdin.write('d');
     await until(() => frame(view).includes('Any other key keeps it.'));
     view.stdin.write(ENTER);
-    await until(() => frame(view).includes('Too early for Enter — nothing was withdrawn.'));
+    await until(() =>
+      frame(view).includes('Too early or too late for Enter — nothing was withdrawn.'),
+    );
     expect(withdraw).not.toHaveBeenCalled();
   });
 
@@ -266,7 +270,12 @@ describe('the permissions sheet in the standalone chat', () => {
     await until(() => frame(view).includes('Any other key keeps it.'));
     view.stdin.write('x');
     await until(() => !frame(view).includes('Any other key keeps it.'));
-    await afterSettle();
+    // The `x` was typing: `d` arms nothing until an arrow key says the person is choosing a row.
+    view.stdin.write('d');
+    await until(() => frame(view).includes('Typed keys are ignored here.'));
+    view.stdin.write(DOWN);
+    view.stdin.write(UP);
+    await settleFrames();
     view.stdin.write('d');
     await until(() => frame(view).includes('Any other key keeps it.'));
     view.stdin.write(ESC);
@@ -274,7 +283,6 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(frame(view), 'the first Esc kept the row and left the sheet open').toContain(
       'Permissions ·',
     );
-    await afterSettle();
     view.stdin.write('d');
     await until(() => frame(view).includes('Any other key keeps it.'));
     view.stdin.write(bracketed('please withdraw everything'));
@@ -286,6 +294,85 @@ describe('the permissions sheet in the standalone chat', () => {
     );
     view.stdin.write(ESC);
     await until(() => !frame(view).includes('Permissions ·'));
+  });
+
+  it('SECURITY: a line typed ahead at a HUMAN pace, then a pause, then d, then a pause, then Enter, withdraws nothing (security sitting 2, M1)', async () => {
+    const { port, withdraw } = fakePort(SNAPSHOT);
+    const { view } = mount({ port });
+    view.stdin.write('/permissions');
+    view.stdin.write(ENTER);
+    await until(() => frame(view).includes('Permissions ·'));
+    // "the tests passed", a character every 110 ms; then 350 ms, `d` (the last letter of "passed" typed as its own key), 380 ms, Enter.
+    for (const char of 'the tests passe') {
+      view.stdin.write(char);
+      await sleep(110);
+    }
+    await sleep(350);
+    view.stdin.write('d');
+    await sleep(380);
+    view.stdin.write(ENTER);
+    await settleFrames();
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(frame(view)).not.toContain('Any other key keeps it.');
+    expect(frame(view)).toContain('This project · remembered (2)');
+  });
+
+  it('a d pressed at once says to wait, is not typing, and arms when pressed again after a moment', async () => {
+    const { port } = fakePort(SNAPSHOT);
+    const { view } = mount({ port });
+    view.stdin.write('/permissions');
+    view.stdin.write(ENTER);
+    await until(() => frame(view).includes('Permissions ·'));
+    view.stdin.write('d');
+    await until(() => frame(view).includes('Wait a moment, then press d.'));
+    await afterSettle();
+    view.stdin.write('d');
+    await until(() => frame(view).includes('Any other key keeps it.'));
+  });
+
+  it('closes cleanly: after Esc the keyboard is the composer’s again (the ref is cleared, not only the state)', async () => {
+    const { port } = fakePort(SNAPSHOT);
+    const { view } = mount({ port });
+    await openSheet(view);
+    view.stdin.write(ESC);
+    await until(() => !frame(view).includes('Permissions ·'));
+    view.stdin.write('hello again');
+    await until(() => frame(view).includes('hello again'));
+    expect(frame(view)).not.toContain('Permissions ·');
+  });
+
+  it('takes the composer’s place while open: the idle prompt and its hint are not drawn under the sheet, and come back when it closes', async () => {
+    const { port } = fakePort(SNAPSHOT);
+    const { view } = mount({ port });
+    await until(() => frame(view).includes('/ for commands'));
+    await openSheet(view);
+    expect(frame(view)).not.toContain('/ for commands');
+    view.stdin.write(ESC);
+    await until(() => frame(view).includes('/ for commands'));
+  });
+
+  it('reads the terminal’s real width AND height: either one below the floor says so', async () => {
+    const { port } = fakePort(SNAPSHOT);
+    for (const [columns, rows] of [
+      [80, 23],
+      [79, 30],
+    ] as const) {
+      const { view } = mount({ port });
+      Object.defineProperty(view.stdout, 'columns', { value: columns, configurable: true });
+      Object.defineProperty(view.stdout, 'rows', { value: rows, configurable: true });
+      view.stdout.emit('resize');
+      await openSheet(view);
+      expect(frame(view), `${String(columns)}x${String(rows)}`).toContain(
+        'Enlarge the terminal to use this screen',
+      );
+      cleanup();
+    }
+    const { view } = mount({ port });
+    Object.defineProperty(view.stdout, 'columns', { value: 100, configurable: true });
+    Object.defineProperty(view.stdout, 'rows', { value: 30, configurable: true });
+    view.stdout.emit('resize');
+    await openSheet(view);
+    expect(frame(view)).not.toContain('Enlarge the terminal');
   });
 
   it('Ctrl+C while a withdrawal waits closes the sheet and withdraws nothing', async () => {

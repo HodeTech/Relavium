@@ -1,8 +1,8 @@
 # Remembered command permissions
 
-> Last updated: 2026-11-19
+> Last updated: 2026-11-21
 
-- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 and 4).
+- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 to 5; the chat's `/permissions` is a sheet since step 5).
 - **Surface**: CLI (`relavium permissions`, the chat's command card, `!`)
 - **Scope**: A person's "Remember this command" answers, kept on one machine. Not the `[chat]` allowlist (config), not a workflow's allowlist, not MCP consent.
 - **Related**: [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md), [commands.md](commands.md), [chat-session.md](chat-session.md), [keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [mcp-integration.md](../shared-core/mcp-integration.md#the-grant-store), [security-review.md](../../standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs)
@@ -12,7 +12,8 @@ A **remembered grant** marks one exact command — an exact argv under one proje
 file, authorizes every future clone. Pre-approval matters only to the mode table in
 [chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): `auto` runs a remembered
 command without a card, until the session has approved a file write (then it asks once), while `ask` and
-`accept-edits` still show one, because a grant removes the *unknown*, not the person's per-call consent. A
+`accept-edits` still show one, because a grant removes the *unknown*, not the person's per-call consent (a *Remember* also approves the
+command for the chat it is made in, so that chat does not ask about it again; a later chat does). A
 repository's own `[chat]` allowlist is not a pre-approval in `auto`: it is a file the person did not write, and the
 command card says so in its standing row. This page is the canonical home for the store's format,
 bounds and commands; the decision and its reasoning are
@@ -290,25 +291,33 @@ Remembered commands still ask here; only auto mode runs one unasked.
   numbers: the cursor is the selection.
 - **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
   `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and
-  the project's section only. The note row says what a grant is worth in the mode (only `auto` runs a remembered command unasked, and
-  asks once after a file write; `plan` refuses every command). An empty list says what to do (`Press Ctrl+O on a command card to
-  remember one.`), and a sheet with nothing to select offers only `Esc close`.
-- **Keys, and the clock.** `↑`/`↓` move and clamp (`PgUp`, `PgDn`, `Home`, `End` too). `d`, `Delete` or `Backspace` **arms** the selected
-  row; `Enter` withdraws it. Both are timed, as the card's keys are, because a person who types `/permissions`, `Enter` and goes on
-  typing must not withdraw a grant by accident (a typed line that ends in `d`, then `Enter`, is two steps): `d` arms only once the
-  sheet has been open for 400 ms **and** the keyboard has been quiet for 300 ms (any key, an arrow or a refused `d` included,
-  restarts the quiet); `Enter` withdraws only 300 ms after the question appeared, and only an `Enter` with nothing held (an `Esc`
-  then `Enter` inside a terminal's escape window arrives as `Meta+Enter` and is not an answer). An `Enter` that comes too early
-  drops the question and says `Too early for Enter — nothing was withdrawn. Press d again.`. Any other key, a paste and `Esc` keep the
-  row; `Esc` closes an idle sheet; `Ctrl+C` closes it from either state. Neither closing key ever withdraws, and nothing is added or
-  edited here: a grant is a digest of an exact argv, and one can only be made on a command card.
+  the project's section only. The note row says what the mode does with the two kinds of row, and matches the mode table of
+  [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits`
+  `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones
+  ask once after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a
+  remembered command unasked, in a chat in this project.` (a remembered command in a fresh chat; a *Remember* also approves it for the
+  chat it was made in). An empty list says what to do (`Press Ctrl+O on a command card, then Enter, to remember one.`; `plan` has no
+  cards and says only that nothing is remembered), and a sheet with nothing to select offers only `Esc close`.
+- **Keys, and typing.** `↑`/`↓` move and clamp (`PgUp`, `PgDn` by six, `Home`, `End`). `d`, `Delete` or `Backspace` **arms** the
+  selected row; `Enter` withdraws it. A person who types `/permissions`, `Enter` and goes on typing must not withdraw a grant by
+  accident (a typed line that ends in `d`, then `Enter`, is two steps), and a gap between keys cannot tell typing from choosing (the
+  card learned that at 350 ms a key), so the rule is about *what* was typed: **once any key that is not navigation has arrived since
+  the sheet opened, `d` arms nothing until an arrow key** (or a page key, `Home` or `End`) says the person is choosing a row; a refused
+  `d` says `Typed keys are ignored here. Select a row with ↑/↓, then press d.` On top of that `d` waits for the sheet to settle
+  (400 ms after it opened; an early `d` says `Wait a moment, then press d.` and is not typing), and `Enter` withdraws only between 300 ms
+  and 10 s after the question appeared, and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
+  `Meta+Enter`). An `Enter` outside that window drops the question and says `Too early or too late for Enter — nothing was withdrawn.
+  Press d again.` A paste is typing. Any other key, a paste and `Esc` keep the row; `Esc` closes an idle sheet; `Ctrl+C` closes it
+  from either state. Neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and
+  one can only be made on a command card.
 - **The message row** is always one row. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a remembered row shows its label and
   its minute in parentheses, the label clipped before the minute is; a session row shows the scrubbed command, clipped) and the legend
-  becomes `Enter withdraw · Esc keep`. After a withdrawal it says what happened, in a sentence that fits the row and names only
-  `auto`: `Withdrawn. Auto mode asks about it again.`; `Withdrawn, with its session approval. Auto mode asks about it again.`;
-  `Withdrawn, but a session approval of it remains: auto mode still runs it unasked.`; for a session row
-  `Session approval withdrawn. Auto mode asks about it again.` or, when a remembered grant covers the command,
-  `Session approval withdrawn. It is still remembered for this project.`
+  becomes `Enter withdraw · Esc keep`. After a withdrawal it says what happened, in a sentence that fits the row and that no mode can
+  contradict. A remembered row: `Withdrawn. Auto mode asks about it again.`; with its linked session approval
+  `Withdrawn, with its session approval. The chat asks about it again.`; and, when a plain session approval of the same command stands,
+  `Withdrawn, but a session approval of it remains: it still runs unasked.` (only the approvals *this* grant covered count: another
+  remembered command's approval does not). A session row: `Session approval withdrawn. The chat asks about it again.` or, when a
+  remembered grant covers the command, `Session approval withdrawn. It is still remembered: auto mode runs it unasked.`
 - **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
   again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
   one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a

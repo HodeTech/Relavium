@@ -1808,7 +1808,8 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
   if (!freePositional) {
     const bad = nonFlag.find((token) => !positionalValues.includes(token));
     if (bad !== undefined) {
-      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
+      const hint = command.rejectHint === undefined ? '' : ` ${command.rejectHint}`;
+      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}${hint}`;
     }
   }
   // A single positional value (fixed OR free) — more than one is rejected, not silently dropped downstream.

@@ -117,6 +117,8 @@ export interface ReplCommand {
   /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any token not
    *  listed here, so a zero-arg command still rejects `/exit now`. */
   readonly args?: readonly ReplArg[];
+  /** A sentence appended to the dispatch's rejection of a token this command does not accept: where a removed or mistyped form's job went. */
+  readonly rejectHint?: string;
   /** An optional single POSITIONAL value the command accepts (e.g. `/mode plan`) — the dispatch accepts a token
    *  in `values` (in addition to any declared flags) and rejects anything else, so an invalid value is caught
    *  before `run`. The palette still submits the BARE `/<name>` (no positional), so `run` handles the empty arg. */
@@ -273,6 +275,7 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
       'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
     // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
     effect: 'read',
+    rejectHint: 'Open /permissions and press d on a row to withdraw it.',
     run: (ctx) => ctx.managePermissions(),
     availableIn: ['chat'],
   },

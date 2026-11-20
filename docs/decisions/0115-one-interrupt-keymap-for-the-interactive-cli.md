@@ -114,7 +114,7 @@ matched before every answer chord and resolve an approval only as a rejection**,
 letter answers nothing, and the input guards (dwell, quiet gap, typeahead window, lockout)
 gate affirmative answers only: a rejection is never delayed.
 
-> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the rejection above applies where the card is the screen. On the full view and on the call list of an approval, `Esc` returns to the card and rejects nothing; `Ctrl+C` is unchanged and still rejects first.
+> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the rejection above applies where the card is the screen. On the full view and on the call list of an approval, `Esc` returns to the card and rejects nothing; `Ctrl+C` is unchanged and still rejects first. *(Implementation owed: MVP-4 step 6.)*
 
 ### 3. `Esc` steps back one level
 
@@ -132,7 +132,7 @@ nothing left to close.
 A second `Esc`, now with no box open, therefore stops the turn. `Ctrl+C` inside a text box
 is not "step back": it stops, as everywhere (§1).
 
-> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the third row now reads — on the full view or the call list of an approval, no box open, `Esc` returns to the card and the call stays pending; on the card, no box open, `Esc` rejects the call and stops the turn. The table-driven test of §5 covers the changed row.
+> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the third row now reads — on the full view or the call list of an approval, no box open, `Esc` returns to the card and the call stays pending; on the card, no box open, `Esc` rejects the call and stops the turn. The table-driven test of §5 covers the changed row. *(Implementation owed: MVP-4 step 6; until it lands `Esc` on the full view still stops the turn.)*
 
 This reverses one sentence the maintainer ruled in
 [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md) ("`Esc` stops the

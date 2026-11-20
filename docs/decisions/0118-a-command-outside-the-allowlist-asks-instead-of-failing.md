@@ -297,7 +297,7 @@ the blanket answer, and the session cache for that tool is keyed by argv.
   for them is MVP-8's (workstream 2.6.G) and the phase document's `/permissions` bullet is
   amended to say so.
 
-> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): the chat's `/permissions` is a keyboard-owning sheet, not a transcript notice; the typed `--revoke` forms are removed; the bare Home and a bare `relavium permissions` on a TTY open the same sheet with the project's remembered commands only. Only the Home's tab bar and the pane that composes the sheet with the allowlist, domain and MCP sections stay MVP-8's.
+> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): the chat's `/permissions` is a keyboard-owning sheet, not a transcript notice; the typed `--revoke` forms are removed; the bare Home and a bare `relavium permissions` on a TTY open the same sheet with the project's remembered commands only. Only the Home's tab bar and the pane that composes the sheet with the allowlist, domain and MCP sections stay MVP-8's. *(Implemented: the chat's sheet in MVP-4 step 5; the bare Home and the bare command are step 7.)*
 
 The grant store's format, bounds and commands live in one new reference,
 `docs/reference/cli/command-permissions.md`, modelled on the MCP grant store section of

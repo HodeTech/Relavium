@@ -26,10 +26,12 @@ import { displayWidth, wrapWords } from './viewport.js';
  * Nothing here writes. A withdrawal is a {@link PermissionsSheetStep} of kind `withdraw` that the host carries out through the port it
  * holds (the store is read again there) and then {@link reloadPermissionsSheet}s with the answer.
  *
- * Two steps, and time. Withdrawing only ever makes the chat ask more, but a person who types `/permissions`, `Enter` and goes on typing
- * must not withdraw a grant by accident, and a typed line that ends in `d` followed by `Enter` is two steps: so the keys are timed like the
- * card's. `d` arms only once the sheet has been open a moment and the keyboard has been quiet a moment, and `Enter` withdraws only after the
- * question has been up a moment.
+ * Two steps, and no typing. Withdrawing only ever makes the chat ask more, but a person who types `/permissions`, `Enter` and goes on typing
+ * must not withdraw a grant by accident, and a typed line that ends in `d` followed by `Enter` is two steps. A gap between keys does not
+ * tell typing from choosing (the card learned that at 350 ms a key, PR #99), so the rule is about WHAT was typed: once any key that is not
+ * navigation has arrived since the sheet opened (or since the last arrow key), `d` arms nothing until an arrow key says the person is
+ * choosing a row. On top of that `d` waits for the sheet to settle, and `Enter` withdraws only after the question has been up a moment and
+ * not long after.
  */
 
 /**
@@ -53,12 +55,17 @@ export const SHEET_LEGEND_ARMED = legend([SHEET_KEYS.confirm, SHEET_KEYS.keep]);
 
 /** The sheet must have been open this long before `d` arms a row: a person has had time to read the list. */
 export const SHEET_SETTLE_MS = 400;
-/** The keyboard must have been quiet this long before `d` arms a row: a typed line is not a command. */
-export const SHEET_QUIET_MS = 300;
 /** The question must have been up this long before `Enter` withdraws: a key typed ahead is not an answer. */
 export const SHEET_CONFIRM_DWELL_MS = 300;
-/** What an `Enter` that came before its dwell says; the question is dropped and nothing is withdrawn. */
-export const SHEET_ENTER_NOTE = 'Too early for Enter — nothing was withdrawn. Press d again.';
+/** ...and no longer than this: a question left up (the terminal was suspended, the person walked away) is not answered by a stray Enter. */
+export const SHEET_CONFIRM_WINDOW_MS = 10_000;
+/** What an `Enter` outside that window says; the question is dropped and nothing is withdrawn. */
+export const SHEET_ENTER_NOTE =
+  'Too early or too late for Enter — nothing was withdrawn. Press d again.';
+/** What a `d` refused because the sheet has just opened says. */
+export const SHEET_WAIT_NOTE = 'Wait a moment, then press d.';
+/** What a `d` refused because keys were typed since the sheet opened says. */
+export const SHEET_TYPED_NOTE = 'Typed keys are ignored here. Select a row with ↑/↓, then press d.';
 
 /** The most body lines (headings, rows, markers) the sheet shows at once, the bound the model picker uses for its rows. */
 export const SHEET_WINDOW = 8;
@@ -91,10 +98,11 @@ export interface PermissionsSheetState {
   readonly armed: boolean;
   /** The result of the last withdrawal; empty when there is none. The question of an armed row is drawn from the row, not stored. */
   readonly message: string;
-  /** The monotonic clock (ms) when the sheet opened, when the last key of any kind arrived, and when the question was asked. */
+  /** The monotonic clock (ms) when the sheet opened and when the question was asked. */
   readonly openedAt: number;
-  readonly lastKeyAt: number;
   readonly armedAt: number;
+  /** A key that is not navigation has arrived since the sheet opened or since the last arrow key: the person may be typing, so `d` arms nothing. */
+  readonly typed: boolean;
 }
 
 /** The selectable rows, in the order they are drawn: the project's, then the session's. */
@@ -120,8 +128,8 @@ export function initialPermissionsSheetState(
     armed: false,
     message: '',
     openedAt: now,
-    lastKeyAt: now,
     armedAt: Number.NEGATIVE_INFINITY,
+    typed: false,
   };
 }
 
@@ -141,12 +149,9 @@ export function reloadPermissionsSheet(
   };
 }
 
-/** A paste is a key too, and not one the sheet answers to: it drops a waiting question and withdraws nothing. */
-export function disarmPermissionsSheet(
-  state: PermissionsSheetState,
-  now: number,
-): PermissionsSheetState {
-  return { ...state, armed: false, lastKeyAt: now, ...(state.armed ? { message: '' } : {}) };
+/** A paste is typing, and not a key the sheet answers to: it drops a waiting question, withdraws nothing, and keeps `d` from arming until an arrow key. */
+export function disarmPermissionsSheet(state: PermissionsSheetState): PermissionsSheetState {
+  return { ...state, armed: false, typed: true, ...(state.armed ? { message: '' } : {}) };
 }
 
 /** What a keystroke does to the open sheet. */
@@ -184,8 +189,9 @@ function isPlainEnter(key: ChatKey): boolean {
  * what it asks. `now` is the monotonic clock in milliseconds.
  *
  * `Ctrl+C` closes from either state and never withdraws. `Esc` drops an armed question first and closes the sheet on the next press, one
- * level at a time; neither ever confirms. `Enter` withdraws only an armed row, only unmodified, and only once the question has been up for
- * {@link SHEET_CONFIRM_DWELL_MS}; any other key drops the question. `d` arms only once the sheet has settled and the keyboard has been quiet.
+ * level at a time; neither ever confirms. `Enter` withdraws only an armed row, only unmodified, and only between
+ * {@link SHEET_CONFIRM_DWELL_MS} and {@link SHEET_CONFIRM_WINDOW_MS} after the question; any other key drops the question. `d` arms only
+ * once the sheet has settled and only if nothing has been typed since the sheet opened or since the last arrow key.
  */
 export function foldPermissionsSheetKey(
   input: string,
@@ -196,33 +202,41 @@ export function foldPermissionsSheetKey(
 ): PermissionsSheetStep {
   if (isInterruptKey(input, key)) return { kind: 'close' };
   const entries = sheetEntries(state.snapshot);
-  // Every key, whatever it does, is evidence of a person typing: it restarts the quiet the next `d` needs.
-  const touched: PermissionsSheetState = { ...state, lastKeyAt: now };
   if (state.armed) {
+    // `Esc` keeps the row and is not typing; every other key keeps it too and is.
     const kept: PermissionsSheetStep = {
       kind: 'state',
-      state: { ...touched, armed: false, message: '' },
+      state: {
+        ...state,
+        armed: false,
+        message: '',
+        typed: key.escape === true ? state.typed : true,
+      },
     };
     // The question is not on screen: the frame says how to leave, and `Esc` does.
     if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
     const entry = entries[state.cursor];
     if (isPlainEnter(key) && entry !== undefined) {
-      if (now - state.armedAt >= SHEET_CONFIRM_DWELL_MS)
+      const held = now - state.armedAt;
+      if (held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS)
         return {
           kind: 'withdraw',
           entry,
-          state: { ...touched, armed: false, message: '' },
+          state: { ...state, armed: false, message: '', typed: true },
         };
-      return { kind: 'state', state: { ...touched, armed: false, message: SHEET_ENTER_NOTE } };
+      return {
+        kind: 'state',
+        state: { ...state, armed: false, message: SHEET_ENTER_NOTE, typed: true },
+      };
     }
-    // `Esc` keeps the row; so does every other key, a modified `Enter` included. The key does nothing else.
     return kept;
   }
   if (key.escape === true) return { kind: 'close' };
   const count = entries.length;
+  // An arrow key (or a page key) is a person choosing a row, not typing: it says the keys that follow are deliberate.
   const move = (cursor: number): PermissionsSheetStep => ({
     kind: 'state',
-    state: { ...touched, cursor: clampCursor(cursor, count), message: '' },
+    state: { ...state, cursor: clampCursor(cursor, count), message: '', typed: false },
   });
   if (key.upArrow === true) return move(state.cursor - 1);
   if (key.downArrow === true) return move(state.cursor + 1);
@@ -230,15 +244,16 @@ export function foldPermissionsSheetKey(
   if (key.pageDown === true) return move(state.cursor + PAGE);
   if (key.home === true) return move(0);
   if (key.end === true) return move(count - 1);
-  if (
-    isWithdrawKey(input, key) &&
-    canArm &&
-    entries[state.cursor] !== undefined &&
-    now - state.openedAt >= SHEET_SETTLE_MS &&
-    now - state.lastKeyAt >= SHEET_QUIET_MS
-  )
-    return { kind: 'state', state: { ...touched, armed: true, armedAt: now, message: '' } };
-  return { kind: 'state', state: touched };
+  if (isWithdrawKey(input, key)) {
+    if (!canArm || entries[state.cursor] === undefined)
+      return { kind: 'state', state: { ...state, typed: true } };
+    if (state.typed) return { kind: 'state', state: { ...state, message: SHEET_TYPED_NOTE } };
+    // Too soon is not typing: a person who pressed `d` early and presses it again after a moment is choosing.
+    if (now - state.openedAt < SHEET_SETTLE_MS)
+      return { kind: 'state', state: { ...state, message: SHEET_WAIT_NOTE } };
+    return { kind: 'state', state: { ...state, armed: true, armedAt: now, message: '' } };
+  }
+  return { kind: 'state', state: { ...state, typed: true, message: '' } };
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
@@ -257,20 +272,22 @@ export function sheetNote(state: PermissionsSheetState): string {
     return 'Only auto mode runs a remembered command unasked, in a chat in this project.';
   switch (state.mode) {
     case 'auto':
-      return 'Auto mode runs a remembered command unasked, and asks once after a file write.';
+      return 'Auto runs approved commands; remembered ones ask once after a file write.';
     case 'plan':
       return 'Plan mode refuses every command; nothing here runs.';
     case 'ask':
     case 'accept-edits':
-      return 'Remembered commands still ask here; only auto mode runs one unasked.';
+      return 'Session-approved commands run unasked here; a remembered one still asks.';
   }
 }
 
-/** What an empty project list says, by surface. */
+/** What an empty project list says, by surface (`plan` has no cards, so it has nothing to point at). */
 function emptyProjectText(state: PermissionsSheetState): string {
-  return state.surface === 'chat'
-    ? 'Nothing is remembered for this project. Press Ctrl+O on a command card to remember one.'
-    : 'Nothing is remembered for this project. A command is remembered from its card in a chat (Ctrl+O).';
+  if (state.surface !== 'chat')
+    return 'Nothing is remembered for this project. A command is remembered from its card in a chat (Ctrl+O, then Enter).';
+  return state.mode === 'plan'
+    ? 'Nothing is remembered for this project.'
+    : 'Nothing is remembered for this project. Press Ctrl+O on a command card, then Enter, to remember one.';
 }
 
 const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
@@ -366,19 +383,32 @@ export function permissionsSheetLines(
     0,
     all.findIndex((line) => line.entry === state.cursor),
   );
-  let { start, end } = windowBody(all.length, cursorLine, height);
-  // A heading as the last real line above a `▼` marker would head nothing: slide the window down one line, which the centred cursor allows.
-  if (end < all.length && all[end - 2]?.kind === 'heading' && cursorLine >= start + 2) {
-    start += 1;
-    end += 1;
-  }
+  // A marker is drawn only where a ROW is hidden, and stands in for the rows above or below it, the line it covers included. So a window is good
+  // when the cursor is off a drawn marker, no heading is left alone above a `▼` marker or at the very bottom of a window that hides lines, and no
+  // fragment of a hidden heading's text starts it: the window moves to the nearest start that is.
+  const { start, end } = windowBody(all.length, cursorLine, height, (from, to) => {
+    const topMarker = rowsIn(all.slice(0, from)) > 0;
+    const bottomMarker = rowsIn(all.slice(to)) > 0;
+    if (cursorLine < from + (topMarker ? 1 : 0) || cursorLine >= to - (bottomMarker ? 1 : 0))
+      return false;
+    if (!topMarker && from > 0 && all[from]?.kind === 'text') return false;
+    if (
+      bottomMarker
+        ? all[to - 2]?.kind === 'heading'
+        : to < all.length && all[to - 1]?.kind === 'heading'
+    )
+      return false;
+    return true;
+  });
+  const topMarker = rowsIn(all.slice(0, start)) > 0;
+  const bottomMarker = rowsIn(all.slice(end)) > 0;
   const body: SheetLine[] = all.slice(start, end).map((line) => ({
     kind: line.kind,
     text: clipLine(line.text, width),
   }));
-  if (start > 0 && body.length > 0)
+  if (topMarker && body.length > 0)
     body[0] = { kind: 'marker', text: `▲ ${String(rowsIn(all.slice(0, start + 1)))} more` };
-  if (end < all.length && body.length > 0)
+  if (bottomMarker && body.length > 0)
     body[body.length - 1] = {
       kind: 'marker',
       text: `▼ ${String(rowsIn(all.slice(end - 1)))} more`,

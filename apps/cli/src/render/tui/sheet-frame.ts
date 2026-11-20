@@ -66,17 +66,32 @@ export function flushRow(left: string, right: string, width: number): string {
 }
 
 /**
- * The window of `height` lines of `total` that keeps `cursorLine` on a real line: when lines are hidden above or below, the first or last
- * window line is a marker, and the cursor is never on one. The cursor is centred, which leaves it at least one line from each end of a
- * window of three or more lines (a window of fewer lines cannot hold a cursor between two markers; the floor of 80×24 gives a sheet at
- * least seven). Pure so the arithmetic is unit-checkable.
+ * The window of `height` lines of `total` around `cursorLine`. It starts centred on the cursor and, if the caller's `accept` check refuses it,
+ * moves outward one line at a time to the nearest start it accepts; a caller that accepts nothing gets the centred window.
+ *
+ * `accept(start, end)` says whether the window `[start, end)` is a good one for this content: the caller knows what its lines are, so only it
+ * can say that a marker would stand in for no row, that a heading would be left alone above one, or that the cursor would sit on one. The
+ * default accepts any window that keeps the cursor off the first and last lines when lines are hidden on that side (every hidden line
+ * counted as a row), which a window of fewer than three lines cannot do. Pure so the arithmetic is unit-checkable.
  */
 export function windowBody(
   total: number,
   cursorLine: number,
   height: number,
+  accept?: (start: number, end: number) => boolean,
 ): { readonly start: number; readonly end: number } {
   if (total <= height) return { start: 0, end: total };
-  const start = Math.max(0, Math.min(cursorLine - Math.floor((height - 1) / 2), total - height));
-  return { start, end: start + height };
+  const last = total - height;
+  const centred = Math.max(0, Math.min(cursorLine - Math.floor((height - 1) / 2), last));
+  const ok =
+    accept ??
+    ((start: number, end: number): boolean =>
+      cursorLine >= start + (start > 0 ? 1 : 0) && cursorLine < end - (end < total ? 1 : 0));
+  for (let offset = 0; offset <= last; offset += 1) {
+    for (const start of offset === 0 ? [centred] : [centred - offset, centred + offset]) {
+      if (start < 0 || start > last) continue;
+      if (ok(start, start + height)) return { start, end: start + height };
+    }
+  }
+  return { start: centred, end: centred + height };
 }

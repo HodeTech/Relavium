@@ -86,6 +86,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     const command = REPL_COMMANDS_BY_NAME.get('permissions');
     expect(command?.args ?? []).toEqual([]);
     expect(command?.positional).toBeUndefined();
+    // A rejected token says where the job went, since the typed forms have no replacement in the grammar.
+    expect(command?.rejectHint).toBe('Open /permissions and press d on a row to withdraw it.');
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {

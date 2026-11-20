@@ -2144,7 +2144,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       const pasted = text.replace(/\r\n?/g, '\n');
       // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
       if (state.permissionsSheet !== undefined)
-        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet, interruptNow()) });
+        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;

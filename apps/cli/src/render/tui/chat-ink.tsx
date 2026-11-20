@@ -1401,7 +1401,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     });
     // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is withdrawn.
     if (permissionsSheetRef.current !== undefined)
-      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current, performance.now()));
+      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });

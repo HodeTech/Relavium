@@ -89,7 +89,7 @@ const WITHDRAW_FAILURES: Readonly<Record<string, string>> = Object.freeze({
   'no-key': 'The OS keychain is not available.',
   unreadable: 'The remembered-commands file could not be read.',
   unwritable: 'Could not write the withdrawal; nothing changed.',
-  full: 'No room in the file for a withdrawal; revoke --all clears it.',
+  full: 'No room in the file; relavium permissions revoke --all clears it.',
 });
 
 const FALLBACK_FAILURE = 'The remembered commands could not be read.';
@@ -133,21 +133,18 @@ export function readPermissions(deps: PermissionsDeps): PermissionsSnapshot {
       project = { ok: false, text: FALLBACK_FAILURE };
     }
   }
-  let session: readonly SessionApprovalRow[] | undefined;
-  try {
-    session = deps.session?.commandApprovals().map(
-      (approval): SessionApprovalRow => ({
-        argv: approval.argv,
-        // The command as the card's title showed it. Nothing is stripped from it here: the sheet shows a control, a bidi override or a
-        // tab as a visible token, which a strip would have hidden.
-        text: bounded(scrubbedCommandDisplay(approval.argv)),
-        // Whether a remembered grant covers the command NOW: the only thing that keeps `auto` running it after the approval is withdrawn.
-        alsoRemembered: deps.grants?.matches(approval.argv) === true,
-      }),
-    );
-  } catch {
-    session = [];
-  }
+  // The session list is not wrapped: a cache that threw would be a defect, and the host's guard says so (the sheet does not open) instead of
+  // drawing an empty list that claims nothing is approved while approvals still run unasked.
+  const session = deps.session?.commandApprovals().map(
+    (approval): SessionApprovalRow => ({
+      argv: approval.argv,
+      // The command as the card's title showed it. Nothing is stripped from it here: the sheet shows a control, a bidi override or a
+      // tab as a visible token, which a strip would have hidden.
+      text: bounded(scrubbedCommandDisplay(approval.argv)),
+      // Whether a remembered grant covers the command NOW: the only thing that keeps `auto` running it after the approval is withdrawn.
+      alsoRemembered: deps.grants?.matches(approval.argv) === true,
+    }),
+  );
   return { project, session };
 }
 
@@ -155,15 +152,15 @@ const sameArgv = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((element, index) => element === b[index]);
 
 /**
- * Take a remembered command back, by the grant's identity. The answer says what was withdrawn and what that changes, and names only `auto`
- * (the one mode that ever ran a remembered command unasked); it never promises a question where a session approval of the same command
- * still stands, because that approval runs it unasked in `auto` whatever the grants say.
+ * Take a remembered command back, by the grant's identity. The answer says what was withdrawn and what that changes, and says nothing a mode
+ * could contradict: it names `auto` only for what `auto` does (a withdrawn grant no longer exempts a command there), and it never promises a
+ * question where a session approval of the same command still stands, because that approval runs it unasked in every mode.
  */
 export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps): string {
   const grants = deps.grants;
   if (grants === undefined) return NOT_AVAILABLE;
-  // The session approvals this grant covers, noted before it goes: the ones still there afterwards are not its to take.
-  const covered = (deps.session?.commandApprovals() ?? []).filter((approval) =>
+  // The session approvals a grant covers, noted before it goes: the ones it covered are the ones that stop matching afterwards.
+  const before = (deps.session?.commandApprovals() ?? []).filter((approval) =>
     grants.matches(approval.argv),
   );
   const result = grants.revokeById(row.id);
@@ -174,24 +171,28 @@ export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps
   // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked here.
   let dropped = 0;
   for (const id of result.ids) dropped += deps.session?.forgetCommandsByGrant?.(id) ?? 0;
+  // The approvals THIS grant covered are those that matched before and match no more; of them, the ones still in the cache are plain
+  // session approvals of the command, which the grant never owned. (An approval another grant covers matches still and is not this one's.)
+  const covered = before.filter((approval) => !grants.matches(approval.argv));
   const remaining = (deps.session?.commandApprovals() ?? []).some((approval) =>
     covered.some((was) => sameArgv(was.argv, approval.argv)),
   );
-  if (remaining)
-    return 'Withdrawn, but a session approval of it remains: auto mode still runs it unasked.';
+  if (remaining) return 'Withdrawn, but a session approval of it remains: it still runs unasked.';
   return dropped > 0
-    ? 'Withdrawn, with its session approval. Auto mode asks about it again.'
+    ? 'Withdrawn, with its session approval. The chat asks about it again.'
     : 'Withdrawn. Auto mode asks about it again.';
 }
 
 /** Take a session approval back, by its exact argv. */
 export function withdrawSessionApproval(row: SessionApprovalRow, deps: PermissionsDeps): string {
+  // Asked before anything changes: a store that failed on the question must not leave "nothing changed" over a removed approval.
+  const covered = deps.grants?.matches(row.argv) === true;
   const gone = deps.session?.forgetCommandApproval(row.argv);
   if (gone === undefined) return 'That row was already withdrawn.';
   // A remembered grant that covers the command keeps `auto` running it unasked, so the sentence says so instead of promising a question.
-  return deps.grants?.matches(gone.argv) === true
-    ? 'Session approval withdrawn. It is still remembered for this project.'
-    : 'Session approval withdrawn. Auto mode asks about it again.';
+  return covered
+    ? 'Session approval withdrawn. It is still remembered: auto mode runs it unasked.'
+    : 'Session approval withdrawn. The chat asks about it again.';
 }
 
 /** The port a host opens the sheet with, over the store and the cache it already holds. */

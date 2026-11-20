@@ -18,7 +18,7 @@ import {
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { SHEET_QUIET_MS, SHEET_SETTLE_MS } from './permissions-sheet.js';
+import { SHEET_SETTLE_MS } from './permissions-sheet.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -1176,6 +1176,47 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     await untilTrue(() => !(harness.lastFrame() ?? '').includes('Permissions ·'));
   });
 
+  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${String(i)}`);
+    const { c, harness } = mountHome(store, {
+      alternateScreen: true,
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    await untilTrue(() => frame().includes('HMSG59'));
+    harness.stdin.write('/permissions');
+    harness.stdin.write('\r');
+    await untilTrue(() => c.getSnapshot().permissionsSheet !== undefined);
+    await settleFrames();
+    harness.stdin.write('\x1b[5~'); // PgUp: the sheet's own page key
+    await settleFrames();
+    harness.stdin.write('\x1b[5~');
+    await settleFrames();
+    expect(c.getSnapshot().permissionsSheet, 'the sheet is still open').toBeDefined();
+    expect(frame(), 'the transcript did not scroll behind the sheet').toContain('HMSG59');
+  });
+
+  it('draws the sheet at the terminal’s real width and height: it fits an 80x24 terminal and says so below it', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      size: { cols: 80, rows: 24 },
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const sheetLines = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .filter((line) => line.includes('remembered') || line.includes('select · d'));
+    for (const line of sheetLines) expect(line.length).toBeLessThanOrEqual(80);
+    m.setSize({ cols: 80, rows: 23 });
+    m.fireResize();
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+  });
+
   it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, {
@@ -1195,7 +1236,10 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     m.setSize({ cols: 100, rows: 30 });
     m.fireResize();
     await settleFrames();
-    await sleep(SHEET_QUIET_MS + 100);
+    // The `d` above was typed into a sheet that could not arm; an arrow key says the person is choosing a row again.
+    m.harness.stdin.write('\u001b[B');
+    m.harness.stdin.write('\u001b[A');
+    await settleFrames();
     m.harness.stdin.write('d');
     await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
   });

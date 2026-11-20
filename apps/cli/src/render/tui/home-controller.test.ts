@@ -33,7 +33,11 @@ import type {
   PermissionsPort,
   PermissionsSnapshot,
 } from '../../permissions/chat-permissions.js';
-import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from './permissions-sheet.js';
+import {
+  SHEET_CONFIRM_DWELL_MS,
+  SHEET_CONFIRM_WINDOW_MS,
+  SHEET_SETTLE_MS,
+} from './permissions-sheet.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
@@ -3271,26 +3275,56 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     ]);
   });
 
-  it('SECURITY: keys typed ahead withdraw nothing: `d` too soon is ignored, and an Enter before the dwell drops the question', async () => {
+  it('SECURITY: keys typed ahead withdraw nothing, at any pace: `d` too soon says to wait, and once anything was typed `d` arms nothing until an arrow key', async () => {
     const { port, withdraw } = portOf();
     const { c, t } = await open(makeSession({ permissions: port }));
-    // The person goes on typing at once, a character every 100 ms, "…build" then Enter.
+    // `d` pressed at once: too soon, and it says so; it is not typing.
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message).toBe('Wait a moment, then press d.');
+    // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
     for (const char of 'build') {
-      t.advance(100);
+      t.advance(380);
       c.handleKey(char, {});
     }
-    t.advance(100);
+    t.advance(2_000);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed, 'typed text poisons arming').toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Typed keys are ignored here/u);
+    t.advance(2_000);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
     expect(withdraw).not.toHaveBeenCalled();
-    // After a pause the person arms it for real, then presses Enter in the same breath: too early, and nothing is withdrawn.
-    settle(t);
+    // An arrow key says the person is choosing a row: after it `d` arms, and an Enter in the same breath is too early.
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
     c.handleKey('', ENTER);
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early for Enter/u);
+    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early or too late for Enter/u);
     expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('the settle time runs from the moment the sheet opened on the controller’s own clock', async () => {
+    const { port } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    t.advance(SHEET_SETTLE_MS - 1);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    t.advance(1);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+  });
+
+  it('an Enter long after the question is too late: a suspended or abandoned question is not answered by a stray Enter', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early or too late for Enter/u);
   });
 
   it('a paste or any other key drops the question and withdraws nothing', async () => {
@@ -3301,8 +3335,14 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handlePaste('withdraw it all');
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
     expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
+    // The paste was typing: `d` arms nothing until an arrow key.
     settle(t);
     c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('x', {});
     c.handleKey('', ENTER);
@@ -3327,6 +3367,9 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
     c.setTerminalSize(80, 24);
+    // The Enter and the `d` above were keys typed into a sheet: an arrow key says the person is choosing a row again.
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
     settle(t);
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);

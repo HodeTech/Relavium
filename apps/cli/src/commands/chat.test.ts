@@ -1086,8 +1086,11 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     const out = err();
     expect(out).toContain('Remembered commands are not available in this chat.');
-    expect(out, 'the typed forms are gone: the dispatch rejects the token').toContain(
-      "/permissions: unknown argument '--revoke'.",
+    expect(
+      out,
+      'the typed forms are gone: the dispatch rejects the token and says where the job went',
+    ).toContain(
+      "/permissions: unknown argument '--revoke'. Open /permissions and press d on a row to withdraw it.",
     );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
   });
@@ -1158,7 +1161,7 @@ describe('chatCommand', () => {
             const sessionRow = listed.session?.[0];
             if (sessionRow === undefined) throw new Error('expected the session approval');
             expect(port.withdraw({ kind: 'session', row: sessionRow })).toBe(
-              'Session approval withdrawn. Auto mode asks about it again.',
+              'Session approval withdrawn. The chat asks about it again.',
             );
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
@@ -1243,7 +1246,7 @@ describe('chatCommand', () => {
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
             expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              'Withdrawn, with its session approval. Auto mode asks about it again.',
+              'Withdrawn, with its session approval. The chat asks about it again.',
             );
             expect(port.load().session).toEqual([]);
             await ctx.processLine('/exit');
@@ -1263,7 +1266,9 @@ describe('chatCommand', () => {
   it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
     const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("/permissions: unknown argument 'now'.");
+    expect(err()).toContain(
+      "/permissions: unknown argument 'now'. Open /permissions and press d on a row to withdraw it.",
+    );
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {

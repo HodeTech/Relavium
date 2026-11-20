@@ -484,7 +484,7 @@ async function askAboutCommand(
         scope = 'always'; // remembered for the project, and for the rest of this session too
         grantId = written.id;
         deps.notify?.(
-          'Allowed now and remembered for this project. Auto mode will run it without asking; ask mode still asks. /permissions lists it and takes it back.',
+          'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.',
         );
       } else {
         const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';

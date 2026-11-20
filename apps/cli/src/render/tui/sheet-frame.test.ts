@@ -67,7 +67,39 @@ describe('flushRow', () => {
   });
 });
 
+describe('flushRow at its limits', () => {
+  it('keeps the value while the label keeps twelve columns, drops it below that, and always leaves two spaces between', () => {
+    // width 30, value 10 wide: the label's room is 30 - 10 - 2 = 18, so a label of 12 or more fits the rule
+    const value = 'x'.repeat(10);
+    const kept = flushRow('l'.repeat(18), value, 30);
+    expect(kept).toBe(`${'l'.repeat(18)}  ${value}`);
+    // width 23: room 11 < 12 → the value is dropped and the label alone is clipped to the width
+    expect(flushRow('l'.repeat(40), value, 23)).toBe(`${'l'.repeat(22)}…`);
+    // width 24: room 12 → the value is kept beside a clipped label
+    const squeezed = flushRow('l'.repeat(40), value, 24);
+    expect(displayWidth(squeezed)).toBe(24);
+    expect(squeezed.endsWith(`  ${value}`)).toBe(true);
+  });
+});
+
 describe('windowBody', () => {
+  it('moves to the nearest start the caller accepts, and gives the centred window when it accepts none', () => {
+    // 30 lines, a window of 8, the cursor at 15: centred start 12; refusing it moves outward one line at a time (11, then 13, then 10 …)
+    expect(windowBody(30, 15, 8, (start) => start !== 12)).toEqual({ start: 11, end: 19 });
+    expect(windowBody(30, 15, 8, (start) => start !== 12 && start !== 11)).toEqual({
+      start: 13,
+      end: 21,
+    });
+    expect(windowBody(30, 15, 8, () => false)).toEqual({ start: 12, end: 20 });
+    // the caller's check is the whole rule: a start that puts the cursor on an edge line is offered too
+    const asked: number[] = [];
+    windowBody(30, 15, 8, (start) => {
+      asked.push(start);
+      return false;
+    });
+    expect(asked.slice(0, 3)).toEqual([12, 11, 13]);
+  });
+
   it('shows everything that fits, and otherwise a window of the asked height around the cursor', () => {
     expect(windowBody(5, 2, 8)).toEqual({ start: 0, end: 5 });
     expect(windowBody(30, 0, 8)).toEqual({ start: 0, end: 8 });
