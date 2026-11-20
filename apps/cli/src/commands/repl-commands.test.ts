@@ -76,45 +76,16 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     ]);
   });
 
-  it('/permissions passes what was typed: the bare list, --revoke with its number, and --session', async () => {
-    const run = async (args: readonly string[]) => {
-      const spy = spyContext();
-      await REPL_COMMANDS_BY_NAME.get('permissions')?.run(spy.ctx, args);
-      return vi.mocked(spy.ctx.managePermissions).mock.calls[0]?.[0];
-    };
-    expect(await run([])).toEqual({
-      revoke: false,
-      session: false,
-      number: undefined,
-      unknown: [],
-    });
-    expect(await run(['--revoke', '2'])).toEqual({
-      revoke: true,
-      session: false,
-      number: '2',
-      unknown: [],
-    });
-    expect(await run(['--revoke', '--session', '1'])).toEqual({
-      revoke: true,
-      session: true,
-      number: '1',
-      unknown: [],
-    });
-    // A typo is carried to the handler so it can be reported, not dropped.
-    expect((await run(['--revokee', '2']))?.unknown).toEqual(['--revokee']);
-    // The order does not matter, and a second number is carried as unknown rather than ignored.
-    expect(await run(['1', '--session', '--revoke'])).toEqual({
-      revoke: true,
-      session: true,
-      number: '1',
-      unknown: [],
-    });
-    expect(await run(['--revoke', '1', '2'])).toEqual({
-      revoke: true,
-      session: false,
-      number: '1',
-      unknown: ['2'],
-    });
+  it('/permissions takes no argument: it calls the capability once, with nothing typed after it', async () => {
+    const spy = spyContext();
+    await REPL_COMMANDS_BY_NAME.get('permissions')?.run(spy.ctx, []);
+    expect(vi.mocked(spy.ctx.managePermissions)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spy.ctx.managePermissions).mock.calls[0]).toEqual([]);
+    // The typed `--revoke` forms are gone (ADR-0137 §2): the command declares neither a flag nor a positional, so the dispatch rejects a
+    // typed token before the capability runs.
+    const command = REPL_COMMANDS_BY_NAME.get('permissions');
+    expect(command?.args ?? []).toEqual([]);
+    expect(command?.positional).toBeUndefined();
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {

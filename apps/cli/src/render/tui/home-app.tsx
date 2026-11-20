@@ -41,6 +41,8 @@ import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
+import type { PermissionsSheetState } from './permissions-sheet.js';
+import { PermissionsSheetView } from './permissions-sheet-view.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
@@ -130,6 +132,7 @@ function ChatRegion(
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
     effortPicker: EffortPickerState | undefined;
+    permissionsSheet: PermissionsSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
@@ -224,7 +227,8 @@ function ChatRegion(
           props.search !== undefined ||
           props.mention !== undefined ||
           props.modelPicker !== undefined ||
-          props.effortPicker !== undefined
+          props.effortPicker !== undefined ||
+          props.permissionsSheet !== undefined
         }
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -270,6 +274,15 @@ function ChatRegion(
           labelSuffix={props.effortPicker.model}
           footer="↑/↓ select · Enter apply · Esc cancel"
           color={color}
+        />
+      )}
+      {/* The `/permissions` sheet in a live in-Home chat (ADR-0137 §2) — docked with the other overlays. */}
+      {props.permissionsSheet !== undefined && (
+        <PermissionsSheetView
+          state={props.permissionsSheet}
+          color={color}
+          columns={props.reviewSize.cols}
+          rows={props.reviewSize.rows}
         />
       )}
     </Box>
@@ -445,6 +458,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     setScroll(next);
   };
 
+  // Tell the controller the size, so the permissions sheet knows whether it can show a withdrawal's question (ADR-0137 §2).
+  useEffect(() => {
+    controller.setTerminalSize(size.cols, size.rows);
+  }, [controller, size.cols, size.rows]);
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(
     () =>
@@ -482,6 +499,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
+    state.permissionsSheet === undefined &&
     !prompt.active &&
     !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
@@ -782,6 +800,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           mention={state.mention}
           modelPicker={state.modelPicker}
           effortPicker={state.effortPicker}
+          permissionsSheet={state.permissionsSheet}
           now={props.nowMs}
           cols={size.cols}
           // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which

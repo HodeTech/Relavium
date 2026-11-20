@@ -175,7 +175,7 @@ export class ApprovalCache {
     }
     return removed;
   }
-  /** The commands approved for this session, in the order they were approved (`/permissions` numbers them from 1). */
+  /** The commands approved for this session, in the order they were approved (the `/permissions` sheet lists them so). */
   commandApprovals(): readonly SessionCommandApproval[] {
     const approvals: SessionCommandApproval[] = [];
     for (const [key, grantId] of this.#commands) {
@@ -185,12 +185,16 @@ export class ApprovalCache {
     }
     return approvals;
   }
-  /** Take back the session approval at the 1-based `index` of {@link commandApprovals}; what it was, or `undefined` when none. */
-  forgetCommandApproval(index: number): SessionCommandApproval | undefined {
-    const target = this.commandApprovals()[index - 1];
-    if (target === undefined) return undefined;
-    this.#commands.delete(JSON.stringify(target.argv));
-    return target;
+  /**
+   * Take back the session approval of exactly this argv; what it was, or `undefined` when there is none (it was withdrawn already).
+   * The sheet names a row by the argv, the key the cache itself uses, so a position that moved cannot name another command.
+   */
+  forgetCommandApproval(argv: readonly string[]): SessionCommandApproval | undefined {
+    const key = JSON.stringify(argv);
+    if (!this.#commands.has(key)) return undefined;
+    const grantId = this.#commands.get(key);
+    this.#commands.delete(key);
+    return { argv: [...argv], remembered: grantId !== undefined };
   }
   /**
    * Note that this session approved a file write (ADR-0118 §2, the security sitting's ruling): from then on a REMEMBERED command no

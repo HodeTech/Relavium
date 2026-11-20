@@ -1078,21 +1078,21 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
-  it('/permissions on a headless chat says there are no remembered commands to show, and never ends the session (ADR-0118 §2)', async () => {
+  it('/permissions on a headless chat says remembered commands are not available, never ends the session, and takes no argument (ADR-0137 §2)', async () => {
     const { d, err, store, sessionId } = deps(
-      ['/permissions', '/permissions --revoke 1', '/permissions --revoke', 'hello', '/exit'],
+      ['/permissions', '/permissions --revoke 1', 'hello', '/exit'],
       [textTurn('hi')],
     );
     await chatCommand({ agent: undefined }, d);
     const out = err();
-    expect(out).toContain('Remembered for this project: not available in this chat.');
-    expect(out).toContain('Approved for this session: none.');
     expect(out).toContain('Remembered commands are not available in this chat.');
-    expect(out).toContain('Give the number to withdraw');
+    expect(out, 'the typed forms are gone: the dispatch rejects the token').toContain(
+      "/permissions: unknown argument '--revoke'.",
+    );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
   });
 
-  it('/permissions in an interactive chat lists and withdraws the real session approvals and remembered commands (ADR-0118 §2)', async () => {
+  it('an interactive chat hands the driver a /permissions port over the real session approvals and remembered commands (ADR-0137 §2)', async () => {
     const entries = new Map<string, string>();
     const keychain = {
       get: (account: string) => entries.get(account) ?? null,
@@ -1122,7 +1122,6 @@ describe('chatCommand', () => {
         textTurn('Done.'),
       ],
     );
-    let notices: () => string[] = () => [];
     await chatCommand(
       { agent: undefined },
       {
@@ -1131,15 +1130,13 @@ describe('chatCommand', () => {
         keychain,
         io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
         drive: async (ctx) => {
-          notices = () =>
-            ctx.store
-              .getSnapshot()
-              .state.transcript.filter((entry) => entry.role === 'notice')
-              .map((entry) => entry.text);
           const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
+            const port = ctx.permissions;
+            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            expect(port.surface).toBe('chat');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
             // The card names the session workspace and offers every answer (this is the production mode control).
@@ -1147,23 +1144,33 @@ describe('chatCommand', () => {
               session: true,
               remember: true,
             });
-            expect(ctx.store.getSnapshot().approval?.facts?.cwd).toBe(cwd);
             ctx.store.answerApproval({ outcome: 'approve', scope: 'always' }); // "this session"
             await turn;
-            await ctx.processLine('/permissions');
-            const listing = notices().join('\n');
-            expect(listing).toContain('Remembered for this project (1):');
-            expect(listing).toContain('1. npm  (1 argument)');
-            expect(listing).toContain('Approved for this session (1):');
-            await ctx.processLine('/permissions --revoke --session 1');
-            expect(notices().join('\n')).toContain('Withdrew session approval 1');
-            await ctx.processLine('/permissions --revoke 1');
-            expect(notices().join('\n')).toContain(
-              'Revoked remembered command 1: npm, 1 argument.',
+            const listed = port.load();
+            expect(listed.project).toMatchObject({
+              ok: true,
+              rows: [{ label: 'npm, 1 argument' }],
+            });
+            expect(listed.session?.map((row) => [row.argv, row.alsoRemembered])).toEqual([
+              [[process.execPath, '--version'], false],
+            ]);
+            // Withdraw the session approval by its argv, then the remembered command by its id: both reach their stores.
+            const sessionRow = listed.session?.[0];
+            if (sessionRow === undefined) throw new Error('expected the session approval');
+            expect(port.withdraw({ kind: 'session', row: sessionRow })).toBe(
+              'Session approval withdrawn. Auto mode asks about it again.',
             );
-            await ctx.processLine('/permissions');
-            expect(notices().at(-1)).toContain('Remembered for this project: none.');
-            expect(notices().at(-1)).toContain('Approved for this session: none.');
+            const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
+            if (grantRow === undefined) throw new Error('expected the remembered command');
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
+              'Withdrew npm, 1 argument. Auto mode asks about it again.',
+            );
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
+              'That row was already withdrawn.',
+            );
+            const after = port.load();
+            expect(after.session).toEqual([]);
+            expect(after.project).toEqual({ ok: true, rows: [] });
             await ctx.processLine('/exit');
             return { kind: 'exit' };
           } finally {
@@ -1177,11 +1184,11 @@ describe('chatCommand', () => {
         'npm',
         'test',
       ]),
-      'the revoke reached the file',
+      'the withdrawal reached the file',
     ).toBe(false);
   });
 
-  it('a Remember answered on the real card writes the grant, leaves a linked session approval, and /permissions --revoke withdraws both (ADR-0118 §2)', async () => {
+  it('a Remember answered on the real card writes the grant and a linked session approval, and withdrawing the grant from the port takes both (ADR-0137 §2)', async () => {
     const entries = new Map<string, string>();
     const keychain = {
       get: (account: string) => entries.get(account) ?? null,
@@ -1222,22 +1229,23 @@ describe('chatCommand', () => {
           try {
             ctx.startSession();
             await ctx.onActivated?.(() => !ctx.shouldStop());
+            const port = ctx.permissions;
+            if (port === undefined) throw new Error('an interactive chat opens the sheet');
             const turn = ctx.processLine('Run node --version');
             await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
             ctx.store.answerApproval({ outcome: 'approve', scope: 'remember' });
             await turn;
             expect(notices().join('\n')).toContain('Allowed now and remembered for this project.');
-            await ctx.processLine('/permissions');
-            const listing = notices().at(-1) ?? '';
-            expect(listing).toContain('Remembered for this project (1):');
-            expect(listing).toContain('Approved for this session (1):');
-            expect(listing, 'the session entry says it is the Remember’s').toContain(
-              '(also remembered)',
+            const listed = port.load();
+            expect(listed.project.ok && listed.project.rows).toHaveLength(1);
+            expect(listed.session, 'the Remember also approved it for the session').toHaveLength(1);
+            expect(listed.session?.[0]?.alsoRemembered, 'and the row says so').toBe(true);
+            const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
+            if (grantRow === undefined) throw new Error('expected the remembered command');
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
+              `Withdrew ${grantRow.label}. Auto mode asks about it again. Its session approval went too.`,
             );
-            await ctx.processLine('/permissions --revoke 1');
-            expect(notices().at(-1)).toContain('This chat’s session approval of it went too.');
-            await ctx.processLine('/permissions');
-            expect(notices().at(-1)).toContain('Approved for this session: none.');
+            expect(port.load().session).toEqual([]);
             await ctx.processLine('/exit');
             return { kind: 'exit' };
           } finally {
@@ -1248,14 +1256,14 @@ describe('chatCommand', () => {
     );
     expect(
       createCommandGrantStore({ homeDir: home, projectRoot: cwd, keychain }).list(),
-      'the revoke reached the file',
+      'the withdrawal reached the file',
     ).toMatchObject({ ok: true, grants: [] });
   });
 
   it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
     const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain('/permissions: takes a single n value');
+    expect(err()).toContain("/permissions: unknown argument 'now'.");
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {

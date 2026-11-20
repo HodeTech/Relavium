@@ -1,7 +1,9 @@
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import {
-  chatPermissionsNotice,
+  createPermissionsPort,
+  NOT_AVAILABLE as PERMISSIONS_NOT_AVAILABLE,
+  type PermissionsPort,
   type SessionCommandApprovals,
 } from '../permissions/chat-permissions.js';
 import {
@@ -310,6 +312,9 @@ export interface ChatDriveContext {
    * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
    */
   readonly modelPicker?: ChatModelsPort;
+  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
+   *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
+  readonly permissions?: PermissionsPort;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -1774,6 +1779,9 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly onReseat: (target: ReseatTarget) => void;
   /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
   readonly reseatTarget: () => ReseatTarget | undefined;
+  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
+   *  present on an interactive session only, where there is someone to ask and a store to read. */
+  readonly permissions: PermissionsPort | undefined;
 }
 
 /**
@@ -2037,13 +2045,10 @@ export function createChatLineHandler(
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
     // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
-    managePermissions: async (request) => {
-      emitOutput(
-        await chatPermissionsNotice(request, {
-          grants: commandGrants,
-          session: modeControl.commandApprovals,
-        }),
-      );
+    // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
+    // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
+    managePermissions: () => {
+      emitOutput(PERMISSIONS_NOT_AVAILABLE);
     },
     showCost: (release = false) => {
       try {
@@ -2365,6 +2370,12 @@ export function createChatLineHandler(
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
     commandApprovals: modeControl.commandApprovals,
+    permissions: interactive
+      ? createPermissionsPort(
+          { grants: commandGrants, session: modeControl.commandApprovals },
+          'chat',
+        )
+      : undefined,
   };
 }
 
@@ -3074,6 +3085,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onAbort,
     onModeChange,
     onSetEffort,
+    permissions,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3183,6 +3195,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(interactive && wiring.modelPicker !== undefined
         ? { modelPicker: wiring.modelPicker }
         : {}),
+      // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
+      ...(interactive && permissions !== undefined ? { permissions } : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside

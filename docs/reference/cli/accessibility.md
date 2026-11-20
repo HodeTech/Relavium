@@ -101,6 +101,8 @@ when an Enter came outside its window, and a control character or an empty argum
 shows as an escape or `(empty)` instead of nothing. The contract is
 [command-permissions.md](command-permissions.md#the-command-card).
 
+**MVP-4 step 5 (2026-11-20): the `/permissions` sheet** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is docked under the conversation like the other overlays, so it works in the inline renderer, which is the accessible mode, and not only in the full-screen one. It reads the same with colour off: the selected row is marked `›`, the sections have headings, hidden rows are counted by `▲ n more` / `▼ n more`, and a withdrawal's question is the message row's text, not a colour. Below 80×24 it says so and arms nothing. `Esc` and `Ctrl+C` close it and never withdraw. The contract is [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet).
+
 ## See also
 
 - [home.md](home.md) · [chat-session.md](chat-session.md) — the two interactive surfaces.

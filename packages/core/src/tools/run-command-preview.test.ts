@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
-import { createToolRegistry } from './registry.js';
+import { createToolRegistry, scrubbedCommandDisplay } from './registry.js';
 import type {
   ToolApprovalLiveContext,
   ToolApprovalRequest,
@@ -139,5 +139,35 @@ describe('the event preview of a command masks everything the joined projection 
   it('leaves an ordinary command readable', async () => {
     const { request } = await asked('git', ['log', '--oneline', '-n', '5', 'a b']);
     expect(request.preview.command).toBe("git log --oneline -n 5 'a b'");
+  });
+});
+
+describe('scrubbedCommandDisplay: the same line the approval preview shows, for an argv held without a tool call (ADR-0137 §2)', () => {
+  it('quotes the argv like the card’s title and leaves an ordinary command readable', () => {
+    expect(scrubbedCommandDisplay(['git', 'log', '--oneline', '-n', '5', 'a b'])).toBe(
+      "git log --oneline -n 5 'a b'",
+    );
+    expect(scrubbedCommandDisplay([])).toBe('');
+    expect(scrubbedCommandDisplay(['ls'])).toBe('ls');
+  });
+
+  it('is exactly the preview a real request carries, for every form of the oracle corpus used above', async () => {
+    for (const [command, args] of [
+      ['psql', ["password='S3cretValueHere'"]],
+      ['curl', ['--header', 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789ABCD']],
+      ['tool', ['--password', 'hunter2hunter2hunter2']],
+      ['git', ['status', '--short']],
+    ] as const) {
+      const { request } = await asked(command, args);
+      expect(scrubbedCommandDisplay([command, ...args]), `${command} ${args.join(' ')}`).toBe(
+        request.preview.command,
+      );
+    }
+  });
+
+  it('masks a secret-shaped argument and never returns one', () => {
+    const shown = scrubbedCommandDisplay(['psql', "password='S3cretValueHere'"]);
+    expect(shown).not.toContain('S3cretValueHere');
+    expect(shown).toContain('[redacted]');
   });
 });

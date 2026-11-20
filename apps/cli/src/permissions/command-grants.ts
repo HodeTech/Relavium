@@ -172,6 +172,12 @@ export interface CommandGrantStore {
   list: () => ListResult;
   /** Withdraw the grant at the 1-based index of {@link list} by appending a tombstone. */
   revoke: (index: number) => RevokeResult;
+  /**
+   * Withdraw the grant that CONTAINS this record `id` (a listed grant's `id`, or the id of one of its twins), appending a
+   * tombstone for every record of it. Unlike {@link revoke} it names an identity, not a position, so a list read a moment ago
+   * cannot make it withdraw a different grant: a grant that is gone is `no-such-grant`.
+   */
+  revokeById: (id: string) => RevokeResult;
   /** Remove the whole file: the recovery that needs no text editor. Every root's grants go. */
   revokeAll: () => RevokeAllResult;
 }
@@ -582,13 +588,18 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     };
   };
 
-  const revoke = (index: number): RevokeResult => {
+  /** Withdraw the live grant `select` picks from this root's grants: one tombstone per record of it (the grant and its twins). */
+  const withdraw = (
+    select: (
+      grants: ReturnType<typeof rootGrants>,
+    ) => ReturnType<typeof rootGrants>[number] | undefined,
+  ): RevokeResult => {
     const state = readKey();
     if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
     const folded = readFold(state.kind === 'ready' ? state.key : undefined);
     if (!folded.ok) return { ok: false, reason: 'unreadable' };
     if (state.kind === 'absent') return { ok: false, reason: 'no-such-grant' };
-    const target = rootGrants(folded.fold, rootDigest(state.key, canonical))[index - 1];
+    const target = select(rootGrants(folded.fold, rootDigest(state.key, canonical)));
     if (target === undefined) return { ok: false, reason: 'no-such-grant' };
     const ids = [target.id, ...target.twins];
     // A tombstone is a line too. Remember leaves room for one (see `room`), but a store at its bound cannot take another line:
@@ -612,9 +623,14 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     };
   };
 
+  const revoke = (index: number): RevokeResult => withdraw((grants) => grants[index - 1]);
+
+  const revokeById = (id: string): RevokeResult =>
+    withdraw((grants) => grants.find((grant) => grant.id === id || grant.twins.includes(id)));
+
   const revokeAll = (): RevokeAllResult => removeCommandGrantsFile(deps.homeDir, deps.keychain);
 
-  return { matches, canRemember, remember, list, revoke, revokeAll };
+  return { matches, canRemember, remember, list, revoke, revokeById, revokeAll };
 }
 
 /**

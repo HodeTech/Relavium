@@ -28,6 +28,11 @@ import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@re
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
 import type { MentionReader } from './mention.js';
+import type {
+  PermissionEntry,
+  PermissionsPort,
+  PermissionsSnapshot,
+} from '../../permissions/chat-permissions.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
@@ -72,6 +77,7 @@ function makeSession(
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
     onSetEffort?: (effort: ReasoningEffort) => void;
+    permissions?: PermissionsPort;
     clear?: () => Promise<HomeChatSession>;
   } = {},
 ): {
@@ -99,6 +105,7 @@ function makeSession(
     stopReason: opts.stopReason ?? (() => 'exit'),
     ...(opts.clear === undefined ? {} : { clear: opts.clear }),
     ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
+    ...(opts.permissions === undefined ? {} : { permissions: opts.permissions }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -3129,5 +3136,153 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER); // Enter on the opening highlight (the bound 'high')
     expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
     expect(c.getSnapshot().effortPicker).toBeUndefined(); // closed
+  });
+});
+
+describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
+  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
+  const SNAPSHOT: PermissionsSnapshot = {
+    project: {
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
+        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
+      ],
+    },
+    session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
+  };
+  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
+    let current = SNAPSHOT;
+    const withdraw = vi.fn((entry: PermissionEntry): string => {
+      if (entry.kind === 'project' && current.project.ok)
+        current = {
+          ...current,
+          project: {
+            ok: true,
+            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
+          },
+        };
+      return `Withdrew ${entry.kind === 'project' ? entry.row.label : 'the session approval'}.`;
+    });
+    return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
+  };
+  const inChat = async (made: ReturnType<typeof makeSession>): Promise<HomeController> => {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    return c;
+  };
+  const open = async (
+    made: ReturnType<typeof makeSession>,
+  ): Promise<{ c: HomeController; sent: string[] }> => {
+    const c = await inChat(made);
+    const before = made.lines.length;
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    return { c, sent: made.lines.slice(before) };
+  };
+
+  it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
+    const { port } = portOf();
+    const { c, sent } = await open(makeSession({ permissions: port }));
+    const sheet = c.getSnapshot().permissionsSheet;
+    expect(sheet?.surface).toBe('chat');
+    expect(sheet?.mode).toBe('ask');
+    expect(sent, 'nothing was dispatched').toEqual([]);
+    expect(c.getSnapshot().input.text).toBe('');
+  });
+
+  it('is dispatched like any command where the chat has no port', async () => {
+    const { c, sent } = await open(makeSession({}));
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sent).toEqual(['/permissions']);
+  });
+
+  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
+    const { port } = portOf();
+    const { c } = await open(makeSession({ permissions: port }));
+    type(c, 'hello');
+    expect(c.getSnapshot().input.text).toBe('');
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet).toBeDefined();
+    c.handleKey('c', CTRL_C);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
+      false,
+    );
+  });
+
+  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer', async () => {
+    const { port, withdraw } = portOf();
+    const { c } = await open(makeSession({ permissions: port }));
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(withdraw).not.toHaveBeenCalled();
+    c.handleKey('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
+    const sheet = c.getSnapshot().permissionsSheet;
+    expect(sheet?.armed).toBe(false);
+    expect(sheet?.message).toBe('Withdrew npm, 1 argument.');
+    expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
+      'b',
+    ]);
+  });
+
+  it('a paste or any other key drops the question and withdraws nothing', async () => {
+    const { port, withdraw } = portOf();
+    const { c } = await open(makeSession({ permissions: port }));
+    c.handleKey('d', {});
+    c.handlePaste('withdraw it all');
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
+    c.handleKey('d', {});
+    c.handleKey('x', {});
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('does not arm in a terminal that cannot show the question, and says how to leave', async () => {
+    const { port, withdraw } = portOf();
+    const { c } = await open(makeSession({ permissions: port }));
+    c.setTerminalSize(60, 20);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    c.setTerminalSize(80, 24);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+  });
+
+  it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
+    const { port } = portOf();
+    const { c } = await open(
+      makeSession({
+        permissions: {
+          ...port,
+          withdraw: () => {
+            throw new Error('boom');
+          },
+        },
+      }),
+    );
+    c.handleKey('d', {});
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.message).toBe(
+      'Could not withdraw that row; nothing changed.',
+    );
   });
 });

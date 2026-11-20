@@ -226,10 +226,9 @@ exact command for this session` and `Press Enter to allow this exact command now
 `Enter confirms · any other key cancels, allowing nothing`; an Enter that comes too early or too late says `Too early or too late
 for Enter — nothing was allowed.` A Remember written as the call is cancelled leaves the grant, and says so.
 
-The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions
---revoke` withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
-`relavium permissions revoke`, or another chat) until the person withdraws it there with `/permissions --revoke --session`, and
-both revoke messages say so.
+The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions` sheet
+withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
+`relavium permissions revoke`, or another chat) until the person withdraws that row in its sheet, and the sheet's answer says so.
 
 A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
 allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node
@@ -261,18 +260,51 @@ resolved lexically against the working directory is a path the file tools' read 
 warning on every command). The card says so (`⚠ Names a protected path (its output goes to the model). Allow once only.`) and the only
 answer that approves is *Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
 
-**In the chat: `/permissions`.**
+**In the chat: `/permissions`, a sheet.** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2.) The bare `/permissions` opens a docked, keyboard-owning sheet under the
+conversation, where `/models` and `/effort` open, with the transcript still above it. The command takes **no argument**: the typed
+`--revoke <number>` forms are gone, because a typed number is a position and the sheet names a row. On a plain, `--json` or one-shot
+chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.`
 
 ```text
-/permissions                      list what is remembered for this project and approved for this session
-/permissions --revoke <number>    withdraw a remembered command
-/permissions --revoke --session <number>   withdraw a session approval, so the same command asks again
+Permissions · ask mode
+This project · remembered (2)
+› npm, 1 argument                            remembered 2026-11-19 12:00Z
+  node, 1 argument                           remembered 2026-11-18 09:30Z
+This session · approved (1)
+  git status                                 (also remembered)
+Remembered commands still ask here; only auto mode runs one unasked.
+<message row: a withdrawal's question, or its answer>
+↑/↓ select · d withdraw · Esc close
 ```
 
-The two lists are numbered separately and show the same labels as `relavium permissions list` — a program's name only where it
-could be named without risking a credential, the argument count (`npm, 1 argument`) and, for a remembered command only, the
-date — and never an argument. A session approval a *Remember* made is marked `(also remembered)`, and withdrawing it with `--session`
-says the project grant still covers the command (`auto` then runs it unasked). The number is a plain decimal from 1; a typo, `--session` or a number without `--revoke`, or a
-second number gets the usage line instead of a guess. A confirmation names what it withdrew, because the numbers close up. On a plain, `--json` or one-shot chat, which has
-no store and no one to ask, `/permissions` says remembered commands are not available. The Home's full screen for grants,
-domain allowlists and MCP servers is MVP-8's.
+- **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a
+  credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one
+  program can be told apart — never an argument. A session row shows the approved command, quoted and **scrubbed by the same
+  function the command card's title uses**, with every control, invisible or `<` character shown as a visible `<U+…>` token; it is
+  marked `(also remembered)` when a *Remember* made it or a remembered grant covers the command now. There are no row numbers: the
+  cursor is the selection.
+- **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
+  `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and the project's section only. The note row says what a grant
+  is worth in the mode (only `auto` runs a remembered command unasked, and asks once after a file write; `plan` refuses every
+  command). An empty list says what to do (`Press Ctrl+O on a command card to remember one.`).
+- **Keys.** `↑`/`↓` move and clamp (`PgUp`, `PgDn`, `Home`, `End` too). `d`, `Delete` or `Backspace` **arms** the selected row: the
+  message row asks `Withdraw <row>? Enter withdraws · Esc keeps it` and the legend becomes `Enter withdraw · Esc keep`. `Enter`
+  withdraws; any other key, a paste and `Esc` keep the row. `Esc` closes an idle sheet; `Ctrl+C` closes it from either state. Neither
+  closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and one can only be made on
+  a command card.
+- **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
+  again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
+  one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
+  session row withdrawn while a remembered grant covers the command says `Still remembered: auto mode runs it unasked.` The answers say
+  what was withdrawn and name only `auto` as the mode that asks again, because no other mode ran a remembered command unasked.
+- **Failures.** A store that cannot be read shows its fixed sentence (`The OS keychain is not available…`, `The remembered-commands
+  file could not be read…`) in place of the rows, and the session section still works; a withdrawal that cannot be written leaves the
+  row and says so in one short row.
+- **Bounds.** At most three fifths of the terminal and at least eight transcript rows stay above (the card's rule), at most eight body
+  lines with `▲ n more` / `▼ n more` markers; the title, the message row and the legend are always drawn and the note is the first row
+  to go. Below 80×24 the sheet says `Enlarge the terminal to use this screen — Esc closes.` and `d` arms nothing.
+- **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
+  colour off: the `›` marker, the headings and the markers carry the meaning.
+
+The Home's tab bar and its pane that composes this sheet with the domain allowlists, MCP servers and egress endpoints are MVP-8's;
+add and remove belong to those sections, not to command grants.

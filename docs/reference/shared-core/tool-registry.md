@@ -445,6 +445,8 @@ ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-pl
   span must be revealed before an approving answer counts — and the fs/egress floors, but real; surfacing "this was redacted" to the prompt
   is an open follow-up.
 
+`scrubbedCommandDisplay(argv)` (exported from `@relavium/core`, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is the same scrub for an argv a host holds **without** a tool call: it returns the line the command card's title shows for that command (quoted, element-wise scrubbed, with the joined line as the oracle). The CLI's `/permissions` sheet uses it for the session approvals; it adds no behaviour, only the one function exported instead of copied.
+
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
 fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the
 retryable `tool_failed` a *host-capability* throw gets); an absent hook under an active regime ⇒

@@ -388,6 +388,36 @@ describe('revocation does not depend on file order, and one argv is one grant', 
     expect(nonEmptyLines().filter((line) => line.includes('"revoked"'))).toHaveLength(2);
   });
 
+  it('revokeById names an identity: it takes the grant that holds the id (or a twin’s id), with every record, and is blind to positions', () => {
+    const key = useKey();
+    writeFile(
+      `\n${grantLine(key, canonicalRoot(project), ['npm', 'test'], 'twin-a')}\n${grantLine(key, canonicalRoot(project), ['npm', 'test'], 'twin-b')}\n${grantLine(key, canonicalRoot(project), ['git', 'status'], 'solo')}\n`,
+    );
+    const grants = store();
+    // The twin's own id, not the listed one, still names the grant: both records are withdrawn.
+    expect(grants.revokeById('twin-b')).toMatchObject({
+      ok: true,
+      id: 'twin-a',
+      ids: ['twin-a', 'twin-b'],
+    });
+    expect(grants.matches(['npm', 'test'])).toBe(false);
+    expect(grants.matches(['git', 'status']), 'the other grant is untouched').toBe(true);
+    expect(nonEmptyLines().filter((line) => line.includes('"revoked"'))).toHaveLength(2);
+    // A grant that is gone is gone: the same id again, and an id that never existed, name nothing.
+    expect(grants.revokeById('twin-a')).toEqual({ ok: false, reason: 'no-such-grant' });
+    expect(grants.revokeById('never')).toEqual({ ok: false, reason: 'no-such-grant' });
+    // What is left is still withdrawn by its own id, wherever it now sits in the list.
+    expect(grants.revokeById('solo')).toMatchObject({ ok: true, id: 'solo', ids: ['solo'] });
+    expect(grants.matches(['git', 'status'])).toBe(false);
+  });
+
+  it('revokeById reads the store like revoke does: a file that does not parse is unreadable, never an empty store', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    appendFileSync(file(), 'not a line\n');
+    expect(store().revokeById('grant-1')).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
   it('two overlapping remembers in one process make exactly one record', async () => {
     const a = store();
     const b = store();

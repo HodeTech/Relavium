@@ -58,6 +58,9 @@ this glossary links to rather than duplicates.
 - **Edge** — a directed connection between two nodes, optionally guarded by a
   condition expression; defines execution order and data flow.
 
+- **Sheet** — a docked, keyboard-owning overlay of the CLI's chat and Home, drawn under the live region with the transcript still above it (the `/permissions` sheet is the first built on the shared frame; `/models`, `/effort` and the palette are the same family). `Esc` and `Ctrl+C` close it and neither confirms anything. Not a modal in the middle of the screen: the renderer has no layering and the inline renderer could not draw one. See [ADR-0137](decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md).
+- **Withdraw** — to take back a permission a person gave: a remembered command (a grant kept for the project) or a session approval. The user-facing verb of the `/permissions` sheet (`d`, then `Enter`); the command that does the same from a script is `relavium permissions revoke`. Withdrawing only ever makes the chat ask **more**. See [command-permissions.md](reference/cli/command-permissions.md).
+
 ## Node Types (canvas catalog)
 
 The nine canvas node components. These are **canvas component names**; the value

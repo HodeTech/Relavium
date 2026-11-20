@@ -17,6 +17,7 @@ import {
   type TranscriptEntry,
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -80,13 +81,18 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 /** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. The
  *  `sessionId` is parameterized so a `/models` reseat fake can hand back a DIFFERENT session object that keeps the
  *  SAME id (the reseat invariant the scroll-reset test discriminates against). */
-function makeSession(store: ChatStoreController, sessionId = 'sess-fake'): HomeChatSession {
+function makeSession(
+  store: ChatStoreController,
+  sessionId = 'sess-fake',
+  permissions?: PermissionsPort,
+): HomeChatSession {
   return {
     store,
     sessionId,
     processLine: async () => {},
     shouldStop: () => false,
     stopReason: () => 'exit',
+    ...(permissions === undefined ? {} : { permissions }),
     teardown: () => Promise.resolve(),
   };
 }
@@ -1116,5 +1122,77 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     expect(carried.at(-1)?.role).toBe('notice');
     expect(carried.at(-1)?.text).toContain('claude-sonnet-4-6 → claude-opus-4-8'); // the marker, in order
     expect(carried.at(-1)?.text).toContain('@-attached file contents included'); // ADR-0059's bound disclosure
+  });
+});
+
+/**
+ * Poll until `predicate` holds and FAIL if it never does. `harness-util`'s `waitFor` returns silently on a timeout, so a bare `await waitFor(...)`
+ * asserts nothing (a removed paste handler survived the mutation sweep that way); a lone Esc is also held back a moment while the input layer
+ * rules out an escape sequence, so the budget is real time, as in `interrupt-wiring.test.tsx`.
+ */
+const untilTrue = (predicate: () => boolean, timeout = 3000): Promise<void> =>
+  vi.waitFor(
+    () => {
+      if (!predicate())
+        throw new Error(`the condition did not become true: ${predicate.toString()}`);
+    },
+    { timeout, interval: 15 },
+  );
+
+describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
+  const port: PermissionsPort = {
+    surface: 'chat',
+    load: () => ({
+      project: {
+        ok: true,
+        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
+      },
+      session: [],
+    }),
+    withdraw: () => 'Withdrew npm, 1 argument. Auto mode asks about it again.',
+  };
+
+  it('is drawn docked in the chat when the command is typed, takes a paste away from the prompt, and closes on Esc', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const { c, harness } = mountHome(store, {
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(c);
+    harness.stdin.write('/permissions');
+    harness.stdin.write('\r');
+    await untilTrue(() => (harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const frame = harness.lastFrame() ?? '';
+    expect(frame).toContain('This project · remembered (1)');
+    expect(frame).toContain('› npm, 1 argument');
+    expect(frame).toContain('↑/↓ select · d withdraw · Esc close');
+    // A paste is not input to the sheet and not text for the prompt behind it.
+    harness.stdin.write(bracketed('pasted words'));
+    await settleFrames();
+    expect(c.getSnapshot().input.text).toBe('');
+    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
+    harness.stdin.write('\u001b');
+    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Permissions ·'));
+  });
+
+  it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet !== undefined);
+    m.setSize({ cols: 60, rows: 20 });
+    m.fireResize();
+    await settleFrames();
+    m.harness.stdin.write('d');
+    await settleFrames();
+    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    m.setSize({ cols: 100, rows: 30 });
+    m.fireResize();
+    await settleFrames();
+    m.harness.stdin.write('d');
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
   });
 });

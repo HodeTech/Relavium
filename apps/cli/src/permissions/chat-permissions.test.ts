@@ -1,303 +1,235 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalCache } from '../chat/chat-mode.js';
-import { chatPermissionsNotice, type ChatPermissionsDeps } from './chat-permissions.js';
+import {
+  createPermissionsPort,
+  NOT_AVAILABLE,
+  PROJECT_FAILURES,
+  readPermissions,
+  withdrawProjectGrant,
+  withdrawSessionApproval,
+  type PermissionsDeps,
+} from './chat-permissions.js';
 import type { CommandGrantStore, ListResult, RevokeResult } from './command-grants.js';
 
-/** `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one. */
-const PATH_PROGRAMS = new Set(['npm', 'git']);
-const findProgram = (name: string): Promise<string | undefined> =>
-  Promise.resolve(PATH_PROGRAMS.has(name) ? `/usr/bin/${name}` : undefined);
+/** The `/permissions` sheet's data (ADR-0137 §2): the project's remembered commands and this session's approvals, and taking one back. */
+type Grants = Pick<CommandGrantStore, 'list' | 'revokeById' | 'matches'>;
 
 function deps(options: {
   readonly list?: ListResult;
-  readonly revoke?: RevokeResult;
+  readonly revokeById?: RevokeResult;
   readonly noStore?: boolean;
+  readonly matches?: (argv: readonly string[]) => boolean;
   readonly session?: readonly (readonly string[])[];
   /** Session approvals created by a Remember, each linked to the id of the grant it came from. */
   readonly linked?: readonly { readonly argv: readonly string[]; readonly grantId: string }[];
-}): ChatPermissionsDeps & {
+}): PermissionsDeps & {
   readonly cache: ApprovalCache;
-  readonly revoke: ReturnType<typeof vi.fn>;
+  readonly revokeById: ReturnType<typeof vi.fn>;
 } {
   const cache = new ApprovalCache();
   for (const argv of options.session ?? []) cache.rememberAlwaysCommand(argv);
   for (const { argv, grantId } of options.linked ?? []) cache.rememberAlwaysCommand(argv, grantId);
-  const revoke = vi.fn(() => options.revoke ?? ({ ok: false, reason: 'no-such-grant' } as const));
-  const grants: Pick<CommandGrantStore, 'list' | 'revoke'> = {
+  const revokeById = vi.fn(
+    () =>
+      options.revokeById ??
+      ({ ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 } satisfies RevokeResult),
+  );
+  const grants: Grants = {
     list: () => options.list ?? { ok: true, grants: [] },
-    revoke,
+    revokeById,
+    matches: options.matches ?? (() => false),
   };
   return {
     grants: options.noStore === true ? undefined : grants,
     session: cache,
-    findProgram,
     cache,
-    revoke,
+    revokeById,
   };
 }
-const request = (
-  change: Partial<{ revoke: boolean; session: boolean; number: string; unknown: string[] }> = {},
-) => ({
-  revoke: false,
-  session: false,
-  number: undefined,
-  unknown: [] as string[],
-  ...change,
-});
 
-describe('/permissions lists', () => {
-  it('both kinds, numbered, with a program name only where it could be named, and never an argument', async () => {
-    const d = deps({
-      list: {
-        ok: true,
-        grants: [
-          { index: 1, id: 'a', program: 'npm', args: 1, grantedAt: '2026-11-19T12:00:00.000Z' },
-          {
-            index: 2,
-            id: 'b',
-            program: '(unnamed program)',
-            args: 3,
-            grantedAt: '2026-11-19T12:05:00.000Z',
-          },
-        ],
-      },
-      session: [
-        ['git', 'push', 'SECRET-TOKEN'],
-        ['./deploy.sh', '--prod'],
-      ],
-    });
-    const text = await chatPermissionsNotice(request(), d);
-    expect(text).toBe(
-      [
-        'Remembered for this project (2):',
-        '  1. npm  (1 argument)  remembered 2026-11-19T12:00:00.000Z',
-        '  2. (unnamed program)  (3 arguments)  remembered 2026-11-19T12:05:00.000Z',
-        'Approved for this session (2):',
-        '  1. git, 2 arguments',
-        '  2. (unnamed program), 1 argument',
-        'Withdraw one with /permissions --revoke <number>, or /permissions --revoke --session <number> for a session approval.',
-      ].join('\n'),
-    );
-    expect(text).not.toContain('SECRET-TOKEN');
-    expect(text).not.toContain('deploy');
-  });
-
-  it('says none for an empty list, and that remembered commands are unavailable where the chat has no store', async () => {
-    expect(await chatPermissionsNotice(request(), deps({}))).toContain(
-      'Remembered for this project: none.',
-    );
-    expect(await chatPermissionsNotice(request(), deps({}))).toContain(
-      'Approved for this session: none.',
-    );
-    expect(await chatPermissionsNotice(request(), deps({ noStore: true }))).toContain(
-      'Remembered for this project: not available in this chat.',
-    );
-  });
-
-  it.each([
-    ['no-key', 'OS keychain'],
-    ['unreadable', 'revoke --all'],
-  ] as const)(
-    'reports a store that cannot be read (%s) with its way out, and still lists the session',
-    async (reason, phrase) => {
-      const text = await chatPermissionsNotice(
-        request(),
-        deps({ list: { ok: false, reason }, session: [['npm', 'test']] }),
-      );
-      expect(text).toContain(phrase);
-      expect(text).toContain('1. npm, 1 argument');
+const GRANTS: ListResult = {
+  ok: true,
+  grants: [
+    { index: 1, id: 'a', program: 'npm', args: 1, grantedAt: '2026-11-19T12:00:07.123Z' },
+    {
+      index: 2,
+      id: 'b',
+      program: '(unnamed program)',
+      args: 3,
+      grantedAt: '2026-11-19T12:05:00.000Z',
     },
-  );
-});
+  ],
+};
 
-describe('/permissions marks the session approvals a Remember made', () => {
-  it('lists them as also remembered, and an ordinary one without the mark', async () => {
-    const d = deps({
-      session: [['git', 'status']],
-      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
-      list: {
-        ok: true,
-        grants: [
-          {
-            id: 'grant-7',
-            index: 1,
-            program: 'npm',
-            args: 1,
-            grantedAt: '2026-11-19T10:00:00.000Z',
-          },
-        ],
-      },
-    });
-    const text = await chatPermissionsNotice(request(), d);
-    expect(text).toContain('  1. git, 1 argument\n');
-    expect(text).toContain('  2. npm, 1 argument  (also remembered)');
-  });
-});
-
-describe('/permissions says what it did not understand instead of doing something else', () => {
-  it.each([
-    ['an unknown flag', { unknown: ['--revokee'], number: '2' }],
-    ['an unknown flag next to a real one', { revoke: true, number: '2', unknown: ['--all'] }],
-    ['a number without --revoke', { number: '2' }],
-    ['--session without --revoke', { session: true }],
-    ['--session and a number without --revoke', { session: true, number: '1' }],
-    ['a second number', { revoke: true, number: '1', unknown: ['2'] }],
-  ])('%s gets the usage line and touches nothing', async (_what, change) => {
-    const d = deps({
-      session: [['npm', 'test']],
-      revoke: { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 },
-    });
-    const text = await chatPermissionsNotice(request(change), d);
-    expect(text).toMatch(/^Usage: \/permissions lists/u);
-    expect(d.revoke).not.toHaveBeenCalled();
-    expect(d.cache.commandApprovals()).toHaveLength(1);
-  });
-});
-
-describe('/permissions --revoke', () => {
-  it('withdraws a remembered command by its number and says which one', async () => {
-    const d = deps({ revoke: { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 } });
-    const text = await chatPermissionsNotice(request({ revoke: true, number: '2' }), d);
-    expect(d.revoke).toHaveBeenCalledExactlyOnceWith(2);
-    expect(text).toBe(
-      'Revoked remembered command 2: npm, 1 argument. It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.',
-    );
-  });
-
-  it('a project revoke also withdraws the session approval its Remember created, and says so', async () => {
-    const d = deps({
-      revoke: { ok: true, id: 'grant-7', ids: ['grant-7'], program: 'npm', args: 1 },
-      session: [['git', 'status']],
-      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
-    });
-    const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
-    expect(text).toBe(
-      'Revoked remembered command 1: npm, 1 argument. This chat’s session approval of it went too. It asks again the next time it is needed; another chat that is already open keeps its own session approval of it until it withdraws that with /permissions --revoke --session. The numbers have changed: /permissions lists them.',
-    );
-    expect(
-      d.cache.isAlwaysCommand(['npm', 'test']),
-      'the linked approval went with the grant',
-    ).toBe(false);
-    expect(d.cache.isAlwaysCommand(['git', 'status']), 'an unrelated one stays').toBe(true);
-  });
-
-  it('a project revoke of a grant no session approval came from says nothing about the session', async () => {
-    const d = deps({
-      revoke: { ok: true, id: 'grant-8', ids: ['grant-8'], program: 'npm', args: 1 },
-      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }],
-    });
-    const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
-    expect(text).not.toContain('This chat’s session approval');
-    expect(d.cache.isAlwaysCommand(['npm', 'test'])).toBe(true);
-  });
-
-  it('a project revoke withdraws the session approvals of every twin record of the grant', async () => {
-    const d = deps({
-      revoke: {
-        ok: true,
-        id: 'grant-7',
-        ids: ['grant-7', 'grant-7-twin'],
-        program: 'npm',
-        args: 1,
-      },
-      linked: [{ argv: ['npm', 'test'], grantId: 'grant-7-twin' }],
-    });
-    const text = await chatPermissionsNotice(request({ revoke: true, number: '1' }), d);
-    expect(text).toContain('This chat’s session approval of it went too.');
-    expect(d.cache.isAlwaysCommand(['npm', 'test'])).toBe(false);
-  });
-
-  it('withdrawing a session approval a Remember made says the project grant still covers it', async () => {
-    const d = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'grant-7' }] });
-    const text = await chatPermissionsNotice(
-      request({ revoke: true, session: true, number: '1' }),
-      d,
-    );
-    expect(text).toBe(
-      'Withdrew session approval 1: npm, 1 argument. It asks again. It is also remembered for this project, so auto mode still runs it unasked: /permissions --revoke <number> withdraws that. The numbers have changed: /permissions lists them.',
-    );
-  });
-
-  it('withdraws a session approval with --session, so the same command asks again', async () => {
-    const d = deps({
-      session: [
-        ['git', 'status'],
-        ['npm', 'test'],
+describe('readPermissions', () => {
+  it('lists the remembered commands by label and minute, and never an argument', () => {
+    const snapshot = readPermissions(deps({ list: GRANTS }));
+    expect(snapshot.project).toEqual({
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
+        { id: 'b', label: '(unnamed program), 3 arguments', remembered: '2026-11-19 12:05Z' },
       ],
     });
-    const text = await chatPermissionsNotice(
-      request({ revoke: true, session: true, number: '1' }),
-      d,
-    );
-    expect(text).toBe(
-      'Withdrew session approval 1: git, 1 argument. It asks again. The numbers have changed: /permissions lists them.',
-    );
-    expect(d.cache.isAlwaysCommand(['git', 'status'])).toBe(false);
-    expect(d.cache.isAlwaysCommand(['npm', 'test']), 'the other one stays').toBe(true);
-    expect(d.revoke).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, '0', '01', '-1', '1.5', 'x', '1234567', ''])(
-    'refuses the number %j without touching anything',
-    async (number) => {
-      const d = deps({ session: [['npm', 'test']] });
-      const text = await chatPermissionsNotice(
-        request({ revoke: true, ...(number === undefined ? {} : { number }) }),
+  it('shows a session approval as the command the card showed, scrubbed, and marks one a remembered grant covers', () => {
+    const d = deps({
+      session: [['git', 'push', 'origin', 'main']],
+      linked: [{ argv: ['npm', 'test'], grantId: 'a' }],
+      matches: (argv) => argv[0] === 'npm' || argv[0] === 'curl',
+    });
+    d.cache.rememberAlwaysCommand(['curl', 'https://x.test']);
+    const rows = readPermissions(d).session ?? [];
+    expect(rows.map((row) => [row.text, row.alsoRemembered])).toEqual([
+      ['git push origin main', false],
+      ['npm test', true],
+      ['curl https://x.test', true],
+    ]);
+  });
+
+  it('masks a secret-shaped argument in a session row, as the card’s title does', () => {
+    const rows =
+      readPermissions(
+        deps({
+          session: [['psql', 'password=hunter2']],
+        }),
+      ).session ?? [];
+    expect(rows[0]?.text).not.toContain('hunter2');
+    expect(rows[0]?.text).toContain('[redacted]');
+  });
+
+  it('has no session list on a surface with no chat', () => {
+    const d = deps({ list: GRANTS });
+    expect(readPermissions({ grants: d.grants, session: undefined }).session).toBeUndefined();
+  });
+
+  it('says why when the store cannot answer, and that a chat with no store has none', () => {
+    for (const reason of ['no-key', 'unreadable'] as const) {
+      expect(readPermissions(deps({ list: { ok: false, reason } })).project).toEqual({
+        ok: false,
+        text: PROJECT_FAILURES[reason],
+      });
+    }
+    expect(readPermissions(deps({ noStore: true })).project).toEqual({
+      ok: false,
+      text: NOT_AVAILABLE,
+    });
+  });
+});
+
+describe('withdrawProjectGrant', () => {
+  const row = { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' };
+
+  it('withdraws by the grant’s identity and says what it changes without a mode-blind promise', () => {
+    const d = deps({});
+    expect(withdrawProjectGrant(row, d)).toBe(
+      'Withdrew npm, 1 argument. Auto mode asks about it again.',
+    );
+    expect(d.revokeById).toHaveBeenCalledWith('a');
+  });
+
+  it('takes this chat’s linked session approvals with it, by every record of the grant', () => {
+    const d = deps({
+      revokeById: { ok: true, id: 'a', ids: ['a', 'a-twin'], program: 'npm', args: 1 },
+      linked: [{ argv: ['npm', 'test'], grantId: 'a-twin' }],
+    });
+    expect(withdrawProjectGrant(row, d)).toBe(
+      'Withdrew npm, 1 argument. Auto mode asks about it again. Its session approval went too.',
+    );
+    expect(d.cache.commandApprovals()).toEqual([]);
+  });
+
+  it('says a row that is already gone is already withdrawn', () => {
+    const d = deps({ revokeById: { ok: false, reason: 'no-such-grant' } });
+    expect(withdrawProjectGrant(row, d)).toBe('That row was already withdrawn.');
+  });
+
+  it('says in one short row why a withdrawal could not be written, and changes nothing', () => {
+    for (const reason of ['unwritable', 'full', 'unreadable', 'no-key'] as const) {
+      const text = withdrawProjectGrant(row, deps({ revokeById: { ok: false, reason } }));
+      expect(text.length).toBeLessThanOrEqual(70);
+      expect(text).not.toMatch(/withdrew/iu);
+    }
+  });
+
+  it('refuses where there is no store', () => {
+    expect(withdrawProjectGrant(row, deps({ noStore: true }))).toBe(NOT_AVAILABLE);
+  });
+});
+
+describe('withdrawSessionApproval', () => {
+  it('withdraws by the exact argv, so a position that moved cannot name another command', () => {
+    const d = deps({
+      session: [
+        ['cat', 'a b'],
+        ['cat', 'a', 'b'],
+      ],
+    });
+    expect(
+      withdrawSessionApproval(
+        { argv: ['cat', 'a', 'b'], text: 'cat a b', alsoRemembered: false },
         d,
-      );
-      expect(text).toContain('Give the number to withdraw');
-      expect(d.revoke).not.toHaveBeenCalled();
-      expect(d.cache.commandApprovals()).toHaveLength(1);
-    },
-  );
-
-  it('a number that names nothing is said plainly, for both kinds', async () => {
-    expect(await chatPermissionsNotice(request({ revoke: true, number: '9' }), deps({}))).toBe(
-      'There is no remembered command with that number. /permissions lists them.',
-    );
-    expect(
-      await chatPermissionsNotice(request({ revoke: true, session: true, number: '9' }), deps({})),
-    ).toBe('There is no session approval with that number. /permissions lists them.');
+      ),
+    ).toBe('Session approval withdrawn. Auto mode asks about it again.');
+    expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['cat', 'a b']]);
   });
 
-  it.each([
-    ['unwritable', 'could not be written'],
-    ['full', 'no room'],
-    ['no-key', 'OS keychain'],
-    ['unreadable', 'could not be read'],
-  ] as const)('a revoke that could not happen (%s) says so', async (reason, phrase) => {
-    const text = await chatPermissionsNotice(
-      request({ revoke: true, number: '1' }),
-      deps({ revoke: { ok: false, reason } }),
-    );
-    expect(text).toContain(phrase);
+  it('says a remembered grant still runs it unasked, whether the Remember made the approval or an older grant covers it', () => {
+    const linked = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'a' }] });
+    expect(
+      withdrawSessionApproval(
+        { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true },
+        linked,
+      ),
+    ).toBe('Session approval withdrawn. Still remembered: auto mode runs it unasked.');
+    const covered = deps({ session: [['npm', 'test']], matches: () => true });
+    expect(
+      withdrawSessionApproval(
+        { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true },
+        covered,
+      ),
+    ).toBe('Session approval withdrawn. Still remembered: auto mode runs it unasked.');
   });
 
-  it('with no store a remembered revoke is unavailable, while a session one still works', async () => {
-    const d = deps({ noStore: true, session: [['npm', 'test']] });
-    expect(await chatPermissionsNotice(request({ revoke: true, number: '1' }), d)).toBe(
-      'Remembered commands are not available in this chat.',
-    );
+  it('says a row that is already gone is already withdrawn', () => {
     expect(
-      await chatPermissionsNotice(request({ revoke: true, session: true, number: '1' }), d),
-    ).toContain('Withdrew session approval 1');
+      withdrawSessionApproval(
+        { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: false },
+        deps({}),
+      ),
+    ).toBe('That row was already withdrawn.');
   });
 });
 
-describe('the session approvals of the approval cache', () => {
-  it('are listed in the order given, round-trip exactly, and a withdrawn one is gone', () => {
+describe('createPermissionsPort', () => {
+  it('loads and withdraws through the deps it was given, for the surface it was made for', () => {
+    const d = deps({ list: GRANTS, session: [['git', 'status']] });
+    const port = createPermissionsPort(d, 'chat');
+    expect(port.surface).toBe('chat');
+    const snapshot = port.load();
+    expect(snapshot.project.ok && snapshot.project.rows).toHaveLength(2);
+    const entry = { kind: 'session', row: snapshot.session?.[0] } as const;
+    if (entry.row === undefined) throw new Error('expected a session row');
+    expect(port.withdraw({ kind: 'session', row: entry.row })).toBe(
+      'Session approval withdrawn. Auto mode asks about it again.',
+    );
+    expect(port.load().session).toEqual([]);
+  });
+});
+
+describe('ApprovalCache.forgetCommandApproval', () => {
+  it('takes back one exact argv and reports what it was, or nothing for one that is not there', () => {
     const cache = new ApprovalCache();
     cache.rememberAlwaysCommand(['cat', 'a b']);
-    cache.rememberAlwaysCommand(['cat', 'a', 'b']);
-    expect(cache.commandApprovals()).toEqual([
-      { argv: ['cat', 'a b'], remembered: false },
-      { argv: ['cat', 'a', 'b'], remembered: false },
-    ]);
-    expect(cache.forgetCommandApproval(1)).toEqual({ argv: ['cat', 'a b'], remembered: false });
-    expect(cache.isAlwaysCommand(['cat', 'a b'])).toBe(false);
-    expect(cache.isAlwaysCommand(['cat', 'a', 'b'])).toBe(true);
-    expect(cache.forgetCommandApproval(5)).toBeUndefined();
-    expect(cache.forgetCommandApproval(0)).toBeUndefined();
+    cache.rememberAlwaysCommand(['cat', 'a', 'b'], 'grant-1');
+    expect(cache.forgetCommandApproval(['cat', 'a', 'b'])).toEqual({
+      argv: ['cat', 'a', 'b'],
+      remembered: true,
+    });
+    expect(cache.commandApprovals().map((a) => a.argv)).toEqual([['cat', 'a b']]);
+    expect(cache.forgetCommandApproval(['cat', 'a', 'b'])).toBeUndefined();
+    expect(cache.forgetCommandApproval(['nope'])).toBeUndefined();
   });
 });

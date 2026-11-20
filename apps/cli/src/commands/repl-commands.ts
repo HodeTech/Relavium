@@ -19,16 +19,6 @@ import { REASONING_EFFORTS } from '@relavium/shared';
 import { CHAT_MODES } from '../chat/chat-mode.js';
 import type { CommandEffect } from './manifest.js';
 
-/** What `/permissions` was asked: the list, or one numbered approval to withdraw (from the project's, or with `session` from this session's). */
-export interface PermissionsRequest {
-  readonly revoke: boolean;
-  readonly session: boolean;
-  /** The raw number token, `undefined` when none was typed. */
-  readonly number: string | undefined;
-  /** Any other token typed (a typo such as `--revokee`, or a second number): reported, never ignored or guessed at. */
-  readonly unknown: readonly string[];
-}
-
 /**
  * The lifecycle capabilities a {@link ReplCommand} can invoke — supplied by the surface (the chat REPL / the
  * Home). Each may be sync or async (`void | Promise<void>`): `help` opens the interactive `/` palette in 2.5.C
@@ -60,11 +50,12 @@ export interface ReplCommandContext {
   /** Open the interactive, read-only list of this instance's recent tool calls. */
   readonly openDetails: () => void | Promise<void>;
   /**
-   * `/permissions` (ADR-0118 §2) — list the commands remembered for this project and the ones approved for this session, and
-   * with `--revoke` withdraw one by its number (`--session` for the session's own). Neither list shows a command's arguments.
-   * Chat-only: the bare Home has no session, and its full screen for grants is MVP-8's.
+   * `/permissions` where there is no sheet to open ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
+   * §2): a plain, `--json` or one-shot chat, which has no store and no one to ask. The interactive hosts intercept the command and open
+   * the sheet before it gets here, as they do `/models`. The command takes no argument (the typed `--revoke` forms are gone, and the
+   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens the sheet through its own controller.
    */
-  readonly managePermissions: (request: PermissionsRequest) => void | Promise<void>;
+  readonly managePermissions: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -279,37 +270,10 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     name: 'permissions',
     label: 'Permissions',
     description:
-      'List the commands remembered for this project and approved for this session; /permissions --revoke <n> withdraws one.',
-    // `read` for the bare form. `--revoke` removes an approval (it only ever makes the chat ask MORE), but it is opt-in by typing
-    // it, exactly like `/cost --release`: the palette submits the bare form.
+      'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
+    // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
     effect: 'read',
-    args: [
-      {
-        flag: '--revoke',
-        description: 'Withdraw the numbered approval (the project’s remembered list by default).',
-      },
-      {
-        flag: '--session',
-        description: 'With --revoke: the number is among this session’s approvals.',
-      },
-    ],
-    // The number of the approval to withdraw: a FREE positional, validated by the handler.
-    positional: { name: 'n', values: [] },
-    run: (ctx, args) => {
-      const words = args.filter((token) => !token.startsWith('--'));
-      return ctx.managePermissions({
-        revoke: args.includes('--revoke'),
-        session: args.includes('--session'),
-        number: words[0],
-        // A second number is not guessed at: `/permissions --revoke 1 2` would otherwise withdraw one and look as if it did both.
-        unknown: [
-          ...args.filter(
-            (token) => token.startsWith('--') && token !== '--revoke' && token !== '--session',
-          ),
-          ...words.slice(1),
-        ],
-      });
-    },
+    run: (ctx) => ctx.managePermissions(),
     availableIn: ['chat'],
   },
   {

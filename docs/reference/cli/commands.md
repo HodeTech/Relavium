@@ -664,13 +664,16 @@ relavium permissions revoke --all [--json]
 ```
 
 Look at, and take back, the commands this project's operator chose to **Remember** in the chat
-([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat shows the same list). `list`
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat opens a sheet of the same grants, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)). `list`
 shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
 command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
 whole file, for every project, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
 database and make no network request. Success exits `0` (an empty list is not a fault); the other exit codes,
 the `--json` records and the failure table are in [command-permissions.md](command-permissions.md), the
 canonical home.
+
+`revoke <number>` takes the number from the `list` just printed and has the caveat of any position: another process can change the
+file between the two. The chat's sheet withdraws by the grant's identity instead.
 
 ### `relavium media prune-temporaries`
 

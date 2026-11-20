@@ -58,6 +58,16 @@ import {
 } from './effort-picker.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import {
+  disarmPermissionsSheet,
+  foldPermissionsSheetKey,
+  initialPermissionsSheetState,
+  reloadPermissionsSheet,
+  sheetCanArm,
+  type PermissionsSheetState,
+} from './permissions-sheet.js';
+import { PermissionsSheetView } from './permissions-sheet-view.js';
 import {
   foldModelPickerKey,
   partialFailureBanner,
@@ -262,6 +272,10 @@ interface ChatAppProps {
    *  keyboard-owning model-picker overlay whose accept triggers a live reseat. Absent ⇒ `/models` is a normal
    *  message/slash (no overlay). `| undefined` so the createElement passthrough forwards an absent `ctx.modelPicker`. */
   readonly modelPicker?: ChatModelsPort | undefined;
+  /** The `/permissions` sheet's port (ADR-0137 §2). When present, a typed (or palette-selected) bare `/permissions` opens the
+   *  keyboard-owning sheet instead of dispatching. Absent ⇒ the command says remembered commands are not available. `| undefined`
+   *  so the createElement passthrough forwards an absent `ctx.permissions`. */
+  readonly permissions?: PermissionsPort | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -845,6 +859,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     effortPickerRef.current = next;
     setEffortPicker(next);
   };
+  // The `/permissions` sheet (ADR-0137 §2) — a keyboard-owning submode like `/effort`, ref-shadowed so a coalesced stdin chunk sees a
+  // just-applied open, arm, withdraw or close. Opened only at an idle prompt, so no card can arrive while it is open.
+  const [permissionsSheet, setPermissionsSheet] = useState<PermissionsSheetState | undefined>(
+    undefined,
+  );
+  const permissionsSheetRef = useRef<PermissionsSheetState | undefined>(undefined);
+  const applyPermissionsSheet = (next: PermissionsSheetState | undefined): void => {
+    permissionsSheetRef.current = next;
+    setPermissionsSheet(next);
+  };
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -1189,6 +1213,71 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
+  // ---- The `/permissions` sheet (ADR-0137 §2) -------------------------------------------------------------------------------
+  // Open on the data read NOW, in the chat's current mode. The caller (submit) gates this on a wired port and an idle prompt.
+  const openPermissionsSheet = (): void => {
+    const port = props.permissions;
+    if (port === undefined) return;
+    const snap = props.store.getSnapshot();
+    if (
+      snap.state.status === 'running' ||
+      snap.review !== undefined ||
+      snap.question !== undefined ||
+      snap.checkpoint !== undefined ||
+      snap.approval !== undefined
+    )
+      return;
+    applyPermissionsSheet(initialPermissionsSheetState(port.load(), port.surface, snap.mode));
+  };
+  // The open sheet owns every key. A withdrawal is carried out through the port (the store is read again there) and the sheet is
+  // reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
+  const routePermissionsSheetKey = (char: string, key: ModelPickerKey): void => {
+    const open = permissionsSheetRef.current;
+    const port = props.permissions;
+    if (open === undefined) return;
+    if (port === undefined) {
+      applyPermissionsSheet(undefined);
+      return;
+    }
+    const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
+    const step = foldPermissionsSheetKey(char, key, open, canArm);
+    switch (step.kind) {
+      case 'close':
+        applyPermissionsSheet(undefined);
+        return;
+      case 'state':
+        applyPermissionsSheet(step.state);
+        return;
+      case 'withdraw': {
+        let message: string;
+        try {
+          message = port.withdraw(step.entry);
+        } catch {
+          message = 'Could not withdraw that row; nothing changed.';
+        }
+        applyPermissionsSheet(reloadPermissionsSheet(step.state, port.load(), message));
+        return;
+      }
+      default: {
+        const exhaustive: never = step;
+        return exhaustive;
+      }
+    }
+  };
+  // A card (or any approval) that arrives while the sheet is open wins: the sheet closes with its question dropped. The sheet opens only
+  // when nothing is pending, so this is a defence for a host that lets one arrive, not a path the product takes.
+  useEffect(() => {
+    if (permissionsSheetRef.current === undefined) return;
+    const snap = props.store.getSnapshot();
+    if (
+      snap.review !== undefined ||
+      snap.question !== undefined ||
+      snap.checkpoint !== undefined ||
+      snap.approval !== undefined
+    )
+      applyPermissionsSheet(undefined);
+  });
+
   // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
   // the only place it exists, and the slash dispatch that runs `/scrollback` / `/edit` lives outside React — so the
   // port is the bridge. Detaching on unmount is what makes the hatches report "needs an interactive terminal" between
@@ -1229,6 +1318,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       canControlEffort(props.store.getSnapshot().state.model, props.onSetEffort !== undefined)
     ) {
       openEffortPicker();
+      return;
+    }
+    // A typed (or palette-selected) bare `/permissions` opens the sheet (ADR-0137 §2) instead of dispatching, where the port is wired.
+    // `/permissions <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
+    if (props.permissions !== undefined && message.trim() === '/permissions') {
+      openPermissionsSheet();
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -1282,8 +1377,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mentionOpen: mentionRef.current !== undefined,
       modelPickerOpen: modelPickerRef.current !== undefined,
       effortPickerOpen: effortPickerRef.current !== undefined,
+      permissionsSheetOpen: permissionsSheetRef.current !== undefined,
       approvalPending: snap.approval !== undefined || snap.review !== undefined,
     });
+    // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is withdrawn.
+    if (permissionsSheetRef.current !== undefined)
+      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });
@@ -1395,7 +1494,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       searchRef.current !== undefined ||
       mentionRef.current !== undefined ||
       modelPickerRef.current !== undefined ||
-      effortPickerRef.current !== undefined
+      effortPickerRef.current !== undefined ||
+      permissionsSheetRef.current !== undefined
     )
       return { kind: 'overlay' };
     const busy =
@@ -1475,7 +1575,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           searchRef.current !== undefined ||
           mentionRef.current !== undefined ||
           modelPickerRef.current !== undefined ||
-          effortPickerRef.current !== undefined;
+          effortPickerRef.current !== undefined ||
+          permissionsSheetRef.current !== undefined;
         if (mouse !== undefined && !overlayOwnsKeyboard) {
           if (mouse.kind === 'wheel') {
             const geom = chatLiveGeom();
@@ -1521,6 +1622,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied open/close/accept.
     if (effortPickerRef.current !== undefined) {
       routeEffortPickerKey(char, key);
+      return;
+    }
+    // The open `/permissions` sheet owns every key (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes,
+    // neither ever withdraws. Mutually exclusive with the other submodes (it opens only at an idle prompt).
+    if (permissionsSheetRef.current !== undefined) {
+      routePermissionsSheetKey(char, key);
       return;
     }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
@@ -1858,7 +1965,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             search !== undefined ||
             mention !== undefined ||
             modelPicker !== undefined ||
-            effortPicker !== undefined
+            effortPicker !== undefined ||
+            permissionsSheet !== undefined
           }
         />
         {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
@@ -1906,6 +2014,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             labelSuffix={effortPicker.model}
             footer="↑/↓ select · Enter apply · Esc cancel"
             color={color}
+          />
+        )}
+        {/* The `/permissions` sheet (ADR-0137 §2) — docked here with the other overlays; the transcript stays above it. */}
+        {permissionsSheet !== undefined && (
+          <PermissionsSheetView
+            state={permissionsSheet}
+            color={color}
+            columns={windowSize.columns}
+            rows={windowSize.rows}
           />
         )}
       </Box>
@@ -2182,6 +2299,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
           // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
           onReseat: ctx.onReseat,
           modelPicker: ctx.modelPicker,
+          permissions: ctx.permissions,
           // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
           // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
           mentionReader: ctx.mentionReader,

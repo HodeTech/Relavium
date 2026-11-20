@@ -1108,6 +1108,14 @@ function scrubbedCommandLine(target: PolicyTarget, quoted: string): string {
     : candidate;
 }
 
+/**
+ * The scrubbed display line of an argv the host holds without a tool call: what the command card's title shows for the same
+ * command (the `/permissions` sheet lists the commands approved for the session). Pure; the one scrub, exported rather than copied.
+ */
+export function scrubbedCommandDisplay(argv: readonly string[]): string {
+  return scrubbedCommandLine({ command: argv[0] ?? '', argv }, quoteCommandLine(argv));
+}
+
 /** The DISPLAY copy: {@link rawPreviewFor}'s field selection with every string scrubbed. */
 function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   const raw = rawPreviewFor(action, target);

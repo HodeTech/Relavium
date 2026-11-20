@@ -983,6 +983,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
+          permissions,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1144,6 +1145,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
           onSetEffort,
+          // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
+          ...(permissions === undefined ? {} : { permissions }),
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };
