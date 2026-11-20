@@ -517,8 +517,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
-          effortPicker: undefined,
-          permissionsSheet: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
+          effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
+          permissionsSheet: undefined, // and the `/permissions` sheet, chat-scoped the same way
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -1295,7 +1295,22 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       snap.approval !== undefined
     )
       return;
-    set({ permissionsSheet: initialPermissionsSheetState(port.load(), port.surface, snap.mode) });
+    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
+    let snapshot: ReturnType<PermissionsPort['load']>;
+    try {
+      snapshot = port.load();
+    } catch {
+      active.store.note('Could not read the permissions.');
+      return;
+    }
+    set({
+      permissionsSheet: initialPermissionsSheetState(
+        snapshot,
+        port.surface,
+        snap.mode,
+        interruptNow(),
+      ),
+    });
   };
   // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
   // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
@@ -1307,6 +1322,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const open = state.permissionsSheet;
     const port = active.permissions;
     if (open === undefined) return false;
+    // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
+    // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
+    const pending = active.store.getSnapshot();
+    if (
+      pending.review !== undefined ||
+      pending.question !== undefined ||
+      pending.checkpoint !== undefined ||
+      pending.approval !== undefined
+    ) {
+      set({ permissionsSheet: undefined });
+      return false;
+    }
     if (port === undefined) {
       set({ permissionsSheet: undefined });
       return true;
@@ -1314,7 +1341,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const canArm =
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
-    const step = foldPermissionsSheetKey(input, key, open, canArm);
+    const step = foldPermissionsSheetKey(input, key, open, canArm, interruptNow());
     switch (step.kind) {
       case 'close':
         set({ permissionsSheet: undefined });
@@ -1329,7 +1356,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         } catch {
           message = 'Could not withdraw that row; nothing changed.';
         }
-        set({ permissionsSheet: reloadPermissionsSheet(step.state, port.load(), message) });
+        let snapshot: ReturnType<PermissionsPort['load']>;
+        try {
+          snapshot = port.load();
+        } catch {
+          // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
+          set({ permissionsSheet: undefined });
+          active.store.note(`${message} Could not read the permissions again.`);
+          break;
+        }
+        set({ permissionsSheet: reloadPermissionsSheet(step.state, snapshot, message) });
         break;
       }
       default: {
@@ -2048,10 +2084,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     // The `/permissions` sheet (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither withdraws.
-    if (state.permissionsSheet !== undefined && state.session !== undefined) {
-      routePermissionsSheetKey(state.session, input, key);
+    if (
+      state.permissionsSheet !== undefined &&
+      state.session !== undefined &&
+      routePermissionsSheetKey(state.session, input, key)
+    )
       return;
-    }
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
       return;
@@ -2106,7 +2144,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       const pasted = text.replace(/\r\n?/g, '\n');
       // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
       if (state.permissionsSheet !== undefined)
-        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet) });
+        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet, interruptNow()) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;

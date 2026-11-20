@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApprovalCache } from '../chat/chat-mode.js';
 import {
   createPermissionsPort,
+  MAX_ROW_TEXT,
   NOT_AVAILABLE,
   PROJECT_FAILURES,
   readPermissions,
@@ -74,7 +75,7 @@ describe('readPermissions', () => {
     });
   });
 
-  it('shows a session approval as the command the card showed, scrubbed, and marks one a remembered grant covers', () => {
+  it('shows a session approval as the command the card showed, scrubbed, and marks one a remembered grant covers NOW', () => {
     const d = deps({
       session: [['git', 'push', 'origin', 'main']],
       linked: [{ argv: ['npm', 'test'], grantId: 'a' }],
@@ -87,6 +88,50 @@ describe('readPermissions', () => {
       ['npm test', true],
       ['curl https://x.test', true],
     ]);
+  });
+
+  it('does not call an approval remembered because a Remember once made it: the grant may be gone (revoked elsewhere)', () => {
+    const d = deps({
+      linked: [{ argv: ['npm', 'test'], grantId: 'long-gone' }],
+      matches: () => false,
+    });
+    expect(readPermissions(d).session?.map((row) => row.alsoRemembered)).toEqual([false]);
+  });
+
+  it('keeps a control, a bidi override and a tab in a command as the characters they are, for the sheet to make visible: nothing is stripped here', () => {
+    const argv = ['echo', 'a\u001b[0mb', 'x\u202Ey', 'a\tb', 'l1\nl2'];
+    const text = readPermissions(deps({ session: [argv] })).session?.[0]?.text ?? '';
+    for (const raw of ['\u001b', '\u202E', '\t', '\n']) expect(text).toContain(raw);
+  });
+
+  it('bounds a command’s row once, at load, so a megabyte argument is not measured on every key', () => {
+    const rows =
+      readPermissions(deps({ session: [['echo', 'x'.repeat(1_000_000)]] })).session ?? [];
+    expect([...(rows[0]?.text ?? '')].length).toBeLessThanOrEqual(MAX_ROW_TEXT);
+    expect(rows[0]?.text.endsWith('…')).toBe(true);
+    const short = readPermissions(deps({ session: [['ls', '-la']] })).session ?? [];
+    expect(short[0]?.text).toBe('ls -la');
+  });
+
+  it('never throws: a store or a cache that throws is said in a sentence, or an empty list', () => {
+    const throwing: PermissionsDeps = {
+      grants: {
+        list: () => {
+          throw new Error('boom');
+        },
+        revokeById: () => ({ ok: false, reason: 'no-such-grant' }),
+        matches: () => false,
+      },
+      session: {
+        commandApprovals: () => {
+          throw new Error('boom');
+        },
+        forgetCommandApproval: () => undefined,
+      },
+    };
+    const snapshot = readPermissions(throwing);
+    expect(snapshot.project.ok).toBe(false);
+    expect(snapshot.session).toEqual([]);
   });
 
   it('masks a secret-shaped argument in a session row, as the card’s title does', () => {
@@ -112,6 +157,8 @@ describe('readPermissions', () => {
         text: PROJECT_FAILURES[reason],
       });
     }
+    // A terminal shows a backtick as a backtick: the sentences carry none.
+    for (const sentence of Object.values(PROJECT_FAILURES)) expect(sentence).not.toContain('`');
     expect(readPermissions(deps({ noStore: true })).project).toEqual({
       ok: false,
       text: NOT_AVAILABLE,
@@ -122,11 +169,9 @@ describe('readPermissions', () => {
 describe('withdrawProjectGrant', () => {
   const row = { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' };
 
-  it('withdraws by the grant’s identity and says what it changes without a mode-blind promise', () => {
+  it('withdraws by the grant’s identity and says what it changes, in a sentence that fits one row whatever the label', () => {
     const d = deps({});
-    expect(withdrawProjectGrant(row, d)).toBe(
-      'Withdrew npm, 1 argument. Auto mode asks about it again.',
-    );
+    expect(withdrawProjectGrant(row, d)).toBe('Withdrawn. Auto mode asks about it again.');
     expect(d.revokeById).toHaveBeenCalledWith('a');
   });
 
@@ -136,9 +181,27 @@ describe('withdrawProjectGrant', () => {
       linked: [{ argv: ['npm', 'test'], grantId: 'a-twin' }],
     });
     expect(withdrawProjectGrant(row, d)).toBe(
-      'Withdrew npm, 1 argument. Auto mode asks about it again. Its session approval went too.',
+      'Withdrawn, with its session approval. Auto mode asks about it again.',
     );
     expect(d.cache.commandApprovals()).toEqual([]);
+  });
+
+  it('does not promise a question while a plain session approval of the same command still stands: it runs unasked in auto', () => {
+    const covered = new Set(['npm test']);
+    const d = deps({ session: [['npm', 'test']], matches: (argv) => covered.has(argv.join(' ')) });
+    d.revokeById.mockImplementation(() => {
+      covered.clear(); // the grant is gone once the revoke has run
+      return { ok: true, id: 'a', ids: ['a'], program: 'npm', args: 1 };
+    });
+    expect(withdrawProjectGrant(row, d)).toBe(
+      'Withdrawn, but a session approval of it remains: auto mode still runs it unasked.',
+    );
+    expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['npm', 'test']]);
+  });
+
+  it('an unrelated session approval does not change the answer', () => {
+    const d = deps({ session: [['git', 'status']], matches: () => false });
+    expect(withdrawProjectGrant(row, d)).toBe('Withdrawn. Auto mode asks about it again.');
   });
 
   it('says a row that is already gone is already withdrawn', () => {
@@ -150,7 +213,14 @@ describe('withdrawProjectGrant', () => {
     for (const reason of ['unwritable', 'full', 'unreadable', 'no-key'] as const) {
       const text = withdrawProjectGrant(row, deps({ revokeById: { ok: false, reason } }));
       expect(text.length).toBeLessThanOrEqual(70);
-      expect(text).not.toMatch(/withdrew/iu);
+      expect(text, reason).toBe(
+        {
+          unwritable: 'Could not write the withdrawal; nothing changed.',
+          full: 'No room in the file for a withdrawal; revoke --all clears it.',
+          unreadable: 'The remembered-commands file could not be read.',
+          'no-key': 'The OS keychain is not available.',
+        }[reason],
+      );
     }
   });
 
@@ -176,21 +246,17 @@ describe('withdrawSessionApproval', () => {
     expect(d.cache.commandApprovals().map((a) => a.argv)).toEqual([['cat', 'a b']]);
   });
 
-  it('says a remembered grant still runs it unasked, whether the Remember made the approval or an older grant covers it', () => {
-    const linked = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'a' }] });
-    expect(
-      withdrawSessionApproval(
-        { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true },
-        linked,
-      ),
-    ).toBe('Session approval withdrawn. Still remembered: auto mode runs it unasked.');
+  it('says it is still remembered only when a remembered grant covers the command now, however the approval came to be', () => {
+    const row = { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true };
     const covered = deps({ session: [['npm', 'test']], matches: () => true });
-    expect(
-      withdrawSessionApproval(
-        { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true },
-        covered,
-      ),
-    ).toBe('Session approval withdrawn. Still remembered: auto mode runs it unasked.');
+    expect(withdrawSessionApproval(row, covered)).toBe(
+      'Session approval withdrawn. It is still remembered for this project.',
+    );
+    // A Remember's link to a grant that has since been revoked elsewhere proves nothing: no grant covers it now.
+    const gone = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'a' }], matches: () => false });
+    expect(withdrawSessionApproval(row, gone)).toBe(
+      'Session approval withdrawn. Auto mode asks about it again.',
+    );
   });
 
   it('says a row that is already gone is already withdrawn', () => {

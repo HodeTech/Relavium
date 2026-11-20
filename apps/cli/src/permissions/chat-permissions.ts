@@ -1,7 +1,6 @@
 import { scrubbedCommandDisplay } from '@relavium/core';
 
 import type { SessionCommandApproval } from '../chat/chat-mode.js';
-import { sanitizeInline } from '../render/sanitize.js';
 import type { CommandGrantStore } from './command-grants.js';
 
 /**
@@ -80,9 +79,9 @@ const plural = (count: number): string =>
 export const PROJECT_FAILURES: Readonly<Record<string, string>> = Object.freeze({
   'no-key': 'The OS keychain is not available, so the remembered commands cannot be read.',
   unreadable:
-    'The remembered-commands file could not be read, so nothing in it is trusted. `relavium permissions revoke --all` removes it.',
+    'The remembered-commands file could not be read, so nothing in it is trusted. Running relavium permissions revoke --all removes it.',
   unwritable: 'The remembered-commands file could not be written, so nothing was withdrawn.',
-  full: 'The remembered-commands file has no room for a withdrawal. `relavium permissions revoke --all` removes it.',
+  full: 'The remembered-commands file has no room for a withdrawal. Running relavium permissions revoke --all removes it.',
 });
 
 /** The same reasons for the sheet's one-row message, where a withdrawal could not be made: short enough to be read whole at 80 columns. */
@@ -96,47 +95,78 @@ const WITHDRAW_FAILURES: Readonly<Record<string, string>> = Object.freeze({
 const FALLBACK_FAILURE = 'The remembered commands could not be read.';
 export const NOT_AVAILABLE = 'Remembered commands are not available in this chat.';
 
-/** `2026-11-19T14:03:21.123Z` → `2026-11-19 14:03Z`; a value of another shape is shown as it is, sanitized (the store validates it already). */
+/** `2026-11-19T14:03:21.123Z` → `2026-11-19 14:03Z`; a value of another shape is passed on as it is (the store validates it already, and the sheet escapes what it draws). */
 function rememberedAt(iso: string): string {
   const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/u.exec(iso);
-  return match === null ? sanitizeInline(iso) : `${match[1] ?? ''} ${match[2] ?? ''}Z`;
+  return match === null ? iso : `${match[1] ?? ''} ${match[2] ?? ''}Z`;
 }
 
-/** The sheet's data, read now. Synchronous: the store and the cache are both in this process. */
+/** The most characters of a command a row keeps. A command can be a megabyte long; the sheet draws every row on every key, so the cut is made once, here. */
+export const MAX_ROW_TEXT = 400;
+
+function bounded(text: string): string {
+  const characters = [...text];
+  return characters.length <= MAX_ROW_TEXT
+    ? text
+    : `${characters.slice(0, MAX_ROW_TEXT - 1).join('')}…`;
+}
+
+/** The sheet's data, read now. Synchronous: the store and the cache are both in this process. It never throws: what cannot be read is said in a sentence. */
 export function readPermissions(deps: PermissionsDeps): PermissionsSnapshot {
   let project: ProjectPermissions;
   if (deps.grants === undefined) {
     project = { ok: false, text: NOT_AVAILABLE };
   } else {
-    const listed = deps.grants.list();
-    project = listed.ok
-      ? {
-          ok: true,
-          rows: listed.grants.map((grant) => ({
-            id: grant.id,
-            label: `${sanitizeInline(grant.program)}, ${plural(grant.args)}`,
-            remembered: rememberedAt(grant.grantedAt),
-          })),
-        }
-      : { ok: false, text: PROJECT_FAILURES[listed.reason] ?? FALLBACK_FAILURE };
+    try {
+      const listed = deps.grants.list();
+      project = listed.ok
+        ? {
+            ok: true,
+            rows: listed.grants.map((grant) => ({
+              id: grant.id,
+              label: `${grant.program}, ${plural(grant.args)}`,
+              remembered: rememberedAt(grant.grantedAt),
+            })),
+          }
+        : { ok: false, text: PROJECT_FAILURES[listed.reason] ?? FALLBACK_FAILURE };
+    } catch {
+      project = { ok: false, text: FALLBACK_FAILURE };
+    }
   }
-  const session = deps.session?.commandApprovals().map(
-    (approval): SessionApprovalRow => ({
-      argv: approval.argv,
-      text: sanitizeInline(scrubbedCommandDisplay(approval.argv)),
-      alsoRemembered: approval.remembered || deps.grants?.matches(approval.argv) === true,
-    }),
-  );
+  let session: readonly SessionApprovalRow[] | undefined;
+  try {
+    session = deps.session?.commandApprovals().map(
+      (approval): SessionApprovalRow => ({
+        argv: approval.argv,
+        // The command as the card's title showed it. Nothing is stripped from it here: the sheet shows a control, a bidi override or a
+        // tab as a visible token, which a strip would have hidden.
+        text: bounded(scrubbedCommandDisplay(approval.argv)),
+        // Whether a remembered grant covers the command NOW: the only thing that keeps `auto` running it after the approval is withdrawn.
+        alsoRemembered: deps.grants?.matches(approval.argv) === true,
+      }),
+    );
+  } catch {
+    session = [];
+  }
   return { project, session };
 }
 
+const sameArgv = (a: readonly string[], b: readonly string[]): boolean =>
+  a.length === b.length && a.every((element, index) => element === b[index]);
+
 /**
- * Take a remembered command back, by the grant's identity. The message says what was withdrawn and what that changes, and never claims an
- * effect that depends on the mode the chat is in: only `auto` ever ran a remembered command unasked, so it is `auto` that asks again.
+ * Take a remembered command back, by the grant's identity. The answer says what was withdrawn and what that changes, and names only `auto`
+ * (the one mode that ever ran a remembered command unasked); it never promises a question where a session approval of the same command
+ * still stands, because that approval runs it unasked in `auto` whatever the grants say.
  */
 export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps): string {
-  if (deps.grants === undefined) return NOT_AVAILABLE;
-  const result = deps.grants.revokeById(row.id);
+  const grants = deps.grants;
+  if (grants === undefined) return NOT_AVAILABLE;
+  // The session approvals this grant covers, noted before it goes: the ones still there afterwards are not its to take.
+  const covered = (deps.session?.commandApprovals() ?? []).filter((approval) =>
+    grants.matches(approval.argv),
+  );
+  const result = grants.revokeById(row.id);
   if (!result.ok) {
     if (result.reason === 'no-such-grant') return 'That row was already withdrawn.';
     return WITHDRAW_FAILURES[result.reason] ?? FALLBACK_FAILURE;
@@ -144,7 +174,14 @@ export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps
   // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked here.
   let dropped = 0;
   for (const id of result.ids) dropped += deps.session?.forgetCommandsByGrant?.(id) ?? 0;
-  return `Withdrew ${row.label}. Auto mode asks about it again.${dropped > 0 ? ' Its session approval went too.' : ''}`;
+  const remaining = (deps.session?.commandApprovals() ?? []).some((approval) =>
+    covered.some((was) => sameArgv(was.argv, approval.argv)),
+  );
+  if (remaining)
+    return 'Withdrawn, but a session approval of it remains: auto mode still runs it unasked.';
+  return dropped > 0
+    ? 'Withdrawn, with its session approval. Auto mode asks about it again.'
+    : 'Withdrawn. Auto mode asks about it again.';
 }
 
 /** Take a session approval back, by its exact argv. */
@@ -152,9 +189,8 @@ export function withdrawSessionApproval(row: SessionApprovalRow, deps: Permissio
   const gone = deps.session?.forgetCommandApproval(row.argv);
   if (gone === undefined) return 'That row was already withdrawn.';
   // A remembered grant that covers the command keeps `auto` running it unasked, so the sentence says so instead of promising a question.
-  const covered = gone.remembered || deps.grants?.matches(gone.argv) === true;
-  return covered
-    ? 'Session approval withdrawn. Still remembered: auto mode runs it unasked.'
+  return deps.grants?.matches(gone.argv) === true
+    ? 'Session approval withdrawn. It is still remembered for this project.'
     : 'Session approval withdrawn. Auto mode asks about it again.';
 }
 

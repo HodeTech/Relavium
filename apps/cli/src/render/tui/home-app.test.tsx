@@ -18,6 +18,7 @@ import {
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import { SHEET_QUIET_MS, SHEET_SETTLE_MS } from './permissions-sheet.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -1149,8 +1150,9 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
       },
       session: [],
     }),
-    withdraw: () => 'Withdrew npm, 1 argument. Auto mode asks about it again.',
+    withdraw: () => 'Withdrawn. Auto mode asks about it again.',
   };
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
   it('is drawn docked in the chat when the command is typed, takes a paste away from the prompt, and closes on Esc', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
@@ -1183,6 +1185,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     m.harness.stdin.write('/permissions');
     m.harness.stdin.write('\r');
     await untilTrue(() => m.c.getSnapshot().permissionsSheet !== undefined);
+    await sleep(SHEET_SETTLE_MS + 100);
     m.setSize({ cols: 60, rows: 20 });
     m.fireResize();
     await settleFrames();
@@ -1192,6 +1195,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     m.setSize({ cols: 100, rows: 30 });
     m.fireResize();
     await settleFrames();
+    await sleep(SHEET_QUIET_MS + 100);
     m.harness.stdin.write('d');
     await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
   });

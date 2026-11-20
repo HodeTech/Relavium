@@ -1163,7 +1163,7 @@ describe('chatCommand', () => {
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
             expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              'Withdrew npm, 1 argument. Auto mode asks about it again.',
+              'Withdrawn. Auto mode asks about it again.',
             );
             expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
               'That row was already withdrawn.',
@@ -1243,7 +1243,7 @@ describe('chatCommand', () => {
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
             expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              `Withdrew ${grantRow.label}. Auto mode asks about it again. Its session approval went too.`,
+              'Withdrawn, with its session approval. Auto mode asks about it again.',
             );
             expect(port.load().session).toEqual([]);
             await ctx.processLine('/exit');

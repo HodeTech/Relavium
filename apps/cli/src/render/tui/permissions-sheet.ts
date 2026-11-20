@@ -3,9 +3,18 @@ import type { PermissionEntry, PermissionsSnapshot } from '../../permissions/cha
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { legend, type LegendItem } from './legend.js';
-import { escapeReviewCharacter } from './tool-review-projection.js';
+import {
+  clipLine,
+  flushRow,
+  usableColumns,
+  windowBody,
+  type SheetGeometry,
+  type SheetLine,
+  type SheetLineKind,
+} from './sheet-frame.js';
 import { cardRowBudget } from './tool-review-card.js';
-import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
+import { escapeReviewCharacter } from './tool-review-projection.js';
+import { displayWidth, wrapWords } from './viewport.js';
 
 /**
  * The `/permissions` sheet ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
@@ -16,9 +25,17 @@ import { displayWidth, sliceDisplayColumns, wrapWords } from './viewport.js';
  *
  * Nothing here writes. A withdrawal is a {@link PermissionsSheetStep} of kind `withdraw` that the host carries out through the port it
  * holds (the store is read again there) and then {@link reloadPermissionsSheet}s with the answer.
+ *
+ * Two steps, and time. Withdrawing only ever makes the chat ask more, but a person who types `/permissions`, `Enter` and goes on typing
+ * must not withdraw a grant by accident, and a typed line that ends in `d` followed by `Enter` is two steps: so the keys are timed like the
+ * card's. `d` arms only once the sheet has been open a moment and the keyboard has been quiet a moment, and `Enter` withdraws only after the
+ * question has been up a moment.
  */
 
-/** The keys the sheet answers to, with the words its legend uses: the one constant both the handler and the legend read. */
+/**
+ * The keys the sheet's legend names. The legend is built from these; the test presses every one of them and checks it does what its verb
+ * says, which is what keeps a hint and its handler from drifting (the handler matches the keys themselves, not these labels).
+ */
 export const SHEET_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   withdraw: { keys: 'd', verb: 'withdraw' },
@@ -29,22 +46,33 @@ export const SHEET_KEYS = {
 
 /** The legend while no withdrawal is asked: navigation, the action, the leaving key last. */
 export const SHEET_LEGEND_IDLE = legend([SHEET_KEYS.select, SHEET_KEYS.withdraw, SHEET_KEYS.close]);
+/** The legend of a sheet with nothing to select: only the way out. */
+export const SHEET_LEGEND_EMPTY = legend([SHEET_KEYS.close]);
 /** The legend while a withdrawal waits for its `Enter`. */
 export const SHEET_LEGEND_ARMED = legend([SHEET_KEYS.confirm, SHEET_KEYS.keep]);
+
+/** The sheet must have been open this long before `d` arms a row: a person has had time to read the list. */
+export const SHEET_SETTLE_MS = 400;
+/** The keyboard must have been quiet this long before `d` arms a row: a typed line is not a command. */
+export const SHEET_QUIET_MS = 300;
+/** The question must have been up this long before `Enter` withdraws: a key typed ahead is not an answer. */
+export const SHEET_CONFIRM_DWELL_MS = 300;
+/** What an `Enter` that came before its dwell says; the question is dropped and nothing is withdrawn. */
+export const SHEET_ENTER_NOTE = 'Too early for Enter — nothing was withdrawn. Press d again.';
 
 /** The most body lines (headings, rows, markers) the sheet shows at once, the bound the model picker uses for its rows. */
 export const SHEET_WINDOW = 8;
 /** Below this the sheet does not promise a readable frame: ADR-0122 §7.3's floor. */
 export const SHEET_MIN_COLUMNS = 80;
 export const SHEET_MIN_ROWS = 24;
-/** The rows the sheet always draws: the title, the message row and the legend. */
+/** The rows the sheet always draws: the title, the message row and the legend; and the note under the body. */
 const FIXED_ROWS = 3;
+const NOTE_ROWS = 1;
 /** The blank row that separates the sheet from the conversation above it (the card's rule row), outside its lines. */
 const MARGIN_ROWS = 1;
-/** The column the row's marker takes, and the gap between a row's label and what flushes right. */
+/** The column the row's marker takes. */
 const MARKER = '› ';
 const NO_MARKER = '  ';
-const GAP = 2;
 
 /** Whether the sheet shows a chat's two lists or only the project's (the bare Home, a bare `relavium permissions`). */
 export type SheetSurface = 'chat' | 'project';
@@ -63,6 +91,10 @@ export interface PermissionsSheetState {
   readonly armed: boolean;
   /** The result of the last withdrawal; empty when there is none. The question of an armed row is drawn from the row, not stored. */
   readonly message: string;
+  /** The monotonic clock (ms) when the sheet opened, when the last key of any kind arrived, and when the question was asked. */
+  readonly openedAt: number;
+  readonly lastKeyAt: number;
+  readonly armedAt: number;
 }
 
 /** The selectable rows, in the order they are drawn: the project's, then the session's. */
@@ -78,8 +110,19 @@ export function initialPermissionsSheetState(
   snapshot: PermissionsSnapshot,
   surface: SheetSurface,
   mode: ChatMode | undefined,
+  now: number,
 ): PermissionsSheetState {
-  return { surface, mode, snapshot, cursor: 0, armed: false, message: '' };
+  return {
+    surface,
+    mode,
+    snapshot,
+    cursor: 0,
+    armed: false,
+    message: '',
+    openedAt: now,
+    lastKeyAt: now,
+    armedAt: Number.NEGATIVE_INFINITY,
+  };
 }
 
 /** The sheet after a withdrawal (or a refused one): the data read again, the cursor kept near where it was, nothing armed. */
@@ -98,9 +141,12 @@ export function reloadPermissionsSheet(
   };
 }
 
-/** A paste (or any input that is not a key of the sheet) while a withdrawal waits: the question is dropped, nothing is withdrawn. */
-export function disarmPermissionsSheet(state: PermissionsSheetState): PermissionsSheetState {
-  return state.armed ? { ...state, armed: false, message: '' } : state;
+/** A paste is a key too, and not one the sheet answers to: it drops a waiting question and withdraws nothing. */
+export function disarmPermissionsSheet(
+  state: PermissionsSheetState,
+  now: number,
+): PermissionsSheetState {
+  return { ...state, armed: false, lastKeyAt: now, ...(state.armed ? { message: '' } : {}) };
 }
 
 /** What a keystroke does to the open sheet. */
@@ -127,33 +173,56 @@ function isWithdrawKey(input: string, key: ChatKey): boolean {
   return key.backspace === true || key.delete === true || input.toLowerCase() === 'd';
 }
 
+/** An `Enter` with nothing held: `Esc` then `Enter` inside a terminal's escape window arrives as `Meta+Enter` and is not an answer. */
+function isPlainEnter(key: ChatKey): boolean {
+  return key.return === true && key.meta !== true && key.ctrl !== true && key.shift !== true;
+}
+
 /**
  * Fold one keystroke into the open sheet. `canArm` is false where the frame cannot show the question (below the floor): `d` then does
- * nothing, because a withdrawal is never asked for in a frame that cannot say what it asks.
+ * nothing, and a question already asked is dropped by the next key, because a withdrawal is never asked for in a frame that cannot say
+ * what it asks. `now` is the monotonic clock in milliseconds.
  *
  * `Ctrl+C` closes from either state and never withdraws. `Esc` drops an armed question first and closes the sheet on the next press, one
- * level at a time; neither ever confirms. `Enter` withdraws only an armed row, and any other key drops the question.
+ * level at a time; neither ever confirms. `Enter` withdraws only an armed row, only unmodified, and only once the question has been up for
+ * {@link SHEET_CONFIRM_DWELL_MS}; any other key drops the question. `d` arms only once the sheet has settled and the keyboard has been quiet.
  */
 export function foldPermissionsSheetKey(
   input: string,
   key: ChatKey,
   state: PermissionsSheetState,
   canArm: boolean,
+  now: number,
 ): PermissionsSheetStep {
   if (isInterruptKey(input, key)) return { kind: 'close' };
   const entries = sheetEntries(state.snapshot);
+  // Every key, whatever it does, is evidence of a person typing: it restarts the quiet the next `d` needs.
+  const touched: PermissionsSheetState = { ...state, lastKeyAt: now };
   if (state.armed) {
+    const kept: PermissionsSheetStep = {
+      kind: 'state',
+      state: { ...touched, armed: false, message: '' },
+    };
+    // The question is not on screen: the frame says how to leave, and `Esc` does.
+    if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
     const entry = entries[state.cursor];
-    if (key.return === true && entry !== undefined)
-      return { kind: 'withdraw', entry, state: { ...state, armed: false, message: '' } };
-    // `Esc` keeps the row; so does every other key. The key does nothing else.
-    return { kind: 'state', state: { ...state, armed: false, message: '' } };
+    if (isPlainEnter(key) && entry !== undefined) {
+      if (now - state.armedAt >= SHEET_CONFIRM_DWELL_MS)
+        return {
+          kind: 'withdraw',
+          entry,
+          state: { ...touched, armed: false, message: '' },
+        };
+      return { kind: 'state', state: { ...touched, armed: false, message: SHEET_ENTER_NOTE } };
+    }
+    // `Esc` keeps the row; so does every other key, a modified `Enter` included. The key does nothing else.
+    return kept;
   }
   if (key.escape === true) return { kind: 'close' };
   const count = entries.length;
   const move = (cursor: number): PermissionsSheetStep => ({
     kind: 'state',
-    state: { ...state, cursor: clampCursor(cursor, count), message: '' },
+    state: { ...touched, cursor: clampCursor(cursor, count), message: '' },
   });
   if (key.upArrow === true) return move(state.cursor - 1);
   if (key.downArrow === true) return move(state.cursor + 1);
@@ -161,61 +230,20 @@ export function foldPermissionsSheetKey(
   if (key.pageDown === true) return move(state.cursor + PAGE);
   if (key.home === true) return move(0);
   if (key.end === true) return move(count - 1);
-  if (isWithdrawKey(input, key) && canArm && entries[state.cursor] !== undefined)
-    return { kind: 'state', state: { ...state, armed: true, message: '' } };
-  return { kind: 'state', state };
+  if (
+    isWithdrawKey(input, key) &&
+    canArm &&
+    entries[state.cursor] !== undefined &&
+    now - state.openedAt >= SHEET_SETTLE_MS &&
+    now - state.lastKeyAt >= SHEET_QUIET_MS
+  )
+    return { kind: 'state', state: { ...touched, armed: true, armedAt: now, message: '' } };
+  return { kind: 'state', state: touched };
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-/** The role of one drawn row, so a view colours by role and never by guessing from the text. */
-export type SheetLineKind =
-  | 'title'
-  | 'heading'
-  | 'row'
-  | 'selected'
-  | 'text'
-  | 'marker'
-  | 'note'
-  | 'message'
-  | 'question'
-  | 'legend';
-
-export interface SheetLine {
-  readonly kind: SheetLineKind;
-  readonly text: string;
-}
-
-export interface SheetGeometry {
-  readonly columns: number;
-  readonly terminalRows: number;
-}
-
-/** The columns a line may use: a margin on each side, as the card's rows have. */
-function usableColumns(columns: number): number {
-  return Math.max(1, columns - 2);
-}
-
-/** `text` cut to `width` display columns, the cut shown by `…`; whole when it fits. */
-export function clipLine(text: string, width: number): string {
-  if (displayWidth(text) <= width) return text;
-  if (width <= 1) return sliceDisplayColumns(text, 0, Math.max(0, width));
-  return `${sliceDisplayColumns(text, 0, width - 1)}…`;
-}
-
-/** `left` and `right` on one row, `right` flush to the edge; `left` is clipped first, and `right` is dropped when it would leave no room. */
-function flushRow(left: string, right: string, width: number): string {
-  if (right.length === 0) return clipLine(left, width);
-  const room = width - displayWidth(right) - GAP;
-  if (room < 12) return clipLine(left, width);
-  const clipped = clipLine(left, room);
-  return `${clipped}${' '.repeat(Math.max(GAP, width - displayWidth(clipped) - displayWidth(right)))}${right}`;
-}
-
-/** The text of a command, with every control, invisible and `<` character shown as the card shows it (`<U+202E>`, `<TAB>`). */
-function escaped(text: string): string {
-  return [...text].map((char) => escapeReviewCharacter(char, false)).join('');
-}
+export type { SheetGeometry, SheetLine, SheetLineKind } from './sheet-frame.js';
 
 export function sheetTitle(state: PermissionsSheetState): string {
   return state.mode === undefined || state.surface === 'project'
@@ -226,7 +254,7 @@ export function sheetTitle(state: PermissionsSheetState): string {
 /** The one-row note on what a grant is worth ([ADR-0118](../../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1). */
 export function sheetNote(state: PermissionsSheetState): string {
   if (state.surface === 'project' || state.mode === undefined)
-    return 'A remembered command runs unasked only in auto mode, in a chat opened in this project.';
+    return 'Only auto mode runs a remembered command unasked, in a chat in this project.';
   switch (state.mode) {
     case 'auto':
       return 'Auto mode runs a remembered command unasked, and asks once after a file write.';
@@ -247,10 +275,15 @@ function emptyProjectText(state: PermissionsSheetState): string {
 
 const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
 
+/** The text of a command, with every control, invisible and `<` character shown as the card shows it (`<U+202E>`, `<TAB>`). */
+function escaped(text: string): string {
+  return [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+}
+
 interface BodyLine {
   readonly kind: SheetLineKind;
   readonly text: string;
-  /** The entry this line is, for a row; the window keeps the selected one in view. */
+  /** The entry this line is, for a row; the window keeps the selected one in view and the markers count these. */
   readonly entry?: number;
 }
 
@@ -259,6 +292,15 @@ function bodyLines(state: PermissionsSheetState, width: number): readonly BodyLi
   const lines: BodyLine[] = [];
   const { project, session } = state.snapshot;
   let entryIndex = 0;
+  const row = (left: string, right: string): void => {
+    const selected = entryIndex === state.cursor;
+    lines.push({
+      kind: selected ? 'selected' : 'row',
+      text: flushRow(`${selected ? MARKER : NO_MARKER}${left}`, right, width),
+      entry: entryIndex,
+    });
+    entryIndex += 1;
+  };
   if (project.ok) {
     lines.push({
       kind: 'heading',
@@ -268,19 +310,7 @@ function bodyLines(state: PermissionsSheetState, width: number): readonly BodyLi
       for (const text of wrapWords(emptyProjectText(state), width))
         lines.push({ kind: 'text', text: text.trimEnd() });
     }
-    for (const row of project.rows) {
-      const selected = entryIndex === state.cursor;
-      lines.push({
-        kind: selected ? 'selected' : 'row',
-        text: flushRow(
-          `${selected ? MARKER : NO_MARKER}${escaped(row.label)}`,
-          `remembered ${row.remembered}`,
-          width,
-        ),
-        entry: entryIndex,
-      });
-      entryIndex += 1;
-    }
+    for (const item of project.rows) row(escaped(item.label), escaped(item.remembered));
   } else {
     lines.push({ kind: 'heading', text: 'This project · remembered' });
     for (const text of wrapWords(project.text, width))
@@ -289,37 +319,10 @@ function bodyLines(state: PermissionsSheetState, width: number): readonly BodyLi
   if (session !== undefined) {
     lines.push({ kind: 'heading', text: `This session · approved (${String(session.length)})` });
     if (session.length === 0) lines.push({ kind: 'text', text: EMPTY_SESSION_TEXT });
-    for (const row of session) {
-      const selected = entryIndex === state.cursor;
-      lines.push({
-        kind: selected ? 'selected' : 'row',
-        text: flushRow(
-          `${selected ? MARKER : NO_MARKER}${escaped(row.text)}`,
-          row.alsoRemembered ? '(also remembered)' : '',
-          width,
-        ),
-        entry: entryIndex,
-      });
-      entryIndex += 1;
-    }
+    for (const item of session)
+      row(escaped(item.text), item.alsoRemembered ? '(also remembered)' : '');
   }
   return lines;
-}
-
-/**
- * The window of `height` lines of `total` that keeps `cursorLine` on a real line: when lines are hidden above or below, the first or
- * last window line is the `▲ n more` / `▼ n more` marker, and the cursor is never on one. The cursor is centred, which leaves it at least
- * one line from each end of a window of three or more lines, so a marker never covers it (a window of fewer lines cannot hold a cursor
- * between two markers; the floor of 80×24 gives the sheet at least seven). Pure so the arithmetic is unit-checkable.
- */
-export function windowBody(
-  total: number,
-  cursorLine: number,
-  height: number,
-): { readonly start: number; readonly end: number } {
-  if (total <= height) return { start: 0, end: total };
-  const start = Math.max(0, Math.min(cursorLine - Math.floor((height - 1) / 2), total - height));
-  return { start, end: start + height };
 }
 
 /** The lines of the sheet when the terminal is below the floor: the title, why, and the way out. */
@@ -336,11 +339,19 @@ export function sheetCanArm(geometry: SheetGeometry): boolean {
   return geometry.columns >= SHEET_MIN_COLUMNS && geometry.terminalRows >= SHEET_MIN_ROWS;
 }
 
+/** How many selectable rows lie in `lines`: what a `▲`/`▼` marker counts (the headings and the empty-state text are not rows). */
+function rowsIn(lines: readonly BodyLine[]): number {
+  return lines.filter((line) => line.entry !== undefined).length;
+}
+
 /**
  * The sheet's lines, top to bottom, for a terminal of this size. The budget is the card's ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
- * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain. The title, the message row
- * and the legend are always drawn and the selected row is always visible; the note is the first to go when the budget is short, and the
- * body gets the rest, from one line to {@link SHEET_WINDOW}. Every line is clipped to the width.
+ * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain. The title, the note, the
+ * message row and the legend are always drawn (the floor of 80×24 leaves room for all of them and at least seven body lines) and the
+ * selected row is always visible; the body gets the rest, up to {@link SHEET_WINDOW} lines. Every line is clipped to the width.
+ *
+ * When body lines are hidden, the first or last body line is a marker that counts the ROWS it stands in for, the one under the marker
+ * included; a heading is never left alone at the bottom of the window above a marker.
  */
 export function permissionsSheetLines(
   state: PermissionsSheetState,
@@ -349,30 +360,41 @@ export function permissionsSheetLines(
   if (!sheetCanArm(geometry)) return tooSmallLines(state);
   const width = usableColumns(geometry.columns);
   const room = cardRowBudget(geometry.terminalRows) - MARGIN_ROWS;
-  const note = sheetNote(state);
   const all = bodyLines(state, width);
-  const withNote = room - FIXED_ROWS - 1 >= 1;
-  const height = Math.max(1, Math.min(SHEET_WINDOW, room - FIXED_ROWS - (withNote ? 1 : 0)));
+  const height = Math.min(SHEET_WINDOW, room - FIXED_ROWS - NOTE_ROWS);
   const cursorLine = Math.max(
     0,
-    all.findIndex((line) => line.entry === state.cursor && line.entry !== undefined),
+    all.findIndex((line) => line.entry === state.cursor),
   );
-  const { start, end } = windowBody(all.length, cursorLine, height);
+  let { start, end } = windowBody(all.length, cursorLine, height);
+  // A heading as the last real line above a `▼` marker would head nothing: slide the window down one line, which the centred cursor allows.
+  if (end < all.length && all[end - 2]?.kind === 'heading' && cursorLine >= start + 2) {
+    start += 1;
+    end += 1;
+  }
   const body: SheetLine[] = all.slice(start, end).map((line) => ({
     kind: line.kind,
     text: clipLine(line.text, width),
   }));
-  if (start > 0 && body.length > 0) body[0] = { kind: 'marker', text: `▲ ${String(start)} more` };
+  if (start > 0 && body.length > 0)
+    body[0] = { kind: 'marker', text: `▲ ${String(rowsIn(all.slice(0, start + 1)))} more` };
   if (end < all.length && body.length > 0)
-    body[body.length - 1] = { kind: 'marker', text: `▼ ${String(all.length - end)} more` };
+    body[body.length - 1] = {
+      kind: 'marker',
+      text: `▼ ${String(rowsIn(all.slice(end - 1)))} more`,
+    };
+  const hasEntries = sheetEntries(state.snapshot).length > 0;
   return [
     { kind: 'title', text: clipLine(sheetTitle(state), width) },
     ...body,
-    ...(withNote ? [{ kind: 'note' as const, text: clipLine(note, width) }] : []),
+    { kind: 'note', text: clipLine(sheetNote(state), width) },
     messageLine(state, width),
     {
       kind: 'legend',
-      text: clipLine(state.armed ? SHEET_LEGEND_ARMED : SHEET_LEGEND_IDLE, width),
+      text: clipLine(
+        state.armed ? SHEET_LEGEND_ARMED : hasEntries ? SHEET_LEGEND_IDLE : SHEET_LEGEND_EMPTY,
+        width,
+      ),
     },
   ];
 }
@@ -382,19 +404,19 @@ function messageLine(state: PermissionsSheetState, width: number): SheetLine {
   if (state.armed) {
     const entry = sheetEntries(state.snapshot)[state.cursor];
     if (entry !== undefined) {
-      const tail = `? ${SHEET_KEYS.confirm.keys} withdraws · ${SHEET_KEYS.keep.keys} keeps it`;
+      const tail = '? Any other key keeps it.';
       const head = 'Withdraw ';
       const room = Math.max(8, width - displayWidth(head) - displayWidth(tail));
       // The date is what tells two grants of one program apart, so it is kept and the label is clipped to make room for it.
       const what =
         entry.kind === 'project'
           ? (() => {
-              const suffix = ` (${entry.row.remembered})`;
+              const suffix = ` (${escaped(entry.row.remembered)})`;
               return `${clipLine(escaped(entry.row.label), Math.max(4, room - displayWidth(suffix)))}${suffix}`;
             })()
           : clipLine(escaped(entry.row.text), room);
       return { kind: 'question', text: `${head}${what}${tail}` };
     }
   }
-  return { kind: 'message', text: clipLine(state.message, width) };
+  return { kind: 'message', text: clipLine(escaped(state.message), width) };
 }

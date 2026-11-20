@@ -1227,7 +1227,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       snap.approval !== undefined
     )
       return;
-    applyPermissionsSheet(initialPermissionsSheetState(port.load(), port.surface, snap.mode));
+    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
+    let snapshot: ReturnType<PermissionsPort['load']>;
+    try {
+      snapshot = port.load();
+    } catch {
+      props.store.note('Could not read the permissions.');
+      return;
+    }
+    applyPermissionsSheet(
+      initialPermissionsSheetState(snapshot, port.surface, snap.mode, performance.now()),
+    );
   };
   // The open sheet owns every key. A withdrawal is carried out through the port (the store is read again there) and the sheet is
   // reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
@@ -1240,7 +1250,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       return;
     }
     const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
-    const step = foldPermissionsSheetKey(char, key, open, canArm);
+    const step = foldPermissionsSheetKey(char, key, open, canArm, performance.now());
     switch (step.kind) {
       case 'close':
         applyPermissionsSheet(undefined);
@@ -1255,7 +1265,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         } catch {
           message = 'Could not withdraw that row; nothing changed.';
         }
-        applyPermissionsSheet(reloadPermissionsSheet(step.state, port.load(), message));
+        let snapshot: ReturnType<PermissionsPort['load']>;
+        try {
+          snapshot = port.load();
+        } catch {
+          // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
+          applyPermissionsSheet(undefined);
+          props.store.note(`${message} Could not read the permissions again.`);
+          return;
+        }
+        applyPermissionsSheet(reloadPermissionsSheet(step.state, snapshot, message));
         return;
       }
       default: {
@@ -1382,7 +1401,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     });
     // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is withdrawn.
     if (permissionsSheetRef.current !== undefined)
-      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current));
+      applyPermissionsSheet(disarmPermissionsSheet(permissionsSheetRef.current, performance.now()));
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });

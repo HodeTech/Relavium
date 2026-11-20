@@ -228,7 +228,7 @@ for Enter — nothing was allowed.` A Remember written as the call is cancelled 
 
 The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions` sheet
 withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
-`relavium permissions revoke`, or another chat) until the person withdraws that row in its sheet, and the sheet's answer says so.
+`relavium permissions revoke`, or another chat) until the person withdraws that row in its sheet (the row then no longer says `(also remembered)`, because no grant covers it).
 
 A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
 allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node
@@ -260,18 +260,21 @@ resolved lexically against the working directory is a path the file tools' read 
 warning on every command). The card says so (`⚠ Names a protected path (its output goes to the model). Allow once only.`) and the only
 answer that approves is *Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
 
-**In the chat: `/permissions`, a sheet.** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2.) The bare `/permissions` opens a docked, keyboard-owning sheet under the
+### In the chat: `/permissions`, a sheet
+
+([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2.) The bare `/permissions` opens a docked, keyboard-owning sheet under the
 conversation, where `/models` and `/effort` open, with the transcript still above it. The command takes **no argument**: the typed
 `--revoke <number>` forms are gone, because a typed number is a position and the sheet names a row. On a plain, `--json` or one-shot
-chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.`
+chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.` The sheet opens
+only at an idle prompt, with no card open; if a card ever arrived while it was open, the sheet would close and the card would be shown.
 
 ```text
 Permissions · ask mode
 This project · remembered (2)
-› npm, 1 argument                            remembered 2026-11-19 12:00Z
-  node, 1 argument                           remembered 2026-11-18 09:30Z
+› npm, 1 argument                              2026-11-19 12:00Z
+  node, 1 argument                             2026-11-18 09:30Z
 This session · approved (1)
-  git status                                 (also remembered)
+  git status                                   (also remembered)
 Remembered commands still ask here; only auto mode runs one unasked.
 <message row: a withdrawal's question, or its answer>
 ↑/↓ select · d withdraw · Esc close
@@ -280,29 +283,46 @@ Remembered commands still ask here; only auto mode runs one unasked.
 - **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a
   credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one
   program can be told apart — never an argument. A session row shows the approved command, quoted and **scrubbed by the same
-  function the command card's title uses**, with every control, invisible or `<` character shown as a visible `<U+…>` token; it is
-  marked `(also remembered)` when a *Remember* made it or a remembered grant covers the command now. There are no row numbers: the
-  cursor is the selection.
+  function the command card's title uses** (`scrubbedCommandDisplay`), cut to 400 characters once when the sheet loads. Every row, the
+  message row included, is drawn with each control, invisible or `<` character shown as a visible `<U+…>` or `<TAB>` token, as the card
+  shows it; nothing is stripped first. A session row is marked `(also remembered)` when a remembered grant covers the command **now**
+  (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). There are no row
+  numbers: the cursor is the selection.
 - **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
-  `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and the project's section only. The note row says what a grant
-  is worth in the mode (only `auto` runs a remembered command unasked, and asks once after a file write; `plan` refuses every
-  command). An empty list says what to do (`Press Ctrl+O on a command card to remember one.`).
-- **Keys.** `↑`/`↓` move and clamp (`PgUp`, `PgDn`, `Home`, `End` too). `d`, `Delete` or `Backspace` **arms** the selected row: the
-  message row asks `Withdraw <row>? Enter withdraws · Esc keeps it` and the legend becomes `Enter withdraw · Esc keep`. `Enter`
-  withdraws; any other key, a paste and `Esc` keep the row. `Esc` closes an idle sheet; `Ctrl+C` closes it from either state. Neither
-  closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and one can only be made on
-  a command card.
+  `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and
+  the project's section only. The note row says what a grant is worth in the mode (only `auto` runs a remembered command unasked, and
+  asks once after a file write; `plan` refuses every command). An empty list says what to do (`Press Ctrl+O on a command card to
+  remember one.`), and a sheet with nothing to select offers only `Esc close`.
+- **Keys, and the clock.** `↑`/`↓` move and clamp (`PgUp`, `PgDn`, `Home`, `End` too). `d`, `Delete` or `Backspace` **arms** the selected
+  row; `Enter` withdraws it. Both are timed, as the card's keys are, because a person who types `/permissions`, `Enter` and goes on
+  typing must not withdraw a grant by accident (a typed line that ends in `d`, then `Enter`, is two steps): `d` arms only once the
+  sheet has been open for 400 ms **and** the keyboard has been quiet for 300 ms (any key, an arrow or a refused `d` included,
+  restarts the quiet); `Enter` withdraws only 300 ms after the question appeared, and only an `Enter` with nothing held (an `Esc`
+  then `Enter` inside a terminal's escape window arrives as `Meta+Enter` and is not an answer). An `Enter` that comes too early
+  drops the question and says `Too early for Enter — nothing was withdrawn. Press d again.`. Any other key, a paste and `Esc` keep the
+  row; `Esc` closes an idle sheet; `Ctrl+C` closes it from either state. Neither closing key ever withdraws, and nothing is added or
+  edited here: a grant is a digest of an exact argv, and one can only be made on a command card.
+- **The message row** is always one row. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a remembered row shows its label and
+  its minute in parentheses, the label clipped before the minute is; a session row shows the scrubbed command, clipped) and the legend
+  becomes `Enter withdraw · Esc keep`. After a withdrawal it says what happened, in a sentence that fits the row and names only
+  `auto`: `Withdrawn. Auto mode asks about it again.`; `Withdrawn, with its session approval. Auto mode asks about it again.`;
+  `Withdrawn, but a session approval of it remains: auto mode still runs it unasked.`; for a session row
+  `Session approval withdrawn. Auto mode asks about it again.` or, when a remembered grant covers the command,
+  `Session approval withdrawn. It is still remembered for this project.`
 - **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
   again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
   one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
-  session row withdrawn while a remembered grant covers the command says `Still remembered: auto mode runs it unasked.` The answers say
-  what was withdrawn and name only `auto` as the mode that asks again, because no other mode ran a remembered command unasked.
+  plain session approval of the same command stays, and the answer says it does.
 - **Failures.** A store that cannot be read shows its fixed sentence (`The OS keychain is not available…`, `The remembered-commands
   file could not be read…`) in place of the rows, and the session section still works; a withdrawal that cannot be written leaves the
-  row and says so in one short row.
-- **Bounds.** At most three fifths of the terminal and at least eight transcript rows stay above (the card's rule), at most eight body
-  lines with `▲ n more` / `▼ n more` markers; the title, the message row and the legend are always drawn and the note is the first row
-  to go. Below 80×24 the sheet says `Enlarge the terminal to use this screen — Esc closes.` and `d` arms nothing.
+  row and says so in one short row. A port that cannot be read at all does not open the sheet (`Could not read the permissions.`), and
+  one that cannot be read again after a withdrawal closes it (`… Could not read the permissions again.`) rather than leave it armed on a
+  stale list.
+- **Bounds.** At most three fifths of the terminal and at least eight transcript rows stay above (the card's rule), no line wider than
+  100 columns, and at most **eight body lines** (headings, rows and markers) with `▲ n more` / `▼ n more` markers that count the **rows**
+  they stand in for, the row under the marker included; a heading is never left alone above a `▼` marker. The title, the note, the message
+  row and the legend are always drawn: the floor of 80×24 leaves room for all of them. Below 80×24 the sheet says `Enlarge the terminal
+  to use this screen — Esc closes.`, `d` arms nothing, and a question asked before the terminal shrank is dropped by the next key.
 - **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
   colour off: the `›` marker, the headings and the markers carry the meaning.
 

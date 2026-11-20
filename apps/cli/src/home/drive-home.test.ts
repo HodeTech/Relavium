@@ -1312,6 +1312,40 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('ADR-0137: the in-Home chat is wired to the /permissions sheet through its own line handler, and a typed /permissions opens it', async () => {
+    // The wired-but-dead field: a Home session built without `permissions` would still pass every controller test that hands the controller
+    // a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    const permissions = props.controller.getSnapshot().session?.permissions;
+    expect(permissions?.surface, 'the session carries the port').toBe('chat');
+    // The port reads the real store through the mocked keychain: no key was ever written, so the project's list is empty and readable.
+    expect(permissions?.load().project).toEqual({ ok: true, rows: [] });
+    expect(permissions?.load().session).toEqual([]);
+
+    type(props, '/permissions');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('ADR-0132: the Home gives a fresh chat AND a /models-reseated chat the question delegate, each bound to its own store', async () => {
     // The Home is always a terminal with a person at it, and its fresh and reseat builders are separate call sites: a missing
     // option or a missing `bind` on either leaves that session unable to ask. Asking through the delegate the session was

@@ -33,6 +33,7 @@ import type {
   PermissionsPort,
   PermissionsSnapshot,
 } from '../../permissions/chat-permissions.js';
+import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from './permissions-sheet.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
@@ -3162,17 +3163,26 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
             rows: current.project.rows.filter((row) => row.id !== entry.row.id),
           },
         };
-      return `Withdrew ${entry.kind === 'project' ? entry.row.label : 'the session approval'}.`;
+      return 'Withdrawn. Auto mode asks about it again.';
     });
     return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
   };
-  const inChat = async (made: ReturnType<typeof makeSession>): Promise<HomeController> => {
+  /** The monotonic clock the controller's timed keys run on: a test moves it by hand, as the interrupt keymap's tests do. */
+  const clock = (): { now: () => number; advance: (ms: number) => void } => {
+    let t = 10_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  };
+  const inChat = async (
+    made: ReturnType<typeof makeSession>,
+    now: () => number,
+  ): Promise<HomeController> => {
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
       startChat: () => Promise.resolve(made.session),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
+      now,
     });
     type(c, 'hi');
     c.handleKey('', ENTER);
@@ -3181,14 +3191,17 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
   };
   const open = async (
     made: ReturnType<typeof makeSession>,
-  ): Promise<{ c: HomeController; sent: string[] }> => {
-    const c = await inChat(made);
+    t = clock(),
+  ): Promise<{ c: HomeController; sent: string[]; t: ReturnType<typeof clock> }> => {
+    const c = await inChat(made, t.now);
     const before = made.lines.length;
     type(c, '/permissions');
     c.handleKey('', ENTER);
     await flush();
-    return { c, sent: made.lines.slice(before) };
+    return { c, sent: made.lines.slice(before), t };
   };
+  /** The sheet has settled and the keyboard has been quiet, as after a person has read the list. */
+  const settle = (t: ReturnType<typeof clock>): void => t.advance(SHEET_SETTLE_MS + 100);
 
   it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
     const { port } = portOf();
@@ -3204,6 +3217,21 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     const { c, sent } = await open(makeSession({}));
     expect(c.getSnapshot().permissionsSheet).toBeUndefined();
     expect(sent).toEqual(['/permissions']);
+  });
+
+  it('does not open when the port cannot be read: the chat says so', async () => {
+    const { port } = portOf();
+    const made = makeSession({
+      permissions: {
+        ...port,
+        load: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    const { c } = await open(made);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(made.store.getSnapshot().state.warnings).toContain('Could not read the permissions.');
   });
 
   it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
@@ -3224,52 +3252,89 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     );
   });
 
-  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer', async () => {
+  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer, each once its moment has passed', async () => {
     const { port, withdraw } = portOf();
-    const { c } = await open(makeSession({ permissions: port }));
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
     expect(withdraw).not.toHaveBeenCalled();
+    t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
     expect(withdraw).toHaveBeenCalledTimes(1);
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
     const sheet = c.getSnapshot().permissionsSheet;
     expect(sheet?.armed).toBe(false);
-    expect(sheet?.message).toBe('Withdrew npm, 1 argument.');
+    expect(sheet?.message).toBe('Withdrawn. Auto mode asks about it again.');
     expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
       'b',
     ]);
   });
 
+  it('SECURITY: keys typed ahead withdraw nothing: `d` too soon is ignored, and an Enter before the dwell drops the question', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    // The person goes on typing at once, a character every 100 ms, "…build" then Enter.
+    for (const char of 'build') {
+      t.advance(100);
+      c.handleKey(char, {});
+    }
+    t.advance(100);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(withdraw).not.toHaveBeenCalled();
+    // After a pause the person arms it for real, then presses Enter in the same breath: too early, and nothing is withdrawn.
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early for Enter/u);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
   it('a paste or any other key drops the question and withdraws nothing', async () => {
     const { port, withdraw } = portOf();
-    const { c } = await open(makeSession({ permissions: port }));
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
     c.handleKey('d', {});
     c.handlePaste('withdraw it all');
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
     expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
+    settle(t);
     c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('x', {});
     c.handleKey('', ENTER);
     expect(withdraw).not.toHaveBeenCalled();
   });
 
-  it('does not arm in a terminal that cannot show the question, and says how to leave', async () => {
+  it('does not arm in a terminal that cannot show the question, drops a question asked before it shrank, and says how to leave', async () => {
     const { port, withdraw } = portOf();
-    const { c } = await open(makeSession({ permissions: port }));
-    c.setTerminalSize(60, 20);
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.setTerminalSize(60, 20); // shrinks while the question is up
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(
+      withdraw,
+      'Enter withdraws nothing in a frame that hides the question',
+    ).not.toHaveBeenCalled();
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    settle(t);
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    c.handleKey('', ENTER);
-    expect(withdraw).not.toHaveBeenCalled();
     c.setTerminalSize(80, 24);
+    settle(t);
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
   });
 
   it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
     const { port } = portOf();
-    const { c } = await open(
+    const { c, t } = await open(
       makeSession({
         permissions: {
           ...port,
@@ -3279,10 +3344,53 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
         },
       }),
     );
+    settle(t);
     c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
     expect(c.getSnapshot().permissionsSheet?.message).toBe(
       'Could not withdraw that row; nothing changed.',
     );
+  });
+
+  it('closes, and says so, when the list cannot be read again after a withdrawal', async () => {
+    const { port } = portOf();
+    let reads = 0;
+    const made = makeSession({
+      permissions: {
+        ...port,
+        load: () => {
+          reads += 1;
+          if (reads > 1) throw new Error('boom');
+          return SNAPSHOT;
+        },
+      },
+    });
+    const { c, t } = await open(made);
+    settle(t);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(made.store.getSnapshot().state.warnings.join(' ')).toContain(
+      'Could not read the permissions again.',
+    );
+  });
+
+  it('gives way to a card that arrives while it is open: the sheet closes and the key goes on to the card', async () => {
+    const { port, withdraw } = portOf();
+    const made = makeSession({ permissions: port });
+    const { c, t } = await open(made);
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    void made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'x' } },
+      true,
+    );
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
   });
 });
