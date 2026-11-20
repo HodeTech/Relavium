@@ -180,6 +180,7 @@ flowchart TD
 | 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
 | 0135 | [Concurrent processes on one operator home wait for the allocation claim](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md) | Accepted | 2026-11-18 |
 | 0136 | [A turn asks to continue at a checkpoint instead of dying at a ceiling](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) | Accepted | 2026-11-19 |
+| 0137 | [`/permissions` is a sheet, and `Esc` steps back one level out of the full view](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) | Accepted | 2026-11-20 |
 
 ## Creating a new ADR
 

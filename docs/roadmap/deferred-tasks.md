@@ -71,6 +71,17 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
 
 ## Decisions needed (maintainer call)
 
+### ADR-0137 follow-ups (2026-11-20)
+
+> What [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §6 left undecided. Each names its own trigger, so each is parked.
+
+- [~] **Opening the permissions sheet during a running turn.** A peer does; a card can then arrive and compete for the keyboard. *Trigger:* the maintainer asks for it, or the MVP-8 run view needs it.
+- [~] **A stored display line for a remembered command**, so two `npm, 1 argument` rows can be told apart. It changes ADR-0118 §2 ("never the command") and the scrub is heuristic. *Trigger:* a separate decision with its own security reading.
+- [~] **A repository `[chat]` allowlist section, and the domain, MCP and egress sections, in the permissions pane.** *Trigger:* MVP-8's `/permissions` tab and MVP-9.
+- [~] **A withdraw-all key in the sheet** (`relavium permissions revoke --all` is the one place). *Trigger:* a maintainer request.
+- [~] **Moving `/models`, `/effort`, the palette, reverse search, mention and the session picker onto the shared frame and legend builder.** *Trigger:* the common-language increment (its ADR takes the next free number; 0135 was taken by the native adapter).
+- [~] **The sheet's intents on the desktop and the VS Code extension.** *Trigger:* those surfaces start.
+
 ### Open decisions (collected 2026-11-18)
 
 > Entries whose own text asks for a maintainer decision before any work starts. They were moved here, unchanged apart from the

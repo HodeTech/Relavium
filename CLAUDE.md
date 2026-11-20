@@ -76,7 +76,7 @@ processes on one operator home wait for the staging inventory's allocation claim
 [ADR-0135](docs/decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) with CI once per commit and a coverage run narrowed to
 `packages/`. Its final-head run `2ce6a252` passed all 29 jobs; the docs-only final head `639134b2` was merged before its own run finished, so no
 completed run exists on it, and a separate security sitting on the Linux parent-snapshot change is still owed (the
-[PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 is implemented on `development`** (2026-11-19), with
+[PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 steps 1–4 are implemented on `development`** (2026-11-19; [ADR-0137](docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md), Accepted 2026-11-20, adds steps 5–7 before the pull request: the `/permissions` sheet, `Esc` out of the full view and the Home entry points), with
 [ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
 [ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
 [ADR-0136](docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) accepted: all four steps (engine floor, interrupt

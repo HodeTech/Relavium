@@ -629,7 +629,10 @@ last drill-down position.
   ADR-0063 primitive) is the design ADR-0118 rejects. MVP-4 ships the store, `relavium permissions
   list|revoke` and the chat's `/permissions` (list and revoke the project's remembered grants and this
   session's); **this workstream's Home screen** (a single pane across command grants, domain allowlists, MCP
-  servers and egress endpoints, with add/remove) is MVP-8's 2.6.G. A **`once`-granted** command is never
+  servers and egress endpoints, with add/remove) is MVP-8's 2.6.G. **Amended 2026-11-20 by [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md):** the chat's
+  `/permissions` is a keyboard-owning sheet, withdraw-only for command grants (a grant can only be made on a command card), and the Home
+  reaches the same sheet (MVP-4 steps 5 and 7); MVP-8's `/permissions` tab **composes** that sheet with the allowlist, domain, MCP and
+  egress sections, and add/remove belongs to those sections, not to command grants. A **`once`-granted** command is never
   persisted. An allowlist whose *only* entry is default-approved (like the curl/wget research item in 2.6.M)
   is surfaced there as a built-in grant that can be revoked.
 - **Liveness**: wire `engine.reconcile()` (never invoked today) on Home open and the browser/status reads,
@@ -6030,6 +6033,9 @@ a clash of `Ctrl+K`; what the headless path does with an allowlisted command (AD
 | 2. Interrupt keymap | I1 the legacy approval-prompt reducer and the older reason-draft path deleted behind characterization tests; I2 `interrupt-keymap.ts`, reject-first, `Esc` one level, the arming window, the plain and `--json` SIGINT pin, the strings; the checkpoint card; I4 the Windows evidence recipe | rigor and a security sitting |
 | 3. Command permissions backend | B4 the grants store and key; B5 the engine seam (the request's argv and flag, the interactive miss asks, the exact-argv session cache, the mode table); B7 revoke and list; `relavium permissions` | rigor and a security sitting |
 | 4. Command card and wiring | I3 the command card (argv rows, standing row, code-carrier and protected-path rows, the answers, the inspection lock); B6 `!` through the card, `run_command` and the new prompt in the default agent; the chat's `/permissions` | rigor and a security sitting |
+| 5. The permissions sheet | [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2, §5: `revokeById` and the session withdraw-by-argv, the sheet reducer, view, frame and legend builder, the core export of the scrub, the typed forms removed, both chat hosts, the references | D64 rigor + security sitting |
+| 6. `Esc` out of the full view | [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the reducer row, the full view's answer row, the call list's and the unreadable-frame hints, the Home's routing, the references | D64 (the approval path) + security sitting |
+| 7. Home entry points | [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3: the bare Home `/permissions`, a bare `relavium permissions` on a TTY, the ADR-0110 compatibility rows | per-milestone review |
 
 Each step ends with a review round, its fixes, a second review round and its fixes (agents: Sonnet and Haiku, Opus for the security-critical rounds, never Fable). After step 4: the whole gate, the remaining reference documents and the register, then the PR.
 

@@ -114,6 +114,8 @@ matched before every answer chord and resolve an approval only as a rejection**,
 letter answers nothing, and the input guards (dwell, quiet gap, typeahead window, lockout)
 gate affirmative answers only: a rejection is never delayed.
 
+> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the rejection above applies where the card is the screen. On the full view and on the call list of an approval, `Esc` returns to the card and rejects nothing; `Ctrl+C` is unchanged and still rejects first.
+
 ### 3. `Esc` steps back one level
 
 `Esc` closes the innermost thing a card opened and only stops the turn when there is
@@ -129,6 +131,8 @@ nothing left to close.
 
 A second `Esc`, now with no box open, therefore stops the turn. `Ctrl+C` inside a text box
 is not "step back": it stops, as everywhere (§1).
+
+> Amended 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4: the third row now reads — on the full view or the call list of an approval, no box open, `Esc` returns to the card and the call stays pending; on the card, no box open, `Esc` rejects the call and stops the turn. The table-driven test of §5 covers the changed row.
 
 This reverses one sentence the maintainer ruled in
 [ADR-0132](0132-the-model-can-ask-the-user-a-structured-question.md) ("`Esc` stops the
@@ -206,6 +210,7 @@ off) keeps its process-control meaning.
   inside a box.
 - **`Esc` in the full view returns to the card first.** Not taken: the full view has an
   explicit way back, and changing it is outside what was decided on 2026-11-19.
+  *(Taken on 2026-11-20 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4.)*
 - **No arming window.** Rejected. A second press minutes after an interrupt would end a
   session the user meant to keep.
 - **Leave the Home on a single press.** Rejected for consistency. One keymap means the same
