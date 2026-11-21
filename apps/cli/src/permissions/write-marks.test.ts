@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 import {
+  COMMAND_GRANT_LIMITS,
   COMMAND_GRANTS_KEY_ACCOUNT,
   commandGrantsPath,
   createCommandGrantStore,
@@ -303,6 +304,26 @@ describe('a remembered grant against the writes recorded for its project (ADR-01
     const revoked = grants.revoke(1);
     expect(revoked.ok && revoked.ids).toHaveLength(2);
     expect(grants.standing(TEST)).toBe('none');
+  });
+
+  it('a root at its grant bound can still RENEW a grant (a twin adds no grant), while a new command there is refused as full', async () => {
+    const grants = store(project);
+    for (let index = 0; index < COMMAND_GRANT_LIMITS.perRoot; index += 1) {
+      expect(await grants.remember(['npm', 'run', String(index)])).toMatchObject({ ok: true });
+    }
+    expect(await grants.remember(['npm', 'run', 'one-too-many'])).toEqual({
+      ok: false,
+      reason: 'full',
+    });
+    clock += 1000;
+    grants.noteFileWrite();
+    expect(grants.standing(['npm', 'run', '0'])).toBe('stale');
+    clock += 1000;
+    expect(await grants.remember(['npm', 'run', '0'])).toMatchObject({
+      ok: true,
+      alreadyRemembered: false,
+    });
+    expect(grants.standing(['npm', 'run', '0'])).toBe('fresh');
   });
 
   it('Remember on a grant that stands is reported, not duplicated', async () => {

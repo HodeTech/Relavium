@@ -637,6 +637,12 @@ describe.each(['chat', 'home'] as const)(
         expect(f.lastFrameWith('Allow once')).toBeUndefined();
         expect(f.lastFrameWith('A command is waiting')).toBeUndefined();
       }
+      // The control: a preview that holds something opens its card and answers nothing by itself.
+      const f = fast();
+      await f.ready();
+      const answers = open(f, ['echo', 'x']);
+      await vi.waitFor(() => expect(f.lastFrameWith('echo x')).toBeDefined(), { timeout: 5000 });
+      expect(answers).toEqual([]);
     });
 
     it('more than 63 arguments is a blocked card that says why: no approving answer counts, not even a chord with its Enter, and Deny still does', async () => {
