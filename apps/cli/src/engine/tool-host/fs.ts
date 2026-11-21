@@ -889,6 +889,13 @@ const PROTECTED_DIR_SEGMENTS: ReadonlySet<string> = new Set([
   FS_STAGE_DIRECTORY,
   FS_PRIVATE_INDEX_PARENT,
 ]);
+/**
+ * Directories named by a RUN of consecutive segments (a bare `git` elsewhere must stay writable), refused to WRITE. `~/.config/git/`
+ * is the XDG user-global git configuration: git reads its `config` exactly as it reads `~/.gitconfig` (`core.fsmonitor`,
+ * `core.sshCommand`, `[alias] x = !cmd`), and `git_status` runs with no card, so a write there is a command that runs on the next git
+ * call. The whole directory is refused (`ignore` and `attributes` are read by every git command as well).
+ */
+const PROTECTED_DIR_RUNS: ReadonlyArray<readonly string[]> = [['.config', 'git']];
 const PROTECTED_RC_BASENAMES: ReadonlySet<string> = new Set([
   '.bashrc',
   '.bash_profile',
@@ -933,11 +940,10 @@ export function isProtectedPath(absoluteTarget: string): boolean {
  * after a path is resolved stay fatal.
  */
 export function isProtectedLexicalPath(absoluteTarget: string): boolean {
-  for (const segment of absoluteTarget.split(/[\\/]/)) {
-    if (PROTECTED_DIR_SEGMENTS.has(foldPathComponent(segment))) return true;
-  }
-  const base = absoluteTarget.split(/[\\/]/).at(-1) ?? '';
-  return PROTECTED_RC_BASENAMES.has(foldPathComponent(base));
+  const folded = absoluteTarget.split(/[\\/]/).map(foldPathComponent);
+  if (folded.some((segment) => PROTECTED_DIR_SEGMENTS.has(segment))) return true;
+  if (PROTECTED_DIR_RUNS.some((run) => hasSegmentRun(folded, run))) return true;
+  return PROTECTED_RC_BASENAMES.has(folded.at(-1) ?? '');
 }
 
 /** Deny a write to a protected path (a `.git`/`.relavium`/`.ssh` directory, or a startup/config file). FATAL. */

@@ -26,6 +26,7 @@ import {
   FS_STAGE_DIRECTORY,
   FsCapabilityError,
   FsScopeDeniedError,
+  isProtectedLexicalPath,
   readJailedFile,
   type NodeFsCapabilityConfig,
 } from './fs.js';
@@ -628,6 +629,36 @@ describe('createNodeFsCapability — protected paths (denied in EVERY mode, auto
         FsScopeDeniedError,
       );
     }
+  });
+
+  it('refuses the XDG user-global git configuration directory (`.config/git/`) however it is spelled, and nothing that only resembles it (PR #101 review S1)', async () => {
+    // git reads `$XDG_CONFIG_HOME/git/config` exactly as it reads `~/.gitconfig` (`core.fsmonitor`, `core.sshCommand`, `[alias] x = !cmd`),
+    // and `git_status` runs with no card: a write there is a command that runs on the next git call.
+    for (const target of [
+      '.config/git/config',
+      '.config/git/ignore',
+      '.config/git/attributes',
+      '.CONFIG/Git/config',
+      'sub/../.config/git/config',
+    ]) {
+      await expect(
+        sandboxed().writeFile(target, '[core]\n\tfsmonitor = evil', { createDirs: true }),
+      ).rejects.toBeInstanceOf(FsScopeDeniedError);
+    }
+    for (const target of ['/home/u/.config/git/config', 'C:\\Users\\u\\.CONFIG\\Git\\config']) {
+      expect(isProtectedLexicalPath(target), target).toBe(true);
+    }
+    for (const target of [
+      '/home/u/project/git/config',
+      '/home/u/.config/gitx/config',
+      '/home/u/.config/other/git',
+      '/home/u/project/.config/notes.txt',
+    ]) {
+      expect(isProtectedLexicalPath(target), target).toBe(false);
+    }
+    await expect(
+      sandboxed().writeFile('git/config', 'ordinary', { createDirs: true }),
+    ).resolves.toBeDefined();
   });
 
   it('matches `.git` case-insensitively (`.GIT/`) — the over-deny is the safe direction', async () => {
