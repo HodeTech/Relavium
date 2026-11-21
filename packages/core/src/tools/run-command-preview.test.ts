@@ -125,22 +125,30 @@ describe('the event preview of a command masks everything the joined projection 
   });
 
   it('a secret in the program name or split from its key across two arguments is masked as well', async () => {
-    for (const [command, args] of [
-      [`./sk-ant-api03-${SECRET}${SECRET}${SECRET}`, ['--version']],
-      ['curl', ['--header', `Authorization: Bearer ${SECRET}${SECRET}`]],
+    // Exact and unconditional: an assertion guarded by "unless the oracle leaks" pins nothing exactly when the oracle leaks.
+    for (const [command, args, shown] of [
+      [`./sk-ant-api03-${SECRET}${SECRET}${SECRET}`, ['--version'], './[redacted] --version'],
+      [
+        'curl',
+        ['--header', `Authorization: Bearer ${SECRET}${SECRET}`],
+        "curl --header '[redacted] [redacted]'",
+      ],
+      // The label and its value are two arguments, so only the joined line reads the pair: the fallback masks every argument.
+      ['curl', ['-H', 'Authorization:', `Bearer ${SECRET}${SECRET}`], 'curl [redacted]'],
     ] as const) {
-      // Unconditional: the joined projection masks both, so the preview must too (it once skipped the check whenever the oracle leaked).
-      expect(redactSecretShapedText([command, ...args].join(' ')), command).not.toContain(SECRET);
       const { request } = await asked(command, args);
-      expect(request.preview.command, command).not.toContain(SECRET);
-      expect(request.preview.command, command).toContain('[redacted]');
+      expect(request.preview.command).toBe(shown);
+      expect(request.preview.command).not.toContain(SECRET);
     }
   });
 
-  it('a bare value after a flag has no secret shape, so neither projection can mask it (the card shows the whole argv)', async () => {
+  it('a bare `--flag value` pair is read by neither scrubber today: the preview shows what the joined oracle shows', async () => {
+    // Recorded, not promised: this shape used to sit in the test above, where its assertion was skipped because the oracle leaks it.
+    // A detector that learns the shape should turn this into a masked case beside the two above.
+    const joined = redactSecretShapedText(['tool', '--password', SECRET].join(' '));
+    expect(joined).toBe(`tool --password ${SECRET}`);
     const { request } = await asked('tool', ['--password', SECRET]);
-    expect(redactSecretShapedText(['tool', '--password', SECRET].join(' '))).toContain(SECRET);
-    expect(request.preview.command).toBe(`tool --password ${SECRET}`);
+    expect(request.preview.command).toBe(joined);
   });
 
   it('leaves an ordinary command readable', async () => {
