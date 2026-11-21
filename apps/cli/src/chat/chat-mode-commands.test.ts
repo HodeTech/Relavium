@@ -871,3 +871,110 @@ describe('a remembered grant that a recorded file write outdated, a listed comma
     expect(plan.noteFileWrite).not.toHaveBeenCalled();
   });
 });
+
+describe('a Remember answered while the call is being cancelled leaves no grant the person did not see (ADR-0118 §2)', () => {
+  const NOTE_SUCCESS =
+    'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.';
+  const NOTE_CANCELLED =
+    'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.';
+  const ARGV = ['npm', 'test'] as const;
+
+  /** A real policy with a fake grants store; the prompt answers Remember, optionally after running `beforeAnswer`. */
+  function abortRig(options: {
+    readonly remember: (argv: readonly string[]) => Promise<{ ok: boolean; id?: string }>;
+    readonly beforeAnswer?: () => void;
+  }) {
+    const cache = new ApprovalCache();
+    const notes: string[] = [];
+    const prompt = vi.fn<ApprovalPrompt>(() => {
+      options.beforeAnswer?.();
+      return Promise.resolve({ outcome: 'approve', scope: 'remember' });
+    });
+    const remember = vi.fn(options.remember);
+    const policy = buildTurnPolicy('ask', {
+      governed: new Set(['run_command']),
+      prompt,
+      cache,
+      commandSessionGrants: true,
+      commandCwd: '/work/project',
+      notify: (message) => notes.push(message),
+      commandGrants: { matches: () => false, canRemember: () => ({ ok: true }), remember },
+    });
+    if (policy.confirm === undefined) throw new Error('a policy always has a confirm hook');
+    return { confirm: policy.confirm, cache, notes, remember, prompt };
+  }
+
+  /** What the hook rejects with, or `undefined` when it resolved. */
+  async function rejection(promise: Promise<unknown>): Promise<unknown> {
+    try {
+      await promise;
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  }
+
+  function expectAbortError(error: unknown): void {
+    expect(error, 'the hook rejected').toBeInstanceOf(Error);
+    expect(error instanceof Error ? error.name : undefined).toBe('AbortError');
+  }
+
+  it('an answer given after the call was cancelled writes NO grant and ends as the cancellation it is', async () => {
+    const controller = new AbortController();
+    const r = abortRig({
+      remember: () => Promise.resolve({ ok: true, id: 'grant-1' }),
+      beforeAnswer: () => controller.abort(),
+    });
+    const error = await rejection(r.confirm(command(ARGV, false), controller.signal, undefined));
+    expect(r.prompt, 'the card was shown').toHaveBeenCalledOnce();
+    expect(r.remember, 'no standing grant behind a cancelled call').not.toHaveBeenCalled();
+    expectAbortError(error);
+    expect(r.notes, 'nothing is claimed as allowed or remembered').toEqual([]);
+    expect(r.cache.isAlwaysCommand(ARGV), 'and no session approval either').toBe(false);
+  });
+
+  it('a write that finishes as the call is cancelled keeps the grant, says so ONCE, and then cancels', async () => {
+    const controller = new AbortController();
+    const r = abortRig({
+      remember: () => {
+        controller.abort();
+        return Promise.resolve({ ok: true, id: 'grant-2' });
+      },
+    });
+    const error = await rejection(r.confirm(command(ARGV, false), controller.signal, undefined));
+    expect(r.remember).toHaveBeenCalledExactlyOnceWith(ARGV);
+    expectAbortError(error);
+    expect(
+      r.notes,
+      'the grant stands, so the person is told it does; never the success notice',
+    ).toEqual([NOTE_CANCELLED]);
+    expect(r.cache.isAlwaysCommand(ARGV), 'a cancelled call is not a session approval').toBe(false);
+  });
+
+  it('a cancelled write that FAILED is not announced as a remembered grant', async () => {
+    const controller = new AbortController();
+    const r = abortRig({
+      remember: () => {
+        controller.abort();
+        return Promise.resolve({ ok: false });
+      },
+    });
+    await r.confirm(command(ARGV, false), controller.signal, undefined);
+    // Nothing stands, so there is no "remembered" claim; the failure is reported as it always is.
+    expect(r.notes).toEqual(['Allowed once, but not remembered: it could not be written.']);
+  });
+
+  it('without a cancellation the same answer approves with the session scope and says it was remembered', async () => {
+    const controller = new AbortController();
+    const r = abortRig({ remember: () => Promise.resolve({ ok: true, id: 'grant-3' }) });
+    const decision = await r.confirm(command(ARGV, false), controller.signal, undefined);
+    expect(r.remember).toHaveBeenCalledExactlyOnceWith(ARGV);
+    expect(r.notes).toEqual([NOTE_SUCCESS]);
+    expect(decision.outcome).toBe('approve');
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(ARGV), 'the grant is also this chat’s session approval').toBe(
+      true,
+    );
+    expect(r.cache.forgetCommandsByGrant('grant-3'), 'and it is linked to its grant').toBe(1);
+  });
+});
