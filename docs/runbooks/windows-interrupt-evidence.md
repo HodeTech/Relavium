@@ -6,6 +6,10 @@
 
 The keymap is decided in one pure reducer and is covered by automated tests on every platform. What a test cannot show is what a **Windows console** actually delivers: whether `Ctrl+C` in raw mode arrives as a key (the keymap applies) or as a SIGINT (the signal path of ADR-0115 §4 applies instead). This recipe records which one it is, and that the keymap still behaves as designed under it.
 
+## Status of the evidence — 2026-11-21
+
+**Every row, 1 to 16, is owed.** No row was run on a real Windows terminal, in Windows Terminal or in the legacy console host, and no result is recorded for any of them: the phase record's step 2 listed the whole of ADR-0115 §5 as owed (rows 1 to 12), and rows 13 to 16 (the command card's `Ctrl+O`, the `/permissions` sheet's keys, `Esc` out of the full view, the bare `relavium permissions`) were added by steps 4 to 7 and also never run. CI runs the tests of the keymap and of every card on Windows, and its required Windows job is headless; it does not put a person at a console, so it cannot show what a Windows terminal delivers for `Ctrl+C`, `Ctrl+O`, `Esc`, `Delete` or `Backspace`. MVP-4's "final round" acceptance is therefore **conditional on these rows**: until each is recorded as `PASS` or `FAIL` in the [phase record](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record), the claim is "designed and tested, not observed on Windows". A row left unrun is recorded as unrun.
+
 ## What you need
 
 - A Windows 10 or 11 machine, a built `relavium` (the installed package or `node apps/cli/dist/index.js`), and a provider key in the Windows credential store.
@@ -38,7 +42,7 @@ Record, for each row: terminal, `PASS` or `FAIL`, and a short note (what you pre
 
 ## If `Ctrl+C` arrives as a signal
 
-If row 1 ends the process (or prints `^C` and returns to the shell) instead of showing the hint, the console delivered a SIGINT and the raw-mode key never reached the keymap. Record that fact in the register with the terminal and Windows version. Per ADR-0115 §4 the signal path then applies there: the first SIGINT ends the session cooperatively (abort, persist, code 4) and a second force-exits. Rows 2 to 9 and 15 to 16 (the `Esc` and `Ctrl+C` rows that close a screen) are then expected to differ, and the register notes which ones. It is not a defect in the keymap, but it is a documented platform difference the maintainer decides what to do about.
+If row 1 ends the process (or prints `^C` and returns to the shell) instead of showing the hint, the console delivered a SIGINT and the raw-mode key never reached the keymap. Record that fact in the register with the terminal and Windows version. Per ADR-0115 §4 the signal path then applies there, and the two hosts end differently. In a **standalone chat** (`relavium chat`, and the plain and `--json` drivers of row 12) the first SIGINT ends the session cooperatively (abort, persist, exit code 4) and a second force-exits. In the **Home**, the chat it hosts included (rows 1 to 5, and the bare `relavium permissions` of row 16, which runs the Home), the Home's own signal lifecycle applies and the process exits `130` (`128 + 2`); the `4` is what a chat ends with, and inside the Home the mode loop consumes it ([home.md](../reference/cli/home.md#signal-lifecycle--exit-codes), [commands.md](../reference/cli/commands.md#exit-codes)). Rows 2 to 9 and 15 to 16 (the `Esc` and `Ctrl+C` rows that close a screen) are then expected to differ, and the register notes which ones. It is not a defect in the keymap, but it is a documented platform difference the maintainer decides what to do about.
 
 ## Recording the evidence
 

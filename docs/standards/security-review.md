@@ -107,7 +107,7 @@ entire checklist with **no chat-specific exception**: provider keys stay in the 
 and are attached exactly as above (the chat surface holds only a key reference), the
 session runs under the same filesystem **scope tier**, `run_command` uses the same
 `allowedCommands` allowlist (exact-match, below), and no secret ever reaches the frontend.
-A chat-only relaxation of any rule here is a security violation, not a feature — with the one exception [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) records: where a person is present, an allowlist miss for `run_command` is a request to them (a card), not a refusal, and nothing runs in `auto` without being pre-approved.
+A chat-only relaxation of any rule here is a security violation, not a feature — with the one exception [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) records: where a person is present, an allowlist miss for `run_command` is a request to them (a card), not a refusal, and nothing runs in `auto` without the person's approval: a remembered grant that is fresh or an exact command approved for the session runs unasked, anything else (a command the repository's allowlist admits included) shows a card, and a *Once* answer to that card runs the command too.
 
 - **Conversational content is the user's data, not a managed secret.** What the user types
   into a session and the model's replies are persisted in `history.db` (SQLCipher-encrypted on
@@ -131,7 +131,7 @@ A chat-only relaxation of any rule here is a security violation, not a feature �
   additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): the allowlist is judged first;
   in a workflow (no approval regime) the allowlist is the only authority, a miss is refused and an empty set disables `run_command`; a plain, `--json` or one-shot surface has a regime whose hook refuses every governed call and hides the tool, so nothing runs there; and in an
   interactive chat a miss reaches the mode-aware `confirmAction` as a request (`ask`/`accept-edits` show a card, `plan` refuses,
-  `auto` shows a card unless a remembered grant (and no file write approved since) or an earlier session answer pre-approved that exact argv; the repository's allowlist is not a pre-approval there —
+  `auto` shows a card unless a remembered grant (and no file write a chat applied in the project since the grant, [ADR-0138](../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md)) or an earlier session answer pre-approved that exact argv; the repository's allowlist is not a pre-approval there —
   [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), then `spawn`/`shell:false` (no
   metachar expansion). **`[chat].allowed_commands` defaults EMPTY, pre-approving nothing** — a non-empty chat default is the
   "chat-specific relaxation" this section forbids (`run_command` has no argument/file floor, so even a read-only default
@@ -951,12 +951,23 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   reordered grant line stays revoked) and withdraws every record of its argv; a locked keychain
   means *nothing matches* and *Remember is not offered*; `revoke --all` needs no key, no project
   root and no readable file. The store defends against forgery (the HMAC), torn writes and replay;
-  it does **not** defend against a process running as the same user that deletes lines or the file,
-  and the labels are display text the HMAC does not cover. The mode behavior (`ask` and
-  `accept-edits` still show the card for a remembered command, `auto` runs only a remembered
-  one, and asks once after a file write) is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
+  it does **not** defend against a process running as the same user that deletes lines or the file
+  (tombstones are not authenticated), restores an older copy, or reads the keychain key. The record's
+  MAC covers **every** field, the label (`program`, `args`) and the `id` included, so a relabelled or
+  re-`id`ed record is ignored; what it does not give is proof that the label *describes* the hidden
+  argv (a label is display text the store cannot check against a digest). A revocation is by record
+  `id`, wherever it sits in the file. The mode behavior (`ask` and `accept-edits` still show the card
+  for a remembered command, and only a *Session* answer given in the current chat removes it there;
+  `auto` runs unasked **only** a command the person remembered or approved for the session, and
+  asks about a remembered one again after a file write a chat applied in the project, until
+  *Remember* renews it, [ADR-0138](../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md))
+  is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
   headless paths and workflows never read the store. The format, bounds and failure table are
-  [command-permissions.md](../reference/cli/command-permissions.md).
+  [command-permissions.md](../reference/cli/command-permissions.md). A review also confirms the write
+  marks: `command-write-marks.json` is keyed by the grants' root digest, authenticated by the
+  installation key, replaced whole (never appended), never overwritten when unreadable, and removed
+  by `revoke --all`; losing it can only make a remembered command run unasked again, as the chat
+  without the file did.
 - **The command card shows the whole command, and the answers it offers are the narrowest that fit.** *(ADR-0118 §1; MVP-4
   step 4.)* A review confirms: the card's target is the entire argv as one quoted line and its body one row per argument
   (`["cat","a b"]` and `["cat","a","b"]` read differently on the card, in the event preview and in the in-process copy);
@@ -965,7 +976,7 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   card, never an approvable one; every masked span of a command must be revealed and displayed before an approving answer counts
   (a file card requires only the flagged ones); *This session* and *Remember* are withheld while the page does not show the whole
   command, and for a command that names a protected path (Once only); *Remember* is also withheld for a code carrier, for a
-  command already on the allowlist or remembered, and when the store cannot write; a Remember's session approval is linked to its
+  command that a fresh grant already covers; it **is** offered for a command the repository's allowlist admits (the list pre-approves nothing in `auto`) and for a grant that a later file write outdated (it renews it), and it is withheld when the store cannot write; a Remember's session approval is linked to its
   grant, so a revoke withdraws it; `Ctrl+O` is a two-step answer behind the same dwell, quiet, typeahead and lockout guards as `Ctrl+G`; the hook
   narrows any answer the card did not offer to Once; a Remember that cannot be written approves the call once and says why
   without the command; the code-carrier table and the protected-path check are warnings, never refusals, and are not the
@@ -1081,7 +1092,7 @@ security invariants** a review must confirm are:
 - **A recoverable refusal is safe by construction.** On the `recoverToolFailures` chat surfaces,
   exactly three refusals decided BEFORE any side effect are fed back to the model with a **secret-free**
   reason so it adapts: a media scope denial, the fs pure scope-tier escape, and the **lexical
-  protected-path arm** (a write whose path *text* names a protected directory or a shell startup file,
+  protected-path arm** (a write whose path *text* names a protected directory — `.git`, `.relavium`, `.ssh`, the host's stage directory and, since PR #101, git's XDG user-global `.config/git/` (a run of consecutive segments, so a bare `git` elsewhere stays writable; git reads its `config` as it reads `~/.gitconfig`, and `git_status` runs without a card) — or a shell startup or git configuration file,
   decided without any filesystem resolution; one fixed text that names neither the list nor the target) —
   the floor still denies every attempt (no bypass; the bounded workspace-boundary signal a probing model
   could gather is accepted, matching the pre-existing not-found-read feedback).
