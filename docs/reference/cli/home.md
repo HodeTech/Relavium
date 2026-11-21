@@ -122,6 +122,11 @@ native host. Other shell scaffolding/gate prompts retain their existing contract
 
 ## Project initialization
 
+**`/permissions` on the bare Home (MVP-4 step 7, 2026-11-21).** The landing palette offers `/permissions`: it opens the permissions sheet
+docked under the Home with the project's remembered commands only, and closing it returns to the Home. A bare `relavium permissions` on a
+terminal starts the Home with that sheet open and ends the run when it is closed.
+Contract: [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet), [commands.md](commands.md#relavium-permissions).
+
 **Accepted on development, MVP-2 step 3 (2026-11-10).**
 `/init` is available in the landing and Home-chat palettes. Its card lists the
 exact three directories before writing and defaults to **No**. Only an explicit

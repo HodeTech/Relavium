@@ -105,6 +105,8 @@ import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import { createPermissionsPort } from '../permissions/chat-permissions.js';
+import { commandGrantRoot, createCommandGrantStore } from '../permissions/command-grants.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
@@ -151,6 +153,9 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
+  /** Open the `/permissions` sheet as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3): the Home ends
+   *  with success when the sheet is closed. Absent ⇒ the ordinary Home. */
+  readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
   /** Explicit output resource factory for hermetic embeddings and tests. */
@@ -1785,6 +1790,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       };
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+        // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
+        // `relavium permissions` read. Nothing is read until the sheet is opened.
+        permissions: createPermissionsPort(
+          {
+            grants: createCommandGrantStore({
+              homeDir,
+              projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
+              keychain,
+            }),
+            session: undefined,
+          },
+          'project',
+        ),
         startChat,
         reseatChat,
         resumeChat,
@@ -1849,6 +1867,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3): the Home opens with the sheet open and ends when it is closed.
+      if (deps.openPermissions === true) controller.openPermissionsAsCommand();
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)

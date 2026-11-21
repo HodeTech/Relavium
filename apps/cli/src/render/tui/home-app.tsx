@@ -674,6 +674,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       current.notice === undefined ||
       current.palette !== undefined ||
       current.modelPicker !== undefined ||
+      current.permissionsSheet !== undefined ||
       (!key.pageUp && !key.pageDown)
     )
       return false;
@@ -899,7 +900,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           cols={Number.isFinite(size.cols) ? size.cols : 0}
           rows={size.rows}
           color={color}
-          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          paletteOpen={
+            state.palette !== undefined ||
+            state.modelPicker !== undefined ||
+            state.permissionsSheet !== undefined
+          }
           showBanner={props.showBanner}
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
@@ -912,6 +917,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
+      )}
+      {/* The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, docked under the Home; below its own
+          80×24 floor the sheet says so itself, so it is drawn whatever the Home strip does. */}
+      {state.permissionsSheet !== undefined && (
+        <PermissionsSheetView
+          state={state.permissionsSheet}
+          color={color}
+          columns={size.cols}
+          rows={size.rows}
+        />
       )}
     </Box>
   );

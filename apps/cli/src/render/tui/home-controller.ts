@@ -16,15 +16,16 @@ import {
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
-import type { PermissionsPort, WithdrawAnswer } from '../../permissions/chat-permissions.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import {
   disarmPermissionsSheet,
-  foldPermissionsSheetKey,
-  initialPermissionsSheetState,
-  reloadPermissionsSheet,
   sheetCanArm,
   type PermissionsSheetState,
 } from './permissions-sheet.js';
+import {
+  foldPermissionsSheetThroughPort,
+  openPermissionsSheetThroughPort,
+} from './permissions-sheet-port.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
@@ -216,8 +217,9 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
-  /** The open `/permissions` sheet (ADR-0137 §2) — `undefined` ⇒ closed. CHAT-scoped here (a live in-Home chat with a wired port); a
-   *  keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open. */
+  /** The open `/permissions` sheet (ADR-0137 §2, §3) — `undefined` ⇒ closed. In a live in-Home chat with a wired port it shows both lists;
+   *  on the bare Home it shows the project's only. A keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can
+   *  arrive while it is open. */
   readonly permissionsSheet: PermissionsSheetState | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
@@ -295,6 +297,9 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
+  /** The bare Home's `/permissions` sheet port (ADR-0137 §3): the project's remembered commands only, there being no chat. Absent ⇒
+   *  the Home has no sheet to open (a test may omit it); a live chat's own port is `HomeChatSession.permissions`. */
+  readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
   readonly pickSession?: () => Promise<string | undefined>;
@@ -330,6 +335,12 @@ export interface HomeController {
   /** The terminal's size, told by the host whenever it changes: the permissions sheet needs it to know whether it can show a
    *  withdrawal's question (ADR-0137 §2). Until it is told, the sheet assumes a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
+  /**
+   * Open the `/permissions` sheet as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3): the sheet
+   * opens at once and, when the person closes it, the Home ends with success instead of staying open behind it. If the sheet cannot
+   * open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
+   */
+  readonly openPermissionsAsCommand: () => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -478,6 +489,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     notify();
   };
 
+  // A bare `relavium permissions` opens the sheet as the run's whole job: closing it ends the run (ADR-0137 §3).
+  let permissionsIsTheCommand = false;
   const exitHome = (): void => {
     if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
     exiting = true;
@@ -857,6 +870,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           '/resume accepts no arguments. Use its picker to select a session.',
         );
       } else openResume();
+      return true;
+    }
+    if (state.session === undefined && /^\/permissions(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/permissions') set({ notice: '/permissions accepts no arguments.' });
+      else if (deps.permissions === undefined)
+        set({ notice: 'Remembered commands are not available here.' });
+      else openPermissionsSheet(undefined);
       return true;
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
@@ -1281,57 +1302,57 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // ---- The in-Home `/permissions` sheet (ADR-0137 §2) ---------------------------------------------------------
   // Open on the data read NOW, in the chat's current mode: only at an idle prompt with nothing pending, so a card cannot arrive while
   // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so.
-  const openPermissionsSheet = (active: HomeChatSession): void => {
-    const port = active.permissions;
+  const openPermissionsSheet = (active: HomeChatSession | undefined): void => {
+    const port = active === undefined ? deps.permissions : active.permissions;
     if (port === undefined) return;
-    const snap = active.store.getSnapshot();
-    // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
-    // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
-    if (
-      snap.state.status === 'running' ||
-      state.shellBusy ||
-      state.submitBusy ||
-      snap.review !== undefined ||
-      snap.question !== undefined ||
-      snap.checkpoint !== undefined ||
-      snap.approval !== undefined
-    )
-      return;
-    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    let snapshot: ReturnType<PermissionsPort['load']>;
-    try {
-      snapshot = port.load();
-    } catch {
-      active.store.note('Could not read the permissions.');
-      return;
+    if (active === undefined) {
+      // The bare Home: only from the Home itself, with nothing being built or resumed. (`submitBusy` and `nativeActionBusy` are defence in
+      // depth: the keys that start those are gated while one runs, so a test can only reach the mode check.)
+      if (state.mode !== 'home' || state.submitBusy || state.nativeActionBusy) return;
+    } else {
+      const snap = active.store.getSnapshot();
+      // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
+      // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+      if (
+        snap.state.status === 'running' ||
+        state.shellBusy ||
+        state.submitBusy ||
+        snap.review !== undefined ||
+        snap.question !== undefined ||
+        snap.checkpoint !== undefined ||
+        snap.approval !== undefined
+      )
+        return;
     }
-    set({
-      permissionsSheet: initialPermissionsSheetState(
-        snapshot,
-        port.surface,
-        snap.mode,
-        interruptNow(),
-      ),
-    });
+    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
+    const opened = openPermissionsSheetThroughPort(
+      port,
+      active?.store.getSnapshot().mode,
+      interruptNow(),
+    );
+    if (opened.sheet !== undefined) set({ permissionsSheet: opened.sheet });
+    else if (active !== undefined) active.store.note(opened.note);
+    else set({ notice: opened.note });
   };
   // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
   // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
   const routePermissionsSheetKey = (
-    active: HomeChatSession,
+    active: HomeChatSession | undefined,
     input: string,
     key: ChatKey,
   ): boolean => {
     const open = state.permissionsSheet;
-    const port = active.permissions;
+    const port = active === undefined ? deps.permissions : active.permissions;
     if (open === undefined) return false;
     // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
     // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
-    const pending = active.store.getSnapshot();
+    const pending = active?.store.getSnapshot();
     if (
-      pending.review !== undefined ||
-      pending.question !== undefined ||
-      pending.checkpoint !== undefined ||
-      pending.approval !== undefined
+      pending !== undefined &&
+      (pending.review !== undefined ||
+        pending.question !== undefined ||
+        pending.checkpoint !== undefined ||
+        pending.approval !== undefined)
     ) {
       set({ permissionsSheet: undefined });
       return false;
@@ -1343,37 +1364,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const canArm =
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
-    const step = foldPermissionsSheetKey(input, key, open, canArm, interruptNow());
-    switch (step.kind) {
-      case 'close':
-        set({ permissionsSheet: undefined });
-        break;
-      case 'state':
-        set({ permissionsSheet: step.state });
-        break;
-      case 'withdraw': {
-        let message: WithdrawAnswer;
-        try {
-          message = port.withdraw(step.entry);
-        } catch {
-          message = { tone: 'failed', text: 'Could not withdraw that row; nothing changed.' };
-        }
-        let snapshot: ReturnType<PermissionsPort['load']>;
-        try {
-          snapshot = port.load();
-        } catch {
-          // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
-          set({ permissionsSheet: undefined });
-          active.store.note(`${message.text} Could not read the permissions again.`);
-          break;
-        }
-        set({ permissionsSheet: reloadPermissionsSheet(step.state, snapshot, message) });
-        break;
-      }
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
+    const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
+    set({ permissionsSheet: result.sheet });
+    if (result.note !== undefined) {
+      if (active !== undefined) active.store.note(result.note);
+      else set({ notice: result.note });
+    } else if (result.sheet === undefined && permissionsIsTheCommand) {
+      // The person closed the sheet a command opened: there is nothing behind it to stay for.
+      exitHome();
     }
     return true;
   };
@@ -1523,6 +1521,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProjectInit();
         } else if (step.command.name === 'resume') {
           openResume();
+        } else if (step.command.name === 'permissions' && active === undefined) {
+          // home: bare `/permissions` opens the sheet over the Home with the project's list only (ADR-0137 §3).
+          if (deps.permissions === undefined)
+            set({ notice: 'Remembered commands are not available here.' });
+          else openPermissionsSheet(undefined);
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -1894,7 +1897,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.search !== undefined ||
       state.mention !== undefined ||
       (state.effortPicker !== undefined && active !== undefined) ||
-      (state.permissionsSheet !== undefined && active !== undefined)
+      state.permissionsSheet !== undefined
     )
       return { kind: 'overlay' };
     if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
@@ -2086,11 +2089,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     // The `/permissions` sheet (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither withdraws.
-    if (
-      state.permissionsSheet !== undefined &&
-      state.session !== undefined &&
-      routePermissionsSheetKey(state.session, input, key)
-    )
+    if (state.permissionsSheet !== undefined && routePermissionsSheetKey(state.session, input, key))
       return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
@@ -2135,6 +2134,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     setTerminalSize(columns, rows) {
       terminal = { columns, rows };
+    },
+    openPermissionsAsCommand() {
+      if (exiting) return;
+      permissionsIsTheCommand = true;
+      openPermissionsSheet(undefined);
+      // It did not open (the port could not be read): stay in the Home, whose notice says why.
+      if (state.permissionsSheet === undefined) permissionsIsTheCommand = false;
     },
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;

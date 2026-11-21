@@ -164,6 +164,8 @@ function mountHome(
     setMouseCapture?: (enabled: boolean) => void;
     /** Capture the raw Ctrl-Z job-control request. */
     onSuspend?: () => void;
+    /** The bare Home's `/permissions` port (ADR-0137 §3). */
+    permissions?: PermissionsPort;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -174,6 +176,7 @@ function mountHome(
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
+    ...(opts.permissions !== undefined ? { permissions: opts.permissions } : {}),
     homeStore: snapshot === undefined ? homeStore : { read: () => snapshot },
     onExit: vi.fn(),
     onError: vi.fn(),
@@ -1267,5 +1270,63 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     await settleFrames();
     m.harness.stdin.write('d');
     await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
+  });
+});
+
+describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+  const homePort: PermissionsPort = {
+    surface: 'project',
+    load: () => ({
+      project: {
+        ok: true,
+        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
+      },
+      session: undefined,
+    }),
+    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
+  };
+  const openFromPalette = async (m: MountedHome): Promise<void> => {
+    m.harness.stdin.write('/');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('permissions'));
+    m.harness.stdin.write('permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · this project'));
+  };
+
+  it('is drawn under the Home from the palette: the project’s list only, no session section, and Esc closes it back to the Home', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const frame = m.harness.lastFrame() ?? '';
+    expect(frame).toContain('This project · remembered (1)');
+    expect(frame).toContain('› npm, 1 argument');
+    expect(frame).toContain('[d] withdraw');
+    expect(frame, 'the bare Home has no session list').not.toContain('This session');
+    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    m.harness.stdin.write('\u001b');
+    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('Permissions ·'));
+    expect(m.c.getSnapshot().mode).toBe('home');
+  });
+
+  it('draws at the terminal’s real width and says so below the floor, as in a chat', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const rule = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .find((line) => line.includes('Permissions · this project'));
+    expect(rule?.trimEnd().length, 'two columns of margin on a 100-column terminal').toBe(98);
+    m.setSize({ cols: 80, rows: 23 });
+    m.fireResize();
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+  });
+
+  it('PgUp reaches the sheet, not the Home notice behind it', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort });
+    await openFromPalette(m);
+    m.harness.stdin.write('\x1b[5~');
+    await settleFrames();
+    expect(m.c.getSnapshot().permissionsSheet, 'still open').toBeDefined();
   });
 });

@@ -58,15 +58,16 @@ import {
 } from './effort-picker.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
-import type { PermissionsPort, WithdrawAnswer } from '../../permissions/chat-permissions.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import {
   disarmPermissionsSheet,
-  foldPermissionsSheetKey,
-  initialPermissionsSheetState,
-  reloadPermissionsSheet,
   sheetCanArm,
   type PermissionsSheetState,
 } from './permissions-sheet.js';
+import {
+  foldPermissionsSheetThroughPort,
+  openPermissionsSheetThroughPort,
+} from './permissions-sheet-port.js';
 import { PermissionsSheetView } from './permissions-sheet-view.js';
 import {
   foldModelPickerKey,
@@ -1228,16 +1229,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     )
       return;
     // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    let snapshot: ReturnType<PermissionsPort['load']>;
-    try {
-      snapshot = port.load();
-    } catch {
-      props.store.note('Could not read the permissions.');
-      return;
-    }
-    applyPermissionsSheet(
-      initialPermissionsSheetState(snapshot, port.surface, snap.mode, performance.now()),
-    );
+    const opened = openPermissionsSheetThroughPort(port, snap.mode, performance.now());
+    if (opened.sheet === undefined) props.store.note(opened.note);
+    else applyPermissionsSheet(opened.sheet);
   };
   // The open sheet owns every key. A withdrawal is carried out through the port (the store is read again there) and the sheet is
   // reloaded with the answer; the port never throws, but a defect there must not leave the keyboard owned by a frozen sheet.
@@ -1250,38 +1244,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       return;
     }
     const canArm = sheetCanArm({ columns: windowSize.columns, terminalRows: windowSize.rows });
-    const step = foldPermissionsSheetKey(char, key, open, canArm, performance.now());
-    switch (step.kind) {
-      case 'close':
-        applyPermissionsSheet(undefined);
-        return;
-      case 'state':
-        applyPermissionsSheet(step.state);
-        return;
-      case 'withdraw': {
-        let message: WithdrawAnswer;
-        try {
-          message = port.withdraw(step.entry);
-        } catch {
-          message = { tone: 'failed', text: 'Could not withdraw that row; nothing changed.' };
-        }
-        let snapshot: ReturnType<PermissionsPort['load']>;
-        try {
-          snapshot = port.load();
-        } catch {
-          // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
-          applyPermissionsSheet(undefined);
-          props.store.note(`${message.text} Could not read the permissions again.`);
-          return;
-        }
-        applyPermissionsSheet(reloadPermissionsSheet(step.state, snapshot, message));
-        return;
-      }
-      default: {
-        const exhaustive: never = step;
-        return exhaustive;
-      }
-    }
+    const result = foldPermissionsSheetThroughPort(
+      port,
+      open,
+      char,
+      key,
+      canArm,
+      performance.now(),
+    );
+    applyPermissionsSheet(result.sheet);
+    if (result.note !== undefined) props.store.note(result.note);
   };
   // A card (or any approval) that arrives while the sheet is open wins: the sheet closes with its question dropped. The sheet opens only
   // when nothing is pending, so this is a defence for a host that lets one arrive, not a path the product takes.

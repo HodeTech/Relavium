@@ -312,7 +312,7 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   shows `›` and, at its right edge before the value, its action: `[d] withdraw`, and `[Enter] withdraw` while its question is up. There
   are no row numbers: the cursor is the selection.
 - **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
-  `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and
+  `relavium permissions` on a terminal (MVP-4 step 7, below) show `Permissions · this project` and
   the project's section only. The note row says what the mode does with the two kinds of row, and matches the mode table of
   [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits`
   `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones
@@ -364,6 +364,7 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   list that needs a window keeps one height as the cursor moves (a window that had to be one line shorter to avoid stranding a heading
   is padded with a blank line), so the rule does not move under it; the first body line is always a heading, a marker, or the first line
   of a whole sentence — never a row under a hidden heading and never the middle of a sentence.
+- **On the bare Home and from `relavium permissions`** (MVP-4 step 7, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3). The Home's palette and a pasted or recalled `/permissions` open the same sheet over the Home with the project's list only (no session section, no mode in the title), over the very store a chat and `relavium permissions list` read; an argument is refused with `/permissions accepts no arguments.`, a Home with no port says `Remembered commands are not available here.`, and a port that cannot be read says `Could not read the permissions.` and opens nothing. Every rule above holds: the clock, the typed-keys rule, the floor, the sentences. Closing it returns to the Home. A bare `relavium permissions` on a terminal (stdout and stdin a TTY, no `--json`, not CI) starts the Home with the sheet already open and ends the run with exit `0` when it is closed (`Esc`, or `Ctrl+C`); if it cannot open, or closes because the list could not be read again, the Home stays and its notice says why, so the person can read it. Anywhere else the command group is unchanged ([commands.md](commands.md#relavium-permissions)).
 - **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
   colour off: the `›` marker, the bracketed keys, the `✓`/`✗` of an answer, the headings and the markers carry the meaning; bold is the
   only style left.

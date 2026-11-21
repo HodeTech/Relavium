@@ -1346,6 +1346,44 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('ADR-0137 §3: the bare Home is wired to the /permissions sheet over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
+    // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
+    // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome({ ...deps, openPermissions: true });
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    // The sheet is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('project');
+    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.project).toEqual({
+      ok: true,
+      rows: [],
+    });
+    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.session).toBeUndefined();
+    props.controller.handleKey('', { escape: true });
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0137 §3: an ordinary Home opens no sheet of its own, and the typed command opens the project list without ending the Home', async () => {
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+    props.controller.handleKey('/', {});
+    for (const ch of 'permissions') props.controller.handleKey(ch, {});
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('ADR-0132: the Home gives a fresh chat AND a /models-reseated chat the question delegate, each bound to its own store', async () => {
     // The Home is always a terminal with a person at it, and its fresh and reseat builders are separate call sites: a missing
     // option or a missing `bind` on either leaves that session unable to ask. Asking through the delegate the session was

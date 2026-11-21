@@ -88,6 +88,22 @@ export async function run(
       assertPreparing();
       return await openHome({ io, global: admitted, invocation });
     }
+    // A bare `relavium permissions` on a terminal opens the sheet before anything else (ADR-0137 §3), as `relavium chat resume` opens
+    // the session picker. Anywhere else (a pipe, `--json`, CI) it stays the group: its help, and the `list` and `revoke` subcommands.
+    if (
+      isBareGroup(rest, 'permissions') &&
+      shouldOpenHome({
+        stdoutIsTty: io.stdoutIsTty,
+        stdinIsTty: io.stdinIsTty,
+        json: global.json,
+        env: io.env,
+      })
+    ) {
+      const admitted = await admitGlobal(global, assertPreparing);
+      await invocation.seedFileCatalogOnce();
+      assertPreparing();
+      return await openHome({ io, global: admitted, invocation, openPermissions: true });
+    }
     await program.parseAsync([...rest]);
     return result.exitCode ?? EXIT_CODES.success;
   } catch (err) {
@@ -160,6 +176,12 @@ function renderFailure(
 
 function isBareInvocation(rest: readonly string[]): boolean {
   return !rest.slice(2).some((token) => token !== '--');
+}
+
+/** The command group named alone: `relavium permissions`, with nothing after it but an optional `--`. */
+function isBareGroup(rest: readonly string[], group: string): boolean {
+  const tokens = rest.slice(2).filter((token) => token !== '--');
+  return tokens.length === 1 && tokens[0] === group;
 }
 
 function stripErrorPrefix(message: string): string {

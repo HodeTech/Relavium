@@ -243,6 +243,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'models',
       'providers',
       'init',
+      'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
       'resume',
     ]);
   });

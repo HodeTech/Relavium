@@ -411,6 +411,17 @@ const HOME_INIT_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/** The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it. */
+const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
+  name: 'permissions',
+  label: 'Permissions',
+  description:
+    'Open the permissions sheet: the commands remembered for this project; d withdraws one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 const HOME_RESUME_COMMAND = freezeReplCommand({
   name: 'resume',
   label: 'Resume session',
@@ -433,6 +444,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
   HOME_INIT_COMMAND,
+  HOME_PERMISSIONS_COMMAND,
   HOME_RESUME_COMMAND,
 ]);
 

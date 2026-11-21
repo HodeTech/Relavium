@@ -38,6 +38,7 @@ import {
   SHEET_CONFIRM_DWELL_MS,
   SHEET_CONFIRM_WINDOW_MS,
   SHEET_SETTLE_MS,
+  sheetEntries,
 } from './permissions-sheet.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
@@ -3481,5 +3482,382 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('', ENTER);
     expect(c.getSnapshot().permissionsSheet).toBeUndefined();
     expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
+  });
+});
+
+describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
+  const SNAPSHOT: PermissionsSnapshot = {
+    project: {
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
+        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
+      ],
+    },
+    // the bare Home has no chat, so no session list at all
+    session: undefined,
+  };
+  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
+    let current = SNAPSHOT;
+    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
+      if (entry.kind === 'project' && current.project.ok)
+        current = {
+          ...current,
+          project: {
+            ok: true,
+            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
+          },
+        };
+      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
+    });
+    return { port: { surface: 'project', load: () => current, withdraw }, withdraw };
+  };
+  const clock = (): { now: () => number; advance: (ms: number) => void } => {
+    let t = 10_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  };
+  const home = (
+    port: PermissionsPort | undefined,
+    t = clock(),
+    extra: Partial<Parameters<typeof createHomeController>[0]> = {},
+  ): { c: HomeController; t: ReturnType<typeof clock>; startChat: ReturnType<typeof vi.fn> } => {
+    const startChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      now: t.now,
+      ...(port === undefined ? {} : { permissions: port }),
+      ...extra,
+    });
+    return { c, t, startChat };
+  };
+  const openSheet = async (c: HomeController): Promise<void> => {
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+  };
+
+  it('a typed bare /permissions opens the sheet over the Home instead of starting a chat, with the project list only', async () => {
+    const { port } = portOf();
+    const { c, startChat } = home(port);
+    await openSheet(c);
+    const snap = c.getSnapshot();
+    expect(snap.mode).toBe('home');
+    expect(snap.permissionsSheet?.surface).toBe('project');
+    expect(snap.permissionsSheet?.mode, 'no chat, no mode').toBeUndefined();
+    expect(snap.input.text).toBe('');
+    expect(startChat, 'nothing was sent as a message').not.toHaveBeenCalled();
+    expect(sheetEntries(snap.permissionsSheet?.snapshot ?? SNAPSHOT)).toHaveLength(2);
+  });
+
+  it('the palette’s /permissions opens it too, and an argument is refused with a notice and opens nothing', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    c.handleKey('/', {});
+    for (const ch of 'permissions') c.handleKey(ch, {});
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    c.handleKey('', { escape: true });
+    // A `/` typed at an empty prompt opens the palette, so a line with an argument reaches the Home as a paste.
+    c.handlePaste('/permissions now');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('/permissions accepts no arguments.');
+  });
+
+  it('says so, and opens nothing, where the Home has no port', async () => {
+    const { c, startChat } = home(undefined);
+    await openSheet(c);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
+  it('does not open when the port cannot be read: the Home says so', async () => {
+    const { port } = portOf();
+    const { c } = home({
+      ...port,
+      load: () => {
+        throw new Error('boom');
+      },
+    });
+    await openSheet(c);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
+  });
+
+  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    await openSheet(c);
+    type(c, 'hello');
+    expect(c.getSnapshot().input.text).toBe('');
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    await openSheet(c);
+    c.handleKey('c', { ctrl: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
+      false,
+    );
+    expect(c.getSnapshot().mode).toBe('home');
+  });
+
+  it('`d` asks and Enter withdraws through the port by the row, and the answer is shown; the clock rules apply here as in a chat', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handleKey('', ENTER); // at once: too early
+    expect(withdraw).not.toHaveBeenCalled();
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'done',
+      text: 'Withdrawn. Auto mode asks about it again.',
+    });
+  });
+
+  it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
+    const { port } = portOf();
+    const chatPort: PermissionsPort = {
+      surface: 'chat',
+      load: () => ({ ...SNAPSHOT, session: [] }),
+      withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
+    };
+    const { c } = home(port, clock(), {
+      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    expect(c.getSnapshot().permissionsSheet?.snapshot.session).toEqual([]);
+  });
+
+  it('SECURITY: keys typed ahead after the command withdraw nothing on the Home either, at any pace', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    for (const ch of 'run the build') {
+      c.handleKey(ch, {});
+      t.advance(120);
+    }
+    c.handleKey('d', {});
+    t.advance(120);
+    c.handleKey('', ENTER);
+    t.advance(2_000);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS + 50);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('a port that throws on a withdrawal leaves the sheet open with a failure; a list that cannot be read again closes it with a notice', async () => {
+    const { port } = portOf();
+    const t = clock();
+    const { c } = home(
+      {
+        ...port,
+        withdraw: () => {
+          throw new Error('boom');
+        },
+      },
+      t,
+    );
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'failed',
+      text: 'Could not withdraw that row; nothing changed.',
+    });
+    // now the list cannot be read again after a withdrawal
+    let loads = 0;
+    const t2 = clock();
+    const { c: c2 } = home(
+      {
+        ...port,
+        load: () => {
+          loads += 1;
+          if (loads > 1) throw new Error('boom');
+          return SNAPSHOT;
+        },
+      },
+      t2,
+    );
+    await openSheet(c2);
+    t2.advance(SHEET_SETTLE_MS + 100);
+    c2.handleKey('d', {});
+    t2.advance(SHEET_CONFIRM_DWELL_MS);
+    c2.handleKey('', ENTER);
+    expect(c2.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c2.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
+  });
+
+  it('a paste is typing, not input for the prompt behind the sheet, and drops a waiting question', async () => {
+    const { port } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handlePaste('pasted words');
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().input.text).toBe('');
+  });
+
+  it('is told the terminal size, so a withdrawal is not asked for below the floor', async () => {
+    const { port } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    c.setTerminalSize(60, 20);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+  });
+
+  describe('opened as the run’s whole job: a bare `relavium permissions` (ADR-0137 §3)', () => {
+    it('opens the sheet at once, and closing it with Esc ends the Home with success instead of leaving it behind', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+      expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('Ctrl+C closes it and ends the run too, once', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      c.handleKey('c', { ctrl: true });
+      expect(onExit).toHaveBeenCalledTimes(1);
+      c.handleKey('c', { ctrl: true });
+      expect(onExit, 'idempotent').toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the run while a question is up: the first Esc only drops the question, the second closes and ends', () => {
+      const { port } = portOf();
+      const t = clock();
+      const onExit = vi.fn();
+      const { c } = home(port, t, { onExit });
+      c.openPermissionsAsCommand();
+      t.advance(SHEET_SETTLE_MS + 100);
+      c.handleKey('d', {});
+      expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+      expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('', { escape: true });
+      expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not end the run when the sheet closed because the list could not be read again: the Home stays, and says why', () => {
+      const { port } = portOf();
+      let loads = 0;
+      const t = clock();
+      const onExit = vi.fn();
+      const { c } = home(
+        {
+          ...port,
+          load: () => {
+            loads += 1;
+            if (loads > 1) throw new Error('boom');
+            return SNAPSHOT;
+          },
+        },
+        t,
+        { onExit },
+      );
+      c.openPermissionsAsCommand();
+      t.advance(SHEET_SETTLE_MS + 100);
+      c.handleKey('d', {});
+      t.advance(SHEET_CONFIRM_DWELL_MS);
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(c.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
+      expect(onExit, 'the person must be able to read the note').not.toHaveBeenCalled();
+    });
+
+    it('stays in the Home with the reason when the sheet cannot open, and a later typed /permissions then closes without ending the run', async () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      let fail = true;
+      const { c } = home(
+        {
+          ...port,
+          load: () => {
+            if (fail) throw new Error('boom');
+            return SNAPSHOT;
+          },
+        },
+        clock(),
+        { onExit },
+      );
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
+      fail = false;
+      await openSheet(c);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit, 'the flag did not leak from the failed open').not.toHaveBeenCalled();
+    });
+
+    it('does nothing where the Home has no port: no sheet, no notice, no exit', () => {
+      const onExit = vi.fn();
+      const { c } = home(undefined, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('does not open from anywhere but the Home: a chat being built keeps its place', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), {
+        onExit,
+        startChat: () => new Promise<never>(() => undefined), // the build never finishes: the Home stays in `loading`
+      });
+      type(c, 'hello');
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().mode).toBe('loading');
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('an ordinary typed /permissions closes back to the Home and ends nothing', async () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      await openSheet(c);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().mode).toBe('home');
+      expect(onExit).not.toHaveBeenCalled();
+    });
   });
 });

@@ -675,6 +675,16 @@ canonical home.
 `revoke <number>` takes the number from the `list` just printed and has the caveat of any position: another process can change the
 file between the two. The chat's sheet withdraws by the grant's identity instead.
 
+**The bare form** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3, with the compatibility rows [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks for). `relavium permissions` with nothing after it opens the permissions sheet on a terminal, as `relavium chat resume` opens the session picker; everywhere else it is the group it was, and the descriptor, the discovery output and the two subcommands are unchanged.
+
+| Invocation | Behaviour | Exit |
+|---|---|---|
+| `relavium permissions`, stdout **and** stdin a TTY, no `--json`, not CI | Opens the sheet (the project's remembered commands only, `Permissions · this project`); `Esc` or `Ctrl+C` closes it and the run ends. If the list cannot be read the Home opens with the reason in its notice | `0` |
+| `relavium permissions`, stdout or stdin piped, or `--json`, or CI | The group's help and a missing-subcommand error, exactly as before | unchanged (usage error) |
+| `relavium permissions --help`, `relavium permissions <unknown>`, `list …`, `revoke …` | Unchanged | unchanged |
+
+The sheet is the one the chat opens (`/permissions`): [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet) owns its keys, rows and sentences. A withdrawal there is by the grant's identity, not by a number.
+
 ### `relavium media prune-temporaries`
 
 ```bash

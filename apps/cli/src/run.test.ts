@@ -339,6 +339,56 @@ describe('run — bare-invocation Home gate', () => {
     expect(out()).toContain('Usage: relavium');
   });
 
+  // ADR-0137 §3 — a bare `relavium permissions` opens the permissions sheet in a genuine terminal, as `relavium chat resume` opens the
+  // session picker; anywhere else the group keeps its help and its two subcommands.
+  describe('a bare `relavium permissions`', () => {
+    it('opens the Home with the sheet as its whole job in a genuine TTY (no help printed), and a lone -- still counts as bare', async () => {
+      for (const args of [['permissions'], ['permissions', '--']]) {
+        const { io, out } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);
+        expect(await run(argv(...args), io, openHome)).toBe(EXIT_CODES.success);
+        expect(calls(), args.join(' ')).toHaveLength(1);
+        expect(calls()[0]?.openPermissions).toBe(true);
+        expect(out()).toBe('');
+      }
+    });
+
+    it('never opens the Home anywhere else: a pipe, --json and CI keep the group’s help, exactly as before', async () => {
+      const piped = captureIo();
+      const interactive = interactiveIo();
+      const ci = interactiveIo({ CI: 'true' });
+      const cases: readonly [string, CliIo, readonly string[]][] = [
+        ['a pipe', piped.io, ['permissions']],
+        ['stdin not a TTY', { ...interactive.io, stdinIsTty: false }, ['permissions']],
+        ['--json', interactive.io, ['--json', 'permissions']],
+        ['CI', ci.io, ['permissions']],
+      ];
+      for (const [name, io, args] of cases) {
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), name).toHaveLength(0);
+      }
+      // the help itself is the commander group's, unchanged
+      const { io, err, out } = captureIo();
+      await run(argv('permissions'), io, fakeOpenHome(EXIT_CODES.chatEnded).openHome);
+      expect(out() + err()).toContain('Usage: relavium permissions');
+    });
+
+    it('is only the bare group: `permissions --help` and an unknown subcommand never open the Home', async () => {
+      // (`permissions list` and `revoke` are not run here: they read the real OS keychain; the routing is the same one-token test.)
+      for (const args of [
+        ['permissions', '--help'],
+        ['permissions', 'bogus'],
+        ['permissions', 'list', 'extra'],
+      ]) {
+        const { io } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), args.join(' ')).toHaveLength(0);
+      }
+    });
+  });
+
   it('renders a Home build/config fault like a command fault (exit 2, stderr, stdout clean)', async () => {
     const { io, out, err } = interactiveIo();
     const { openHome } = fakeOpenHome(() =>
