@@ -420,6 +420,7 @@ describe('the command card: facts, offers and the Remember answer (ADR-0118 §1,
     expect(asked(r)).toEqual({
       standing: 'not-pre-approved',
       filesChanged: false,
+      grantOutdated: false,
       runsCode: false,
       protectedPath: false,
       cwd: PROJECT,
@@ -719,5 +720,154 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     expect(notes).toEqual([
       'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.',
     ]);
+  });
+});
+
+describe('a remembered grant that a recorded file write outdated, a listed command, and a protected path from the cwd (ADR-0138, PR #101 review)', () => {
+  type Standing = 'none' | 'fresh' | 'stale';
+  const TEST = ['npm', 'test'] as const;
+  const WRITE: ToolApprovalRequest = {
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview: { path: 'a.txt' },
+    unredactedPreview: { path: 'a.txt' },
+  };
+
+  function build(
+    mode: ChatMode,
+    options: {
+      readonly standing?: (argv: readonly string[]) => Standing;
+      readonly answer?: ApprovalAnswer;
+      readonly cwd?: string;
+    } = {},
+  ) {
+    const standing = options.standing ?? ((): Standing => 'none');
+    const cache = new ApprovalCache();
+    const remember = vi.fn((argv: readonly string[]) => {
+      void argv;
+      return Promise.resolve({ ok: true, id: 'grant-9' });
+    });
+    const noteFileWrite = vi.fn(() => true);
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve(options.answer ?? { outcome: 'approve', scope: 'once' }),
+    );
+    const policy = buildTurnPolicy(mode, {
+      governed: new Set(['run_command', 'fs_write']),
+      prompt,
+      cache,
+      commandSessionGrants: true,
+      commandCwd: options.cwd ?? '/work/project',
+      commandGrants: {
+        matches: (argv) => standing(argv) !== 'none',
+        standing,
+        noteFileWrite,
+        canRemember: () => ({ ok: true }),
+        remember,
+      },
+    });
+    if (policy.confirm === undefined) throw new Error('a policy always has a confirm hook');
+    return {
+      confirm: policy.confirm,
+      prompt,
+      remember,
+      noteFileWrite,
+      cache,
+      facts: () => prompt.mock.calls.at(-1)?.[4],
+    };
+  }
+
+  it('auto: a grant that stands runs unasked; one a write outdated asks, and its card says why and offers to renew it', async () => {
+    const fresh = build('auto', { standing: () => 'fresh' });
+    expect(await fresh.confirm(command(TEST, false), undefined, undefined)).toEqual({
+      outcome: 'approve',
+    });
+    expect(fresh.prompt).not.toHaveBeenCalled();
+
+    const stale = build('auto', { standing: () => 'stale' });
+    await stale.confirm(command(TEST, false), undefined, undefined);
+    expect(stale.prompt).toHaveBeenCalledTimes(1);
+    expect(stale.facts()).toMatchObject({
+      standing: 'remembered',
+      grantOutdated: true,
+      offers: { session: true, remember: true },
+    });
+  });
+
+  it('ask and accept-edits ask about a command whatever the standing, so an outdated grant changes nothing there', async () => {
+    for (const mode of ['ask', 'accept-edits'] as const) {
+      for (const standing of ['none', 'fresh', 'stale'] as const) {
+        const r = build(mode, { standing: () => standing });
+        await r.confirm(command(TEST, false), undefined, undefined);
+        expect(r.prompt, `${mode} ${standing}`).toHaveBeenCalledTimes(1);
+      }
+    }
+  });
+
+  it('Remember on an outdated grant renews it (the store is asked to remember again) and the chat stops asking, like any Remember', async () => {
+    const r = build('auto', {
+      standing: () => 'stale',
+      answer: { outcome: 'approve', scope: 'remember' },
+    });
+    const decision = await r.confirm(command(TEST, false), undefined, undefined);
+    expect(decision).toMatchObject({ outcome: 'approve' });
+    expect(r.remember).toHaveBeenCalledTimes(1);
+    expect(r.remember).toHaveBeenCalledWith(TEST);
+    // The session approval a Remember leaves is committed once the call has really run.
+    if (decision.outcome === 'approve') decision.onDispatchSucceeded?.();
+    expect(r.cache.isAlwaysCommand(TEST)).toBe(true);
+    await r.confirm(command(TEST, false), undefined, undefined);
+    expect(r.prompt).toHaveBeenCalledTimes(1); // the second call needed no card
+  });
+
+  it('a listed command is offered Remember, and the grant it writes is the person’s own: auto does not run a listed command unasked', async () => {
+    const r = build('auto', { answer: { outcome: 'approve', scope: 'remember' } });
+    await r.confirm(command(LS, true), undefined, undefined);
+    expect(r.facts()).toMatchObject({ standing: 'allowlisted', offers: { remember: true } });
+    expect(r.remember).toHaveBeenCalledWith(LS);
+    // Without a grant a listed command asks in auto, every time.
+    const plain = build('auto');
+    await plain.confirm(command(LS, true), undefined, undefined);
+    await plain.confirm(command(LS, true), undefined, undefined);
+    expect(plain.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it('a listed AND remembered command that a write has since changed says why it asks: the person’s grant is the standing on the card', async () => {
+    const r = build('auto', { standing: () => 'stale' });
+    await r.confirm(command(TEST, true), undefined, undefined);
+    expect(r.facts()).toMatchObject({ standing: 'remembered', grantOutdated: true });
+    const afterWrite = build('auto', { standing: () => 'fresh' });
+    await afterWrite.confirm(WRITE, undefined, undefined); // auto approves the write
+    await afterWrite.confirm(command(TEST, true), undefined, undefined);
+    expect(afterWrite.facts()).toMatchObject({ standing: 'remembered', filesChanged: true });
+  });
+
+  it('a grant does not run an argument that reaches a protected path from the directory this chat runs in: `cat id_rsa` from ~/.ssh asks', async () => {
+    const argv = ['cat', 'id_rsa'];
+    const fromSsh = build('auto', { standing: () => 'fresh', cwd: '/home/u/.ssh' });
+    await fromSsh.confirm(command(argv, false), undefined, undefined);
+    expect(fromSsh.prompt).toHaveBeenCalledTimes(1);
+    const fromProject = build('auto', { standing: () => 'fresh', cwd: '/home/u/project' });
+    expect(await fromProject.confirm(command(argv, false), undefined, undefined)).toEqual({
+      outcome: 'approve',
+    });
+    expect(fromProject.prompt).not.toHaveBeenCalled();
+  });
+
+  it('every approved file write is recorded for the project (once per write), and a refused write is not', async () => {
+    const approving = build('accept-edits');
+    await approving.confirm(WRITE, undefined, undefined);
+    await approving.confirm(WRITE, undefined, undefined);
+    expect(approving.noteFileWrite).toHaveBeenCalledTimes(2);
+    // A card-approved write in `ask` counts too; a command approved on a card is not a write.
+    const asked = build('ask');
+    await asked.confirm(WRITE, undefined, undefined);
+    await asked.confirm(command(TEST, false), undefined, undefined);
+    expect(asked.noteFileWrite).toHaveBeenCalledTimes(1);
+    const refusing = build('ask', { answer: { outcome: 'reject', reason: 'no' } });
+    await refusing.confirm(WRITE, undefined, undefined);
+    expect(refusing.noteFileWrite).not.toHaveBeenCalled();
+    const plan = build('plan');
+    await plan.confirm(WRITE, undefined, undefined);
+    expect(plan.noteFileWrite).not.toHaveBeenCalled();
   });
 });

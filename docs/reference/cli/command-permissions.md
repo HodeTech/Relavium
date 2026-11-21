@@ -11,11 +11,13 @@ A **remembered grant** marks one exact command — an exact argv under one proje
 *pre-approved* on this machine. It exists because the alternative, listing every command in a repository
 file, authorizes every future clone. Pre-approval matters only to the mode table in
 [chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): `auto` runs a remembered
-command without a card, until the session has approved a file write (then it asks once), while `ask` and
+command without a card, until a file write has been applied in this project after the grant was made (then it asks, in this chat and
+in every later one, until the grant is renewed: [the write marks](#the-write-marks)), while `ask` and
 `accept-edits` still show one, because a grant removes the *unknown*, not the person's per-call consent (a *Remember* also approves the
-command for the chat it is made in, so that chat does not ask about it again; a later chat does). A
+command for the chat it is made in, so that chat does not ask about it again; a later chat does, in `ask` and `accept-edits`, and in `auto` runs it
+unasked while the grant is fresh). A
 repository's own `[chat]` allowlist is not a pre-approval in `auto`: it is a file the person did not write, and the
-command card says so in its standing row. This page is the canonical home for the store's format,
+command card says so in its standing row. *Remember* is offered for a listed command too, because the grant is the person's own word. This page is the canonical home for the store's format,
 bounds and commands; the decision and its reasoning are
 [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2, and the card
 that offers *Remember* is [the command card](#the-command-card) below.
@@ -71,7 +73,8 @@ every write.
   `relavium-internal:command-grants-digest-key`, beside the provider keys. A read never generates it. It never
   enters a file, a log or an event. An entry shorter than 32 bytes is not a key (it reads as unusable, and
   nothing is regenerated over it); `relavium permissions revoke --all` clears it. A running chat holds the key it
-  read for its whole life.
+  read for matching, and reads the keychain afresh for every *Remember*: another process may have cleared the key (`revoke --all`) since,
+  and a grant signed with the cached key would be reported as remembered and never match again.
 
 **Folding.** A reader folds the whole file. A revocation names a grant `id` and holds **wherever it sits in
 the file**, so a replayed or reordered grant line stays revoked. Two live records for one argv (two
@@ -117,6 +120,36 @@ line or size bound is recovered by `relavium permissions revoke --all`.
 | the directory cannot be written but the file can | unchanged | offered (appending needs the file, not the directory) | unchanged | works | exit 1 (`storage_unavailable`): removing a file needs the directory |
 | a revoke would pass the line or size bound | unchanged | not offered | unchanged | exit 2 (`config_error`), names `revoke --all` | **works** |
 
+## The write marks
+
+[ADR-0138](../../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md). A remembered command can
+change meaning when a file it reads changes (`npm test` after `package.json`'s `test` script was edited), so a grant is only as
+current as the project's files. The store keeps, per project root, **when a chat of this machine last applied a file write there**, and a grant older than
+that asks again in `auto`.
+
+- **What is recorded.** Each time the approval hook approves a file write (in any mode that approves one, `ask`'s card included) it records
+  the time against the root. A command the person approved on a card (*Once* or *Session*) is not a write, even when it is `sed -i`; a write
+  made by an editor or a shell outside the product is not seen. The chat also keeps the same fact in memory, which is what holds when the
+  file cannot be written.
+- **Fresh and stale.** A grant (its records and any twins are one grant) is **fresh** when its latest record is strictly newer than the root's mark or the
+  root has no mark; **stale** otherwise. `auto` runs a fresh grant unasked and asks about a stale one; `ask` and `accept-edits` ask about
+  every command either way. `matches` (is it remembered?) is the same for both; `standing` is `none`, `fresh` or `stale`.
+- **Renewal.** *Remember* on a stale grant appends a new record for the same argv, which folds into the one grant (a twin, dated now) and makes
+  it fresh. A *Session* answer ends the asking for that chat only. `list` shows the grant once, dated by its latest record.
+- **The file.** `~/.relavium/command-write-marks.json`, mode `0600` in the `0700` directory, read as a regular file only (the same refusals as the
+  grants file: a symbolic link, a FIFO, a device, a directory), **replaced whole** (a sibling created exclusively, then renamed over it), never
+  appended to. `{"v":1,"marks":[{"root":"<hex64>","at":"<ISO-8601>","mac":"<hex64>"}]}`. `root` is the grants' root digest; `mac` is HMAC-SHA256
+  under the installation key over a version tag, the root and the time, NUL-separated. An entry whose MAC does not verify is ignored (it was
+  minted without the key). At most 256 roots (the oldest mark is dropped) and 64 KiB.
+- **It fails toward asking.** A file that cannot be read (a refusal above, text that does not parse, a shape that is not exactly this one, a time that is
+  not a time, over the size bound) makes **every** remembered command stale, is reported once with its recovery, and is **never overwritten**:
+  replacing an unreadable file would give every other project a clean slate. `relavium permissions revoke --all` removes it with the grants and the key.
+  A mark that cannot be written is reported once and leaves the in-memory fact as the rule for that chat. With no key yet nothing is written: no grant exists,
+  and a grant made later is newer than the write.
+- **What it does not defend against.** There is no lock, so two chats of different projects that write in the same instant can drop one entry (that
+  project's grants read as fresh again, which is the behaviour before the marks). A process running as the same operating-system user can delete
+  the file, as it can delete a revocation (see *What the store defends against*).
+
 ## `relavium permissions list`
 
 ```bash
@@ -149,7 +182,8 @@ relavium permissions revoke --all [--json]
   can name a different grant once another process has revoked an earlier one. **The numbers close up
   afterwards**, so list again before a second revoke. A number that names no grant exits `2` and changes
   nothing.
-- `--all` removes the **whole file**, which holds every project's grants, and says so, and deletes the digest key
+- `--all` removes the **whole file**, which holds every project's grants, and says so, removes the [write-mark
+  file](#the-write-marks) beside it (best effort: it is keyed by the same key and useless without the grants), and deletes the digest key
   from the keychain (best effort: a locked keychain is ignored). It needs no project root and no readable
   file, so it is the recovery from a locked keychain, an unreadable file, an unusable key entry or a full
   store (a symlink at the path is removed, not what it points at). The next grant generates a new key.
@@ -188,7 +222,8 @@ write) or approved for this session; the repository's allowlist does not skip th
   a longer command can be answered *Once* only.
 - `Standing: on this project’s allowlist | remembered for this project | not pre-approved` (the allowlist is the project’s
   file, not the person’s; a remembered command in `auto` after a file write says `remembered for this project; asks because
-  files changed this session`), and `Runs in: <directory>` (the session workspace the host pins; never model-supplied; the two
+  files changed this session`, or, when the write was recorded in an earlier chat, `remembered for this project; asks because
+  files changed since`; the person's grant outranks the allowlist on this row when both hold), and `Runs in: <directory>` (the session workspace the host pins; never model-supplied; the two
   share one row while the directory keeps room to say where it is), then the warnings that apply, one row each, each worded as a
   fact and neither ever refusing a command: `⚠ Runs code: a shell, an inline script or a wrapper. Remember is not offered.` (a *code
   carrier*, below) and `⚠ Names a protected path (its output goes to the model). Allow once only.` A command card has no
@@ -213,7 +248,7 @@ write) or approved for this session; the repository's allowlist does not skip th
 |--------|-----|--------------|
 | Once | `Ctrl+Y` | a card that can be shown; locked until every requirement to read it is met (a shortened target, a masked span) |
 | Allow this session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command (the card, or the full view) |
-| Allow + remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not already pre-approved (on the allowlist or remembered), and the page shows the whole command |
+| Allow + remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not covered by a grant that stands (a listed command is offered it; a grant a later file write outdated is offered it to renew), and the page shows the whole command |
 | Deny | `Ctrl+N` | always, even on a blocked card; a denial returns to the model |
 | Deny with a reason | `Ctrl+R` | on a card that can be shown; the denial returns to the model with the person's words |
 | Stop | `Esc` or `Ctrl+C` | at the card and outside a text box (in the reason box or a search box `Esc` only closes the box); rejects the call and stops the turn (only `Ctrl+C` also starts the exit window). On the full view `Esc` only steps back to the card, answering nothing, and `Ctrl+C` stops |
@@ -316,7 +351,7 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   the project's section only. The note row says what the mode does with the two kinds of row, and matches the mode table of
   [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits`
   `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones
-  ask once after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a
+  ask again after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a
   remembered command unasked, in a chat in this project.` (a remembered command in a fresh chat; a *Remember* also approves it for the
   chat it was made in). An empty list says what to do (`Press Ctrl+O on a command card, then Enter, to remember one.`; `plan` has no
   cards and says only that nothing is remembered), and a sheet with nothing to select offers only `Esc close`.

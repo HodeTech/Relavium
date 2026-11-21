@@ -446,7 +446,7 @@ describe('what is drawn', () => {
       'Session-approved commands run unasked here; a remembered one still asks.',
     );
     expect(sheetNote(open(TWO_AND_ONE, 'chat', 'auto'))).toBe(
-      'Auto runs approved commands; remembered ones ask once after a file write.',
+      'Auto runs approved commands; remembered ones ask again after a file write.',
     );
     expect(sheetNote(open(TWO_AND_ONE, 'chat', 'plan'))).toBe(
       'Plan mode refuses every command; nothing here runs.',

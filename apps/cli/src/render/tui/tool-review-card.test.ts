@@ -493,7 +493,21 @@ describe('the command card chrome (ADR-0118 §1)', () => {
     expect(commandStandingRow(facts({ standing: 'remembered' }))).toBe(
       'Standing: remembered for this project',
     );
+    // A grant a later file write outdated (ADR-0138): it asks until it is renewed, and the row says why. A write of this very
+    // session is the nearer reason and keeps its own words when both hold.
+    expect(commandStandingRow(facts({ standing: 'remembered', grantOutdated: true }))).toBe(
+      'Standing: remembered for this project; asks because files changed since',
+    );
+    expect(
+      commandStandingRow(
+        facts({ standing: 'remembered', grantOutdated: true, filesChanged: true }),
+      ),
+    ).toBe('Standing: remembered for this project; asks because files changed this session');
     expect(commandStandingRow(facts())).toBe('Standing: not pre-approved');
+    // The longest standing row still fits the narrowest card the sheet and the card are drawn for.
+    expect(
+      commandStandingRow(facts({ standing: 'remembered', filesChanged: true })).length,
+    ).toBeLessThanOrEqual(78);
   });
 
   it('shows the standing and the directory, and the two warnings only when they apply', () => {

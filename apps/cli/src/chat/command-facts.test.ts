@@ -144,6 +144,7 @@ describe('the facts and the answers a command card offers', () => {
     expect(commandCardFacts(base)).toEqual({
       standing: 'not-pre-approved',
       filesChanged: false,
+      grantOutdated: false,
       runsCode: false,
       protectedPath: false,
       cwd: '/work/project',
@@ -154,7 +155,8 @@ describe('the facts and the answers a command card offers', () => {
   it.each([
     [{ commandAdmitted: true }, 'allowlisted'],
     [{ remembered: true }, 'remembered'],
-    [{ commandAdmitted: true, remembered: true }, 'allowlisted'],
+    // The person's own grant outranks the repository's allowlist on the row (ADR-0138).
+    [{ commandAdmitted: true, remembered: true }, 'remembered'],
     [{}, 'not-pre-approved'],
   ] as const)('standing for %j is %s', (change, standing) => {
     expect(commandCardFacts({ ...base, ...change }).standing).toBe(standing);
@@ -300,7 +302,7 @@ describe('a Windows spelling of a program name does not hide a shell (round 1 se
   });
 });
 
-describe('Remember is not offered for a command that is already pre-approved', () => {
+describe('what a command card offers by where the command stands (ADR-0118 §1, ADR-0138)', () => {
   const base = {
     argv: ['npm', 'test'],
     commandAdmitted: false,
@@ -309,15 +311,50 @@ describe('Remember is not offered for a command that is already pre-approved', (
     sessionOffered: true,
     rememberAvailable: true,
   };
-  it('on the allowlist or already remembered: Session is still offered, Remember is not', () => {
-    expect(commandCardFacts({ ...base, commandAdmitted: true }).offers).toEqual({
-      session: true,
-      remember: false,
-    });
+  it('an unknown command, and a listed one: Remember is offered for both (the allowlist is the repository’s say, and auto does not run it unasked)', () => {
+    expect(commandCardFacts(base).offers).toEqual({ session: true, remember: true });
+    const listed = commandCardFacts({ ...base, commandAdmitted: true });
+    expect(listed.standing).toBe('allowlisted');
+    expect(listed.offers).toEqual({ session: true, remember: true });
+  });
+  it('a grant that stands needs no Remember; one a later file write has outdated is renewed by it', () => {
     expect(commandCardFacts({ ...base, remembered: true }).offers).toEqual({
       session: true,
       remember: false,
     });
-    expect(commandCardFacts(base).offers.remember).toBe(true);
+    const outdated = commandCardFacts({ ...base, remembered: true, grantOutdated: true });
+    expect(outdated.standing).toBe('remembered');
+    expect(outdated.grantOutdated).toBe(true);
+    expect(outdated.offers).toEqual({ session: true, remember: true });
+    // Outdated says nothing about a command no grant covers.
+    expect(commandCardFacts({ ...base, grantOutdated: true }).grantOutdated).toBe(false);
+  });
+  it('the person’s grant outranks the allowlist on the standing row, so a listed and remembered command still says why it asks after a write', () => {
+    const both = commandCardFacts({
+      ...base,
+      commandAdmitted: true,
+      remembered: true,
+      filesChanged: true,
+    });
+    expect(both.standing).toBe('remembered');
+    expect(both.filesChanged).toBe(true);
+    const later = commandCardFacts({
+      ...base,
+      commandAdmitted: true,
+      remembered: true,
+      grantOutdated: true,
+    });
+    expect(later.standing).toBe('remembered');
+    expect(later.grantOutdated).toBe(true);
+  });
+  it('a code carrier and a protected path are never offered Remember, whatever the standing', () => {
+    expect(
+      commandCardFacts({ ...base, argv: ['bash', '-c', 'x'], commandAdmitted: true }).offers
+        .remember,
+    ).toBe(false);
+    expect(
+      commandCardFacts({ ...base, argv: ['cat', '.env'], remembered: true, grantOutdated: true })
+        .offers.remember,
+    ).toBe(false);
   });
 });

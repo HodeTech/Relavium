@@ -169,8 +169,11 @@ export function commandStandingRow(facts: CommandCardFacts): string {
       // The allowlist is the project's file, not the person's: `auto` asks about such a command all the same.
       return 'Standing: on this project’s allowlist';
     case 'remembered':
-      return facts.filesChanged === true
-        ? 'Standing: remembered for this project; asks because files changed this session'
+      if (facts.filesChanged === true) {
+        return 'Standing: remembered for this project; asks because files changed this session';
+      }
+      return facts.grantOutdated === true
+        ? 'Standing: remembered for this project; asks because files changed since'
         : 'Standing: remembered for this project';
     default:
       return 'Standing: not pre-approved';

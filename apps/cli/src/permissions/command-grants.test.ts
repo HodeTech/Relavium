@@ -877,7 +877,8 @@ describe('a grant record is authenticated (ADR-0118 §2, review round 2)', () =>
     appendFileSync(file(), `\n${JSON.stringify({ ...original, id: 'attacker-new-id' })}\n`);
     const fresh = store();
     expect(fresh.matches(['make', 'deploy', '--prod'])).toBe(false);
-    expect(fresh.list()).toEqual({ ok: true, grants: [] });
+    // The record that does not verify is counted, so a caller can say a list that shows nothing could not be verified.
+    expect(fresh.list()).toEqual({ ok: true, grants: [], ignored: 1 });
     expect(messages.join()).toContain('were not made with this installation');
   });
 

@@ -185,6 +185,11 @@ export interface CommandCardFacts {
    * write may have changed what it does. Only the card's standing row says so.
    */
   readonly filesChanged?: boolean | undefined;
+  /**
+   * The command is remembered but asks anyway in `auto`, because a file write was recorded for this project after the grant was made
+   * (ADR-0138), in this chat or an earlier one. Remember renews it.
+   */
+  readonly grantOutdated?: boolean | undefined;
   /** The command is a code carrier: its card says it runs code, and Remember is not offered. */
   readonly runsCode: boolean;
   /** An argument names a protected path: its card says so and the only answer that approves is Once. */
@@ -200,6 +205,8 @@ export interface CommandFactsInput {
   readonly remembered: boolean;
   /** `auto` asks about a remembered command because this session has approved a file write. */
   readonly filesChanged?: boolean;
+  /** The remembered grant is older than the last file write recorded for this project (ADR-0138). */
+  readonly grantOutdated?: boolean;
   readonly cwd: string;
   /** Whether the host offers a session answer at all (a delivered saved result, a blank preview or the headless path do not). */
   readonly sessionOffered: boolean;
@@ -215,24 +222,28 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
   const runsCode = codeCarrier(input.argv) !== undefined;
   const protectedPath = namesProtectedPath(input.argv, input.cwd);
   return {
-    standing: input.commandAdmitted
-      ? 'allowlisted'
-      : input.remembered
-        ? 'remembered'
+    // The person's own grant outranks the repository's allowlist on the standing row: it is the stronger fact, and the one `auto`
+    // acts on (the allowlist pre-approves nothing there).
+    standing: input.remembered
+      ? 'remembered'
+      : input.commandAdmitted
+        ? 'allowlisted'
         : 'not-pre-approved',
-    filesChanged: input.filesChanged === true && input.remembered && !input.commandAdmitted,
+    filesChanged: input.filesChanged === true && input.remembered,
+    grantOutdated: input.grantOutdated === true && input.remembered,
     runsCode,
     protectedPath,
     cwd: input.cwd,
     offers: {
       session: input.sessionOffered && !protectedPath,
-      // Nothing to remember for a command already pre-approved (on the allowlist or remembered): `auto` runs it as it is.
+      // Remember is for a command no grant of the person's covers: an unremembered one (a listed command included: the allowlist is the
+      // repository's say and `auto` does not run it unasked, so a grant is what the person adds) or a grant a later file write has
+      // outdated (renewing it). A grant that stands needs nothing.
       remember:
         input.rememberAvailable &&
         !runsCode &&
         !protectedPath &&
-        !input.commandAdmitted &&
-        !input.remembered,
+        (!input.remembered || input.grantOutdated === true),
     },
   };
 }

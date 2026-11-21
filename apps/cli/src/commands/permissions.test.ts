@@ -220,6 +220,25 @@ describe('relavium permissions list', () => {
     },
   );
 
+  it('a record this installation’s key did not make is ignored and SAID so on stderr, so a reset keychain is not mistaken for an empty list', async () => {
+    await storeFor(project).remember(['npm', 'test']);
+    // The keychain was reset (or the file came from another machine): the record no longer verifies.
+    keychain.entries.set(
+      'relavium-internal:command-grants-digest-key',
+      Buffer.alloc(32, 9).toString('base64'),
+    );
+    const run = deps();
+    expect(permissionsListCommand(run.deps)).toBe(EXIT_CODES.success);
+    expect(run.out()).toContain('No remembered commands for this project.');
+    expect(run.err()).toContain('were not made with this installation');
+    expect(run.err()).toContain('revoke --all');
+    // `--json` keeps stdout to the listing alone.
+    const json = deps(project, true);
+    expect(permissionsListCommand(json.deps)).toBe(EXIT_CODES.success);
+    expect(json.out()).toBe('');
+    expect(json.err()).toContain('were not made with this installation');
+  });
+
   it('a locked keychain is a clean exit-2 refusal that names the way out and leaks nothing', () => {
     keychain.locked = true;
     const failure = refusal(() => permissionsListCommand(deps().deps));

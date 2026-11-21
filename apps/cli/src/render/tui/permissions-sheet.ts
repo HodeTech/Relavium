@@ -317,7 +317,7 @@ export function sheetNote(state: PermissionsSheetState): string {
     return 'Only auto mode runs a remembered command unasked, in a chat in this project.';
   switch (state.mode) {
     case 'auto':
-      return 'Auto runs approved commands; remembered ones ask once after a file write.';
+      return 'Auto runs approved commands; remembered ones ask again after a file write.';
     case 'plan':
       return 'Plan mode refuses every command; nothing here runs.';
     case 'ask':

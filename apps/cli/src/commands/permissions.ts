@@ -100,6 +100,13 @@ export function permissionsListCommand(deps: PermissionsDeps): ExitCode {
   const { store, homeDir } = openStore(deps);
   const listed = store.list();
   if (!listed.ok) throw unavailable(listed.reason, homeDir);
+  // Records this installation's key did not make are ignored, and a list that shows nothing may then be a list that cannot be verified
+  // (a reset keychain, a file from another machine): say so on stderr, so a `--json` listing stays one stream.
+  if ((listed.ignored ?? 0) > 0) {
+    deps.io.writeErr(
+      `${String(listed.ignored)} record(s) in ${stripTerminalControls(commandGrantsPath(homeDir))} were not made with this installation's key and are ignored; \`relavium permissions revoke --all\` removes the file and the key.\n`,
+    );
+  }
   if (deps.global.json) {
     writeRecords(
       deps,

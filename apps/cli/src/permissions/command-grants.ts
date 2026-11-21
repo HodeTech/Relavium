@@ -1,14 +1,12 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import {
   accessSync,
   closeSync,
   constants,
   fchmodSync,
   fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
-  readSync,
   realpathSync,
   unlinkSync,
   writeSync,
@@ -20,6 +18,23 @@ import { z } from 'zod';
 import { findOnPath } from '../engine/find-on-path.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
 import type { KeychainStore } from '../secrets/keychain.js';
+
+import {
+  DIR_MODE,
+  FILE_MODE,
+  HEX_DIGEST,
+  ISO_TIME,
+  readRegularFile,
+  sameDigest,
+  statState,
+} from './file-state.js';
+import {
+  COMMAND_WRITE_MARKS_FILE,
+  latestWriteMark,
+  readWriteMarks,
+  recordWriteMark,
+  removeWriteMarks,
+} from './write-marks.js';
 
 /**
  * Remembered command grants ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2).
@@ -71,19 +86,16 @@ export const COMMAND_GRANT_LIMITS = Object.freeze({
 const RECORD_BYTES_BOUND = 1024;
 /** A tombstone is about 110 bytes; this is what a write reserves for the one that will withdraw a grant it makes room for. */
 const TOMBSTONE_BYTES_BOUND = 256;
-const FILE_MODE = 0o600;
-const DIR_MODE = 0o700;
 const ROOT_TAG = 'relavium/command-grants/root/v1';
 const GRANT_TAG = 'relavium/command-grants/grant/v1';
 const RECORD_TAG = 'relavium/command-grants/record/v1';
-const HEX_DIGEST = /^[0-9a-f]{64}$/u;
 /** `argv[0]` may be named in a label only when it is this shape AND resolves on the PATH (ADR-0118 §2): it is free text otherwise. */
 const BARE_PROGRAM = /^[A-Za-z0-9._+-]{1,64}$/u;
 /** What a label says when the program cannot be named without risking a credential. */
 export const UNNAMED_PROGRAM = '(unnamed program)';
 
 /** What `toISOString()` writes. A free-text time would let a hand-edited line put a newline or an escape into a listing. */
-const ISO_TIME = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/u);
+const IsoTime = z.string().regex(ISO_TIME);
 
 const GrantRecordSchema = z
   .object({
@@ -93,7 +105,7 @@ const GrantRecordSchema = z
     grant: z.string().regex(HEX_DIGEST),
     program: z.string().regex(BARE_PROGRAM).optional(),
     args: z.number().int().min(0).max(100_000),
-    at: ISO_TIME,
+    at: IsoTime,
     /** HMAC over every other field under the installation key: see {@link grantRecordMac}. */
     mac: z.string().regex(HEX_DIGEST),
   })
@@ -104,7 +116,7 @@ const TombstoneSchema = z
   .object({
     v: z.literal(1),
     revoked: z.string().regex(/^[0-9a-zA-Z-]{1,64}$/u),
-    at: ISO_TIME,
+    at: IsoTime,
   })
   .strict();
 
@@ -120,6 +132,9 @@ export interface GrantSummary {
   readonly grantedAt: string;
 }
 
+/** Where a remembered grant stands against the file writes recorded for its root (ADR-0138). */
+export type GrantStanding = 'none' | 'fresh' | 'stale';
+
 /** Why the store cannot answer or accept a grant right now. */
 export type CommandGrantUnavailable =
   /** The OS keychain is absent, locked, denied or holds an unusable entry, or a first write could not store the new key: no grant can be verified or written. */
@@ -134,7 +149,15 @@ export type RememberResult =
   | { readonly ok: false; readonly reason: CommandGrantUnavailable | 'full' };
 
 export type ListResult =
-  | { readonly ok: true; readonly grants: readonly GrantSummary[] }
+  | {
+      readonly ok: true;
+      readonly grants: readonly GrantSummary[];
+      /**
+       * How many well-formed records of the file this installation's key did not make (a reset keychain, a file from another machine):
+       * they are ignored, so a list that shows nothing may be a list that cannot be verified, and the caller says so. Absent when none.
+       */
+      readonly ignored?: number;
+    }
   | { readonly ok: false; readonly reason: CommandGrantUnavailable };
 
 export type RevokeResult =
@@ -162,6 +185,17 @@ export type RevokeAllResult =
 export interface CommandGrantStore {
   /** Whether a remembered grant covers exactly this argv under this root. A store that cannot answer says `false`. */
   matches: (argv: readonly string[]) => boolean;
+  /**
+   * Where a remembered grant for this argv stands (ADR-0138): `none` (no live grant, or the store cannot answer), `fresh` (the grant
+   * is newer than every file write recorded for this root: `auto` runs it unasked) or `stale` (a file write was recorded after the
+   * grant was made, or the record of writes cannot be read: `auto` asks, and Remember renews it).
+   */
+  standing: (argv: readonly string[]) => GrantStanding;
+  /**
+   * Record that a file write was applied under this root, so a grant made before it asks again in `auto` (ADR-0138). `false` when it
+   * could not be recorded (told once through `notify`); a store with no key yet has no grant to protect and says `true`.
+   */
+  noteFileWrite: () => boolean;
   /** Whether Remember can be offered right now: the key is usable, the file is readable and writable, and a bound has room. */
   canRemember: () =>
     | { readonly ok: true }
@@ -259,21 +293,18 @@ export function grantRecordMac(key: Buffer, record: Omit<GrantRecord, 'mac'>): s
     .digest('hex');
 }
 
-/** Constant-time comparison of two hex digests. */
-function sameDigest(a: string, b: string): boolean {
-  const left = Buffer.from(a, 'utf8');
-  const right = Buffer.from(b, 'utf8');
-  return left.length === right.length && timingSafeEqual(left, right);
-}
-
 /** A live grant, with the ids of any OTHER records for the same argv (two processes that remembered it at the same moment). */
 interface LiveGrant extends GrantRecord {
   readonly twins: readonly string[];
+  /** The latest `at` among the grant's records: a renewal (Remember again after a file write) is a twin with a later time. */
+  readonly renewedAt: string;
 }
 
 interface Fold {
   /** Live grants in file order, one per argv. */
   readonly grants: readonly LiveGrant[];
+  /** Well-formed grant records whose MAC did not verify under the key (ignored). */
+  readonly foreign: number;
   readonly lines: number;
   readonly bytes: number;
 }
@@ -339,59 +370,18 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     }
   };
 
-  /**
-   * Read the file as a regular file only. An `lstat` refuses a symlink on every platform; the open then does not follow one and
-   * does not block (where the platform has those flags), and the descriptor is checked, so a symlink, a FIFO or a device at the
-   * path reads as "unreadable" instead of being followed or hanging the approval hook. Exactly the bytes `fstat` reported are
-   * read, so the size bound is the size that was checked.
-   */
+  /** The grants file as text, through the one discipline both permission files share ({@link readRegularFile}); a refusal is told once. */
   const readText = ():
     | { readonly text: string; readonly bytes: number }
     | 'absent'
     | 'unreadable' => {
-    const seen = statState(path);
-    if (seen === undefined) return 'absent';
-    if (seen === 'error') {
-      report(unreadableMessage(path, 'it cannot be inspected'));
+    const read = readRegularFile(path, COMMAND_GRANT_LIMITS.bytes);
+    if (read.kind === 'absent') return 'absent';
+    if (read.kind === 'refused') {
+      report(unreadableMessage(path, read.why, read.byHand ? REMOVE_BY_HAND : REVOKE_ALL_HINT));
       return 'unreadable';
     }
-    if (seen.isSymbolicLink()) {
-      report(unreadableMessage(path, 'it is a symbolic link'));
-      return 'unreadable';
-    }
-    let fd: number | undefined;
-    try {
-      fd = openSync(
-        path,
-        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
-      );
-      const info = fstatSync(fd);
-      if (info.isDirectory()) {
-        report(unreadableMessage(path, 'it is a directory', REMOVE_BY_HAND));
-        return 'unreadable';
-      }
-      if (!info.isFile()) {
-        report(unreadableMessage(path, 'it is not a regular file'));
-        return 'unreadable';
-      }
-      if (info.size > COMMAND_GRANT_LIMITS.bytes) {
-        report(unreadableMessage(path, 'it is larger than the size bound'));
-        return 'unreadable';
-      }
-      const buffer = Buffer.alloc(info.size);
-      let filled = 0;
-      while (filled < buffer.length) {
-        const count = readSync(fd, buffer, filled, buffer.length - filled, filled);
-        if (count === 0) break;
-        filled += count;
-      }
-      return { text: buffer.toString('utf8', 0, filled), bytes: info.size };
-    } catch {
-      report(unreadableMessage(path, 'it cannot be read'));
-      return 'unreadable';
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-    }
+    return { text: read.text, bytes: read.bytes };
   };
 
   /**
@@ -401,7 +391,8 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
    */
   const readFold = (key: Buffer | undefined): ReadFold => {
     const read = readText();
-    if (read === 'absent') return { ok: true, fold: { grants: [], lines: 0, bytes: 0 } };
+    if (read === 'absent')
+      return { ok: true, fold: { grants: [], foreign: 0, lines: 0, bytes: 0 } };
     if (read === 'unreadable') return { ok: false };
     const records = new Map<string, GrantRecord>();
     const revoked = new Set<string>();
@@ -446,16 +437,24 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     }
     // Revocation does not depend on file order: a replayed or reordered grant line stays revoked. Two live records for one argv are
     // one grant (the first is kept, the other ids are its twins, so revoking it withdraws both).
-    const byDigest = new Map<string, { record: GrantRecord; twins: string[] }>();
+    const byDigest = new Map<string, { record: GrantRecord; twins: string[]; renewedMs: number }>();
     for (const record of records.values()) {
       if (revoked.has(record.id)) continue;
       const identity = `${record.root}:${record.grant}`;
       const seen = byDigest.get(identity);
-      if (seen === undefined) byDigest.set(identity, { record, twins: [] });
-      else seen.twins.push(record.id);
+      const ms = Date.parse(record.at);
+      if (seen === undefined) byDigest.set(identity, { record, twins: [], renewedMs: ms });
+      else {
+        seen.twins.push(record.id);
+        if (ms > seen.renewedMs) seen.renewedMs = ms;
+      }
     }
     const grants = [...byDigest.values()].map(
-      ({ record, twins }): LiveGrant => ({ ...record, twins }),
+      ({ record, twins, renewedMs }): LiveGrant => ({
+        ...record,
+        twins,
+        renewedAt: Number.isNaN(renewedMs) ? record.at : new Date(renewedMs).toISOString(),
+      }),
     );
     const perRoot = new Map<string, number>();
     for (const grant of grants) perRoot.set(grant.root, (perRoot.get(grant.root) ?? 0) + 1);
@@ -466,7 +465,7 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
       report(unreadableMessage(path, 'it has more grants than the bound'));
       return { ok: false };
     }
-    return { ok: true, fold: { grants, lines, bytes: read.bytes } };
+    return { ok: true, fold: { grants, foreign, lines, bytes: read.bytes } };
   };
 
   const rootGrants = (fold: Fold, root: string): readonly LiveGrant[] =>
@@ -483,15 +482,70 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     return rootGrants(folded.fold, root).some((grant) => sameDigest(grant.grant, candidate));
   };
 
+  const marksPath = join(dirname(path), COMMAND_WRITE_MARKS_FILE);
+
+  /**
+   * Whether a file write was recorded for this root after the grant was last made (ADR-0138). A file of marks that cannot be read
+   * is told once and counts as "yes": without it nothing says no write happened, and asking is the safe answer.
+   */
+  const writtenSince = (key: Buffer, root: string, renewedAt: string): boolean => {
+    const marks = readWriteMarks(marksPath, key);
+    if (marks.kind === 'absent') return false;
+    if (marks.kind === 'unreadable') {
+      report(
+        `The write-mark file ${marksPath} was ignored (${marks.why}); remembered commands will ask again in auto mode until it is repaired. ${REVOKE_ALL_HINT}`,
+      );
+      return true;
+    }
+    const latest = latestWriteMark(marks.marks, root);
+    return latest !== undefined && !(Date.parse(renewedAt) > latest);
+  };
+
+  const standing = (argv: readonly string[]): GrantStanding => {
+    if (argv.length === 0) return 'none';
+    const state = readKey();
+    if (state.kind !== 'ready') return 'none';
+    const folded = readFold(state.key);
+    if (!folded.ok) return 'none';
+    const root = rootDigest(state.key, canonical);
+    const candidate = grantDigest(state.key, root, argv);
+    const grant = rootGrants(folded.fold, root).find((record) =>
+      sameDigest(record.grant, candidate),
+    );
+    if (grant === undefined) return 'none';
+    return writtenSince(state.key, root, grant.renewedAt) ? 'stale' : 'fresh';
+  };
+
+  const noteFileWrite = (): boolean => {
+    const state = readKey();
+    // No key yet means no grant was ever made on this machine, and a grant made later is newer than this write. An unusable keychain
+    // verifies no grant at all, so nothing can run unasked on its strength: there is nothing to protect until it answers.
+    if (state.kind !== 'ready') return true;
+    const result = recordWriteMark(marksPath, state.key, rootDigest(state.key, canonical), now());
+    if (result.ok) return true;
+    report(
+      result.reason === 'unreadable'
+        ? `A file write could not be recorded for remembered commands: ${marksPath} cannot be read. They ask again in auto mode in this chat only. ${REVOKE_ALL_HINT}`
+        : `A file write could not be recorded for remembered commands: ${marksPath} cannot be written. They ask again in auto mode in this chat only.`,
+    );
+    return false;
+  };
+
+  /**
+   * Whether the store has room for one more record. A renewal (a record for an argv that already has a live grant) adds no grant:
+   * only the line and size bounds apply to it, so a root with 64 grants can still renew one.
+   */
   const room = (
     fold: Fold,
     root: string,
+    renewal = false,
   ): { readonly ok: true } | { readonly ok: false; readonly reason: 'full' } => {
     if (
       fold.lines + 2 > COMMAND_GRANT_LIMITS.lines ||
       fold.bytes + RECORD_BYTES_BOUND + TOMBSTONE_BYTES_BOUND > COMMAND_GRANT_LIMITS.bytes ||
-      fold.grants.length >= COMMAND_GRANT_LIMITS.total ||
-      rootGrants(fold, root).length >= COMMAND_GRANT_LIMITS.perRoot
+      (!renewal &&
+        (fold.grants.length >= COMMAND_GRANT_LIMITS.total ||
+          rootGrants(fold, root).length >= COMMAND_GRANT_LIMITS.perRoot))
     )
       return { ok: false, reason: 'full' };
     return { ok: true };
@@ -535,6 +589,9 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     // The only await comes first: from the read of the file to the append nothing yields, so two calls in one process cannot both
     // pass the "already remembered" check. Two PROCESSES still can; the fold treats the two records as one grant.
     const program = await namedProgram(argv[0], findProgram);
+    // A write reads the keychain afresh: another process may have cleared the key (`revoke --all`) since this store cached it, and a
+    // grant signed with the cached key would be reported as remembered and never match again.
+    keyState = undefined;
     // Look before generating anything: an unusable keychain or an unreadable file must not leave a new key behind.
     const state = readKey();
     if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
@@ -547,8 +604,12 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     const existing = rootGrants(folded.fold, root).find((record) =>
       sameDigest(record.grant, grant),
     );
-    if (existing !== undefined) return { ok: true, id: existing.id, alreadyRemembered: true };
-    const space = room(folded.fold, root);
+    // A grant that stands as it is is reported, not duplicated. One that a recorded file write has outdated is renewed: a new record
+    // for the same argv (a twin, folded into the one grant) dated now, so `auto` runs it unasked again.
+    if (existing !== undefined && !writtenSince(key, root, existing.renewedAt)) {
+      return { ok: true, id: existing.id, alreadyRemembered: true };
+    }
+    const space = room(folded.fold, root, existing !== undefined);
     if (!space.ok) return space;
     const fields: Omit<GrantRecord, 'mac'> = {
       v: 1,
@@ -578,12 +639,13 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     const root = rootDigest(state.key, canonical);
     return {
       ok: true,
+      ...(folded.fold.foreign > 0 ? { ignored: folded.fold.foreign } : {}),
       grants: rootGrants(folded.fold, root).map((grant, offset) => ({
         index: offset + 1,
         id: grant.id,
         program: grant.program ?? UNNAMED_PROGRAM,
         args: grant.args,
-        grantedAt: grant.at,
+        grantedAt: grant.renewedAt,
       })),
     };
   };
@@ -630,7 +692,17 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
 
   const revokeAll = (): RevokeAllResult => removeCommandGrantsFile(deps.homeDir, deps.keychain);
 
-  return { matches, canRemember, remember, list, revoke, revokeById, revokeAll };
+  return {
+    matches,
+    standing,
+    noteFileWrite,
+    canRemember,
+    remember,
+    list,
+    revoke,
+    revokeById,
+    revokeAll,
+  };
 }
 
 /**
@@ -645,6 +717,8 @@ export function removeCommandGrantsFile(
   keychain?: KeychainStore,
 ): RevokeAllResult {
   const path = commandGrantsPath(homeDir);
+  // The write marks are keyed by the same installation key, so they are of no use without the grants; best effort, like the key.
+  removeWriteMarks(join(dirname(path), COMMAND_WRITE_MARKS_FILE));
   const forgetKey = (): void => {
     try {
       keychain?.delete(COMMAND_GRANTS_KEY_ACCOUNT);
@@ -685,17 +759,6 @@ export async function namedProgram(
     return (await findProgram(first)) === undefined ? undefined : first;
   } catch {
     return undefined;
-  }
-}
-
-/** `undefined` when the path does not exist; `'error'` when it cannot be inspected (a permission, a non-directory in the way). */
-function statState(path: string): ReturnType<typeof lstatSync> | undefined | 'error' {
-  try {
-    return lstatSync(path);
-  } catch (error) {
-    return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
-      ? undefined
-      : 'error';
   }
 }
 

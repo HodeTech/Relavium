@@ -181,6 +181,7 @@ flowchart TD
 | 0135 | [Concurrent processes on one operator home wait for the allocation claim](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md) | Accepted | 2026-11-18 |
 | 0136 | [A turn asks to continue at a checkpoint instead of dying at a ceiling](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) | Accepted | 2026-11-19 |
 | 0137 | [`/permissions` is a sheet, and `Esc` steps back one level out of the full view](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) | Accepted | 2026-11-20 |
+| 0138 | [A file write the chat applied is remembered for the project, and it outdates the grants made before it](0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md) | Accepted | 2026-11-21 |
 
 ## Creating a new ADR
 

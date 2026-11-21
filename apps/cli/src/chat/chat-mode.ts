@@ -11,7 +11,9 @@ import type {
 } from '@relavium/core';
 import { CHAT_MODES, type AbortSignalLike, type ChatMode } from '@relavium/shared';
 
-import { commandCardFacts, type CommandCardFacts } from './command-facts.js';
+import type { GrantStanding } from '../permissions/command-grants.js';
+
+import { commandCardFacts, namesProtectedPath, type CommandCardFacts } from './command-facts.js';
 
 export { CHAT_MODES } from '@relavium/shared';
 export type { ChatMode } from '@relavium/shared';
@@ -88,7 +90,8 @@ function isChatMode(value: string): value is ChatMode {
  * The REPL's interactive answer to an approval prompt — RICHER than the engine's approve/reject because it
  * carries the SCOPE (the engine only needs the final approve/reject). `always` is remembered for the tool id for the rest of the
  * session instance — for a command, for that exact argv; `once` approves just this invocation; `remember` (a command only, ADR-0118
- * §1) writes the exact argv to the project's grants file and also acts as `always` for this session.
+ * §1) records a keyed digest of the exact argv in the project's grants file (the file never holds the command) and also acts as
+ * `always` for this session.
  */
 export type ApprovalAnswer =
   | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' | 'remember' }
@@ -247,6 +250,13 @@ export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
 /** What the command rows need of the remembered-grants store: matching always, and writing when the card may offer Remember. */
 export interface CommandGrantsPort {
   readonly matches: (argv: readonly string[]) => boolean;
+  /**
+   * Where a remembered grant stands against the file writes recorded for this project (ADR-0138). A port without it treats a
+   * grant it matches as standing, which is the rule before the writes were recorded.
+   */
+  readonly standing?: (argv: readonly string[]) => GrantStanding;
+  /** Record that a file write was applied, so a grant made before it asks again in `auto` (ADR-0138). */
+  readonly noteFileWrite?: () => boolean;
   readonly canRemember?: () => { readonly ok: boolean };
   readonly remember?: (
     argv: readonly string[],
@@ -406,8 +416,23 @@ function commandArgv(request: ToolApprovalRequest): readonly string[] | undefine
  * "on this project's allowlist". `ask` and `accept-edits` ask for every command either way. An exact argv approved earlier in THIS
  * session is honoured by {@link askAboutCommand} in every mode, which is what removes the card there.
  */
+/** Where the person's grant for this argv stands: the port's own answer, or `fresh` when it only matches. */
+function grantStanding(
+  grants: CommandGrantsPort | undefined,
+  argv: readonly string[],
+): GrantStanding {
+  if (grants === undefined) return 'none';
+  return grants.standing?.(argv) ?? (grants.matches(argv) ? 'fresh' : 'none');
+}
+
 function isPreApproved(argv: readonly string[], deps: TurnPolicyDeps): boolean {
-  return deps.commandGrants?.matches(argv) === true && !deps.cache.wrote;
+  // A grant is the person's word for an exact argv under the project root, not for what the argv names from where this chat runs:
+  // an argument that reaches a protected path from this working directory (`cat id_rsa` started inside `~/.ssh`) asks, as the card says.
+  return (
+    grantStanding(deps.commandGrants, argv) === 'fresh' &&
+    !deps.cache.wrote &&
+    !namesProtectedPath(argv, deps.commandCwd ?? '')
+  );
 }
 
 function throwIfAborted(signal: AbortSignalLike | undefined): void {
@@ -445,12 +470,14 @@ async function askAboutCommand(
 ): Promise<ToolApprovalDecision> {
   if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
   const grants = deps.commandGrants;
+  const standingNow = grantStanding(grants, argv);
   // The same rule `askPerson` has (#W15-12): no remembered answer over a preview reduced to redaction markers or a delivered saved result.
   const shown = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
   const facts = commandCardFacts({
     argv,
     commandAdmitted: request.commandAdmitted === true,
-    remembered: grants?.matches(argv) === true,
+    remembered: standingNow !== 'none',
+    grantOutdated: standingNow === 'stale',
     filesChanged,
     cwd: deps.commandCwd ?? '',
     sessionOffered: deps.commandSessionGrants === true && shown,
@@ -539,7 +566,11 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   const decide = modeDecision(mode, deps);
   return async (request, signal, live): Promise<ToolApprovalDecision> => {
     const decision = await decide(request, signal, live);
-    if (decision.outcome === 'approve' && request.action === 'fs_write') deps.cache.noteWrite();
+    if (decision.outcome === 'approve' && request.action === 'fs_write') {
+      deps.cache.noteWrite();
+      // The same fact for later chats of this project (ADR-0138). A failure is told once by the store; the in-memory flag above holds here.
+      deps.commandGrants?.noteFileWrite?.();
+    }
     return decision;
   };
 }
