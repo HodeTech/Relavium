@@ -82,7 +82,16 @@ describe('@/! pending-attachment model (2.5.D chip redesign)', () => {
         args: ['-H', `Authorization: Bearer ${token}`, 'password=S3cr3tValue9Zq'],
       },
     });
-    // A command with nothing to hide is framed exactly as it always was.
+    // The transcript's note is what the session stores as `user_display_text` (history.db): the scrubbed line as well, while the live
+    // attachment bar (`attachmentChip`) is the person's own local view.
+    expect(out.display).not.toContain(token);
+    expect(out.display).not.toContain('S3cr3tValue9Zq');
+    expect(out.display).toContain('[📎 !curl');
+    expect(attachmentChip(carried)).toContain('S3cr3tValue9Zq');
+    // A command with nothing to hide is framed, and noted, exactly as it always was.
+    expect(buildOutbound('x', [cmd('git', ['status'])]).display).toBe(
+      'x [📎 !git status (exit 0)]',
+    );
     expect(buildOutbound('x', [cmd('git', ['status'])]).message).toMatch(
       /^x\n\n<command id="[0-9a-f]{32}" cmd="git status" exit="0">\nOUT\n<\/command:[0-9a-f]{32}>$/,
     );

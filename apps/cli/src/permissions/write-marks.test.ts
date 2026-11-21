@@ -326,6 +326,88 @@ describe('a remembered grant against the writes recorded for its project (ADR-01
     expect(grants.standing(['npm', 'run', '0'])).toBe('fresh');
   });
 
+  it('a write applied while the keychain is unavailable still outdates the grants made before it: recorded keyless, once told (security sitting)', async () => {
+    const grants = store(project);
+    await grants.remember(TEST);
+    clock += 1000;
+    keychain.failure = 'throws'; // locked: no key, so no root digest and no MAC can be made
+    const lockedChat = store(project);
+    expect(lockedChat.noteFileWrite()).toBe(true);
+    expect(messages.filter((message) => message.includes('without the keychain'))).toHaveLength(1);
+    const recorded = JSON.parse(readFileSync(marksFile(), 'utf8')) as { unkeyed?: string };
+    expect(recorded.unkeyed).toBe(new Date(clock).toISOString());
+    keychain.failure = 'none';
+    // The keychain answers again: the grant verifies, and it is older than the keyless write.
+    expect(store(project).standing(TEST)).toBe('stale');
+    // A grant made after the write stands; another project's grants made before it are outdated too (the write has no root).
+    clock += 1000;
+    await store(project).remember(['npm', 'ci']);
+    expect(store(project).standing(['npm', 'ci'])).toBe('fresh');
+    await store(other).remember(TEST); // made after: fresh
+    expect(store(other).standing(TEST)).toBe('fresh');
+  });
+
+  it('a keyless write that cannot be recorded says so and returns false; an unreadable file is not replaced', () => {
+    keychain.failure = 'throws';
+    mkdirSync(dirname(marksFile()), { recursive: true });
+    writeFileSync(marksFile(), 'garbage');
+    expect(store(project).noteFileWrite()).toBe(false);
+    expect(readFileSync(marksFile(), 'utf8')).toBe('garbage');
+    expect(messages.some((message) => message.includes('cannot be read'))).toBe(true);
+  });
+
+  it('a rewrite keeps the entries it cannot verify (another key’s), so a chat with an old key cannot erase what a newer key wrote', () => {
+    const foreignKey = Buffer.alloc(32, 3);
+    recordWriteMark(marksFile(), foreignKey, ROOT_B, at(clock + 5000));
+    recordWriteMark(marksFile(), KEY, ROOT_A, at(clock));
+    const file = JSON.parse(readFileSync(marksFile(), 'utf8')) as {
+      marks: { root: string; mac: string }[];
+    };
+    expect(file.marks.map((mark) => mark.root).sort()).toEqual([ROOT_A, ROOT_B].sort());
+    expect(file.marks.find((mark) => mark.root === ROOT_B)?.mac).toBe(
+      markMac(foreignKey, ROOT_B, new Date(clock + 5000).toISOString()),
+    );
+    // ...and the entry that does not verify under KEY is still only ignored when read with KEY.
+    const read = readWriteMarks(marksFile(), KEY);
+    expect(read.kind === 'ready' && latestWriteMark(read.marks, ROOT_B)).toBe(undefined);
+  });
+
+  it('a chat that cached a key the keychain has since replaced signs its mark with the current key', async () => {
+    const chatA = store(project);
+    await chatA.remember(['npm', 'ci']);
+    expect(chatA.matches(['npm', 'ci'])).toBe(true); // chat A now holds key K1
+    removeCommandGrantsFile(home, keychain); // another terminal: `revoke --all`
+    const chatB = store(project);
+    await chatB.remember(TEST); // creates K2
+    clock += 1000;
+    expect(chatB.noteFileWrite()).toBe(true);
+    clock += 1000;
+    expect(chatA.noteFileWrite()).toBe(true); // A wrote a file: it must sign under K2, not K1
+    expect(store(project).standing(TEST)).toBe('stale');
+  });
+
+  it('`revoke --all` that cannot remove the grants leaves the marks that outdate them', async () => {
+    const grants = store(project);
+    await grants.remember(TEST);
+    clock += 1000;
+    grants.noteFileWrite();
+    expect(grants.standing(TEST)).toBe('stale');
+    // A directory where the grants file should be: the removal fails, the way an immutable file would.
+    rmSync(commandGrantsPath(home), { force: true });
+    mkdirSync(commandGrantsPath(home));
+    expect(removeCommandGrantsFile(home, keychain)).toEqual({ ok: false, reason: 'unwritable' });
+    expect(existsSync(marksFile())).toBe(true);
+    expect(keychain.entries.has(COMMAND_GRANTS_KEY_ACCOUNT)).toBe(true);
+  });
+
+  it('Remember is not offered while the marks file cannot be read: a record added then could not make anything fresh', async () => {
+    const grants = store(project);
+    await grants.remember(TEST);
+    expect(grants.canRemember()).toEqual({ ok: true });
+    writeFileSync(marksFile(), 'garbage');
+    expect(grants.canRemember()).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
   it('Remember on a grant that stands is reported, not duplicated', async () => {
     const grants = store(project);
     await grants.remember(TEST);

@@ -32,6 +32,7 @@ import {
   COMMAND_WRITE_MARKS_FILE,
   latestWriteMark,
   readWriteMarks,
+  recordUnkeyedWriteMark,
   recordWriteMark,
   removeWriteMarks,
 } from './write-marks.js';
@@ -497,8 +498,11 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
       );
       return true;
     }
+    const renewed = Date.parse(renewedAt);
+    // A write applied while the keychain was unavailable could not be signed for a root: it outdates every grant older than it.
+    if (marks.unkeyedMs !== undefined && !(renewed > marks.unkeyedMs)) return true;
     const latest = latestWriteMark(marks.marks, root);
-    return latest !== undefined && !(Date.parse(renewedAt) > latest);
+    return latest !== undefined && !(renewed > latest);
   };
 
   const standing = (argv: readonly string[]): GrantStanding => {
@@ -517,10 +521,28 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
   };
 
   const noteFileWrite = (): boolean => {
+    // Afresh, like a Remember: a chat that cached a key the keychain has since replaced would otherwise sign a mark nothing verifies.
+    keyState = undefined;
     const state = readKey();
-    // No key yet means no grant was ever made on this machine, and a grant made later is newer than this write. An unusable keychain
-    // verifies no grant at all, so nothing can run unasked on its strength: there is nothing to protect until it answers.
-    if (state.kind !== 'ready') return true;
+    // No key yet means no grant was ever made on this machine, and a grant made later is newer than this write.
+    if (state.kind === 'absent') return true;
+    if (state.kind === 'unavailable') {
+      // The grants made earlier verify again when the keychain answers, so this write must still outdate them: no key means no root
+      // digest and no MAC, so it is recorded as one unauthenticated time that outdates every older grant (ADR-0138 §5).
+      const unkeyed = recordUnkeyedWriteMark(marksPath, now());
+      if (unkeyed.ok) {
+        report(
+          'A file write was recorded without the keychain, which is not available: remembered commands made before it ask again in auto mode.',
+        );
+        return true;
+      }
+      report(
+        unkeyed.reason === 'unreadable'
+          ? `A file write could not be recorded for remembered commands: ${marksPath} cannot be read. They ask again in auto mode in this chat only. ${REVOKE_ALL_HINT}`
+          : `A file write could not be recorded for remembered commands: ${marksPath} cannot be written. They ask again in auto mode in this chat only.`,
+      );
+      return false;
+    }
     const result = recordWriteMark(marksPath, state.key, rootDigest(state.key, canonical), now());
     if (result.ok) return true;
     report(
@@ -580,6 +602,11 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     const folded = readFold(state.kind === 'ready' ? state.key : undefined);
     if (!folded.ok) return { ok: false, reason: 'unreadable' };
     if (!writable()) return { ok: false, reason: 'unwritable' };
+    // While the marks cannot be read every grant reads as stale, so a Remember would add a record that cannot make anything fresh:
+    // not offered (the notice that says why comes from the read).
+    if (state.kind === 'ready' && readWriteMarks(marksPath, state.key).kind === 'unreadable') {
+      return { ok: false, reason: 'unreadable' };
+    }
     const root = state.kind === 'ready' ? rootDigest(state.key, canonical) : '0'.repeat(64); // no grants can exist without a key
     return room(folded.fold, root);
   };
@@ -717,8 +744,11 @@ export function removeCommandGrantsFile(
   keychain?: KeychainStore,
 ): RevokeAllResult {
   const path = commandGrantsPath(homeDir);
-  // The write marks are keyed by the same installation key, so they are of no use without the grants; best effort, like the key.
-  removeWriteMarks(join(dirname(path), COMMAND_WRITE_MARKS_FILE));
+  // The write marks are keyed by the same installation key, so they are of no use without the grants; best effort, like the key, and
+  // only once the grants are gone: a removal that fails must not leave the grants standing with the marks that outdate them gone.
+  const forgetMarks = (): void => {
+    removeWriteMarks(join(dirname(path), COMMAND_WRITE_MARKS_FILE));
+  };
   const forgetKey = (): void => {
     try {
       keychain?.delete(COMMAND_GRANTS_KEY_ACCOUNT);
@@ -727,6 +757,7 @@ export function removeCommandGrantsFile(
     }
   };
   if (statState(path) === undefined) {
+    forgetMarks();
     forgetKey();
     return { ok: true, removed: false };
   }
@@ -735,9 +766,11 @@ export function removeCommandGrantsFile(
   } catch {
     // Lost a race with another remover, or a refusal: only the file's absence now tells them apart.
     if (statState(path) !== undefined) return { ok: false, reason: 'unwritable' };
+    forgetMarks();
     forgetKey();
     return { ok: true, removed: false };
   }
+  forgetMarks();
   forgetKey();
   return { ok: true, removed: true };
 }
