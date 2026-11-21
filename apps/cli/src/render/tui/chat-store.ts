@@ -7,6 +7,7 @@ import {
   type ToolApprovalRequest,
   type ToolApprovalLiveContext,
   type ToolLiveEvent,
+  type ToolPreview,
   type ToolRoundCheckpoint,
   type ToolRoundLimitDecision,
 } from '@relavium/core';
@@ -87,6 +88,20 @@ import {
  */
 export const UNSHOWABLE_COMMAND_REASON =
   'this command is too large for the approval card to show; run it as smaller commands';
+
+/** What the model is told when its command reached the card with a preview that held nothing to show (the host's own limit, not a decision). */
+export const EMPTY_COMMAND_REASON =
+  'this command came with nothing the approval card can show, so it was not run; use the standard command tool';
+
+/** Whether a preview has no target, no row and no diff: a card built from it would show a title and offer an answer over nothing. */
+function previewHoldsNothing(preview: ToolPreview | undefined): boolean {
+  return (
+    preview === undefined ||
+    ((preview.target ?? '').trim() === '' &&
+      preview.fields.every((field) => field.name.trim() === '' && field.value.trim() === '') &&
+      preview.diff === undefined)
+  );
+}
 
 /** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
  *  `Ctrl+G` allow for the session, `Ctrl+O` (a command only) remember it for the project, `Ctrl+N` deny, `Ctrl+R` deny with a
@@ -1016,10 +1031,11 @@ export function createChatStore(
           reject(abortError());
           return;
         }
-        // A command card is built from the command's own preview. Without one there is nothing to show, and an empty card must not
-        // offer an answer (the built-in `run_command` always publishes one; a hand-built tool might not): refused, as too large to show.
-        if (facts !== undefined && live?.preview === undefined) {
-          resolve({ outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON });
+        // A command card is built from the command's own preview. Without one, or with one that holds nothing (no target, no row, no
+        // diff), there is nothing to show, and a card that shows nothing must not offer an answer: the person would approve an argv
+        // they cannot see (the built-in `run_command` always publishes rows; a hand-built tool might not). Refused in fixed words.
+        if (facts !== undefined && previewHoldsNothing(live?.preview)) {
+          resolve({ outcome: 'reject', denialClass: 'mode', reason: EMPTY_COMMAND_REASON });
           return;
         }
         const clear = (): void => {
@@ -1058,7 +1074,7 @@ export function createChatStore(
         const fallback = {
           kind: 'operation',
           fields: [],
-        } satisfies import('@relavium/core').ToolPreview;
+        } satisfies ToolPreview;
         review = initialToolReview(
           'approval',
           live?.callId,
@@ -1223,9 +1239,20 @@ function abortError(): Error {
 /** Whether a `state` action changes nothing but the note: every other field of the review is the very same value. */
 function noteOnly(before: ToolReviewState, action: ReviewKeyAction): boolean {
   if (action.kind !== 'state' || action.state.message === before.message) return false;
-  const was = before as unknown as Record<string, unknown>;
-  const now = action.state as unknown as Record<string, unknown>;
-  return Object.keys(was).every((name) => name === 'message' || was[name] === now[name]);
+  const was = fieldsOf(before);
+  const now = fieldsOf(action.state);
+  if (was.size !== now.size) return false;
+  for (const [name, value] of was) {
+    if (name !== 'message' && now.get(name) !== value) return false;
+  }
+  return true;
+}
+
+/** The own fields of a review state by name, typed `unknown` at this one boundary (no cast: `Object.entries` hands back `any`). */
+function fieldsOf(state: ToolReviewState): ReadonlyMap<string, unknown> {
+  const fields = new Map<string, unknown>();
+  for (const [name, value] of Object.entries(state)) fields.set(name, value);
+  return fields;
 }
 
 /**

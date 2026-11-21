@@ -476,7 +476,7 @@ export interface MediaReadAccess {
 export interface ToolActionPreview {
   /** fs_write — the resolved target path. */
   readonly path?: string;
-  /** process — the resolved command, space-joined for display (what the opt-in globs match; an exact entry is compared with the argv). */
+  /** process — the command as ONE shell-quoted line for display (`quoteCommandLine`: `["cat","a b"]` and `["cat","a","b"]` read differently), scrubbed of secret-shaped spans. The allowlist is compared with the argv, never with this line. */
   readonly command?: string;
   /** egress — the target host ONLY (never the full URL / query string, never a secret). */
   readonly host?: string;

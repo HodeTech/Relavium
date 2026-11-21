@@ -2313,6 +2313,15 @@ describe('initialRoundAllowance — the clamp that makes the backstop hold for a
     ).toBe(ABSOLUTE_TOOL_ROUNDS);
   });
 
+  it('counts whole rounds: a fractional limit from a direct caller is rounded DOWN, never up (PR #101 review)', () => {
+    expect(initialRoundAllowance({ ...base, maxToolTurns: 1.5 })).toBe(1);
+    expect(initialRoundAllowance({ ...base, maxToolTurns: 0.9 })).toBe(0);
+    expect(
+      initialRoundAllowance({ ...base, onToolRoundLimit: hook, checkpointToolTurns: 4.99 }),
+    ).toBe(4);
+    expect(initialRoundAllowance({ ...base, maxToolTurns: -2.5 })).toBe(0);
+  });
+
   it('fails closed on a value that is not a number at all, not only on NaN', () => {
     for (const value of [undefined, 'abc', {}, null, [], true]) {
       expect(initialRoundAllowance({ ...base, maxToolTurns: value as never })).toBe(0);

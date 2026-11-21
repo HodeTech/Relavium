@@ -1509,7 +1509,8 @@ export function initialRoundAllowance(limits: AgentTurnLimits): number {
   // Anything that is not a usable number — NaN, but also `undefined`, a string or an object from an untyped caller, all of which
   // make `Math.min` return NaN — is zero: the turn stops before any round instead of running unbounded.
   if (typeof requested !== 'number' || Number.isNaN(requested)) return 0;
-  return Math.min(Math.max(requested, 0), ABSOLUTE_TOOL_ROUNDS);
+  // Whole rounds only: a direct caller's `1.5` is one round (the stricter reading), never the two that `rounds < 1.5` would allow.
+  return Math.min(Math.max(Math.floor(requested), 0), ABSOLUTE_TOOL_ROUNDS);
 }
 
 /** Whether a held `tool_use` response is one the dispatch would run: at least one call, and no more than the ceiling. */

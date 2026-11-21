@@ -12,7 +12,7 @@ import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
 import type { ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
-import { UNSHOWABLE_COMMAND_REASON, createChatStore } from './chat-store.js';
+import { EMPTY_COMMAND_REASON, UNSHOWABLE_COMMAND_REASON, createChatStore } from './chat-store.js';
 import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
 import { createHomeController } from './home-controller.js';
@@ -609,6 +609,35 @@ describe.each(['chat', 'home'] as const)(
     };
     const fast = () => fixture(host, true, false, new OwnedTtyOutput(), {}, FAST);
     const denied = [{ outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON }];
+
+    it('a preview that holds nothing is refused before any card opens: nobody approves an argv they cannot see', async () => {
+      const empty = { callId: 'call', preview: { kind: 'operation', fields: [] } } satisfies {
+        callId: string;
+        preview: ToolPreview;
+      };
+      const blank = {
+        callId: 'call',
+        preview: { kind: 'operation', target: '  ', fields: [{ name: '', value: ' ' }] },
+      } satisfies { callId: string; preview: ToolPreview };
+      for (const held of [undefined, empty, blank]) {
+        const f = fast();
+        await f.ready();
+        const answer = await f.store.requestApproval(
+          request(['echo', 'x']),
+          true,
+          undefined,
+          held,
+          facts(),
+        );
+        expect(answer).toEqual({
+          outcome: 'reject',
+          denialClass: 'mode',
+          reason: EMPTY_COMMAND_REASON,
+        });
+        expect(f.lastFrameWith('Allow once')).toBeUndefined();
+        expect(f.lastFrameWith('A command is waiting')).toBeUndefined();
+      }
+    });
 
     it('more than 63 arguments is a blocked card that says why: no approving answer counts, not even a chord with its Enter, and Deny still does', async () => {
       const f = fast();
