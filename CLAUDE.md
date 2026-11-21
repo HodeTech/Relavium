@@ -39,7 +39,7 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-19): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-21): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
@@ -74,16 +74,19 @@ limit in the first attempt of the merge commit's push run, which a re-run (attem
 the PR and on `main`. **PR #100 (`1e71f652`, merged 2026-11-18) then put the native adapter's first increment on `main`** (concurrent
 processes on one operator home wait for the staging inventory's allocation claim instead of failing a write,
 [ADR-0135](docs/decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) with CI once per commit and a coverage run narrowed to
-`packages/`. Its final-head run `2ce6a252` passed all 29 jobs; the docs-only final head `639134b2` was merged before its own run finished, so no
-completed run exists on it, and a separate security sitting on the Linux parent-snapshot change is still owed (the
+`packages/`. Its final-head run `2ce6a252` passed all 29 jobs; the docs-only final head `639134b2` was merged before its own run finished, and that run
+(`44424575691`) and the merge commit's (`44424607930`) then completed and passed; a separate security sitting on the Linux parent-snapshot change is still owed (the
 [PR #100 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) owns the evidence). **MVP-4 steps 1–7 are implemented on `development`** (steps 1–4 on 2026-11-19; step 5, the `/permissions` sheet, on 2026-11-20 and 21; step 6, `Esc` out of the full view, on 2026-11-21 with two review rounds and two security sittings; step 7, the Home entry points, on 2026-11-21 with two review rounds and two security sittings; [ADR-0137](docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md), Accepted 2026-11-20, steps 5 to 7), with
 [ADR-0115](docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
 [ADR-0118](docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
-[ADR-0136](docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) accepted: all four steps (engine floor, interrupt
-keymap and continue checkpoint, command permissions, the command card with `/permissions`) are in with two review rounds each. In `auto` only the operator's
+[ADR-0136](docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) accepted: all seven steps (engine floor; interrupt
+keymap and continue checkpoint; command permissions; the command card with `/permissions`; the permissions sheet; `Esc` out of the full view; the Home entry points)
+are in with two review rounds each, three for step 5. In `auto` only the operator's
 own remembered or session-approved commands skip the card, never the repository's allowlist (the maintainer's ruling on the second round's security
-sitting). The pull request is to be opened on request (the
-[implementation record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress). npm still
+sitting). **PR #101 (`development`→`main`) was opened on 2026-11-21**, and its review (three reports) was answered the same day by corrections on `development`:
+[ADR-0138](docs/decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md) records a file write per project so that a remembered command asks again
+after it, and the phase record's [PR #101 review corrections](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-review-corrections--2026-11-21) lists what was
+fixed, refuted, deferred and what needs a human (the [implementation record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress). npm still
 serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
