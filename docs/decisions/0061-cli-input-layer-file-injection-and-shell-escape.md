@@ -206,6 +206,8 @@ the `@relavium/llm` seam — [CLAUDE.md](../../CLAUDE.md) #4/#5 hold) and runs i
   machine-output contract is untouched. On the interactive surface, the `!cmd` + its (bounded) output persist to
   the transcript so a `chat-resume` stays coherent.
 
+> Amended 2026-11-21 (the PR #101 review): what persists and what the model reads is the output framed as `<command … cmd="…" exit="N">`, and that frame's `cmd` is the **scrubbed** command line (the engine's `scrubbedCommandDisplay` of the argv, the same line the approval card and the event preview show), not the line as typed: a credential typed into `!curl -H "Authorization: Bearer …"` reaches neither the provider nor `history.db` through the frame. The process still runs the typed argv; the local hint, the busy label and the chip show what was typed. See [tool-registry.md](../reference/shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
+
 *Considered:* an `apps/cli`-side re-implementation of the allowlist + approval (rejected — forks the one command
 boundary; a divergence, or an approval-before-allowlist ordering bug, is a security regression, exactly attack
 (2)); a separate `!`-shell execution path outside `run_command` (rejected — a second command sandbox); a

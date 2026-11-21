@@ -97,6 +97,8 @@ drivers and workflow agent nodes are not, even though
   allowed and takes effect (more checkpoints, a shorter hard stop, a shorter session).
   `max_turns` is an existing repository-layer key; it gets the same rule and the upper bound
   it never had. No global `[chat]` table is introduced.
+> Amended 2026-11-21: the error names the **layer** (`project` or `workspace`), the key, the value and the limit, not a file, and carries the `invalid_invocation` code (exit `2`): `apps/cli/src/config/resolve.ts` sees parsed configs, not paths (the first implementation note already read "file" that way). It stops **every** command that loads configuration, a repository value that a higher layer shadows included, and no compatibility path exists for a repository that already set a larger value (the product has no deployed users to migrate, maintainer, 2026-11-19): raise the limit under `[preferences]` or lower the repository's. [config-spec.md](../reference/contracts/config-spec.md#chat-limits) is the canonical statement.
+
 - **The bounds are published as data** in `@relavium/shared` (one object read by the config
   schema and by the engine's own check), so the loader, the session and the documentation
   cannot drift. The config schema uses `.int().min().max()`; that is deliberate, and
@@ -292,3 +294,9 @@ The card and the host wiring are in. `checkpoint-card.ts` is the pure key table 
 
 - **Review round 2 (2026-11-19):** a store sealed under an open approval now cancels it (ADR-0115's second implementation note); the command-level wiring tests pin that every interactive build path (fresh, `/clear`, reseat, resume, and the Home's fresh and reseat) is given the checkpoint hook with the question delegate and binds one store to both, and that the plain and `--json` paths get neither.
 
+
+### Amendment note — 2026-11-21 (PR #101 review)
+
+- **The strict-limit error names the layer, not a file** (beneath "Who may raise them"): what `resolve.ts` does, and what config-spec states.
+- **The landing obligations are met** (checked 2026-11-21): [config-spec.md](../reference/contracts/config-spec.md#chat-limits), [agent-session-spec.md](../reference/contracts/agent-session-spec.md#within-turn-limits-and-the-checkpoint), [agent-runner.md](../reference/shared-core/agent-runner.md), [built-in-tools.md](../reference/shared-core/built-in-tools.md) and [chat-session.md](../reference/cli/chat-session.md#the-continue-checkpoint--mvp-4-adr-0136) carry the limits, the checkpoint and the absolute backstop; ADR-0086, ADR-0097, ADR-0117 and ADR-0132 each carry a dated note pointing here; the runbook's correction sentence reads "fourth consecutive round" (ADR-0131); the phase document's MVP-A11 row and the MVP-4 entry of [current.md](../roadmap/current.md) are updated. Nothing in that list is still owed.
+- **A one-shot `agent run` and a workflow node do not read the chat keys** (they keep the engine's 16 tool rounds and 3 corrections); config-spec states it once, in "Chat limits".

@@ -70,6 +70,8 @@ stops.** The behaviour is decided here. The hint, legend and footer *texts* live
 | Home, no chat, loaded | Arm and show the hint | Exit the Home (code 0, as today) |
 | Home, still loading | Exit at once (nothing is loaded and nothing can be lost) | — |
 
+> Amended 2026-11-21 (the PR #101 review): on the **loaded Home with a draft** the first `Ctrl+C` arms and keeps the draft, and the second press exits, **so the draft is lost**: "nothing unsaved to lose" (the rejected-alternative paragraph below) is false there. The decision stands (one press count on every surface, a draft is never cleared by a press that also arms an exit, and `Ctrl+D` on an empty prompt still leaves at once); what changes is that the reference says the loss plainly ([home.md](../reference/cli/home.md#keymap-25b)) and the hint is the only warning. A chat's prompt differs: a draft there is cleared by the first press and nothing is armed, so leaving a chat from a draft takes three presses (clear, arm, end), as `interrupt-keymap.ts` decides.
+
 - **Arming expires.** The armed state lasts 2 seconds, measured on a monotonic clock, and
   ends earlier at any other key. The value is one named constant. A `Ctrl+C` long after an
   interrupt therefore starts over instead of ending the session.
@@ -151,6 +153,8 @@ off) keeps its process-control meaning.
   reading further input (the #23 defect). **Whether it does today is not pinned by any
   test**; the implementation proves it with a test and fixes it if it does not. Those
   drivers have no approver, so no approval can be pending.
+
+> Amended 2026-11-21: it is pinned since MVP-4 step 2, by a test in each driver (`apps/cli/src/commands/chat.test.ts`; the implementation note below). Two exit codes follow from "keeps its process-control meaning" and the reference keeps them apart: a SIGINT that reaches a **chat** (the standalone chat, and the plain and `--json` drivers) ends it with exit `4`; one that reaches the **Home** (the invocation-backed host that owns the terminal) is `128 + 2` = `130` ([home.md](../reference/cli/home.md#signal-lifecycle--exit-codes), [commands.md](../reference/cli/commands.md#exit-codes)).
 - **Hatches.** A SIGINT that arrives while a `/scrollback` or `/edit` hatch owns the
   terminal is still dropped: raw mode is off for that window, so a keyboard `Ctrl-C` is a
   real SIGINT, and the handler must yield (the suspend note in
@@ -216,6 +220,8 @@ off) keeps its process-control meaning.
 - **Leave the Home on a single press.** Rejected for consistency. One keymap means the same
   press count on every surface. The Home cost is one extra keystroke, and it has nothing
   unsaved to lose.
+
+> Amended 2026-11-21: that is not true of a Home prompt that holds a draft (see the note beneath the §1 table): the second `Ctrl+C` exits and the draft goes with the process. Kept as decided; stated in the reference.
 
 ## Consequences
 
@@ -295,3 +301,9 @@ The keymap is `apps/cli/src/render/tui/interrupt-keymap.ts`, a pure reducer over
 - **A running turn shows that the press was heard.** While the keymap is armed on a running turn the view says `Interrupting · press Ctrl+C again to end the session`, so a turn that is slow to stop (a hung tool) is not silent.
 - **`ask_user` refusal, ASCII and chord spellings.** The refusal now also rejects any short bracketed token written with `+`, a full-width `＋` or `^`, and a token that begins with a key name (`[Ctrl-Y]`, `[Escape]`), so homoglyph letters inside a `+` chord are covered. Homoglyph letters joined by `-` or a space are not; a forged legend at a question card can only prime a key that counts as typing at the next card.
 
+
+### Amendment note — 2026-11-21 (PR #101 review)
+
+- **§1, beneath the table**: a Home draft is lost on the second press (the decision stands; the reasoning "nothing to lose" did not hold, and the reference now says so). A chat from a draft takes three presses.
+- **Alternatives, "Leave the Home on a single press"**: the same correction.
+- **§4**: the first-SIGINT test it called unpinned exists; the Home's SIGINT exit is `130` and a chat's is `4`.

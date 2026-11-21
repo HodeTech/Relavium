@@ -175,7 +175,7 @@ flowchart TD
 | 0129 | [The approval card is docked, bounded and says only what matters](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md) | Accepted | 2026-11-16 |
 | 0130 | [Chat modes say what they do — `ask` asks, `plan` reads, `accept-edits` accepts](0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md) | Accepted | 2026-11-16 |
 | 0131 | [A round that made progress resets the correction budget, and a line range past the end of a file is clipped](0131-a-round-that-made-progress-resets-the-correction-budget.md) | Accepted | 2026-11-16 |
-| 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted | 2026-11-16 |
+| 0132 | [The model can ask the user a structured question mid-turn, and an answer is never consent](0132-the-model-can-ask-the-user-a-structured-question.md) | Accepted; §3 superseded in part by [0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) (2026-11-19) | 2026-11-16 |
 | 0133 | [An `ask_user` question and its answer are kept with the session](0133-an-ask-user-question-and-its-answer-are-kept-with-the-session.md) | Accepted | 2026-11-16 |
 | 0134 | [The full view and the tool details are one readable inspection screen](0134-the-full-view-and-the-tool-details-are-one-readable-inspection-screen.md) | Accepted | 2026-11-17 |
 | 0135 | [Concurrent processes on one operator home wait for the allocation claim](0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md) | Accepted | 2026-11-18 |
