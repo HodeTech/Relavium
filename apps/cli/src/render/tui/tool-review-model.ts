@@ -375,14 +375,18 @@ export function reduceToolReviewKey(
   rememberOffered = false,
 ): ReviewKeyAction {
   // `Ctrl+C` stops, everywhere (ADR-0115 §1): it rejects the approval and stops the turn, or closes a details view. `Esc` steps
-  // back ONE level (§3): inside the reason box or the search box of an approval it closes the box and returns to where it opened,
-  // the typed text discarded, the call still pending; only with no box open does it reject the call and stop the turn.
+  // back ONE level (ADR-0115 §3, ADR-0137 §4): inside the reason box or the search box of an approval it closes the box and
+  // returns to where it opened, the typed text discarded, the call still pending; on the full view (or a call list) it returns to
+  // the card, the call still pending and nothing answered; only on the card with no box open does it reject the call and stop the
+  // turn. Stepping back grants nothing, so it needs no acknowledged frame: a person who cannot read the full view (a terminal too
+  // small, an unreadable identity) must still be able to leave it without stopping the turn, as `Ctrl+N` denies without a frame.
   if (isInterruptKey(input, key)) return { kind: state.kind === 'approval' ? 'abort' : 'close' };
   if (key.escape) {
     if (state.kind !== 'approval') return { kind: 'close' };
     if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });
     if (state.searching)
       return reviewChange(state, { searching: false, query: undefined, message: '' });
+    if (state.screen !== 'card') return backToTheCard(state);
     return { kind: 'abort' };
   }
   if (key.ctrl || key.meta) {
@@ -691,6 +695,17 @@ function nearerLanding(
   return compareCursors(off, jumped) < 0 === forward ? off : jumped;
 }
 
+/** Leave the full view (or a list) of an approval for its card: the call stays pending and nothing is answered. `[b]` and `Esc` both. */
+function backToTheCard(state: ToolReviewState): ReviewKeyAction {
+  return reviewChange(state, {
+    screen: 'card',
+    reveal: false,
+    numeric: false,
+    message: '',
+    cursor: REVIEW_START,
+  });
+}
+
 function reduceFullReviewKey(
   state: ToolReviewState,
   input: string,
@@ -707,13 +722,7 @@ function reduceFullReviewKey(
   if (input === 'c') return { kind: 'copy' };
   if (input === 'b')
     return state.kind === 'approval'
-      ? reviewChange(state, {
-          screen: 'card',
-          reveal: false,
-          numeric: false,
-          message: '',
-          cursor: REVIEW_START,
-        })
+      ? backToTheCard(state)
       : reviewChange(state, {
           screen: 'list',
           reveal: false,

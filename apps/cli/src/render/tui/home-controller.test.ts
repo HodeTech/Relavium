@@ -610,6 +610,38 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.store.getSnapshot().approval).toBeUndefined();
   });
 
+  it('Esc on the full view steps back to the card and is never an abort: the Home hands the controller nothing, the call stays pending; the next Esc stops the turn (ADR-0137 §4)', async () => {
+    // A wrong mapping of the new back result would end the turn silently: with no `onAbort` wired an abort rejects the pending
+    // approval, so a settled approval after the FIRST Esc would be exactly that mistake.
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    const pending = made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+      true,
+    );
+    showApprovalCard(made.store);
+
+    hostKey(c, made.store, 'v', {}); // the full view
+    expect(made.store.getSnapshot().review?.screen).toBe('full');
+    const consumed = routeKeyThroughCards(c, made.store, '', { escape: true });
+    expect(consumed, 'the card took the Esc: it is not the controller’s').toBe(true);
+    expect(made.store.getSnapshot().review?.screen).toBe('card');
+    expect(made.store.getSnapshot().approval, 'stepping back rejects nothing').toBeDefined();
+    expect(c.getSnapshot().interruptArmed, 'and arms nothing').toBe(false);
+    hostKey(c, made.store, '', { escape: true }); // on the card Esc is the stop key: the card reports `abort`
+    await expect(pending).resolves.toEqual({ outcome: 'reject' });
+    expect(made.store.getSnapshot().approval).toBeUndefined();
+  });
+
   it('`@` completion: Esc restores the typed keystrokes; a mid-word `@` stays literal (2.5.D step 4)', async () => {
     const mentionReader: MentionReader = {
       list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),

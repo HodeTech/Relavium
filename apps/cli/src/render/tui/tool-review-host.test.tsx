@@ -66,7 +66,7 @@ const CTRL_G = '\x07'; // ask for the session-wide grant (ENTER confirms)
 const CTRL_N = '\x0e'; // deny
 const CTRL_R = '\x12'; // deny with a reason (opens the reason box on the card)
 /** The full view's refusals row (ADR-0134): the card's refusals minus the card-only keys, plus the way back. */
-const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn';
+const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
 
 /**
  * The suite drives the approval card with keys pressed right after a frame, as fast as the harness can. The product's
@@ -1320,15 +1320,51 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       expect(answered).toBe(false);
     });
+
+    it('says on an unreadable full view that Esc steps back and Ctrl+C stops the turn, and Esc really steps back (ADR-0137 §4)', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      let answered = false;
+      void f.store
+        .requestApproval(request, true, undefined, {
+          callId: 'hint-full',
+          preview: poemPreview(2),
+        })
+        .then(() => {
+          answered = true;
+        });
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await settle();
+      f.input.push('v');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+      await settle();
+      f.resize(79, 23);
+      await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
+      // The full view cannot be read, but Esc still leaves it without stopping the turn: no acknowledged frame is needed to step back.
+      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc back \u00b7 Ctrl+C stops the turn.');
+      expect(hint(f)).not.toContain('Esc stops the turn');
+      f.input.push('\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await settle();
+      expect(answered, 'stepping back stops nothing').toBe(false);
+      // Now on the card, whose own hint is unchanged: Esc stops the turn here.
+      await vi.waitFor(() =>
+        expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.'),
+      );
+      f.input.push(CTRL_N);
+      await settle();
+      expect(answered).toBe(true);
+    });
   });
 
   // D64 round 2, D4: Esc stops the whole turn (the card says so); the full view still said "abort". ADR-0134: the full
-  // view's answer rows are the card's two rows, and the second says `Esc stops the turn`.
+  // view's answer rows are the card's grants row and its own refusals row; since ADR-0137 §4 the second says `Esc back` (Esc steps
+  // back to the card) and `Ctrl+C stops the turn`.
   it.each([
     [true, '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session'],
     [false, '[Ctrl+Y] Allow'],
   ])(
-    'the full view says Esc stops the turn, not "abort" (cacheable=%s)',
+    'the full view says Esc goes back and Ctrl+C stops the turn, not "abort" (cacheable=%s)',
     async (cacheable, grants) => {
       const f = fixture(host, true, false);
       await f.ready();
@@ -1934,6 +1970,63 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
     }
   });
 
+  it('after Esc steps back, an answer typed at once is refused and one after the card has been seen again counts, as after [b] (ADR-0137 §4)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'esc-guard', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      // The very next key: the card the Esc returned to has not been seen yet, and a key arrived a moment ago.
+      await press(f, CTRL_Y);
+      expect(answered(), 'a Ctrl+Y right after Esc answers nothing').toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(3000);
+      await press(f, CTRL_Y);
+      await vi.waitFor(() => expect(answered()).toEqual({ outcome: 'approve', scope: 'once' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Esc while the session-wide question waits in the full view cancels it, grants nothing, and steps back to the card (ADR-0137 §4)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'full-ask-esc', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, CTRL_G);
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Press Enter to allow all file writes this session')).toBeDefined(),
+      );
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      expect(f.store.getSnapshot().alwaysConfirm, 'the question is gone').toBe(false);
+      expect(answered(), 'nothing was granted and nothing was stopped').toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+      // The Enter that would have confirmed it, a moment later, answers nothing.
+      vi.advanceTimersByTime(1000);
+      await press(f, '\r');
+      expect(answered()).toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks the same question in the full view, in the card's two rows", async () => {
     fakeClock();
     try {
@@ -1962,9 +2055,10 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
       expect(asking[grantsAt], 'the question takes the grants row').toBe(
         'Press Enter to allow all file writes this session',
       );
-      expect(asking[grantsAt + 1], 'and says what any other key does').toBe(
-        'Any other key cancels \u00b7 Esc stops the turn',
-      );
+      expect(
+        asking[grantsAt + 1],
+        'and says what any other key does, and what Esc and Ctrl+C do',
+      ).toBe('Any other key cancels \u00b7 Esc back \u00b7 Ctrl+C stops the turn');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
       expect(asking.findIndex((row) => row.startsWith('\u2500'))).toBe(
         before.findIndex((row) => row.startsWith('\u2500')),
@@ -2156,14 +2250,15 @@ describe('answer chords in the real host', () => {
         await press(f, '\x1b'); // Esc: closes the box and rejects nothing
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(false));
         expect(outcome()).toBeUndefined();
-        await vi.waitFor(() =>
-          expect(
-            f.output.frames
-              .slice(mark)
-              // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
-              .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
-              .join(''),
-          ).toContain('Esc stops the turn'),
+        await vi.waitFor(
+          () =>
+            expect(
+              f.output.frames
+                .slice(mark)
+                // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+                .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
+                .join(''),
+            ).toContain('Esc back   Ctrl+C stops the turn'), // the full view's own legend: the box is closed, Esc now steps back
         );
       });
 
@@ -2767,6 +2862,30 @@ describe.each(['chat', 'home'] as const)(
       expect(outcome()).toBeUndefined();
       f.input.push(CTRL_Y);
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+    });
+
+    it('Esc goes back to the card as [b] does: the approval stays pending, nothing is answered and the turn is not stopped; a second Esc then stops it (ADR-0137 §4)', async () => {
+      const { f, outcome } = await openFull(SIXTY());
+      const screen = view(f);
+      if (screen === undefined) throw new Error('no full view');
+      expect(screen.rows[screen.note - 1], 'the legend names Esc as the way back').toContain(
+        'Esc back',
+      );
+      const mark = f.output.frames.length;
+      f.input.push('\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await vi.waitFor(() =>
+        expect(f.output.frames.slice(mark).some((frame) => frame.includes('Approval needed'))).toBe(
+          true,
+        ),
+      );
+      await pause(80);
+      expect(f.store.getSnapshot().approval, 'stepping back answers nothing').toBeDefined();
+      expect(outcome(), 'and stops nothing').toBeUndefined();
+      expect(f.errors).toEqual([]);
+      f.input.push('\x1b');
+      // The harness wires no abort handler, so the host turns the stop into a plain rejection of the call.
+      await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
     });
 
     it('shows Unicode code points only for non-ASCII characters on [p], and says so until [p] goes back to text', async () => {

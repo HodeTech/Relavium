@@ -391,13 +391,13 @@ masks, exact-frame acknowledgement and resource limits applies to the card and t
   change of convention), the body, a status rule (`64% · changed lines off this page: 2 above, 4 below`, plus `masked values
   revealed (view only)` and `Unicode code points` while on), a message row (always one row, blank when empty) and a search row while the search box is open, the navigation legend
   (`[key] words`, keys coloured; only keys that do something; movement and inspection on their own rows), the answer rows (the card's
-  two, without `[Ctrl+R]` and `[v]`, with `[b] Back to the card`) and one closing note: the protected-path sentence on an approval,
+  grants row, and a second row with `[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn`) and one closing note: the protected-path sentence on an approval,
   `[b] Back to the list   Esc closes · viewing never executes a tool` on details. One row stays empty.
 - **Keys** (none answers anything; one that acts is not typing evidence): `↑`/`↓` or `k`/`j` one listed line · `PgUp`/`PgDn` or
   `Space` a page (a page cut inside a long line continues there) · `Home`/`End` · `Tab`/`Shift+Tab` the next/previous change (a
   run of changed lines; runs six unchanged lines or fewer apart are one, and a change is about 40 listed lines at most; inside a
   change longer than a page `Tab` lands on the next page that shows a changed line not yet seen and `Shift+Tab` on the page that ends on the nearest one above, so none is stepped over) · `/` search · `r` reveal (only where something is
-  masked) · `p` every non-ASCII character as its code point (`<U+0131>`; ASCII stays readable) · `c` copy the masked page · `b` back · `Esc`/Ctrl+C stop the turn on an approval (`Esc` first closes an open search box), close on details.
+  masked) · `p` every non-ASCII character as its code point (`<U+0131>`; ASCII stays readable) · `c` copy the masked page · `b` back to the card on an approval (back to the list on details) · `Esc` one level back: it closes an open search box, then returns an approval's full view to its card (the call stays pending, nothing is answered, and no visible frame is needed), and on the card it rejects the call and stops the turn; on details it closes · `Ctrl+C` stops the turn from anywhere on an approval and closes details. While a session-wide or remember question waits on the full view `Esc` cancels it and steps back too (the second row says `Esc back · Ctrl+C stops the turn`); a screen too small to read says `[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.` on the full view and `[Ctrl+N] denies · Esc stops the turn.` on the card. An approval never shows the call list: it opens only for details.
   Scrolling down stops at the last page that begins on a line (the screen ends on the document's last row). A row is measured as the whole string the renderer
   (`string-width`) measures and is never cut by it: a row wider than its page would wrap — one wrapped row uses the spare row and is drawn
   whole, a second makes the frame too tall and it is refused — and a row holds at most three tokens per column, so a run of zero-width

@@ -103,6 +103,8 @@ shows as an escape or `(empty)` instead of nothing. The contract is
 
 **MVP-4 step 5 (2026-11-20): the `/permissions` sheet** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is docked under the conversation like the other overlays, so it works in the inline renderer, which is the accessible mode, and not only in the full-screen one. It reads the same with colour off: the selected row is marked `›`, the sections have headings, hidden rows are counted by `▲ n more` / `▼ n more`, and a withdrawal's question is the message row's text, not a colour. Below 80×24 it says so and arms nothing. `Esc` and `Ctrl+C` close it and never withdraw. The contract is [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet).
 
+**MVP-4 step 6 (2026-11-21): `Esc` leaves the full view for the card** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4). The keys are named in words on the screen (`Esc back`, `Ctrl+C stops the turn`), not by colour, in the inline renderer as in the full-screen one; stepping back answers nothing and needs no visible frame, so a screen too small to read still says `[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.` and `Esc` still leaves it.
+
 ## See also
 
 - [home.md](home.md) · [chat-session.md](chat-session.md) — the two interactive surfaces.

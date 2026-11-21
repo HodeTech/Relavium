@@ -1930,15 +1930,11 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
     const card = answerable();
     expect(press(card, '', { escape: true })).toEqual({ kind: 'abort' });
     expect(press(card, 'c', CTRL)).toEqual({ kind: 'abort' });
-    // The full view and the call list have their own way back (`[b]`); Esc there is still the stop key.
-    for (const screen of ['full', 'list'] as const) {
-      expect(press(answerable(small(), { screen }), '', { escape: true }), screen).toEqual({
-        kind: 'abort',
-      });
+    // `Ctrl+C` stops from the full view and the call list too; `Esc` there steps back instead (ADR-0137 §4, below).
+    for (const screen of ['full', 'list'] as const)
       expect(press(answerable(small(), { screen }), 'c', CTRL), `${screen} Ctrl+C`).toEqual({
         kind: 'abort',
       });
-    }
     // The interrupt matcher is shared with every card: either case of the letter is the same key, and Alt+C is not an interrupt.
     expect(press(card, 'C', CTRL)).toEqual({ kind: 'abort' });
     expect(press(card, 'c', { ctrl: true, meta: true })).toEqual({ kind: 'none' });
@@ -1965,7 +1961,7 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
     });
   });
 
-  it("Esc inside the full view's search box closes the box and keeps the full view", () => {
+  it("Esc inside the full view's search box closes the box and keeps the full view; the next Esc returns to the card; the next stops the turn", () => {
     const searching = answerable(small(), { screen: 'full', searching: true, query: 'needle' });
     const result = press(searching, '', { escape: true });
     expect(result.kind).toBe('state');
@@ -1973,8 +1969,83 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
     expect(result.state.searching).toBe(false);
     expect(result.state.query).toBeUndefined();
     expect(result.state.screen).toBe('full');
-    expect(press({ state: result.state, page: undefined }, '', { escape: true })).toEqual({
+    const back = press({ state: result.state, page: undefined }, '', { escape: true });
+    expect(back.kind).toBe('state');
+    if (back.kind !== 'state') return;
+    expect(back.state.screen).toBe('card');
+    expect(press({ state: back.state, page: undefined }, '', { escape: true })).toEqual({
       kind: 'abort',
+    });
+  });
+
+  describe('Esc on the full view returns to the card (ADR-0137 §4): one level per press, nothing answered', () => {
+    it('returns an approval to its card, still pending, exactly as `[b]` does', () => {
+      const full = answerable(small(), {
+        screen: 'full',
+        reveal: true,
+        numeric: true,
+        message: 'x',
+        cursor: { line: 7, offset: 3 }, // scrolled down: the card shows the change from the top again
+      });
+      const esc = press(full, '', { escape: true });
+      const b = press(full, 'b', {});
+      expect(esc.kind).toBe('state');
+      expect(esc).toEqual(b);
+      if (esc.kind !== 'state') return;
+      expect(esc.state).toMatchObject({
+        kind: 'approval',
+        screen: 'card',
+        reveal: false,
+        numeric: false,
+        message: '',
+        cursor: REVIEW_START,
+      });
+    });
+
+    it('needs no visible frame: a person who cannot read the full view can still leave it without stopping the turn', () => {
+      const full = answerable(small(), { screen: 'full' });
+      const hidden = reduceToolReviewKey(
+        full.state,
+        '',
+        { escape: true },
+        false,
+        undefined,
+        true,
+        1,
+      );
+      expect(hidden.kind).toBe('state');
+      if (hidden.kind === 'state') expect(hidden.state.screen).toBe('card');
+    });
+
+    it('answers nothing and aborts nothing, whatever else is held', () => {
+      const full = answerable(small(), { screen: 'full' });
+      for (const key of [{ escape: true }, { escape: true, shift: true }] as const) {
+        const result = press(full, '', key);
+        expect(result.kind, JSON.stringify(key)).toBe('state');
+      }
+    });
+
+    it('treats an approval’s call list the same way, although an approval never shows one today', () => {
+      const list = answerable(small(), { screen: 'list' });
+      const result = press(list, '', { escape: true });
+      expect(result.kind).toBe('state');
+      if (result.kind === 'state') expect(result.state.screen).toBe('card');
+    });
+
+    it('closes a box first: the reason box and the search box keep their one level (ADR-0115 §3)', () => {
+      const boxed = press(answerable(small(), { screen: 'full', denial: 'why' }), '', {
+        escape: true,
+      });
+      expect(boxed.kind).toBe('state');
+      if (boxed.kind === 'state') {
+        expect(boxed.state.denial).toBeUndefined();
+        expect(boxed.state.screen, 'the box closed, the full view stayed').toBe('full');
+      }
+    });
+
+    it('never makes the call list the place an approval lands: `[b]` and Esc both go to the card, and the list opens only for details', () => {
+      expect(initialToolReview('approval', 'call').screen).toBe('card');
+      expect(initialToolReview('details', 'call').screen).toBe('list');
     });
   });
 

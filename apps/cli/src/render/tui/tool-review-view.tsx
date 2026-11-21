@@ -329,17 +329,18 @@ function buildFullChrome(
 }
 
 /**
- * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn, Esc stops it. Inside a
- * modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model
- * only lets those states act on a frame the person can read — so only the two exits are true there: Esc closes the box and
- * `Ctrl+C` stops the turn.
+ * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn; on the card Esc stops it, on the
+ * full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4). Inside a modal sub-state (a typed denial reason, the
+ * full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets those states act on a frame the person can
+ * read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
  */
 function reviewExitHint(review: ToolReviewState): string {
   if (review.kind !== 'approval') return 'Esc closes.';
   const modal = review.denial !== undefined || review.searching;
-  return modal
-    ? 'Esc closes the box · Ctrl+C stops the turn.'
-    : '[Ctrl+N] denies · Esc stops the turn.';
+  if (modal) return 'Esc closes the box · Ctrl+C stops the turn.';
+  return review.screen === 'card'
+    ? '[Ctrl+N] denies · Esc stops the turn.'
+    : '[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.';
 }
 
 const RULE_LABEL = ' Approval needed ';

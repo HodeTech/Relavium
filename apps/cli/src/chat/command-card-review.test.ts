@@ -207,7 +207,8 @@ describe('the full view of a command carries its facts and the Remember question
     };
     expect(fullAnswerRows(keys)).toEqual([
       'Press Enter to allow this exact command now and remember it for this project',
-      'Enter confirms · any other key cancels, allowing nothing · Esc stops the turn',
+      // The full view's own row (ADR-0137 §4): `Esc` cancels the question and steps back here, and `Ctrl+C` is the stop key.
+      'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn',
     ]);
     const chrome = fullChrome({
       kind: 'approval',

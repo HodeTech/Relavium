@@ -258,15 +258,34 @@ export function fullNavLegend(input: NavLegendInput): readonly string[] {
   return [...packRows(move, width), ...packRows(tools, width)];
 }
 
+/**
+ * The second row while a session-wide or remember question waits in the FULL view (ADR-0137 §4). Any other key cancels the question
+ * and grants nothing; `Esc` is one of them and, here, also steps back to the card, so the card's `Esc stops the turn` would be false;
+ * `Ctrl+C` stops the turn from anywhere and is named, because the stop key stays named wherever it works. The command variants
+ * (an Enter confirms) and the tool variant (any key) differ only in their first words.
+ */
+export const FULL_CONFIRM_ENTER_ROW =
+  'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn';
+export const FULL_CONFIRM_ANY_ROW = 'Any other key cancels · Esc back · Ctrl+C stops the turn';
+/**
+ * The full view's second answer row: the refusals that exist here, the way back, and the stop key. `Esc` steps back to the card
+ * (ADR-0137 §4) and `Ctrl+C` stops the turn; the row names both, so neither is learned by pressing it.
+ */
+export const FULL_DENY_ROW =
+  '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+
 /** The grants row the card shows, then the refusals: the same words, minus the keys that only exist on the card, plus the way back. */
 export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
   const rows = cardKeyRows(input);
-  if (input.confirmAlways === true || input.confirmRemember === true) return rows;
+  if (input.confirmAlways === true || input.confirmRemember === true)
+    return [
+      rows[0],
+      input.confirmRemember === true || input.command === true
+        ? FULL_CONFIRM_ENTER_ROW
+        : FULL_CONFIRM_ANY_ROW,
+    ];
   // The full view names what is owed in its warning row; the row here only says that Allow is off, not the card's generic cause.
-  return [
-    input.inspected ? rows[0] : '(Allow is locked — see the warning above)',
-    '[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn',
-  ];
+  return [input.inspected ? rows[0] : '(Allow is locked — see the warning above)', FULL_DENY_ROW];
 }
 
 /**
