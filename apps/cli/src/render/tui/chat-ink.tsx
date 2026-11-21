@@ -58,7 +58,7 @@ import {
 } from './effort-picker.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
-import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import type { PermissionsPort, WithdrawAnswer } from '../../permissions/chat-permissions.js';
 import {
   disarmPermissionsSheet,
   foldPermissionsSheetKey,
@@ -1259,11 +1259,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         applyPermissionsSheet(step.state);
         return;
       case 'withdraw': {
-        let message: string;
+        let message: WithdrawAnswer;
         try {
           message = port.withdraw(step.entry);
         } catch {
-          message = 'Could not withdraw that row; nothing changed.';
+          message = { tone: 'failed', text: 'Could not withdraw that row; nothing changed.' };
         }
         let snapshot: ReturnType<PermissionsPort['load']>;
         try {
@@ -1271,7 +1271,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         } catch {
           // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
           applyPermissionsSheet(undefined);
-          props.store.note(`${message} Could not read the permissions again.`);
+          props.store.note(`${message.text} Could not read the permissions again.`);
           return;
         }
         applyPermissionsSheet(reloadPermissionsSheet(step.state, snapshot, message));

@@ -1160,17 +1160,20 @@ describe('chatCommand', () => {
             // Withdraw the session approval by its argv, then the remembered command by its id: both reach their stores.
             const sessionRow = listed.session?.[0];
             if (sessionRow === undefined) throw new Error('expected the session approval');
-            expect(port.withdraw({ kind: 'session', row: sessionRow })).toBe(
-              'Session approval withdrawn. The chat asks about it again.',
-            );
+            expect(port.withdraw({ kind: 'session', row: sessionRow })).toEqual({
+              tone: 'done',
+              text: 'Session approval withdrawn. It needs approval again.',
+            });
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
-            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              'Withdrawn. Auto mode asks about it again.',
-            );
-            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              'That row was already withdrawn.',
-            );
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'done',
+              text: 'Withdrawn. Auto mode asks about it again.',
+            });
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'note',
+              text: 'That row was already withdrawn.',
+            });
             const after = port.load();
             expect(after.session).toEqual([]);
             expect(after.project).toEqual({ ok: true, rows: [] });
@@ -1245,9 +1248,10 @@ describe('chatCommand', () => {
             expect(listed.session?.[0]?.alsoRemembered, 'and the row says so').toBe(true);
             const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
             if (grantRow === undefined) throw new Error('expected the remembered command');
-            expect(port.withdraw({ kind: 'project', row: grantRow })).toBe(
-              'Withdrawn, with its session approval. The chat asks about it again.',
-            );
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'done',
+              text: 'Withdrawn, with its session approval. It needs approval again.',
+            });
             expect(port.load().session).toEqual([]);
             await ctx.processLine('/exit');
             return { kind: 'exit' };

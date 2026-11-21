@@ -16,7 +16,7 @@ import {
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
-import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import type { PermissionsPort, WithdrawAnswer } from '../../permissions/chat-permissions.js';
 import {
   disarmPermissionsSheet,
   foldPermissionsSheetKey,
@@ -1285,6 +1285,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const port = active.permissions;
     if (port === undefined) return;
     const snap = active.store.getSnapshot();
+    // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
+    // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
     if (
       snap.state.status === 'running' ||
       state.shellBusy ||
@@ -1350,11 +1352,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ permissionsSheet: step.state });
         break;
       case 'withdraw': {
-        let message: string;
+        let message: WithdrawAnswer;
         try {
           message = port.withdraw(step.entry);
         } catch {
-          message = 'Could not withdraw that row; nothing changed.';
+          message = { tone: 'failed', text: 'Could not withdraw that row; nothing changed.' };
         }
         let snapshot: ReturnType<PermissionsPort['load']>;
         try {
@@ -1362,7 +1364,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         } catch {
           // The sheet would otherwise stay armed on a stale list that still shows the row: close it and say what happened.
           set({ permissionsSheet: undefined });
-          active.store.note(`${message} Could not read the permissions again.`);
+          active.store.note(`${message.text} Could not read the permissions again.`);
           break;
         }
         set({ permissionsSheet: reloadPermissionsSheet(step.state, snapshot, message) });

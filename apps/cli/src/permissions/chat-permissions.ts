@@ -52,13 +52,29 @@ export type PermissionEntry =
   | { readonly kind: 'project'; readonly row: ProjectGrantRow }
   | { readonly kind: 'session'; readonly row: SessionApprovalRow };
 
+/**
+ * What a withdrawal says: a sentence and how to draw it. `done` is a withdrawal made (a `✓`, in the success colour), `failed` is one that could
+ * not be made (a `✗`, in the danger colour), `note` is what the person needs to know and is neither: a row that was already gone, a withdrawal
+ * that left a session approval standing. The glyph is the sheet's; the sentence carries none, so a screen reader reads the words once.
+ */
+export type WithdrawTone = 'done' | 'failed' | 'note';
+
+export interface WithdrawAnswer {
+  readonly tone: WithdrawTone;
+  readonly text: string;
+}
+
+const done = (text: string): WithdrawAnswer => ({ tone: 'done', text });
+const failed = (text: string): WithdrawAnswer => ({ tone: 'failed', text });
+const note = (text: string): WithdrawAnswer => ({ tone: 'note', text });
+
 /** What a host hands the sheet: the data read now, and a withdrawal carried out (the store is read again there). */
 export interface PermissionsPort {
   /** A chat lists the session's approvals too; the bare Home and a bare `relavium permissions` list the project's only. */
   readonly surface: 'chat' | 'project';
   readonly load: () => PermissionsSnapshot;
   /** Withdraw the row and return the one-line answer; it never throws, and says what happened when it could not. */
-  readonly withdraw: (entry: PermissionEntry) => string;
+  readonly withdraw: (entry: PermissionEntry) => WithdrawAnswer;
 }
 
 export type ProjectPermissions =
@@ -153,20 +169,20 @@ const sameArgv = (a: readonly string[], b: readonly string[]): boolean =>
 
 /**
  * Take a remembered command back, by the grant's identity. The answer says what was withdrawn and what that changes, and says nothing a mode
- * could contradict: it names `auto` only for what `auto` does (a withdrawn grant no longer exempts a command there), and it never promises a
- * question where a session approval of the same command still stands, because that approval runs it unasked in every mode.
+ * could contradict: it names `auto` only for what `auto` does (a withdrawn grant no longer exempts a command there), and where a session
+ * approval of the same command still stands it says that approval stands, because it keeps the command approved in every mode that asks.
  */
-export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps): string {
+export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps): WithdrawAnswer {
   const grants = deps.grants;
-  if (grants === undefined) return NOT_AVAILABLE;
+  if (grants === undefined) return failed(NOT_AVAILABLE);
   // The session approvals a grant covers, noted before it goes: the ones it covered are the ones that stop matching afterwards.
   const before = (deps.session?.commandApprovals() ?? []).filter((approval) =>
     grants.matches(approval.argv),
   );
   const result = grants.revokeById(row.id);
   if (!result.ok) {
-    if (result.reason === 'no-such-grant') return 'That row was already withdrawn.';
-    return WITHDRAW_FAILURES[result.reason] ?? FALLBACK_FAILURE;
+    if (result.reason === 'no-such-grant') return note('That row was already withdrawn.');
+    return failed(WITHDRAW_FAILURES[result.reason] ?? FALLBACK_FAILURE);
   }
   // A Remember in this chat also left a session approval; it goes with the grant, or the command would keep running unasked here.
   let dropped = 0;
@@ -177,22 +193,26 @@ export function withdrawProjectGrant(row: ProjectGrantRow, deps: PermissionsDeps
   const remaining = (deps.session?.commandApprovals() ?? []).some((approval) =>
     covered.some((was) => sameArgv(was.argv, approval.argv)),
   );
-  if (remaining) return 'Withdrawn, but a session approval of it remains: it still runs unasked.';
+  if (remaining)
+    return note('Withdrawn, but a session approval of it remains: it is still approved here.');
   return dropped > 0
-    ? 'Withdrawn, with its session approval. The chat asks about it again.'
-    : 'Withdrawn. Auto mode asks about it again.';
+    ? done('Withdrawn, with its session approval. It needs approval again.')
+    : done('Withdrawn. Auto mode asks about it again.');
 }
 
 /** Take a session approval back, by its exact argv. */
-export function withdrawSessionApproval(row: SessionApprovalRow, deps: PermissionsDeps): string {
+export function withdrawSessionApproval(
+  row: SessionApprovalRow,
+  deps: PermissionsDeps,
+): WithdrawAnswer {
   // Asked before anything changes: a store that failed on the question must not leave "nothing changed" over a removed approval.
   const covered = deps.grants?.matches(row.argv) === true;
   const gone = deps.session?.forgetCommandApproval(row.argv);
-  if (gone === undefined) return 'That row was already withdrawn.';
+  if (gone === undefined) return note('That row was already withdrawn.');
   // A remembered grant that covers the command keeps `auto` running it unasked, so the sentence says so instead of promising a question.
   return covered
-    ? 'Session approval withdrawn. It is still remembered: auto mode runs it unasked.'
-    : 'Session approval withdrawn. The chat asks about it again.';
+    ? note('Session approval withdrawn. It is still remembered: auto mode runs it unasked.')
+    : done('Session approval withdrawn. It needs approval again.');
 }
 
 /** The port a host opens the sheet with, over the store and the cache it already holds. */

@@ -9,10 +9,17 @@
  * increment moves them (ADR-0137 §5).
  */
 
-/** One key and the thing it does: `{ keys: '↑/↓', verb: 'select' }` reads `↑/↓ select`. */
+import type { SheetRole, SheetSpan } from './sheet-frame.js';
+
+/**
+ * One key and the thing it does: `{ keys: '↑/↓', verb: 'select' }` reads `↑/↓ select`. A key that CHANGES something is written in brackets
+ * (`[d / Del]`), a key that only moves or leaves is not, and `role` says how a view draws the key (an action in danger, a confirmation in
+ * attention; absent ⇒ emphasised).
+ */
 export interface LegendItem {
   readonly keys: string;
   readonly verb: string;
+  readonly role?: Exclude<SheetRole, 'dim' | 'ok'>;
 }
 
 /** The separator between two items: one space, a middle dot, one space. */
@@ -21,4 +28,25 @@ export const LEGEND_SEPARATOR = ' · ';
 /** The legend text for these items, in the order given: the caller puts the leaving key last. */
 export function legend(items: readonly LegendItem[]): string {
   return items.map((item) => `${item.keys} ${item.verb}`).join(LEGEND_SEPARATOR);
+}
+
+/**
+ * Where the keys, the verbs and the separators are in {@link legend}'s text, so a view can draw the keys apart from the words: each key in
+ * its role (emphasised by default), each verb and each separator dimmed. The spans index `legend(items)` exactly.
+ */
+export function legendSpans(items: readonly LegendItem[]): readonly SheetSpan[] {
+  const spans: SheetSpan[] = [];
+  let at = 0;
+  items.forEach((item, index) => {
+    if (index > 0) {
+      spans.push({ from: at, to: at + LEGEND_SEPARATOR.length, role: 'dim' });
+      at += LEGEND_SEPARATOR.length;
+    }
+    spans.push({ from: at, to: at + item.keys.length, role: item.role ?? 'strong' });
+    at += item.keys.length;
+    // the space between the keys and the verb, then the verb
+    spans.push({ from: at, to: at + 1 + item.verb.length, role: 'dim' });
+    at += 1 + item.verb.length;
+  });
+  return spans;
 }

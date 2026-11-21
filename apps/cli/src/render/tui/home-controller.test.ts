@@ -30,6 +30,7 @@ import type { RefreshReport } from '../../engine/model-refresh.js';
 import type { MentionReader } from './mention.js';
 import type {
   PermissionEntry,
+  WithdrawAnswer,
   PermissionsPort,
   PermissionsSnapshot,
 } from '../../permissions/chat-permissions.js';
@@ -3158,7 +3159,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
   };
   const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
     let current = SNAPSHOT;
-    const withdraw = vi.fn((entry: PermissionEntry): string => {
+    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
       if (entry.kind === 'project' && current.project.ok)
         current = {
           ...current,
@@ -3167,7 +3168,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
             rows: current.project.rows.filter((row) => row.id !== entry.row.id),
           },
         };
-      return 'Withdrawn. Auto mode asks about it again.';
+      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
     });
     return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
   };
@@ -3269,7 +3270,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
     const sheet = c.getSnapshot().permissionsSheet;
     expect(sheet?.armed).toBe(false);
-    expect(sheet?.message).toBe('Withdrawn. Auto mode asks about it again.');
+    expect(sheet?.message).toEqual({
+      tone: 'done',
+      text: 'Withdrawn. Auto mode asks about it again.',
+    });
     expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
       'b',
     ]);
@@ -3281,7 +3285,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     // `d` pressed at once: too soon, and it says so; it is not typing.
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message).toBe('Wait a moment, then press d.');
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'note',
+      text: 'Wait a moment, then press d.',
+    });
     // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
     for (const char of 'build') {
       t.advance(380);
@@ -3290,7 +3297,9 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     t.advance(2_000);
     c.handleKey('d', {});
     expect(c.getSnapshot().permissionsSheet?.armed, 'typed text poisons arming').toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Typed keys are ignored here/u);
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Typed keys are ignored here/u,
+    );
     t.advance(2_000);
     c.handleKey('', ENTER);
     expect(withdraw).not.toHaveBeenCalled();
@@ -3301,7 +3310,9 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
     c.handleKey('', ENTER);
     expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
-    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early or too late for Enter/u);
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Too early or too late for Enter/u,
+    );
     expect(withdraw).not.toHaveBeenCalled();
   });
 
@@ -3324,7 +3335,9 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
     c.handleKey('', ENTER);
     expect(withdraw).not.toHaveBeenCalled();
-    expect(c.getSnapshot().permissionsSheet?.message).toMatch(/^Too early or too late for Enter/u);
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Too early or too late for Enter/u,
+    );
   });
 
   it('a paste or any other key drops the question and withdraws nothing', async () => {
@@ -3391,9 +3404,10 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     c.handleKey('d', {});
     t.advance(SHEET_CONFIRM_DWELL_MS);
     c.handleKey('', ENTER);
-    expect(c.getSnapshot().permissionsSheet?.message).toBe(
-      'Could not withdraw that row; nothing changed.',
-    );
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'failed',
+      text: 'Could not withdraw that row; nothing changed.',
+    });
   });
 
   it('closes, and says so, when the list cannot be read again after a withdrawal', async () => {

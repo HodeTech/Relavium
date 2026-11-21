@@ -8,6 +8,7 @@ import type {
   PermissionEntry,
   PermissionsPort,
   PermissionsSnapshot,
+  WithdrawAnswer,
 } from '../../permissions/chat-permissions.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
@@ -60,15 +61,15 @@ function fakePort(initial: PermissionsSnapshot): {
   readonly load: ReturnType<typeof vi.fn>;
 } {
   let current = initial;
-  const withdraw = vi.fn((entry: PermissionEntry): string => {
+  const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
     if (entry.kind === 'project' && current.project.ok) {
       current = {
         ...current,
         project: { ok: true, rows: current.project.rows.filter((row) => row.id !== entry.row.id) },
       };
-      return WITHDRAWN;
+      return { tone: 'done', text: WITHDRAWN };
     }
-    return 'Session approval withdrawn. Auto mode asks about it again.';
+    return { tone: 'done', text: 'Session approval withdrawn. It needs approval again.' };
   });
   const load = vi.fn(() => current);
   return { port: { surface: 'chat', load, withdraw }, withdraw, load };
@@ -142,7 +143,7 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(text).toContain('› npm, 1 argument');
     expect(text).toContain('This session · approved (1)');
     expect(text).toContain('git status');
-    expect(text).toContain('↑/↓ select · d withdraw · Esc close');
+    expect(text).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
     expect(submitted, 'the sheet took the command: nothing was sent to the model').toEqual([]);
   });
 
@@ -218,7 +219,7 @@ describe('the permissions sheet in the standalone chat', () => {
     await until(() =>
       frame(view).includes('Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.'),
     );
-    expect(frame(view)).toContain('Enter withdraw · Esc keep');
+    expect(frame(view)).toContain('[Enter] withdraw · Esc keep');
     expect(withdraw, 'arming withdraws nothing').not.toHaveBeenCalled();
     await afterDwell();
     view.stdin.write(ENTER);
@@ -227,7 +228,27 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
     await settleFrames();
     expect(frame(view)).toContain('This project · remembered (1)');
-    expect(frame(view)).toContain('↑/↓ select · d withdraw · Esc close');
+    expect(frame(view)).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+  });
+
+  it('a port that throws on a withdrawal leaves the sheet open and says so as a failure, with the cross', async () => {
+    const { port } = fakePort(SNAPSHOT);
+    const { view } = mount({
+      port: {
+        ...port,
+        withdraw: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    await openSheet(view);
+    await afterSettle();
+    view.stdin.write('d');
+    await until(() => frame(view).includes('Any other key keeps it.'));
+    await afterDwell();
+    view.stdin.write(ENTER);
+    await until(() => frame(view).includes('✗ Could not withdraw that row; nothing changed.'));
+    expect(frame(view)).toContain('Permissions ·');
   });
 
   it('SECURITY: keys typed ahead after the command withdraw nothing, even a line that ends in d and an Enter', async () => {
@@ -294,6 +315,12 @@ describe('the permissions sheet in the standalone chat', () => {
     );
     view.stdin.write(ESC);
     await until(() => !frame(view).includes('Permissions ·'));
+    // The composer is hidden while the sheet is open, so the assertion above can pass on a paste that went to it; once the sheet is gone the
+    // prompt is drawn again, and it must be empty.
+    await settleFrames();
+    expect(frame(view), 'the paste did not wait in the prompt behind the sheet').not.toContain(
+      'please withdraw everything',
+    );
   });
 
   it('SECURITY: a line typed ahead at a HUMAN pace, then a pause, then d, then a pause, then Enter, withdraws nothing (security sitting 2, M1)', async () => {

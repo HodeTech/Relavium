@@ -270,16 +270,37 @@ chat, which has no store and no one to ask, `/permissions` says `Remembered comm
 only at an idle prompt, with no card open; if a card ever arrived while it was open, the sheet would close and the card would be shown.
 
 ```text
-Permissions · ask mode
+─ Permissions · ask mode ─────────────────────────────────────────────────────
 This project · remembered (2)
-› npm, 1 argument                              2026-11-19 12:00Z
-  node, 1 argument                             2026-11-18 09:30Z
+› npm, 1 argument                             [d] withdraw   2026-11-19 12:00Z
+  node, 1 argument                                           2026-11-18 09:30Z
 This session · approved (1)
-  git status                                   (also remembered)
-Remembered commands still ask here; only auto mode runs one unasked.
-<message row: a withdrawal's question, or its answer>
-↑/↓ select · d withdraw · Esc close
+  git status                                                 (also remembered)
+Session-approved commands run unasked here; a remembered one still asks.
+Press d to withdraw it: auto mode will ask about this command again.
+↑/↓ select · [d / Del] withdraw · Esc close
 ```
+
+With the question up (after `d`), the same sheet reads:
+
+```text
+─ Permissions · ask mode ─────────────────────────────────────────────────────
+This project · remembered (2)
+› npm, 1 argument                         [Enter] withdraw   2026-11-19 12:00Z
+  node, 1 argument                                           2026-11-18 09:30Z
+This session · approved (1)
+  git status                                                 (also remembered)
+Session-approved commands run unasked here; a remembered one still asks.
+Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.
+[Enter] withdraw · Esc keep
+```
+
+**The action is on the thing it acts on.** The selected row carries its own action, `[d] withdraw`, just before its date, so a person
+who has not read a legend still sees that the row can be taken back and with which key; the date stays flush right on every row, so
+the dates stay in one column as the selection moves. The row under the note (the *message row*) says what withdrawing the selected row
+will do **before** it is done; the legend names the key in brackets, as the approval card brackets its answers (`[d / Del]`), and
+draws it in the danger colour, with the confirming `[Enter]` in the attention colour. The opening rule carries the title
+(`─ Permissions · <mode> mode ───`) and separates the sheet from the conversation above it.
 
 - **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a
   credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one
@@ -287,8 +308,9 @@ Remembered commands still ask here; only auto mode runs one unasked.
   function the command card's title uses** (`scrubbedCommandDisplay`), cut to 400 characters once when the sheet loads. Every row, the
   message row included, is drawn with each control, invisible or `<` character shown as a visible `<U+…>` or `<TAB>` token, as the card
   shows it; nothing is stripped first. A session row is marked `(also remembered)` when a remembered grant covers the command **now**
-  (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). There are no row
-  numbers: the cursor is the selection.
+  (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). The selected row
+  shows `›` and, at its right edge before the value, its action: `[d] withdraw`, and `[Enter] withdraw` while its question is up. There
+  are no row numbers: the cursor is the selection.
 - **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
   `relavium permissions` on a TTY (MVP-4 step 7; until it lands only a chat opens the sheet) show `Permissions · this project` and
   the project's section only. The note row says what the mode does with the two kinds of row, and matches the mode table of
@@ -304,20 +326,27 @@ Remembered commands still ask here; only auto mode runs one unasked.
   card learned that at 350 ms a key), so the rule is about *what* was typed: **once any key that is not navigation has arrived since
   the sheet opened, `d` arms nothing until an arrow key** (or a page key, `Home` or `End`) says the person is choosing a row; a refused
   `d` says `Typed keys are ignored here. Select a row with ↑/↓, then press d.` On top of that `d` waits for the sheet to settle
-  (400 ms after it opened; an early `d` says `Wait a moment, then press d.` and is not typing), and `Enter` withdraws only between 300 ms
-  and 10 s after the question appeared, and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
+  (400 ms after it opened; an early `d` says `Wait a moment, then press d.` and is not typing), and `Enter` withdraws only between 800 ms
+  and 10 s after the question appeared (the approval card's own minimum), and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
   `Meta+Enter`). An `Enter` outside that window drops the question and says `Too early or too late for Enter — nothing was withdrawn.
-  Press d again.` A paste is typing. Any other key, a paste and `Esc` keep the row; `Esc` closes an idle sheet; `Ctrl+C` closes it
+  Press d again.` An `Enter` that reaches a question always follows a deliberate `d`, so neither it nor the withdrawal it makes counts as
+  typing: the `d` the note asks for arms again, and so does the next row. A paste is typing. Any other key, a paste and `Esc` keep the row; `Esc` closes an idle sheet; `Ctrl+C` closes it
   from either state. Neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and
   one can only be made on a command card.
-- **The message row** is always one row. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a remembered row shows its label and
-  its minute in parentheses, the label clipped before the minute is; a session row shows the scrubbed command, clipped) and the legend
-  becomes `Enter withdraw · Esc keep`. After a withdrawal it says what happened, in a sentence that fits the row and that no mode can
-  contradict. A remembered row: `Withdrawn. Auto mode asks about it again.`; with its linked session approval
-  `Withdrawn, with its session approval. The chat asks about it again.`; and, when a plain session approval of the same command stands,
-  `Withdrawn, but a session approval of it remains: it still runs unasked.` (only the approvals *this* grant covered count: another
-  remembered command's approval does not). A session row: `Session approval withdrawn. The chat asks about it again.` or, when a
-  remembered grant covers the command, `Session approval withdrawn. It is still remembered: auto mode runs it unasked.`
+- **The message row** is always one row, and it never moves the legend. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a
+  remembered row shows its label and its minute in parentheses, the label clipped before the minute is; a session row shows the
+  scrubbed command, clipped) and the legend becomes `[Enter] withdraw · Esc keep`. Idle, it says what withdrawing the selected row will
+  do: for a remembered row `Press d to withdraw it: auto mode will ask about this command again.`, for a session row
+  `Press d to withdraw it: this command will need approval again.`, and for a session row a remembered grant also covers `Press d to
+  withdraw the session approval; the project still remembers it.` (the `d` is drawn in the danger colour). After a withdrawal it says
+  what happened, in a sentence that fits the row, that no mode can contradict, and that carries its tone in a glyph as well as a
+  colour: `✓` (green) for a withdrawal made, `✗` (red) for one that could not be made, and no glyph, in the attention colour, for what the
+  person needs to know and is neither (a row that was already gone, a session approval left standing, a refused key). A remembered row:
+  `✓ Withdrawn. Auto mode asks about it again.`; with its linked session approval `✓ Withdrawn, with its session approval. It needs
+  approval again.`; and, when a plain session approval of the same command stands, `Withdrawn, but a session approval of it remains: it
+  is still approved here.` (only the approvals *this* grant covered count: another remembered command's approval does not). A session
+  row: `✓ Session approval withdrawn. It needs approval again.` or, when a remembered grant covers the command, `Session approval
+  withdrawn. It is still remembered: auto mode runs it unasked.`
 - **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
   again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
   one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
@@ -331,9 +360,13 @@ Remembered commands still ask here; only auto mode runs one unasked.
   100 columns, and at most **eight body lines** (headings, rows and markers) with `▲ n more` / `▼ n more` markers that count the **rows**
   they stand in for, the row under the marker included; a heading is never left alone above a `▼` marker. The title, the note, the message
   row and the legend are always drawn: the floor of 80×24 leaves room for all of them. Below 80×24 the sheet says `Enlarge the terminal
-  to use this screen — Esc closes.`, `d` arms nothing, and a question asked before the terminal shrank is dropped by the next key.
+  to use this screen — Esc closes.`, `d` arms nothing, and a question asked before the terminal shrank is dropped by the next key. A
+  list that needs a window keeps one height as the cursor moves (a window that had to be one line shorter to avoid stranding a heading
+  is padded with a blank line), so the rule does not move under it; the first body line is always a heading, a marker, or the first line
+  of a whole sentence — never a row under a hidden heading and never the middle of a sentence.
 - **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
-  colour off: the `›` marker, the headings and the markers carry the meaning.
+  colour off: the `›` marker, the bracketed keys, the `✓`/`✗` of an answer, the headings and the markers carry the meaning; bold is the
+  only style left.
 
 The Home's tab bar and its pane that composes this sheet with the domain allowlists, MCP servers and egress endpoints are MVP-8's;
 add and remove belong to those sections, not to command grants.

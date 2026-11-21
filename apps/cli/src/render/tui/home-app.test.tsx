@@ -1150,7 +1150,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
       },
       session: [],
     }),
-    withdraw: () => 'Withdrawn. Auto mode asks about it again.',
+    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
   };
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -1166,7 +1166,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('This project · remembered (1)');
     expect(frame).toContain('› npm, 1 argument');
-    expect(frame).toContain('↑/↓ select · d withdraw · Esc close');
+    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
     // A paste is not input to the sheet and not text for the prompt behind it.
     harness.stdin.write(bracketed('pasted words'));
     await settleFrames();
@@ -1210,11 +1210,28 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
     const sheetLines = (m.harness.lastFrame() ?? '')
       .split('\n')
-      .filter((line) => line.includes('remembered') || line.includes('select · d'));
+      .filter((line) => line.includes('remembered') || line.includes('select · [d'));
     for (const line of sheetLines) expect(line.length).toBeLessThanOrEqual(80);
     m.setSize({ cols: 80, rows: 23 });
     m.fireResize();
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+  });
+
+  it('draws the rule as wide as the terminal allows, not at a fixed 80 columns', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      size: { cols: 100, rows: 30 },
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const rule = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .find((line) => line.includes('Permissions · ask mode'));
+    // two columns of margin on a 100-column terminal: the sheet's own cap is 100, so the rule is 98 wide
+    expect(rule?.trimEnd().length).toBe(98);
   });
 
   it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
@@ -1236,7 +1253,15 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     m.setSize({ cols: 100, rows: 30 });
     m.fireResize();
     await settleFrames();
-    // The `d` above was typed into a sheet that could not arm; an arrow key says the person is choosing a row again.
+    // The `d` above was typed into a sheet that could not arm, and that counts as typing: it is refused again, and says why.
+    m.harness.stdin.write('d');
+    await untilTrue(() =>
+      (m.c.getSnapshot().permissionsSheet?.message?.text ?? '').startsWith(
+        'Typed keys are ignored',
+      ),
+    );
+    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    // An arrow key says the person is choosing a row again.
     m.harness.stdin.write('\u001b[B');
     m.harness.stdin.write('\u001b[A');
     await settleFrames();

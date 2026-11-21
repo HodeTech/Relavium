@@ -4,7 +4,11 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { PermissionsSnapshot } from '../../permissions/chat-permissions.js';
-import { initialPermissionsSheetState, type PermissionsSheetState } from './permissions-sheet.js';
+import {
+  initialPermissionsSheetState,
+  type PermissionsSheetState,
+  type SheetMessage,
+} from './permissions-sheet.js';
 import { PermissionsSheetView } from './permissions-sheet-view.js';
 
 /**
@@ -23,11 +27,13 @@ const SNAPSHOT: PermissionsSnapshot = {
   },
   session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
 };
-const CYAN = '\u001b[36m';
-const YELLOW = '\u001b[33m';
-const BOLD = '\u001b[1m';
-const DIM = '\u001b[2m';
 const ESC = String.fromCharCode(0x1b);
+const CYAN = `${ESC}[36m`;
+const YELLOW = `${ESC}[33m`;
+const GREEN = `${ESC}[32m`;
+const RED = `${ESC}[31m`;
+const BOLD = `${ESC}[1m`;
+const DIM = `${ESC}[2m`;
 /** Any foreground colour code (the regular and the bright palette). */
 const ANY_COLOUR = new RegExp(`${ESC}\\[(3[0-7]|9[0-7])m`, 'u');
 
@@ -35,52 +41,131 @@ const open = (armed = false): PermissionsSheetState => ({
   ...initialPermissionsSheetState(SNAPSHOT, 'chat', 'ask', 0),
   armed,
 });
+const withMessage = (message: SheetMessage): PermissionsSheetState => ({
+  ...open(),
+  message,
+});
 
 const frame = (state: PermissionsSheetState, color: boolean): string =>
   render(<PermissionsSheetView state={state} color={color} columns={80} rows={24} />).lastFrame() ??
   '';
+
+/** A frame without its style codes: what a person without them reads. */
+const plain = (text: string): string => text.replace(new RegExp(`${ESC}\\[\\d+m`, 'gu'), '');
 
 /** The styled text of the first line of a frame that contains `needle`. */
 const lineWith = (text: string, needle: string): string =>
   text.split('\n').find((line) => line.includes(needle)) ?? '';
 
 describe('PermissionsSheetView with colour on', () => {
-  it('draws the title and the selected row in cyan, the headings in bold, the note and the legend dim', () => {
+  it('draws the rule dim with its title in bold, the headings in bold, and the note dim', () => {
     const text = frame(open(), true);
-    expect(lineWith(text, 'Permissions · ask mode')).toContain(CYAN);
-    expect(lineWith(text, '› npm, 1 argument')).toContain(CYAN);
+    const rule = lineWith(text, 'Permissions · ask mode');
+    expect(rule.startsWith(`${DIM}─ `)).toBe(true);
+    expect(rule).toContain(`${BOLD}Permissions · ask mode`);
     expect(lineWith(text, 'This project · remembered (2)')).toContain(BOLD);
     expect(lineWith(text, 'This session · approved (1)')).toContain(BOLD);
     expect(lineWith(text, 'Session-approved commands run unasked here')).toContain(DIM);
-    expect(lineWith(text, '↑/↓ select · d withdraw · Esc close')).toContain(DIM);
-    // an unselected row is plain: no colour at all
+  });
+
+  it('draws the selected row in cyan with its action key in red and its date dimmed; an unselected row has no colour', () => {
+    const text = frame(open(), true);
+    const selected = lineWith(text, '› npm, 1 argument');
+    expect(selected).toContain(CYAN);
+    expect(selected).toMatch(new RegExp(`${ESC}\\[31m\\[d\\]`, 'u'));
+    expect(selected).toContain(`${DIM}2026-11-19 12:00Z`);
     expect(lineWith(text, 'node, 1 argument')).not.toMatch(ANY_COLOUR);
   });
 
-  it('draws a withdrawal’s question in yellow', () => {
+  it('draws the hint dim with its key in red, and the legend with the keys apart from the words', () => {
+    const text = frame(open(), true);
+    // the dim stretch is closed (ESC[22m) before the key, so the key is bold red on its own, not red inside a dimmed line
+    expect(lineWith(text, 'to withdraw it: auto mode')).toMatch(
+      new RegExp(`${ESC}\\[2mPress ${ESC}\\[22m${ESC}\\[1m${ESC}\\[31md`, 'u'),
+    );
+    const legend = lineWith(text, 'select');
+    expect(legend).toContain(`${BOLD}↑/↓`);
+    expect(legend).toMatch(new RegExp(`${ESC}\\[31m\\[d / Del\\]`, 'u'));
+    expect(legend).toContain(`${BOLD}Esc`);
+    expect(legend).toContain(`${DIM} withdraw`);
+  });
+
+  it('draws an armed row and its question in yellow, and the confirming key in yellow and bold', () => {
     const text = frame(open(true), true);
-    expect(lineWith(text, 'Withdraw npm, 1 argument')).toContain(YELLOW);
+    const row = lineWith(text, '› npm, 1 argument');
+    expect(row).toContain(YELLOW);
+    expect(row).toContain(`${BOLD}[Enter]`);
+    expect(lineWith(text, 'Withdraw npm, 1 argument')).toContain(`${BOLD}${YELLOW}`);
+    expect(lineWith(text, 'Any other key keeps it.')).toContain(BOLD);
+    expect(lineWith(text, 'Esc')).toMatch(new RegExp(`${ESC}\\[33m\\[Enter\\]`, 'u'));
+  });
+
+  it('draws a withdrawal’s answer by its tone: done in green with a tick, a failure in red with a cross, a note in yellow', () => {
+    const done = lineWith(frame(withMessage({ tone: 'done', text: 'Withdrawn.' }), true), '✓');
+    expect(done).toContain(GREEN);
+    expect(done).toContain('✓ Withdrawn.');
+    const failed = lineWith(frame(withMessage({ tone: 'failed', text: 'No room.' }), true), '✗');
+    expect(failed).toContain(RED);
+    expect(failed).toContain('✗ No room.');
+    const note = lineWith(
+      frame(withMessage({ tone: 'note', text: 'That row was already withdrawn.' }), true),
+      'That row was already withdrawn.',
+    );
+    expect(note).toContain(YELLOW);
+    expect(note).not.toContain('✓');
+    expect(note).not.toContain('✗');
   });
 });
 
 describe('PermissionsSheetView with colour off', () => {
-  it('emits no colour at all and loses no meaning: the marker, the headings, the question and the legend are all words and glyphs', () => {
-    const text = frame(open(), false);
-    expect(text).not.toMatch(ANY_COLOUR);
+  it('emits no colour at all and loses no meaning: the marker, the action, the headings, the question and the legend are words and glyphs', () => {
+    const styled = frame(open(), false);
+    expect(styled).not.toMatch(ANY_COLOUR);
+    const text = plain(styled);
     expect(text).toContain('› npm, 1 argument');
+    expect(text).toContain('[d] withdraw');
     expect(text).toContain('This project · remembered (2)');
-    expect(text).toContain('↑/↓ select · d withdraw · Esc close');
-    const armed = frame(open(true), false);
-    expect(armed).not.toMatch(ANY_COLOUR);
+    expect(text).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    const armedStyled = frame(open(true), false);
+    expect(armedStyled).not.toMatch(ANY_COLOUR);
+    const armed = plain(armedStyled);
+    expect(armed).toContain('[Enter] withdraw');
     expect(armed).toContain(
       'Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.',
     );
-    expect(armed).toContain('Enter withdraw · Esc keep');
+    expect(armed).toContain('[Enter] withdraw · Esc keep');
+    for (const message of [
+      { tone: 'done', text: 'Withdrawn.' },
+      { tone: 'failed', text: 'No room.' },
+      { tone: 'note', text: 'Already gone.' },
+    ] as const) {
+      const answerStyled = frame(withMessage(message), false);
+      expect(answerStyled, message.tone).not.toMatch(ANY_COLOUR);
+      expect(plain(answerStyled), message.tone).toContain(
+        `${message.tone === 'done' ? '✓ ' : message.tone === 'failed' ? '✗ ' : ''}${message.text}`,
+      );
+    }
   });
 
-  it('keeps the blank message row as a row, so the legend never moves when a message comes and goes', () => {
-    const lines = frame(open(), false).split('\n');
-    const legend = lines.findIndex((line) => line.includes('↑/↓ select'));
+  it('keeps the sheet the same height whatever the row under the list says, so the legend never moves', () => {
+    const heights = [
+      open(),
+      open(true),
+      withMessage({ tone: 'done', text: 'Withdrawn.' }),
+      withMessage({ tone: 'note', text: 'Wait a moment, then press d.' }),
+    ].map((state) => {
+      const lines = plain(frame(state, false)).split('\n');
+      return [lines.length, lines.findIndex((line) => line.includes(' Esc '))] as const;
+    });
+    for (const height of heights) expect(height).toEqual(heights[0]);
+  });
+
+  it('keeps the blank message row as a row when there is nothing to select', () => {
+    const empty: PermissionsSnapshot = { project: { ok: true, rows: [] }, session: [] };
+    const lines = plain(frame(initialPermissionsSheetState(empty, 'chat', 'ask', 0), false)).split(
+      '\n',
+    );
+    const legend = lines.findIndex((line) => line.startsWith('Esc close'));
     expect(lines[legend - 1]?.trim()).toBe('');
     expect(lines[legend - 2]).toContain('Session-approved commands run unasked here');
   });

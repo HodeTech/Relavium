@@ -10,20 +10,44 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /** The role of one drawn line, so a view colours by role and never by guessing from the text. */
 export type SheetLineKind =
-  | 'title'
+  | 'rule'
   | 'heading'
   | 'row'
   | 'selected'
+  | 'armed'
   | 'text'
   | 'marker'
   | 'note'
+  | 'hint'
   | 'message'
+  | 'done'
+  | 'failed'
+  | 'notice'
   | 'question'
   | 'legend';
+
+/** A role a stretch of a line can take over the style of its kind: a dimmed value, an emphasised key, a danger, a success, an attention. */
+export type SheetRole = 'dim' | 'strong' | 'danger' | 'ok' | 'warn';
+
+/** A stretch of a line's text, by JS string index (`from` inclusive, `to` exclusive), that takes a role. */
+export interface SheetSpan {
+  readonly from: number;
+  readonly to: number;
+  readonly role: SheetRole;
+}
 
 export interface SheetLine {
   readonly kind: SheetLineKind;
   readonly text: string;
+  /** Stretches of {@link SheetLine.text} that override the line's own style; absent ⇒ the whole line takes its kind's style. */
+  readonly spans?: readonly SheetSpan[];
+}
+
+/** The spans that still lie inside `text` once it has been cut to `length` characters; a span that straddles the cut is shortened. */
+export function clampSpans(spans: readonly SheetSpan[], length: number): readonly SheetSpan[] {
+  return spans
+    .filter((span) => span.from < length)
+    .map((span) => (span.to <= length ? span : { ...span, to: length }));
 }
 
 export interface SheetGeometry {

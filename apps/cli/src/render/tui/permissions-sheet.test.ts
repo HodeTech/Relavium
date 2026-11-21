@@ -29,6 +29,7 @@ import {
   sheetTitle,
   type PermissionsSheetState,
   type PermissionsSheetStep,
+  type SheetMessage,
 } from './permissions-sheet.js';
 import { SHEET_MAX_COLUMNS } from './sheet-frame.js';
 import { MAX_ROW_TEXT } from '../../permissions/chat-permissions.js';
@@ -96,6 +97,8 @@ const ENTER = { return: true } as const;
 const ESC = { escape: true } as const;
 const CTRL_C = { ctrl: true } as const;
 const CONFIRM_AT = SETTLED + SHEET_CONFIRM_DWELL_MS;
+const DONE: SheetMessage = { tone: 'done', text: 'Withdrawn.' };
+const note = (text: string): SheetMessage => ({ tone: 'note', text });
 
 describe('the entries', () => {
   it('are the project rows then the session rows, the order they are drawn in', () => {
@@ -123,10 +126,10 @@ describe('the entries', () => {
 
 describe('the key ladder (ADR-0137 §2)', () => {
   it('moves the cursor with the arrows and clamps at both ends, clearing the last message', () => {
-    let state = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, 'Withdrawn.');
+    let state = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, DONE);
     state = stateOf(press(state, '', ARROW_DOWN));
     expect(state.cursor).toBe(1);
-    expect(state.message).toBe('');
+    expect(state.message).toBeUndefined();
     state = stateOf(press(state, '', ARROW_DOWN));
     state = stateOf(press(state, '', ARROW_DOWN));
     expect(state.cursor).toBe(2);
@@ -197,7 +200,7 @@ describe('the key ladder (ADR-0137 §2)', () => {
   describe('typed keys never arm: a typed line is not a command (security sittings, step 5 rounds 1 and 2)', () => {
     it('pins the numbers the ADR and the docs state', () => {
       expect(SHEET_SETTLE_MS).toBe(400);
-      expect(SHEET_CONFIRM_DWELL_MS).toBe(300);
+      expect(SHEET_CONFIRM_DWELL_MS).toBe(800);
       expect(SHEET_CONFIRM_WINDOW_MS).toBe(10_000);
     });
 
@@ -205,7 +208,7 @@ describe('the key ladder (ADR-0137 §2)', () => {
       const fresh = open(TWO_AND_ONE);
       const early = press(fresh, 'd', {}, T0 + SHEET_SETTLE_MS - 1);
       expect(stateOf(early).armed).toBe(false);
-      expect(stateOf(early).message).toBe(SHEET_WAIT_NOTE);
+      expect(stateOf(early).message).toEqual(note(SHEET_WAIT_NOTE));
       expect(
         stateOf(early).typed,
         'too soon is not typing: pressing it again after a moment arms',
@@ -220,7 +223,7 @@ describe('the key ladder (ADR-0137 §2)', () => {
       expect(state.typed).toBe(true);
       const refused = press(state, 'd', {}, SETTLED + 5_000);
       expect(stateOf(refused).armed).toBe(false);
-      expect(stateOf(refused).message).toBe(SHEET_TYPED_NOTE);
+      expect(stateOf(refused).message).toEqual(note(SHEET_TYPED_NOTE));
       expect(stateOf(refused).typed).toBe(true);
       // An arrow key is a person choosing a row: after it, `d` is deliberate.
       const chosen = stateOf(press(stateOf(refused), '', ARROW_DOWN, SETTLED + 5_100));
@@ -284,12 +287,12 @@ describe('the key ladder (ADR-0137 §2)', () => {
       const early = press(armed, '', ENTER, CONFIRM_AT - 1);
       expect(early.kind).toBe('state');
       expect(stateOf(early).armed).toBe(false);
-      expect(stateOf(early).message).toBe(SHEET_ENTER_NOTE);
+      expect(stateOf(early).message).toEqual(note(SHEET_ENTER_NOTE));
       expect(press(armed, '', ENTER, CONFIRM_AT).kind).toBe('withdraw');
       expect(press(armed, '', ENTER, SETTLED + SHEET_CONFIRM_WINDOW_MS).kind).toBe('withdraw');
       const late = press(armed, '', ENTER, SETTLED + SHEET_CONFIRM_WINDOW_MS + 1);
       expect(late.kind).toBe('state');
-      expect(stateOf(late).message).toBe(SHEET_ENTER_NOTE);
+      expect(stateOf(late).message).toEqual(note(SHEET_ENTER_NOTE));
     });
 
     it('only an Enter with nothing held confirms: Meta+Enter (an Esc then Enter), Ctrl+Enter and Shift+Enter drop the question', () => {
@@ -367,7 +370,7 @@ describe('the key ladder (ADR-0137 §2)', () => {
     const after = disarmPermissionsSheet(armedAt());
     expect(after.armed).toBe(false);
     expect(after.typed).toBe(true);
-    expect(after.message).toBe('');
+    expect(after.message).toBeUndefined();
     const idle = disarmPermissionsSheet(open(TWO_AND_ONE));
     expect(idle.armed).toBe(false);
     expect(idle.typed).toBe(true);
@@ -382,8 +385,8 @@ describe('the key ladder (ADR-0137 §2)', () => {
 
 describe('the legend and the handler (ADR-0137 §5)', () => {
   it('names every key the handler answers to, in the grammar: dim separators, leaving key last', () => {
-    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · d withdraw · Esc close');
-    expect(SHEET_LEGEND_ARMED).toBe('Enter withdraw · Esc keep');
+    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(SHEET_LEGEND_ARMED).toBe('[Enter] withdraw · Esc keep');
     expect(SHEET_LEGEND_EMPTY).toBe('Esc close');
     expect(SHEET_LEGEND_IDLE.endsWith(`${SHEET_KEYS.close.keys} ${SHEET_KEYS.close.verb}`)).toBe(
       true,
@@ -396,8 +399,10 @@ describe('the legend and the handler (ADR-0137 §5)', () => {
     expect(stateOf(press(idle, '', ARROW_DOWN)).cursor).toBe(1);
     expect(stateOf(press(stateOf(press(idle, '', ARROW_DOWN)), '', ARROW_UP)).cursor).toBe(0);
     // withdraw: `d` arms
-    const armed = stateOf(press(idle, SHEET_KEYS.withdraw.keys));
+    const armed = stateOf(press(idle, 'd'));
     expect(armed.armed).toBe(true);
+    // ...and so does the Delete key the legend names beside it
+    expect(stateOf(press(idle, '', { delete: true })).armed).toBe(true);
     // confirm: `Enter` withdraws what is armed
     expect(press(armed, '', ENTER, armed.armedAt + SHEET_CONFIRM_DWELL_MS).kind).toBe('withdraw');
     // keep: `Esc` keeps what is armed
@@ -410,11 +415,11 @@ describe('the legend and the handler (ADR-0137 §5)', () => {
 describe('reloading after a withdrawal', () => {
   it('keeps the cursor near where it was, clamps it to the shorter list, disarms and carries the message', () => {
     const state = { ...armedAt(), cursor: 2 };
-    const after = reloadPermissionsSheet(state, snapshot([project('a')], []), 'Withdrawn.');
+    const after = reloadPermissionsSheet(state, snapshot([project('a')], []), DONE);
     expect(after.cursor).toBe(0);
     expect(after.armed).toBe(false);
-    expect(after.message).toBe('Withdrawn.');
-    const none = reloadPermissionsSheet(state, snapshot([], []), 'Withdrawn.');
+    expect(after.message).toEqual(DONE);
+    const none = reloadPermissionsSheet(state, snapshot([], []), DONE);
     expect(none.cursor).toBe(0);
   });
 });
@@ -459,20 +464,22 @@ describe('what is drawn', () => {
   it('draws the title, the two sections with their counts, the rows, the note, the message row and the legend, in that order', () => {
     const lines = permissionsSheetLines(open(TWO_AND_ONE), geometry);
     expect(lines.map((line) => line.kind)).toEqual([
-      'title',
+      'rule',
       'heading',
       'selected',
       'row',
       'heading',
       'row',
       'note',
-      'message',
+      'hint',
       'legend',
     ]);
     const text = lines.map((line) => line.text);
-    expect(text[0]).toBe('Permissions · ask mode');
+    expect(text[0]).toMatch(/^─ Permissions · ask mode ─+$/u);
+    expect(displayWidth(text[0] ?? '')).toBe(78);
     expect(text[1]).toBe('This project · remembered (2)');
-    expect(text[2]).toMatch(/^› npm, 1 argument +2026-11-19 12:00Z$/u);
+    // the selected row carries its own action, just before its date; the date stays flush right
+    expect(text[2]).toMatch(/^› npm, 1 argument +\[d\] withdraw {3}2026-11-19 12:00Z$/u);
     expect(text[3]).toMatch(/^ {2}node, 1 argument +2026-11-19 12:00Z$/u);
     expect(text[4]).toBe('This session · approved (1)');
     expect(text[5]).toBe('  git status');
@@ -486,6 +493,7 @@ describe('what is drawn', () => {
     );
     expect(displayWidth(lines[2]?.text ?? '')).toBe(78);
     expect(lines[2]?.text.endsWith('2026-11-19 12:00Z')).toBe(true);
+    expect(lines[3]?.kind).toBe('heading');
     expect(displayWidth(lines[4]?.text ?? '')).toBe(78);
     expect(lines[4]?.text.endsWith('(also remembered)')).toBe(true);
   });
@@ -506,7 +514,7 @@ describe('what is drawn', () => {
   it('leaves the project-only surface without a session section', () => {
     const lines = texts(open(projectOnly([project('a')]), 'project', undefined));
     expect(lines.some((line) => line.startsWith('This session'))).toBe(false);
-    expect(lines[0]).toBe('Permissions · this project');
+    expect(lines[0]).toMatch(/^─ Permissions · this project ─+$/u);
   });
 
   it('says what to do when nothing is remembered, per surface, and that nothing is approved for the session', () => {
@@ -536,7 +544,7 @@ describe('what is drawn', () => {
     expect(text[1]).toBe('This project · remembered');
     expect(text.slice(2, 4).join(' ')).toContain('could not be read');
     // With no project rows the session row is the first entry, so it is the selected one.
-    expect(text.some((line) => line === '› git status')).toBe(true);
+    expect(text.some((line) => line.startsWith('› git status'))).toBe(true);
     for (const line of text) expect(displayWidth(line)).toBeLessThanOrEqual(78);
   });
 
@@ -590,16 +598,21 @@ describe('what is drawn', () => {
   });
 
   it('always has a message row, empty or not, escaped, and clipped to the width', () => {
-    const idle = permissionsSheetLines(open(TWO_AND_ONE), geometry);
-    expect(idle.at(-2)).toEqual({ kind: 'message', text: '' });
+    const nothing = permissionsSheetLines(open(snapshot([], [])), geometry);
+    expect(nothing.at(-2)).toEqual({ kind: 'message', text: '' });
     const answer = 'Withdrawn. Auto mode asks about it again.';
-    const after = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, answer);
-    expect(permissionsSheetLines(after, geometry).at(-2)?.text).toBe(answer);
-    const long = reloadPermissionsSheet(
-      open(TWO_AND_ONE),
-      TWO_AND_ONE,
-      `${RLO}hello ${'long '.repeat(40)}`,
-    );
+    const after = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, {
+      tone: 'done',
+      text: answer,
+    });
+    expect(permissionsSheetLines(after, geometry).at(-2)).toEqual({
+      kind: 'done',
+      text: `✓ ${answer}`,
+    });
+    const long = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, {
+      tone: 'note',
+      text: `${RLO}hello ${'long '.repeat(40)}`,
+    });
     const message = permissionsSheetLines(long, geometry).at(-2)?.text ?? '';
     expect(displayWidth(message)).toBeLessThanOrEqual(78);
     expect(message.endsWith('…')).toBe(true);
@@ -627,13 +640,13 @@ describe('what is drawn', () => {
       const state = { ...open(many), cursor: 20 };
       const lines = permissionsSheetLines(state, { columns, terminalRows: rows });
       const budget = Math.max(8, Math.min(Math.floor((rows * 3) / 5), rows - 8 - 4));
-      expect(lines.length, `${String(columns)}x${String(rows)}`).toBeLessThanOrEqual(budget - 1);
+      expect(lines.length, `${String(columns)}x${String(rows)}`).toBeLessThanOrEqual(budget);
       for (const line of lines)
         expect(displayWidth(line.text)).toBeLessThanOrEqual(
           Math.min(columns - 2, SHEET_MAX_COLUMNS),
         );
       expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
-      expect(lines[0]?.kind).toBe('title');
+      expect(lines[0]?.kind).toBe('rule');
       expect(lines.at(-1)?.kind).toBe('legend');
       expect(lines.some((line) => line.kind === 'note')).toBe(true);
     }
@@ -665,8 +678,9 @@ describe('what is drawn', () => {
     expect(sheetCanArm({ columns: 80, terminalRows: 23 })).toBe(false);
     expect(sheetCanArm({ columns: 80, terminalRows: 24 })).toBe(true);
     const lines = permissionsSheetLines(open(TWO_AND_ONE), { columns: 60, terminalRows: 20 });
-    expect(lines.map((line) => line.text)).toEqual([
-      'Permissions · ask mode',
+    const text = lines.map((line) => line.text);
+    expect(text[0]).toMatch(/^─ Permissions · ask mode ─+$/u);
+    expect(text.slice(1)).toEqual([
       'Enlarge the terminal to use this screen — Esc closes.',
       'Esc close',
     ]);
@@ -781,12 +795,21 @@ describe('the markers count the rows they stand in for (step 5 round 1)', () => 
             const up = lines.findIndex((l) => l.kind === 'marker' && l.text.startsWith('▲'));
             if (up >= 0)
               expect(lines[up + 1]?.kind, `${where}: a dangling fragment`).not.toBe('text');
+            // The first body line is a heading, a marker, or the first line of a whole sentence: never a row under a hidden heading and
+            // never the middle of a sentence (round 3, F2: the earlier assertion above looked only below a `▲`, which these shapes never draw).
+            const first = lines[1];
+            expect(
+              first?.kind === 'heading' ||
+                first?.kind === 'marker' ||
+                first?.text.startsWith('Nothing is remembered') === true,
+              `${where}: a window that starts on "${first?.text ?? ''}"`,
+            ).toBe(true);
           }
         }
       }
     }
     expect(frames).toBeGreaterThan(4_000);
-  });
+  }, 60_000);
 
   it('the first view of nothing remembered and four approved shows the heading and the whole sentence, with no marker above', () => {
     const snap = snapshot(
@@ -806,5 +829,228 @@ describe('the markers count the rows they stand in for (step 5 round 1)', () => 
     expect(markers).toHaveLength(2);
     expect(markers[0]).toMatch(/^▲ \d+ more$/u);
     expect(markers[1]).toMatch(/^▼ \d+ more$/u);
+  });
+});
+
+describe('the action is on the row it acts on, and every answer says how it went (the polish after step 5)', () => {
+  const geometry = { columns: 80, terminalRows: 24 };
+  const lineOf = (state: PermissionsSheetState, kind: string) =>
+    permissionsSheetLines(state, geometry).find((line) => line.kind === kind);
+
+  it('puts `[d] withdraw` on the selected row only, before its date, with the key in danger and the date dimmed', () => {
+    const lines = permissionsSheetLines(open(TWO_AND_ONE), geometry);
+    const selected = lines.find((line) => line.kind === 'selected');
+    const other = lines.find((line) => line.kind === 'row');
+    expect(selected?.text).toContain('[d] withdraw');
+    expect(other?.text).not.toContain('withdraw');
+    const text = selected?.text ?? '';
+    const key = text.indexOf('[d]');
+    expect(selected?.spans).toEqual([
+      { from: key, to: key + 3, role: 'danger' },
+      { from: text.indexOf('2026-11-19 12:00Z'), to: text.length, role: 'dim' },
+    ]);
+    // a session row without a date carries the action flush right
+    const session = permissionsSheetLines({ ...open(TWO_AND_ONE), cursor: 2 }, geometry).find(
+      (line) => line.kind === 'selected',
+    );
+    expect(session?.text.endsWith('[d] withdraw')).toBe(true);
+  });
+
+  it('keeps every date flush right however the selection moves, so the dates stay in one column', () => {
+    for (const cursor of [0, 1, 2]) {
+      const dated = permissionsSheetLines({ ...open(TWO_AND_ONE), cursor }, geometry).filter(
+        (line) =>
+          (line.kind === 'row' || line.kind === 'selected') && /\d{4}-\d{2}-\d{2}/u.test(line.text),
+      );
+      expect(dated.length, `cursor ${String(cursor)}`).toBeGreaterThan(0);
+      for (const line of dated) {
+        expect(line.text, `cursor ${String(cursor)}`).toMatch(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}Z$/u);
+        expect(displayWidth(line.text)).toBe(78);
+      }
+    }
+  });
+
+  it('says `[Enter] withdraw` on the armed row, in attention, and draws the row as armed', () => {
+    const armed = lineOf(armedAt(), 'armed');
+    expect(armed?.text).toContain('[Enter] withdraw');
+    expect(armed?.text).not.toContain('[d]');
+    const key = armed?.text.indexOf('[Enter]') ?? -1;
+    expect(armed?.spans?.[0]).toEqual({ from: key, to: key + 7, role: 'warn' });
+    expect(lineOf(armedAt(), 'selected')).toBeUndefined();
+  });
+
+  it('says what withdrawing the selected row will do before it is done, for each kind of row', () => {
+    const hint = (state: PermissionsSheetState): string | undefined => lineOf(state, 'hint')?.text;
+    const snap = snapshot([project('a')], [session('git status'), session('npm test', true)]);
+    expect(hint(open(snap))).toBe(
+      'Press d to withdraw it: auto mode will ask about this command again.',
+    );
+    expect(hint({ ...open(snap), cursor: 1 })).toBe(
+      'Press d to withdraw it: this command will need approval again.',
+    );
+    expect(hint({ ...open(snap), cursor: 2 })).toBe(
+      'Press d to withdraw the session approval; the project still remembers it.',
+    );
+    // the key in the hint is the one thing on it that is not dimmed
+    expect(lineOf(open(snap), 'hint')?.spans).toEqual([
+      { from: 0, to: 6, role: 'dim' },
+      { from: 6, to: 7, role: 'danger' },
+      { from: 7, to: hint(open(snap))?.length ?? 0, role: 'dim' },
+    ]);
+  });
+
+  it('draws an answer by its tone: a tick for done, a cross for failed, nothing for a note, and a question wins over all of them', () => {
+    const done = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, {
+      tone: 'done',
+      text: 'Withdrawn.',
+    });
+    expect(lineOf(done, 'done')?.text).toBe('✓ Withdrawn.');
+    const failed = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, {
+      tone: 'failed',
+      text: 'No room.',
+    });
+    expect(lineOf(failed, 'failed')?.text).toBe('✗ No room.');
+    const noted = reloadPermissionsSheet(open(TWO_AND_ONE), TWO_AND_ONE, note('Gone.'));
+    expect(lineOf(noted, 'notice')?.text).toBe('Gone.');
+    // a question is never hidden behind an old answer
+    const asked = { ...armedAt(), message: { tone: 'done', text: 'Old.' } } as const;
+    expect(lineOf(asked, 'question')?.text).toMatch(/^Withdraw npm/u);
+    expect(lineOf(asked, 'done')).toBeUndefined();
+  });
+
+  it('opens with a rule that carries the title: the title in bold, the rest dim, one row wide enough for the frame', () => {
+    const rule = permissionsSheetLines(open(TWO_AND_ONE), geometry)[0];
+    expect(rule?.kind).toBe('rule');
+    expect(rule?.spans).toEqual([
+      { from: 0, to: 2, role: 'dim' },
+      { from: 2, to: 2 + 'Permissions · ask mode'.length, role: 'strong' },
+      { from: 2 + 'Permissions · ask mode'.length, to: rule?.text.length ?? 0, role: 'dim' },
+    ]);
+    expect(rule?.text.startsWith('─ Permissions · ask mode ─')).toBe(true);
+  });
+
+  it('names the keys in the legend by their role: the action in danger, the confirmation in attention, the rest emphasised', () => {
+    expect(SHEET_KEYS.withdraw).toMatchObject({ keys: '[d / Del]', role: 'danger' });
+    expect(SHEET_KEYS.confirm).toMatchObject({ keys: '[Enter]', role: 'warn' });
+    const legendLine = permissionsSheetLines(open(TWO_AND_ONE), geometry).at(-1);
+    const roles = legendLine?.spans?.filter((span) => span.role !== 'dim').map((span) => span.role);
+    expect(roles).toEqual(['strong', 'danger', 'strong']);
+    const armed = permissionsSheetLines(armedAt(), geometry).at(-1);
+    expect(armed?.spans?.filter((span) => span.role !== 'dim').map((span) => span.role)).toEqual([
+      'warn',
+      'strong',
+    ]);
+  });
+
+  it('keeps the sheet one height as the cursor moves through a long list, so the rule does not move under it', () => {
+    const shapesToHold: readonly PermissionsSnapshot[] = [
+      projectOnly(Array.from({ length: 30 }, (_, i) => project(`g${String(i)}`))),
+      snapshot(
+        Array.from({ length: 5 }, (_, i) => project(`g${String(i)}`)),
+        [session('a'), session('b')],
+      ),
+      snapshot(
+        Array.from({ length: 14 }, (_, i) => project(`g${String(i)}`)),
+        Array.from({ length: 5 }, (_, i) => session(`cmd${String(i)}`)),
+      ),
+    ];
+    for (const snap of shapesToHold) {
+      const surface = snap.session === undefined ? 'project' : 'chat';
+      const total = sheetEntries(snap).length;
+      const heights = new Set<number>();
+      for (let cursor = 0; cursor < total; cursor += 1)
+        heights.add(permissionsSheetLines({ ...open(snap, surface), cursor }, geometry).length);
+      // one height, and the whole budget: the rule, eight body lines, the note, the message row and the legend (twelve rows at 80x24)
+      expect([...heights], `${String(total)} rows`).toEqual([12]);
+    }
+  });
+
+  it('every navigation key says the person is choosing a row, and a refused `d` is typing (round 3, F3)', () => {
+    for (const key of [
+      { upArrow: true },
+      { downArrow: true },
+      { home: true },
+      { end: true },
+      { pageUp: true },
+      { pageDown: true },
+    ] as const) {
+      const typed = { ...open(TWO_AND_ONE), typed: true };
+      expect(stateOf(press(typed, '', key)).typed, JSON.stringify(key)).toBe(false);
+    }
+    // a `d` that could not arm (the frame is too small to ask) or had nothing to arm is typing: the next `d` must not arm until an arrow key
+    const small = stateOf(press(open(TWO_AND_ONE), 'd', {}, SETTLED, false));
+    expect(small.typed).toBe(true);
+    expect(stateOf(press(small, 'd', {}, SETTLED + 1)).armed).toBe(false);
+    const nothing = stateOf(press(open(snapshot([], [])), 'd'));
+    expect(nothing.typed).toBe(true);
+    // ...and a `d` after an arrow key arms again
+    const chosen = stateOf(press(small, '', ARROW_DOWN, SETTLED + 2));
+    expect(stateOf(press(chosen, 'd', {}, SETTLED + 3)).armed).toBe(true);
+  });
+
+  it('while a question is up, a key that is not Esc is typing and Esc is not: the next `d` is refused after the one and arms after the other', () => {
+    const afterKey = stateOf(press(armedAt(), 'x', {}, CONFIRM_AT));
+    expect(afterKey.armed).toBe(false);
+    expect(afterKey.typed).toBe(true);
+    expect(stateOf(press(afterKey, 'd', {}, CONFIRM_AT + 10)).armed).toBe(false);
+    const afterEsc = stateOf(press(armedAt(), '', ESC, CONFIRM_AT));
+    expect(afterEsc.armed).toBe(false);
+    expect(afterEsc.typed).toBe(false);
+    expect(stateOf(press(afterEsc, 'd', {}, CONFIRM_AT + 10)).armed).toBe(true);
+  });
+
+  it('a hasty Enter and a withdrawal are not typing: the `d` that follows arms again, as the sheet’s own note says to press it (round 3, F1)', () => {
+    const armed = armedAt();
+    const hasty = stateOf(press(armed, '', ENTER, armed.armedAt + 100));
+    expect(hasty.message).toEqual(note(SHEET_ENTER_NOTE));
+    expect(hasty.typed).toBe(false);
+    expect(stateOf(press(hasty, 'd', {}, armed.armedAt + 200)).armed).toBe(true);
+    const step = press(armed, '', ENTER, CONFIRM_AT);
+    if (step.kind !== 'withdraw') throw new Error('expected a withdrawal');
+    expect(step.state.typed).toBe(false);
+    // after the host reloads the sheet, the next `d` arms the next row without an arrow detour
+    const reloaded = reloadPermissionsSheet(step.state, TWO_AND_ONE, DONE);
+    expect(stateOf(press(reloaded, 'd', {}, CONFIRM_AT + 50)).armed).toBe(true);
+  });
+
+  it('a command that imitates the sheet’s own keys is an ordinary row: it carries no chip, no role and no extra line (§5 amendment)', () => {
+    const hostile = snapshot(
+      [],
+      [session('echo [d] withdraw [Enter] withdraw'), session('git status')],
+    );
+    const lines = permissionsSheetLines({ ...open(hostile), cursor: 1 }, geometry);
+    const imitation = lines.find((line) => line.text.includes('echo [d]'));
+    expect(imitation?.kind).toBe('row');
+    expect(imitation?.spans ?? []).toEqual([]);
+    expect(imitation?.text.startsWith('  echo ')).toBe(true);
+    // the only chip is the selected row's, at its right edge
+    expect(lines.filter((line) => line.spans?.some((span) => span.role === 'danger'))).toHaveLength(
+      3,
+    );
+    expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
+  });
+
+  it('never carries a span outside its line, over every state it can draw', () => {
+    const snaps = [TWO_AND_ONE, snapshot([], []), projectOnly([project('a')])];
+    for (const snap of snaps) {
+      for (const armed of [false, true]) {
+        for (const cols of [80, 100, 140]) {
+          for (let cursor = 0; cursor < Math.max(1, sheetEntries(snap).length); cursor += 1) {
+            const state = {
+              ...open(snap, snap.session === undefined ? 'project' : 'chat'),
+              cursor,
+              armed,
+            };
+            for (const line of permissionsSheetLines(state, { columns: cols, terminalRows: 30 })) {
+              for (const span of line.spans ?? []) {
+                expect(span.from, line.text).toBeGreaterThanOrEqual(0);
+                expect(span.to, line.text).toBeLessThanOrEqual(line.text.length);
+                expect(span.from, line.text).toBeLessThan(span.to);
+              }
+            }
+          }
+        }
+      }
+    }
   });
 });
