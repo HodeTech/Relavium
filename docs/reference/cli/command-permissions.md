@@ -228,7 +228,12 @@ write) or approved for this session; the repository's allowlist does not skip th
   fact and neither ever refusing a command: `⚠ Runs code: a shell, an inline script or a wrapper. Remember is not offered.` (a *code
   carrier*, below) and `⚠ Names a protected path (its output goes to the model). Allow once only.` A command card has no
   tool-identity row: its title already says `Run`, and the rows that are not shown are named in the warnings.
-- Secret-shaped spans are masked, labelled (`N masked values in this command`) and counted by the existing masking. On a command card **every** masked span must be
+- Secret-shaped spans are masked, labelled (`N masked values in this command`) and counted by the existing masking, **plus every span
+  the engine's event preview of the same command masks** (`secretShapedRanges`, [tool-registry.md](../shared-core/tool-registry.md)): the
+  two scrubbers do not recognize the same shapes (`password=…`, `--api_key=…`, `secret=…`), and what the event hides the card, its
+  masked copy (`c`) and `/details` hide too. A secret split from its key across two arguments is masked in each; where the engine
+  cannot locate a span in the text it read, the whole argument is masked; and the quoted title line is masked whole when quoting
+  (`'` becomes `'"'"'`) could hide a secret from a scan of the title alone. On a command card **every** masked span must be
   revealed and displayed before an approving answer counts (a file card requires only the flagged ones), because a masked
   argument is exactly where a command could hide what it does. Control characters, line separators and invisible code points
   show as visible escapes (`<U+001B>`), never as terminal controls.
