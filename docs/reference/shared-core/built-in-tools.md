@@ -268,7 +268,10 @@ refused inside model text, so the renderer owns column 0 of every wrapped line; 
 narrower, which the bounds already allow (a code point is never wider in columns than in bytes, and 150 bytes fit two 76-column
 rows). In `accept-edits` and `auto`, where no card follows a write, the stop row also reads `· an answer is guidance, not a veto`.
 The **Review** tab lists every question with its answer exactly as it will be sent (`● 2 Also → one, “my text”`, `○ 3 Last → not answered yet`) and a
-line saying what `Enter` does; it is shorter than a question tab, so it always fits. Host text (hints, the own-answer note) is **not** behind the gutter —
+line saying what `Enter` does, within the same nine-row body bound as a question tab. An answer is shown **whole**: it wraps under its own row, indented (column 0
+stays the host's, so answer text cannot pose as a row), and the rows left after the title and the note are shared — a short answer takes one, a long one takes what is left. Where even
+that cannot hold an answer, its last row ends with how many characters it leaves out (`… 123 more characters not shown`), so the tab never shows less than `Enter` will send without saying so.
+Host text (hints, the own-answer note) is **not** behind the gutter —
 the gutter always means "the agent wrote this".
 
 **Delegate** (`SessionDeps.askUser`, copied into the dispatch context): `(request, signal) => Promise<AskUserAnswer>`.

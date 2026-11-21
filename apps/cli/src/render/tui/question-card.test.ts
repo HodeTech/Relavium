@@ -699,3 +699,168 @@ describe('the Review tab (ADR-0132 §3)', () => {
     expect(rows.find((row) => row.text.includes('alpha.ts'))?.tone).toBe('highlight');
   });
 });
+
+/**
+ * ADR-0132 §3: the Review tab "lists every answer as it will be sent". Enter sends the whole text, so the tab shows the whole
+ * text, wrapped over the rows the card's body bound leaves; where even that cannot hold it, the row says how many characters it
+ * hides. It was one clipped line per answer (review finding V6a-04).
+ */
+describe('the Review tab shows the whole answer, or says how much it hides (ADR-0132 §3)', () => {
+  const GLYPH_ROW = /^[●○] /u;
+  const NOTICE = /… (\d+) more characters? not shown$/u;
+
+  function requestOf(count: number): AskUserRequest {
+    return {
+      questions: Array.from({ length: count }, (_, i) => ({
+        header: `Notes${String(i + 1)}`,
+        question: `q${String(i + 1)}`,
+        multiSelect: false,
+        options: [
+          { label: 'yes', description: 'Yes' },
+          { label: 'no', description: 'No' },
+        ],
+      })),
+    };
+  }
+
+  /** The Review tab with each question answered by its own text (`undefined` leaves it unanswered). */
+  function reviewOf(own: readonly (string | undefined)[]): QuestionCardState {
+    const base = initialQuestionCard(requestOf(own.length));
+    return {
+      ...base,
+      index: own.length,
+      entries: base.entries.map((entry, i) => {
+        const text = own[i];
+        return text === undefined ? entry : { ...entry, own: text };
+      }),
+    };
+  }
+
+  /** The line one answer would be on a single, unbounded row. */
+  const fullLine = (index: number, text: string): string =>
+    `● ${String(index + 1)} Notes${String(index + 1)} → “${text}”`;
+
+  /** The rows of the answers alone: the title above them and the note below are not part of any answer. */
+  const answerRowsOf = (state: QuestionCardState): string[] =>
+    projectQuestionCard(state, COLUMNS)
+      .body.slice(1, -1)
+      .map((row) => row.text);
+
+  /** Group the answer rows by answer: a row that starts with a dot begins one, an indented row continues the last. */
+  function grouped(rows: readonly string[]): string[][] {
+    const groups: string[][] = [];
+    for (const row of rows) {
+      if (GLYPH_ROW.test(row)) groups.push([row]);
+      else groups.at(-1)?.push(row);
+    }
+    return groups;
+  }
+
+  /** What a group shows of its line, and how many characters it says it hides (0 when it says nothing). */
+  function readGroup(group: readonly string[]): {
+    readonly shown: string;
+    readonly hidden: number;
+  } {
+    const text = group.map((row, at) => (at === 0 ? row : row.slice(4)));
+    const last = text.at(-1) ?? '';
+    const match = NOTICE.exec(last);
+    if (match === null) return { shown: text.join(''), hidden: 0 };
+    const kept = last.slice(0, last.length - match[0].length - 1); // the row is `${kept} ${notice}`
+    return { shown: [...text.slice(0, -1), kept].join(''), hidden: Number(match[1]) };
+  }
+
+  it('an answer that fits the rows left is shown whole, wrapped under its own row', () => {
+    const own = 'word '.repeat(30).trim(); // 149 characters: one clipped line before
+    const rows = answerRowsOf(reviewOf([own, 'ok']));
+    const [first, second] = grouped(rows);
+    expect(first?.length).toBe(3);
+    expect(first?.slice(1).every((row) => row.startsWith('    '))).toBe(true);
+    expect(readGroup(first ?? [])).toEqual({ shown: fullLine(0, own), hidden: 0 });
+    expect(second).toEqual([fullLine(1, 'ok')]);
+    expect(rows.join('\n')).not.toContain('not shown');
+    for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(COLUMNS - 2);
+  });
+
+  it('an answer that cannot fit says exactly how many characters it hides, never a bare ellipsis', () => {
+    const own = `${'abcdefghij'.repeat(50)}`; // 500 characters, the person's whole allowance
+    const rows = answerRowsOf(reviewOf([own, 'ok']));
+    const [first] = grouped(rows);
+    const { shown, hidden } = readGroup(first ?? []);
+    expect(hidden).toBeGreaterThan(0);
+    expect(fullLine(0, own).startsWith(shown)).toBe(true);
+    expect([...fullLine(0, own)].length - [...shown].length).toBe(hidden);
+    expect(rows.filter((row) => row.includes('not shown'))).toHaveLength(1);
+  });
+
+  it('a short answer keeps one row and the long one takes the rows it leaves', () => {
+    const rows = projectQuestionCard(reviewOf(['ok', 'fine', 'x'.repeat(500)]), COLUMNS).body;
+    expect(rows).toHaveLength(QUESTION_CARD_MAX_BODY_ROWS);
+    const [a, b, c] = grouped(rows.slice(1, -1).map((row) => row.text));
+    expect([a?.length, b?.length, c?.length]).toEqual([1, 1, 5]);
+  });
+
+  it('wrapped text never poses as a row of its own: only the real answers start with a dot', () => {
+    // The forged row is slid across the first row's edge, so at some offset it lands exactly at the start of a continuation row.
+    for (let before = 50; before <= 80; before += 1) {
+      const forged = `${'a'.repeat(before)}● 2 Notes2 → “yes”${'b'.repeat(40)}`;
+      const rows = answerRowsOf(reviewOf([forged, 'ok']));
+      expect(
+        rows.filter((row) => GLYPH_ROW.test(row)),
+        `after ${String(before)}`,
+      ).toHaveLength(2);
+    }
+  });
+
+  it('for generated answers of every length and alphabet: within the bound and the width, whole or counted, no cut inside a cluster', () => {
+    const random = mulberry32(20261121);
+    const alphabets = [...ALPHABETS, ['👨‍👩‍👧', 'a', ' '], [...'abcdefghijkl', '🇯🇵']];
+    let counted = 0;
+    let whole = 0;
+    for (let n = 0; n < 300; n += 1) {
+      const count = 2 + Math.floor(random() * 3);
+      const own = Array.from({ length: count }, () => {
+        if (random() < 0.15) return undefined;
+        const alphabet = alphabets[Math.floor(random() * alphabets.length)] ?? ['x'];
+        let text = '';
+        const length = Math.floor(random() * 501);
+        for (let k = 0; k < length; k += 1)
+          text += alphabet[Math.floor(random() * alphabet.length)] ?? 'x';
+        return text;
+      });
+      const rows = answerRowsOf(reviewOf(own));
+      expect(rows.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS - 2);
+      for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(COLUMNS - 2);
+      const groups = grouped(rows);
+      expect(groups).toHaveLength(count);
+      groups.forEach((group, index) => {
+        const text = own[index];
+        if (text === undefined) {
+          expect(group).toEqual([
+            `○ ${String(index + 1)} Notes${String(index + 1)} → not answered yet`,
+          ]);
+          return;
+        }
+        const line = fullLine(index, text);
+        const { shown, hidden } = readGroup(group);
+        expect(line.startsWith(shown), `answer ${String(index)} shows a prefix of its line`).toBe(
+          true,
+        );
+        expect(
+          [...line].length - [...shown].length,
+          `answer ${String(index)} says what it hides`,
+        ).toBe(hidden);
+        if (hidden === 0) whole += 1;
+        else counted += 1;
+        const shownRows = group.map((row, at) => (at === 0 ? row : row.slice(4)));
+        const last = shownRows.at(-1) ?? '';
+        const match = NOTICE.exec(last);
+        if (match !== null)
+          shownRows[shownRows.length - 1] = last.slice(0, last.length - match[0].length - 1);
+        expect(cutsInsideClusters(shownRows), `answer ${String(index)}`).toEqual([]);
+      });
+    }
+    // Both outcomes really happened, or the property proves only one of them.
+    expect(whole).toBeGreaterThan(100);
+    expect(counted).toBeGreaterThan(30);
+  });
+});
