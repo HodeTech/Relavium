@@ -370,7 +370,9 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   and 10 s after the question appeared (the approval card's own minimum), and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
   `Meta+Enter`). An `Enter` outside that window drops the question and says `Too early or too late for Enter — nothing was withdrawn.
   Press d again.` An `Enter` that reaches a question always follows a deliberate `d`, so neither it nor the withdrawal it makes counts as
-  typing: the `d` the note asks for arms again, and so does the next row. A paste is typing. Any other key, a paste and `Esc` keep the row; `Esc` closes an idle sheet; `Ctrl+C` closes it
+  typing: the `d` the note asks for arms again, and so does the next row. A paste is typing. Any other key, a paste and `Esc` keep the row (the question is dropped and nothing is
+  withdrawn). Typing there is any key that is neither `Esc` nor a navigation key (an arrow, a page key, `Home`, `End`), and a paste: a `d` after a navigation key or `Esc` arms
+  again, a `d` after typing is refused with the note above. `Esc` closes an idle sheet; `Ctrl+C` closes it
   from either state. Neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and
   one can only be made on a command card.
 - **The message row** is always one row, and it never moves the legend. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a

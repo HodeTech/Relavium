@@ -988,7 +988,7 @@ describe('the action is on the row it acts on, and every answer says how it went
     expect(stateOf(press(chosen, 'd', {}, SETTLED + 3)).armed).toBe(true);
   });
 
-  it('while a question is up, a key that is not Esc is typing and Esc is not: the next `d` is refused after the one and arms after the other', () => {
+  it('while a question is up, a key that is neither Esc nor a navigation key is typing: the next `d` is refused after the one and arms after the other', () => {
     const afterKey = stateOf(press(armedAt(), 'x', {}, CONFIRM_AT));
     expect(afterKey.armed).toBe(false);
     expect(afterKey.typed).toBe(true);
@@ -997,6 +997,120 @@ describe('the action is on the row it acts on, and every answer says how it went
     expect(afterEsc.armed).toBe(false);
     expect(afterEsc.typed).toBe(false);
     expect(stateOf(press(afterEsc, 'd', {}, CONFIRM_AT + 10)).armed).toBe(true);
+  });
+
+  it('while a question is up, a navigation key drops it and is not typing: the `d` after it arms again (review V6a-08, ADR-0137 §2)', () => {
+    for (const key of [
+      ARROW_DOWN,
+      ARROW_UP,
+      { pageUp: true },
+      { pageDown: true },
+      { home: true },
+      { end: true },
+    ] as const) {
+      const armed = armedAt();
+      const dropped = stateOf(press(armed, '', key, CONFIRM_AT));
+      expect(dropped.armed, JSON.stringify(key)).toBe(false);
+      expect(dropped.typed, JSON.stringify(key)).toBe(false);
+      expect(dropped.cursor, 'it keeps the row, as every other key does').toBe(armed.cursor);
+      const again = stateOf(press(dropped, 'd', {}, CONFIRM_AT + 10));
+      expect(again.armed, `d after ${JSON.stringify(key)}`).toBe(true);
+      expect(again.message).toBeUndefined();
+    }
+    // The whole sequence from the review: `d`, `↓`, `d`, then an Enter after the dwell withdraws the row the question names.
+    const second = stateOf(
+      press(stateOf(press(armedAt(), '', ARROW_DOWN, CONFIRM_AT)), 'd', {}, CONFIRM_AT + 10),
+    );
+    const step = press(second, '', ENTER, second.armedAt + SHEET_CONFIRM_DWELL_MS);
+    expect(step.kind).toBe('withdraw');
+  });
+
+  it('...and that is the ONLY exception: after any other key the next `d` is refused with the typed-keys note', () => {
+    for (const [input, key] of [
+      ['x', {}],
+      ['d', {}],
+      ['', { tab: true }],
+      ['', { backspace: true }],
+    ] as const) {
+      const dropped = stateOf(press(armedAt(), input, key, CONFIRM_AT));
+      expect(dropped.typed, JSON.stringify([input, key])).toBe(true);
+      const refused = stateOf(press(dropped, 'd', {}, CONFIRM_AT + 10));
+      expect(refused.armed).toBe(false);
+      expect(refused.message).toEqual(note(SHEET_TYPED_NOTE));
+    }
+  });
+
+  it('a stream of letters, navigation keys, `d` and Enter at any pace behaves as the rule says, and withdraws only a row the person armed after choosing', () => {
+    // An independent statement of ADR-0137 §2: a key that is not navigation is typing, navigation clears it, `d` arms only when
+    // nothing was typed and the sheet has settled, and only an Enter after a `d` that armed, inside the window, withdraws.
+    let seed = 7654321;
+    const next = (): number => {
+      seed = (seed * 1664525 + 1013904223) % 4294967296;
+      return seed / 4294967296;
+    };
+    const alphabet: readonly (readonly [string, Parameters<typeof foldPermissionsSheetKey>[1]])[] =
+      [
+        ['a', {}],
+        ['x', {}],
+        [' ', {}],
+        ['d', {}],
+        ['d', {}],
+        ['', { backspace: true }],
+        ['', ARROW_DOWN],
+        ['', ARROW_UP],
+        ['', { pageDown: true }],
+        ['', { home: true }],
+        ['', ENTER],
+        ['', ENTER],
+        ['', { tab: true }],
+      ];
+    let withdrawals = 0;
+    let rearmed = 0;
+    for (let run = 0; run < 3_000; run += 1) {
+      let state = open(TWO_AND_ONE);
+      let typed = false;
+      let armed = false;
+      let askedAt = 0;
+      let at = T0 + Math.floor(next() * 600);
+      const pace = [5, 40, 110, 250, 700, 2_000][Math.floor(next() * 6)] ?? 110;
+      const length = 2 + Math.floor(next() * 12);
+      for (let index = 0; index < length; index += 1) {
+        const [input, key] = alphabet[Math.floor(next() * alphabet.length)] ?? ['a', {}];
+        at += Math.floor(pace * (0.5 + next()));
+        const isNavigation =
+          key.upArrow === true ||
+          key.downArrow === true ||
+          key.pageDown === true ||
+          key.home === true;
+        const isWithdrawKey = input === 'd' || key.backspace === true;
+        let expectWithdraw = false;
+        if (armed) {
+          if (key.return === true) {
+            const held = at - askedAt;
+            expectWithdraw = held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS;
+          } else if (!isNavigation) typed = true;
+          armed = false;
+        } else if (isNavigation) typed = false;
+        else if (isWithdrawKey) {
+          if (!typed && at - T0 >= SHEET_SETTLE_MS) {
+            armed = true;
+            askedAt = at;
+            if (index > 0) rearmed += 1;
+          }
+        } else typed = true;
+        const step = press(state, input, key, at);
+        const label = `run ${String(run)} key ${String(index)} ${JSON.stringify([input, key])}`;
+        if (step.kind === 'close') throw new Error(`${label}: closed`);
+        expect(step.kind === 'withdraw', label).toBe(expectWithdraw);
+        if (expectWithdraw) withdrawals += 1;
+        state = step.state;
+        expect(state.armed, label).toBe(armed);
+        expect(state.typed, label).toBe(typed);
+      }
+    }
+    // The stream really reached both outcomes and the case the review found (a `d` that armed after a navigation key).
+    expect(withdrawals).toBeGreaterThan(20);
+    expect(rearmed).toBeGreaterThan(200);
   });
 
   it('a hasty Enter and a withdrawal are not typing: the `d` that follows arms again, as the sheet’s own note says to press it (round 3, F1)', () => {

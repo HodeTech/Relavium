@@ -207,6 +207,18 @@ function isWithdrawKey(input: string, key: ChatKey): boolean {
   return key.backspace === true || key.delete === true || input.toLowerCase() === 'd';
 }
 
+/** The keys that say a person is choosing a row, not typing: the arrows, the page keys, `Home` and `End`. */
+function isNavigationKey(key: ChatKey): boolean {
+  return (
+    key.upArrow === true ||
+    key.downArrow === true ||
+    key.pageUp === true ||
+    key.pageDown === true ||
+    key.home === true ||
+    key.end === true
+  );
+}
+
 /** An `Enter` with nothing held: `Esc` then `Enter` inside a terminal's escape window arrives as `Meta+Enter` and is not an answer. */
 function isPlainEnter(key: ChatKey): boolean {
   return key.return === true && key.meta !== true && key.ctrl !== true && key.shift !== true;
@@ -233,14 +245,15 @@ export function foldPermissionsSheetKey(
   if (isInterruptKey(input, key)) return { kind: 'close' };
   const entries = sheetEntries(state.snapshot);
   if (state.armed) {
-    // `Esc` keeps the row and is not typing; every other key keeps it too and is.
+    // `Esc` and a navigation key keep the row and are not typing (ADR-0137 §2: only a key that is not navigation is); every other key
+    // keeps it too and is. A navigation key does not move the row either: it drops the question, as every key but `Enter` does.
     const kept: PermissionsSheetStep = {
       kind: 'state',
       state: {
         ...state,
         armed: false,
         message: undefined,
-        typed: key.escape === true ? state.typed : true,
+        typed: key.escape === true || isNavigationKey(key) ? state.typed : true,
       },
     };
     // The question is not on screen: the frame says how to leave, and `Esc` does.
