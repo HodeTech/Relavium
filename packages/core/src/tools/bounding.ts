@@ -547,6 +547,51 @@ function redactSecretShapedOnce(text: string, throughCloser = false): string {
   return replaceRanges(source, secretRanges(source, throughCloser));
 }
 
+/** A span of the ORIGINAL text that {@link redactSecretShapedText} masks (UTF-16 offsets, `end` exclusive). */
+export interface SecretShapedRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Where {@link redactSecretShapedText} masks `text`, as ranges of the ORIGINAL text: the locations a surface that shows
+ * the text itself (the command card shows each argument in clear until a person reveals it) must hide to hide what the
+ * event preview hides, which it cannot read back from the replacement text.
+ *
+ * The ranges are those of the projection's first pass, and they are exact only when that pass IS the projection: a text
+ * whose split header labels the pass joins first, or one the projection needs a second pass for, has no ranges of its own
+ * to report, so the whole text is one range (`[0, length)`) rather than a guess. Over-masking is the safe direction.
+ * Outside that fallback, replacing each range with `[redacted]` gives the projection's output, except that a scheme
+ * credential's range stops short of the whitespace the projection rewrites to one space (`Bearer  <token>`). Ranges are
+ * sorted and never overlap; ranges that only touch stay apart, as the projection keeps their masks apart.
+ */
+export function secretShapedRanges(text: string): readonly SecretShapedRange[] {
+  const projected = redactSecretShapedText(text);
+  if (projected === text) return [];
+  const whole = [{ start: 0, end: text.length }];
+  if (joinSplitHeaderLabels(text) !== text) return whole;
+  const firstPass = secretRanges(text, false);
+  if (replaceRanges(text, firstPass) !== projected) return whole;
+  // The runs the projection replaces (`replaceRanges`): overlapping ranges are one run, which a touching range does not join.
+  const runs: { start: number; end: number; replacement: string }[] = [];
+  for (const range of [...firstPass].sort((left, right) => left.start - right.start)) {
+    const last = runs.at(-1);
+    if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else runs.push({ start: range.start, end: range.end, replacement: range.replacement });
+  }
+  const masked: SecretShapedRange[] = [];
+  for (const run of runs) {
+    // A scheme credential's replacement carries its own separating space, so the whitespace before the token is not
+    // part of what is hidden.
+    let { start } = run;
+    if (run.replacement.startsWith(' '))
+      while (/\s/.test(text[start] ?? '') && start < run.end) start += 1;
+    // A run with nothing in it hides nothing: the projection only inserts its mask there.
+    if (run.end > start) masked.push({ start, end: run.end });
+  }
+  return masked;
+}
+
 /**
  * Every span the projection masks in `text`; each rule is described at its visitor. `throughCloser` selects
  * the summary's decisions (`redactSecretShapedSummaryText`).

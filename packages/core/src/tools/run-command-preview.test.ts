@@ -128,12 +128,19 @@ describe('the event preview of a command masks everything the joined projection 
     for (const [command, args] of [
       [`./sk-ant-api03-${SECRET}${SECRET}${SECRET}`, ['--version']],
       ['curl', ['--header', `Authorization: Bearer ${SECRET}${SECRET}`]],
-      ['tool', ['--password', SECRET]],
     ] as const) {
-      const joined = redactSecretShapedText([command, ...args].join(' '));
+      // Unconditional: the joined projection masks both, so the preview must too (it once skipped the check whenever the oracle leaked).
+      expect(redactSecretShapedText([command, ...args].join(' ')), command).not.toContain(SECRET);
       const { request } = await asked(command, args);
-      if (!joined.includes(SECRET)) expect(request.preview.command).not.toContain(SECRET);
+      expect(request.preview.command, command).not.toContain(SECRET);
+      expect(request.preview.command, command).toContain('[redacted]');
     }
+  });
+
+  it('a bare value after a flag has no secret shape, so neither projection can mask it (the card shows the whole argv)', async () => {
+    const { request } = await asked('tool', ['--password', SECRET]);
+    expect(redactSecretShapedText(['tool', '--password', SECRET].join(' '))).toContain(SECRET);
+    expect(request.preview.command).toBe(`tool --password ${SECRET}`);
   });
 
   it('leaves an ordinary command readable', async () => {

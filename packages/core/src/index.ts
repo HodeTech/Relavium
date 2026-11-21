@@ -397,6 +397,9 @@ export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node
 // AgentSession (1.V) invoke; side effects go through the injected ToolHost seam (ADR-0037;
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
 export { createToolRegistry, scrubbedCommandDisplay } from './tools/registry.js';
+// Where the event preview's secret projection masks a text, as ranges of that text (the command card hides the same spans).
+export { secretShapedRanges } from './tools/bounding.js';
+export type { SecretShapedRange } from './tools/bounding.js';
 export { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './tools/builtins.js';
 // `ask_user` (ADR-0132): the question/answer contract a host's card implements, and its closed bounds.
 export { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH, plainTextRefusal } from './tools/ask-user.js';
