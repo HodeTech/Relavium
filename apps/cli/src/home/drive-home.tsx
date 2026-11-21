@@ -105,6 +105,7 @@ import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import { findProjectConfigDir } from '../config/paths.js';
 import { createPermissionsPort } from '../permissions/chat-permissions.js';
 import {
   commandGrantRoot,
@@ -1792,12 +1793,22 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             .catch((cause: unknown) => ownership?.surface.work.failure(cause));
         resolve(EXIT_CODES.success);
       };
-      const openHomeGrants = (): CommandGrantStore =>
-        createCommandGrantStore({
+      const openHomeGrants = (): CommandGrantStore => {
+        // The project directory is found again every time, as a chat finds it when it is built (`openCommandGrants`): a `.relavium/` that
+        // appeared (a checkout, a pull, another terminal's `relavium init`) or went away since this Home started changes the root a chat
+        // keys its grants by, and a sheet that kept the old one would list nothing while the chat's grant runs unasked.
+        let currentConfigDir: string | undefined;
+        try {
+          currentConfigDir = findProjectConfigDir(deps.global.cwd, homeDir);
+        } catch {
+          // A home that cannot be resolved safely: grants then key by the working directory, as in a chat.
+        }
+        return createCommandGrantStore({
           homeDir,
-          projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
+          projectRoot: commandGrantRoot(deps.global.cwd, currentConfigDir),
           keychain,
         });
+      };
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and

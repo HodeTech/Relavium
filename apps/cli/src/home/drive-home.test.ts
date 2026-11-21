@@ -1453,6 +1453,63 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
+    it('withdraws through the Home’s own wrapper, end to end: `d`, then `Enter`, removes the grant from the store a chat reads', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      expect(projectStore(keychain).list()).toMatchObject({
+        ok: true,
+        grants: [{ program: 'npm' }],
+      });
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome({ ...deps, openPermissions: true });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
+      // The controller runs on the real clock here: the sheet settles (400 ms), then the question must have stood for 800 ms.
+      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+      props.controller.handleKey('d', {});
+      expect(props.controller.getSnapshot().permissionsSheet?.armed).toBe(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      props.controller.handleKey('', ENTER);
+      expect(props.controller.getSnapshot().permissionsSheet?.message?.tone).toBe('done');
+      expect(rowLabels(props)).toEqual([]);
+      expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('finds the project directory again on every read, as a chat does: a `.relavium/` that appeared since the Home started changes the root', async () => {
+      const keychain = memoryKeychain();
+      const sub = join(cwd, 'sub');
+      mkdirSync(sub);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), {
+        keychain,
+        global: { ...global, cwd: sub },
+      });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      // While the Home runs a project directory appears above its working directory (a checkout, a pull, another terminal's `init`); a
+      // chat built from this Home would key its grants by that root, so a grant remembered there is what the Home must list.
+      mkdirSync(join(cwd, '.relavium'));
+      await createCommandGrantStore({
+        homeDir: testHomeDir,
+        projectRoot: commandGrantRoot(sub, findProjectConfigDir(sub, testHomeDir)),
+        keychain,
+        findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
+      }).remember(['npm', 'test']);
+      props.controller.handleKey('/', {});
+      for (const ch of 'permissions') props.controller.handleKey(ch, {});
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
     it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the sheet', async () => {
       const keylessResolver: ProviderResolver = {
         resolveProvider: () => undefined,

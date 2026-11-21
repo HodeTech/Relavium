@@ -1321,7 +1321,7 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
   });
 
-  it('PgDn reaches the sheet, not a long Home notice that landed after it opened (the notice window is paged by PgUp and PgDn)', async () => {
+  it('PgDn and PgUp reach the sheet, not a long Home notice that landed after it opened (the notice window is paged by them)', async () => {
     const many: PermissionsPort = {
       ...homePort,
       load: () => ({
@@ -1345,6 +1345,8 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     m.harness.stdin.write('\x1b[6~');
     // the key went to the sheet: a page is six rows
     await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 6);
+    m.harness.stdin.write('\x1b[5~'); // and PgUp is the sheet's too
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 0);
   });
 
   it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {
@@ -1356,14 +1358,5 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     expect(open).not.toContain('/ for commands');
     m.harness.stdin.write('\u001b');
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
-  });
-
-  it('PgUp reaches the sheet, not the Home notice behind it', async () => {
-    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-    const m = mountHome(store, { permissions: homePort });
-    await openFromPalette(m);
-    m.harness.stdin.write('\x1b[5~');
-    await settleFrames();
-    expect(m.c.getSnapshot().permissionsSheet, 'still open').toBeDefined();
   });
 });

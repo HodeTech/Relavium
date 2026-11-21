@@ -1365,16 +1365,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
     const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
+    if (result.sheet === undefined && permissionsIsTheCommand) {
+      // The sheet a command opened is closing: the run ends with it, and the last frame it leaves (the scrollback of the inline renderer) is
+      // the sheet's, not a Home prompt, so the closed state is never published. Unless it closed because of a fault: then the Home stays,
+      // with the note, so that the person can read it. Either way the command is over: a sheet opened later is an ordinary one.
+      permissionsIsTheCommand = false;
+      if (result.note === undefined) {
+        exitHome();
+        return true;
+      }
+    }
     set({ permissionsSheet: result.sheet });
     if (result.note !== undefined) {
       if (active !== undefined) active.store.note(result.note);
       else set({ notice: result.note });
-    }
-    if (result.sheet === undefined && permissionsIsTheCommand) {
-      // The sheet a command opened is gone: the run ends with it, unless it closed because of a fault, when the Home stays so that the
-      // note can be read. Either way the command is over: a sheet opened later is an ordinary one that returns to the Home.
-      permissionsIsTheCommand = false;
-      if (result.note === undefined) exitHome();
     }
     return true;
   };

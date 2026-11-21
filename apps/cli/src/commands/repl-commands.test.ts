@@ -4,6 +4,7 @@ import {
   CHAT_PALETTE_COMMANDS,
   formatReplHelp,
   HOME_PALETTE_COMMANDS,
+  HOME_CHAT_PALETTE_COMMANDS,
   PALETTE_COMMANDS,
   replCommandList,
   REPL_COMMANDS,
@@ -245,6 +246,22 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'init',
       'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
       'resume',
+    ]);
+  });
+
+  it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {
+    for (const [name, set] of [
+      ['PALETTE', PALETTE_COMMANDS],
+      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['HOME', HOME_PALETTE_COMMANDS],
+      ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
+    ] as const) {
+      const names = set.map((command) => command.name);
+      expect(new Set(names).size, `${name}: ${names.join(', ')}`).toBe(names.length);
+    }
+    expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'permissions')).toHaveLength(1);
+    expect(HOME_CHAT_PALETTE_COMMANDS.find((c) => c.name === 'permissions')?.availableIn).toEqual([
+      'chat',
     ]);
   });
 });

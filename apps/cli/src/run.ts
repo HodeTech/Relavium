@@ -71,39 +71,30 @@ export async function run(
         return executeLazyCommand(id, input, { ...ctx, global: admitted });
       },
     });
+    // Both routes into the interactive Home admit the invocation's directories, seed the offline catalog and enter the lazy runtime the same way.
+    const enterHome = async (extra: Pick<HomeDeps, 'openPermissions'> = {}): Promise<ExitCode> => {
+      const admitted = await admitGlobal(global, assertPreparing);
+      await invocation.seedFileCatalogOnce();
+      assertPreparing();
+      return await openHome({ io, global: admitted, invocation, ...extra });
+    };
+    const interactive = shouldOpenHome({
+      stdoutIsTty: io.stdoutIsTty,
+      stdinIsTty: io.stdinIsTty,
+      json: global.json,
+      env: io.env,
+    });
     if (isBareInvocation(rest)) {
-      if (
-        !shouldOpenHome({
-          stdoutIsTty: io.stdoutIsTty,
-          stdinIsTty: io.stdinIsTty,
-          json: global.json,
-          env: io.env,
-        })
-      ) {
+      if (!interactive) {
         io.writeOut(program.helpInformation());
         return EXIT_CODES.success;
       }
-      const admitted = await admitGlobal(global, assertPreparing);
-      await invocation.seedFileCatalogOnce();
-      assertPreparing();
-      return await openHome({ io, global: admitted, invocation });
+      return await enterHome();
     }
     // A bare `relavium permissions` on a terminal opens the sheet before anything else (ADR-0137 §3), as `relavium chat resume` opens
     // the session picker. Anywhere else (a pipe, `--json`, CI) it stays the group: its help, and the `list` and `revoke` subcommands.
-    if (
-      isBareGroup(rest, 'permissions') &&
-      shouldOpenHome({
-        stdoutIsTty: io.stdoutIsTty,
-        stdinIsTty: io.stdinIsTty,
-        json: global.json,
-        env: io.env,
-      })
-    ) {
-      const admitted = await admitGlobal(global, assertPreparing);
-      await invocation.seedFileCatalogOnce();
-      assertPreparing();
-      return await openHome({ io, global: admitted, invocation, openPermissions: true });
-    }
+    if (isBareGroup(rest, 'permissions') && interactive)
+      return await enterHome({ openPermissions: true });
     await program.parseAsync([...rest]);
     return result.exitCode ?? EXIT_CODES.success;
   } catch (err) {

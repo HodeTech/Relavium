@@ -3654,6 +3654,38 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     expect(startChat).not.toHaveBeenCalled();
   });
 
+  it('inside a chat the CHAT’s port is the one a withdrawal goes through, even with the Home’s own port wired (the real product wires both)', async () => {
+    const homePort = portOf();
+    const chatWithdraw = vi.fn(
+      (): WithdrawAnswer => ({ tone: 'done', text: 'Session approval withdrawn.' }),
+    );
+    const chatPort: PermissionsPort = {
+      surface: 'chat',
+      load: () => ({
+        project: { ok: true, rows: [] },
+        session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
+      }),
+      withdraw: chatWithdraw,
+    };
+    const t = clock();
+    const { c } = home(homePort.port, t, {
+      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(chatWithdraw, 'the chat’s port').toHaveBeenCalledTimes(1);
+    expect(homePort.withdraw, 'never the Home’s project-only one').not.toHaveBeenCalled();
+  });
+
   it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
     const { port } = portOf();
     const chatPort: PermissionsPort = {
@@ -3768,8 +3800,12 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
       expect(onExit).not.toHaveBeenCalled();
       c.handleKey('', { escape: true });
-      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
       expect(onExit).toHaveBeenCalledTimes(1);
+      // The last frame the run leaves (the scrollback of the inline renderer) is the sheet's: a closed state with the Home's prompt is
+      // never published on the way out.
+      expect(c.getSnapshot().permissionsSheet?.surface, 'the closed state is not published').toBe(
+        'project',
+      );
     });
 
     it('Ctrl+C closes it and ends the run too, once', () => {

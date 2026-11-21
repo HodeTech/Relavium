@@ -353,6 +353,24 @@ describe('run — bare-invocation Home gate', () => {
       }
     });
 
+    it('hands the Home the same wiring the bare route does: the io, the admitted globals and the invocation (so it runs under the product’s signal lifecycle)', async () => {
+      const { io } = interactiveIo();
+      const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);
+      await run(argv('permissions'), io, openHome);
+      const deps = calls()[0];
+      expect(deps?.io).toBe(io);
+      expect(deps?.global.cwd).toBe(process.cwd());
+      expect(deps?.invocation, 'without it the Home runs ownerless').toBeDefined();
+    });
+
+    it('a pipe on stdout alone is enough to keep the group: `relavium permissions | less` and `> file` never open the Home', async () => {
+      const { io } = interactiveIo();
+      const stdoutPiped: CliIo = { ...io, stdoutIsTty: false };
+      const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+      await run(argv('permissions'), stdoutPiped, openHome);
+      expect(calls()).toHaveLength(0);
+    });
+
     it('never opens the Home anywhere else: a pipe, --json and CI keep the group’s help, exactly as before', async () => {
       const piped = captureIo();
       const interactive = interactiveIo();
