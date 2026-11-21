@@ -82,7 +82,7 @@ final-head evidence and its two CI observations: the required `coverage` job sto
 final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed; the merge commit's identical
 tree passed `coverage` in 41 min 10 s); and one acceptance-tool test hit its 10-second limit in the first attempt of the merge
 commit's push run, which a re-run cleared. SonarCloud's gate is OK on the PR and on `main`. The dated blocks below keep the wording they had when written; where they say
-final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 steps 1–6 are implemented on `development`** (2026-11-19 to 21; two review rounds each, step 6's owed; step 7 of [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) follow): [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
+final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 steps 1–6 are implemented on `development`** (2026-11-19 to 21; two review rounds each, step 6's owed; step 7 of [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) follows): [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
 [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
 [ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) were revised or written and accepted on 2026-11-19, and its four steps are recorded in the
 [implementation record](phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record).

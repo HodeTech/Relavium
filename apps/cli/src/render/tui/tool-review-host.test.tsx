@@ -2027,7 +2027,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
     }
   });
 
-  it("asks the same question in the full view, in the card's two rows", async () => {
+  it("asks the card's question in the full view, in its first row, and its own second row", async () => {
     fakeClock();
     try {
       const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);

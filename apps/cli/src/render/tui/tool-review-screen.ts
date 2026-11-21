@@ -473,7 +473,7 @@ export function escapedFit(
 }
 
 /**
- * Split a key legend into its `[key]` labels, `Esc` and the words between, in one pass over the row. A label is a `[`, at least one
+ * Split a key legend into its `[key]` labels, `Esc`, `Ctrl+C` (the stop key every legend names) and the words between, in one pass over the row. A label is a `[`, at least one
  * character and the next `]`; a `[` with no `]` after it is plain text. (The same split a regular expression gave, which backtracked
  * quadratically on a long run of `[`.)
  */
@@ -489,6 +489,8 @@ export function keyLabelParts(row: string): readonly string[] {
       if (close > index + 1) end = close + 1;
     } else if (row.startsWith('Esc', index)) {
       end = index + 3;
+    } else if (row.startsWith('Ctrl+C', index)) {
+      end = index + 6;
     }
     if (end === -1) {
       index++;

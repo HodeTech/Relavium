@@ -3285,13 +3285,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 });
 
 /**
- * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc` and the words between, in one pass. The regular expression
- * it replaced (`/(\[[^\]]+\]|Esc)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
+ * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc`, `Ctrl+C` and the words between, in one pass. The regular expression
+ * it replaced (`/(\[[^\]]+\]|Esc|Ctrl\+C)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
  * 3.4 s). Mutation: put the oracle back, and the time bound fails; drop the `close > index + 1` test, and `[]` is a label.
  */
 describe('keyLabelParts — a key legend in labels and words, in one pass', () => {
   const oracle = (row: string): string[] =>
-    row.split(/(\[[^\]]+\]|Esc)/u).filter((part) => part.length > 0);
+    row.split(/(\[[^\]]+\]|Esc|Ctrl\+C)/u).filter((part) => part.length > 0);
 
   it('equals the regular expression on every string of up to six pieces', () => {
     const pieces = ['[', ']', 'Esc', 'x', ' '];
@@ -3332,7 +3332,9 @@ describe('keyLabelParts — a key legend in labels and words, in one pass', () =
       '[b]',
       ' Back to the card   ',
       'Esc',
-      ' back   Ctrl+C stops the turn',
+      ' back   ',
+      'Ctrl+C',
+      ' stops the turn',
     ]);
   });
 

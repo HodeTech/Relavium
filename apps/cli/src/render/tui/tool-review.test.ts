@@ -2019,7 +2019,13 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
 
     it('answers nothing and aborts nothing, whatever else is held', () => {
       const full = answerable(small(), { screen: 'full' });
-      for (const key of [{ escape: true }, { escape: true, shift: true }] as const) {
+      // `Esc`+`Meta` is how ink reports a quick double tap (`\x1b\x1b`): it steps back one level, the safe direction.
+      for (const key of [
+        { escape: true },
+        { escape: true, shift: true },
+        { escape: true, meta: true },
+        { escape: true, ctrl: true },
+      ] as const) {
         const result = press(full, '', key);
         expect(result.kind, JSON.stringify(key)).toBe('state');
       }
@@ -2043,9 +2049,18 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
       }
     });
 
-    it('never makes the call list the place an approval lands: `[b]` and Esc both go to the card, and the list opens only for details', () => {
+    it('an approval starts on its card and `[b]` and Esc from its full view both land there; the list is only for details', () => {
       expect(initialToolReview('approval', 'call').screen).toBe('card');
       expect(initialToolReview('details', 'call').screen).toBe('list');
+      const full = answerable(small(), { screen: 'full' });
+      for (const [input, key] of [
+        ['b', {}],
+        ['', { escape: true }],
+      ] as const) {
+        const result = press(full, input, key);
+        expect(result.kind).toBe('state');
+        if (result.kind === 'state') expect(result.state.screen, input || 'Esc').toBe('card');
+      }
     });
   });
 

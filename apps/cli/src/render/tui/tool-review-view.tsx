@@ -351,12 +351,13 @@ function approvalRule(columns: number): string {
 }
 
 /** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
-function keyTone(part: string, color: boolean): Record<string, unknown> {
+export function keyTone(part: string, color: boolean): Record<string, unknown> {
   if (!color) return {};
   if (part === '[Ctrl+Y]' || part === '[Ctrl+G]' || part === '[Ctrl+O]')
     return { color: 'green', bold: true };
   if (part === '[Ctrl+N]') return { color: 'red', bold: true };
-  if (part === 'Esc') return { color: 'yellow', bold: true };
+  // `Esc` and `Ctrl+C` are the exits (back, or stop): the stop key is as visible as any answer.
+  if (part === 'Esc' || part === 'Ctrl+C') return { color: 'yellow', bold: true };
   // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
   if (part.startsWith('[') && part.endsWith(']')) return { color: 'cyan', bold: true };
   return { dimColor: true };
