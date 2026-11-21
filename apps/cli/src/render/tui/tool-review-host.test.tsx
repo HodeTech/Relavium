@@ -1997,6 +1997,30 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
     }
   });
 
+  it('Esc is not a foreign key: an answer 600 ms after the step back counts, where a stray key would have held it for the typeahead window (ADR-0137 §4, round 2)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'esc-not-foreign', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await vi.waitFor(() => expect(f.store.getSnapshot().approval).toBeDefined());
+      await pause(60);
+      // The 300 ms quiet gap and the 400 ms dwell on the new frame have passed; the 1.5 s typeahead window (a typed key) has not.
+      vi.advanceTimersByTime(600);
+      await press(f, CTRL_Y);
+      await vi.waitFor(() => expect(answered()).toEqual({ outcome: 'approve', scope: 'once' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('Esc while the session-wide question waits in the full view cancels it, grants nothing, and steps back to the card (ADR-0137 §4)', async () => {
     fakeClock();
     try {

@@ -3306,6 +3306,24 @@ describe('keyLabelParts — a key legend in labels and words, in one pass', () =
     expect(checked).toBe(19_531);
   });
 
+  it('equals the regular expression on every string of up to four pieces, `Ctrl+C` among them', () => {
+    const pieces = ['[', ']', 'Esc', 'Ctrl+C', 'Ctrl+', 'x', ' '];
+    let checked = 0;
+    const walk = (prefix: string, depth: number): void => {
+      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
+      checked++;
+      if (depth === 0) return;
+      for (const piece of pieces) walk(prefix + piece, depth - 1);
+    };
+    walk('', 4);
+    expect(checked).toBe(2_801);
+  });
+
+  it('finds the stop key at the start of a row, as a row of the search box begins with it', () => {
+    expect(keyLabelParts('Ctrl+C stops the turn')).toEqual(['Ctrl+C', ' stops the turn']);
+    expect(keyLabelParts('Ctrl+N is not the stop key')).toEqual(['Ctrl+N is not the stop key']);
+  });
+
   it('is lossless: the parts put back together are the row, whatever the row holds', () => {
     for (const row of [
       '',

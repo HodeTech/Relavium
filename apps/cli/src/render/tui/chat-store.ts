@@ -91,7 +91,7 @@ export const UNSHOWABLE_COMMAND_REASON =
 /** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
  *  `Ctrl+G` allow for the session, `Ctrl+O` (a command only) remember it for the project, `Ctrl+N` deny, `Ctrl+R` deny with a
  *  reason (a reject carrying WHY, via the `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop
- *  the turn (ADR-0115 §2). */
+ *  the turn (ADR-0115 §2; `Esc` on the full view only steps back to the card, ADR-0137 §4). */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   readonly live?: ToolApprovalLiveContext;

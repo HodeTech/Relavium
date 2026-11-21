@@ -195,7 +195,10 @@ export function ToolReviewHost(
           ? 'Review unavailable — the tool identity does not fit; enlarge terminal.'
           : review.facts !== undefined && review.document?.valid === false
             ? 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.'
-            : 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'}{' '}
+            : review.screen === 'card'
+              ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
+              : // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
+                'Review unavailable — enlarge terminal, narrow change, or [p] code points.'}{' '}
         {reviewExitHint(review)}
       </Text>
     );

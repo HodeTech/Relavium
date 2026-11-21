@@ -216,7 +216,7 @@ write) or approved for this session; the repository's allowlist does not skip th
 | Allow + remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not already pre-approved (on the allowlist or remembered), and the page shows the whole command |
 | Deny | `Ctrl+N` | always, even on a blocked card; a denial returns to the model |
 | Deny with a reason | `Ctrl+R` | on a card that can be shown; the denial returns to the model with the person's words |
-| Stop | `Esc` or `Ctrl+C` | at the card and outside a text box (in the reason box or a search box `Esc` only closes the box); rejects the call and stops the turn (only `Ctrl+C` also starts the exit window) |
+| Stop | `Esc` or `Ctrl+C` | at the card and outside a text box (in the reason box or a search box `Esc` only closes the box); rejects the call and stops the turn (only `Ctrl+C` also starts the exit window). On the full view `Esc` only steps back to the card, answering nothing, and `Ctrl+C` stops |
 
 *This session* approves this **exact argv** for the rest of this session instance (in memory, gone on `/exit`, and it asks
 again after a resume). *Remember* writes the grant at the moment of the answer — it is consent to the command, not to its

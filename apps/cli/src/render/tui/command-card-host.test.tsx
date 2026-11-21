@@ -308,6 +308,39 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 �
     expect(f.lastFrameWith('nothing was allowed')).toContain('[Ctrl+Y] Allow once');
   });
 
+  it('Esc while the Remember question waits on the command’s full view cancels it, grants nothing and steps back to the card (ADR-0137 §4)', async () => {
+    const f = fast();
+    await f.ready();
+    const answers = open(f, ['npm', 'test'], facts());
+    await shown(f);
+    await seen();
+    f.input.push('v');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+    await seen();
+    f.input.push(CTRL_O);
+    await vi.waitFor(() =>
+      expect(f.text()).toContain(
+        'Press Enter to allow this exact command now and remember it for this project',
+      ),
+    );
+    // The full view's own second row: Esc steps back here (the card's "Esc stops the turn" would be false), Ctrl+C stops.
+    await vi.waitFor(() =>
+      expect(f.text()).toContain(
+        'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn',
+      ),
+    );
+    f.input.push('\x1b');
+    await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+    expect(answers, 'cancelling the question and stepping back grants nothing').toEqual([]);
+    expect(f.store.getSnapshot().approval).toBeDefined();
+    await confirmWindow();
+    f.input.push('\r');
+    await wait(150);
+    expect(answers, 'an Enter after the step back confirms nothing').toEqual([]);
+    expect(f.store.getSnapshot().approval).toBeDefined();
+    expect(f.errors).toEqual([]);
+  });
+
   it('Ctrl+G then Enter is the session answer, and Ctrl+Y allows once', async () => {
     const f = fast();
     await f.ready();

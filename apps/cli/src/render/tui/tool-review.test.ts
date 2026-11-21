@@ -2002,6 +2002,25 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
       });
     });
 
+    it('keeps what the person has inspected and the target the card owes them, exactly as `[b]` does (a step back must not reset or fake an inspection)', () => {
+      const full = answerable(small(), { screen: 'full' });
+      const carried = {
+        ...full.state,
+        requiredTarget: { field: 0, start: 0, end: 5 },
+        inspected: [{ field: 0, start: 0, end: 3 }],
+      };
+      for (const [input, key] of [
+        ['', { escape: true }],
+        ['b', {}],
+      ] as const) {
+        const result = press({ state: carried, page: full.page }, input, key);
+        expect(result.kind, input || 'Esc').toBe('state');
+        if (result.kind !== 'state') continue;
+        expect(result.state.requiredTarget, input || 'Esc').toEqual({ field: 0, start: 0, end: 5 });
+        expect(result.state.inspected, input || 'Esc').toEqual([{ field: 0, start: 0, end: 3 }]);
+      }
+    });
+
     it('needs no visible frame: a person who cannot read the full view can still leave it without stopping the turn', () => {
       const full = answerable(small(), { screen: 'full' });
       const hidden = reduceToolReviewKey(
