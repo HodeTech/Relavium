@@ -6096,6 +6096,7 @@ Each step ends with a review round, its fixes, a second review round and its fix
 | A secret split over two arguments stayed readable in the event preview (found by the test agent, confirmed by probe) | a joined-line mask that touches an argument the element-wise scrub left alone falls back to masking every argument after the program | `13325d6f` |
 | Security sitting (medium): a write made while the keychain was unavailable was never recorded | recorded as one unauthenticated `unkeyed` time that outdates every older grant; the key is read afresh for every write; a rewrite keeps entries it cannot verify; `revoke --all` removes the marks last; *Remember* is not offered while the marks cannot be read; the stored note for a carried `!` command is scrubbed | `550b054e` |
 | Correctness review: the outdated row in `ask`, a grant at the bound could not be renewed from the card, a refused renewal reported as remembered, a reset keychain told nothing on `list`, wording | `autoAsks`; `canRemember(argv)`; `remember` refuses over unreadable marks; `list` counts records ignored for lack of a key; a hook-plus-real-store test of six chats | `8c9ff6de` |
+| SonarCloud's gate on the PR was red (`new_reliability_rating` C): one bug among 63 open findings | `answerRows` passed a two-parameter function straight to `.map` (S7727), fixed; three quadratic regexes in `programName` and `codeCarrier` (S8786; 100,000 characters took about 54 s) are a linear loop with a bound test that fails on the regex form; four tests with no `expect` of their own end on one (S2699); three generic matchers, one `\d`, three duplicate imports, one `??`. 47 smells were left on purpose ([register](../deferred-tasks.md#sonarcloud-gate-on-pr-101-2026-11-21)) | `9e77ff04` |
 
 **Refuted (the claim was wrong, or the finding is not PR #101's).**
 
@@ -6107,3 +6108,40 @@ Each step ends with a review round, its fixes, a second review round and its fix
 - **Already true when checked:** A·L30 (the tokenizer's path is corrected in ADR-0118's 2026-11-19 implementation note; a pointer note was added) and A·L31 (every landing obligation of ADR-0136 was met; a note says so).
 
 **Deferred (the register, one entry each).** A·M1, M2, M10, L1 to L3, L5, L6, L8 to L14, L18, L19, L21 to L27; B·H2, H15, the medium table's rows that are not document fixes, B's low list and its mutation-sweep evidence; C·K2, K4, K9 (rationale recorded), K10, K13, V6a-03, V6a-13, V1-06 (not verified here), the lows and tests, and the documents' leftovers. K5 (a grant is root-scoped, not bound to the working directory) and K7 (a Home draft is lost on the second `Ctrl+C`) are **documented, not deferred** ([command-permissions.md](../../reference/cli/command-permissions.md), [home.md](../../reference/cli/home.md), [ADR-0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)); K6 (a repository `[chat]` limit above the operator's base is a hard error naming the layer) is **kept**, and no compatibility path is needed (the product has no deployed users, [config-spec.md](../../reference/contracts/config-spec.md#chat-limits)); K12 (ADR-0137's in-place edits after acceptance) is answered by the ledger at the end of that ADR.
+
+### PR #101 merge checkpoint (2026-11-21)
+
+**Merged to `main`: MVP-4 is complete.** The maintainer merged [PR #101](https://github.com/HodeTech/Relavium/pull/101) on 2026-11-21 at 20:22:00Z (23:22 in the maintainer's time zone) as
+`0a599a36e6ef9a39a216c9853ead41eab85e5b9e` (parents `1e71f652`, the PR #100 merge, and `9e77ff04`). Its Git tree, `cf7e28d6825ecc61a4bd83772c5faf3b350f28fa`, is identical to head
+`9e77ff04`'s, so `development` was fast-forwarded to the merge commit and the two branches have the same content. The PR carried 106 non-merge commits (221 files, +26,408 −1,702 lines).
+npm still serves `0.1.1`; the D59 release guard is unchanged.
+
+What the PR carried:
+
+- [x] **MVP-4's seven steps** ([implementation record](#mvp-4-implementation-record)): the engine floor (element-wise allowlist, the protected-path refusal returned to the model, four finite turn limits),
+  the one interrupt keymap and the continue checkpoint, the command-grant store and `relavium permissions`, the command card and `!` through it, the `/permissions` sheet, `Esc` out of the full view
+  and the Home entry points. Each step had two review rounds (three for step 5) and a security sitting where the D64 tier required one.
+- [x] **The ADRs:** [0115](../../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md), [0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
+  [0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) (accepted 2026-11-19), [0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
+  (2026-11-20) and [0138](../../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md) (2026-11-21, written while answering the review).
+- [x] **The review corrections** ([the section above](#pr-101-review-corrections--2026-11-21)): the per-project write marks, masking parity between the event and the card, the `~/.config/git/` write
+  floor, the documents, and the fixes of the increment's own review round (a security sitting and a correctness review; one medium, fixed).
+- [x] **The SonarCloud fix** (`9e77ff04`): one reliability bug and 15 small findings.
+
+**Final-head evidence, and what it does not show.**
+
+- CI run `44941661476` on `9e77ff04` ran 29 jobs and **all 29 succeeded** (created 19:34:30Z, last job done 20:05:21Z, so before the merge at 20:22:00Z), including the three required checks
+  (`lint · typecheck · test`, `engine coverage floor (llm, mcp)`, `windows · db concurrency + filesystem + headless smoke`). The pull request showed 30 passing checks and two skipped reviewers.
+  The full local gate (24 steps, coverage included, 31 minutes) passed on the same content before the push; an earlier gate run was voided because a test fix was made while it ran.
+- SonarCloud's gate was **red on `60b65954`** (`new_reliability_rating` C, one S7727 bug) and **OK on `9e77ff04`** (reliability, security and maintainability A, duplication 1.5%, hotspots 100%), with
+  no open bug or vulnerability. 47 code smells stay open on the pull request by decision (the [register](../deferred-tasks.md#sonarcloud-gate-on-pr-101-2026-11-21) lists them: 26 nested ternaries, 12
+  cognitive-complexity findings, four S1940 that fail closed on `NaN` on purpose, and a few single items). **The analysis of the merge commit on `main` had not run when this was written**, and a
+  status is per branch, so `main`'s gate can differ from the pull request's (see the note on `main`'s gate after earlier merges); the merge commit's own `push` run (`44945900314`) was still in progress.
+- **The conditional acceptance stays conditional.** MVP-4's "final round" acceptance depends on rows 1 to 16 of [the interrupt-evidence runbook](../../runbooks/windows-interrupt-evidence.md) being run by a
+  person on Windows Terminal and the legacy console host; no row was ever run, and CI runs tests, not a console. Core coverage is still measured and not enforced (a maintainer ruling is parked), and
+  the register's other open items from the review (the card's mask-every-argument fallback for quote-heavy split secrets, a clock set ahead keeping a grant fresh, nested-root and MCP writes not marked) are
+  unchanged.
+
+This checkpoint closes MVP-4's implementation, review, security and maintainer-merge gates except the Windows evidence above. Pending-gate wording ("opened", "under review", "implemented on `development`")
+in the dated records above is historical and is superseded by this checkpoint. **MVP-8 (the Home as hub) is next** under [the existing execution order](../current.md#next-work--the-cli-mvp); its run-hosting
+ADR ([ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) §10) is written and accepted before it starts. Phase 2.6, Phase 2.5.5 and milestone M3.5 remain open.
