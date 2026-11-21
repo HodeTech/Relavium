@@ -250,6 +250,19 @@ const cases: readonly Case[] = [
     positionals: [],
     options: { legacyOffline: true, force: true },
   },
+  { id: 'permissions.list', argv: ['permissions', 'list'], positionals: [], options: {} },
+  {
+    id: 'permissions.revoke',
+    argv: ['permissions', 'revoke', '2'],
+    positionals: ['2'],
+    options: {},
+  },
+  {
+    id: 'permissions.revoke',
+    argv: ['permissions', 'revoke', '--all'],
+    positionals: [],
+    options: { all: true },
+  },
   {
     id: 'provider.remove-key',
     argv: ['provider', 'remove-key', 'openai'],
@@ -317,6 +330,7 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
         'budget',
         'provider',
         'media',
+        'permissions',
         'init',
         ...COMMAND_DESCRIPTORS.filter(
           (entry) => entry.path[0] === 'chat' && entry.path.length > 1,
@@ -364,11 +378,14 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
             'provider.set-key': 'name',
             'provider.remove-key': 'name',
             'provider.test': 'name',
+            'permissions.revoke': 'number',
           };
           expect(index).toBe(0);
           return [
             names[testCase.id],
-            !['gate', 'gate.list', 'status', 'chat-resume'].includes(testCase.id),
+            !['gate', 'gate.list', 'status', 'chat-resume', 'permissions.revoke'].includes(
+              testCase.id,
+            ),
             false,
           ];
         }),
@@ -423,6 +440,8 @@ describe('descriptor-derived real Commander actions (compatibility grammar only)
       ['budget', 'resume'],
       ['run', 'wf', 'extra'],
       ['media', 'prune-temporaries', 'extra'],
+      ['permissions', 'list', 'extra'],
+      ['permissions', 'revoke', '1', '2'],
     ].map((argv) => ({ argv })),
   )(
     'refuses missing required grammar/excess arguments before dispatch: $argv',

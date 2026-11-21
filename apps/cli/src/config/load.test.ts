@@ -40,6 +40,37 @@ describe('loadConfigFile', () => {
     }
   });
 
+  it('tells a person with an open-quote allowlist entry that the quote is the problem, without echoing the entry (ADR-0118 §3)', () => {
+    const file = join(dir, 'project.toml');
+    writeFileSync(
+      file,
+      '[chat]\nallowed_commands = ["git status", "echo \\"unfinished secret-token"]\n',
+    );
+    try {
+      loadConfigFile(file, ProjectConfigSchema);
+      expect.fail('an open quote must refuse');
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      expect(error.message).toContain('chat.allowed_commands.1');
+      expect(error.message).toContain('balanced quotes');
+      expect(error.message).not.toContain('secret-token'); // the value is never echoed
+      expect(error.message).not.toContain('value is invalid'); // the generic fallback hid the cause
+    }
+  });
+
+  it('keeps any other custom schema issue generic (only the marked allowlist issue may speak)', () => {
+    const file = join(dir, 'project.toml');
+    writeFileSync(file, '[chat]\nextra_roots = [" "]\n');
+    try {
+      loadConfigFile(file, ProjectConfigSchema);
+      expect.fail('a blank selector must refuse');
+    } catch (error) {
+      if (!(error instanceof ConfigError)) throw error;
+      expect(error.message).toContain('value is invalid');
+      expect(error.message).not.toContain('balanced quotes');
+    }
+  });
+
   it('parses and validates a global config', () => {
     const file = join(dir, 'config.toml');
     writeFileSync(file, 'update_channel = "beta"\n[preferences]\ndefault_model = "m"\n');

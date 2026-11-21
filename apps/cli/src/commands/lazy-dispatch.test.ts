@@ -39,6 +39,8 @@ const INPUT: CommandInput = { positionals: ['literal-model-or-file'], options: {
 let events: string[];
 let execute: ReturnType<typeof vi.fn<DispatchCommand>>;
 let media: ReturnType<typeof vi.fn>;
+let permissionsList: ReturnType<typeof vi.fn>;
+let permissionsRevoke: ReturnType<typeof vi.fn>;
 
 function context(seed: () => Promise<void>): DispatchContext {
   return {
@@ -79,11 +81,18 @@ beforeEach(() => {
     events.push('import media');
     return { pruneTemporariesCommand: media };
   });
+  permissionsList = vi.fn(() => Promise.resolve(0));
+  permissionsRevoke = vi.fn(() => Promise.resolve(0));
+  vi.doMock('./permissions.js', () => {
+    events.push('import permissions');
+    return { permissionsListCommand: permissionsList, permissionsRevokeCommand: permissionsRevoke };
+  });
 });
 
 afterEach(() => {
   vi.doUnmock('./dispatch.js');
   vi.doUnmock('./media.js');
+  vi.doUnmock('./permissions.js');
 });
 
 describe('finite lazy route boundary (ADR-0111)', () => {
@@ -92,11 +101,17 @@ describe('finite lazy route boundary (ADR-0111)', () => {
     const advertised = COMMAND_DESCRIPTORS.flatMap((descriptor) =>
       descriptor.executorId === undefined ? [] : [descriptor.executorId],
     );
-    expect(LAZY_COMMAND_IDS).toHaveLength(25);
-    expect(new Set(LAZY_COMMAND_IDS).size).toBe(25);
+    expect(LAZY_COMMAND_IDS).toHaveLength(27);
+    expect(new Set(LAZY_COMMAND_IDS).size).toBe(27);
     expect([...LAZY_COMMAND_IDS].sort()).toEqual([...advertised].sort());
     expect([...LAZY_COMMAND_IDS].sort()).toEqual(
-      [...PRICED, ...UNPRICED, 'media.prune-temporaries'].sort(),
+      [
+        ...PRICED,
+        ...UNPRICED,
+        'media.prune-temporaries',
+        'permissions.list',
+        'permissions.revoke',
+      ].sort(),
     );
     expect(events).toEqual([]);
   });
@@ -225,4 +240,89 @@ describe('finite lazy route boundary (ADR-0111)', () => {
     expect(events).toEqual([]);
     expect(seed).not.toHaveBeenCalled();
   });
+});
+
+describe('the permissions routes (ADR-0118 §2)', () => {
+  it('list imports only permissions, never seeds, and runs the LIST core with the context', async () => {
+    const { executeLazyCommand } = await import('./lazy-dispatch.js');
+    const seed = vi.fn(() => Promise.resolve());
+    const ctx = context(seed);
+    await executeLazyCommand('permissions.list', { positionals: [], options: {} }, ctx);
+    expect(events).toEqual(['import permissions']);
+    expect(permissionsList).toHaveBeenCalledExactlyOnceWith(ctx);
+    expect(permissionsRevoke).not.toHaveBeenCalled();
+    expect(seed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { input: { positionals: ['3'], options: {} }, args: { all: false, index: 3 } },
+    { input: { positionals: [], options: { all: true } }, args: { all: true } },
+  ])('revoke passes the PARSED arguments, never a fixed "all": %j', async ({ input, args }) => {
+    const { executeLazyCommand } = await import('./lazy-dispatch.js');
+    const ctx = context(() => Promise.resolve());
+    await executeLazyCommand('permissions.revoke', input, ctx);
+    expect(events).toEqual(['import permissions']);
+    expect(permissionsRevoke).toHaveBeenCalledExactlyOnceWith(args, ctx);
+    expect(permissionsList).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { positionals: [], options: {} },
+    { positionals: ['1'], options: { all: true } },
+    { positionals: ['1', '2'], options: {} },
+    { positionals: ['0'], options: {} },
+    { positionals: ['npm'], options: {} },
+  ])('revoke refuses invalid arguments before the module is even imported: %j', async (input) => {
+    const { executeLazyCommand } = await import('./lazy-dispatch.js');
+    await expect(
+      executeLazyCommand(
+        'permissions.revoke',
+        input,
+        context(() => Promise.resolve()),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    expect(events).toEqual([]);
+    expect(permissionsRevoke).not.toHaveBeenCalled();
+  });
+
+  it.each(['permissions.list', 'permissions.revoke'])(
+    '%s runs nothing once the invocation is terminating',
+    async (id) => {
+      const { executeLazyCommand } = await import('./lazy-dispatch.js');
+      const ctx = context(() => Promise.resolve());
+      const invocation = ctx.invocation;
+      if (invocation === undefined) throw new Error('the test context carries an invocation');
+      const terminating = {
+        ...ctx,
+        invocation: {
+          ...invocation,
+          registry: { ...invocation.registry, termination: { kind: 'signal' } },
+        },
+      } as unknown as DispatchContext;
+      await expect(
+        executeLazyCommand(id, { positionals: ['1'], options: {} }, terminating),
+      ).resolves.toBe(0);
+      expect(permissionsList).not.toHaveBeenCalled();
+      expect(permissionsRevoke).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['permissions.list', 'permissions.revoke'])(
+    '%s refuses --allow-fs-root: it applies only to Home and chat',
+    async (id) => {
+      const { executeLazyCommand } = await import('./lazy-dispatch.js');
+      const ctx = context(() => Promise.resolve());
+      await expect(
+        executeLazyCommand(
+          id,
+          { positionals: ['1'], options: {} },
+          {
+            ...ctx,
+            global: { ...ctx.global, allowFsRoots: ['/x'] },
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_invocation' });
+      expect(events).toEqual([]);
+    },
+  );
 });

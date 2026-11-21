@@ -1,4 +1,4 @@
-import type { EffectDispatchPort } from '@relavium/shared';
+import { quoteCommandLine, type EffectDispatchPort } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BUILTIN_TOOLS } from './builtins.js';
@@ -182,7 +182,9 @@ function harness(
     config,
     toolPolicy: {
       allowedDomains: ['api.example'],
-      allowedCommands: [[typeof command === 'string' ? command : 'echo', ...vector].join(' ')],
+      allowedCommands: [
+        quoteCommandLine([typeof command === 'string' ? command : 'echo', ...vector]),
+      ],
     },
     fsScope: 'sandboxed',
     gateApproved: true,

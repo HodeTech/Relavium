@@ -1,5 +1,6 @@
 import { COMMAND_DESCRIPTORS } from './descriptors.js';
 import { buildMediaPruneArgs } from './media-input.js';
+import { buildPermissionsRevokeArgs } from './permissions-input.js';
 import type { DispatchCommand } from './input.js';
 import { CliError } from '../process/cli-error.js';
 
@@ -50,6 +51,18 @@ routes.set('media.prune-temporaries', async (_id, input, ctx) => {
   const { pruneTemporariesCommand } = await import('./media.js');
   if (ctx.invocation?.registry.termination !== undefined) return 0;
   return pruneTemporariesCommand(args, ctx);
+});
+
+routes.set('permissions.list', async (_id, _input, ctx) => {
+  const { permissionsListCommand } = await import('./permissions.js');
+  if (ctx.invocation?.registry.termination !== undefined) return 0;
+  return permissionsListCommand(ctx);
+});
+routes.set('permissions.revoke', async (_id, input, ctx) => {
+  const args = buildPermissionsRevokeArgs(input);
+  const { permissionsRevokeCommand } = await import('./permissions.js');
+  if (ctx.invocation?.registry.termination !== undefined) return 0;
+  return permissionsRevokeCommand(args, ctx);
 });
 
 export const LAZY_COMMAND_IDS: readonly string[] = Object.freeze([...routes.keys()]);

@@ -1,3 +1,16 @@
+import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import type { KeychainStore } from '../secrets/keychain.js';
+import {
+  createPermissionsPort,
+  NOT_AVAILABLE as PERMISSIONS_NOT_AVAILABLE,
+  type PermissionsPort,
+  type SessionCommandApprovals,
+} from '../permissions/chat-permissions.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
@@ -73,6 +86,7 @@ import {
   parseMode,
   type ApprovalPrompt,
   type ChatMode,
+  type CommandGrantsPort,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import {
@@ -99,6 +113,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
+import { findProjectConfigDir } from '../config/paths.js';
 import {
   createStartingModeRuntime,
   startingModeConfigObserver,
@@ -297,6 +312,9 @@ export interface ChatDriveContext {
    * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
    */
   readonly modelPicker?: ChatModelsPort;
+  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
+   *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
+  readonly permissions?: PermissionsPort;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -355,9 +373,9 @@ export interface ChatDriveContext {
   readonly mentionReader?: MentionReader;
   /**
    * Run a USER-invoked `!`-shell command (2.5.D step 5, ADR-0061) through the session's `runUserCommand` — the one
-   * `run_command` boundary (allowlist BEFORE approval → mode-aware `confirmAction` → hardened process arm). The
+   * `run_command` boundary (allowlist judged first; a miss reaches the mode-aware `confirmAction` as a request, ADR-0118 §1 → hardened process arm). The
    * caller pre-tokenizes the line into `command` + `args`. Present on an interactive (TTY, non-`--json`) session;
-   * the driver injects the classified output as UNTRUSTED context / renders the actionable deny hint. Absent ⇒ a
+   * the driver injects the classified output as UNTRUSTED context / renders the fixed "not allowed here" line. Absent ⇒ a
    * plain/`--json` driver treats a leading `!` as a literal message (no shell escape).
    */
   readonly runShellCommand?: (
@@ -404,6 +422,8 @@ export interface ChatResolvedKeys {
 }
 
 export interface ChatCommandDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -446,6 +466,8 @@ export interface ChatResumeCommandArgs {
 }
 
 export interface ChatResumeCommandDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   /** The original bootstrap invocation, shared across clear and reseat. */
   readonly invocation?: CliInvocation;
   readonly io: CliIo;
@@ -482,6 +504,8 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
+  readonly keychain?: KeychainStore;
   readonly openModeSettings?: (
     currentMode: () => ChatMode,
     onCurrentMode: (mode: ChatMode) => void,
@@ -1368,12 +1392,12 @@ async function chatResumeCommandBody(
       // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
       // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
       // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
-      // silently trapped — distinct from the per-turn engine error. The effective cap mirrors the engine's
-      // `undefined/≤0 ⇒ default` rule (config validation already rejects a non-positive max_turns).
+      // silently trapped — distinct from the per-turn engine error. The effective cap is the resolved `max_turns`, else
+      // the published default (config validation rejects a value outside 1 to 1,000).
       const cap = config.chat.maxTurns ?? DEFAULT_SESSION_MAX_TURNS;
       if (turns >= cap) {
         deps.io.writeErr(
-          `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise [chat].max_turns to continue it.\n`,
+          `note: this session has ${turns} turns, at or over the ${cap}-turn cap — new turns will be refused (turn_limit). Raise max_turns under [preferences] in your global config to continue it (a project's [chat].max_turns can only lower it).\n`,
         );
       }
     } catch (err) {
@@ -1604,6 +1628,8 @@ export interface ChatModeControl {
    * next turn. The tier is still per-model gated at send, so on a non-reasoning model the footer stays clear.
    */
   readonly onSetEffort: (effort: ReasoningEffort) => void;
+  /** The commands approved for this session (the exact-argv memory of the mode policy), for `/permissions` (ADR-0118 §2). */
+  readonly commandApprovals: SessionCommandApprovals;
 }
 
 /**
@@ -1637,7 +1663,11 @@ export function createChatModeControl(
     'session' | 'tools' | 'context' | 'agent' | 'fsPolicy' | 'startingMode'
   >,
   store: ChatStoreController,
-  opts?: { readonly interactive?: boolean },
+  opts?: {
+    readonly interactive?: boolean;
+    /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
+    readonly commandGrants?: CommandGrantsPort;
+  },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
   // NON-interactive driver (plain non-TTY, or `--json`) NOTHING answers it — `store.requestApproval` would
@@ -1659,6 +1689,20 @@ export function createChatModeControl(
     workspaceDir: built.context.workingDir,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
+    // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
+    ...(interactive && opts?.commandGrants !== undefined
+      ? { commandGrants: opts.commandGrants }
+      : {}),
+    // The command card words "this exact command" for the session and for the project (ADR-0118 §1), so both are offered wherever
+    // a person can answer; a headless surface answers nothing and never reaches a card.
+    ...(interactive
+      ? {
+          commandSessionGrants: true,
+          notify: (message: string): void => {
+            store.notice(message);
+          },
+        }
+      : {}),
     ...(interactive ? { onToolLiveEvent: store.applyToolLiveEvent } : {}),
   });
   const initialMode = interactive ? (built.startingMode?.mode ?? store.getSnapshot().mode) : 'ask';
@@ -1686,6 +1730,7 @@ export function createChatModeControl(
     store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
   }
   return {
+    commandApprovals: modeEnv.cache,
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
     },
@@ -1734,6 +1779,9 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly onReseat: (target: ReseatTarget) => void;
   /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
   readonly reseatTarget: () => ReseatTarget | undefined;
+  /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
+   *  present on an interactive session only, where there is someone to ask and a store to read. */
+  readonly permissions: PermissionsPort | undefined;
 }
 
 /**
@@ -1760,7 +1808,8 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
   if (!freePositional) {
     const bad = nonFlag.find((token) => !positionalValues.includes(token));
     if (bad !== undefined) {
-      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
+      const hint = command.rejectHint === undefined ? '' : ` ${command.rejectHint}`;
+      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}${hint}`;
     }
   }
   // A single positional value (fixed OR free) — more than one is rejected, not silently dropped downstream.
@@ -1768,6 +1817,50 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
     return `/${command.name}: takes a single ${positional.name} value (got ${nonFlag.length}).${validHint}`;
   }
   return undefined;
+}
+
+/** The OS keychain, opened on first use: building a session must not touch it (a session that never asks about a command never does). */
+function lazyOsKeychain(): KeychainStore {
+  let opened: KeychainStore | undefined;
+  const store = (): KeychainStore => (opened ??= createOsKeychainStore());
+  return {
+    get: (account) => store().get(account),
+    set: (account, secret) => {
+      store().set(account, secret);
+    },
+    delete: (account) => store().delete(account),
+  };
+}
+
+/**
+ * The remembered command grants for this session's project root (ADR-0118 §2), or `undefined` when the surface cannot ask or the
+ * session has no operator home to keep them in. Lazy by construction: nothing touches the keychain or the file until a command asks to be matched. The
+ * project root is the directory that holds the nearest `.relavium/` (else the working directory), resolved to its real path by the
+ * store, so two paths to one tree share grants and a fresh clone elsewhere shares none.
+ */
+export function openCommandGrants(
+  interactive: boolean,
+  built: Pick<BuiltChatSession, 'operatorHomeDir'>,
+  deps: Pick<ChatReplDeps, 'global' | 'keychain'>,
+  store: Pick<ChatStoreController, 'notice'>,
+): CommandGrantStore | undefined {
+  // A plain, `--json` or one-shot surface has no one who can answer a card, so it never reads or writes the store.
+  const homeDir = built.operatorHomeDir;
+  if (!interactive || homeDir === undefined) return undefined;
+  // The same discovery `relavium permissions` runs, and nothing else: no config is re-read here (a re-read can disturb the
+  // starting-mode authority), and the project directory is found by walking up from the working directory.
+  let projectConfigDir: string | undefined;
+  try {
+    projectConfigDir = findProjectConfigDir(deps.global.cwd, homeDir);
+  } catch {
+    // A home that cannot be resolved safely fails its own load elsewhere; grants then key by the working directory.
+  }
+  return createCommandGrantStore({
+    homeDir,
+    projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
+    keychain: deps.keychain ?? lazyOsKeychain(),
+    notify: (message) => store.notice(message),
+  });
 }
 
 /**
@@ -1826,7 +1919,11 @@ export function createChatLineHandler(
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
   // full-capability host is never live without the approval regime (unconfigured/headless `ask` denies governed).
-  const modeControl = createChatModeControl(built, store, { interactive });
+  const commandGrants = openCommandGrants(interactive, built, deps, store);
+  const modeControl = createChatModeControl(built, store, {
+    interactive,
+    ...(commandGrants === undefined ? {} : { commandGrants }),
+  });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&
     (workOwner.signal.aborted || workOwner.invocation.registry.termination !== undefined);
@@ -1948,6 +2045,12 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
+    // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
+    // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
+    // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
+    managePermissions: () => {
+      emitOutput(PERMISSIONS_NOT_AVAILABLE);
+    },
     showCost: (release = false) => {
       try {
         // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
@@ -2267,6 +2370,13 @@ export function createChatLineHandler(
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
+    commandApprovals: modeControl.commandApprovals,
+    permissions: interactive
+      ? createPermissionsPort(
+          { grants: commandGrants, session: modeControl.commandApprovals },
+          'chat',
+        )
+      : undefined,
   };
 }
 
@@ -2976,6 +3086,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onAbort,
     onModeChange,
     onSetEffort,
+    permissions,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3085,6 +3196,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(interactive && wiring.modelPicker !== undefined
         ? { modelPicker: wiring.modelPicker }
         : {}),
+      // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
+      ...(interactive && permissions !== undefined ? { permissions } : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside

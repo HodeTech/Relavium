@@ -48,7 +48,7 @@ import {
 } from '@relavium/shared';
 
 import { WorkflowGraphError, type GraphIssue } from '../errors.js';
-import { collectAgentCeilingIssues } from '../limits.js';
+import { collectAgentCeilingIssues, collectTurnLimitIssues } from '../limits.js';
 import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
 import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
@@ -119,6 +119,17 @@ import type {
 } from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import type { CompletedTurnSpan, SessionResumeState } from './session-resume.js';
+
+/** The turn limits without the checkpoint: a turn that can never ask a person (compaction) keeps the hard stop. */
+function withoutCheckpoint(limits: AgentTurnLimits): AgentTurnLimits {
+  return {
+    maxToolTurns: limits.maxToolTurns,
+    maxToolCorrections: limits.maxToolCorrections,
+    ...(limits.recoverToolFailures === undefined
+      ? {}
+      : { recoverToolFailures: limits.recoverToolFailures }),
+  };
+}
 
 /** The default hard turn cap when {@link SessionDeps.maxTurns} is omitted — a finite DoS fail-safe. */
 export const DEFAULT_SESSION_MAX_TURNS = 50;
@@ -354,7 +365,7 @@ export interface SessionDeps {
   readonly askUser?: AskUserDelegate;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
   readonly limits?: AgentTurnLimits;
-  /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); 0/absent ⇒ the default. */
+  /** The session hard turn cap (default {@link DEFAULT_SESSION_MAX_TURNS}); absent ⇒ the default. An integer 1 to 1,000: a value outside the bounds (0 included) is refused at construction, never clamped (ADR-0136 §1). */
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
@@ -534,7 +545,7 @@ type PlanResult =
  *   type does NOT carry a `truncated` flag, which would describe a different, model-facing bounding pass over data
  *   the caller never receives). `exitCode` may be non-zero (a normal command failure, still `ran`).
  * - `denied` — refused BEFORE any side effect: `allowlist: true` ⇒ the command is not in `[chat].allowed_commands`
- *   (the host shows the actionable opt-in hint); `false` ⇒ an interactive approval reject / protected-path denial.
+ *   (only a dispatch with no approval regime produces it; an interactive chat asks instead, ADR-0118 §1); `false` ⇒ an interactive approval reject / protected-path denial.
  * - `failed` — a transient execution/wiring fault (a spawn error, a capability gap) — `message` is secret-free.
  * - `cancelled` — the session was cancelled/aborted mid-run.
  */
@@ -723,9 +734,20 @@ export class AgentSession {
     this.#context = params.context;
     this.#deps = params.deps;
     this.#maxTokensEstimate = params.deps.maxTokensEstimate;
+    // The host-supplied turn limits are ADMITTED, never clamped (ADR-0136 §1): outside its published bound a value is a
+    // rejection naming the field. A resume re-reads the same host configuration, not a frozen agent file, so it admits
+    // them too — a bad limit is the host's to fix, and nothing persisted depends on it.
+    const turnLimitIssues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
+      params.deps.maxTurns,
+      turnLimitIssues,
+    );
+    if (turnLimitIssues.length > 0) throw new WorkflowGraphError(turnLimitIssues);
     const max = params.deps.maxTurns;
-    this.#maxTurns = max === undefined || max <= 0 ? DEFAULT_SESSION_MAX_TURNS : max;
-    this.#limits = params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS;
+    this.#maxTurns = max ?? DEFAULT_SESSION_MAX_TURNS;
+    // A frozen COPY of what was admitted: the host's own object can be changed later, and that must not reach the loop unchecked.
+    this.#limits = Object.freeze({ ...(params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS) });
   }
 
   /**
@@ -1408,12 +1430,13 @@ export class AgentSession {
   /**
    * Run a USER-invoked `!`-shell command (2.5.D, [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — the additive engine method that routes the shell escape through the ONE `run_command` boundary:
-   * `enforcePolicy(allowedCommands)` (the exact-match allowlist, enforced BEFORE approval) → the mode-aware
-   * `confirmAction` gate → the hardened process arm (`spawn`, `shell:false`). It reuses {@link #runTurn}'s
+   * `enforcePolicy(allowedCommands)` (the exact-match allowlist; under an approval regime a miss reaches the mode-aware
+   * `confirmAction` hook as a request instead of failing, ADR-0118 §1) → the `confirmAction` gate → the hardened process arm
+   * (`spawn`, `shell:false`). It reuses {@link #runTurn}'s
    * dispatch-context construction VERBATIM (`this.#turnPolicy`, the session `toolPolicy`, `fsScope`,
    * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
    * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
-   * discriminated union — the host renders the output (untrusted context), the actionable allowlist-deny hint, or
+   * discriminated union — the host renders the output (untrusted context), the fixed "not allowed here" line, or
    * a failure. Dispatch failures use that result; host controller initialization preserves its original
    * throwable after releasing operation state. Callable only when started + idle (a `!` never races a turn).
    */
@@ -1438,7 +1461,7 @@ export class AgentSession {
       // The user-initiated `!` GRANTS `run_command` for THIS one-off dispatch (the user typed it — the grant is
       // implicit), regardless of whether the bound agent lists it in `tools`. This never reaches the model: it is a
       // direct dispatch, not a turn, so the model's granted/advertised set is untouched. The security gate stays the
-      // allowlist (`enforcePolicy`, BEFORE approval) + the mode-aware `confirmAction`, never this grant.
+      // allowlist (`enforcePolicy`) + the mode-aware `confirmAction`, never this grant.
       const grantedToolIds = new Set<ToolId>([...(this.#agent.tools ?? []), 'run_command']);
       const outcome = await this.#deps.registry.dispatch(toolCall, {
         ...this.#buildDispatchContext(grantedToolIds, this.#turnPolicy),
@@ -1474,8 +1497,8 @@ export class AgentSession {
     } catch (err) {
       if (err instanceof AgentTurnError) return { kind: 'failed', message: err.message };
       if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
-      // An allowlist MISS is a policy denial with `command_not_allowed` — the host shows the actionable
-      // `[chat].allowed_commands` hint; any other `tool_denied` (an approval reject / protected path) is a plain
+      // An allowlist MISS with no approval regime is a policy denial with `command_not_allowed` — the host shows its fixed
+      // "not allowed here" line (under a regime the miss is a request to the hook instead); any other `tool_denied` (an approval reject / protected path) is a plain
       // decline. Both messages are secret-free (the error classes never echo the resolved command value).
       if (err instanceof ToolPolicyError) {
         return {
@@ -1652,7 +1675,8 @@ export class AgentSession {
       signal,
       registry: this.#deps.registry,
       dispatchContext: this.#buildDispatchContext(new Set(), undefined),
-      limits: this.#limits,
+      // Compaction offers no tools, so it never asks a person anything: it keeps the bounds but not the checkpoint hook.
+      limits: withoutCheckpoint(this.#limits),
       ...(this.#maxTokensEstimate === undefined
         ? {}
         : { maxTokensEstimate: this.#maxTokensEstimate }),

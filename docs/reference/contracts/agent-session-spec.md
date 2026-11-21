@@ -72,7 +72,7 @@ stateDiagram-v2
 | **setTurnPolicy** | Set/clear the **reseat-less mode policy** (ADR-0057) — the advertise-filter + the interactive approval hook — on the **same** session instance (no reseat, no tool-context loss). Snapshotted at each turn start, so a change applies on the **next** turn. The ask / plan / accept-edits / auto enum lives in the host; this is its mode-agnostic engine projection. Callable in any state, including mid-turn; **inert once cancelled** (a cancelled session runs no further turn, so the policy is never read again). |
 | **abort** | **Mid-turn abort** (ADR-0057 EA7): end the *in-flight turn* via its `AbortSignal` but **keep the session alive** — settle **one** `session:turn_completed{stopReason:'aborted'}` (no error), and return to `idle`. A turn the provider had already **accepted** (it returned at least one stream chunk) is **retained** as an interrupted turn ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md): the event carries `interruption: { reason: 'aborted' }`); an abort before the provider returned anything rolls its pending user message back (see [Interrupted turns](#interrupted-turns--adr-0119), *Not retained*). **Distinct from `cancel`** (which is terminal): no `session:cancelled`, no new status. No-op when no turn is in flight; a concurrent `cancel` wins. A **late** abort that lands after the turn already resolved is **also a no-op** — that turn completes normally and its reply is **kept** (`abort` interrupts an in-flight turn only, never discards a finished one). |
 | **cancel** | Abort the in-flight turn via `AbortSignal` **and end the session** (the terminal `session:cancelled`); the session stays resumable from its persisted transcript. |
-| **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): `enforcePolicy(allowedCommands)` **before** approval → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
+| **runUserCommand** | Run a **USER-invoked `!`-shell command** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — the additive method that routes a shell escape through the **one** `run_command` dispatch boundary, **reusing the same dispatch-context construction as a turn** (`toolPolicy` allowlist, `fsScope`, `gateApproved:false`, the mode-aware `confirmAction`): the allowlist is judged first (with no approval regime a miss is `denied{allowlist}`; under the chat's regime a miss reaches the mode-aware `confirmAction` as a request instead, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1) → `spawn`/`shell:false`. The caller pre-tokenizes the line into `command` + `args` (no shell expansion); the user grant of `run_command` is scoped to this one-off dispatch and never reaches the model. Returns a classified `UserCommandOutcome` (`ran` \| `denied{allowlist}` \| `failed` \| `cancelled`) — no raw error escapes. Callable only when **started + idle** (a `!` never races a turn); leaves the session idle. |
 | **resume** | Reload a persisted session (messages + context) and continue. |
 | **compact** | Summarise the older working context, retain the latest complete exchange and append a durable boundary marker. Callable only when started and idle; returns a typed `CompactionResult`. Memory-policy refusal precedes no-op detection, provider planning, events and egress. |
 | **trimHistory** | Keep a suffix under a message-unit bound, starting at a user boundary; append a marker without an LLM call. Callable only when started and idle; returns a typed `TrimResult`. Memory-policy refusal precedes bound/no-op checks and mutation. |
@@ -383,7 +383,7 @@ persister writes the interruption row **iff** the event carries `interruption`.
 |---|---|---|
 | `stopReason: 'aborted'`, no error | `aborted` | absent |
 | `error.code = tool_denied` | `denied` | absent |
-| `error.code = turn_limit` from a within-turn limit (the `maxToolTurns` guard, the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
+| `error.code = turn_limit` from a within-turn limit (the tool-round limit or its checkpoint "stop", the tool-calls-per-response and media-attachment ceilings) | `turn_limit` | absent |
 | any other classified error | `failed` | the `ErrorCode` literal |
 
 Not retained, today's rollback stays: session-ending cancellation (`session:cancelled`), process death, an
@@ -514,13 +514,15 @@ criteria, custom-endpoint downgrade and admission-release evidence; the
 ### Hard turn cap
 
 A session carries a **hard turn cap** — a finite DoS fail-safe on the number of turns it will run (engine
-default **50**, overridable at construction; **0/absent ⇒ the default**). It is **distinct** from two other
+default **50**, overridable at construction within **1 to 1,000**; **absent ⇒ the default**, and a value
+outside the bounds is refused at session construction, never clamped —
+[ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §1). It is **distinct** from two other
 limits and must not be conflated with either: `[chat].max_messages` (a history-**trim** threshold that
 silently *continues* the session — [config-spec.md](config-spec.md)) and the turn core's **within-turn**
-`maxToolTurns` tool-loop guard. A `sendMessage` past the cap ends **loudly, with no egress**:
+tool-round limits ([below](#within-turn-limits-and-the-checkpoint)). A `sendMessage` past the cap ends **loudly, with no egress**:
 `session:turn_completed` carries `stopReason: 'error'` + `error.code: 'turn_limit'`
 ([sse-event-schema.md](sse-event-schema.md#error-code-taxonomy)) — never a silent stop; the within-turn
-`maxToolTurns` guard surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
+tool-round limit surfaces the same `turn_limit` code through the same event. The cap is an **engine-API
 knob** (`SessionDeps.maxTurns`); a surface maps the `[chat].max_turns` config field onto it at construction
 time — that surface field was added in build-phase 2 (workstream **2.M**); see the `[chat]` block in
 [config-spec.md](config-spec.md).
@@ -581,6 +583,18 @@ Compaction estimates the prospective summary/history projection before installin
 terminal cancellation after the provider-supplied estimator. A cancellation during that estimator
 retains the previous history and summary. Ordinary estimator failure remains best-effort; the existing
 EA7 late-abort no-op after successful summarisation remains unchanged.
+
+### Within-turn limits and the checkpoint
+
+Two limits bound the work of one turn (the hard turn cap above bounds the session). They are the chat's limits; a workflow agent node and a one-shot `agent run` keep the engine's own defaults (16 and 3). The configuration keys, defaults and bounds are in [config-spec.md](config-spec.md#chat-limits); the decision is [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md).
+
+- **The round limit** counts tool rounds the turn has *dispatched*. The check is made when the model has asked for another round and the limit has been reached, **before that round runs**: a round the model asked for is held, not run, so a limit never lets a round's effects land in a turn whose result the model will not see. Where nobody can answer, a turn therefore makes at most `limit + 1` provider calls and dispatches at most `limit` rounds; where a person keeps answering "continue" the bound is the absolute constant below.
+  - **Where nobody can answer** (no host hook: a workflow node, `agent run`, a plain or `--json` chat) the limit is a hard stop: the turn ends with `error.code: 'turn_limit'` (`SessionDeps.limits.maxToolTurns`).
+  - **Where a person can answer** the host wires `AgentTurnLimits.onToolRoundLimit` (the CLI wires it on the standalone chat and the Home's chat, as the docked checkpoint card — [chat-session.md](../cli/chat-session.md#the-continue-checkpoint--mvp-4-adr-0136); the plain and `--json` drivers and `agent run` wire none and stay a hard stop). At each interval (`checkpointToolTurns`, default 32 in a chat) the engine calls it with the rounds dispatched and the interval, with **no provider call, lease or admission held**: an unanswered checkpoint is a stopped spend and there is no timeout. `'continue'` runs the held round and grants one more interval; `'stop'` ends the turn with `turn_limit`; an abort while it is open takes the usual cancellation path (the engine races the hook against the turn's signal, so a host that never settles it cannot make the turn uncancellable, and an abort wins over any answer, a late one included; an unanswered checkpoint otherwise waits, by design). Only the literal `'continue'` continues: a rejection, a throw or any other value is a classified stop (`turn_limit`), so a buggy host fails closed. The host is told the rounds so far and what a "continue" will actually grant — the interval, or what is left of the backstop. A continued turn still stops at the absolute constant `ABSOLUTE_TOOL_ROUNDS` (256 rounds, so at most 257 provider calls and 4,096 tool calls at 16 per response), asked of nobody.
+  - `continue` grants rounds, not money: a configured cost cap still governs every provider call, and a turn that continues into it ends with `budget_exceeded`.
+  - No event and no history field carries the checkpoint: the host owns the question and the answer, so a resumed transcript shows the same `turn_limit` interruption either way.
+- **The correction budget** (`maxToolCorrections`, default 3) counts consecutive rounds in which no call ran to a result ([ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)); the turn ends with `tool_failed` in the round that would be the *(N+1)*th, so with 3 a model gets three corrections. A checkpoint does not reset it.
+- **Admission.** The session refuses a host-supplied limit outside its published bound (`CHAT_LIMITS` in `@relavium/shared`) when it is constructed.
 
 ## Session context
 

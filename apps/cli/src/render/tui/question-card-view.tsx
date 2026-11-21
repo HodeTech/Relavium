@@ -102,10 +102,10 @@ export function QuestionCardHost(
   if (card === undefined) return null;
   if (!reviewTerminalFits(props.size))
     return (
-      <Text>Terminal too small — resize to at least 80×24. Esc or Ctrl-C stops the turn.</Text>
+      <Text>Terminal too small — resize to at least 80×24. Esc or Ctrl+C stops the turn.</Text>
     );
   if (blocked === shown)
-    return <Text>Question unavailable — enlarge the terminal. Esc or Ctrl-C stops the turn.</Text>;
+    return <Text>Question unavailable — enlarge the terminal. Esc or Ctrl+C stops the turn.</Text>;
   const color = props.color === true;
   const view = projectQuestionCard(card, props.size.cols, {
     guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',

@@ -129,7 +129,8 @@ it introduces machine-local boundaries that still matter:
   hostile same-user parent-swap jail. The future scratch producer remains with
   [Phase 2.6.N](../roadmap/phases/phase-2.6-conversational-authoring.md#26n--child-session-foundation-catalog-spawn-standardized-io-lineage).
 - **Shell tool execution.** Tools that run commands use an explicit per-workflow
-  allowlist; unlisted commands are never executed. File-tool scope does not constrain arbitrary
+  allowlist; unlisted commands are never executed in a workflow. In an interactive chat a command outside
+  the allowlist runs only after the person answers its card ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)), and a surface with no one to ask refuses it. File-tool scope does not constrain arbitrary
   subprocess arguments or supply OS filesystem isolation. Built-in tools and their
   permission model are in
   [../reference/shared-core/built-in-tools.md](../reference/shared-core/built-in-tools.md).

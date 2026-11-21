@@ -206,6 +206,8 @@ the `@relavium/llm` seam — [CLAUDE.md](../../CLAUDE.md) #4/#5 hold) and runs i
   machine-output contract is untouched. On the interactive surface, the `!cmd` + its (bounded) output persist to
   the transcript so a `chat-resume` stays coherent.
 
+> Amended 2026-11-21 (the PR #101 review): what persists and what the model reads is the output framed as `<command … cmd="…" exit="N">`, and that frame's `cmd` is the **scrubbed** command line (the engine's `scrubbedCommandDisplay` of the argv, the same line the approval card and the event preview show), not the line as typed: a credential typed into `!curl -H "Authorization: Bearer …"` reaches neither the provider nor `history.db` through the frame. The process still runs the typed argv; the local hint, the busy label and the chip show what was typed. See [tool-registry.md](../reference/shared-core/tool-registry.md#the-per-tool-approval-seam-confirmactionhook-adr-0057-ea3).
+
 *Considered:* an `apps/cli`-side re-implementation of the allowlist + approval (rejected — forks the one command
 boundary; a divergence, or an approval-before-allowlist ordering bug, is a security regression, exactly attack
 (2)); a separate `!`-shell execution path outside `run_command` (rejected — a second command sandbox); a
@@ -370,3 +372,9 @@ as PR #94 (`ab08209e`). The [merge checkpoint](../roadmap/phases/phase-2.5.5-har
 joins final reviewed source `4cdfe011`, review scopes, execution evidence and preserved
 limits. Earlier pending/unmerged notes are historical; this landing adds no decision,
 future feature, deferral or claim of merge-commit execution.
+
+> Amended 2026-11-19 (open-quote refusal implemented in MVP-4 step 1; the card, the retired hint and `Ctrl-C` during `!` are decided, implementation owed, steps 2 and 4) by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md): a `!` command that is not pre-approved shows the same command card as the model's `run_command` (the actionable allowlist hint is retired; the security reasoning above is answered in [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1); the tokenizer refuses an open quote instead of running to the end of the line; and `Ctrl-C` during a `!` command interrupts it as `Esc` does, instead of ending the session.
+
+> Implemented 2026-11-19 (MVP-4 step 2, in part): the `Ctrl-C` during a `!` command is now the interrupt keymap's: the first `Ctrl+C` interrupts the command the way `Esc` does and arms, and a second inside two seconds ends the session. See [ADR-0115's implementation note](0115-one-interrupt-keymap-for-the-interactive-cli.md#implementation-note--2026-11-19-mvp-4-step-2). The command card and the retired hint stay owed to step 4.
+
+> Implemented 2026-11-19 (MVP-4 steps 3 and 4): a `!` command that is not pre-approved shows the same command card as the model's `run_command`, and the actionable allowlist hint is retired (a dispatch with no approval regime says only that the command is not allowed here). See [ADR-0118's implementation notes](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md#implementation-note--2026-11-19-mvp-4-step-4).

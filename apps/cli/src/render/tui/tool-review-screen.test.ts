@@ -26,6 +26,8 @@ import {
   FULL_BODY_ROWS_CAP,
   FULL_PROTECTED_NOTE,
   FULL_SPARE_ROWS,
+  FULL_CONFIRM_ANY_ROW,
+  FULL_CONFIRM_ENTER_ROW,
   fullAnswerRows,
   fullBodyRows,
   fullChrome,
@@ -1349,7 +1351,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
 // rows on the wrong flag; return one row; reword the second row; give the locked row the card's wording.
 // ---------------------------------------------------------------------------------------------------------------------
 describe('fullAnswerRows — the card’s two rows, without the keys only the card has', () => {
-  const DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn';
+  const DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
   const scopes = [
     'file writes',
     'file edits',
@@ -1397,7 +1399,9 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
       scope: 'file edits',
       confirmAlways: true,
     };
-    expect(fullAnswerRows(input)).toEqual(cardKeyRows(input));
+    // The question is the card's, word for word; only the second row differs: Esc steps back here and Ctrl+C stops (ADR-0137 §4).
+    expect(fullAnswerRows(input)[0]).toBe(cardKeyRows(input)[0]);
+    expect(fullAnswerRows(input)[1]).toBe(FULL_CONFIRM_ANY_ROW);
   });
 
   it('offers neither the denial reason nor the full diff: they are keys of the card, and this is the full view', () => {
@@ -1440,9 +1444,10 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
   });
 
   // Moved from the card's tests: `fullViewConfirmLegend` ("the full view asks the same question as the card, in one row that
-  // fits") is gone; the full view now draws the card's own two confirmation rows, and they still fit.
-  describe('while the session-wide grant waits for its Enter (the card’s question, word for word)', () => {
-    it('asks the same two-row question the card asks, so the person is asked the same thing in both places', () => {
+  // fits") is gone; the full view draws the card's own question row and its own second row, which says what Esc and Ctrl+C do HERE
+  // (the card's `Esc stops the turn` would be false on the full view, where Esc steps back, ADR-0137 §4).
+  describe('while the session-wide grant waits for its Enter (the card’s question, its own second row)', () => {
+    it('asks the card’s question in its first row, and says in its second what the keys do on the full view', () => {
       for (const scope of scopes) {
         const input: CardKeyInput = {
           inspected: true,
@@ -1450,7 +1455,8 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
           scope,
           confirmAlways: true,
         };
-        expect(fullAnswerRows(input)).toEqual(cardKeyRows(input));
+        expect(fullAnswerRows(input)[0]).toBe(cardKeyRows(input)[0]);
+        expect(fullAnswerRows(input)[1]).not.toBe(cardKeyRows(input)[1]);
       }
       expect(
         fullAnswerRows({
@@ -1461,17 +1467,50 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         }),
       ).toEqual([
         'Press Enter to allow all file writes this session',
-        'Any other key cancels · Esc stops the turn',
+        'Any other key cancels · Esc back · Ctrl+C stops the turn',
       ]);
+    });
+
+    it('never tells the full view that Esc stops the turn: it steps back there, and the stop key Ctrl+C stays named', () => {
+      for (const confirm of [{ confirmAlways: true }, { confirmRemember: true }] as const)
+        for (const command of [true, false]) {
+          const rows = fullAnswerRows({
+            inspected: true,
+            cacheable: true,
+            scope: 'file writes',
+            ...(command ? { command: true } : {}),
+            ...confirm,
+          });
+          expect(rows[1], JSON.stringify({ confirm, command })).not.toContain('Esc stops');
+          expect(rows[1]).toContain('Esc back');
+          expect(rows[1]).toContain('Ctrl+C stops the turn');
+        }
+      // an Enter confirms a command's question, and any key a tool's
+      expect(
+        fullAnswerRows({
+          inspected: true,
+          cacheable: true,
+          scope: 'x',
+          command: true,
+          confirmAlways: true,
+        })[1],
+      ).toBe(FULL_CONFIRM_ENTER_ROW);
+      expect(
+        fullAnswerRows({ inspected: true, cacheable: true, scope: 'x', confirmRemember: true })[1],
+      ).toBe(FULL_CONFIRM_ENTER_ROW);
     });
 
     it('fits each row in 78 columns for the longest scope phrase, so "any other key cancels" is never cut off', () => {
       const scope = cardScopePhrase('mcp:a-very-long-server:and-a-very-long-tool-name');
-      const rows = fullAnswerRows({ inspected: true, cacheable: true, scope, confirmAlways: true });
-      expect(rows).toEqual(
-        cardKeyRows({ inspected: true, cacheable: true, scope, confirmAlways: true }),
-      );
-      for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(78);
+      for (const extra of [{}, { command: true }, { confirmRemember: true, confirmAlways: false }])
+        for (const row of fullAnswerRows({
+          inspected: true,
+          cacheable: true,
+          scope,
+          confirmAlways: true,
+          ...extra,
+        }))
+          expect(displayWidth(row)).toBeLessThanOrEqual(78);
     });
 
     it('offers no `[b]` while it waits either: the card’s two rows are the whole question', () => {
@@ -1713,7 +1752,7 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     });
     expect(waiting.answers).toEqual([
       'Press Enter to allow all file edits this session',
-      'Any other key cancels · Esc stops the turn',
+      'Any other key cancels · Esc back · Ctrl+C stops the turn',
     ]);
     expect(waiting.rows).toBe(fullChrome(base).rows);
   });
@@ -3246,13 +3285,13 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
 });
 
 /**
- * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc` and the words between, in one pass. The regular expression
- * it replaced (`/(\[[^\]]+\]|Esc)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
+ * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc`, `Ctrl+C` and the words between, in one pass. The regular expression
+ * it replaced (`/(\[[^\]]+\]|Esc|Ctrl\+C)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
  * 3.4 s). Mutation: put the oracle back, and the time bound fails; drop the `close > index + 1` test, and `[]` is a label.
  */
 describe('keyLabelParts — a key legend in labels and words, in one pass', () => {
   const oracle = (row: string): string[] =>
-    row.split(/(\[[^\]]+\]|Esc)/u).filter((part) => part.length > 0);
+    row.split(/(\[[^\]]+\]|Esc|Ctrl\+C)/u).filter((part) => part.length > 0);
 
   it('equals the regular expression on every string of up to six pieces', () => {
     const pieces = ['[', ']', 'Esc', 'x', ' '];
@@ -3265,6 +3304,24 @@ describe('keyLabelParts — a key legend in labels and words, in one pass', () =
     };
     walk('', 6);
     expect(checked).toBe(19_531);
+  });
+
+  it('equals the regular expression on every string of up to four pieces, `Ctrl+C` among them', () => {
+    const pieces = ['[', ']', 'Esc', 'Ctrl+C', 'Ctrl+', 'x', ' '];
+    let checked = 0;
+    const walk = (prefix: string, depth: number): void => {
+      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
+      checked++;
+      if (depth === 0) return;
+      for (const piece of pieces) walk(prefix + piece, depth - 1);
+    };
+    walk('', 4);
+    expect(checked).toBe(2_801);
+  });
+
+  it('finds the stop key at the start of a row, as a row of the search box begins with it', () => {
+    expect(keyLabelParts('Ctrl+C stops the turn')).toEqual(['Ctrl+C', ' stops the turn']);
+    expect(keyLabelParts('Ctrl+N is not the stop key')).toEqual(['Ctrl+N is not the stop key']);
   });
 
   it('is lossless: the parts put back together are the row, whatever the row holds', () => {
@@ -3285,12 +3342,16 @@ describe('keyLabelParts — a key legend in labels and words, in one pass', () =
   });
 
   it('finds the labels the real legend rows hold', () => {
-    expect(keyLabelParts('[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn')).toEqual([
+    expect(
+      keyLabelParts('[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn'),
+    ).toEqual([
       '[Ctrl+N]',
       ' Deny   ',
       '[b]',
       ' Back to the card   ',
       'Esc',
+      ' back   ',
+      'Ctrl+C',
       ' stops the turn',
     ]);
   });

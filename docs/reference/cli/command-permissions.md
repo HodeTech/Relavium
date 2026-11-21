@@ -1,0 +1,448 @@
+# Remembered command permissions
+
+> Last updated: 2026-11-21
+
+- **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 to 7; the chat's `/permissions` is a sheet since step 5, and the bare Home and a bare `relavium permissions` open it since step 7).
+- **Surface**: CLI (`relavium permissions`, the chat's command card, `!`)
+- **Scope**: A person's "Remember this command" answers, kept on one machine. Not the `[chat]` allowlist (config), not a workflow's allowlist, not MCP consent.
+- **Related**: [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md), [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md), [commands.md](commands.md), [chat-session.md](chat-session.md), [keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [mcp-integration.md](../shared-core/mcp-integration.md#the-grant-store), [security-review.md](../../standards/security-review.md#sandbox-and-tool-policy-run_command-node-tools-secret-inputs)
+
+A **remembered grant** marks one exact command — an exact argv under one project root — as
+*pre-approved* on this machine. It exists because the alternative, listing every command in a repository
+file, authorizes every future clone. Pre-approval matters only to the mode table in
+[chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): `auto` runs a remembered
+command without a card, until a file write has been applied in this project after the grant was made (then it asks, in this chat and
+in every later one, until the grant is renewed: [the write marks](#the-write-marks)), while `ask` and
+`accept-edits` still show one, because a grant removes the *unknown*, not the person's per-call consent (a *Remember* also approves the
+command for the chat it is made in, so that chat does not ask about it again; a later chat does, in `ask` and `accept-edits`, and in `auto` runs it
+unasked while the grant is fresh). A
+repository's own `[chat]` allowlist is not a pre-approval in `auto`: it is a file the person did not write, and the
+command card says so in its standing row. *Remember* is offered for a listed command too, because the grant is the person's own word. This page is the canonical home for the store's format,
+bounds and commands; the decision and its reasoning are
+[ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2, and the card
+that offers *Remember* is [the command card](#the-command-card) below.
+
+## What a grant is, and is not
+
+- **Exact.** A grant matches one argv. One keyed digest covers the whole argv with every element
+  length-prefixed, so `npm test` never authorizes `npm test -- --exec=…`, and `["cat","a b"]` is a different
+  command from `["cat","a","b"]`.
+- **Root-scoped.** The root is the directory holding the nearest `.relavium/`, else the working
+  directory, resolved to its real path (`realpath.native`, so case-insensitive spellings share one root) —
+  so two paths to one tree share grants and a fresh clone elsewhere shares none. The chat and
+  `relavium permissions` derive it with the same function, so a grant made in one is the grant the other
+  lists.
+- **Not bound to the working directory or the environment.** The root is what a grant keys on; the host pins the directory a
+  command runs in and the model cannot choose it, so the card's `Runs in` row is information and not part of the grant
+  ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2 decides this). The one place the
+  directory still matters: in `auto` a grant does not skip the card for a command whose arguments name a protected path from where
+  the chat runs (`cat id_rsa` started inside `~/.ssh`).
+- **Not a runtime guarantee.** A grant binds the argv, not what the program reads: `npm test` keeps being
+  approved after `package.json`'s `test` script changes. ADR-0118 §2 records this as a decision, not a
+  deferral.
+- **Never the command.** The file holds keyed digests, so it cannot leak a credential typed in an argument
+  and `relavium permissions list` has no command to print.
+
+## The store
+
+`~/.relavium/command-grants.ndjson`, mode `0600` in the `0700` directory, one JSON object per line,
+**append-only with tombstones** — never rewritten, because an interrupted rewrite loses grants and losing a
+*revocation* is the failure that matters. There is **no lock**. The path is read and written as a **regular
+file only**: a symlink there is refused on every platform (an `lstat`), the open does not follow one and does
+not block (`O_NOFOLLOW` and `O_NONBLOCK`, on the platforms that have them), and the descriptor is checked, so a
+FIFO, a device or a directory reads as unreadable and a path swapped for a link or a FIFO between the read and
+the write is neither written through nor waited on. The mode is set when the file is created and healed on
+every write.
+
+| Line | Shape |
+|------|-------|
+| grant | `{"v":1,"id":"<uuid>","root":"<hex64>","grant":"<hex64>","program":"<name>","args":<n>,"at":"<ISO-8601>","mac":"<hex64>"}` (`program` omitted when it could not be named) |
+| revocation | `{"v":1,"revoked":"<id>","at":"<ISO-8601>"}` |
+
+- `root` is HMAC-SHA256 over a version tag and the canonical root. `grant` is HMAC-SHA256 over a version tag,
+  the `root` digest, a four-byte big-endian argument count and then **each element length-prefixed** (four
+  bytes, big-endian), with NUL separators between the parts. Binding the root digest means a record copied among
+  another root's lines never validates. Comparison is constant-time.
+- `mac` is HMAC-SHA256 under the same key over a version tag and every other field (`id`, `root`, `grant`,
+  `program`, `args`, `at`), NUL-joined. A record that was minted without the key, relabelled, or **copied
+  under a new `id`** fails it and is ignored (reported once, without making the store unreadable).
+- `at` must match `YYYY-MM-DDTHH:MM:SS[.fraction]Z`; any other value makes the line invalid, so a hand-edited
+  time cannot carry a newline or an escape into a listing. `args` is an integer from 0 to 100,000 and `id` is
+  1 to 64 of `[0-9A-Za-z-]`.
+- `program` is the label `relavium permissions list` shows. It is kept only when `argv[0]`, taken whole, is
+  a bare name (`^[A-Za-z0-9._+-]{1,64}$`) that resolves through the `PATH` to an executable when the grant
+  is written; anything else — a path, a command line, an assignment such as `PGPASSWORD=…` — is
+  `(unnamed program)`. A free-text `argv[0]` can itself be a credential, so no part of it is kept.
+- The **digest key** is 32 random bytes from `node:crypto`, generated on the first *write* (after the file was
+  read, so an unreadable file never leaves a key behind) and kept in the OS keychain under the account
+  `relavium-internal:command-grants-digest-key`, beside the provider keys. A read never generates it. It never
+  enters a file, a log or an event. An entry shorter than 32 bytes is not a key (it reads as unusable, and
+  nothing is regenerated over it); `relavium permissions revoke --all` clears it. A running chat holds the key it
+  read for matching, and reads the keychain afresh for every *Remember*: another process may have cleared the key (`revoke --all`) since,
+  and a grant signed with the cached key would be reported as remembered and never match again.
+
+**Folding.** A reader folds the whole file. A revocation names a grant `id` and holds **wherever it sits in
+the file**, so a replayed or reordered grant line stays revoked. Two live records for one argv (two
+processes that remembered it at the same moment) are **one** grant: `list` shows it once and `revoke`
+withdraws both. The first record with an `id` wins. **A line that is not exactly a grant or a revocation —
+it does not parse, has an extra or mistyped field, or an `id`, `program` or time of the wrong shape — makes
+the whole store read as "no grants"** for that invocation: never skip the line, because a truncated line may
+be a tombstone and skipping it would resurrect a revoked grant. The failure is reported once, with its
+recovery. Each *different* failure is reported once.
+
+**What the store defends against, and what it does not.** Forging, relabelling or minting a grant needs the
+keychain key. A torn write, a replayed grant line and a reordered tombstone cannot bring a revoked grant
+back. It does **not** defend against a process running as the same OS user: that process can delete a
+*revocation* line (tombstones are not authenticated) and so bring its grant back, can restore an older copy of
+the file, and can read the keychain key. `revoke --all` deletes the key as well as the file, so a restored
+older copy stops validating once a new key is generated; deleting a grant line or the whole file only
+removes trust.
+
+### Bounds
+
+| Bound | Value | Applied |
+|-------|-------|---------|
+| live grants per root | 64 | on write (the 65th is refused) and on read (a file with more reads as "no grants") |
+| live grants in total | 1,024 | on write and on read |
+| lines (blank lines are free; tombstones count) | 8,192 | on read; on write a grant needs two free lines, so one is always left for its tombstone |
+| file size | 2 MiB | on read; on write a grant needs 1,024 bytes for its record and 256 for its tombstone |
+
+A write that would pass a bound is refused and *Remember* is not offered. A `revoke <number>` is a tombstone
+per record of the grant (one, or two when a grant has a twin) and is refused (`full`) when those lines or
+256 bytes each would pass the line or size bound, rather than pushing the file past it, where every grant would
+read as "no grants". Revoking a grant frees a per-root or total slot but never a line, so a store at the
+line or size bound is recovered by `relavium permissions revoke --all`.
+
+### When the store cannot answer
+
+| Condition | Matching | Remember | `permissions list` | `permissions revoke <number>` | `permissions revoke --all` |
+|-----------|----------|----------|--------------------|-------------------------------|----------------------------|
+| keychain locked, denied, or holding an unusable entry | nothing matches | not offered | exit 2, names the keychain | exit 2, names the keychain | **works**; the key is not cleared (the failure is ignored) |
+| no key generated yet (no grant was ever made) | nothing matches | offered; the first write generates the key | empty list, exit 0 | exit 2, no such grant | reports nothing to remove |
+| file unparseable, a symlink or other non-regular file, or over a bound | nothing matches | not offered | exit 2 (`config_error`), names the file | same | **works** for a file, FIFO or symlink; a directory at the path is exit 1 (remove it by hand) |
+| the file or its directory cannot be inspected (a permission) | nothing matches | not offered | exit 2 (`config_error`) | exit 2 | exit 1 (`storage_unavailable`): it tries to remove the file and reports a failure, never "nothing to remove" |
+| the file cannot be written (a best-effort check in advance; the write re-checks) | unchanged | not offered | unchanged | exit 1 (`storage_unavailable`) | **works** if its directory can be written (removing a file needs the directory, not the file) |
+| the directory cannot be written but the file can | unchanged | offered (appending needs the file, not the directory) | unchanged | works | exit 1 (`storage_unavailable`): removing a file needs the directory |
+| a revoke would pass the line or size bound | unchanged | not offered | unchanged | exit 2 (`config_error`), names `revoke --all` | **works** |
+
+## The write marks
+
+[ADR-0138](../../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md). A remembered command can
+change meaning when a file it reads changes (`npm test` after `package.json`'s `test` script was edited), so a grant is only as
+current as the project's files. The store keeps, per project root, **when a chat of this machine last applied a file write there**, and a grant older than
+that asks again in `auto`.
+
+- **What is recorded.** Each time the approval hook approves a file write (in any mode that approves one, `ask`'s card included) it records
+  the time against the root. A command the person approved on a card (*Once* or *Session*) is not a write, even when it is `sed -i`; a write
+  made by an editor or a shell outside the product is not seen. The chat also keeps the same fact in memory, which is what holds when the
+  file cannot be written.
+- **Fresh and stale.** A grant (its records and any twins are one grant) is **fresh** when its latest record is strictly newer than the root's mark or the
+  root has no mark; **stale** otherwise. `auto` runs a fresh grant unasked and asks about a stale one; `ask` and `accept-edits` ask about
+  every command either way. `matches` (is it remembered?) is the same for both; `standing` is `none`, `fresh` or `stale`.
+- **Renewal.** *Remember* on a stale grant appends a new record for the same argv, which folds into the one grant (a twin, dated now) and makes
+  it fresh. A *Session* answer ends the asking for that chat only. A *Remember* also approves the command for the chat it is made in
+  (it behaves as *This session* too, see the answers below), so that chat does not ask about it again even after a write; a later chat
+  asks if a write was recorded since the grant. `list` shows the grant once, dated by its latest record.
+- **The file.** `~/.relavium/command-write-marks.json`, mode `0600` in the `0700` directory, read as a regular file only (the same refusals as the
+  grants file: a symbolic link, a FIFO, a device, a directory), **replaced whole** (a sibling created exclusively, then renamed over it), never
+  appended to. `{"v":1,"marks":[{"root":"<hex64>","at":"<ISO-8601>","mac":"<hex64>"}],"unkeyed":"<ISO-8601>"}` (`unkeyed` is optional, see below).
+  `root` is the grants' root digest; `mac` is HMAC-SHA256 under the installation key over a version tag, the root and the time, NUL-separated.
+  An entry whose MAC does not verify is ignored when reading (it was minted without the key, or under a key the keychain has since replaced),
+  and **kept as it is when the file is rewritten**, so a chat that holds an old key cannot erase what a newer key wrote. At most 256 roots (the
+  oldest mark is dropped) and 64 KiB. The key is read from the keychain afresh for every write, as for a *Remember*.
+- **A write while the keychain is unavailable.** No key means no root digest and no MAC, yet the grants made earlier verify again when the
+  keychain answers, so such a write is recorded as `unkeyed`: one unauthenticated time that outdates **every** grant older than it, whatever
+  its root. It needs no MAC because it can only make a grant stricter. It is reported once. With no key *and none ever made* nothing is
+  written: no grant exists, and a grant made later is newer than the write.
+- **It fails toward asking.** A file that cannot be read (a refusal above, text that does not parse, a shape that is not exactly this one, a time that is
+  not a time, over the size bound) makes **every** remembered command stale, is reported once with its recovery, and is **never overwritten**:
+  replacing an unreadable file would give every other project a clean slate. `relavium permissions revoke --all` removes it with the grants and the key.
+  A mark that cannot be written is reported once and leaves the in-memory fact as the rule for that chat. While the file cannot be read *Remember* is not offered
+  (a record added then could not make anything fresh) and a direct request is refused as `unreadable`. `revoke --all` removes the marks only after the grants file is
+  gone, so a removal that fails does not leave the grants standing without the marks that outdate them.
+- **Whose writes.** A write is recorded against the root of the chat that applied it. A chat rooted at a parent directory that edits a file inside a nested
+  project (a directory with its own `.relavium/`) does not outdate that project's grants; a file written by an MCP tool (an egress-class action) is not seen either.
+- **What it does not defend against.** There is no lock, so two chats of different projects that write in the same instant can drop one entry (that
+  project's grants read as fresh again, which is the behaviour before the marks). A process running as the same operating-system user can delete
+  the file, as it can delete a revocation (see *What the store defends against*).
+
+## `relavium permissions list`
+
+```bash
+relavium permissions list [--json]
+```
+
+Lists this project's live grants, in file order, numbered from 1:
+
+```text
+Remembered commands for this project (2):
+  1. npm  (1 argument)  remembered 2026-11-19T12:00:00.000Z
+  2. (unnamed program)  (3 arguments)  remembered 2026-11-19T12:05:41.000Z
+Revoke one with `relavium permissions revoke <number>`, or all of them with `relavium permissions revoke --all`.
+```
+
+`--json` writes one record per grant — `{ "index", "id", "program", "args", "grantedAt" }` — and nothing for
+an empty list; the human form says *No remembered commands for this project.* Both exit `0`. Every label is
+sanitized to one line before it is printed. Another project's grants are never listed.
+
+When records were **ignored** (they were not made with this installation's key: a reset keychain, a file brought from another
+machine), `list` says so on **stderr**, naming the count, the file and `relavium permissions revoke --all`, so a list that shows nothing
+is not mistaken for "nothing was ever remembered". Standard output, and a `--json` stream, are unchanged.
+
+## `relavium permissions revoke`
+
+```bash
+relavium permissions revoke <number> [--json]
+relavium permissions revoke --all [--json]
+```
+
+- `<number>` is the number `list` printed: a plain decimal from 1 of at most six digits (no sign, padding,
+  fraction or exponent). It appends a tombstone for that grant and the confirmation **names what was
+  withdrawn** (`Revoked remembered command 2: npm, 1 argument. …`), because a number taken from an older listing
+  can name a different grant once another process has revoked an earlier one. **The numbers close up
+  afterwards**, so list again before a second revoke. A number that names no grant exits `2` and changes
+  nothing.
+- `--all` removes the **whole file**, which holds every project's grants, and says so, removes the [write-mark
+  file](#the-write-marks) beside it (best effort: it is keyed by the same key and useless without the grants), and deletes the digest key
+  from the keychain (best effort: a locked keychain is ignored). It needs no project root and no readable
+  file, so it is the recovery from a locked keychain, an unreadable file, an unusable key entry or a full
+  store (a symlink at the path is removed, not what it points at). The next grant generates a new key. The refusals that name `revoke --all`
+  as the way out say it "removes the file and clears the entry"; read them with the failure table above: with a locked keychain the entry
+  stays (the failure is ignored), and a directory at the path is not removed (exit `1`, remove it by hand).
+  **One key per account, one file per home:** the digest key is a single keychain entry for the operating-system account, while the grants
+  file lives in the home directory in use (`~/.relavium`). `revoke --all` run under another `HOME` (a test home, a container) removes **that**
+  home's file and clears the **account's** key, so the grants file of every other home stops validating: nothing in it matches, and once a new key exists its records read as
+  ignored and `list` says so on stderr, until grants are made again. It is the recovery tool for one machine, not a per-home reset.
+- Exactly one of `<number>` and `--all`; neither or both is an invalid invocation (`2`). The refusal never
+  echoes what was typed.
+- `--json` writes `{ "action": "revoke", "index", "id", "program", "args" }` or
+  `{ "action": "revoke-all", "removed" }`.
+- A revoke that succeeded but whose confirmation could not be delivered exits `9` (`output_unavailable`);
+  the grant is already gone.
+
+`list` is a `read` and `revoke` a `destructive` entry of the [command manifest](commands.md#command-manifest).
+Neither is reachable by the model: the manifest is a CLI projection, not a tool.
+
+## The command card
+
+A command reaches the person as the approval card the chat already has
+([chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): docked, bounded, every affirmative
+chord behind the dwell, quiet, typeahead and lockout guards) — in `ask` and `accept-edits` every command, even an allowlisted
+or remembered one (only a *Session* answer given in the current chat removes the card there), and in `auto` every command except one the person
+remembered (while no file write recorded for the project is newer than the grant) or approved for this session; the repository's
+allowlist does not skip the card there — with the additions of
+[ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1. The `!` escape and a model's
+`run_command` reach the same card; the `!` escape no longer sends anyone to a config file.
+
+**What the card shows.**
+
+- The title `Run <the whole command as one quoted line>`: the argv joined by the shared quoter, so `["cat","a b"]`
+  (`cat 'a b'`) and `["cat","a","b"]` (`cat a b`) never read alike, a leading or trailing space and an empty argument are
+  visible, and a line too long for the title rows is a **shortened target**, which keeps **every approving answer locked**
+  until the person has read it all in the full view (`[v]`).
+- One bare row per argument, the program first (the rows carry no labels; an empty argument reads `(empty)`), so each is
+  delimited on its own line. A title that wraps continues under the command (indented by the verb), never at the margin of the
+  argument rows. A command whose rows do not all fit the card (six elements fit at 80×24, with every answer, and a refusal note
+  does not take a row from them) says `⚠ N rows of this command are not shown — press [v]` and offers only *Once* there, because
+  *This session* and *Remember* (where either is offered at all) need every row on screen. The card adds `; This session and Remember
+  are offered only while every row is on screen` when it would otherwise offer *This session* or *Remember*, and the sentence ends at
+  `[v]` when it would offer neither. The sentence names both answers even where one of them is withheld for another reason (a code
+  carrier gets no *Remember*, and nor does a command a grant already covers; the card's own warning and its answer row say so). That holds in the full view too:
+  it lists every row and offers them while the whole command fits on its first page (about eight elements at 80×24, more on a taller
+  terminal); a longer command can be answered *Once* only.
+- `Standing: on this project’s allowlist | remembered for this project | not pre-approved` (the allowlist is the project’s
+  file, not the person’s; a remembered command in `auto` after a file write says `remembered for this project; asks because
+  files changed this session`, or, when the write was recorded in an earlier chat, `remembered for this project; asks because
+  files changed since`; the person's grant outranks the allowlist on this row when both hold), and `Runs in: <directory>` (the session workspace the host pins; never model-supplied; the two
+  share one row while the directory keeps room to say where it is), then the warnings that apply, one row each, each worded as a
+  fact and neither ever refusing a command: `⚠ Runs code: a shell, an inline script or a wrapper. Remember is not offered.` (a *code
+  carrier*, below) and `⚠ Names a protected path (its output goes to the model). Allow once only.` A command card has no
+  tool-identity row: its title already says `Run`, and the rows that are not shown are named in the warnings.
+- Secret-shaped spans are masked, labelled (`N masked values in this command`) and counted by the existing masking, **plus every span
+  the engine's event preview of the same command masks** (`secretShapedRanges`, [tool-registry.md](../shared-core/tool-registry.md)): the
+  two scrubbers do not recognize the same shapes (`password=…`, `--api_key=…`, `secret=…`), and what the event hides the card, its
+  masked copy (`c`) and `/details` hide too. A secret split from its key across two arguments is masked in each; where the engine
+  cannot locate a span in the text it read, the whole argument is masked; and the quoted title line is masked whole when quoting
+  (`'` becomes `'"'"'`) could hide a secret from a scan of the title alone. On a command card **every** masked span must be
+  revealed and displayed before an approving answer counts (a file card requires only the flagged ones), because a masked
+  argument is exactly where a command could hide what it does. Control characters, line separators and invisible code points
+  show as visible escapes (`<U+001B>`), never as terminal controls.
+- The same rows head the command's **full view**, which ends on `Approving runs exactly this command; file-tool path rules do
+  not limit it.` (not on the file cards' sentence that approval cannot override protected paths).
+- The transcript row of a command names the program and how many arguments it had (`npm (4 arguments)`), never an argument; `/details`
+  shows the command.
+- A command with more than 63 arguments, or any argument or the quoted line over 4,096 characters, cannot be shown in full;
+  its card is **blocked**: it says `A command is waiting, but it is too large for this card to show …`, no approving answer
+  counts, `Ctrl+N` (and `Esc`) still answer, and the refusal reaches the model as a `mode` refusal with a fixed label (the host's
+  limit, never the person's words) telling it to run smaller commands. A command card the host cannot build a preview for, **or whose
+  preview holds no target, no row and no diff**, is refused the same way, in the fixed words `this command came with nothing the
+  approval card can show, so it was not run; use the standard command tool`, before any card opens: a card that shows nothing must not
+  offer an answer, so nobody approves an argv they cannot see. The built-in `run_command` always publishes a target and one row per
+  argument; the case is a hand-built tool's.
+
+**The answers** (each affirmative one is a Ctrl chord typing cannot produce):
+
+| Answer | Key | Offered when |
+|--------|-----|--------------|
+| Once | `Ctrl+Y` | a card that can be shown; locked until every requirement to read it is met (a shortened target, a masked span) |
+| Allow this session | `Ctrl+G`, then Enter | the command names no protected path, and the page shows the whole command (the card, or the full view) |
+| Allow + remember | `Ctrl+O`, then Enter | the store can write one (key usable, file readable and writable, room under the bounds), the command is not a code carrier, names no protected path, is not covered by a grant that stands (a listed command is offered it; a grant a later file write outdated is offered it to renew), and the page shows the whole command |
+| Deny | `Ctrl+N` | always, even on a blocked card; a denial returns to the model |
+| Deny with a reason | `Ctrl+R` | on a card that can be shown; the denial returns to the model with the person's words |
+| Stop | `Esc` or `Ctrl+C` | at the card and outside a text box (in the reason box or a search box `Esc` only closes the box); rejects the call and stops the turn (only `Ctrl+C` also starts the exit window). On the full view `Esc` only steps back to the card, answering nothing, and `Ctrl+C` stops |
+
+*This session* approves this **exact argv** for the rest of this session instance (in memory, gone on `/exit`, and it asks
+again after a resume). *Remember* writes the grant at the moment of the answer — it is consent to the command, not to its
+outcome — and then behaves as *This session* too, so the same command does not ask again in this chat. A Remember that
+cannot be written approves this call only and the chat says why, in fixed words that never contain the command. An answer
+the card did not offer is narrowed to *Once* by the hook, whatever the prompt returned. The questions read `Press Enter to allow this
+exact command for this session` and `Press Enter to allow this exact command now and remember it for this project`, both with
+`Enter confirms · any other key cancels, allowing nothing`; an Enter that comes too early or too late says `Too early or too late
+for Enter — nothing was allowed.` A Remember written as the call is cancelled leaves the grant, and says so.
+
+The session approval a *Remember* leaves is **linked to its grant**: withdrawing the grant from this chat's `/permissions` sheet
+withdraws it too. A chat that is already open keeps its own session approval of a command revoked elsewhere (from
+`relavium permissions revoke`, or another chat) until the person withdraws that row in its sheet (the row then no longer says `(also remembered)`, because no grant covers it).
+
+A session export (`/export`) carries no authority: a session that used `run_command` exports `tools: [run_command]` and no
+allowlist, neither the remembered commands nor this session's approvals. A workflow has no one to ask, so the scaffolded node
+cannot run a command until the person writes the allowlist, as it is for the network tools and their allowed domains.
+
+**Code carriers.** A closed table over the argv, a speed bump that names the common ways of hiding a script in one argument
+and **not a security boundary** (the boundary is the full command on the card, exact-argv matching and `auto`'s hard edge).
+Names are compared by base name, case-folded, with a Windows drive designator without a separator (`C:cmd.exe`), a trailing
+`.exe`, a Windows alternate-stream suffix (`:…`) and trailing dots or spaces removed (`cmd.exe.` is `cmd`), and an interpreter's
+version digits ignored (`python3.12` and `node22` are `python` and `node`). The table lives in
+`apps/cli/src/chat/command-facts.ts`:
+
+- *shells* — `sh`, `bash`, `zsh`, `dash`, `fish`, `ksh`, `csh`, `tcsh`, `pwsh`, `powershell`, `cmd` — in any invocation;
+- *interpreters given inline code* — `python`, `python3`, `pypy`, `py`, `node`, `nodejs`, `deno`, `bun`, `perl`, `ruby`, `php`,
+  `lua`, `osascript` — when any argument is exactly `-c`, `-e`, `-E`, `-p`, `-r`, `--eval`, `--command` or `--print`, or, among
+  the interpreter's own leading options, is `--eval=…`, `--command=…`, `--print=…` or a short cluster holding one of those letters
+  (`-Ic`, `-pe`, `-ne`); `deno eval` is one too (`node build.js` and `python -m pytest -rA` are not flagged);
+- *wrappers that run another command* — `env`, `sudo`, `doas`, `xargs`, `nohup`, `nice`, `timeout`, `time`, `stdbuf`,
+  `exec`, `command`, `ssh`, `watch`, `busybox`, `toybox`, `wsl`, and `find` with `-exec`, `-execdir`, `-ok` or `-okdir`; the wrapped command is not
+  parsed, the wrapper is flagged.
+
+A code carrier is answered Once or This session: Remember is not offered, and its card says so. The table does not catch everything (`make`,
+`npm run`, a `git` alias, `awk`, `vim -c` carry code too).
+
+**A protected path.** An argument — and the text after the first `=` or `:` of any argument (`--flag=value`, `KEY=value`,
+`git show HEAD:.env`, `host:.ssh/id_rsa`), after a leading `@` (`curl -d @.env`) or after an attached one-letter option (`-d@.env`) —
+resolved lexically against the working directory is a path the file tools' read floor would refuse (`.env`, `.ssh`, `.aws`, `.docker/config.json`, credential dotfiles,
+`.relavium`) or the write floor protects (`.git`, startup files). The program's own name and a flag are not paths (a workspace that itself sits under a credential directory would otherwise put the
+warning on every command). The card says so (`⚠ Names a protected path (its output goes to the model). Allow once only.`) and the only
+answer that approves is *Once*. Nothing is resolved on disk and no shell expansion is imagined: the command is spawned without a shell.
+
+### In the chat: `/permissions`, a sheet
+
+([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2.) The bare `/permissions` opens a docked, keyboard-owning sheet under the
+conversation, where `/models` and `/effort` open, with the transcript still above it. The command takes **no argument**: the typed
+`--revoke <number>` forms are gone, because a typed number is a position and the sheet names a row. On a plain, `--json` or one-shot
+chat, which has no store and no one to ask, `/permissions` says `Remembered commands are not available in this chat.` The sheet opens
+only at an idle prompt, with no card open; if a card ever arrived while it was open, the sheet would close and the card would be shown.
+
+```text
+─ Permissions · ask mode ─────────────────────────────────────────────────────
+This project · remembered (2)
+› npm, 1 argument                             [d] withdraw   2026-11-19 12:00Z
+  node, 1 argument                                           2026-11-18 09:30Z
+This session · approved (1)
+  git status                                                 (also remembered)
+Session-approved commands run unasked here; a remembered one still asks.
+Press d to withdraw it: auto mode will ask about this command again.
+↑/↓ select · [d / Del] withdraw · Esc close
+```
+
+With the question up (after `d`), the same sheet reads:
+
+```text
+─ Permissions · ask mode ─────────────────────────────────────────────────────
+This project · remembered (2)
+› npm, 1 argument                         [Enter] withdraw   2026-11-19 12:00Z
+  node, 1 argument                                           2026-11-18 09:30Z
+This session · approved (1)
+  git status                                                 (also remembered)
+Session-approved commands run unasked here; a remembered one still asks.
+Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.
+[Enter] withdraw · Esc keep
+```
+
+**The action is on the thing it acts on.** The selected row carries its own action, `[d] withdraw`, just before its date, so a person
+who has not read a legend still sees that the row can be taken back and with which key; the date stays flush right on every row, so
+the dates stay in one column as the selection moves. The row under the note (the *message row*) says what withdrawing the selected row
+will do **before** it is done; the legend names the key in brackets, as the approval card brackets its answers (`[d / Del]`), and
+draws it in the danger colour, with the confirming `[Enter]` in the attention colour. The opening rule carries the title
+(`─ Permissions · <mode> mode ───`) and separates the sheet from the conversation above it.
+
+- **Rows.** A remembered row shows the label the store can give (a program's name only where it could be named without risking a
+  credential, and the argument count: `npm, 1 argument`) and when it was remembered, to the minute (UTC) so two grants of one
+  program can be told apart — never an argument. A session row shows the approved command, quoted and **scrubbed by the same
+  function the command card's title uses** (`scrubbedCommandDisplay`), cut to 400 characters once when the sheet loads. Every row, the
+  message row included, is drawn with each control, invisible or `<` character shown as a visible `<U+…>` or `<TAB>` token, as the card
+  shows it; nothing is stripped first. A session row is marked `(also remembered)` when a remembered grant covers the command **now**
+  (the store is asked; a link a *Remember* once made proves nothing, the grant may have been revoked elsewhere). The selected row
+  shows `›` and, at its right edge before the value, its action: `[d] withdraw`, and `[Enter] withdraw` while its question is up. There
+  are no row numbers: the cursor is the selection.
+- **Surfaces.** A chat's title is `Permissions · <mode> mode` and it shows both sections; the bare Home and a bare
+  `relavium permissions` on a terminal (MVP-4 step 7, below) show `Permissions · this project` and
+  the project's section only. The note row says what the mode does with the two kinds of row, and matches the mode table of
+  [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1: in `ask` and `accept-edits`
+  `Session-approved commands run unasked here; a remembered one still asks.`; in `auto` `Auto runs approved commands; remembered ones
+  ask again after a file write.`; in `plan` `Plan mode refuses every command; nothing here runs.`; with no chat, `Only auto mode runs a
+  remembered command unasked, in a chat in this project.` (a remembered command in a fresh chat; a *Remember* also approves it for the
+  chat it was made in). An empty list says what to do (`Press Ctrl+O on a command card, then Enter, to remember one.`; `plan` has no
+  cards and says only that nothing is remembered), and a sheet with nothing to select offers only `Esc close`.
+- **Keys, and typing.** `↑`/`↓` move and clamp (`PgUp`, `PgDn` by six, `Home`, `End`). `d`, `Delete` or `Backspace` **arms** the
+  selected row; `Enter` withdraws it. A person who types `/permissions`, `Enter` and goes on typing must not withdraw a grant by
+  accident (a typed line that ends in `d`, then `Enter`, is two steps), and a gap between keys cannot tell typing from choosing (the
+  card learned that at 350 ms a key), so the rule is about *what* was typed: **once any key that is not navigation has arrived since
+  the sheet opened, `d` arms nothing until an arrow key** (or a page key, `Home` or `End`) says the person is choosing a row; a refused
+  `d` says `Typed keys are ignored here. Select a row with ↑/↓, then press d.` On top of that `d` waits for the sheet to settle
+  (400 ms after it opened; an early `d` says `Wait a moment, then press d.` and is not typing), and `Enter` withdraws only between 800 ms
+  and 10 s after the question appeared (the approval card's own minimum), and only with nothing held (an `Esc` then `Enter` inside a terminal's escape window arrives as
+  `Meta+Enter`). An `Enter` outside that window drops the question and says `Too early or too late for Enter — nothing was withdrawn.
+  Press d again.` An `Enter` that reaches a question always follows a deliberate `d`, so neither it nor the withdrawal it makes counts as
+  typing: the `d` the note asks for arms again, and so does the next row. A paste is typing. Any other key, a paste and `Esc` keep the row (the question is dropped and nothing is
+  withdrawn). Typing there is any key that is neither `Esc` nor a navigation key (an arrow, a page key, `Home`, `End`), and a paste: a `d` after a navigation key or `Esc` arms
+  again, a `d` after typing is refused with the note above. `Esc` closes an idle sheet; `Ctrl+C` closes it
+  from either state. Neither closing key ever withdraws, and nothing is added or edited here: a grant is a digest of an exact argv, and
+  one can only be made on a command card.
+- **The message row** is always one row, and it never moves the legend. Armed, it asks `Withdraw <row>? Any other key keeps it.` (a
+  remembered row shows its label and its minute in parentheses, the label clipped before the minute is; a session row shows the
+  scrubbed command, clipped) and the legend becomes `[Enter] withdraw · Esc keep`. Idle, it says what withdrawing the selected row will
+  do: for a remembered row `Press d to withdraw it: auto mode will ask about this command again.`, for a session row
+  `Press d to withdraw it: this command will need approval again.`, and for a session row a remembered grant also covers `Press d to
+  withdraw the session approval; the project still remembers it.` (the `d` is drawn in the danger colour). After a withdrawal it says
+  what happened, in a sentence that fits the row, that no mode can contradict, and that carries its tone in a glyph as well as a
+  colour: `✓` (green) for a withdrawal made, `✗` (red) for one that could not be made, and no glyph, in the attention colour, for what the
+  person needs to know and is neither (a row that was already gone, a session approval left standing, a refused key). A remembered row:
+  `✓ Withdrawn. Auto mode asks about it again.`; with its linked session approval `✓ Withdrawn, with its session approval. It needs
+  approval again.`; and, when a plain session approval of the same command stands, `Withdrawn, but a session approval of it remains: it
+  is still approved here.` (only the approvals *this* grant covered count: another remembered command's approval does not). A session
+  row: `✓ Session approval withdrawn. It needs approval again.` or, when a remembered grant covers the command, `Session approval
+  withdrawn. It is still remembered; auto may run it unasked.`
+- **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
+  again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
+  one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
+  plain session approval of the same command stays, and the answer says it does.
+- **Failures.** A store that cannot be read shows its fixed sentence (`The OS keychain is not available…`, `The remembered-commands
+  file could not be read…`) in place of the rows, and the session section still works; a withdrawal that cannot be written leaves the
+  row and says so in one short row. A port that cannot be read at all does not open the sheet (`Could not read the permissions.`), and
+  one that cannot be read again after a withdrawal closes it (`… Could not read the permissions again.`) rather than leave it armed on a
+  stale list.
+- **Bounds.** At most three fifths of the terminal and at least eight transcript rows stay above (the card's rule), no line wider than
+  100 columns, and at most **eight body lines** (headings, rows and markers) with `▲ n more` / `▼ n more` markers that count the **rows**
+  they stand in for, the row under the marker included; a heading is never left alone above a `▼` marker. The title, the note, the message
+  row and the legend are always drawn: the floor of 80×24 leaves room for all of them. Below 80×24 the sheet says `Enlarge the terminal
+  to use this screen — Esc closes.`, `d` arms nothing, and a question asked before the terminal shrank is dropped by the next key. A
+  list that needs a window keeps one height as the cursor moves (a window that had to be one line shorter to avoid stranding a heading
+  is padded with a blank line), so the rule does not move under it; the first body line is always a heading, a marker, or the first line
+  of a whole sentence — never a row under a hidden heading and never the middle of a sentence.
+- **On the bare Home and from `relavium permissions`** (MVP-4 step 7, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3). The Home's palette, and a `/permissions` that reaches the Home as a line (a paste, or typed with a leading space, since a `/` at an empty prompt opens the palette), open the same sheet over the Home with the project's list only (no session section, no mode in the title), over the very store a chat and `relavium permissions list` read; an argument is refused with `/permissions accepts no arguments.`, a Home with no port says `Remembered commands are not available here.`, and a port that cannot be read says `Could not read the permissions.` and opens nothing. Every rule above holds: the clock, the typed-keys rule, the floor, the sentences. Closing it returns to the Home. A bare `relavium permissions` on a terminal (stdout and stdin a TTY, no `--json`, not CI) starts the Home with the sheet already open (and no first-run provider setup over it) and ends the run with exit `0` when it is closed (`Esc`, or `Ctrl+C`). A store that cannot be read is not a Home notice: the sheet opens and says so in its project section, as in a chat. Only a faulting port (a defect, not a store state) keeps the Home open with a notice, so that it can be read, and then the command is over: a sheet opened later is an ordinary one. The command opens the whole Home, so it inherits the Home's start-up refusals and opens the history database ([commands.md](commands.md#relavium-permissions)); anywhere else the command group is unchanged. Every read and withdrawal in the Home opens its own grant store: a store keeps the digest key it first read, and a Home lives long.
+- **Inline renderer and colour off.** It works in the inline renderer (it is docked like the other overlays) and reads the same with
+  colour off: the `›` marker, the bracketed keys, the `✓`/`✗` of an answer, the headings and the markers carry the meaning; bold is the
+  only style left.
+
+The Home's tab bar and its pane that composes this sheet with the domain allowlists, MCP servers and egress endpoints are MVP-8's;
+add and remove belong to those sections, not to command grants.

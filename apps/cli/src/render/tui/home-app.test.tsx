@@ -17,6 +17,8 @@ import {
   type TranscriptEntry,
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import { SHEET_SETTLE_MS } from './permissions-sheet.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -80,13 +82,18 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 /** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. The
  *  `sessionId` is parameterized so a `/models` reseat fake can hand back a DIFFERENT session object that keeps the
  *  SAME id (the reseat invariant the scroll-reset test discriminates against). */
-function makeSession(store: ChatStoreController, sessionId = 'sess-fake'): HomeChatSession {
+function makeSession(
+  store: ChatStoreController,
+  sessionId = 'sess-fake',
+  permissions?: PermissionsPort,
+): HomeChatSession {
   return {
     store,
     sessionId,
     processLine: async () => {},
     shouldStop: () => false,
     stopReason: () => 'exit',
+    ...(permissions === undefined ? {} : { permissions }),
     teardown: () => Promise.resolve(),
   };
 }
@@ -157,6 +164,8 @@ function mountHome(
     setMouseCapture?: (enabled: boolean) => void;
     /** Capture the raw Ctrl-Z job-control request. */
     onSuspend?: () => void;
+    /** The bare Home's `/permissions` port (ADR-0137 §3). */
+    permissions?: PermissionsPort;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -167,6 +176,7 @@ function mountHome(
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
+    ...(opts.permissions !== undefined ? { permissions: opts.permissions } : {}),
     homeStore: snapshot === undefined ? homeStore : { read: () => snapshot },
     onExit: vi.fn(),
     onError: vi.fn(),
@@ -1116,5 +1126,237 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     expect(carried.at(-1)?.role).toBe('notice');
     expect(carried.at(-1)?.text).toContain('claude-sonnet-4-6 → claude-opus-4-8'); // the marker, in order
     expect(carried.at(-1)?.text).toContain('@-attached file contents included'); // ADR-0059's bound disclosure
+  });
+});
+
+/**
+ * Poll until `predicate` holds and FAIL if it never does. `harness-util`'s `waitFor` returns silently on a timeout, so a bare `await waitFor(...)`
+ * asserts nothing (a removed paste handler survived the mutation sweep that way); a lone Esc is also held back a moment while the input layer
+ * rules out an escape sequence, so the budget is real time, as in `interrupt-wiring.test.tsx`.
+ */
+const untilTrue = (predicate: () => boolean, timeout = 3000): Promise<void> =>
+  vi.waitFor(
+    () => {
+      if (!predicate())
+        throw new Error(`the condition did not become true: ${predicate.toString()}`);
+    },
+    { timeout, interval: 15 },
+  );
+
+describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
+  const port: PermissionsPort = {
+    surface: 'chat',
+    load: () => ({
+      project: {
+        ok: true,
+        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
+      },
+      session: [],
+    }),
+    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
+  };
+  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it('is drawn docked in the chat when the command is typed, takes a paste away from the prompt, and closes on Esc', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const { c, harness } = mountHome(store, {
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(c);
+    harness.stdin.write('/permissions');
+    harness.stdin.write('\r');
+    await untilTrue(() => (harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const frame = harness.lastFrame() ?? '';
+    expect(frame).toContain('This project · remembered (1)');
+    expect(frame).toContain('› npm, 1 argument');
+    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    // A paste is not input to the sheet and not text for the prompt behind it.
+    harness.stdin.write(bracketed('pasted words'));
+    await settleFrames();
+    expect(c.getSnapshot().input.text).toBe('');
+    expect(harness.lastFrame() ?? '').not.toContain('pasted words');
+    harness.stdin.write('\u001b');
+    await untilTrue(() => !(harness.lastFrame() ?? '').includes('Permissions ·'));
+  });
+
+  it('does not scroll the in-Home transcript behind it: PgUp reaches the sheet (the alt-screen gate)', async () => {
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${String(i)}`);
+    const { c, harness } = mountHome(store, {
+      alternateScreen: true,
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    await untilTrue(() => frame().includes('HMSG59'));
+    harness.stdin.write('/permissions');
+    harness.stdin.write('\r');
+    await untilTrue(() => c.getSnapshot().permissionsSheet !== undefined);
+    await settleFrames();
+    harness.stdin.write('\x1b[5~'); // PgUp: the sheet's own page key
+    await settleFrames();
+    harness.stdin.write('\x1b[5~');
+    await settleFrames();
+    expect(c.getSnapshot().permissionsSheet, 'the sheet is still open').toBeDefined();
+    expect(frame(), 'the transcript did not scroll behind the sheet').toContain('HMSG59');
+  });
+
+  it('draws the sheet at the terminal’s real width and height: it fits an 80x24 terminal and says so below it', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      size: { cols: 80, rows: 24 },
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const sheetLines = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .filter((line) => line.includes('remembered') || line.includes('select · [d'));
+    for (const line of sheetLines) expect(line.length).toBeLessThanOrEqual(80);
+    m.setSize({ cols: 80, rows: 23 });
+    m.fireResize();
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+  });
+
+  it('draws the rule as wide as the terminal allows, not at a fixed 80 columns', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      size: { cols: 100, rows: 30 },
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · ask mode'));
+    const rule = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .find((line) => line.includes('Permissions · ask mode'));
+    // two columns of margin on a 100-column terminal: the sheet's own cap is 100, so the rule is 98 wide
+    expect(rule?.trimEnd().length).toBe(98);
+  });
+
+  it('is told the terminal size, so a withdrawal is not asked for in a frame that cannot show the question', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, {
+      startChat: () => Promise.resolve(makeSession(store, 'sess-fake', port)),
+    });
+    await enterChat(m.c);
+    m.harness.stdin.write('/permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet !== undefined);
+    await sleep(SHEET_SETTLE_MS + 100);
+    m.setSize({ cols: 60, rows: 20 });
+    m.fireResize();
+    await settleFrames();
+    m.harness.stdin.write('d');
+    await settleFrames();
+    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    m.setSize({ cols: 100, rows: 30 });
+    m.fireResize();
+    await settleFrames();
+    // The `d` above was typed into a sheet that could not arm, and that counts as typing: it is refused again, and says why.
+    m.harness.stdin.write('d');
+    await untilTrue(() =>
+      (m.c.getSnapshot().permissionsSheet?.message?.text ?? '').startsWith(
+        'Typed keys are ignored',
+      ),
+    );
+    expect(m.c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    // An arrow key says the person is choosing a row again.
+    m.harness.stdin.write('\u001b[B');
+    m.harness.stdin.write('\u001b[A');
+    await settleFrames();
+    m.harness.stdin.write('d');
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.armed === true);
+  });
+});
+
+describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+  const homePort: PermissionsPort = {
+    surface: 'project',
+    load: () => ({
+      project: {
+        ok: true,
+        rows: [{ id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' }],
+      },
+      session: undefined,
+    }),
+    withdraw: () => ({ tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' }),
+  };
+  const openFromPalette = async (m: MountedHome): Promise<void> => {
+    m.harness.stdin.write('/');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('permissions'));
+    m.harness.stdin.write('permissions');
+    m.harness.stdin.write('\r');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · this project'));
+  };
+
+  it('is drawn under the Home from the palette: the project’s list only, no session section, and Esc closes it back to the Home', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const frame = m.harness.lastFrame() ?? '';
+    expect(frame).toContain('This project · remembered (1)');
+    expect(frame).toContain('› npm, 1 argument');
+    expect(frame).toContain('[d] withdraw');
+    expect(frame, 'the bare Home has no session list').not.toContain('This session');
+    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    m.harness.stdin.write('\u001b');
+    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('Permissions ·'));
+    expect(m.c.getSnapshot().mode).toBe('home');
+  });
+
+  it('draws at the terminal’s real width and says so below the floor, as in a chat', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const rule = (m.harness.lastFrame() ?? '')
+      .split('\n')
+      .find((line) => line.includes('Permissions · this project'));
+    expect(rule?.trimEnd().length, 'two columns of margin on a 100-column terminal').toBe(98);
+    m.setSize({ cols: 80, rows: 23 });
+    m.fireResize();
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
+  });
+
+  it('PgDn and PgUp reach the sheet, not a long Home notice that landed after it opened (the notice window is paged by them)', async () => {
+    const many: PermissionsPort = {
+      ...homePort,
+      load: () => ({
+        project: {
+          ok: true,
+          rows: Array.from({ length: 12 }, (_, i) => ({
+            id: `g${String(i)}`,
+            label: 'npm, 1 argument',
+            remembered: '2026-11-19 12:00Z',
+          })),
+        },
+        session: undefined,
+      }),
+    };
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: many, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const long = Array.from({ length: 40 }, (_, i) => `notice line ${String(i)}`).join('\n');
+    m.c.setProviderState(false, long); // a late notice (a background setup result) arrives behind the open sheet
+    await untilTrue(() => m.c.getSnapshot().notice === long);
+    m.harness.stdin.write('\x1b[6~');
+    // the key went to the sheet: a page is six rows
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 6);
+    m.harness.stdin.write('\x1b[5~'); // and PgUp is the sheet's too
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 0);
+  });
+
+  it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
+    await openFromPalette(m);
+    const open = m.harness.lastFrame() ?? '';
+    expect(open).not.toContain('/ for commands');
+    m.harness.stdin.write('\u001b');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
   });
 });

@@ -784,10 +784,11 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
   });
 
   it('maps a within-turn turn_limit (maxToolTurns exceeded) to session:turn_completed{turn_limit}', async () => {
-    // maxToolTurns 0: a tool_use turn exceeds the within-turn loop guard → AgentTurnError('turn_limit').
+    // maxToolTurns 1: the first tool round runs; when the model asks for a second, the turn ends with `turn_limit` and
+    // that round is HELD, not run (ADR-0136 §2) → AgentTurnError('turn_limit') after two provider calls.
     const { deps, events } = harness(
-      [toolUseTurn('c1')],
-      { limits: { maxToolTurns: 0, maxToolCorrections: 3 } },
+      [toolUseTurn('c1'), toolUseTurn('c2')],
+      { limits: { maxToolTurns: 1, maxToolCorrections: 3 } },
       echoRegistry,
     );
     const s = session(deps, TOOL_AGENT);
@@ -797,10 +798,67 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     const completed = events.find((e) => e.type === 'session:turn_completed');
     if (completed?.type !== 'session:turn_completed') throw new Error('expected a turn_completed');
     expect(completed.error?.code).toBe('turn_limit');
-    // EA2: the WITHIN-turn turn_limit is thrown from runAgentTurn AFTER the first tool turn streamed (usage
-    // 4/2 accumulated), so — unlike the session HARD cap below (no egress) — it reports the REAL spent tokens,
-    // not a zero. Pins the within-turn-vs-hard-cap usage distinction so it cannot silently drift.
-    expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
+    // EA2: the WITHIN-turn turn_limit is thrown from runAgentTurn AFTER two tool turns streamed (usage 4/2 each),
+    // so — unlike the session HARD cap below (no egress) — it reports the REAL spent tokens, not a zero. Pins the
+    // within-turn-vs-hard-cap usage distinction so it cannot silently drift.
+    expect(completed.tokensUsed).toEqual({ input: 8, output: 4 });
+  });
+
+  it('refuses host-supplied turn limits outside their published bounds instead of clamping them (ADR-0136 §1)', () => {
+    const refused = (overrides: Parameters<typeof harness>[1], field: RegExp): void => {
+      const built = harness([textTurn('x')], overrides, echoRegistry);
+      expect(() => session(built.deps, TOOL_AGENT), String(field)).toThrow(field);
+    };
+    refused({ limits: { maxToolTurns: 257, maxToolCorrections: 3 } }, /maxToolTurns/);
+    refused({ limits: { maxToolTurns: 0, maxToolCorrections: 3 } }, /maxToolTurns/);
+    refused({ limits: { maxToolTurns: 16, maxToolCorrections: 11 } }, /maxToolCorrections/);
+    refused({ limits: { maxToolTurns: 16, maxToolCorrections: -1 } }, /maxToolCorrections/);
+    refused(
+      { limits: { maxToolTurns: 16, maxToolCorrections: 3, checkpointToolTurns: 257 } },
+      /checkpointToolTurns/,
+    );
+    refused(
+      { limits: { maxToolTurns: 16, maxToolCorrections: 3, checkpointToolTurns: 0 } },
+      /checkpointToolTurns/,
+    );
+    refused({ limits: { maxToolTurns: Number.NaN, maxToolCorrections: 3 } }, /maxToolTurns/);
+    refused({ limits: { maxToolTurns: 2.5, maxToolCorrections: 3 } }, /maxToolTurns/);
+    refused({ maxTurns: 1001 }, /maxTurns/);
+    // 0 and a negative used to mean "the default"; a limit that is not valid is now refused, not guessed at.
+    refused({ maxTurns: 0 }, /maxTurns/);
+    refused({ maxTurns: -1 }, /maxTurns/);
+    // The inclusive bounds are admitted, and the engine's own defaults always are.
+    const edge = harness(
+      [textTurn('x')],
+      {
+        limits: { maxToolTurns: 256, maxToolCorrections: 0, checkpointToolTurns: 1 },
+        maxTurns: 1000,
+      },
+      echoRegistry,
+    );
+    expect(() => session(edge.deps, TOOL_AGENT)).not.toThrow();
+  });
+
+  it("admits the limits on a RESUMED session too: a bad host limit is the host's to fix", () => {
+    const { deps } = harness([[]], { maxTurns: 5000 }, echoRegistry);
+    expect(() =>
+      AgentSession.resume(
+        {
+          sessionId: 'sess-resume',
+          agentRef: TOOL_AGENT.id,
+          agent: TOOL_AGENT,
+          context: CONTEXT,
+          deps,
+        },
+        {
+          messages: [],
+          completedTurnSpans: [],
+          turnCount: 0,
+          cumulativeCostMicrocents: 0,
+          conservativeCostMicrocents: 0,
+        },
+      ),
+    ).toThrow(/maxTurns/);
   });
 
   it('RETRIES a retryable failure once on the session path — the primary carries a budget of 2 (#276)', async () => {
@@ -1737,7 +1795,7 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
       stdout: 'FILES\n',
       stderr: '',
     });
-    // The exact-match allowlist matched the joined `command + args`; the process spawned with the split argv.
+    // The exact-match allowlist compared the argv `['ls','-la']` with the entry `ls -la` element by element; the process spawned with that argv.
     expect(calls).toEqual([{ command: 'ls', args: ['-la'] }]);
   });
 

@@ -82,7 +82,7 @@ export type {
 // ordered plan; the run loop (1.N) and AgentRunner (1.O) consume it.
 // ADR-0086's ceilings, exported so a host can READ the number it will be judged against — a surface that
 // shows an author "the limit is 500" before they hit it beats one that only reports the rejection. §9.3.
-export { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from './limits.js';
+export { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from './limits.js';
 export { buildRunPlan } from './dag.js';
 export type { BuildRunPlanOptions } from './dag.js';
 export type {
@@ -261,6 +261,9 @@ export type {
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
 export type {
   AgentTurnLimits,
+  ToolRoundCheckpoint,
+  ToolRoundLimitDecision,
+  ToolRoundLimitHook,
   PreEgressHook,
   PreEgressInfo,
   TextPreEgressInfo,
@@ -393,7 +396,10 @@ export { createInputNodeExecutor, createOutputNodeExecutor } from './engine/node
 // Built-in ToolRegistry + dispatch (1.T) — the engine-side registry the AgentRunner (1.O) and
 // AgentSession (1.V) invoke; side effects go through the injected ToolHost seam (ADR-0037;
 // tool-registry.md). Pure: zero platform imports, unit-testable against a stub host.
-export { createToolRegistry } from './tools/registry.js';
+export { createToolRegistry, scrubbedCommandDisplay } from './tools/registry.js';
+// Where the event preview's secret projection masks a text, as ranges of that text (the command card hides the same spans).
+export { secretShapedRanges } from './tools/bounding.js';
+export type { SecretShapedRange } from './tools/bounding.js';
 export { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './tools/builtins.js';
 // `ask_user` (ADR-0132): the question/answer contract a host's card implements, and its closed bounds.
 export { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH, plainTextRefusal } from './tools/ask-user.js';

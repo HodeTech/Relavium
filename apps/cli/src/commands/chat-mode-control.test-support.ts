@@ -3,9 +3,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SessionStreamHandleEvent } from '@relavium/core';
+import type {
+  SessionStreamHandleEvent,
+  ToolApprovalLiveContext,
+  ToolApprovalRequest,
+} from '@relavium/core';
 import { vi } from 'vitest';
 
+import type { CommandGrantsPort } from '../chat/chat-mode.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { resolveConfig } from '../config/resolve.js';
@@ -35,6 +40,17 @@ export interface RealModeControl {
   readonly control: ChatModeControl;
   /** How many turn policies the session was given: one for the initial mode, one more per mode that really applied. */
   readonly policyPushes: () => number;
+  /** The turn policy the session holds now (the last one pushed), whose `confirm` is what decides a governed call. */
+  readonly policy: () =>
+    | {
+        readonly confirm?: (
+          request: ToolApprovalRequest,
+          signal?: undefined,
+          live?: ToolApprovalLiveContext,
+        ) => Promise<unknown>;
+      }
+    | undefined;
+  readonly workspace: string;
   readonly dispose: () => Promise<void>;
 }
 
@@ -42,7 +58,9 @@ export interface RealModeControl {
  * The production mode control over a real built session and store (default `ask` start), so a surface test can press
  * Shift+Tab and observe the footer mode, the turn policy the session received and the notice — not a stub of them.
  */
-export async function realModeControl(): Promise<RealModeControl> {
+export async function realModeControl(options?: {
+  readonly commandGrants?: CommandGrantsPort;
+}): Promise<RealModeControl> {
   const workspace = mkdtempSync(join(tmpdir(), 'relavium-mode-control-'));
   const built = await buildChatSession({
     chat: resolveConfig({}).chat,
@@ -57,11 +75,17 @@ export async function realModeControl(): Promise<RealModeControl> {
   });
   const pushes = vi.spyOn(built.session, 'setTurnPolicy');
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-  const control = createChatModeControl(built, store);
+  const control = createChatModeControl(
+    built,
+    store,
+    options?.commandGrants === undefined ? undefined : { commandGrants: options.commandGrants },
+  );
   return {
     store,
     control,
     policyPushes: () => pushes.mock.calls.length,
+    policy: () => pushes.mock.calls.at(-1)?.[0],
+    workspace,
     dispose: async () => {
       built.session.cancel();
       await built.whenHostSafeToClose();

@@ -18,6 +18,7 @@ import {
   type SessionAskRecord,
   utf8ByteLength,
   extractHttpsHost,
+  quoteCommandLine,
 } from '@relavium/shared';
 import { z } from 'zod';
 
@@ -704,11 +705,6 @@ const listDirectoryTool = defineBuiltin({
 
 const runCommandTool = defineBuiltin({
   id: 'run_command',
-  preview: (args) => ({
-    kind: 'operation',
-    target: args.command,
-    fields: [{ name: 'args', value: JSON.stringify(args.args ?? []) }],
-  }),
   description:
     'Run an authorized executable directly, without a shell; return its output and exit code.',
   args: z
@@ -745,9 +741,26 @@ const runCommandTool = defineBuiltin({
   },
   // cwd / timeoutMs / env are pinned by config, never model-supplied.
   configOnlyParams: ['cwd', 'timeoutMs', 'env'],
+  // What the approval card shows (ADR-0118 §1): the WHOLE command as one quoted line, so a command too long for the card is a
+  // shortened target and Allow stays locked until the person has read it in full, and one bare value per argument (the program
+  // first), so a right-to-left argument cannot be drawn past its neighbour and a trailing space is marked. The pinned working
+  // directory, the standing and the warnings are the host's.
+  preview: (args) => {
+    const argv = [args.command, ...(args.args ?? [])];
+    return {
+      kind: 'operation',
+      target: quoteCommandLine(argv),
+      // Bare values, one per row: the first is the program, the rest its arguments in order.
+      fields: argv.map((value) => ({ name: '', value })),
+    };
+  },
   policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
-  // The resolved command the exact-match allowedCommands allowlist inspects (ADR-0029(a)).
-  policyTarget: (args) => ({ command: [args.command, ...(args.args ?? [])].join(' ') }),
+  // The command the allowlist inspects: the argv an exact entry is compared with element by element (ADR-0118 §3,
+  // amending ADR-0029(a)), and the joined string the opt-in globs read.
+  policyTarget: (args) => {
+    const argv = [args.command, ...(args.args ?? [])];
+    return { command: argv.join(' '), argv };
+  },
   // Tier 3 and unpromotable: `allowedCommands` is free-form, so the engine cannot know whether a given
   // command is idempotent — `terraform apply` and `ls` are the same shape to it (ADR-0080 §3).
   effect: () => 3,

@@ -23,13 +23,13 @@ import {
 
 /**
  * The Node host **mechanism** half of the `ToolHost.process` capability arm (2.5.A, [ADR-0055](../../../../../docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md);
- * the engine owns the policy — the allowlist-checked command — the host owns the spawn, [ADR-0037](../../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
- * It backs `git_status` (and, when a workflow allowlists commands, `run_command` / `git_commit`).
+ * the engine owns the policy — the authorized command — the host owns the spawn, [ADR-0037](../../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
+ * It backs `git_status` (and `run_command` / `git_commit`, for a command the allowlist admitted; in an interactive chat also a `run_command` the person approved).
  *
  * The discipline is [built-in-tools.md](../../../../../docs/reference/shared-core/built-in-tools.md) §Subprocess
  * environment + [tool-registry.md](../../../../../docs/reference/shared-core/tool-registry.md):
- * - **`shell: false`** — no shell, so no metacharacter/quoting injection; the engine already allowlist-checked
- *   the command, the host never re-parses it.
+ * - **`shell: false`** — no shell, so no metacharacter/quoting injection; the engine already authorized
+ *   the command (the allowlist, or in a chat the person's approval), the host never re-parses it.
  * - **Host-resolved executable** — the command is resolved to an absolute path against the **ambient** `PATH`
  *   (never the caller-`declaredEnv` `PATH`), so a declared `env.PATH` can never redirect *which* binary runs.
  * - **Platform-minimal base env** — a fixed audited allowlist of platform-essential vars (`PATH`, `HOME`, …),
@@ -181,7 +181,7 @@ async function runChild(opts: RunChildOptions): Promise<ProcessResult> {
       child = spawn(opts.executable, opts.args, {
         cwd: opts.cwd,
         env: opts.env,
-        shell: false, // SECURITY: no shell — no metacharacter/quoting injection (the command is pre-allowlisted)
+        shell: false, // SECURITY: no shell — no metacharacter/quoting injection (the command was authorized by the engine: the allowlist or the person)
         windowsHide: true,
         // POSIX: make the child a process-group leader so a timeout/abort can SIGKILL the WHOLE group (the
         // child AND any grandchildren it forked) — a single-pid kill would leak a forking subprocess. Not
@@ -299,7 +299,7 @@ class BoundedBuffer {
  * Resolve `command` to an absolute executable path against the **ambient** `PATH` (POSIX: `X_OK`; Windows:
  * each `PATHEXT`), so the engine-allowlisted command name maps to a real binary independent of any
  * caller-`declaredEnv` `PATH`. An explicit path (absolute or containing a separator) is returned as-is. A name
- * that resolves nowhere fails-closed — the engine already authorized it, so a miss is an environment gap.
+ * that resolves nowhere fails-closed — the engine already authorized it (allowlist or approval), so a miss is an environment gap.
  */
 async function resolveExecutable(command: string): Promise<string> {
   if (command === '') {

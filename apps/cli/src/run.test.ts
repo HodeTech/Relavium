@@ -339,6 +339,88 @@ describe('run — bare-invocation Home gate', () => {
     expect(out()).toContain('Usage: relavium');
   });
 
+  // ADR-0137 §3 — a bare `relavium permissions` opens the permissions sheet in a genuine terminal, as `relavium chat resume` opens the
+  // session picker; anywhere else the group keeps its help and its two subcommands.
+  describe('a bare `relavium permissions`', () => {
+    it('opens the Home with the sheet as its whole job in a genuine TTY (no help printed), and a lone -- still counts as bare', async () => {
+      for (const args of [['permissions'], ['permissions', '--']]) {
+        const { io, out } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);
+        expect(await run(argv(...args), io, openHome)).toBe(EXIT_CODES.success);
+        expect(calls(), args.join(' ')).toHaveLength(1);
+        expect(calls()[0]?.openPermissions).toBe(true);
+        expect(out()).toBe('');
+      }
+    });
+
+    it('hands the Home the same wiring the bare route does: the io, the admitted globals and the invocation (so it runs under the product’s signal lifecycle)', async () => {
+      const { io } = interactiveIo();
+      const { openHome, calls } = fakeOpenHome(EXIT_CODES.success);
+      await run(argv('permissions'), io, openHome);
+      const deps = calls()[0];
+      expect(deps?.io).toBe(io);
+      expect(deps?.global.cwd).toBe(process.cwd());
+      expect(deps?.invocation, 'without it the Home runs ownerless').toBeDefined();
+    });
+
+    it('a pipe on stdout alone is enough to keep the group: `relavium permissions | less` and `> file` never open the Home', async () => {
+      const { io } = interactiveIo();
+      const stdoutPiped: CliIo = { ...io, stdoutIsTty: false };
+      const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+      await run(argv('permissions'), stdoutPiped, openHome);
+      expect(calls()).toHaveLength(0);
+    });
+
+    it('never opens the Home anywhere else: a pipe, --json and CI keep the group’s help, exactly as before', async () => {
+      const piped = captureIo();
+      const interactive = interactiveIo();
+      const ci = interactiveIo({ CI: 'true' });
+      const cases: readonly [string, CliIo, readonly string[]][] = [
+        ['a pipe', piped.io, ['permissions']],
+        ['stdin not a TTY', { ...interactive.io, stdinIsTty: false }, ['permissions']],
+        ['--json', interactive.io, ['--json', 'permissions']],
+        ['CI', ci.io, ['permissions']],
+      ];
+      for (const [name, io, args] of cases) {
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), name).toHaveLength(0);
+      }
+      // the help itself is the commander group's, unchanged
+      const { io, err, out } = captureIo();
+      await run(argv('permissions'), io, fakeOpenHome(EXIT_CODES.chatEnded).openHome);
+      expect(out() + err()).toContain('Usage: relavium permissions');
+    });
+
+    it('accepts at most one `--` after the word, and none before it: more of them were an error before and stay one', async () => {
+      for (const args of [
+        ['--', 'permissions'],
+        ['permissions', '--', '--'],
+        ['--', '--', 'permissions'],
+        ['permissions', '--', 'x'],
+      ]) {
+        const { io } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), args.join(' ')).toHaveLength(0);
+      }
+    });
+
+    it('is only the bare group: `permissions --help` and an unknown subcommand never open the Home', async () => {
+      // (`permissions list` and `revoke` are not run here: they read the real OS keychain; the routing is the same one-token test.)
+      for (const args of [
+        ['permissions', '--help'],
+        ['permissions', 'bogus'],
+        ['permissions', 'list', 'extra'],
+      ]) {
+        const { io } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), args.join(' ')).toHaveLength(0);
+      }
+    });
+  });
+
   it('renders a Home build/config fault like a command fault (exit 2, stderr, stdout clean)', async () => {
     const { io, out, err } = interactiveIo();
     const { openHome } = fakeOpenHome(() =>

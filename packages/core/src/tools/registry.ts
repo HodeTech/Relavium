@@ -20,6 +20,8 @@ import {
   SessionAskRecordSchema,
   type SessionAskRecord,
   type ToolActionClass,
+  argvMatchesCommandLine,
+  quoteCommandLine,
 } from '@relavium/shared';
 
 import {
@@ -27,6 +29,7 @@ import {
   projectSecretShapedValue,
   redactInlineMedia,
   redactSecretShapedText,
+  secretShapedRanges,
   redactSecretShapedValue,
 } from './bounding.js';
 import {
@@ -156,6 +159,23 @@ function failedLiveOutcome(error: unknown): 'unknown' | 'denied' | 'failure' {
   return 'failure';
 }
 
+/**
+ * What a person may be shown of a refusal that RETURNS to the model: its fixed text, so a denied row is not a bare mark with
+ * no reason. Only a recoverable denial qualifies — the engine already hands that exact text to the model, and by
+ * [ADR-0117](../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md) it is one fixed string per class, naming
+ * no policy and no target. A user rejection is excluded: its explanation is the person's own typed words, not a refusal text.
+ */
+function returnedRefusalSummary(error: unknown): string | undefined {
+  if (error instanceof ToolDeniedByUserError) return undefined;
+  if (
+    error instanceof ToolDispatchError &&
+    error.recoverable &&
+    error.runErrorCode === 'tool_denied'
+  )
+    return error.message;
+  return undefined;
+}
+
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegistry {
   const tools = new Map<ToolId, ToolDef>();
@@ -187,11 +207,13 @@ export function createToolRegistry(options: CreateToolRegistryOptions): ToolRegi
         });
         return result;
       } catch (error) {
+        const summary = returnedRefusalSummary(error);
         observe(ctx, {
           phase: 'completed',
           callId,
           toolId: toolCall.name,
           outcome: failedLiveOutcome(error),
+          ...(summary === undefined ? {} : { summary }),
         });
         throw error;
       }
@@ -483,6 +505,9 @@ async function dispatch(
   const projection = tier === undefined ? undefined : journalProjection(def, effective, ctx);
   const prepare = def.source === 'builtin' && def.policy.fsWrite === true ? def.prepare : undefined;
   let effectDispatched = false;
+  // The tool's own code has been handed the call (set once, just before it runs). A denial thrown before this point decided
+  // nothing about an effect, whatever the signal says by then (see the outer catch).
+  let dispatchStarted = false;
   let replayHit = false;
   let replayed: ReplayEnvelope | typeof NOT_REPLAYED = NOT_REPLAYED;
   let prepared: ToolPreparedCall | undefined;
@@ -573,6 +598,7 @@ async function dispatch(
         let output: unknown;
         try {
           if (prepared !== undefined) effectDispatched = true;
+          dispatchStarted = true;
           const dispatched = takeMediaAttachment(
             await (prepared === undefined ? def.dispatch(args, host, ctx) : prepared.dispatch(ctx)),
           );
@@ -653,6 +679,19 @@ async function dispatch(
     }
   } catch (cause) {
     if (cause instanceof ToolCancelledError) throw cause;
+    // A rejection the person DECIDED stays a denial even when an abort follows it in the same tick (ADR-0115 §2). The CLI settles
+    // the approval as a rejection and then signals the abort in one synchronous stack, so by the time this code runs the signal is
+    // already aborted; without this the call would be recorded cancelled, "execution state unknown", which is false: the decision
+    // was made before any effect was admitted, so nothing ran and the record can say so. The turn still ends at its next boundary
+    // (the abort is already signalled), and an APPROVE that lands after an abort is untouched: it still cancels (confirmDispatch).
+    if (
+      cause instanceof ToolDeniedByUserError &&
+      cause.reason === 'user_rejected' &&
+      !effectDispatched &&
+      !dispatchStarted &&
+      !replayHit
+    )
+      throw cause;
     if (isAbort(cause, ctx)) throw new ToolCancelledError(def.id, cause);
     if (cause instanceof ToolDispatchError) {
       if ((effectDispatched || replayHit) && (cause.retryable || cause.recoverable)) {
@@ -806,7 +845,14 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   }
 
   if (def.policy.spawnsProcess && target.command !== undefined) {
-    if (!commandAllowed(target.command, ctx.toolPolicy)) {
+    // Under an interactive approval regime a miss is the HOST's decision (ADR-0118 §1): it reaches the confirm hook as a request
+    // carrying `commandAdmitted: false`, and a regime with no hook still fails closed there (`no_approval_hook`). Without a regime
+    // — a workflow runs unattended — the allowlist stays the only authority and a miss throws, as it always did.
+    // "The host decides" only when the call WILL reach the hook as a `process` request: a tool that is also a write or an egress
+    // is classified by that first (see `governedAction`) and would arrive without an argv or an admitted flag, so for it the
+    // allowlist stays the authority.
+    const hostDecides = ctx.approval !== undefined && governedAction(def, target) === 'process';
+    if (!hostDecides && !commandAllowed(target.command, target.argv, ctx.toolPolicy)) {
       throw new ToolPolicyError(
         def.id,
         'command_not_allowed',
@@ -822,14 +868,41 @@ function enforcePolicy(def: ToolDef, target: PolicyTarget, ctx: ToolDispatchCont
   // SSRF range-block runs inside the host egress capability. No engine allowlist check here.
 }
 
-function commandAllowed(command: string, policy: import('@relavium/shared').ToolPolicy): boolean {
-  const exact = policy.allowedCommands ?? [];
-  if (exact.includes(command)) {
-    return true; // exact match (ADR-0029(a)) — `git` never authorizes `git push --force`
+/**
+ * What a `process` request adds for the host: the raw argv (never scrubbed, in-process only) and whether the allowlist admitted
+ * the call (ADR-0118 §1). Nothing for any other action class.
+ */
+function commandRequestFields(
+  action: ToolActionClass,
+  target: PolicyTarget,
+  ctx: ToolDispatchContext,
+): { readonly argv?: readonly string[]; readonly commandAdmitted?: boolean } {
+  if (action !== 'process' || target.command === undefined) return {};
+  return {
+    argv: Object.freeze([...(target.argv ?? [target.command])]),
+    commandAdmitted: commandAllowed(target.command, target.argv, ctx.toolPolicy),
+  };
+}
+
+function commandAllowed(
+  command: string,
+  argv: readonly string[] | undefined,
+  policy: import('@relavium/shared').ToolPolicy,
+): boolean {
+  // An exact entry is a COMMAND LINE: it is split by the shared tokenizer and compared with the call's argv element by
+  // element, so `cat a b` admits `["cat","a","b"]` and never `["cat","a b"]` (ADR-0118 §3, amending ADR-0029(a)) — and `git`
+  // still never authorizes `git push --force`. A target without an argv is one program name, which fails closed.
+  const callArgv = argv ?? [command];
+  for (const entry of policy.allowedCommands ?? []) {
+    if (argvMatchesCommandLine(callArgv, entry)) {
+      return true;
+    }
   }
+  // Opt-in globs stay string-level over the space-joined command (so they cannot tell one argument with a space
+  // from two — the reason they are the riskier field).
   for (const glob of policy.allowedCommandGlobs ?? []) {
     if (globMatch(glob, command)) {
-      return true; // opt-in glob
+      return true;
     }
   }
   return false; // empty/absent ⇒ deny-all (symmetry with allowedDomains)
@@ -870,6 +943,7 @@ async function confirmDispatch(
     toolId: def.id,
     action,
     preview: previewFor(action, target),
+    ...commandRequestFields(action, target, ctx),
     // The same field selection, UNSCRUBBED, for CLASSIFICATION only (see the field's own doc). In-process:
     // it never reaches the event, so `preview` stays the one thing crossing the observability boundary.
     unredactedPreview: rawPreviewFor(action, target),
@@ -975,16 +1049,21 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
  * One limitation remains, and it is a property of redaction itself rather than of this choice: `command` is
  * fully model-controlled and the detector's patterns are public, so a prompt-injected model can shape a
  * payload to MATCH a pattern (`sh -c token:evil.example/x|sh`) and be shown `sh -c [redacted]` — which reads
- * as "we protected you" rather than "you cannot see this". Bounded by `allowedCommands` /
- * `allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real; surfacing "this was
- * redacted" to the prompt needs a schema field and is the open follow-up.
+ * as "we protected you" rather than "you cannot see this". Bounded, where no one can answer, by `allowedCommands` /
+ * `allowedCommandGlobs` being deny-all by default; in an interactive chat a command outside them now reaches the card
+ * (ADR-0118 §1), so there the bound is the card itself (the command card shows the full argv, one argument per row)
+ * and the fs/egress floors, but real; surfacing "this was redacted" to the prompt needs a schema field and is the open follow-up.
  */
 function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {
     case 'fs_write':
       return target.path === undefined ? {} : { path: target.path };
     case 'process':
-      return target.command === undefined ? {} : { command: target.command };
+      // The command as ONE quoted line (ADR-0118 §1): `["cat","a b"]` and `["cat","a","b"]` must not read alike, which the joined
+      // `target.command` cannot tell apart. A hand-built target without an argv is one program name.
+      return target.command === undefined
+        ? {}
+        : { command: quoteCommandLine(target.argv ?? [target.command]) };
     case 'egress': {
       if (target.url === undefined) {
         return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough
@@ -1008,12 +1087,63 @@ function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActio
   }
 }
 
+const REDACTED = '[redacted]';
+
+/**
+ * The scrubbed display line of a command. The line is shell-quoted (ADR-0118 §1), and quoting rewrites an embedded `'` as
+ * `'"'"'`, which breaks the `key='value'` context the detector reads: scrubbing the quoted line alone let `password='S'` through
+ * where the joined `psql password='S'` (what the display copy was before the line was quoted) masks it. So each element is
+ * scrubbed on its own, the quoted line is scrubbed again, and the joined line is the oracle: if it carries more masks than the
+ * quoted result, a span the old projection masked is not masked here, and every argument after the program is masked instead
+ * (over-masking is the safe direction: the in-process copy and the full card keep the real text for the person).
+ */
+function scrubbedCommandLine(target: PolicyTarget, quoted: string): string {
+  const argv = target.argv ?? [target.command ?? ''];
+  const elementwise = redactSecretShapedText(quoteCommandLine(argv.map(redactSecretShapedText)));
+  const scrubbedQuoted = redactSecretShapedText(quoted);
+  const masks = (text: string): number => text.split(REDACTED).length - 1;
+  const candidate = masks(scrubbedQuoted) > masks(elementwise) ? scrubbedQuoted : elementwise;
+  const fallback =
+    argv.length > 1
+      ? quoteCommandLine([redactSecretShapedText(argv[0] ?? ''), REDACTED])
+      : candidate;
+  if (masks(redactSecretShapedText(argv.join(' '))) > masks(candidate)) return fallback;
+  // Counting masks does not say WHICH text is masked: a secret split over two arguments (`api_key:` then `'S3cr3t'`) gives the joined
+  // line one mask and the candidate one, on a different argument. So the joined line's masks are also located, and an argument one of
+  // them touches that the element-by-element scrub left as it was (neither the label nor the bare value is a secret on its own)
+  // falls back too. Only ever adds a mask: the fallback is the same output the count comparison already chooses.
+  return joinedMasksLeaveAnArgument(argv) ? fallback : candidate;
+}
+
+/** Whether a mask of the joined line touches an argument that scrubbing that argument alone changes nothing in. */
+function joinedMasksLeaveAnArgument(argv: readonly string[]): boolean {
+  const joined = argv.join(' ');
+  const ranges = secretShapedRanges(joined);
+  if (ranges.length === 0) return false;
+  let start = 0;
+  for (const element of argv) {
+    const end = start + element.length;
+    const touched = ranges.some((range) => range.start < end && range.end > start);
+    if (touched && redactSecretShapedText(element) === element) return true;
+    start = end + 1; // the separating space
+  }
+  return false;
+}
+
+/**
+ * The scrubbed display line of an argv the host holds without a tool call: what the command card's title shows for the same
+ * command (the `/permissions` sheet lists the commands approved for the session). Pure; the one scrub, exported rather than copied.
+ */
+export function scrubbedCommandDisplay(argv: readonly string[]): string {
+  return scrubbedCommandLine({ command: argv[0] ?? '', argv }, quoteCommandLine(argv));
+}
+
 /** The DISPLAY copy: {@link rawPreviewFor}'s field selection with every string scrubbed. */
 function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   const raw = rawPreviewFor(action, target);
   return {
     ...(raw.path === undefined ? {} : { path: redactSecretShapedText(raw.path) }),
-    ...(raw.command === undefined ? {} : { command: redactSecretShapedText(raw.command) }),
+    ...(raw.command === undefined ? {} : { command: scrubbedCommandLine(target, raw.command) }),
     ...(raw.host === undefined ? {} : { host: redactSecretShapedText(raw.host) }),
   };
 }

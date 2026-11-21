@@ -17,7 +17,7 @@ import type { FsCapability, FsScopeTier } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { assembleToolEnv } from './assemble.js';
-import { createNodeFsCapability } from './fs.js';
+import { createNodeFsCapability, FsScopeDeniedError, PROTECTED_PATH_REFUSAL } from './fs.js';
 import {
   admitInvocationFsGrants,
   createFsPathPolicy,
@@ -93,6 +93,42 @@ function assembled(
 function admitted(selectors: readonly string[] | undefined = undefined): FsPathPolicy {
   return selectInvocationFsPolicy(admitInvocationFsGrants([grant]), workspace, selectors);
 }
+
+describe('the lexical protected-path refusal under the host scratch root decides from the path text alone (ADR-0117)', () => {
+  /** The recoverable refusal of a protected write at `<scratch>/<name>/.git/config`. */
+  async function refusalAt(name: string): Promise<FsScopeDeniedError> {
+    const fs = assembled(admitted());
+    const error: unknown = await fs.prepareWrite!({
+      kind: 'write',
+      path: join(scratch, name, '.git', 'config'),
+      content: 'x',
+      createDirs: true,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(error, name).toBeInstanceOf(FsScopeDeniedError);
+    return error as FsScopeDeniedError;
+  }
+
+  it('says the same recoverable words whatever the scratch subtree holds (absent, a plain file)', async () => {
+    // A plain file where a directory is expected: the inspecting floor would throw a fatal policy error, but the refusal that
+    // RETURNS to the model must not depend on that state.
+    writeFileSync(join(scratch, 'file'), 'not a directory');
+    for (const name of ['absent', 'file']) {
+      const refusal = await refusalAt(name);
+      expect(refusal.recoverable, name).toBe(true);
+      expect(refusal.message, name).toBe(PROTECTED_PATH_REFUSAL);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('and for a symlinked component too', async () => {
+    symlinkSync(workspace, join(scratch, 'sym'), 'dir');
+    const refusal = await refusalAt('sym');
+    expect(refusal.recoverable).toBe(true);
+    expect(refusal.message).toBe(PROTECTED_PATH_REFUSAL);
+  });
+});
 
 describe.each(['sandboxed', 'project'] as const)('scratch plus policy in %s', (tier) => {
   it.each(['absent', 'empty', 'narrow'] as const)(

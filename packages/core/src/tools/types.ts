@@ -326,11 +326,11 @@ export interface FsListOpts {
 
 export interface ProcessCapability {
   /**
-   * Spawn an already-allowlist-checked command with `shell: false`. The HOST resolves the executable
+   * Spawn an already-authorized command (the allowlist admitted it, or in an interactive chat the person approved it) with `shell: false`. The HOST resolves the executable
    * (platform PATH lookup) and supplies the platform-minimal base env, merging ONLY `declaredEnv`
    * under an audited allowlist — never the full ambient `process.env`. The engine cannot build a
    * platform base env (it is platform-free), so env construction is the host's job; the engine
-   * supplies the policy (the allowlist-checked command + the declared vars). stdout/stderr are
+   * supplies the policy (the authorized command + the declared vars). stdout/stderr are
    * untrusted.
    */
   spawn(
@@ -476,7 +476,7 @@ export interface MediaReadAccess {
 export interface ToolActionPreview {
   /** fs_write — the resolved target path. */
   readonly path?: string;
-  /** process — the resolved command string (what `allowedCommands` matched). */
+  /** process — the command as ONE shell-quoted line for display (`quoteCommandLine`: `["cat","a b"]` and `["cat","a","b"]` read differently), scrubbed of secret-shaped spans. The allowlist is compared with the argv, never with this line. */
   readonly command?: string;
   /** egress — the target host ONLY (never the full URL / query string, never a secret). */
   readonly host?: string;
@@ -511,6 +511,24 @@ export interface ToolApprovalRequest {
    * is what makes an unredacted copy safe to hand out at all.
    */
   readonly unredactedPreview?: ToolActionPreview;
+  /**
+   * The command as an argv — the program and its literal arguments, spawned without a shell — for a request whose action is
+   * `process`, else absent ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1).
+   * The host's session cache and its remembered grants are keyed by this, element by element: `["cat","a b"]` and
+   * `["cat","a","b"]` are different commands, which is why the preview quotes the line and the card shows one row per element.
+   *
+   * **In-process only, and UNSCRUBBED** (it is the raw call, not a display projection): like {@link unredactedPreview} it is
+   * absent from `agent:approval_requested`, whose body is built from the preview alone, and a host must not log, persist or
+   * forward it. A credential may sit in an argument, which is why a grant stores a keyed digest of it and never the text.
+   */
+  readonly argv?: readonly string[];
+  /**
+   * Whether the `[chat]` command allowlist admitted this call. Present only for a `process` request. Under an interactive
+   * approval regime an allowlist MISS no longer ends the turn: it reaches the host's hook with this `false`, and the host
+   * decides (a card, or a refusal that returns to the model). Without a regime — a workflow — a miss still throws
+   * `command_not_allowed` and never gets here.
+   */
+  readonly commandAdmitted?: boolean;
 }
 
 /** The host's verdict. An optional reject explanation enters the error; embedding hosts own input protection
@@ -719,8 +737,8 @@ export interface ToolDef<Args = unknown, Result = unknown> {
   /**
    * Tells the registry WHERE this tool's guardrail target lives in the effective args, so the engine
    * enforces the allowlist generically without guessing a field. A `spawnsProcess` tool returns the
-   * resolved `command` string (the full string the `allowedCommands` allowlist matches exactly); an
-   * `http` egress tool returns the `url`. A pre-approved tool (e.g. `git_status`) returns neither and
+   * resolved command — its `argv` (compared element by element with each exact `allowedCommands` entry) and the
+   * space-joined `command` string (read by `allowedCommandGlobs`); an `http` egress tool returns the `url`. A pre-approved tool (e.g. `git_status`) returns neither and
    * the generic allowlist check is skipped. Omitted ⇒ no target (e.g. `os` / delegate tools).
    */
   readonly policyTarget?: (args: Args) => PolicyTarget;
@@ -782,8 +800,20 @@ export interface ToolDef<Args = unknown, Result = unknown> {
 
 /** What the registry's guardrail check inspects for a tool — a resolved command and/or an outbound URL. */
 export interface PolicyTarget {
-  /** The resolved command string the `allowedCommands` allowlist matches EXACTLY (ADR-0029(a)). */
+  /**
+   * The resolved command as ONE space-joined string: what `allowedCommandGlobs` match and what a diagnostic may name.
+   * It is **not** what an exact `allowedCommands` entry is compared with — see {@link PolicyTarget.argv}: two different
+   * argvs can join to the same string (`["cat","a b"]` and `["cat a","b"]`).
+   */
   readonly command?: string;
+  /**
+   * The command as an argv — the program and its literal arguments, spawned without a shell. An exact
+   * `allowedCommands` entry is split by the shared tokenizer and compared with this **element by element**
+   * ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3, amending
+   * ADR-0029(a)). Absent on a hand-built target: the registry then treats `command` as a single program name, which
+   * can only ever match a one-token entry, never a longer one (it fails closed).
+   */
+  readonly argv?: readonly string[];
   /** The outbound URL the `allowedDomains` exact-FQDN allowlist + SSRF policy applies to (ADR-0029(d)). */
   readonly url?: string;
   /**

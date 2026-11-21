@@ -141,6 +141,10 @@ it.each(['plain', 'json', 'ink'] as const)(
                         expect(f.registry.termination !== undefined).toBe(faulted);
                         spy.mockRestore();
                       } finally {
+                        // Two presses end the session whether or not the chat had activated yet: before activation the first
+                        // ends it at once, after it the first arms and the second ends it (ADR-0115 §1).
+                        input.push('\x03');
+                        await flush();
                         input.push('\x03');
                         await flush();
                         await driving;

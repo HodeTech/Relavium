@@ -14,6 +14,7 @@ import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent
 import { createAbortController, createInMemoryEffectJournalStore } from './execution-host.js';
 import { BudgetPauseError } from './budget-governor.js';
 import { captureAgentTurnOutcome, DEFAULT_AGENT_TURN_LIMITS } from './agent-turn.js';
+import { markUntrusted } from '../tools/untrusted.js';
 import { KNOWN_EMPTY_RECEIPTS } from './turn-receipts.js';
 
 const text = (value: string): LlmMessage => ({
@@ -1069,4 +1070,70 @@ describe('W7 current-invocation overflow authority and cancellable disclosure', 
             ).toMatchObject({ stopReason: 'stop' });
           }
         });
+});
+
+describe('a compaction turn never opens a checkpoint (ADR-0136)', () => {
+  it('keeps the hard stop but not the hook: compaction offers no tools, so it asks nobody anything', async () => {
+    // The summary pass answers with a tool call it was never offered: each round is an `unknown_tool` correction. With a
+    // checkpoint hook wired on the session, a compaction turn that carried it would ask the PERSON to continue, in the middle of
+    // a compaction nobody sees as a tool loop.
+    let asked = 0;
+    let summaryPasses = 0;
+    const h = fixture({
+      auto: false,
+      window: 12000,
+      deps: {
+        // A registry that runs the call, so the loop reaches its limit instead of failing on the first round.
+        registry: {
+          has: () => false,
+          list: () => [],
+          dispatch: (call) =>
+            Promise.resolve({
+              output: 'OK',
+              truncated: false,
+              mediaAttachments: markUntrusted([]),
+              toolResult: markUntrusted({ type: 'tool_result', toolCallId: call.id, result: 'OK' }),
+              events: {
+                call: { toolId: call.name, toolInput: {} },
+                result: { toolId: call.name, success: true, outputSummary: 'OK' },
+              },
+            }),
+        },
+        limits: {
+          maxToolTurns: 1,
+          maxToolCorrections: 3,
+          checkpointToolTurns: 1,
+          onToolRoundLimit: () => {
+            asked += 1;
+            return Promise.resolve('stop');
+          },
+        },
+      },
+      provider: {
+        stream: async function* (request): AsyncGenerator<StreamChunk> {
+          await Promise.resolve();
+          if (request.maxTokens === 4096) {
+            summaryPasses += 1;
+            yield { type: 'tool_call_start', id: 'c1', name: 'echo' };
+            yield { type: 'tool_call_end', id: 'c1' };
+            yield {
+              type: 'stop',
+              stopReason: 'tool_use',
+              usage: { kind: 'complete', usage: { inputTokens: 7, outputTokens: 3 } },
+            };
+            return;
+          }
+          yield { type: 'text_delta', text: 'reply' };
+          yield {
+            type: 'stop',
+            stopReason: 'stop',
+            usage: { kind: 'complete', usage: { inputTokens: 11, outputTokens: 5 } },
+          };
+        },
+      },
+    });
+    await h.session.compact().catch(() => undefined);
+    expect(asked).toBe(0);
+    expect(summaryPasses).toBeGreaterThan(0); // the compaction really ran (the override bypasses the fixture's own counters)
+  });
 });

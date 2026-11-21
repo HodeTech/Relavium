@@ -1,3 +1,5 @@
+import { scrubbedCommandDisplay } from '@relavium/core';
+
 import { boundInjection, injectionNonce, INJECT_MAX_CHARS } from './injection.js';
 import {
   estimateTokens,
@@ -54,6 +56,13 @@ export function attachmentChip(a: PendingAttachment): string {
   return a.kind === 'file' ? mentionMarker(a.path) : `!${commandLine(a.cmd)} (exit ${a.exitCode})`;
 }
 
+/** The chip as the transcript stores it: a file's marker, or a command's scrubbed line (`attachmentChip` is the live, local bar). */
+function storedChip(a: PendingAttachment): string {
+  return a.kind === 'file'
+    ? mentionMarker(a.path)
+    : `!${scrubbedCommandDisplay([a.cmd.command, ...a.cmd.args])} (exit ${a.exitCode})`;
+}
+
 /** Expand ONE attachment into its framed, UNTRUSTED, nonce-fenced block (a fresh nonce per expansion). */
 function expandOne(a: PendingAttachment): string {
   return a.kind === 'file'
@@ -81,8 +90,10 @@ export function buildOutbound(line: string, attachments: readonly PendingAttachm
   const consumed = attachments.filter((a) => a.kind === 'command' || mentionPresent(line, a.path));
   const message = line + consumed.map(expandOne).join('');
   const commands = consumed.filter((a) => a.kind === 'command');
+  // The display is what the transcript keeps and what the session stores as `user_display_text`: a command's note is its SCRUBBED line,
+  // like the frame's `cmd`, so a credential typed after `!` is not written to history.db by the note (the live attachment bar is local).
   const display =
-    commands.length > 0 ? `${line} [📎 ${commands.map(attachmentChip).join(', ')}]` : line;
+    commands.length > 0 ? `${line} [📎 ${commands.map(storedChip).join(', ')}]` : line;
   return { message, display, consumed };
 }
 

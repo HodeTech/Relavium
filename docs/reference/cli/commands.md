@@ -1,6 +1,6 @@
 # CLI Command Reference (`relavium`)
 
-> Last updated: 2026-10-20
+> Last updated: 2026-11-21
 
 - **Status**: Reference (partial — surface defined, exact flags to be finalized as the CLI is built)
 - **Surface**: CLI (`relavium`)
@@ -123,7 +123,7 @@ before parsing the subcommand).
 | `--no-color` | Disable colored (ANSI) output. |
 | `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). On chat resume this cannot replace the original workspace. |
 | `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). Chat resume uses this current global override while discovering current project layers at its original workspace. |
-| `--allow-fs-root <absolute-directory>` | Repeatable invocation-only filesystem grant for bare Home, `chat`, `chat-resume` and `agent run`; at most 16 arguments, at most 4096 characters each, naming existing accessible directories. Other commands, including workflow `run`, refuse it (exit `2`). [Project/workspace selectors](../contracts/config-spec.md#chat-filesystem-root-selectors) can narrow these grants. |
+| `--allow-fs-root <absolute-directory>` | Repeatable invocation-only filesystem grant for bare Home (and so a bare `relavium permissions` on a terminal, which opens the Home), `chat`, `chat-resume` and `agent run`; at most 16 arguments, at most 4096 characters each, naming existing accessible directories. Other commands, including workflow `run`, refuse it (exit `2`). [Project/workspace selectors](../contracts/config-spec.md#chat-filesystem-root-selectors) can narrow these grants. |
 | `--no-alt-screen` | Keep the byte-identical inline renderer for the bare Home + `relavium chat` (no full-screen alternate screen) — the screen-reader fallback. Overrides `[preferences].alt_screen`; a non-TTY / `--json` / CI path is always inline regardless ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). |
 | `--no-mouse` | Disable terminal mouse reporting (DECSET 1002+1006) inside the full-screen renderer. The wheel stops scrolling the transcript (PgUp/PgDn + Ctrl+Home/Ctrl+End still page), in-app selection and copy-on-select go with it, and the emulator's own click-drag selection works again without a modifier. Overrides `[preferences].mouse`, and forces `[preferences].copy_on_select` off. Ignored outside the alt screen ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e, [accessibility.md](accessibility.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
@@ -162,6 +162,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium models refresh --catalog` | Metadata only — the models.dev catalog. **Needs no provider key.** |
 | `relavium models pricing <model>` | Hand-enter a user price for a model the registry does not know, so the cost cap enforces it. See [`relavium models`](#relavium-models). |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
+| `relavium permissions list` / `revoke <number>\|--all` | Review the commands remembered for this project and take one back (`revoke <number>`), or take back **every project's** (`revoke --all`, which removes the whole file, its write marks and the digest key). See [`relavium permissions`](#relavium-permissions). |
 
 ## Command manifest
 
@@ -180,7 +181,7 @@ The **command manifest** is a derived, alias-free projection of the CLI descript
 }
 ```
 
-- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (`provider.remove-key` and `media.prune-temporaries`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
+- **`effect`** is a forward-looking annotation: `read` never mutates, `write` creates/modifies, `destructive` irreversibly removes (`provider.remove-key`, `media.prune-temporaries` and `permissions.revoke`). It is **marked** for agent discoverability now; approval **enforcement** of a `destructive` entry is owned by [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (workstream 2.5.E), not here.
 - **`modeScope`** lists the chat modes a command appears in (omit ⇒ all). The mode values (`ask` / `plan` / `accept-edits` / `auto`) are defined in [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) (2.5.E); 2.5.C ships the field with `omit = all`.
 - A `manifest ↔ commander` drift guard (a unit test) asserts every real `commander` command has an entry with the **same description** (command + each option), so `commander`, the `executeCommand` table, and `--help --json` stay byte-consistent.
 
@@ -193,12 +194,12 @@ The **command manifest** is a derived, alias-free projection of the CLI descript
 
 ### In-REPL slash commands
 
-The interactive `/` palette + slash commands inside the **Home and chat** are a SEPARATE, **curated** surface ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) amendment, 2.5.C) — the runtime registry is `apps/cli/src/commands/repl-commands.ts` (`REPL_COMMANDS`), the single source for the palette, the `/help` list, and the unknown-slash hint. It surfaces only the commands that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`), info/discovery (`/help`, `/workflows`, `/cost`, `/doctor`), and — in a chat — `/mode`, `/effort`, `/thinking` (also `Ctrl+T`), the ADR-0062 context commands (`/compact`, `/trim`), `/models`, and the [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e copy-and-search hatches `/scrollback`, `/edit` + `/copy`. **Their in-chat behavior is spec'd in [chat-session.md](chat-session.md) and its ADRs** — the `/models` live-reseat vs bare-Home write-default and its reasoning-effort sub-step + picker UX ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) reseat, [ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0063](../../decisions/0063-cli-config-write-contract.md) catalog+write), `/effort`'s per-turn override ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)), and `/thinking`'s panel toggle (2.5.H) — this reference does not restate them. A slash command **never** spawns a shell subcommand (`relavium <cmd> …`). Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) every routine task gets an in-TUI form that re-hosts the same core as its subcommand, with the subcommand's contract unchanged; the tasks that have one today are the ones listed here, and the rest are reached through their subcommands until their milestone lands ([current.md](../../roadmap/current.md#next-work--the-cli-mvp)). A bare `/` at an **empty** prompt opens the filterable palette (the footer hint-bar surfaces `/ for commands` there, 2.5.C S6); an unknown slash — or an undeclared argument on a known command (`/exit now`) — prints a sanitized, secret-free hint. A command may declare flags (`/doctor --deep`) or a single positional value (`/mode plan`); the palette runs the bare form, so a flag/value is opt-in by typing it. There is no separate `/shortcuts` command — the palette's own nav hints (`↑/↓ · Enter · Esc`) + the footer keep keys discoverable in context.
+The interactive `/` palette + slash commands inside the **Home and chat** are a SEPARATE, **curated** surface ([ADR-0056](../../decisions/0056-cli-in-app-slash-command-system-and-manifest.md) amendment, 2.5.C) — the runtime registry is `apps/cli/src/commands/repl-commands.ts` (`REPL_COMMANDS`), the single source for the palette, the `/help` list, and the unknown-slash hint. It surfaces only the commands that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`), info/discovery (`/help`, `/workflows`, `/cost`, `/doctor`), and — in a chat — `/mode`, `/permissions` ([command-permissions.md](command-permissions.md#the-command-card)), `/effort`, `/thinking` (also `Ctrl+T`), the ADR-0062 context commands (`/compact`, `/trim`), `/models`, and the [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e copy-and-search hatches `/scrollback`, `/edit` + `/copy`. **Their in-chat behavior is spec'd in [chat-session.md](chat-session.md) and its ADRs** — the `/models` live-reseat vs bare-Home write-default and its reasoning-effort sub-step + picker UX ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) reseat, [ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0063](../../decisions/0063-cli-config-write-contract.md) catalog+write), `/effort`'s per-turn override ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)), and `/thinking`'s panel toggle (2.5.H) — this reference does not restate them. A slash command **never** spawns a shell subcommand (`relavium <cmd> …`). Under [ADR-0122](../../decisions/0122-the-home-is-the-interactive-product.md) every routine task gets an in-TUI form that re-hosts the same core as its subcommand, with the subcommand's contract unchanged; the tasks that have one today are the ones listed here, and the rest are reached through their subcommands until their milestone lands ([current.md](../../roadmap/current.md#next-work--the-cli-mvp)). A bare `/` at an **empty** prompt opens the filterable palette (the footer hint-bar surfaces `/ for commands` there, 2.5.C S6); an unknown slash — or an undeclared argument on a known command (`/exit now`) — prints a sanitized, secret-free hint. A command may declare flags (`/doctor --deep`) or a single positional value (`/mode plan`); the palette runs the bare form, so a flag/value is opt-in by typing it. There is no separate `/shortcuts` command — the palette's own nav hints (`↑/↓ · Enter · Esc`) + the footer keep keys discoverable in context.
 
 Bare `/mode` is available in idle Home as startup-default settings; its exact
 current/default behavior belongs to [chat-session.md](chat-session.md#proposed-mvp-3-interaction-contract).
 The Home-tree palettes additionally expose `/providers`, `/init` and `/resume` in the
-landing and its live chat. They rehost shared cores; they never spawn a shell
+landing and its live chat, and the landing also offers `/permissions` (the project's remembered commands, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3). They rehost shared cores; they never spawn a shell
 subcommand. Standalone chat keeps its existing palette. See [Home](home.md).
 
 ### `relavium run`
@@ -654,6 +655,38 @@ and `relavium budget resume`, including their non-interactive execution-resume p
 workflow execution and use the same MCP consent rules; the interactive chat family answers at the
 prompt instead.
 
+### `relavium permissions`
+
+```bash
+relavium permissions list [--json]
+relavium permissions revoke <number> [--json]
+relavium permissions revoke --all [--json]
+```
+
+Look at, and take back, the commands this project's operator chose to **Remember** in the chat
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat opens a sheet of the same grants, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)). `list`
+shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
+command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
+whole file, for every project, removes the write-mark file beside it, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
+database and make no network request. Success exits `0` (an empty list is not a fault); the other exit codes,
+the `--json` records and the failure table are in [command-permissions.md](command-permissions.md), the
+canonical home.
+
+`revoke <number>` takes the number from the `list` just printed and has the caveat of any position: another process can change the
+file between the two. The chat's sheet withdraws by the grant's identity instead.
+
+**The bare form** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3, with the compatibility rows [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks for). `relavium permissions` with nothing after it opens the permissions sheet on a terminal, as `relavium chat resume` opens the session picker; everywhere else it is the group it was, and the descriptor, the discovery output and the two subcommands are unchanged.
+
+| Invocation | Behaviour | Exit |
+|---|---|---|
+| `relavium permissions` (optionally followed by one `--`), stdout **and** stdin a TTY, no `--json`, not CI | Opens the sheet (the project's remembered commands only, `Permissions · this project`); `Esc` or `Ctrl+C` closes it and the run ends. A store that cannot be read (no keychain, a corrupt or unreadable file) opens the sheet with its fixed sentence in place of the rows | `0` |
+| `relavium permissions`, stdout or stdin piped, or `--json`, or CI | The group's help **on stderr** (stdout empty); `--json` gives the structured `invalid_invocation` error on stderr instead, exactly as before | `2` |
+| `relavium permissions --help`, `permissions <unknown>`, `list …`, `revoke …`, and any form with more than one `--` or one before the word | Unchanged | unchanged |
+
+**It opens the whole Home**, not a smaller host (it reuses the terminal ownership, signals and restoration the Home already has), so it also opens the history database and runs the Home's start-up reconcile, which `list` and `revoke` never do, and it inherits the Home's own refusals: a working directory a chat cannot use as its workspace (a credential or secret-store directory such as `.relavium` itself), a configuration that cannot be loaded, an unusable history database. Those fail as the Home fails, with the Home's error and exit code; `relavium permissions list` from the same place still works. It does not start the first-run provider setup, which is not what the person came for. The Home's `/permissions` (typed after `/`, pasted, or reached from the palette) reads its own store afresh on every open, so a key replaced by another terminal's `revoke --all` is never listed as empty by a long-lived Home.
+
+The sheet is the one the chat opens (`/permissions`): [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet) owns its keys, rows and sentences. A withdrawal there is by the grant's identity, not by a number.
+
 ### `relavium media prune-temporaries`
 
 ```bash
@@ -691,7 +724,7 @@ also retain their [owned signal dispositions](#invocation-owners-and-fatal-order
 | `1` | Workflow failed, or a classified operational/history/storage refusal; see the [surface dispositions](#failure-classification-and-remedies) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
-| `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
+| `4` | A chat session ended — via `/exit`, `/cancel` (or a second Ctrl+C inside the arming window in TTY mode, or the first SIGINT a chat receives — in the plain and `--json` drivers, and in a standalone chat when the console delivers `Ctrl-C` as a signal rather than a key), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md). The **Home** is not a chat: its own SIGINT exit is `128 + 2` = `130` ([home.md](home.md#signal-lifecycle--exit-codes)), and a chat it hosts has its `4` consumed by the Home's mode loop |
 | `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
 | `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
 | `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
@@ -720,7 +753,7 @@ the surface and ownership contracts below describe that implementation.
 >
 > Exit code `5` is **durability-uncertain**, and it is deliberately neither `0` nor `1`. The run may well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing, so reporting success would be as wrong as reporting failure. The terminal is held in the host's terminal outbox (`~/.relavium/terminal-outbox.ndjson`, beside `history.db` and deliberately not inside it) and retried by the next **`relavium run`**, **`relavium gate`** or **`relavium budget resume`**, or the next time the bare-invocation Home opens. Each of these **reconciles** before it starts or resumes a run (2.6.G liveness): it drains the outbox, then settles every run a dead process left `running` as `run:failed` — `effect_needs_attention` when the run left an external effect unresolved or its effect journal cannot be read ([effect-journal.md](../shared-core/effect-journal.md#8-needs_attention); the code is on the run's terminal, where `relavium logs <runId>` shows it, and the reconciling command's own exit code is about its own run), `budget_exceeded` for a run with a recorded budget rejection ([sse-event-schema.md](../contracts/sse-event-schema.md#durable-budget-authorization)), `internal` otherwise. It leaves alone a run parked at a gate, a run whose lease is live, because another process is executing it ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §7), and a run that started less than one lease TTL (60 s) ago, whose owner may not have taken its lease yet or may be a version that takes none. `chat` and `agent run` run on `AgentSession` and do not reconcile. A reconcile that claims a run anyway inside the instant between its durable `run:started` and its lease acquire (a development build without that rule, or a clock more than a TTL off, either way) settles it, and the store then refuses the run's own terminal, because a log holds exactly one ([database-schema.md](../shared-core/database-schema.md#concurrency--transaction-behavior)): the run ends without executing a node and exits `5`, and the next start drops the held terminal. A drain that cannot write a held terminal leaves that run unrepaired until a later start can, and a repair first checks the outbox again under its claim, so a run that completed is never relabelled failed. While the outbox exists but cannot be read, every run is left unrepaired this way, and `relavium status` warns that the outbox is unavailable. A script seeing `5` should read the durable outcome rather than assume one: `relavium status <runId>` shows whether the held terminal has landed, or, in the case above, that the run was recorded failed. `relavium status` NAMES a run whose terminal is still held (`terminalHeld` in `--json`) so the state is visible, but it does not itself drain — draining claims a run lease, and a status read must not take ownership of a run another process may be finishing. Other docs reference it as `5`.
 >
-> The bare-invocation **interactive Home** (2.5.B, [home.md](home.md)) is a long-lived mode whose **clean exit is `0`** (Ctrl-C / Ctrl-D on an empty prompt). A chat launched from inside the Home has its own exit code `4`, which the **Home loop consumes** — a chat ending returns to the Home, never leaked. An external signal to the Home runs teardown then exits the conventional `128+signo` (**`130`** SIGINT / **`143`** SIGTERM) so a pipeline still detects the interruption.
+> The bare-invocation **interactive Home** (2.5.B, [home.md](home.md)) is a long-lived mode whose **clean exit is `0`** (a second Ctrl+C inside the arming window, or Ctrl-D on an empty prompt). A chat launched from inside the Home has its own exit code `4`, which the **Home loop consumes** — a chat ending returns to the Home, never leaked. An external signal to the Home runs teardown then exits the conventional `128+signo` (**`130`** SIGINT / **`143`** SIGTERM) so a pipeline still detects the interruption.
 
 ## CI/CD usage
 
@@ -905,7 +938,7 @@ actual workflow health **8 > 7 > 5 > 6**, then fatal/output infrastructure **9**
 then an actually terminating external signal **128+signo**, then ordinary outcome.
 5 and 6 remain the existing terminal-uncertainty versus fencing dispositions, not
 new session statuses. First workflow SIGINT remains cooperative run cancellation
-(normally 1); raw-mode chat Ctrl-C remains deliberate end 4. The recoverable
+(normally 1); a raw-mode chat's second Ctrl+C inside the arming window remains the deliberate end 4 (the first interrupts the turn and arms, ADR-0115). The recoverable
 background net is the separate keepalive rule in the table.
 
 The first termination request latches admission-stop and one cleanup operation.
@@ -945,7 +978,7 @@ these modules installs no listeners. Product bootstrap explicitly installs the
 coordinator and retains its actual loader/run root before entering deferred
 modules. The root retires before finalization so cleanup cannot join itself.
 An invocation-owned signal-custody lease leaves each actual surface's existing
-first-Ctrl-C and suspended-terminal behaviour authoritative; the bootstrap
+first-Ctrl-C and suspended-terminal behaviour authoritative (a keyboard first Ctrl+C in raw mode is the interrupt keymap's, not a signal); the bootstrap
 fallback covers loading, admission, metadata and post-surface gaps. Known runtime
 errors are projected before returning to the pure entry. Escaping infrastructure
 faults are observed before joins and diagnosed only after restored-terminal ACK.

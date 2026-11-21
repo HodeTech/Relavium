@@ -1741,6 +1741,7 @@ describe('reviewAnswerKey — the answer keys are Ctrl chords, never a bare lett
     expect(reviewAnswerKey('g', CTRL)).toBe('always');
     expect(reviewAnswerKey('n', CTRL)).toBe('deny');
     expect(reviewAnswerKey('r', CTRL)).toBe('reason');
+    expect(reviewAnswerKey('o', CTRL), 'a command card’s Remember').toBe('remember');
   });
 
   it('answers nothing for a bare printable character — not y, g, n, r, a, c, a digit or an upper-case letter', () => {
@@ -1763,13 +1764,13 @@ describe('reviewAnswerKey — the answer keys are Ctrl chords, never a bare lett
 
   it('answers nothing for any other Ctrl letter or character (Ctrl+A/E/S/T/W/Z and the rest)', () => {
     for (const input of PRINTABLE) {
-      if ('ygnr'.includes(input)) continue;
+      if ('ygnor'.includes(input)) continue;
       expect(reviewAnswerKey(input, CTRL), `ctrl+${JSON.stringify(input)}`).toBeUndefined();
     }
     for (const input of ['a', 'e', 's', 't', 'w', 'z', 'c'])
       expect(reviewAnswerKey(input, CTRL), `ctrl+${input}`).toBeUndefined();
     // Only the exact one-letter chord Ink derives from the control byte: nothing empty, coalesced or upper-case.
-    for (const input of ['', 'yy', 'ny', 'Y', 'N', 'G', 'R'])
+    for (const input of ['', 'yy', 'ny', 'Y', 'N', 'G', 'R', 'O'])
       expect(reviewAnswerKey(input, CTRL), JSON.stringify(input)).toBeUndefined();
   });
 });
@@ -1925,13 +1926,170 @@ describe('reduceToolReviewKey — an approval is answered by a Ctrl chord only',
       expect(press(card, input, CTRL), `ctrl+${input}`).toEqual({ kind: 'none' });
   });
 
-  it('Esc and Ctrl-C stop the turn — they are not answers, and they win over every other rule', () => {
+  it('Esc and Ctrl+C stop the turn at the card — they are not answers, and they win over every other rule (ADR-0115 §2)', () => {
     const card = answerable();
     expect(press(card, '', { escape: true })).toEqual({ kind: 'abort' });
     expect(press(card, 'c', CTRL)).toEqual({ kind: 'abort' });
-    expect(press(answerable(small(), { denial: 'x' }), '', { escape: true })).toEqual({
+    // `Ctrl+C` stops from the full view and the call list too; `Esc` there steps back instead (ADR-0137 §4, below).
+    for (const screen of ['full', 'list'] as const)
+      expect(press(answerable(small(), { screen }), 'c', CTRL), `${screen} Ctrl+C`).toEqual({
+        kind: 'abort',
+      });
+    // The interrupt matcher is shared with every card: either case of the letter is the same key, and Alt+C is not an interrupt.
+    expect(press(card, 'C', CTRL)).toEqual({ kind: 'abort' });
+    expect(press(card, 'c', { ctrl: true, meta: true })).toEqual({ kind: 'none' });
+  });
+
+  it('Ctrl+C stops even inside a text box: it is the stop key everywhere, Esc is the one that steps back (ADR-0115 §3)', () => {
+    expect(press(answerable(small(), { denial: 'x' }), 'c', CTRL)).toEqual({ kind: 'abort' });
+    expect(press(answerable(small(), { searching: true, query: 'q' }), 'c', CTRL)).toEqual({
       kind: 'abort',
     });
+  });
+
+  it('Esc inside the reason box closes the box, discards what was typed and leaves the call pending', () => {
+    const boxed = answerable(small(), { denial: 'because', message: 'old note' });
+    const result = press(boxed, '', { escape: true });
+    expect(result.kind).toBe('state');
+    if (result.kind !== 'state') return;
+    expect(result.state.denial).toBeUndefined();
+    expect(result.state.message).toBe('');
+    expect(result.state.kind).toBe('approval'); // still an approval review: nothing was rejected, nothing aborted
+    // A second Esc, with no box open, now rejects and stops.
+    expect(press({ state: result.state, page: undefined }, '', { escape: true })).toEqual({
+      kind: 'abort',
+    });
+  });
+
+  it("Esc inside the full view's search box closes the box and keeps the full view; the next Esc returns to the card; the next stops the turn", () => {
+    const searching = answerable(small(), { screen: 'full', searching: true, query: 'needle' });
+    const result = press(searching, '', { escape: true });
+    expect(result.kind).toBe('state');
+    if (result.kind !== 'state') return;
+    expect(result.state.searching).toBe(false);
+    expect(result.state.query).toBeUndefined();
+    expect(result.state.screen).toBe('full');
+    const back = press({ state: result.state, page: undefined }, '', { escape: true });
+    expect(back.kind).toBe('state');
+    if (back.kind !== 'state') return;
+    expect(back.state.screen).toBe('card');
+    expect(press({ state: back.state, page: undefined }, '', { escape: true })).toEqual({
+      kind: 'abort',
+    });
+  });
+
+  describe('Esc on the full view returns to the card (ADR-0137 §4): one level per press, nothing answered', () => {
+    it('returns an approval to its card, still pending, exactly as `[b]` does', () => {
+      const full = answerable(small(), {
+        screen: 'full',
+        reveal: true,
+        numeric: true,
+        message: 'x',
+        cursor: { line: 7, offset: 3 }, // scrolled down: the card shows the change from the top again
+      });
+      const esc = press(full, '', { escape: true });
+      const b = press(full, 'b', {});
+      expect(esc.kind).toBe('state');
+      expect(esc).toEqual(b);
+      if (esc.kind !== 'state') return;
+      expect(esc.state).toMatchObject({
+        kind: 'approval',
+        screen: 'card',
+        reveal: false,
+        numeric: false,
+        message: '',
+        cursor: REVIEW_START,
+      });
+    });
+
+    it('keeps what the person has inspected and the target the card owes them, exactly as `[b]` does (a step back must not reset or fake an inspection)', () => {
+      const full = answerable(small(), { screen: 'full' });
+      const carried = {
+        ...full.state,
+        requiredTarget: { field: 0, start: 0, end: 5 },
+        inspected: [{ field: 0, start: 0, end: 3 }],
+      };
+      for (const [input, key] of [
+        ['', { escape: true }],
+        ['b', {}],
+      ] as const) {
+        const result = press({ state: carried, page: full.page }, input, key);
+        expect(result.kind, input || 'Esc').toBe('state');
+        if (result.kind !== 'state') continue;
+        expect(result.state.requiredTarget, input || 'Esc').toEqual({ field: 0, start: 0, end: 5 });
+        expect(result.state.inspected, input || 'Esc').toEqual([{ field: 0, start: 0, end: 3 }]);
+      }
+    });
+
+    it('needs no visible frame: a person who cannot read the full view can still leave it without stopping the turn', () => {
+      const full = answerable(small(), { screen: 'full' });
+      const hidden = reduceToolReviewKey(
+        full.state,
+        '',
+        { escape: true },
+        false,
+        undefined,
+        true,
+        1,
+      );
+      expect(hidden.kind).toBe('state');
+      if (hidden.kind === 'state') expect(hidden.state.screen).toBe('card');
+    });
+
+    it('answers nothing and aborts nothing, whatever else is held', () => {
+      const full = answerable(small(), { screen: 'full' });
+      // `Esc`+`Meta` is how ink reports a quick double tap (`\x1b\x1b`): it steps back one level, the safe direction.
+      for (const key of [
+        { escape: true },
+        { escape: true, shift: true },
+        { escape: true, meta: true },
+        { escape: true, ctrl: true },
+      ] as const) {
+        const result = press(full, '', key);
+        expect(result.kind, JSON.stringify(key)).toBe('state');
+      }
+    });
+
+    it('treats an approval’s call list the same way, although an approval never shows one today', () => {
+      const list = answerable(small(), { screen: 'list' });
+      const result = press(list, '', { escape: true });
+      expect(result.kind).toBe('state');
+      if (result.kind === 'state') expect(result.state.screen).toBe('card');
+    });
+
+    it('closes a box first: the reason box and the search box keep their one level (ADR-0115 §3)', () => {
+      const boxed = press(answerable(small(), { screen: 'full', denial: 'why' }), '', {
+        escape: true,
+      });
+      expect(boxed.kind).toBe('state');
+      if (boxed.kind === 'state') {
+        expect(boxed.state.denial).toBeUndefined();
+        expect(boxed.state.screen, 'the box closed, the full view stayed').toBe('full');
+      }
+    });
+
+    it('an approval starts on its card and `[b]` and Esc from its full view both land there; the list is only for details', () => {
+      expect(initialToolReview('approval', 'call').screen).toBe('card');
+      expect(initialToolReview('details', 'call').screen).toBe('list');
+      const full = answerable(small(), { screen: 'full' });
+      for (const [input, key] of [
+        ['b', {}],
+        ['', { escape: true }],
+      ] as const) {
+        const result = press(full, input, key);
+        expect(result.kind).toBe('state');
+        if (result.kind === 'state') expect(result.state.screen, input || 'Esc').toBe('card');
+      }
+    });
+  });
+
+  it('Esc closes a details view as it always did, a search box included (a details view is not an approval)', () => {
+    const details = { state: initialToolReview('details', 'call'), page: undefined };
+    expect(press(details, '', { escape: true })).toEqual({ kind: 'close' });
+    expect(
+      press({ ...details, state: { ...details.state, searching: true } }, '', { escape: true }),
+    ).toEqual({ kind: 'close' });
+    expect(press(details, 'c', CTRL)).toEqual({ kind: 'close' });
   });
 });
 
@@ -1948,6 +2106,25 @@ describe('isAffirmativeReviewKey — only the Ctrl+Y / Ctrl+G chords are affirma
       expect(isAffirmativeReviewKey(state, 'y', CTRL)).toBe(true);
       expect(isAffirmativeReviewKey(state, 'g', CTRL)).toBe(true);
     }
+  });
+
+  it('counts Ctrl+O as affirmative on a command card only; anywhere else it is a foreign key like any other', () => {
+    const facts = {
+      standing: 'not-pre-approved',
+      runsCode: false,
+      protectedPath: false,
+      cwd: '/work',
+      offers: { session: true, remember: true },
+    } as const;
+    const command = initialToolReview(
+      'approval',
+      'call',
+      createReviewDocument(editedFilePreview(8, { 4: 'four' })),
+      facts,
+    );
+    for (const state of [command, { ...command, screen: 'full' as const }])
+      expect(isAffirmativeReviewKey(state, 'o', CTRL)).toBe(true);
+    expect(isAffirmativeReviewKey(card(), 'o', CTRL)).toBe(false);
   });
 
   it('is false for a bare letter or digit, a Ctrl+Alt chord, and the non-affirmative chords (Ctrl+N, Ctrl+R)', () => {

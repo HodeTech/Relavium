@@ -1,8 +1,9 @@
-import type { AbortSignalLike, Scope, ToolPolicy } from '@relavium/shared';
+import type { AbortSignalLike, ErrorCode, Scope, ToolPolicy } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { projectSecretShapedValue } from './bounding.js';
+import { ToolDispatchError } from './dispatch-error.js';
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import {
   ToolArgsInvalidError,
@@ -356,6 +357,71 @@ describe('ToolRegistry — run_command allowlist', () => {
       { allowedCommandGlobs: ['npm *'] },
     );
     expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
+  });
+
+  // ADR-0118 §3: an exact entry is a command line compared with the argv ELEMENT BY ELEMENT.
+  describe('element-wise exact matching', () => {
+    it('does not admit one argument with a space for two arguments (and the reverse)', async () => {
+      // The defect: both argvs joined to the same string, so the entry `cat a b` admitted all three.
+      const entry = { allowedCommands: ['cat a b'] };
+      const ok = await run({ command: 'cat', args: ['a', 'b'] }, entry);
+      expect((ok as { events: { result: { success: boolean } } }).events.result.success).toBe(true);
+      for (const args of [
+        { command: 'cat', args: ['a b'] },
+        { command: 'cat a', args: ['b'] },
+      ]) {
+        const err = await rejectsWith<ToolPolicyError>(run(args, entry));
+        expect(err.reason).toBe('command_not_allowed');
+      }
+    });
+
+    it('does not admit a file whose NAME is a program plus its flag', async () => {
+      const err = await rejectsWith<ToolPolicyError>(
+        run({ command: './s/build.sh --release' }, { allowedCommands: ['./s/build.sh --release'] }),
+      );
+      expect(err.reason).toBe('command_not_allowed');
+    });
+
+    it('lets an entry typed with quotes match the argv it names', async () => {
+      const out = await run(
+        { command: 'cat', args: ['a b'] },
+        { allowedCommands: ['cat "a b"', "echo 'x y'"] },
+      );
+      expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(
+        true,
+      );
+      const err = await rejectsWith<ToolPolicyError>(
+        run({ command: 'cat', args: ['a', 'b'] }, { allowedCommands: ['cat "a b"'] }),
+      );
+      expect(err.reason).toBe('command_not_allowed');
+    });
+
+    it('never matches an entry with an open quote or an empty entry (fails closed)', async () => {
+      // The argv is built so that, were the open quote tolerated, the entry's tokens would EQUAL it: only the guard refuses.
+      for (const [entry, args] of [
+        ['cat "a b', ['a b']],
+        ['   ', []],
+      ] as const) {
+        const err = await rejectsWith<ToolPolicyError>(
+          run({ command: 'cat', args: [...args] }, { allowedCommands: [entry] }),
+        );
+        expect(err.reason).toBe('command_not_allowed');
+      }
+    });
+
+    it('keeps a glob string-level: it cannot tell one argument with a space from two', async () => {
+      // Documented, opt-in and riskier — which is exactly why globs stay a separate field.
+      const policy = { allowedCommandGlobs: ['cat a *'] };
+      for (const args of [
+        { command: 'cat', args: ['a', 'b'] },
+        { command: 'cat', args: ['a b'] },
+      ]) {
+        const out = await run(args, policy);
+        expect((out as { events: { result: { success: boolean } } }).events.result.success).toBe(
+          true,
+        );
+      }
+    });
   });
 
   it('denies by default when both allowlists are empty/absent', async () => {
@@ -805,17 +871,24 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
 
   // --- ordering + cancellation ---
 
-  it('runs the enforcePolicy floor BEFORE approval — a denied run_command never reaches the prompt', async () => {
-    const confirm = approving();
-    const err = await rejectsWith<ToolPolicyError>(
+  it('an allowlist miss under an approval regime REACHES the prompt as an unadmitted request (ADR-0118 §1); the floors that stay before approval are tested beside it', async () => {
+    // Amended from "a denied run_command never reaches the prompt": the command allowlist is now the host's decision when a person can
+    // answer. The request carries the argv and `commandAdmitted: false`; the full contract is in registry-command-ask.test.ts. The
+    // other policy floors (the human-gate and the HTTPS/domain allowlist) still run before any prompt.
+    const asked: ToolApprovalRequest[] = [];
+    const confirm = vi.fn((request: ToolApprovalRequest) => {
+      asked.push(request);
+      return Promise.resolve({ outcome: 'reject' as const });
+    });
+    const err = await rejectsWith<ToolDeniedByUserError>(
       registry().dispatch(
         call('run_command', { command: 'rm', args: ['-rf', '/'] }),
-        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ deny-all
+        ctx({ approval: { confirm }, toolPolicy: { allowedCommands: [] } }), // empty ⇒ nothing is pre-approved
       ),
     );
-    expect(err).toBeInstanceOf(ToolPolicyError);
-    expect(err.reason).toBe('command_not_allowed');
-    expect(confirm).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(ToolDeniedByUserError);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ argv: ['rm', '-rf', '/'], commandAdmitted: false });
   });
 
   it('classifies an abort raised while prompting (hook throws AbortError) as cancelled, not a denial', async () => {
@@ -1900,4 +1973,115 @@ describe('ToolRegistry — journal identity of credential-shaped arguments (PR95
       content: '[redacted]',
     });
   }, 15_000);
+});
+
+/* --- a refusal that returns to the model is shown with its fixed text (ADR-0117, ADR-0118) --- */
+
+describe('ToolRegistry — the live row of a refusal that returns to the model', () => {
+  /** A host denial like the CLI fs arm's: `tool_denied`, with a chosen recoverability. */
+  class HostRefusal extends ToolDispatchError {
+    readonly code = 'tool_denied' as const;
+    readonly runErrorCode: ErrorCode = 'tool_denied';
+    readonly retryable = false;
+    constructor(message: string, recoverable: boolean) {
+      super(message, undefined, undefined, recoverable);
+    }
+  }
+
+  async function liveEventsFor(error: Error): Promise<unknown[]> {
+    const host = stubHost();
+    if (host.fs === undefined) throw new Error('missing stub fs');
+    const events: unknown[] = [];
+    await registry(
+      stubHost({
+        fs: {
+          ...host.fs,
+          readFile: () => Promise.reject(error),
+        },
+      }),
+    )
+      .dispatch(
+        call('read_file', { path: 'a.txt' }),
+        ctx({ onToolLiveEvent: (e) => events.push(e) }),
+      )
+      .catch(() => undefined);
+    return events.filter(
+      (e) => typeof e === 'object' && e !== null && 'phase' in e && e.phase === 'completed',
+    );
+  }
+
+  it('carries the fixed text of a RECOVERABLE denial as the completed row summary', async () => {
+    const completed = await liveEventsFor(
+      new HostRefusal('this path is protected and cannot be written', true),
+    );
+    expect(completed).toEqual([
+      expect.objectContaining({
+        outcome: 'denied',
+        summary: 'this path is protected and cannot be written',
+      }),
+    ]);
+  });
+
+  it('adds no summary for a recoverable failure that is not a denial (its text is a host message, possibly with a path)', async () => {
+    const completed = await liveEventsFor(
+      new ToolExecutionError('read_file', 'ENOENT: /home/u/secret-project/notes.txt', undefined, {
+        recoverable: true,
+      }),
+    );
+    expect(completed).toEqual([expect.objectContaining({ outcome: 'failure' })]);
+    expect(completed[0]).not.toHaveProperty('summary');
+    expect(JSON.stringify(completed)).not.toContain('secret-project');
+  });
+
+  it('adds no summary for a fatal denial (its text never reaches the model, so it is not a row reason)', async () => {
+    const completed = await liveEventsFor(new HostRefusal('a fatal refusal text', false));
+    expect(completed).toEqual([expect.objectContaining({ outcome: 'denied' })]);
+    expect(JSON.stringify(completed)).not.toContain('a fatal refusal text');
+  });
+
+  it("adds no summary for the person's own rejection — its words are theirs, not a refusal text", async () => {
+    const completed = await liveEventsFor(
+      new ToolDeniedByUserError('read_file', 'user_rejected', 'rejected', {
+        explanation: 'because I said so',
+      }),
+    );
+    expect(JSON.stringify(completed)).not.toContain('because I said so');
+    expect(completed).toEqual([expect.objectContaining({ outcome: 'denied' })]);
+    // No summary AT ALL: the user's message text is not a fixed refusal text, even though the rejection is recoverable.
+    expect(completed[0]).not.toHaveProperty('summary');
+  });
+});
+
+/* --- a hand-built process target without an argv fails closed (ADR-0118 §3) --- */
+
+describe('ToolRegistry — a process target with no argv', () => {
+  const processTool = (target: { command: string }): ToolDef =>
+    ({
+      id: 'plugin_proc',
+      description: 'a hand-built process tool',
+      argsSchema: z.object({}).strict(),
+      parseArgs: (args: unknown) => z.object({}).strict().parse(args),
+      llmVisibleParams: { type: 'object', properties: {}, additionalProperties: false },
+      policy: { fsScoped: false, spawnsProcess: true, requiresGateApproval: false },
+      policyTarget: () => target,
+      dispatch: () => Promise.resolve('ran'),
+    }) as unknown as ToolDef;
+
+  const run = (target: { command: string }, allowedCommands: string[]): Promise<unknown> =>
+    createToolRegistry({ tools: [processTool(target)], host: stubHost() }).dispatch(
+      call('plugin_proc', {}),
+      ctx({ grantedToolIds: new Set(['plugin_proc']), toolPolicy: { allowedCommands } }),
+    );
+
+  it('treats `command` as ONE program name: a multi-token entry never matches it', async () => {
+    // The joined string `ls -la` is two tokens in the entry and one in the target: a string comparison would admit it.
+    const err = await rejectsWith<ToolPolicyError>(run({ command: 'ls -la' }, ['ls -la']));
+    expect(err.reason).toBe('command_not_allowed');
+  });
+
+  it('still admits a one-token program that the entry names exactly', async () => {
+    await expect(run({ command: 'ls' }, ['ls'])).resolves.toBeDefined();
+    const err = await rejectsWith<ToolPolicyError>(run({ command: 'ls' }, ['ls -la']));
+    expect(err.reason).toBe('command_not_allowed');
+  });
 });

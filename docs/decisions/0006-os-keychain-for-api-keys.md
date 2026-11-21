@@ -79,3 +79,7 @@ future feature, deferral or claim of merge-commit execution.
 ## Wave 3 decision acceptance — 2026-10-16
 
 > Amended 2026-10-16: [ADR-0112](0112-chat-network-grants-and-onboarding-state-are-operator-owned.md) is accepted by the maintainer. Keychain custody remains unchanged. The operator acknowledgement is UX-only and must recheck the current backend/key state; ephemeral model selection never claims saved defaults. The approved [execution plan](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md#proposed-implementation-increments) owns implementation and review gates; this note does not claim implementation landing.
+
+> Amended 2026-11-19 (decided; implementation owed in MVP-4 step 3) by [ADR-0118](0118-a-command-outside-the-allowlist-asks-instead-of-failing.md): the keychain also holds the command-grant digest key, under its own account. It never leaves the CLI host and never enters a file, a log or an event.
+
+> Implemented 2026-11-19 (MVP-4 steps 3 and 4): the keychain holds the command-grant digest key under the account `relavium-internal:command-grants-digest-key`, generated on the first write; `relavium permissions revoke --all` deletes it with the file. See [command-permissions.md](../reference/cli/command-permissions.md).

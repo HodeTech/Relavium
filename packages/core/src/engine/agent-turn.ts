@@ -75,7 +75,7 @@ import {
 
 import { canonicalJson, RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
 
-import { ADMISSION_CEILINGS } from '../limits.js';
+import { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDeniedByUserError, ToolDispatchError } from '../tools/errors.js';
 import type {
   ToolCallPart,
@@ -98,25 +98,61 @@ import { denialResultText, REPEATED_DENIAL_TEXT } from './denial-text.js';
 import { sessionJsonBytes } from './session-json-bytes.js';
 
 /**
+ * What the checkpoint hook is told: the tool rounds dispatched so far and the rounds a "continue" will grant — the
+ * interval, except at the last checkpoint before the absolute backstop, where it is what is left of it.
+ */
+export interface ToolRoundCheckpoint {
+  readonly rounds: number;
+  readonly interval: number;
+}
+
+/** The person's answer at a checkpoint. */
+export type ToolRoundLimitDecision = 'continue' | 'stop';
+
+/** The host's checkpoint hook ({@link AgentTurnLimits.onToolRoundLimit}); the signal is the turn's. */
+export type ToolRoundLimitHook = (
+  info: ToolRoundCheckpoint,
+  signal: AbortSignalLike,
+) => Promise<ToolRoundLimitDecision>;
+// The engine does NOT trust the hook to settle: it races the hook against the turn's abort, treats a rejection or throw as a
+// stop (fail closed, classified) and anything other than the literal `'continue'` as a stop (ADR-0136 §2). The hook is only
+// called with a signal that is not yet aborted; a host that listens for the `abort` event still sees any later abort.
+
+/**
  * Loop bounds for one agent turn. The authored hard cap + the `turn_limit` surfacing is the 1.V knob.
  *
- * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** (the
- * tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
- * `turn_limit`), while `maxToolCorrections` is a **sub-budget** *within* that loop that counts
+ * The two bounds are **not multiplicative** — `maxToolTurns` is the worst-case **egress ceiling** where nobody can
+ * answer (the tool loop engages a provider at most `maxToolTurns + 1` times before the guard fails the turn with
+ * `turn_limit`; where a host can ask a person, a "continue" extends that up to {@link ABSOLUTE_TOOL_ROUNDS}), while `maxToolCorrections` is a **sub-budget** *within* that loop that counts
  * CONSECUTIVE rounds in which no tool call ran to a result ([ADR-0131](../../../../docs/decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)):
  * a recoverable tool error (`unknown_tool` / `invalid_args`, plus a host `execution_failed` or a refusal that
  * returns to the model when {@link AgentTurnLimits.recoverToolFailures} is set) increments it and, once
  * exceeded, ends the turn EARLY with `tool_failed`. A round in which at least one call succeeded — or one with
  * no failure at all — resets it to zero, so a long productive turn is not ended by its fourth unrelated slip.
- * Net worst-case egress is `maxToolTurns + 1` provider calls regardless of `maxToolCorrections` — the
+ * Net worst-case egress is `maxToolTurns + 1` provider calls (without a checkpoint) regardless of `maxToolCorrections` — the
  * correction budget can only *shorten* a turn, never extend its egress (so the DoS bound is the turn budget
  * alone, not the product of the two).
  */
 export interface AgentTurnLimits {
-  /** Max tool-loop continuations before the run-default DoS guard fails the turn (`turn_limit`). */
+  /**
+   * Tool rounds a turn may dispatch **where nobody can answer** (no {@link AgentTurnLimits.onToolRoundLimit}): when the
+   * model asks for the next round the turn ends with `turn_limit` and that round does not run. A turn therefore makes
+   * at most `maxToolTurns + 1` provider calls and dispatches at most `maxToolTurns` rounds.
+   */
   readonly maxToolTurns: number;
   /** Max model-correctable tool-error rounds (`unknown_tool` / `invalid_args`) before escalating. */
   readonly maxToolCorrections: number;
+  /**
+   * Where a person can answer ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)):
+   * called when the model asks for another tool round and `allowed` rounds have been dispatched, BEFORE that round runs,
+   * with no provider call, lease or admission held — so an unanswered checkpoint is a stopped spend. `'continue'` runs the
+   * held round and raises `allowed` by one more interval (never past {@link ABSOLUTE_TOOL_ROUNDS}); `'stop'` ends the turn
+   * with `turn_limit`. An abort while it is open takes the usual cancellation path. When absent the turn is a hard stop at
+   * {@link AgentTurnLimits.maxToolTurns}.
+   */
+  readonly onToolRoundLimit?: ToolRoundLimitHook;
+  /** Rounds per interval where {@link AgentTurnLimits.onToolRoundLimit} is wired; absent ⇒ `maxToolTurns`. */
+  readonly checkpointToolTurns?: number;
   /**
    * When `true`, a HOST tool EXECUTION failure (`execution_failed` — a file-not-found read, a transient egress
    * error) is fed back to the model as a correctable `isError` tool result (so it can adapt — try another path,
@@ -1457,6 +1493,111 @@ function unfinishedToolHistoryEntry(
 }
 
 /**
+ * The tool rounds a turn may dispatch before the next one needs an answer, and the interval a "continue" grants
+ * ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §2–§3).
+ *
+ * Where a host can ask a person (an `onToolRoundLimit` hook) that is `checkpointToolTurns`, else `maxToolTurns`; where
+ * nobody can answer it is `maxToolTurns`. Always clamped into `[0, ABSOLUTE_TOOL_ROUNDS]`, so the backstop holds whatever a
+ * direct caller (a workflow runner takes unvalidated limits) passes; a NaN is 0, which stops the turn before any round.
+ */
+export function initialRoundAllowance(limits: AgentTurnLimits): number {
+  const requested =
+    limits.onToolRoundLimit === undefined
+      ? limits.maxToolTurns
+      : (limits.checkpointToolTurns ?? limits.maxToolTurns);
+  // Anything that is not a usable number — NaN, but also `undefined`, a string or an object from an untyped caller, all of which
+  // make `Math.min` return NaN — is zero: the turn stops before any round instead of running unbounded.
+  if (typeof requested !== 'number' || Number.isNaN(requested)) return 0;
+  // Whole rounds only: a direct caller's `1.5` is one round (the stricter reading), never the two that `rounds < 1.5` would allow.
+  return Math.min(Math.max(Math.floor(requested), 0), ABSOLUTE_TOOL_ROUNDS);
+}
+
+/** Whether a held `tool_use` response is one the dispatch would run: at least one call, and no more than the ceiling. */
+function isDispatchableRound(content: readonly ContentPart[]): boolean {
+  const calls = content.filter((part) => part.type === 'tool_call').length;
+  return calls > 0 && calls <= ADMISSION_CEILINGS.toolCallsPerResponse;
+}
+
+/**
+ * Ask the host whether to continue, without trusting it to behave: the hook is raced against the turn's abort (a hook that
+ * ignores the signal cannot hang the turn), a rejection or throw is a classified stop (fail closed, so the session keeps the
+ * turn as interrupted instead of rolling it back), and an abort wins over any answer.
+ */
+async function askToContinue(
+  hook: ToolRoundLimitHook,
+  info: ToolRoundCheckpoint,
+  signal: AbortSignalLike,
+): Promise<unknown> {
+  throwIfAborted(signal);
+  let rejectAborted: (error: unknown) => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = reject;
+  });
+  aborted.catch(() => undefined); // a rejection nobody raced is not an unhandled rejection
+  const onAbort = (): void =>
+    rejectAborted(new AgentTurnError('cancelled', 'the run was cancelled', false));
+  signal.addEventListener('abort', onAbort);
+  // The hook runs in a later microtask, so an abort that arrives in between is checked AGAIN right before the call: a host
+  // that only listens for the `abort` event would otherwise be handed a signal whose event already fired and wait forever.
+  // A synchronous throw becomes a rejection too.
+  const answer = Promise.resolve().then(() => {
+    throwIfAborted(signal);
+    return hook(info, signal);
+  });
+  answer.catch(() => undefined); // a late rejection after the abort won the race is not unhandled either
+  try {
+    const decision = await Promise.race([answer, aborted]);
+    throwIfAborted(signal); // cancel wins over an answer that arrives after the abort
+    return decision;
+  } catch (error) {
+    throwIfAborted(signal);
+    if (error instanceof AgentTurnError) throw error;
+    throw new AgentTurnError(
+      'turn_limit',
+      'the tool-round checkpoint could not be answered, so the turn was stopped',
+      false,
+    );
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * The limit on tool rounds, reached with a round still held ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §2–§3).
+ *
+ * Returns the new number of rounds the turn may dispatch, or throws `turn_limit`. Where nobody can answer, where the
+ * interval is unusable, or where the absolute backstop is reached, it throws at once. Where a person can answer it asks the
+ * host between provider calls — no lease, admission or provider call is held, so an unanswered question is a stopped
+ * spend — and only the literal `'continue'` grants one more interval, never past the backstop: anything else, `undefined`
+ * from a buggy host included, is a stop.
+ */
+async function resolveRoundLimit(
+  params: AgentTurnParams,
+  rounds: number,
+  interval: number,
+): Promise<number> {
+  const hook = params.limits.onToolRoundLimit;
+  if (hook === undefined || rounds >= ABSOLUTE_TOOL_ROUNDS || !(interval >= 1)) {
+    throw new AgentTurnError(
+      'turn_limit',
+      `agent exceeded the ${String(rounds)}-round tool-call limit`,
+      false,
+    );
+  }
+  // What a "continue" will actually grant: the interval, or what is left of the backstop.
+  const grant = Math.min(interval, ABSOLUTE_TOOL_ROUNDS - rounds);
+  const decision = await askToContinue(hook, { rounds, interval: grant }, params.signal);
+  if (decision !== 'continue') {
+    throw new AgentTurnError(
+      'turn_limit',
+      `the turn was stopped at a checkpoint after ${String(rounds)} tool rounds`,
+      false,
+    );
+  }
+  return rounds + grant;
+}
+
+/**
  * Append a tool-use assistant turn, dispatch its tool calls, append the results to `messages`, and return
  * the updated correction count. Throws a classified {@link AgentTurnError} on a protocol anomaly (a
  * `tool_use` stop with no tool call) or once the model-correction budget is exhausted. Extracted from the
@@ -2368,17 +2509,16 @@ async function driveAgentTurn(
     /** Invocations the user declined this turn — an identical repeat is refused without prompting (ADR-0117 §3). */
     const deniedInvocations = new Set<string>();
 
+    // The tool rounds this turn may DISPATCH before the next one needs an answer (ADR-0136 §2). `toolTurn` below is the
+    // number of rounds already dispatched; the check sits where the model asks for another, BEFORE it runs, so a limit
+    // never lets a round's effects land in a turn the model will not see the results of.
+    const interval = initialRoundAllowance(params.limits);
+    let allowedRounds = interval;
+
     for (let toolTurn = 0; ; toolTurn += 1) {
       coverageRound = toolTurn;
       coverageAttempt = 0;
       throwIfAborted(params.signal);
-      if (toolTurn > params.limits.maxToolTurns) {
-        throw new AgentTurnError(
-          'turn_limit',
-          `agent exceeded the ${params.limits.maxToolTurns}-turn tool-call limit`,
-          false,
-        );
-      }
       if (toolTurn > 0) {
         // Only real tool results create a new round. The static fields and earlier messages
         // belong to the first owned construction, never to mutable caller containers.
@@ -2462,6 +2602,15 @@ async function driveAgentTurn(
           stopReason: turn.stopReason,
           toolHistory,
         };
+      }
+
+      // The model asked for another round of tools and `toolTurn` rounds have been dispatched. At the limit the round is
+      // HELD, not run: with nobody to ask the turn ends here, and with a person the answer decides (ADR-0136 §2–§3).
+      // `!(a < b)`, not `a >= b`, as belt and braces: whatever `allowedRounds` ever holds, a comparison that is not true
+      // means "the limit is reached" and fails closed, instead of a NaN making the check never fire. A held response the
+      // dispatch below would refuse anyway (no call, or too many) is refused by it, not asked about.
+      if (!(toolTurn < allowedRounds) && isDispatchableRound(turn.content)) {
+        allowedRounds = await resolveRoundLimit(params, toolTurn, interval);
       }
 
       // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within

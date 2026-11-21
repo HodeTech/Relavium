@@ -70,9 +70,18 @@ const LIST_MARKER_PREFIX =
 // are made of, the exact tick shapes of a row, and the approval card's single-key tokens.
 const HOST_GLYPH = /[›✎█─-╿]/u;
 const HOST_TICK_SHAPE = /\((?:•| )\)|\[(?:[xX]| )\]/u;
-// The card's answer keys are Ctrl chords (`[Ctrl+Y] Allow`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]`) and `[v]`; the bare-letter tokens
-// the card drew before it moved to chords stay refused too (only ever more refusals, never fewer).
-const APPROVAL_KEY_TOKEN = /\[(?:[yYaAnNcCvV]|[Cc][Tt][Rr][Ll]\+[YyGgNnRr])\]/u;
+// The cards' keys are Ctrl chords (`[Ctrl+Y] Allow`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]`, the command card's `[Ctrl+O]`, the
+// question card's own `Ctrl+S` and the interrupt `Ctrl+C`) and `[v]`. ANY `[Ctrl+<letter>]` is refused, so a chord a later card
+// adds is covered without a list to keep in step (ADR-0115 §3); `[Esc]` likewise. The bare-letter tokens the card drew before it
+// moved to chords stay refused too (only ever more refusals, never fewer).
+const APPROVAL_KEY_TOKEN = /\[(?:[yYaAnNcCvV]|[Cc][Tt][Rr][Ll]\+[A-Za-z]|[Ee][Ss][Cc])\]/u;
+// And the spellings a chord legend can take that this list does not name: any SHORT bracketed token written like a chord (a `+`, a
+// full-width `＋` or a `^` inside it, so `[Ctrl+Υ]` with a Greek letter, `[Сtrl+Y]` with a Cyrillic one, `[Ctrl + Y]` and `[^Y]` are
+// refused whatever letters they use), and a token that begins with a key name (`[Ctrl-Y]`, `[Escape]`, `[Control Y]`). Only ever more
+// refusals; a legitimate question that quotes a chord costs the model one correction round. Homoglyph letters joined by `-` or a space
+// are not caught, which is accepted: a forged legend at a question card can only prime a key that counts as typing at the next card.
+const CHORD_SPELLING =
+  /\[[^\]\n]{0,12}[+\uFF0B^][^\]\n]{0,12}\]|\[\s*(?:ctrl|ctl|control|esc|escape)\b[^\]\n]{0,8}\]/iu;
 
 /** True when some grapheme cluster of `value` is built from more than {@link MAX_CODE_POINTS_PER_GRAPHEME} code points. */
 function hasOversizedGrapheme(value: string): boolean {
@@ -98,7 +107,12 @@ export function plainTextRefusal(value: string, maxBytes: number): string | unde
   if (value.normalize('NFC') !== value) return 'must be NFC-normalised';
   if (value !== value.trim()) return 'must not start or end with whitespace';
   if (LIST_MARKER_PREFIX.test(value)) return 'must not start with a list marker';
-  if (HOST_GLYPH.test(value) || HOST_TICK_SHAPE.test(value) || APPROVAL_KEY_TOKEN.test(value))
+  if (
+    HOST_GLYPH.test(value) ||
+    HOST_TICK_SHAPE.test(value) ||
+    APPROVAL_KEY_TOKEN.test(value) ||
+    CHORD_SPELLING.test(value)
+  )
     return "must not draw the host's own glyphs, tick shapes or approval keys";
   return undefined;
 }

@@ -1,6 +1,7 @@
 import { createMeasuredFrameAcknowledgement } from './measured-frame-acknowledgement.js';
 import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
+import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
@@ -28,6 +29,7 @@ import {
   type TranscriptAcknowledgement,
 } from './transcript-acknowledgement.js';
 import type { EditorState } from './chat-input.js';
+import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
@@ -39,6 +41,8 @@ import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
+import type { PermissionsSheetState } from './permissions-sheet.js';
+import { PermissionsSheetView } from './permissions-sheet-view.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
@@ -128,6 +132,7 @@ function ChatRegion(
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
     effortPicker: EffortPickerState | undefined;
+    permissionsSheet: PermissionsSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
@@ -153,8 +158,8 @@ function ChatRegion(
     shellCommand: string | undefined;
     historyEntries: readonly string[];
     attachments: readonly PendingAttachment[];
-    /** The in-flight `[c]` typed-reason capture buffer (Step 14) — shows the reason input in the approval prompt. */
-    reasonDraft: EditorState | undefined;
+    /** The interrupt keymap is armed (ADR-0115 §1) — the idle hint then says a second `Ctrl+C` ends the chat. */
+    interruptArmed: boolean;
     /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — forwarded to `ChatView`'s toast. */
     copied: boolean;
     /** Reserve bounded screen space for the active native card without unmounting Static. */
@@ -175,7 +180,6 @@ function ChatRegion(
     mode,
     reasoningEffort,
     reasoningVisible,
-    approval,
     review,
     toolDisplays,
     markdown,
@@ -212,19 +216,19 @@ function ChatRegion(
         mode={mode}
         reasoningEffort={reasoningEffort}
         reasoningVisible={reasoningVisible}
-        approval={review === undefined ? approval : undefined}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
         viewport={viewport}
-        reasonDraft={props.reasonDraft}
+        interruptArmed={props.interruptArmed}
         copied={props.copied}
         paletteOpen={
           props.palette !== undefined ||
           props.search !== undefined ||
           props.mention !== undefined ||
           props.modelPicker !== undefined ||
-          props.effortPicker !== undefined
+          props.effortPicker !== undefined ||
+          props.permissionsSheet !== undefined
         }
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -237,6 +241,13 @@ function ChatRegion(
       />
       {/* The docked `ask_user` question card (ADR-0132) — where the approval card sits, never both at once. */}
       <QuestionCardHost
+        store={props.store}
+        size={props.reviewSize}
+        hasCustody={props.reviewCustody}
+        color={color}
+      />
+      {/* The docked continue checkpoint (ADR-0136 §4) — the same place, never together with another card. */}
+      <CheckpointCardHost
         store={props.store}
         size={props.reviewSize}
         hasCustody={props.reviewCustody}
@@ -265,8 +276,50 @@ function ChatRegion(
           color={color}
         />
       )}
+      {/* The `/permissions` sheet in a live in-Home chat (ADR-0137 §2) — docked with the other overlays. */}
+      {props.permissionsSheet !== undefined && (
+        <PermissionsSheetView
+          state={props.permissionsSheet}
+          color={color}
+          columns={props.reviewSize.cols}
+          rows={props.reviewSize.rows}
+        />
+      )}
     </Box>
   );
+}
+
+/**
+ * One key through the Home host's card pipeline, in the order the host runs it. Exported so the controller tests drive the very
+ * routing the host does instead of keeping a copy of it.
+ *
+ * Any key but `Ctrl+C` ends the armed interrupt state first, whatever consumes it afterwards (ADR-0115 §1). Then the chat store's
+ * cards get the key: the card owns every answer key. A card that stopped on it has already been settled (an approval as a
+ * REJECTION, before the abort: ADR-0115 §2), so a `Ctrl+C` it reports as `abort` goes on to the controller as itself and the keymap
+ * arms or ends the session, while an `Esc` is the plain stop and reaches the controller as an Esc, which never arms. A `Ctrl+C` that
+ * answered a checkpoint "stop" aborts nothing (the engine ends the turn itself, ADR-0136 §2) but starts the window all the same.
+ * Returns whether the key was consumed.
+ */
+export function routeKeyThroughCards(
+  controller: Pick<HomeController, 'handleKey' | 'interruptAnswered' | 'disarmInterrupt'>,
+  store: Pick<ChatStoreController, 'handleReviewInput'> | undefined,
+  input: string,
+  key: Parameters<HomeController['handleKey']>[1],
+): boolean {
+  const interrupt = isInterruptKey(input, key);
+  if (!interrupt) controller.disarmInterrupt();
+  const action = store?.handleReviewInput(input, key);
+  if (action === 'handled') return true;
+  if (action === 'stop-answered') {
+    controller.interruptAnswered();
+    return true;
+  }
+  if (action === 'abort') {
+    if (interrupt) controller.handleKey(input, key);
+    else controller.handleKey('\u001b', { escape: true });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -405,6 +458,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     setScroll(next);
   };
 
+  // Tell the controller the size, so the permissions sheet knows whether it can show a withdrawal's question (ADR-0137 §2).
+  useEffect(() => {
+    controller.setTerminalSize(size.cols, size.rows);
+  }, [controller, size.cols, size.rows]);
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(
     () =>
@@ -433,7 +490,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
   // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
   // viewport, so those fall straight through. Gated on NO keyboard-owning overlay (palette / search / mention /
-  // model-picker / effort-picker / reason-capture) — mirroring ChatApp's after-overlays ordering, so an overlay that
+  // model-picker / effort-picker) — mirroring ChatApp's after-overlays ordering, so an overlay that
   // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
   // no force-follow is needed (parity with `ChatApp`).
   const noOverlay =
@@ -442,7 +499,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.reasonDraft === undefined &&
+    state.permissionsSheet === undefined &&
     !prompt.active &&
     !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
@@ -579,7 +636,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 
   /**
    * Consume a mouse report, if `input` is one. Returns `true` when it was — the caller must then type NOTHING: a
-   * report's raw bytes must never reach the Home prompt, the `/` palette filter, or the `[c]` reason capture. That is
+   * report's raw bytes must never reach the Home prompt, the `/` palette filter, or a card. That is
    * true in EVERY mode and behind EVERY overlay; only the ROUTING is gated on the chat owning the screen.
    */
   const consumeMouseReport = (input: string): boolean => {
@@ -592,7 +649,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       altChat &&
       props.nativePrompt?.getSnapshot().active !== true &&
       controller.getSnapshot().session?.store.getSnapshot().review === undefined &&
-      controller.getSnapshot().session?.store.getSnapshot().question === undefined
+      controller.getSnapshot().session?.store.getSnapshot().question === undefined &&
+      controller.getSnapshot().session?.store.getSnapshot().checkpoint === undefined
     ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
@@ -616,6 +674,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       current.notice === undefined ||
       current.palette !== undefined ||
       current.modelPicker !== undefined ||
+      current.permissionsSheet !== undefined ||
       (!key.pageUp && !key.pageDown)
     )
       return false;
@@ -679,13 +738,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }
     if (controller.getSnapshot().nativeActionBusy) return;
     if (consumeMouseReport(input)) return;
-    const reviewStore = controller.getSnapshot().session?.store;
-    const reviewAction = reviewStore?.handleReviewInput(input, key);
-    if (reviewAction === 'handled') return;
-    if (reviewAction === 'abort') {
-      controller.handleKey('\u001b', { escape: true });
+    if (routeKeyThroughCards(controller, controller.getSnapshot().session?.store, input, key))
       return;
-    }
     if (routeHomeInput(input, key)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
@@ -747,6 +801,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           mention={state.mention}
           modelPicker={state.modelPicker}
           effortPicker={state.effortPicker}
+          permissionsSheet={state.permissionsSheet}
           now={props.nowMs}
           cols={size.cols}
           // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
@@ -769,7 +824,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
                 }
               : undefined
           }
-          reasonDraft={state.reasonDraft}
+          interruptArmed={state.interruptArmed}
           shellBusy={state.shellBusy}
           submitBusy={state.submitBusy}
           shellCommand={state.shellCommand}
@@ -803,7 +858,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {sanitizeInline(state.pendingMessage)}
         </Text>
         <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat… · Ctrl-C to cancel
+          Starting chat… · Ctrl+C to exit
         </Text>
         {nativeAcknowledgement && (
           <NativePromptView
@@ -845,11 +900,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           cols={Number.isFinite(size.cols) ? size.cols : 0}
           rows={size.rows}
           color={color}
-          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          paletteOpen={
+            state.palette !== undefined ||
+            state.modelPicker !== undefined ||
+            state.permissionsSheet !== undefined
+          }
           showBanner={props.showBanner}
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
           noticePage={noticePage}
+          interruptArmed={state.interruptArmed}
         />
       )}
       {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (
@@ -857,6 +917,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
+      )}
+      {/* The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, docked under the Home; below its own
+          80×24 floor the sheet says so itself, so it is drawn whatever the Home strip does. */}
+      {state.permissionsSheet !== undefined && (
+        <PermissionsSheetView
+          state={state.permissionsSheet}
+          color={color}
+          columns={size.cols}
+          rows={size.rows}
+        />
       )}
     </Box>
   );

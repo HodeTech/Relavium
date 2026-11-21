@@ -298,7 +298,7 @@ export const AgentApprovalRequestedEventSchema = z.object({
   preview: z
     .object({
       path: nonEmptyString.optional(), // fs_write — the resolved target path
-      command: nonEmptyString.optional(), // process — the resolved command (always non-empty: `min(1)` + join)
+      command: nonEmptyString.optional(), // process — the resolved command as one quoted line (never empty: a program name is at least one character)
       host: nonEmptyString.optional(), // egress — the target host only (never the full URL / query string)
     })
     .strict(),

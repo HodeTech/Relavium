@@ -1,6 +1,7 @@
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import { CliError } from '../process/errors.js';
 import { resolveConfig } from './resolve.js';
 
 describe('resolveConfig', () => {
@@ -61,6 +62,126 @@ describe('resolveConfig', () => {
     expect(optOut.allowedCommandGlobs).toBeUndefined(); // NOT inherited — the opt-out is real
     // Absent everywhere ⇒ undefined ⇒ `!`-shell disabled (secure default).
     expect(resolveConfig({}).chat.allowedCommands).toBeUndefined();
+  });
+
+  describe('the chat limits: an operator sets the base, a repository can only lower it (ADR-0136 §1)', () => {
+    const keys = [
+      ['max_turns', 'maxTurns', 50],
+      ['max_tool_turns', 'maxToolTurns', 16],
+      ['checkpoint_tool_turns', 'checkpointToolTurns', 32],
+      ['max_tool_corrections', 'maxToolCorrections', 3],
+    ] as const;
+
+    it.each(keys)(
+      '%s: absent everywhere resolves to undefined — the host applies the default',
+      (key, field) => {
+        expect(resolveConfig({}).chat[field]).toBeUndefined();
+        expect(resolveConfig({ project: { chat: {} } }).chat[field]).toBeUndefined();
+      },
+    );
+
+    it.each(keys)(
+      '%s: the operator base flows through, and a repository value at or below it wins',
+      (key, field, dflt) => {
+        const global: GlobalConfig = { preferences: { [key]: dflt + 2 } };
+        expect(resolveConfig({ global }).chat[field]).toBe(dflt + 2);
+        // project > workspace > operator, each only lowering
+        expect(
+          resolveConfig({ global, workspace: { chat: { [key]: dflt + 1 } } }).chat[field],
+        ).toBe(dflt + 1);
+        expect(
+          resolveConfig({
+            global,
+            workspace: { chat: { [key]: dflt + 1 } },
+            project: { chat: { [key]: dflt } },
+          }).chat[field],
+        ).toBe(dflt);
+        // equal to the base is allowed
+        expect(resolveConfig({ global, project: { chat: { [key]: dflt + 2 } } }).chat[field]).toBe(
+          dflt + 2,
+        );
+      },
+    );
+
+    it.each(keys)(
+      '%s: a repository value above the default (no operator base) is a loud error, never a clamp',
+      (key, _field, dflt) => {
+        for (const layers of [
+          { project: { chat: { [key]: dflt + 1 } } },
+          { workspace: { chat: { [key]: dflt + 1 } } },
+        ] as const) {
+          expect(() => resolveConfig(layers)).toThrow(
+            new RegExp(
+              `\\[chat\\]\\.${key} is ${dflt + 1} in the (project|workspace) config, above this machine's limit of ${dflt}`,
+            ),
+          );
+        }
+        // It is exit-2 invalid config (a CliError), and the message tells the person where to raise it.
+        const refusal: unknown = (() => {
+          try {
+            resolveConfig({ project: { chat: { [key]: dflt + 1 } } });
+            return undefined;
+          } catch (error) {
+            return error;
+          }
+        })();
+        expect(refusal).toBeInstanceOf(CliError);
+        expect(refusal instanceof CliError ? refusal.code : '').toBe('invalid_invocation');
+        expect(refusal instanceof CliError ? refusal.message : '').toContain(
+          `[preferences] ${key}`,
+        );
+      },
+    );
+
+    it('treats zero as a real value for max_tool_corrections, not as "absent": an operator base of 0, a repository 0 over a workspace value', () => {
+      // Zero is legal for this limit only (the first round in which nothing ran ends the turn). A `||` instead of `??` anywhere in
+      // the resolution would read it as unset and fall through to a higher limit.
+      const strict: GlobalConfig = { preferences: { max_tool_corrections: 0 } };
+      expect(resolveConfig({ global: strict }).chat.maxToolCorrections).toBe(0);
+      expect(() =>
+        resolveConfig({ global: strict, project: { chat: { max_tool_corrections: 1 } } }),
+      ).toThrow(/max_tool_corrections is 1 in the project config, above this machine's limit of 0/);
+      expect(
+        resolveConfig({
+          project: { chat: { max_tool_corrections: 0 } },
+          workspace: { chat: { max_tool_corrections: 2 } },
+        }).chat.maxToolCorrections,
+      ).toBe(0);
+    });
+
+    it('an operator may LOWER a limit below the default, and a repository can then not exceed that', () => {
+      const global: GlobalConfig = { preferences: { max_tool_turns: 10 } };
+      expect(resolveConfig({ global }).chat.maxToolTurns).toBe(10);
+      expect(
+        resolveConfig({ global, project: { chat: { max_tool_turns: 10 } } }).chat.maxToolTurns,
+      ).toBe(10);
+      // 12 is below the default (16) but above this machine's own limit (10): refused, not clamped.
+      expect(() => resolveConfig({ global, project: { chat: { max_tool_turns: 12 } } })).toThrow(
+        /max_tool_turns is 12 in the project config, above this machine's limit of 10/,
+      );
+    });
+
+    it('a value above the operator base is refused even when a higher-precedence layer shadows it', () => {
+      const global: GlobalConfig = { preferences: { max_tool_turns: 20 } };
+      expect(() =>
+        resolveConfig({
+          global,
+          workspace: { chat: { max_tool_turns: 30 } }, // above 20, shadowed by the project's lower value
+          project: { chat: { max_tool_turns: 8 } },
+        }),
+      ).toThrow(/max_tool_turns is 30 in the workspace config, above this machine's limit of 20/);
+    });
+
+    it('lets an operator raise a limit above the default, and a repository then use up to that', () => {
+      const global: GlobalConfig = { preferences: { checkpoint_tool_turns: 64 } };
+      expect(
+        resolveConfig({ global, project: { chat: { checkpoint_tool_turns: 48 } } }).chat
+          .checkpointToolTurns,
+      ).toBe(48);
+      expect(() =>
+        resolveConfig({ global, project: { chat: { checkpoint_tool_turns: 65 } } }),
+      ).toThrow(/limit of 64/);
+    });
   });
 
   it('resolves the [chat] block last-writer-wins (project > workspace), per field', () => {

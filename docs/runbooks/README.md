@@ -19,6 +19,7 @@ specs and links to them rather than restating them (see
 | [capture-provider-overflow.md](capture-provider-overflow.md) | Capture and review dated official-provider overflow evidence for W7 without recording credentials. |
 | [troubleshoot-tool-denials.md](troubleshoot-tool-denials.md) | Interpret mode, scope and filesystem-safety refusals and inspect them without changing security metadata. |
 | [verify-macos-write-metadata.md](verify-macos-write-metadata.md) | Reproduce the scoped metadata mechanisms and collect separate real-APFS host/user-interaction acceptance evidence. |
+| [windows-interrupt-evidence.md](windows-interrupt-evidence.md) | Collect the manual Windows evidence that the interrupt keymap (`Ctrl+C`, `Esc`, the checkpoint card) behaves as designed on a Windows console. |
 | [release-a-surface.md](release-a-surface.md) | Cut a release for the desktop (`.dmg`), CLI (npm), or VS Code extension (Marketplace). |
 
 ## Conventions

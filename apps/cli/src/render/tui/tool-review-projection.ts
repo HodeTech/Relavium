@@ -1,4 +1,4 @@
-import type { ToolPreview } from '@relavium/core';
+import { secretShapedRanges, type ToolPreview } from '@relavium/core';
 import { secretMaskRanges } from '@relavium/llm/scrub-secrets';
 import { sanitizeUntrusted, stripTerminalControls } from '../sanitize.js';
 import { displayWidth } from './viewport.js';
@@ -81,6 +81,10 @@ export const REVIEW_START: ReviewCursor = Object.freeze({ line: 0, offset: 0 });
 const encoder = new TextEncoder();
 export const reviewBytes = (text: string): number => encoder.encode(text).byteLength;
 
+interface SourceSpan {
+  readonly start: number;
+  readonly end: number;
+}
 /**
  * What scanning one text for review costs, and the only part of a field that does: the secret spans, the
  * display-floor check and the byte index. It does not depend on where the text sits in a document, so a diff
@@ -88,13 +92,34 @@ export const reviewBytes = (text: string): number => encoder.encode(text).byteLe
  */
 interface TextAnalysis {
   readonly text: string;
-  readonly spans: readonly { readonly start: number; readonly end: number }[];
+  readonly spans: readonly SourceSpan[];
   readonly byteIndex: ReviewField['byteIndex'];
 }
 
-/** Compose the diagnostic floor without guessing where replacement strings came from. */
-function analyseText(text: string): TextAnalysis {
-  let spans = secretMaskRanges(text);
+/** Merge two sorted-or-not lists of ranges into sorted ranges that do not overlap (ranges that only touch stay apart). */
+function unionRanges(
+  left: readonly SourceSpan[],
+  right: readonly SourceSpan[],
+): readonly SourceSpan[] {
+  const merged: { start: number; end: number }[] = [];
+  for (const range of [...left, ...right].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    const last = merged.at(-1);
+    if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
+    else merged.push({ start: range.start, end: range.end });
+  }
+  return merged;
+}
+
+/**
+ * Compose the diagnostic floor without guessing where replacement strings came from.
+ *
+ * `command` adds what the engine's event preview masks in a command's text (`secretShapedRanges`): the two scrubbers do not
+ * recognize the same shapes (`password=…`, `--api_key=…`, `secret=…` are the engine's), and what the event hides the card, its
+ * masked copy and its details must hide as well. The floor below is checked against the diagnostic scrubber's own spans, so it
+ * runs before the engine's are added.
+ */
+function analyseText(text: string, command = false): TextAnalysis {
+  let spans: readonly SourceSpan[] = secretMaskRanges(text);
   let projected = '',
     cursor = 0;
   for (const span of spans) {
@@ -104,6 +129,7 @@ function analyseText(text: string): TextAnalysis {
   projected += text.slice(cursor);
   if (stripTerminalControls(projected) !== sanitizeUntrusted(text))
     spans = [{ start: 0, end: text.length }];
+  if (command) spans = unionRanges(spans, secretShapedRanges(text));
   const byteIndex = [{ offset: 0, bytes: 0 }];
   let offset = 0,
     bytes = 0,
@@ -152,6 +178,10 @@ function analyseDiffSide(diff: object, side: DiffSide, text: string): TextAnalys
 }
 
 const documents = new WeakMap<ToolPreview, ReviewDocument>();
+/** The previews of a command built with the engine's secret spans too (`command`), apart from the plain ones. */
+const commandDocuments = new WeakMap<ToolPreview, ReviewDocument>();
+/** The same previews built with every mask required (a command card's), cached apart so none of the three answers for another. */
+const strictDocuments = new WeakMap<ToolPreview, ReviewDocument>();
 
 /**
  * Whether a preview can no longer change, so a document built from it stays true for as long as the preview
@@ -180,16 +210,97 @@ function isImmutablePreview(preview: ToolPreview): boolean {
  * Source snapshots occur once; row indexes and masks refer to absolute original UTF-16 offsets. Building scans
  * every field for secrets, which is the cost of the review (260 ms per MiB), so the one preview that is shown as
  * a tool event, then as a card, then as details is built once: the document is kept for the frozen preview.
+ *
+ * `requireAllMasks` makes EVERY masked span a requirement the person must reveal and see before an affirmative answer counts, not
+ * only the ones that hold characters a credential does not (ADR-0118 §1): a command is the one call whose arguments can carry a
+ * credential into a process, and a program name or an argument that is nothing but a mask is not something to approve unseen.
+ *
+ * A command's preview (`command`, which `requireAllMasks` implies) is also masked wherever the engine's event preview of the same
+ * command is: see {@link analyseText} and {@link titleHidesArguments}. A file diff's document is never changed by either.
  */
-export function createReviewDocument(preview: ToolPreview): ReviewDocument {
-  const known = documents.get(preview);
+export function createReviewDocument(
+  preview: ToolPreview,
+  options?: { readonly requireAllMasks?: boolean; readonly command?: boolean },
+): ReviewDocument {
+  const strict = options?.requireAllMasks === true;
+  const command = strict || options?.command === true;
+  const cache = strict ? strictDocuments : command ? commandDocuments : documents;
+  const known = cache.get(preview);
   if (known !== undefined) return known;
-  const built = buildReviewDocument(preview);
-  if (isImmutablePreview(preview)) documents.set(preview, built);
+  const built = buildReviewDocument(preview, strict, command);
+  if (isImmutablePreview(preview)) cache.set(preview, built);
   return built;
 }
 
-function buildReviewDocument(preview: ToolPreview): ReviewDocument {
+/**
+ * Whether a command's title, which is the quoted line, hides what its argument rows hide. Quoting rewrites an embedded `'` as
+ * `'"'"'`, which breaks the `key='value'` context a scan reads, so a secret that holds a quote cannot be located in the title and
+ * a scan of the title alone can miss it; any other argument text appears in the title as it is, so it is hidden when none of it
+ * is left outside the title's masks. When it is not hidden the whole title is masked ({@link analyseTitle}).
+ */
+function titleHidesArguments(title: TextAnalysis, args: readonly TextAnalysis[]): boolean {
+  // Every masked span of the title becomes one character no secret holds, so what is left cannot join into one.
+  let shown = '',
+    cursor = 0;
+  for (const span of title.spans) {
+    shown += title.text.slice(cursor, span.start) + '\u0000';
+    cursor = span.end;
+  }
+  shown += title.text.slice(cursor);
+  for (const arg of args) {
+    for (const span of arg.spans) {
+      const secret = arg.text.slice(span.start, span.end);
+      if (secret.includes("'") || secret.includes('\u0000') || shown.includes(secret)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A command's fields analysed one by one, plus what only the whole line shows. The engine's event preview also reads the
+ * arguments joined by single spaces (`scrubbedCommandDisplay`'s oracle), which finds a secret split from its key across two
+ * arguments (`password=` then the value); its spans are mapped back onto the arguments they cover. Only the unnamed fields are
+ * arguments: a named one (a result summary) is not part of the line.
+ */
+function analyseArguments(fields: ToolPreview['fields']): TextAnalysis[] {
+  const argumentIndexes = fields.flatMap((item, index) => (item.name === '' ? [index] : []));
+  const joined = argumentIndexes.map((index) => fields[index]?.value ?? '').join(' ');
+  const joinedSpans = secretShapedRanges(joined);
+  const split = new Map<number, SourceSpan[]>();
+  let offset = 0;
+  for (const index of argumentIndexes) {
+    const length = fields[index]?.value.length ?? 0;
+    const here: SourceSpan[] = [];
+    for (const span of joinedSpans) {
+      const start = Math.max(span.start, offset),
+        end = Math.min(span.end, offset + length);
+      if (start < end) here.push({ start: start - offset, end: end - offset });
+    }
+    split.set(index, here);
+    offset += length + 1;
+  }
+  return fields.map((item, index) => {
+    const analysis = analyseText(item.value, true);
+    const extra = split.get(index) ?? [];
+    return extra.length === 0
+      ? analysis
+      : { ...analysis, spans: unionRanges(analysis.spans, extra) };
+  });
+}
+
+/** The title, masked as a whole when its own scan does not hide what the argument rows hide. */
+function analyseTitle(title: string, args: readonly TextAnalysis[]): TextAnalysis {
+  const analysis = analyseText(title, true);
+  return titleHidesArguments(analysis, args)
+    ? analysis
+    : { ...analysis, spans: [{ start: 0, end: title.length }] };
+}
+
+function buildReviewDocument(
+  preview: ToolPreview,
+  requireAllMasks: boolean,
+  command: boolean,
+): ReviewDocument {
   const invalid = (): ReviewDocument => ({
     valid: false,
     preview: { kind: preview.kind, fields: [] },
@@ -213,12 +324,15 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   const fields: ReviewField[] = [],
     lines: ReviewSourceLine[] = [],
     masks: ReviewMask[] = [];
-  const add = (text: string, side?: DiffSide): number => {
+  // A command's arguments are analysed first: the title is masked as a whole when its scan hides less than they do.
+  const values = command ? analyseArguments(preview.fields) : [];
+  const add = (text: string, side?: DiffSide, known?: TextAnalysis): number => {
     const field = fields.length;
     const analysis =
-      side === undefined || preview.diff === undefined
-        ? analyseText(text)
-        : analyseDiffSide(preview.diff, side, text);
+      known ??
+      (side === undefined || preview.diff === undefined
+        ? analyseText(text, command)
+        : analyseDiffSide(preview.diff, side, text));
     const value = maskField(analysis, field, masks.length + 1);
     fields.push(value);
     masks.push(...value.masks);
@@ -228,11 +342,21 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
     const text = fields[field]?.text ?? '';
     lines.push({ field, start: 0, end: text.length, label, ending: 'field', changed: false });
   };
-  if (preview.target !== undefined) fieldLines(add(preview.target), 'target');
-  for (const item of preview.fields) {
-    fieldLines(add(item.name), 'field name');
-    fieldLines(add(item.value), 'field value');
+  if (preview.target !== undefined) {
+    // Only the unnamed fields are a command's arguments: a named one (a result summary) is not in the quoted line.
+    const title = command
+      ? analyseTitle(
+          preview.target,
+          values.filter((_, index) => preview.fields[index]?.name === ''),
+        )
+      : undefined;
+    fieldLines(add(preview.target, undefined, title), 'target');
   }
+  preview.fields.forEach((item, index) => {
+    // A field with no name is a bare value (a command's arguments): one line, not a blank name line above it.
+    if (item.name !== '') fieldLines(add(item.name), 'field name');
+    fieldLines(add(item.value, undefined, values[index]), 'field value');
+  });
   let changedBytes = 0,
     changedLines = 0;
   if (preview.diff !== undefined) {
@@ -246,7 +370,9 @@ function buildReviewDocument(preview: ToolPreview): ReviewDocument {
   const cardBytes = indexRemainingBytes(lines, fields, (line) => line.cardSkip !== true);
   const fullLines = indexRemainingLines(lines, (line) => line.fullSkip !== true);
   const fullBytes = indexRemainingBytes(lines, fields, (line) => line.fullSkip !== true);
-  const required = requiredInspectionRanges(lines, fields, masks);
+  const required = requireAllMasks
+    ? masks.map(({ field, start, end }): SourceRange => ({ field, start, end }))
+    : requiredInspectionRanges(lines, fields, masks);
   return {
     valid: required.length <= 8192,
     preview,

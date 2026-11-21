@@ -105,7 +105,7 @@ The eleven Step 4 controls remove separate production mechanisms:
 The Step 4 declarations require 52 additional named assertion witnesses. Every
 selected workload remains a complete test file: 33 input cases, 14 action-forwarding
 cases, 32 dispatch cases, 85 run-command cases, three run-consent cases, 76 gate cases,
-28 top-level parser cases, or 131 native integration cases, as declared per control.
+34 top-level parser cases, or 131 native integration cases, as declared per control.
 The coordinator independently enforces exact case counts, unique complete case
 identities and identical fixed/removal/restored inventories. It accepts only a
 completed `AssertionError` carrying the expected marker in each selected target;
@@ -149,7 +149,7 @@ transliteration or uniqueness of generated IDs.
 
 Two independent CLI notice controls remove the successful standalone command and
 live `/export` notice sites. Each requires named human and JSON witnesses in
-the complete 18-case command-export or 165-case chat file. The live control also
+the complete 18-case command-export or 171-case chat file. The live control also
 requires its actual interactive transcript/Ink-frame witness. A third control
 restores raw stderr delivery only for the live notice: human/JSON positive cases
 still pass, while the interactive witness must fail with its named assertion marker.
@@ -211,7 +211,7 @@ check, split scheme labels, split API-header labels and raw `?`/`#` password rec
 independently. Four LLM controls remove the before-masking LF/TAB probe, its original
 left-boundary check, split API-header recognition and raw-password recognition.
 Every core projection phase executes the complete 234-case bounding file (the journal-identity
-control's phases the complete 116-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
+control's phases the complete 127-case registry file); every new LLM phase executes the complete 224-case scrubber file. Independent ordinary tooling tests pin
 these inventories, the 278-case overlap cohort, 180-case CLI diagnostic cohort and
 18-case command-export cohort. Actual collection still has to match in every phase.
 

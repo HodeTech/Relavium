@@ -586,3 +586,5 @@ Usage correlation does not change allowance sizing, dispatch authority or the no
 
 See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and the
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
+
+> Note 2026-11-19 ([ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)): with a continue checkpoint a turn on a surface with a person can run more than `maxToolTurns + 1` provider calls. §1's `calls = maxToolTurns + 1` stays a conservative upper bound **per pause**; the pre-egress check stays armed for every call, and "continue" grants rounds, never money.

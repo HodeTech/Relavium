@@ -17,7 +17,7 @@ import { COMMAND_DESCRIPTORS } from './descriptors.js';
  */
 
 /** Permanent parent-only containers — a parent whose only real form is a subcommand; never a manifest entry. */
-const CONTAINER_PATHS = ['agent', 'budget', 'provider', 'media'] as const;
+const CONTAINER_PATHS = ['agent', 'budget', 'provider', 'media', 'permissions'] as const;
 /**
  * The not-yet-available stubs are excluded too — but **derived from `STUB_COMMANDS`**, not hardcoded, so a stub
  * that graduates to a real command (removed from `STUB_COMMANDS` + given a real registration) automatically stops
@@ -160,11 +160,12 @@ describe('command manifest (ADR-0056)', () => {
     }
   });
 
-  it('the destructive annotation marks credential removal and legacy media maintenance', () => {
+  it('the destructive annotation marks credential removal, legacy media maintenance and revoking remembered commands', () => {
     const destructive = COMMAND_MANIFEST.filter((entry) => entry.effect === 'destructive');
     expect(destructive.map((entry) => entry.id)).toEqual([
       'media.prune-temporaries',
       'provider.remove-key',
+      'permissions.revoke',
     ]);
   });
 });

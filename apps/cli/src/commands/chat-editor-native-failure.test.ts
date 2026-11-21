@@ -136,6 +136,8 @@ it('actual owned /edit native temp creation fault versus missing editor control'
                     .state.transcript.some((entry) => entry.text?.includes('set $EDITOR')),
                 ).toBe(true);
             } finally {
+              input.push('\x03'); // two presses end the session: the first interrupts and arms (ADR-0115 §1)
+              await flush();
               input.push('\x03');
               await flush();
               await driving;

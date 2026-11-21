@@ -2,7 +2,12 @@ import { chmodSync, lstatSync, readFileSync, statSync, type Stats } from 'node:f
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { GlobalConfigSchema, ProjectConfigSchema } from '@relavium/shared';
+import {
+  COMMAND_LINE_ENTRY_ISSUE,
+  COMMAND_LINE_ENTRY_MESSAGE,
+  GlobalConfigSchema,
+  ProjectConfigSchema,
+} from '@relavium/shared';
 import type { GlobalConfig, ProjectConfig } from '@relavium/shared';
 import { parse as parseToml } from 'smol-toml';
 import type { ZodError, ZodIssue, ZodType } from 'zod';
@@ -278,6 +283,12 @@ function safeIssueReason(issue: ZodIssue): string {
         : 'value is too large';
     case 'invalid_string':
       return 'value is not a valid string';
+    case 'custom':
+      // Only an issue that a shared schema marks as value-free may speak: today, an allowlist entry that is not a
+      // command line (an open quote, no token, an empty program). Any other custom issue stays generic.
+      return issue.params?.['relavium'] === COMMAND_LINE_ENTRY_ISSUE
+        ? COMMAND_LINE_ENTRY_MESSAGE
+        : 'value is invalid';
     default:
       return 'value is invalid';
   }

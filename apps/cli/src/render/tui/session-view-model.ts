@@ -60,6 +60,12 @@ export interface TurnSummary {
    * result text. The projection sanitizes and bounds the names before it shows any.
    */
   readonly failedTools?: readonly { readonly toolId: string; readonly count: number }[];
+  /**
+   * Set when the turn ended with `turn_limit` right after the person answered its continue checkpoint "stop": the tool
+   * rounds it had used. The projection then says the person stopped at a checkpoint instead of "reached a limit"
+   * (ADR-0136 §2). Live view only; a resumed transcript has no such field and says the general sentence.
+   */
+  readonly stoppedAtCheckpoint?: number;
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
   /** Classified diagnostic text. The projection limits display to vetted families and treats tool_denied
@@ -151,6 +157,13 @@ export interface SessionViewState {
   readonly approvalWaitMs: number;
   /** Wall-clock (ms) a card opened and is still open, else `undefined`. */
   readonly approvalSinceMs: number | undefined;
+  /**
+   * The tool rounds the in-flight turn had used when the person answered its continue checkpoint "stop"
+   * ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §2), else
+   * `undefined`. Display state only: it lets the live failure line and its hint say the person stopped, instead of
+   * "reached a limit". It is never persisted, so a resumed transcript says the general `turn_limit` sentence.
+   */
+  readonly checkpointStopRounds: number | undefined;
   /** The LAST completed turn's input tokens (ADR-0062 §7) — the numerator of the footer context-fullness
    *  indicator. `undefined` until the first turn completes (a resumed session carries no per-turn seed). */
   readonly lastInputTokens?: number;
@@ -343,6 +356,7 @@ export function initialSessionViewState(
     turnStartedAtMs: undefined,
     approvalWaitMs: 0,
     approvalSinceMs: undefined,
+    checkpointStopRounds: undefined,
     gapDetected: false,
     warnings: [],
   };
@@ -497,6 +511,7 @@ export function reduceSessionEvent(
         turnStartedAtMs: Date.parse(event.timestamp),
         approvalWaitMs: 0,
         approvalSinceMs: undefined,
+        checkpointStopRounds: undefined,
       };
 
     case 'agent:reasoning': {
@@ -585,6 +600,7 @@ export function reduceSessionEvent(
         turnStartedAtMs: undefined,
         approvalWaitMs: 0,
         approvalSinceMs: undefined,
+        checkpointStopRounds: undefined,
       };
 
     case 'session:compacting':
@@ -681,6 +697,11 @@ export function approvalOpened(state: SessionViewState, nowMs: number): SessionV
   return state.approvalSinceMs === undefined ? { ...state, approvalSinceMs: nowMs } : state;
 }
 
+/** The person answered the continue checkpoint "stop" after `rounds` tool rounds (ADR-0136 §2): remember it for the turn's summary. */
+export function checkpointStopped(state: SessionViewState, rounds: number): SessionViewState {
+  return { ...state, checkpointStopRounds: rounds };
+}
+
 /** The card closed (answered, aborted or sealed): fold the wait into the turn's total and stop the clock. */
 export function approvalClosed(state: SessionViewState, nowMs: number): SessionViewState {
   if (state.approvalSinceMs === undefined) return state;
@@ -730,6 +751,9 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     tokensUsed: { input: event.tokensUsed.input, output: event.tokensUsed.output },
     ...(durationMs === undefined ? {} : { durationMs }),
     ...(attributedModel === undefined ? {} : { model: attributedModel }),
+    ...(event.error?.code === 'turn_limit' && base.checkpointStopRounds !== undefined
+      ? { stoppedAtCheckpoint: base.checkpointStopRounds }
+      : {}),
     ...(event.error === undefined
       ? {}
       : { errorCode: event.error.code, errorMessage: event.error.message }),
@@ -774,6 +798,7 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     turnStartedAtMs: undefined,
     approvalWaitMs: 0,
     approvalSinceMs: undefined,
+    checkpointStopRounds: undefined,
     transcript,
   };
 }

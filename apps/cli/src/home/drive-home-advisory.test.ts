@@ -154,8 +154,10 @@ it.each(['notice', 'store-listener'] as const)(
                 .state.transcript.some((entry) => entry.text?.includes('budget warning')),
             ).toBe(true);
             controller.handleKey('c', { ctrl: true });
+            controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
             await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
             controller.handleKey('c', { ctrl: true });
+            controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
           }
         } finally {
           remove();

@@ -214,3 +214,7 @@ change.
 > product names/comparison references are removed from the explanatory prose.
 > The technical decision, status and guarantees are unchanged. See the
 > [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).
+
+> Amended 2026-11-19 (Decided, implementation owed: MVP-4 step 2): §7.4's "the full interrupt keymap … Proposed, implemented in MVP-4" is [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md), Accepted 2026-11-19. Its confirmation-card row (`Ctrl+C` and `Esc` cancel, never confirm) is kept.
+
+> Implemented 2026-11-19 (MVP-4 step 2): §7.4's full interrupt keymap is in, on the Home, the chat it hosts and the standalone chat alike; the confirmation-card row is unchanged. See [ADR-0115's implementation note](0115-one-interrupt-keymap-for-the-interactive-cli.md#implementation-note--2026-11-19-mvp-4-step-2).

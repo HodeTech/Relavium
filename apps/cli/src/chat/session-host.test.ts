@@ -1290,6 +1290,86 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  describe('commands through the real session and mode control (ADR-0118 §1)', () => {
+    const ran = { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1 };
+    async function sessionWith(
+      mode: 'ask' | 'auto',
+      options: { allowedCommands?: string[]; remembered?: readonly (readonly string[])[] } = {},
+    ) {
+      const spawn = vi.fn(() => Promise.resolve(ran));
+      const built = await build({
+        chat: { ...EMPTY_CHAT, allowedCommands: options.allowedCommands ?? [] },
+        toolHost: { process: { spawn } },
+      });
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      const remembered = new Set((options.remembered ?? []).map((argv) => JSON.stringify(argv)));
+      const control = createChatModeControl(built, store, {
+        commandGrants: { matches: (argv) => remembered.has(JSON.stringify(argv)) },
+      });
+      control.onModeChange(mode);
+      built.session.start();
+      return { built, store, spawn };
+    }
+
+    it('auto: a remembered command runs WITHOUT a card', async () => {
+      const { built, store, spawn } = await sessionWith('auto', { remembered: [['echo', 'hi']] });
+      const outcome = await built.session.runUserCommand('echo', ['hi']);
+      expect(outcome.kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(store.getSnapshot().approval, 'no card was published').toBeUndefined();
+    });
+
+    it('auto: a command only the repository’s allowlist admits STILL raises a card, and the card says where it stands', async () => {
+      const { built, store, spawn } = await sessionWith('auto', { allowedCommands: ['echo hi'] });
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(true);
+      expect(store.getSnapshot().approval?.facts?.standing).toBe('allowlisted');
+      expect(spawn).not.toHaveBeenCalled();
+      store.answerApproval({ outcome: 'approve', scope: 'once' });
+      expect((await pending).kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('auto: anything else raises a card (the hard edge), and declining it runs nothing and is the person’s denial, not an allowlist error', async () => {
+      const { built, store, spawn } = await sessionWith('auto');
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() =>
+        expect(store.getSnapshot().approval?.request.argv).toEqual(['echo', 'hi']),
+      );
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(false);
+      store.answerApproval({ outcome: 'reject' });
+      const outcome = await pending;
+      expect(outcome.kind).toBe('denied');
+      expect(outcome.kind === 'denied' && outcome.allowlist, 'a decision, not a config wall').toBe(
+        false,
+      );
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
+    it('ask: even an allowlisted command raises a card; approving it once runs it', async () => {
+      const { built, store, spawn } = await sessionWith('ask', { allowedCommands: ['echo hi'] });
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      expect(store.getSnapshot().approval?.request.commandAdmitted).toBe(true);
+      expect(spawn).not.toHaveBeenCalled();
+      store.answerApproval({ outcome: 'approve', scope: 'once' });
+      expect((await pending).kind).toBe('ran');
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+
+    it('a remembered grant for a different argv does not cover this one', async () => {
+      const { built, store, spawn } = await sessionWith('auto', {
+        remembered: [['echo', 'hello']],
+      });
+      const pending = built.session.runUserCommand('echo', ['hi']);
+      await vi.waitFor(() => expect(store.getSnapshot().approval).toBeDefined());
+      store.answerApproval({ outcome: 'reject' });
+      await pending;
+      expect(spawn).not.toHaveBeenCalled();
+    });
+  });
+
   it('createChatModeControl with interactive:false DENIES a governed dispatch without HANGING (High 9 deadlock)', async () => {
     // On a non-interactive driver (plain non-TTY / --json) nothing answers `requestApproval`. In `accept-edits`
     // (a mode that would prompt on a TTY) the reject-immediately prompt must DENY the write, not publish an
@@ -1898,6 +1978,52 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  it('Esc at a card: the store rejects, the surface aborts in the same tick, and the call is recorded DENIED by the person, never cancelled, with no further model call (ADR-0115 §2; Ctrl+C takes the same store path, pinned in chat-store-approval-guard.test.ts and interrupt-wiring.test.tsx)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
+        textTurn('this model call must never happen'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        agentRef: writeAgent(['write_file']),
+        providers,
+      });
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+      createChatModeControl(built, store); // ask mode: the write waits on a real card
+      built.session.start();
+      const turn = built.session.sendMessage('write a file');
+      await vi.waitFor(
+        () => expect(store.getSnapshot().approval?.request.toolId).toBe('write_file'),
+        { timeout: 5000 },
+      );
+      // What the surface does for an Esc or a Ctrl+C: the store settles the approval as a REJECTION and returns 'abort', and
+      // the surface signals the abort, all in one synchronous stack.
+      expect(store.handleReviewInput('', { escape: true })).toBe('abort');
+      built.session.abort();
+      await turn;
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const result = events.find((e) => e.type === 'agent:tool_result');
+      expect(result?.type === 'agent:tool_result' ? result.success : 'missing').toBe(false);
+      expect(
+        result?.type === 'agent:tool_result' ? result.outputSummary : '',
+        'recorded as the person declining it, not as an unknown outcome',
+      ).toContain('The user declined this tool call');
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.stopReason : 'missing').toBe(
+        'aborted',
+      );
+      expect(requests, 'the abort stopped the turn: no second model call').toHaveLength(1);
+      expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it('createChatModeControl seeds the store effort from the agent + onSetEffort pushes a no-reseat override (ADR-0066)', async () => {
     const built = await build({
       chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },
@@ -2018,8 +2144,211 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     }
   });
 
+  it('threads [chat].max_tool_turns into the session as the hard stop: the round the model asks for past it is held, not run (ADR-0136)', async () => {
+    // Three rounds are asked for; with a limit of 1 the first runs and the second is HELD, so the turn ends with
+    // turn_limit after two provider calls and ONE tool dispatch (before ADR-0136 the second round ran too).
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 1 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'turn_limit',
+      );
+      expect(requests).toHaveLength(2);
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(1);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('wires the checkpoint hook from the interactive surface: it is asked at `checkpoint_tool_turns`, "continue" runs the held round and "stop" ends the turn (ADR-0136 §2)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const asked: Array<{ rounds: number; interval: number }> = [];
+      const answers: Array<'continue' | 'stop'> = ['continue', 'stop'];
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c4', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        // The hard stop is far away; the checkpoint is every round, so it is the hook that decides.
+        chat: { ...EMPTY_CHAT, maxToolTurns: 16, checkpointToolTurns: 1 },
+        checkpoint: (info) => {
+          asked.push({ rounds: info.rounds, interval: info.interval });
+          return Promise.resolve(answers.shift() ?? 'stop');
+        },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      // Asked before the second round (1 dispatched) and before the third (2 dispatched); the second answer stops it.
+      expect(asked).toEqual([
+        { rounds: 1, interval: 1 },
+        { rounds: 2, interval: 1 },
+      ]);
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(2);
+      expect(requests).toHaveLength(3);
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'turn_limit',
+      );
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('without a checkpoint hook (a surface nobody can answer at) `max_tool_turns` is the hard stop and `checkpoint_tool_turns` is not read (ADR-0136 §1)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 2, checkpointToolTurns: 1 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it repeatedly');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(2);
+      expect(requests).toHaveLength(3);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the engine bounds for a one-shot `agent run`: the chat limits are not read (ADR-0136 §1)', async () => {
+    // An operator's raised [preferences] limit must never reach an unattended run, and a project's lowered one is a chat
+    // matter too: with `maxToolTurns: 1` a chat holds the second round, a one-shot (16) runs all three.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      writeFileSync(join(workspace, 'a.txt'), 'a');
+      const { providers } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'a.txt' }),
+        callWithArgs('c3', 'read_file', { path: 'a.txt' }),
+        textTurn('done'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolTurns: 1, maxToolCorrections: 0 },
+        oneShot: true,
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read it three times');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(
+        completed?.type === 'session:turn_completed' ? completed.error : 'none',
+      ).toBeUndefined();
+      expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(3);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the engine correction budget for a one-shot `agent run` too: a zero chat budget is not read (ADR-0136 §1)', async () => {
+    // A chat with `maxToolCorrections: 0` ends on the first failing round (the test below). A one-shot keeps 3, so the model gets a
+    // second request after the failed read.
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'missing.txt' }),
+        textTurn('done'),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolCorrections: 0 },
+        oneShot: true,
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read a file that is not there');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(
+        completed?.type === 'session:turn_completed' ? completed.error : 'none',
+      ).toBeUndefined();
+      expect(requests).toHaveLength(2);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('threads [chat].max_tool_corrections: a zero budget ends the turn on the first round in which nothing ran (ADR-0136)', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
+    try {
+      const { providers, requests } = capturingResolver([
+        callWithArgs('c1', 'read_file', { path: 'missing.txt' }),
+        callWithArgs('c2', 'read_file', { path: 'missing.txt' }),
+      ]);
+      const built = await build({
+        cwd: workspace,
+        operatorHomeDir: workspace,
+        outputStoreFactory: () => Promise.resolve(undefined),
+        chat: { ...EMPTY_CHAT, maxToolCorrections: 0 },
+        agentRef: writeAgent(['read_file']),
+        providers,
+      });
+      built.session.start();
+      await built.session.sendMessage('read a file that is not there');
+      built.session.cancel();
+      const events = await built.recordedEvents;
+      const completed = events.find((e) => e.type === 'session:turn_completed');
+      expect(completed?.type === 'session:turn_completed' ? completed.error?.code : 'none').toBe(
+        'tool_failed',
+      );
+      expect(requests).toHaveLength(1); // the default of 3 would have given the model more rounds
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it.each([false, true])(
-    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure',
+    'auto: protected file existing=%s is refused before approval, cache, native effect or payload exposure, and the refusal returns to the model (ADR-0117, ADR-0118)',
     async (existing) => {
       const workspace = mkdtempSync(join(tmpdir(), 'relavium-ws-'));
       const protectedDir = join(workspace, '.git');
@@ -2032,17 +2361,19 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       const remember = vi.spyOn(ApprovalCache.prototype, 'rememberAlways');
       const native = vi.spyOn(nativeMetadata, 'loadNativeMetadataProtocol');
       try {
+        const { providers, requests } = capturingResolver([
+          callWithArgs('c1', 'write_file', {
+            path: '.git/config',
+            content: 'protected-write-payload-canary',
+          }),
+          textTurn('I cannot write there; I will choose another path.'),
+        ]);
         const built = await build({
           cwd: workspace,
           operatorHomeDir: workspace,
           outputStoreFactory: () => Promise.resolve(undefined),
           agentRef: writeAgent(['write_file']),
-          providers: scriptedResolver([
-            callWithArgs('c1', 'write_file', {
-              path: '.git/config',
-              content: 'protected-write-payload-canary',
-            }),
-          ]),
+          providers,
         });
         let claims = 0;
         built.attachEffectJournal((correlation) => {
@@ -2063,12 +2394,19 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         built.session.cancel();
         const events = await built.recordedEvents;
         const completed = events.find((event) => event.type === 'session:turn_completed');
-        const failure = completed?.type === 'session:turn_completed' ? completed.error : undefined;
-        expect(failure?.code).toBe('tool_denied');
-        expect(failure?.retryable).toBe(false);
-        expect(failure?.message).toBe(
-          'write_file: refusing to write a protected directory, credential store or shell startup file',
+        // The turn CONTINUES: a lexically protected path is a refusal the model can answer, not a dead end.
+        expect(
+          completed?.type === 'session:turn_completed' ? completed.error : 'no event',
+        ).toBeUndefined();
+        // The model's next request carries one fixed refusal text as an error result, naming no list and no target
+        // state — the same words whether or not `.git/config` exists.
+        expect(requests).toHaveLength(2);
+        const secondRequest = JSON.stringify(requests[1]?.messages);
+        expect(secondRequest).toContain(
+          'write_file: this path is protected and cannot be written; choose a different path',
         );
+        expect(secondRequest).not.toContain('credential store');
+        expect(secondRequest).toContain('"isError":true'); // it comes back as an ERROR result the model can answer
         expect(prompt).not.toHaveBeenCalled();
         expect(store.getSnapshot().approval).toBeUndefined();
         expect(events.some((event) => event.type === 'agent:approval_requested')).toBe(false);

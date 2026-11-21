@@ -46,6 +46,9 @@ describe('pure CLI discovery DTO (unit projection, not production JSON help)', (
       'provider test',
       'media',
       'media prune-temporaries',
+      'permissions',
+      'permissions list',
+      'permissions revoke',
       'list',
       'logs',
       'status',
@@ -61,7 +64,7 @@ describe('pure CLI discovery DTO (unit projection, not production JSON help)', (
       executorId: 'init',
       effect: 'write',
     });
-    expect(dto.commands.filter((entry) => entry.executorId !== undefined)).toHaveLength(25);
+    expect(dto.commands.filter((entry) => entry.executorId !== undefined)).toHaveLength(27);
     for (const path of ['chat', 'gate', 'models'])
       expect(dto.commands.find((entry) => entry.path.join(' ') === path)?.executorId).toBe(path);
     expect(dto.commands.find((entry) => entry.path.join(' ') === 'agent')).not.toHaveProperty(

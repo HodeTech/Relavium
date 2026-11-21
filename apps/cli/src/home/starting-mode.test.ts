@@ -320,6 +320,7 @@ async function fixture(
           await vi.waitFor(() => expect(mounted.controller.getSnapshot().mode).toBe('home'));
         }
         if (error === undefined) mounted.controller.handleKey('c', { ctrl: true });
+        if (error === undefined) mounted.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
       }
       await outcome;
     } finally {

@@ -1,4 +1,10 @@
-import type { ChatMode, GlobalConfig, ProjectConfig } from '@relavium/shared';
+import {
+  CHAT_LIMITS,
+  type ChatLimitKey,
+  type ChatMode,
+  type GlobalConfig,
+  type ProjectConfig,
+} from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 
@@ -35,10 +41,19 @@ export interface ResolvedChatConfig {
   readonly fsScope: ChatConfig['fs_scope'];
   /** Optional selectors inside the invocation's independently admitted grants (ADR-0105). */
   readonly extraRoots?: ChatConfig['extra_roots'];
-  /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
-   *  a `positiveInt`, so 0 is rejected at the config layer, never reaching the engine's `<= 0 ⇒ default` arm);
-   *  DISTINCT from `maxMessages` (a history-trim threshold) and the within-turn `maxToolTurns` guard. */
+  /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ default 50; an integer 1 to
+   *  1,000 — anything else is rejected at the config layer and again at session admission, never clamped; resolved with
+   *  {@link resolveChatLimit}, so a repository may only lower it); DISTINCT from `maxMessages` (a history-trim
+   *  threshold) and the within-turn tool-round limits. */
   readonly maxTurns: ChatConfig['max_turns'];
+  /** `[chat].max_tool_turns` — tool rounds in a turn WHERE NOBODY CAN ANSWER (a hard stop; ADR-0136). Absent ⇒ the
+   *  published default (16). Resolved with {@link resolveChatLimit}: a repository layer may only lower it. */
+  readonly maxToolTurns?: ChatConfig['max_tool_turns'] | undefined;
+  /** `[chat].checkpoint_tool_turns` — tool rounds per interval WHERE A PERSON CAN ANSWER: the turn pauses and asks to
+   *  continue (ADR-0136). Absent ⇒ the published default (32). A repository layer may only lower it. */
+  readonly checkpointToolTurns?: ChatConfig['checkpoint_tool_turns'] | undefined;
+  /** `[chat].max_tool_corrections` — consecutive no-progress rounds a turn tolerates (ADR-0131/0136). Absent ⇒ 3. */
+  readonly maxToolCorrections?: ChatConfig['max_tool_corrections'] | undefined;
   /** `[chat].max_messages` — the history-trim threshold consumed by `/trim` + the auto-compaction failure
    *  fallback (→ `SessionDeps.maxMessages`; ADR-0062). */
   readonly maxMessages: ChatConfig['max_messages'];
@@ -58,7 +73,7 @@ export interface ResolvedChatConfig {
   /** `[chat] strict_cost_cap` (ADR-0071 §K7) — refuse a turn on a model we cannot price. Default false. */
   readonly strictCostCap: boolean;
   /** `[chat].allowed_commands` — the `!`-shell exact-match allowlist (→ engine `allowedCommands`; ADR-0061).
-   *  Absent/empty ⇒ `!`-shell disabled (the `empty ⇒ disabled` symmetry; no chat-specific relaxation). */
+   *  Absent/empty ⇒ nothing is pre-approved (ADR-0118 §1: a command then asks, or is refused where no one can answer). */
   readonly allowedCommands: ChatConfig['allowed_commands'];
   /** `[chat].allowed_command_globs` — the opt-in glob form of the `!`-shell allowlist (→ `allowedCommandGlobs`). */
   readonly allowedCommandGlobs: ChatConfig['allowed_command_globs'];
@@ -153,6 +168,42 @@ function resolveGraceMs(
 }
 
 /**
+ * Resolve one chat limit across the layers ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §1).
+ *
+ * The operator's base is the global `[preferences]` value, or the published default when there is none. A **repository**
+ * layer (project, workspace) may only LOWER it: a larger `checkpoint_tool_turns` is a prompt a cloned repository removes,
+ * and the starting-mode rule already says a clone can only tighten a person's protections
+ * ([ADR-0116](../../../../docs/decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md)).
+ * A value above the base is a loud error naming the layer, the key, the value and the limit, never a clamp, and EVERY
+ * supplied value is checked even when a higher-precedence one shadows it (a shadowed breach is still a breach).
+ *
+ * The result is the project value, else the workspace value, else the operator's, and `undefined` when no layer sets
+ * one — the host then applies the published default, so this function never invents a value.
+ */
+export function resolveChatLimit(
+  key: ChatLimitKey,
+  project: ProjectConfig['chat'],
+  workspace: ProjectConfig['chat'],
+  global: GlobalConfig | undefined,
+): number | undefined {
+  const operator = global?.preferences?.[key];
+  const base = operator ?? CHAT_LIMITS[key].default;
+  for (const [layer, value] of [
+    ['project', project?.[key]],
+    ['workspace', workspace?.[key]],
+  ] as const) {
+    if (value !== undefined && value > base) {
+      throw new CliError(
+        'invalid_invocation',
+        `[chat].${key} is ${String(value)} in the ${layer} config, above this machine's limit of ${String(base)}. ` +
+          `A repository can only lower a limit; raise it in your own global config under [preferences] ${key}.`,
+      );
+    }
+  }
+  return project?.[key] ?? workspace?.[key] ?? operator;
+}
+
+/**
  * Resolve the `[chat]` block (last-writer-wins: project → workspace). Most fields are project/workspace-scoped
  * only; `default_model` AND `reasoning_effort` additionally fall back to their GLOBAL `[preferences]` counterparts
  * ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md) · ADR-0066 §6) — the write targets of
@@ -207,7 +258,10 @@ function resolveChat(
     defaultModeSource: startingModeSource(p, w, global),
     fsScope: p?.fs_scope ?? w?.fs_scope,
     extraRoots: p?.extra_roots ?? w?.extra_roots,
-    maxTurns: p?.max_turns ?? w?.max_turns,
+    maxTurns: resolveChatLimit('max_turns', p, w, global),
+    maxToolTurns: resolveChatLimit('max_tool_turns', p, w, global),
+    checkpointToolTurns: resolveChatLimit('checkpoint_tool_turns', p, w, global),
+    maxToolCorrections: resolveChatLimit('max_tool_corrections', p, w, global),
     maxMessages: p?.max_messages ?? w?.max_messages,
     autoCompact: p?.auto_compact ?? w?.auto_compact,
     compactThreshold: p?.compact_threshold ?? w?.compact_threshold,

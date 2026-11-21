@@ -54,7 +54,9 @@ export interface QuestionCardView {
 const RULE_LABEL = ' Question from the agent · not an approval ';
 const OWN_PLACEHOLDER = 'Type your own answer…';
 const OWN_DESCRIPTION = 'Just start typing — it is sent to the model.';
-const STOP_ROW = 'Esc or Ctrl-C stops the turn';
+const STOP_ROW = 'Esc or Ctrl+C stops the turn';
+/** With the own-answer field open `Esc` closes it first (ADR-0115 §3), so only `Ctrl+C` is the stop key there. */
+const FIELD_STOP_ROW = 'Esc closes · Ctrl+C stops the turn';
 /**
  * Said only where a write needs no card (`accept-edits`, `auto`): there an answer is the person's only lever and it is not a
  * veto — nothing in the card otherwise tells them the agent may still act (ADR-0132 §6).
@@ -232,19 +234,99 @@ function keyRows(
       width,
     );
   }
-  return [first, head(guideNote ? `${STOP_ROW}${GUIDE_NOTE}` : STOP_ROW, width)];
+  const stop = state.field !== undefined && !isReview(state) ? FIELD_STOP_ROW : STOP_ROW;
+  return [first, head(guideNote ? `${stop}${GUIDE_NOTE}` : stop, width)];
 }
 
-/** The Review tab: every answer on one row, the way it will be sent, and what to do next. */
+/** The Review tab's rows for answers: the body bound minus its title and its closing note. */
+const REVIEW_ANSWER_ROWS = QUESTION_CARD_MAX_BODY_ROWS - 2;
+/** A wrapped answer continues under its own row, indented, so column 0 stays the host's (no answer text can pose as a new row). */
+const REVIEW_INDENT = '    ';
+
+/** `text` as rows, the first `firstWidth` columns wide and the rest `restWidth`, each cut at a grapheme boundary. */
+function wrapRows(text: string, firstWidth: number, restWidth: number): string[] {
+  const first = hardWrap(text, firstWidth)[0] ?? '';
+  const rest = text.slice(first.length);
+  return rest === '' ? [first] : [first, ...hardWrap(rest, restWidth)];
+}
+
+/** How many rows each answer is given out of `budget`: one each, then the rest to whichever still needs the most. */
+function shareRows(needs: readonly number[], budget: number): number[] {
+  const given = needs.map(() => 1);
+  for (let spare = budget - needs.length; spare > 0; spare -= 1) {
+    let pick = -1;
+    let most = 0;
+    needs.forEach((need, index) => {
+      const unmet = need - (given[index] ?? 1);
+      if (unmet > most) {
+        most = unmet;
+        pick = index;
+      }
+    });
+    if (pick < 0) break;
+    given[pick] = (given[pick] ?? 1) + 1;
+  }
+  return given;
+}
+
+/** What the last shown row of a cut answer says it left out: a count, never a bare ellipsis. */
+function hiddenNotice(hidden: number): string {
+  return `… ${String(hidden)} more character${hidden === 1 ? '' : 's'} not shown`;
+}
+
+/**
+ * One answer's rows within `allowed` rows. An answer that fits is shown whole; one that does not ends its last row with the
+ * number of characters (code points) it left out, so the Review tab never shows less than it will send without saying so.
+ */
+function answerRows(lines: readonly string[], allowed: number, width: number): string[] {
+  const indent = (line: string, at: number): string =>
+    at === 0 ? line : `${REVIEW_INDENT}${line}`;
+  if (lines.length <= allowed) return lines.map((line, at) => indent(line, at));
+  const shown = lines.slice(0, allowed);
+  const last = shown.length - 1;
+  const total = [...lines.join('')].length;
+  const lastWidth = last === 0 ? width : width - REVIEW_INDENT.length;
+  const room = Math.max(0, lastWidth - displayWidth(hiddenNotice(total)) - 1);
+  let kept = '';
+  let used = 0;
+  for (const { segment } of segmenter.segment(shown[last] ?? '')) {
+    const cells = displayWidth(segment);
+    if (used + cells > room) break;
+    kept += segment;
+    used += cells;
+  }
+  const before = [...shown.slice(0, last).join('')].length + [...kept].length;
+  const rows = [...shown.slice(0, last), `${kept} ${hiddenNotice(total - before)}`];
+  return rows.map((row, at) => head(indent(row, at), width));
+}
+
+/**
+ * The Review tab: every answer as it will be sent, wrapped over as many rows as the body bound leaves (a short answer takes one,
+ * a long one takes what the short ones left), and where even that is not enough the answer says how much it hides. The title and
+ * the closing note are one row each.
+ */
 function projectReview(state: QuestionCardState, width: number): readonly QuestionCardRow[] {
-  const rows: QuestionCardRow[] = [
-    { text: head(`Review your answers  ${tabs(state)}`, width), tone: 'header' },
-  ];
-  state.request.questions.forEach((question, index) => {
+  const rest = Math.max(1, width - REVIEW_INDENT.length);
+  const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
     const line = `${answered ? '●' : '○'} ${String(index + 1)} ${question.header} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
-    rows.push({ text: head(line, width), tone: answered ? 'chosen' : 'pending' });
+    return {
+      tone: answered ? ('chosen' as const) : ('pending' as const),
+      lines: wrapRows(line, width, rest),
+    };
   });
+  const allowed = shareRows(
+    answers.map((answer) => answer.lines.length),
+    REVIEW_ANSWER_ROWS,
+  );
+  const rows: QuestionCardRow[] = [
+    { text: head(`Review your answers  ${tabs(state)}`, width), tone: 'header' },
+    ...answers.flatMap((answer, index) =>
+      answerRows(answer.lines, allowed[index] ?? 1, width).map(
+        (text): QuestionCardRow => ({ text, tone: answer.tone }),
+      ),
+    ),
+  ];
   rows.push({
     text: head(
       state.hint === undefined

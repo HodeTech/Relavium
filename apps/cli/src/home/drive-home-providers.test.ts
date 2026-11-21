@@ -190,6 +190,7 @@ function setup(holdNotice = false, custom = false, projectModel?: string, manual
     });
   const end = async (p: RootAppProps): Promise<void> => {
     p.controller.handleKey('c', { ctrl: true });
+    p.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     await running;
     expect(close).toHaveBeenCalledOnce();
   };

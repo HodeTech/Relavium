@@ -20,6 +20,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { routeKeyThroughCards } from './home-app.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@relavium/shared';
@@ -27,6 +28,18 @@ import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@re
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
 import type { MentionReader } from './mention.js';
+import type {
+  PermissionEntry,
+  WithdrawAnswer,
+  PermissionsPort,
+  PermissionsSnapshot,
+} from '../../permissions/chat-permissions.js';
+import {
+  SHEET_CONFIRM_DWELL_MS,
+  SHEET_CONFIRM_WINDOW_MS,
+  SHEET_SETTLE_MS,
+  sheetEntries,
+} from './permissions-sheet.js';
 
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
@@ -71,6 +84,7 @@ function makeSession(
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
     onSetEffort?: (effort: ReasoningEffort) => void;
+    permissions?: PermissionsPort;
     clear?: () => Promise<HomeChatSession>;
   } = {},
 ): {
@@ -98,6 +112,7 @@ function makeSession(
     stopReason: opts.stopReason ?? (() => 'exit'),
     ...(opts.clear === undefined ? {} : { clear: opts.clear }),
     ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
+    ...(opts.permissions === undefined ? {} : { permissions: opts.permissions }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -139,10 +154,9 @@ function showApprovalCard(store: ChatStoreController): void {
 }
 
 /**
- * One key through the Home host's pipeline (`home-app.tsx`): EVERY key is offered to the session store's approval card first —
- * the card owns every answer key — and the controller is handed only what the card did not take; an Esc the card reports as
- * `abort` reaches the controller as an Esc. The ink-free controller never answers an approval itself (its legacy reducer returns
- * `none`), so a test that wants an answer must send it through the card, exactly as the host does.
+ * One key through the Home host's pipeline: the very routing `RootApp` runs (`routeKeyThroughCards`, exported from `home-app.tsx` so
+ * this is not a copy of it) and then the controller for what no card took. The ink-free controller never answers an approval
+ * itself, so a test that wants an answer must send it through the card, exactly as the host does.
  */
 function hostKey(
   c: HomeController,
@@ -150,12 +164,7 @@ function hostKey(
   input: string,
   key: HostKey = {},
 ): void {
-  const action = store.handleReviewInput(input, key);
-  if (action === 'handled') return;
-  if (action === 'abort') {
-    c.handleKey('\u001b', { escape: true });
-    return;
-  }
+  if (routeKeyThroughCards(c, store, input, key)) return;
   c.handleKey(input, key);
 }
 
@@ -526,13 +535,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       true,
     );
     showApprovalCard(made.store);
-    // Through the card (the host's route) and straight to the controller (its own legacy reducer): neither answers.
+    // Through the card (the host's route) and straight to the controller: neither answers.
     for (const send of [
       (ch: string) => hostKey(c, made.store, ch),
       (ch: string) => c.handleKey(ch, {}),
     ])
       for (const ch of ['c', 'n', 'y', 'a', 'r', '1', '2', '3']) send(ch);
-    expect(c.getSnapshot().reasonDraft, 'no reason capture opens').toBeUndefined();
     expect(made.store.getSnapshot().review?.denial, 'the card opens no reason box').toBeUndefined();
     expect(made.store.getSnapshot().approval, 'no letter answered it').toBeDefined();
     // Ctrl+N is the deny, and it works (so the bare letters above were refused for being bare, not because the card is dead).
@@ -565,16 +573,15 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     showApprovalCard(made.store);
     for (const ch of ['y', 'g', 'n', 'r']) c.handleKey(ch, CHORD);
     expect(made.store.getSnapshot().approval, 'no chord answered it').toBeDefined();
-    expect(c.getSnapshot().reasonDraft).toBeUndefined();
     // The same Ctrl+Y through the card does answer this store, so the refusal above was the controller's.
     hostKey(c, made.store, 'y', CHORD);
     await expect(pending).resolves.toEqual({ outcome: 'approve', scope: 'once' });
   });
 
-  it('[Ctrl+R] then Esc stops the turn — the reason box has no way back; Esc is the abort path and never leaves a stuck prompt (Step 14)', async () => {
-    // The old reason capture could be cancelled with Esc back to the choices. The card's reason box has the card's own Esc: it
-    // STOPS THE TURN (`Enter denies and continues · Esc stops the turn`), which the Home hands to the controller as an Esc; with
-    // no `onAbort` wired, that Esc rejects the pending approval rather than leaving it hung.
+  it('[Ctrl+R] then Esc closes the reason box and leaves the call pending; a second Esc stops the turn (ADR-0115 §3)', async () => {
+    // The card's reason box has the card's own Esc: it closes the box and nothing is rejected. With no box open the next Esc is
+    // the stop key, which the Home hands to the controller as an abort; with no `onAbort` wired that rejects the pending
+    // approval rather than leaving it hung.
     const made = makeSession();
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -596,7 +603,42 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
     hostKey(c, made.store, 'r', CHORD); // open the reason box
     expect(made.store.getSnapshot().review?.denial).toBe('');
-    hostKey(c, made.store, '', { escape: true }); // Esc: the card reports `abort`; no onAbort → the pending approval is rejected
+    hostKey(c, made.store, '', { escape: true }); // Esc closes the box
+    expect(made.store.getSnapshot().review?.denial).toBeUndefined();
+    expect(made.store.getSnapshot().approval, 'closing the box rejects nothing').toBeDefined();
+    hostKey(c, made.store, '', { escape: true }); // the card reports `abort`; no onAbort → the pending approval is rejected
+    await expect(pending).resolves.toEqual({ outcome: 'reject' });
+    expect(made.store.getSnapshot().approval).toBeUndefined();
+  });
+
+  it('Esc on the full view steps back to the card and is never an abort: the Home hands the controller nothing, the call stays pending; the next Esc stops the turn (ADR-0137 §4)', async () => {
+    // A wrong mapping of the new back result would end the turn silently: with no `onAbort` wired an abort rejects the pending
+    // approval, so a settled approval after the FIRST Esc would be exactly that mistake.
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    const pending = made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+      true,
+    );
+    showApprovalCard(made.store);
+
+    hostKey(c, made.store, 'v', {}); // the full view
+    expect(made.store.getSnapshot().review?.screen).toBe('full');
+    const consumed = routeKeyThroughCards(c, made.store, '', { escape: true });
+    expect(consumed, 'the card took the Esc: it is not the controller’s').toBe(true);
+    expect(made.store.getSnapshot().review?.screen).toBe('card');
+    expect(made.store.getSnapshot().approval, 'stepping back rejects nothing').toBeDefined();
+    expect(c.getSnapshot().interruptArmed, 'and arms nothing').toBe(false);
+    hostKey(c, made.store, '', { escape: true }); // on the card Esc is the stop key: the card reports `abort`
     await expect(pending).resolves.toEqual({ outcome: 'reject' });
     expect(made.store.getSnapshot().approval).toBeUndefined();
   });
@@ -672,6 +714,44 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe(''); // the buffer stays clean — the stale inject was dropped
   });
 
+  it('an open-quote `!` line that is refused leaves a pending `@` mention read alone: the buffer was not consumed (ADR-0118 §3)', async () => {
+    let resolveRead: (r: { content: string; sizeBytes: number }) => void = () => {};
+    const mentionReader: MentionReader = {
+      list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+      read: () =>
+        new Promise((resolve) => {
+          resolveRead = resolve;
+        }),
+    };
+    const made = makeSession({
+      mentionReader,
+      runShellCommand: () => Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' }),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    type(c, '!echo "oops ');
+    c.handleKey('@', {});
+    await flush();
+    c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+    c.handleKey('', ENTER); // submit `!echo "oops @app.ts`: an open quote, refused, NOT consumed
+    expect(c.getSnapshot().input.text).toContain('!echo "oops');
+
+    // The read resolves AFTER the refused submit. The buffer is still there, so the mention must still inject — a refusal
+    // that bumped the submit epoch would drop it silently while leaving its marker in the editor.
+    resolveRead({ content: '// app.ts', sizeBytes: 9 });
+    await flush();
+    expect(c.getSnapshot().attachments).toEqual([expect.objectContaining({ kind: 'file' })]);
+  });
+
   it('a `!`-shell line runs the command (not a message) and carries the output as a pending chip that expands at the next submit (2.5.D step 5 / ADR-0061 chip model)', async () => {
     const ran: UserCommandOutcome = {
       kind: 'ran',
@@ -734,7 +814,82 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().attachments).toEqual([]);
   });
 
-  it('a denied `!`-shell command injects NOTHING and surfaces the actionable allowlist hint (2.5.D step 5)', async () => {
+  it('a `!` command that carries a credential runs with the typed argv, yet the message that reaches the model names the scrubbed line', async () => {
+    const token = 'sk-abcdefghijklmnop1234567890';
+    const shellCalls: { command: string; args: readonly string[] }[] = [];
+    const made = makeSession({
+      runShellCommand: (command, args) => {
+        shellCalls.push({ command, args });
+        return Promise.resolve({ kind: 'ran', exitCode: 0, stdout: 'ok', stderr: '' });
+      },
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, `!curl -H "Authorization: Bearer ${token}" --password=S3cr3tValue9Zq`);
+    c.handleKey('', ENTER);
+    await flush();
+    // The process is spawned with exactly what was typed.
+    expect(shellCalls).toEqual([
+      {
+        command: 'curl',
+        args: ['-H', `Authorization: Bearer ${token}`, '--password=S3cr3tValue9Zq'],
+      },
+    ]);
+    type(c, 'what happened?');
+    c.handleKey('', ENTER);
+    await flush();
+    const sent = made.lines[0] ?? '';
+    expect(sent).toMatch(/^what happened\?\n\n<command id="[0-9a-f]{32}" cmd="curl /);
+    expect(sent).not.toContain(token);
+    expect(sent).not.toContain('S3cr3tValue9Zq');
+  });
+
+  it('a `!` line with an open quote is refused, runs nothing, sends nothing and stays in the editor (ADR-0118 §3)', async () => {
+    const shellCalls: { command: string; args: readonly string[] }[] = [];
+    const made = makeSession({
+      runShellCommand: (command, args) => {
+        shellCalls.push({ command, args });
+        return Promise.resolve({ kind: 'ran', exitCode: 0, stdout: '', stderr: '' });
+      },
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, '!echo "oops');
+    c.handleKey('', ENTER);
+    await flush();
+    // The old tokenizer ran this as `echo oops`. What runs must be what was typed, so nothing runs ...
+    expect(shellCalls).toEqual([]);
+    // ... nothing goes to the model as a message ...
+    expect(made.lines).toEqual([]);
+    // ... the person is told why, and can fix the line.
+    expect(c.getSnapshot().input.text).toBe('!echo "oops');
+    const noted = made.store
+      .getSnapshot()
+      .state.warnings.some((w) => w.includes('a quote is still open'));
+    expect(noted).toBe(true);
+  });
+
+  it('a denied `!`-shell command injects NOTHING and says plainly that it is not allowed, without sending the person to a config file (2.5.D step 5, ADR-0118)', async () => {
     const made = makeSession({
       runShellCommand: () =>
         Promise.resolve({ kind: 'denied', allowlist: true, message: 'not allowed' }),
@@ -754,11 +909,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().input.text).toBe(''); // nothing injected — the command was denied before any side effect
-    // The store carries an actionable, secret-free hint naming the exact allowed_commands line to add.
-    const warned = made.store
-      .getSnapshot()
-      .state.warnings.some((w) => w.includes('allowed_commands') && w.includes('rm -rf /'));
-    expect(warned).toBe(true);
+    // The store carries a secret-free note: the person's own command, and no config key (an interactive chat asks instead).
+    const warnings = made.store.getSnapshot().state.warnings;
+    expect(warnings.some((w) => w.includes('rm -rf /') && w.includes('not allowed here'))).toBe(
+      true,
+    );
+    expect(warnings.some((w) => w.includes('allowed_commands'))).toBe(false);
   });
 
   it('a bare `!` (no command) falls through to a normal message send', async () => {
@@ -1020,38 +1176,294 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(reads).toBeGreaterThanOrEqual(2); // the strip was re-read on return (initial + post-chat)
   });
 
-  it('Ctrl-C on the Home exits cleanly (idempotent — never settles driveHome twice)', () => {
-    const onExit = vi.fn();
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: vi.fn(),
-      homeStore,
-      onExit,
-      onError: vi.fn(),
-    });
-    c.handleKey('c', CTRL_C);
-    c.handleKey('c', CTRL_C); // a second Ctrl-C / a race must not re-fire
-    expect(onExit).toHaveBeenCalledTimes(1);
-  });
+  describe('the interrupt keymap (ADR-0115 §1)', () => {
+    /** A controller on an injected monotonic clock, so the 2 s window is exact and nothing waits in real time. */
+    const clocked = (
+      overrides: Partial<Parameters<typeof createHomeController>[0]> = {},
+    ): {
+      c: HomeController;
+      onExit: ReturnType<typeof vi.fn>;
+      at: (ms: number) => void;
+    } => {
+      let now = 10_000;
+      const onExit = vi.fn();
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+        now: () => now,
+        ...overrides,
+      });
+      return {
+        c,
+        onExit,
+        at: (ms) => {
+          now = 10_000 + ms;
+        },
+      };
+    };
+    const intoChat = async (
+      made: ReturnType<typeof makeSession>,
+    ): Promise<{
+      c: HomeController;
+      at: (ms: number) => void;
+      onExit: ReturnType<typeof vi.fn>;
+    }> => {
+      const k = clocked({ startChat: () => Promise.resolve(made.session) });
+      type(k.c, 'hi');
+      k.c.handleKey('', ENTER);
+      await flush();
+      made.lines.length = 0; // drop the first turn
+      return k;
+    };
 
-  it('Ctrl-C inside a chat sends /cancel once (cancelFired guards a double)', async () => {
-    const made = makeSession();
-    const startChat = vi.fn(() => Promise.resolve(made.session));
-    const c = createHomeController({
-      doctorProbes: STUB_DOCTOR_PROBES,
-      startChat,
-      homeStore,
-      onExit: vi.fn(),
-      onError: vi.fn(),
+    it('on the loaded Home the first Ctrl+C arms and says so, the second exits cleanly, and a third settles nothing twice', () => {
+      const { c, onExit, at } = clocked();
+      c.handleKey('c', CTRL_C);
+      expect(onExit, 'one press leaves nothing').not.toHaveBeenCalled();
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      at(500);
+      c.handleKey('c', CTRL_C);
+      expect(onExit).toHaveBeenCalledTimes(1);
+      c.handleKey('c', CTRL_C); // a race must not settle `driveHome` twice
+      expect(onExit).toHaveBeenCalledTimes(1);
     });
-    type(c, 'hi');
-    c.handleKey('', ENTER);
-    await flush();
-    made.lines.length = 0; // drop the first turn
 
-    c.handleKey('c', CTRL_C);
-    c.handleKey('c', CTRL_C); // guarded
-    expect(made.lines).toEqual(['/cancel']);
+    it('is a first press again once the window has run out, and any other key in between disarms it', () => {
+      const { c, onExit, at } = clocked();
+      c.handleKey('c', CTRL_C);
+      at(2001);
+      c.handleKey('c', CTRL_C);
+      expect(onExit, 'a Ctrl+C after the window starts over').not.toHaveBeenCalled();
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      at(2100);
+      c.handleKey('', { leftArrow: true });
+      expect(c.getSnapshot().interruptArmed, 'any other key takes the armed state down').toBe(
+        false,
+      );
+      c.handleKey('c', CTRL_C);
+      expect(onExit, 'Ctrl+C, a key, Ctrl+C is two first presses').not.toHaveBeenCalled();
+    });
+
+    it('a key the host consumed (an open card) still disarms through disarmInterrupt', () => {
+      const { c, onExit } = clocked();
+      c.handleKey('c', CTRL_C);
+      c.disarmInterrupt();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('a draft in the Home prompt is kept by the first press, which arms: only the second one exits', () => {
+      const { c, onExit } = clocked();
+      type(c, 'draft');
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().input.text).toBe('draft');
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('c', CTRL_C);
+      expect(
+        onExit,
+        'the second press inside the window exits, draft or not',
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('while the first message is still building (loading) Ctrl+C exits at once: nothing is loaded and nothing can be lost', () => {
+      const k = clocked({ startChat: () => new Promise<HomeChatSession>(() => undefined) });
+      type(k.c, 'hi');
+      k.c.handleKey('', ENTER);
+      expect(k.c.getSnapshot().mode).toBe('loading');
+      k.c.handleKey('c', CTRL_C);
+      expect(k.onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('in an idle chat: a draft is cleared with nothing armed; an empty prompt arms; the second press sends /cancel once', async () => {
+      const made = makeSession();
+      const { c, at } = await intoChat(made);
+      type(c, 'half');
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().input.text).toBe('');
+      expect(c.getSnapshot().interruptArmed, 'clearing a draft arms nothing').toBe(false);
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      expect(made.lines).toEqual([]);
+      at(300);
+      c.handleKey('c', CTRL_C); // ends the chat
+      expect(made.lines).toEqual(['/cancel']);
+      // Another pair of presses must not fire a second /cancel: the end is already under way (the latch). The first of the pair is a
+      // fresh interrupt (it aborts the session's work and arms), the second ends the session again, and only the latch stops it.
+      c.handleKey('c', CTRL_C);
+      at(400);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines, 'one /cancel, however many presses').toEqual(['/cancel']);
+    });
+
+    it('while a turn runs the first Ctrl+C is the abort Esc performs and keeps the session; the second ends it', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, running: true });
+      const { c, at } = await intoChat(made);
+      c.handleKey('c', CTRL_C);
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      expect(made.lines, 'the session is still alive').toEqual([]);
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      at(900);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines).toEqual(['/cancel']);
+    });
+
+    it('Esc is the same abort and never arms', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, running: true });
+      const { c } = await intoChat(made);
+      c.handleKey('', { escape: true });
+      expect(onAbort).toHaveBeenCalledTimes(1);
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines, 'Esc armed nothing, so this Ctrl+C ended nothing').toEqual([]);
+    });
+
+    it('with an overlay open Ctrl+C closes it and arms nothing (a stray press cannot also arm an exit)', async () => {
+      const made = makeSession();
+      const { c } = await intoChat(made);
+      c.handleKey('/', {});
+      expect(c.getSnapshot().palette).toBeDefined();
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().palette).toBeUndefined();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C); // an empty prompt now: this is the FIRST press
+      expect(made.lines).toEqual([]);
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+    });
+
+    it('a `!` command running is interrupted by the first Ctrl+C, the way Esc does, and the second ends the session (ADR-0061 amendment)', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({
+        onAbort,
+        runShellCommand: () => new Promise<UserCommandOutcome>(() => undefined), // a command that never finishes
+      });
+      const { c, at } = await intoChat(made);
+      type(c, '!sleep 1000');
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().shellBusy, 'the command is running').toBe(true);
+      c.handleKey('c', CTRL_C);
+      expect(onAbort, 'interrupts the command instead of clearing or arming').toHaveBeenCalledTimes(
+        1,
+      );
+      expect(made.lines).toEqual([]);
+      at(500);
+      c.handleKey('c', CTRL_C);
+      expect(made.lines).toEqual(['/cancel']);
+    });
+
+    it('a submit in flight (a compaction, a reseat) is work too: the first Ctrl+C interrupts it', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, onProcess: () => new Promise<void>(() => undefined) });
+      const { c } = await intoChat(made);
+      type(c, 'next question');
+      c.handleKey('', ENTER); // processLine never settles: submitBusy stays set
+      expect(c.getSnapshot().submitBusy).toBe(true);
+      c.handleKey('c', CTRL_C);
+      expect(onAbort).toHaveBeenCalledTimes(1);
+    });
+
+    it('every keyboard-owning overlay closes on Ctrl+C and arms nothing: the reverse search and the `@` mention too', async () => {
+      const mentionReader: MentionReader = {
+        list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+        read: () => Promise.resolve({ content: 'x', sizeBytes: 1 }),
+      };
+      const made = makeSession({ mentionReader });
+      const { c } = await intoChat(made);
+      c.handleKey('r', CHORD); // Ctrl+R opens the reverse search
+      expect(c.getSnapshot().search).toBeDefined();
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().search).toBeUndefined();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('@', {});
+      await flush();
+      expect(c.getSnapshot().mention).toBeDefined();
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().mention).toBeUndefined();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      expect(made.lines).toEqual([]);
+    });
+
+    it('clearing a draft with Ctrl+C drops a pending `@` mention read: its marker must not come back into the cleared draft', async () => {
+      let resolveRead: (r: { content: string; sizeBytes: number }) => void = () => {};
+      const mentionReader: MentionReader = {
+        list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+        read: () =>
+          new Promise((resolve) => {
+            resolveRead = resolve;
+          }),
+      };
+      const made = makeSession({ mentionReader });
+      const { c } = await intoChat(made);
+      type(c, 'look at ');
+      c.handleKey('@', {});
+      await flush();
+      c.handleKey('', ENTER); // accept the mention: the read is now PENDING
+      expect(c.getSnapshot().input.text).toBe('look at '); // the marker arrives when the read resolves
+      c.handleKey('c', CTRL_C); // clear the draft
+      expect(c.getSnapshot().input.text).toBe('');
+      resolveRead({ content: '// app.ts', sizeBytes: 9 });
+      await flush();
+      expect(c.getSnapshot().input.text, 'the late read did not splice its marker back').toBe('');
+      expect(c.getSnapshot().attachments, 'and queued no chip for it').toEqual([]);
+    });
+
+    it('a paste is a key too: it ends the armed state, so a Ctrl+C after it is a first press that clears the pasted draft', async () => {
+      const made = makeSession();
+      const { c } = await intoChat(made);
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      c.handlePaste('pasted text');
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      expect(c.getSnapshot().input.text, 'the draft is cleared, the session is not ended').toBe('');
+      expect(made.lines).toEqual([]);
+    });
+
+    it('a Ctrl+C a checkpoint consumed as its own answer starts the window without aborting, and a second ends the chat', async () => {
+      const onAbort = vi.fn();
+      const made = makeSession({ onAbort, running: true });
+      const { c } = await intoChat(made);
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed).toBe(true);
+      expect(
+        onAbort,
+        'the answer is what stops the turn; nothing is aborted',
+      ).not.toHaveBeenCalled();
+      c.interruptAnswered();
+      expect(made.lines).toEqual(['/cancel']);
+    });
+
+    it('interruptAnswered does nothing on the bare Home or after the Home has exited', () => {
+      const { c, onExit } = clocked();
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed).toBe(false);
+      c.handleKey('c', CTRL_C);
+      c.handleKey('c', CTRL_C); // exits
+      expect(onExit).toHaveBeenCalledTimes(1);
+      c.interruptAnswered();
+      expect(c.getSnapshot().interruptArmed, 'nothing is armed after the Home has exited').toBe(
+        false,
+      );
+    });
+
+    it('the arming hint comes down by itself when the window runs out', () => {
+      vi.useFakeTimers();
+      try {
+        const { c } = clocked();
+        c.handleKey('c', CTRL_C);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        vi.advanceTimersByTime(2001);
+        expect(c.getSnapshot().interruptArmed).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('exiting mid-build reclaims the just-built session instead of mounting it', async () => {
@@ -1353,7 +1765,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     await flush();
     expect(onError).toHaveBeenCalledTimes(1); // failHome fired once
 
-    c.handleKey('c', CTRL_C); // a later Ctrl-C must NOT re-settle (exiting is already true)
+    c.handleKey('c', CTRL_C);
+    c.handleKey('c', CTRL_C); // a later pair of Ctrl+C must NOT re-settle (exiting is already true)
     expect(onExit).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledTimes(1);
   });
@@ -1912,6 +2325,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       // it hung — the home-controller abort fallback (a pending approval + no onAbort ⇒ answerApproval reject).
       const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const c = await inChat(makeSession({ store })); // no onAbort
+      store.apply(TURN_STARTED); // an approval is only ever pending inside a running turn
       const pending = store.requestApproval(approvalReq, true);
       c.handleKey('', { escape: true });
       await expect(pending).resolves.toEqual({ outcome: 'reject' });
@@ -1923,11 +2337,100 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const onAbort = vi.fn();
       const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const c = await inChat(makeSession({ onAbort, store }));
+      store.apply(TURN_STARTED); // an approval is only ever pending inside a running turn
       const pending = store.requestApproval(approvalReq, true);
       void pending.catch(() => undefined); // onAbort is a mock (doesn't fire the signal) — avoid an unhandled reject
       c.handleKey('', { escape: true });
       expect(onAbort).toHaveBeenCalledTimes(1);
       expect(store.getSnapshot().approval).not.toBeUndefined(); // the fallback did NOT answer it — onAbort owns the abort
+    });
+
+    describe('the Home host routes a Ctrl+C at a card through the keymap (ADR-0115 §1, §2; the host routing itself)', () => {
+      const withCard = async (onAbort: () => void) => {
+        const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND, {
+          approvalGuard: ROUTE_ONLY_GUARD,
+        });
+        const made = makeSession({ onAbort, store });
+        const c = await inChat(made);
+        store.apply(TURN_STARTED); // a card is only ever open inside a running turn
+        return { store, made, c };
+      };
+
+      it('Ctrl+C at an approval rejects the call first, aborts the turn and arms; the second Ctrl+C ends the chat', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        const pending = store.requestApproval(approvalReq, true);
+        showApprovalCard(store);
+        hostKey(c, store, 'c', CTRL_C);
+        await expect(pending).resolves.toEqual({ outcome: 'reject' });
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        expect(made.lines).not.toContain('/cancel');
+        hostKey(c, store, 'c', CTRL_C);
+        expect(made.lines).toContain('/cancel');
+      });
+
+      it('Esc at an approval rejects and aborts the same way, and arms nothing', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        const pending = store.requestApproval(approvalReq, true);
+        showApprovalCard(store);
+        hostKey(c, store, '', { escape: true });
+        await expect(pending).resolves.toEqual({ outcome: 'reject' });
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(false);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(made.lines, 'Esc armed nothing, so this Ctrl+C ended nothing').not.toContain(
+          '/cancel',
+        );
+      });
+
+      it('Ctrl+C at an ask_user question stops the turn and arms', async () => {
+        const onAbort = vi.fn();
+        const { store, c } = await withCard(onAbort);
+        const asked = store.requestQuestion({
+          questions: [
+            {
+              header: 'Pick',
+              question: 'Which?',
+              multiSelect: false,
+              options: [
+                { label: 'a', description: 'first' },
+                { label: 'b', description: 'second' },
+              ],
+            },
+          ],
+        });
+        void asked.catch(() => undefined);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(onAbort).toHaveBeenCalledTimes(1);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+      });
+
+      it('a key the card swallows still disarms: Ctrl+C, a key at a card, Ctrl+C are two first presses', async () => {
+        const onAbort = vi.fn();
+        const { store, made, c } = await withCard(onAbort);
+        store.apply(TURN_COMPLETED); // an idle prompt: the first Ctrl+C only arms
+        hostKey(c, store, 'c', CTRL_C);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        store.apply({ ...TURN_STARTED, sequenceNumber: 3 });
+        const pending = store.requestApproval(approvalReq, true);
+        void pending.catch(() => undefined);
+        showApprovalCard(store);
+        hostKey(c, store, 'x'); // the card takes it: typing at a card
+        expect(c.getSnapshot().interruptArmed, 'a swallowed key ends the armed state').toBe(false);
+        expect(made.lines).not.toContain('/cancel');
+      });
+
+      it('a key nothing consumes (a scroll key the host handles itself) still ends the armed state: the routing disarms first', async () => {
+        const { store, c } = await withCard(() => undefined);
+        store.apply(TURN_COMPLETED);
+        hostKey(c, store, 'c', CTRL_C);
+        expect(c.getSnapshot().interruptArmed).toBe(true);
+        // `routeKeyThroughCards` is the first thing every non-mouse key meets, so it disarms even when nothing consumes the key.
+        expect(routeKeyThroughCards(c, store, '', { pageUp: true })).toBe(false);
+        expect(c.getSnapshot().interruptArmed).toBe(false);
+      });
     });
 
     it('a pending approval intercepts keys: `/` stays closed, a bare `y` answers nothing and `[Ctrl+Y]` approves-once', async () => {
@@ -2712,5 +3215,761 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER); // Enter on the opening highlight (the bound 'high')
     expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
     expect(c.getSnapshot().effortPicker).toBeUndefined(); // closed
+  });
+});
+
+describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
+  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
+  const SNAPSHOT: PermissionsSnapshot = {
+    project: {
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
+        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
+      ],
+    },
+    session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
+  };
+  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
+    let current = SNAPSHOT;
+    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
+      if (entry.kind === 'project' && current.project.ok)
+        current = {
+          ...current,
+          project: {
+            ok: true,
+            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
+          },
+        };
+      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
+    });
+    return { port: { surface: 'chat', load: () => current, withdraw }, withdraw };
+  };
+  /** The monotonic clock the controller's timed keys run on: a test moves it by hand, as the interrupt keymap's tests do. */
+  const clock = (): { now: () => number; advance: (ms: number) => void } => {
+    let t = 10_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  };
+  const inChat = async (
+    made: ReturnType<typeof makeSession>,
+    now: () => number,
+  ): Promise<HomeController> => {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      now,
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    return c;
+  };
+  const open = async (
+    made: ReturnType<typeof makeSession>,
+    t = clock(),
+  ): Promise<{ c: HomeController; sent: string[]; t: ReturnType<typeof clock> }> => {
+    const c = await inChat(made, t.now);
+    const before = made.lines.length;
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    return { c, sent: made.lines.slice(before), t };
+  };
+  /** The sheet has settled and the keyboard has been quiet, as after a person has read the list. */
+  const settle = (t: ReturnType<typeof clock>): void => t.advance(SHEET_SETTLE_MS + 100);
+
+  it('a typed bare /permissions opens the sheet over the chat instead of sending it, and clears the prompt', async () => {
+    const { port } = portOf();
+    const { c, sent } = await open(makeSession({ permissions: port }));
+    const sheet = c.getSnapshot().permissionsSheet;
+    expect(sheet?.surface).toBe('chat');
+    expect(sheet?.mode).toBe('ask');
+    expect(sent, 'nothing was dispatched').toEqual([]);
+    expect(c.getSnapshot().input.text).toBe('');
+  });
+
+  it('is dispatched like any command where the chat has no port', async () => {
+    const { c, sent } = await open(makeSession({}));
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(sent).toEqual(['/permissions']);
+  });
+
+  it('does not open when the port cannot be read: the chat says so', async () => {
+    const { port } = portOf();
+    const made = makeSession({
+      permissions: {
+        ...port,
+        load: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    const { c } = await open(made);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(made.store.getSnapshot().state.warnings).toContain('Could not read the permissions.');
+  });
+
+  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
+    const { port } = portOf();
+    const { c } = await open(makeSession({ permissions: port }));
+    type(c, 'hello');
+    expect(c.getSnapshot().input.text).toBe('');
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet).toBeDefined();
+    c.handleKey('c', CTRL_C);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
+      false,
+    );
+  });
+
+  it('`d` asks, Enter withdraws through the port by the row, and the sheet shows the answer, each once its moment has passed', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    expect(withdraw).not.toHaveBeenCalled();
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
+    const sheet = c.getSnapshot().permissionsSheet;
+    expect(sheet?.armed).toBe(false);
+    expect(sheet?.message).toEqual({
+      tone: 'done',
+      text: 'Withdrawn. Auto mode asks about it again.',
+    });
+    expect(sheet?.snapshot.project.ok && sheet.snapshot.project.rows.map((row) => row.id)).toEqual([
+      'b',
+    ]);
+  });
+
+  it('SECURITY: keys typed ahead withdraw nothing, at any pace: `d` too soon says to wait, and once anything was typed `d` arms nothing until an arrow key', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    // `d` pressed at once: too soon, and it says so; it is not typing.
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'note',
+      text: 'Wait a moment, then press d.',
+    });
+    // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
+    for (const char of 'build') {
+      t.advance(380);
+      c.handleKey(char, {});
+    }
+    t.advance(2_000);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed, 'typed text poisons arming').toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Typed keys are ignored here/u,
+    );
+    t.advance(2_000);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    // An arrow key says the person is choosing a row: after it `d` arms, and an Enter in the same breath is too early.
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Too early or too late for Enter/u,
+    );
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('the settle time runs from the moment the sheet opened on the controller’s own clock', async () => {
+    const { port } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    t.advance(SHEET_SETTLE_MS - 1);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    t.advance(1);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+  });
+
+  it('an Enter long after the question is too late: a suspended or abandoned question is not answered by a stray Enter', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_WINDOW_MS + 1);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+    expect(c.getSnapshot().permissionsSheet?.message?.text).toMatch(
+      /^Too early or too late for Enter/u,
+    );
+  });
+
+  it('a paste or any other key drops the question and withdraws nothing', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    c.handlePaste('withdraw it all');
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().input.text, 'the paste did not reach the prompt').toBe('');
+    // The paste was typing: `d` arms nothing until an arrow key.
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('x', {});
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('does not arm in a terminal that cannot show the question, drops a question asked before it shrank, and says how to leave', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = await open(makeSession({ permissions: port }));
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.setTerminalSize(60, 20); // shrinks while the question is up
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(
+      withdraw,
+      'Enter withdraws nothing in a frame that hides the question',
+    ).not.toHaveBeenCalled();
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    c.setTerminalSize(80, 24);
+    // The Enter and the `d` above were keys typed into a sheet: an arrow key says the person is choosing a row again.
+    c.handleKey('', { downArrow: true });
+    c.handleKey('', { upArrow: true });
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+  });
+
+  it('survives a port that throws on a withdrawal: nothing changed, the sheet stays open', async () => {
+    const { port } = portOf();
+    const { c, t } = await open(
+      makeSession({
+        permissions: {
+          ...port,
+          withdraw: () => {
+            throw new Error('boom');
+          },
+        },
+      }),
+    );
+    settle(t);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'failed',
+      text: 'Could not withdraw that row; nothing changed.',
+    });
+  });
+
+  it('closes, and says so, when the list cannot be read again after a withdrawal', async () => {
+    const { port } = portOf();
+    let reads = 0;
+    const made = makeSession({
+      permissions: {
+        ...port,
+        load: () => {
+          reads += 1;
+          if (reads > 1) throw new Error('boom');
+          return SNAPSHOT;
+        },
+      },
+    });
+    const { c, t } = await open(made);
+    settle(t);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(made.store.getSnapshot().state.warnings.join(' ')).toContain(
+      'Could not read the permissions again.',
+    );
+  });
+
+  it('gives way to a card that arrives while it is open: the sheet closes and the key goes on to the card', async () => {
+    const { port, withdraw } = portOf();
+    const made = makeSession({ permissions: port });
+    const { c, t } = await open(made);
+    settle(t);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    void made.store.requestApproval(
+      { toolId: 'write_file', action: 'fs_write', preview: { path: 'x' } },
+      true,
+    );
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(withdraw, 'the Enter was never the sheet’s').not.toHaveBeenCalled();
+  });
+});
+
+describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+  const homeStore = { read: () => EMPTY, refresh: () => undefined } as unknown as HomeStore;
+  const SNAPSHOT: PermissionsSnapshot = {
+    project: {
+      ok: true,
+      rows: [
+        { id: 'a', label: 'npm, 1 argument', remembered: '2026-11-19 12:00Z' },
+        { id: 'b', label: 'node, 1 argument', remembered: '2026-11-18 09:30Z' },
+      ],
+    },
+    // the bare Home has no chat, so no session list at all
+    session: undefined,
+  };
+  const portOf = (): { port: PermissionsPort; withdraw: ReturnType<typeof vi.fn> } => {
+    let current = SNAPSHOT;
+    const withdraw = vi.fn((entry: PermissionEntry): WithdrawAnswer => {
+      if (entry.kind === 'project' && current.project.ok)
+        current = {
+          ...current,
+          project: {
+            ok: true,
+            rows: current.project.rows.filter((row) => row.id !== entry.row.id),
+          },
+        };
+      return { tone: 'done', text: 'Withdrawn. Auto mode asks about it again.' };
+    });
+    return { port: { surface: 'project', load: () => current, withdraw }, withdraw };
+  };
+  const clock = (): { now: () => number; advance: (ms: number) => void } => {
+    let t = 10_000;
+    return { now: () => t, advance: (ms) => void (t += ms) };
+  };
+  const home = (
+    port: PermissionsPort | undefined,
+    t = clock(),
+    extra: Partial<Parameters<typeof createHomeController>[0]> = {},
+  ): { c: HomeController; t: ReturnType<typeof clock>; startChat: ReturnType<typeof vi.fn> } => {
+    const startChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      now: t.now,
+      ...(port === undefined ? {} : { permissions: port }),
+      ...extra,
+    });
+    return { c, t, startChat };
+  };
+  const openSheet = async (c: HomeController): Promise<void> => {
+    type(c, '/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+  };
+
+  it('a typed bare /permissions opens the sheet over the Home instead of starting a chat, with the project list only', async () => {
+    const { port } = portOf();
+    const { c, startChat } = home(port);
+    await openSheet(c);
+    const snap = c.getSnapshot();
+    expect(snap.mode).toBe('home');
+    expect(snap.permissionsSheet?.surface).toBe('project');
+    expect(snap.permissionsSheet?.mode, 'no chat, no mode').toBeUndefined();
+    expect(snap.input.text).toBe('');
+    expect(startChat, 'nothing was sent as a message').not.toHaveBeenCalled();
+    expect(sheetEntries(snap.permissionsSheet?.snapshot ?? SNAPSHOT)).toHaveLength(2);
+  });
+
+  it('the palette’s /permissions opens it too, and an argument is refused with a notice and opens nothing', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    c.handleKey('/', {});
+    for (const ch of 'permissions') c.handleKey(ch, {});
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    c.handleKey('', { escape: true });
+    // A `/` typed at an empty prompt opens the palette, so a line with an argument reaches the Home as a paste.
+    c.handlePaste('/permissions now');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('/permissions accepts no arguments.');
+  });
+
+  it('says so, and opens nothing, where the Home has no port', async () => {
+    const { c, startChat } = home(undefined);
+    await openSheet(c);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
+  it('does not open when the port cannot be read: the Home says so', async () => {
+    const { port } = portOf();
+    const { c } = home({
+      ...port,
+      load: () => {
+        throw new Error('boom');
+      },
+    });
+    await openSheet(c);
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
+  });
+
+  it('owns every key while open: typing reaches no prompt, Esc closes, Ctrl+C closes without arming an exit', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    await openSheet(c);
+    type(c, 'hello');
+    expect(c.getSnapshot().input.text).toBe('');
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    await openSheet(c);
+    c.handleKey('c', { ctrl: true });
+    expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c.getSnapshot().interruptArmed, 'a Ctrl+C that closes an overlay arms nothing').toBe(
+      false,
+    );
+    expect(c.getSnapshot().mode).toBe('home');
+  });
+
+  it('`d` asks and Enter withdraws through the port by the row, and the answer is shown; the clock rules apply here as in a chat', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handleKey('', ENTER); // at once: too early
+    expect(withdraw).not.toHaveBeenCalled();
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(withdraw).toHaveBeenCalledTimes(1);
+    expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'done',
+      text: 'Withdrawn. Auto mode asks about it again.',
+    });
+  });
+
+  it('a pasted or leading-space /permissions reaches the Home as a line, not a palette: it opens the sheet; with an argument or a longer word it does not', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    c.handleKey('', { escape: true });
+    c.handlePaste('/permissionsx');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet, 'a longer word is another command').toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Unknown command. Did you mean /permissions?');
+  });
+
+  it('with no port a pasted /permissions says so and starts no chat', async () => {
+    const { c, startChat } = home(undefined);
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
+  it('inside a chat the CHAT’s port is the one a withdrawal goes through, even with the Home’s own port wired (the real product wires both)', async () => {
+    const homePort = portOf();
+    const chatWithdraw = vi.fn(
+      (): WithdrawAnswer => ({ tone: 'done', text: 'Session approval withdrawn.' }),
+    );
+    const chatPort: PermissionsPort = {
+      surface: 'chat',
+      load: () => ({
+        project: { ok: true, rows: [] },
+        session: [{ argv: ['git', 'status'], text: 'git status', alsoRemembered: false }],
+      }),
+      withdraw: chatWithdraw,
+    };
+    const t = clock();
+    const { c } = home(homePort.port, t, {
+      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(chatWithdraw, 'the chat’s port').toHaveBeenCalledTimes(1);
+    expect(homePort.withdraw, 'never the Home’s project-only one').not.toHaveBeenCalled();
+  });
+
+  it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
+    const { port } = portOf();
+    const chatPort: PermissionsPort = {
+      surface: 'chat',
+      load: () => ({ ...SNAPSHOT, session: [] }),
+      withdraw: () => ({ tone: 'done', text: 'Withdrawn.' }),
+    };
+    const { c } = home(port, clock(), {
+      startChat: () => Promise.resolve(makeSession({ permissions: chatPort }).session),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    expect(c.getSnapshot().permissionsSheet?.snapshot.session).toEqual([]);
+  });
+
+  it('SECURITY: keys typed ahead after the command withdraw nothing on the Home either, at any pace', async () => {
+    const { port, withdraw } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    for (const ch of 'run the build') {
+      c.handleKey(ch, {});
+      t.advance(120);
+    }
+    c.handleKey('d', {});
+    t.advance(120);
+    c.handleKey('', ENTER);
+    t.advance(2_000);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS + 50);
+    c.handleKey('', ENTER);
+    expect(withdraw).not.toHaveBeenCalled();
+  });
+
+  it('a port that throws on a withdrawal leaves the sheet open with a failure; a list that cannot be read again closes it with a notice', async () => {
+    const { port } = portOf();
+    const t = clock();
+    const { c } = home(
+      {
+        ...port,
+        withdraw: () => {
+          throw new Error('boom');
+        },
+      },
+      t,
+    );
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    t.advance(SHEET_CONFIRM_DWELL_MS);
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().permissionsSheet?.message).toEqual({
+      tone: 'failed',
+      text: 'Could not withdraw that row; nothing changed.',
+    });
+    // now the list cannot be read again after a withdrawal
+    let loads = 0;
+    const t2 = clock();
+    const { c: c2 } = home(
+      {
+        ...port,
+        load: () => {
+          loads += 1;
+          if (loads > 1) throw new Error('boom');
+          return SNAPSHOT;
+        },
+      },
+      t2,
+    );
+    await openSheet(c2);
+    t2.advance(SHEET_SETTLE_MS + 100);
+    c2.handleKey('d', {});
+    t2.advance(SHEET_CONFIRM_DWELL_MS);
+    c2.handleKey('', ENTER);
+    expect(c2.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(c2.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
+  });
+
+  it('a paste is typing, not input for the prompt behind the sheet, and drops a waiting question', async () => {
+    const { port } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+    c.handlePaste('pasted words');
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+    expect(c.getSnapshot().input.text).toBe('');
+  });
+
+  it('is told the terminal size, so a withdrawal is not asked for below the floor', async () => {
+    const { port } = portOf();
+    const { c, t } = home(port);
+    await openSheet(c);
+    c.setTerminalSize(60, 20);
+    t.advance(SHEET_SETTLE_MS + 100);
+    c.handleKey('d', {});
+    expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+  });
+
+  describe('opened as the run’s whole job: a bare `relavium permissions` (ADR-0137 §3)', () => {
+    it('opens the sheet at once, and closing it with Esc ends the Home with success instead of leaving it behind', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+      expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('', { escape: true });
+      expect(onExit).toHaveBeenCalledTimes(1);
+      // The last frame the run leaves (the scrollback of the inline renderer) is the sheet's: a closed state with the Home's prompt is
+      // never published on the way out.
+      expect(c.getSnapshot().permissionsSheet?.surface, 'the closed state is not published').toBe(
+        'project',
+      );
+    });
+
+    it('Ctrl+C closes it and ends the run too, once', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      c.handleKey('c', { ctrl: true });
+      expect(onExit).toHaveBeenCalledTimes(1);
+      c.handleKey('c', { ctrl: true });
+      expect(onExit, 'idempotent').toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the run while a question is up: the first Esc only drops the question, the second closes and ends', () => {
+      const { port } = portOf();
+      const t = clock();
+      const onExit = vi.fn();
+      const { c } = home(port, t, { onExit });
+      c.openPermissionsAsCommand();
+      t.advance(SHEET_SETTLE_MS + 100);
+      c.handleKey('d', {});
+      expect(c.getSnapshot().permissionsSheet?.armed).toBe(true);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet?.armed).toBe(false);
+      expect(onExit).not.toHaveBeenCalled();
+      c.handleKey('', { escape: true });
+      expect(onExit).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not end the run when the sheet closed because the list could not be read again: the Home stays, and says why', async () => {
+      const { port } = portOf();
+      let loads = 0;
+      const t = clock();
+      const onExit = vi.fn();
+      const { c } = home(
+        {
+          ...port,
+          load: () => {
+            loads += 1;
+            if (loads > 1) throw new Error('boom');
+            return SNAPSHOT;
+          },
+        },
+        t,
+        { onExit },
+      );
+      c.openPermissionsAsCommand();
+      t.advance(SHEET_SETTLE_MS + 100);
+      c.handleKey('d', {});
+      t.advance(SHEET_CONFIRM_DWELL_MS);
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(c.getSnapshot().notice).toBe(
+        'Withdrawn. Auto mode asks about it again. Could not read the permissions again.',
+      );
+      expect(onExit, 'the person must be able to read the note').not.toHaveBeenCalled();
+      // The command is over: a sheet opened later is an ordinary one, and closing it returns to the Home instead of ending the run.
+      loads = 0;
+      await openSheet(c);
+      expect(c.getSnapshot().permissionsSheet).toBeDefined();
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(
+        onExit,
+        'the flag did not outlive the sheet that closed on a fault',
+      ).not.toHaveBeenCalled();
+    });
+
+    it('stays in the Home with the reason when the sheet cannot open, and a later typed /permissions then closes without ending the run', async () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      let fail = true;
+      const { c } = home(
+        {
+          ...port,
+          load: () => {
+            if (fail) throw new Error('boom');
+            return SNAPSHOT;
+          },
+        },
+        clock(),
+        { onExit },
+      );
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(c.getSnapshot().notice).toBe('Could not read the permissions.');
+      fail = false;
+      await openSheet(c);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit, 'the flag did not leak from the failed open').not.toHaveBeenCalled();
+    });
+
+    it('does nothing where the Home has no port: no sheet, no notice, no exit', () => {
+      const onExit = vi.fn();
+      const { c } = home(undefined, clock(), { onExit });
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('does not open from anywhere but the Home: a chat being built keeps its place', () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), {
+        onExit,
+        startChat: () => new Promise<never>(() => undefined), // the build never finishes: the Home stays in `loading`
+      });
+      type(c, 'hello');
+      c.handleKey('', ENTER);
+      expect(c.getSnapshot().mode).toBe('loading');
+      c.openPermissionsAsCommand();
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(onExit).not.toHaveBeenCalled();
+    });
+
+    it('an ordinary typed /permissions closes back to the Home and ends nothing', async () => {
+      const { port } = portOf();
+      const onExit = vi.fn();
+      const { c } = home(port, clock(), { onExit });
+      await openSheet(c);
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().mode).toBe('home');
+      expect(onExit).not.toHaveBeenCalled();
+    });
   });
 });

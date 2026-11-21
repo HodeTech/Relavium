@@ -68,40 +68,13 @@ export type ChatKeyAction =
   | EditorEditAction
   | { readonly kind: 'none' }
   | { readonly kind: 'submit'; readonly line: string }
-  | { readonly kind: 'cancel' }
   /** Shift+Tab — advance the chat mode (ask → plan → accept-edits → auto → ask), ADR-0057. */
   | { readonly kind: 'cycle-mode' }
   /** Ctrl+T — toggle the collapsible "thinking" panel (2.5.H); a pure UI-view flip, valid MID-turn (it is decided
    *  before the running-swallow, so a user can expand reasoning while it streams). */
   | { readonly kind: 'toggle-reasoning' }
-  /** Esc mid-turn — abort the in-flight turn but KEEP the session alive (EA7), distinct from `cancel`. */
-  | { readonly kind: 'abort' }
-  /** An approval-prompt decision. NOT PRODUCED by {@link reduceChatKey} any more: the approval card (the chat store's
-   *  `handleReviewInput`) owns every answer key, and an answer is a Ctrl chord, never a bare letter. Kept only so the surfaces'
-   *  switch over this union stays exhaustive until the legacy prompt is deleted. */
-  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
-  /** An approval-prompt rejection. Not produced (see `approve`). */
-  | { readonly kind: 'reject' }
-  /** Start capturing a typed denial reason at the legacy prompt. Not produced (see `approve`). */
-  | { readonly kind: 'reject-with-reason' };
-
-/**
- * The keystroke intercept while an approval is pending, extracted so {@link reduceChatKey} stays flat. It answers NOTHING.
- * The approval card owns the answers (`Ctrl+Y`, `Ctrl+G`, `Ctrl+N`, `Ctrl+R` — see `reviewAnswerKey`), and the host routes every
- * key to the card first; this reducer runs only for a key the card did not take. The bare letters this function once
- * mapped (`y`/`1` approve, `a`/`2` approve always, `n`/`r`/`3` reject, `c` reason) are gone on purpose: they carried none of
- * the card's guards, and a letter typed while a turn runs is typing, not a decision (PR #99). `Esc` aborts the turn; the
- * VIEW-ONLY reasoning toggle (Ctrl+T) is the one other key let through (Step 14); every other key is ignored. It bypasses the
- * running-swallow so a pending approval can never deadlock.
- */
-function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
-  if (key.escape === true) return { kind: 'abort' }; // Esc aborts regardless of modifiers
-  // The collapsible "thinking" panel toggle (Ctrl+T) is whitelisted through the fail-closed swallow (Step 14): it is a PURE
-  // store-view flip (`toggleReasoning` only flips `reasoningVisible` + repaints — zero session / approval / decision
-  // effect), so a user can expand the model's reasoning to INFORM the pending decision without it counting as an answer.
-  if (key.ctrl === true && key.meta !== true && char === 't') return { kind: 'toggle-reasoning' };
-  return { kind: 'none' };
-}
+  /** Esc mid-turn — abort the in-flight turn but KEEP the session alive (EA7). `Ctrl+C` is the interrupt keymap's, not a key action. */
+  | { readonly kind: 'abort' };
 
 /** Line-boundary + readline word chords: `Home`/`Ctrl+A` → line-start, `End`/`Ctrl+E` → line-end, `Alt+B`/`Alt+F`
  *  → word-left/right. `undefined` when the key is not one of these. */
@@ -138,7 +111,7 @@ function reduceKill(char: string, key: ChatKey): EditorEditAction | undefined {
 
 /**
  * Map one keystroke to a SHARED editor edit/motion action, or `undefined` when it is not an editor key (so the
- * surface reducer handles its own keys — plain `Return`, `Ctrl-C`, `Shift+Tab`, …). This is the ONE home for the
+ * surface reducer handles its own keys — plain `Return`, `Shift+Tab`, …; `Ctrl+C` is the interrupt keymap's). This is the ONE home for the
  * buffer-edit + cursor-motion keystroke contract; both {@link reduceChatKey} and `reduceHomeKey` delegate here so
  * the two surfaces can never drift. `Shift+Enter` / `Ctrl+J` insert a newline (delegating cursor motions to
  * {@link reduceCursorMotion} and kills to {@link reduceKill}); Backspace (and the terminal Delete key, which ink
@@ -179,7 +152,7 @@ export interface PasteEditableFlags {
   readonly mentionOpen: boolean; // `@`-mention completion
   readonly modelPickerOpen: boolean; // `/models`
   readonly effortPickerOpen: boolean; // `/effort`
-  readonly reasonCaptureOpen: boolean; // the `[c]` typed-reason capture
+  readonly permissionsSheetOpen: boolean; // `/permissions` (ADR-0137)
   readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
 }
 
@@ -200,7 +173,7 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
     !f.mentionOpen &&
     !f.modelPickerOpen &&
     !f.effortPickerOpen &&
-    !f.reasonCaptureOpen &&
+    !f.permissionsSheetOpen &&
     !f.approvalPending
   );
 }
@@ -216,9 +189,9 @@ export const MODE_CHANGE_RUNNING_NOTICE =
 /**
  * Reduce one keystroke of the chat prompt to an action.
  *
- * When an approval is pending (`approvalPending`), the prompt OWNS the keyboard (see {@link reduceApprovalKey}) —
- * the in-flight key-swallow bypass (ADR-0057, no deadlock). Otherwise: `Ctrl-C` maps to `cancel` even mid-turn (a
- * streaming turn can always be interrupted); `Shift+Tab` always reduces to `cycle-mode` — the mode control decides
+ * `Ctrl+C` is not here: it is the interrupt keymap's (`interrupt-keymap.ts`, ADR-0115), decided by the surface before this reducer
+ * runs, and an open approval or question card takes every key before it too, so no key reaches this reducer to answer a decision.
+ * `Shift+Tab` always reduces to `cycle-mode` — the mode control decides
  * whether it may apply, and mid-turn it may not (the engine takes its turn policy once, at turn start, so a mode
  * picked while a turn runs could not reach it: {@link MODE_CHANGE_RUNNING_NOTICE}); `Esc` while `running` is a
  * mid-turn `abort` (EA7); while a turn is `running` every OTHER key is ignored (one turn at a time). Idle, the
@@ -232,10 +205,7 @@ export function reduceChatKey(
   key: ChatKey,
   input: string,
   running: boolean,
-  approvalPending = false,
 ): ChatKeyAction {
-  if (approvalPending) return reduceApprovalKey(char, key);
-  if (key.ctrl === true && char === 'c') return { kind: 'cancel' };
   if (key.tab === true && key.shift === true) return { kind: 'cycle-mode' }; // Shift+Tab cycles the chat mode
   if (key.ctrl === true && char === 't') return { kind: 'toggle-reasoning' }; // Ctrl+T toggles the thinking panel (mid-turn OK)
   if (key.escape === true && running) return { kind: 'abort' }; // mid-turn abort, keeps the session (EA7)

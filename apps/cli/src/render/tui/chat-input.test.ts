@@ -21,12 +21,12 @@ import {
 const KEY: ChatKey = {};
 
 describe('reduceChatKey', () => {
-  it('maps Ctrl-C to cancel — even mid-turn (a streaming turn must be interruptible)', () => {
-    expect(reduceChatKey('c', { ctrl: true }, 'hi', false)).toEqual({ kind: 'cancel' });
-    expect(reduceChatKey('c', { ctrl: true }, 'hi', true)).toEqual({ kind: 'cancel' });
+  it('Ctrl+C is not a key action: the interrupt keymap decides it before this reducer runs (ADR-0115), and it is never typing', () => {
+    expect(reduceChatKey('c', { ctrl: true }, 'hi', false)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('c', { ctrl: true }, 'hi', true)).toEqual({ kind: 'none' });
   });
 
-  it('ignores every non-Ctrl-C key while a turn is running (one turn at a time)', () => {
+  it('ignores every other key while a turn is running (one turn at a time)', () => {
     expect(reduceChatKey('x', KEY, 'hi', true)).toEqual({ kind: 'none' });
     expect(reduceChatKey('', { return: true }, 'hi', true)).toEqual({ kind: 'none' });
     expect(reduceChatKey('', { backspace: true }, 'hi', true)).toEqual({ kind: 'none' });
@@ -170,141 +170,59 @@ describe('reduceChatKey', () => {
   });
 });
 
-describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow bypass, ADR-0057)', () => {
-  const PENDING = true;
-  /**
-   * What an answer used to be, and what the approval card's answers are now. `reduceChatKey` is the LEGACY reducer: the
-   * approval card (`handleReviewInput`) owns every answer chord, so this one answers NOTHING while an approval is pending —
-   * a bare letter typed at a card is typing, never a decision, and no chord reaches a decision through here either.
-   */
-  const ANSWER_LETTERS = ['y', 'a', 'n', 'r', 'c', 'g', '1', '2', '3'] as const;
-  const ANSWER_ACTIONS: ReadonlyArray<ChatKeyAction['kind']> = [
-    'approve',
-    'reject',
-    'reject-with-reason',
-  ];
-
-  it('a bare [y]/1 or [a]/2 does NOT approve — a letter typed at a pending approval answers nothing', () => {
-    for (const char of ['y', '1', 'a', '2']) {
-      expect(reduceChatKey(char, KEY, '', true, PENDING)).toEqual({ kind: 'none' });
-    }
-  });
-
-  it('a bare [n]/[r]/3 does NOT reject', () => {
-    for (const char of ['n', 'r', '3']) {
-      expect(reduceChatKey(char, KEY, '', true, PENDING)).toEqual({ kind: 'none' });
-    }
-  });
-
-  it('maps Esc to abort (cancels the whole turn AND the pending approval)', () => {
-    expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
-  });
-
-  it('a bare [c] opens no reason capture, and Ctrl+C / Alt+C stay swallowed (fail-closed)', () => {
-    // The typed-reason capture is the approval card's Ctrl+R now; this legacy reducer never opens it.
-    expect(reduceChatKey('c', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('c', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-  });
-
-  it('NO answer key — bare, Ctrl, Meta or Ctrl+Meta, either case — produces an approve / reject / reject-with-reason action', () => {
-    // The sweep covers every letter and digit that ever answered (y a n r c 1 2 3), the chord letters of the card
-    // (Ctrl+Y/G/N/R), and the upper-case forms a held Shift or Caps Lock produces. Each must come back `none`: an answer
-    // is the card's, never this reducer's. Remove the intercept's "answers nothing" rule and every row here fails.
+describe('reduceChatKey while a turn runs — what can come out, with a card or without (ADR-0057, ADR-0115)', () => {
+  // A pending approval or question implies a running turn, and the card takes every key before this reducer sees it. The
+  // reducer that once answered an approval for a key the card left is deleted, so this is the whole surface a running turn
+  // leaves: Esc aborts, Ctrl+T toggles the thinking panel, Shift+Tab asks for a mode change (which a running turn refuses
+  // with a notice), and nothing edits, submits or answers.
+  it('only abort, toggle-reasoning and cycle-mode are ever produced while a turn runs — across a wide key sweep', () => {
+    const allowed = new Set<ChatKeyAction['kind']>([
+      'none',
+      'abort',
+      'toggle-reasoning',
+      'cycle-mode',
+    ]);
     const modifiers: ReadonlyArray<ChatKey> = [
       KEY,
       { ctrl: true },
       { meta: true },
-      { ctrl: true, meta: true },
       { shift: true },
     ];
-    for (const letter of ANSWER_LETTERS) {
-      for (const char of [letter, letter.toUpperCase()]) {
-        for (const key of modifiers) {
-          const action = reduceChatKey(char, key, '', true, PENDING);
-          expect(ANSWER_ACTIONS).not.toContain(action.kind);
-          // Ctrl+T is the one chord let through, and it is not one of these letters; Esc is not in this set either.
-          expect(action, `char ${JSON.stringify(char)} key ${JSON.stringify(key)}`).toEqual({
-            kind: 'none',
-          });
-        }
-      }
-    }
-  });
-
-  it('the card chords Ctrl+Y / Ctrl+G / Ctrl+N / Ctrl+R are not answers HERE — the approval card answers them, not this reducer', () => {
-    // Pinned apart from the sweep so a reader sees the division of labour: if this reducer ever started answering the
-    // chords too, the card's guards (dwell, typeahead, lockout, the Enter confirmation) would be bypassed by this path.
-    for (const char of ['y', 'g', 'n', 'r']) {
-      expect(reduceChatKey(char, { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    }
-  });
-
-  it('a modified CHORD (Ctrl+A/E/W, Alt+A, Alt+1/2/3) does NOT answer a pending approval (fail-closed floor)', () => {
-    // Ctrl+A is a line-start motion when idle; during a pending approval it must be SWALLOWED — no motion, no answer.
-    // The digit shortcuts are gone entirely, and Alt+1/2/3 (reachable via ink's ESC-prefixed parsing) answer nothing.
-    for (const char of ['a', 'e', 'w', 'z']) {
-      expect(reduceChatKey(char, { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    }
-    expect(reduceChatKey('a', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    for (const digit of ['1', '2', '3']) {
-      expect(reduceChatKey(digit, { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    }
-  });
-
-  it('whitelists ONLY the view-only reasoning toggle (Ctrl+T) through the swallow (Step 14)', () => {
-    // Ctrl+T is a pure store-view flip (toggleReasoning: no session/approval/decision effect), so a user may
-    // expand the model's reasoning to INFORM the pending decision WITHOUT it counting as an answer.
-    expect(reduceChatKey('t', { ctrl: true }, '', true, PENDING)).toEqual({
-      kind: 'toggle-reasoning',
-    });
-    // The whitelist is TIGHT — only the exact Ctrl-without-meta 't' chord: a bare 't' is a non-answer key
-    // (swallowed), and Ctrl+Meta+T / Alt+T do NOT toggle (so an ESC-prefixed Alt-chord can't sneak through).
-    expect(reduceChatKey('t', KEY, '', true, PENDING)).toEqual({ kind: 'none' }); // bare t: swallowed
-    expect(reduceChatKey('t', { ctrl: true, meta: true }, '', true, PENDING)).toEqual({
-      kind: 'none',
-    });
-    expect(reduceChatKey('t', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+T: swallowed
-  });
-
-  it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit, nothing leaks into the composer)', () => {
-    // Even Ctrl-C / Return / a printable / Shift+Tab are ignored during the approval — only Esc (abort) and the view-only
-    // Ctrl+T toggle act. Nothing reaches the composer: no edit, submit, cancel or mode cycle.
-    expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('', { return: true }, 'draft', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('z', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
-    expect(reduceChatKey('', { tab: true, shift: true }, '', true, PENDING)).toEqual({
-      kind: 'none',
-    });
-    expect(reduceChatKey('', { backspace: true }, 'draft', true, PENDING)).toEqual({
-      kind: 'none',
-    });
-    expect(reduceChatKey('\n', KEY, 'draft', true, PENDING)).toEqual({ kind: 'none' });
-  });
-
-  it('only abort and toggle-reasoning are ever produced while an approval is pending — across a wide key sweep', () => {
-    // Every printable ASCII character, bare and with Ctrl / Meta: the only action kinds that can come out are the Esc abort
-    // and the view-only Ctrl+T toggle (and `none`). Pins that no key — answer-shaped or not — leaks an edit, a submit, a
-    // mode cycle or an answer out of this reducer while the card owns the keyboard.
-    const allowed = new Set<ChatKeyAction['kind']>(['none', 'abort', 'toggle-reasoning']);
-    const modifiers: ReadonlyArray<ChatKey> = [KEY, { ctrl: true }, { meta: true }];
     for (let code = 0x20; code < 0x7f; code++) {
       const char = String.fromCharCode(code);
       for (const key of modifiers) {
-        const action = reduceChatKey(char, key, 'draft', true, PENDING);
+        const action = reduceChatKey(char, key, 'draft', true);
         expect(allowed.has(action.kind), `${JSON.stringify(char)} ${JSON.stringify(key)}`).toBe(
           true,
         );
       }
     }
-    // The two producing keys, for completeness: Esc aborts (even with a modifier) and Ctrl+T toggles.
-    expect(reduceChatKey('', { escape: true }, 'draft', true, PENDING).kind).toBe('abort');
-    expect(reduceChatKey('', { escape: true, ctrl: true }, 'draft', true, PENDING).kind).toBe(
-      'abort',
-    );
-    expect(reduceChatKey('t', { ctrl: true }, 'draft', true, PENDING).kind).toBe(
-      'toggle-reasoning',
-    );
+    for (const key of [{ return: true }, { backspace: true }, { delete: true }, { tab: true }]) {
+      expect(reduceChatKey('', key, 'draft', true), JSON.stringify(key)).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('a letter typed while a turn runs answers nothing — a bare letter is typing, never a decision (PR #99)', () => {
+    for (const char of ['y', 'a', 'n', 'r', 'c', 'g', '1', '2', '3', 'Y', 'N']) {
+      expect(reduceChatKey(char, KEY, '', true)).toEqual({ kind: 'none' });
+      expect(reduceChatKey(char, { ctrl: true }, '', true), `Ctrl+${char}`).not.toEqual(
+        expect.objectContaining({ kind: 'append' }),
+      );
+    }
+  });
+
+  it('Esc aborts (even with a modifier), Ctrl+T toggles the panel, Shift+Tab asks for a mode change', () => {
+    expect(reduceChatKey('', { escape: true }, 'draft', true)).toEqual({ kind: 'abort' });
+    expect(reduceChatKey('', { escape: true, ctrl: true }, 'draft', true)).toEqual({
+      kind: 'abort',
+    });
+    expect(reduceChatKey('t', { ctrl: true }, 'draft', true)).toEqual({ kind: 'toggle-reasoning' });
+    expect(reduceChatKey('', { tab: true, shift: true }, 'draft', true)).toEqual({
+      kind: 'cycle-mode',
+    });
+    // Alt+T and a bare t are not the toggle.
+    expect(reduceChatKey('t', { meta: true }, '', true)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('t', KEY, '', true)).toEqual({ kind: 'none' });
   });
 });
 
@@ -315,7 +233,7 @@ describe('applyEditorAction (the functional-updater body, cursor-general)', () =
     expect(applyEditorAction(at('ab'), { kind: 'append', char: 'c' })).toEqual(at('abc'));
     expect(applyEditorAction(at('abc'), { kind: 'backspace' })).toEqual(at('ab'));
     expect(applyEditorAction(at(''), { kind: 'backspace' })).toEqual(at('')); // no-op on an empty buffer
-    expect(applyEditorAction(at('ab'), { kind: 'cancel' })).toEqual(at('ab'));
+    expect(applyEditorAction(at('ab'), { kind: 'abort' })).toEqual(at('ab'));
     expect(applyEditorAction(at('ab'), { kind: 'none' })).toEqual(at('ab'));
     expect(applyEditorAction(at('ab'), { kind: 'submit', line: 'ab' })).toEqual(at('ab')); // submit is a non-edit
   });
@@ -592,7 +510,7 @@ describe('pasteIsEditable (the SHARED bracketed-paste gate — ADR-0068 / ADR-00
     mentionOpen: false,
     modelPickerOpen: false,
     effortPickerOpen: false,
-    reasonCaptureOpen: false,
+    permissionsSheetOpen: false,
     approvalPending: false,
   };
 

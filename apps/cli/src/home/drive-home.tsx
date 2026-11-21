@@ -105,6 +105,13 @@ import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
+import { findProjectConfigDir } from '../config/paths.js';
+import { createPermissionsPort } from '../permissions/chat-permissions.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
@@ -142,7 +149,7 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *
  * Process lifetime lives here (the controller owns the session lifetime):
  * - **Signals** — one handler for SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3), covering the Home, the in-Home chat,
- *   and MCP teardown: a clean Home exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink,
+ *   and MCP teardown: a clean Home exit (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) resolves exit 0; an EXTERNAL signal unmounts ink,
  *   tears the live chat down (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the
  *   conventional `128+signo` (`130` SIGINT / `143` SIGTERM / `129` SIGHUP / `131` SIGQUIT) so a shell pipeline still
  *   sees the interruption. A chat's own exit-code-4 is consumed by the controller loop, never leaked. Behind all of
@@ -151,6 +158,9 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
+  /** Open the `/permissions` sheet as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3): the Home ends
+   *  with success when the sheet is closed. Absent ⇒ the ordinary Home. */
+  readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
   /** Explicit output resource factory for hermetic embeddings and tests. */
@@ -983,6 +993,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onAbort,
           onModeChange,
           onSetEffort,
+          permissions,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1144,6 +1155,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
           onSetEffort,
+          // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
+          ...(permissions === undefined ? {} : { permissions }),
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };
@@ -1780,8 +1793,40 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             .catch((cause: unknown) => ownership?.surface.work.failure(cause));
         resolve(EXIT_CODES.success);
       };
+      const openHomeGrants = (): CommandGrantStore => {
+        // The project directory is found again every time, as a chat finds it when it is built (`openCommandGrants`): a `.relavium/` that
+        // appeared (a checkout, a pull, another terminal's `relavium init`) or went away since this Home started changes the root a chat
+        // keys its grants by, and a sheet that kept the old one would list nothing while the chat's grant runs unasked.
+        let currentConfigDir: string | undefined;
+        try {
+          currentConfigDir = findProjectConfigDir(deps.global.cwd, homeDir);
+        } catch {
+          // A home that cannot be resolved safely: grants then key by the working directory, as in a chat.
+        }
+        return createCommandGrantStore({
+          homeDir,
+          projectRoot: commandGrantRoot(deps.global.cwd, currentConfigDir),
+          keychain,
+        });
+      };
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+        // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
+        // `relavium permissions` read. Nothing is read until the sheet is opened.
+        permissions: createPermissionsPort(
+          {
+            // A store holds the digest key it first read for as long as it lives, and this Home lives as long as the person uses it:
+            // another terminal's `revoke --all`, then a new grant, would leave a long-lived store listing nothing while a chat that
+            // starts afterwards runs the new grant unasked. So every read and every withdrawal opens its own store.
+            grants: {
+              list: () => openHomeGrants().list(),
+              revokeById: (id) => openHomeGrants().revokeById(id),
+              matches: (argv) => openHomeGrants().matches(argv),
+            },
+            session: undefined,
+          },
+          'project',
+        ),
         startChat,
         reseatChat,
         resumeChat,
@@ -1846,6 +1891,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3): the Home opens with the sheet open and ends when it is closed.
+      if (deps.openPermissions === true) controller.openPermissionsAsCommand();
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
@@ -1910,7 +1957,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          if (!automaticSetupStarted && !homeInputSealed && deps.onboardingPrompter === undefined) {
+          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the sheet it came for.
+          if (
+            !automaticSetupStarted &&
+            !homeInputSealed &&
+            deps.onboardingPrompter === undefined &&
+            deps.openPermissions !== true
+          ) {
             automaticSetupStarted = true;
             const operation = () => openProviders('automatic');
             const pending =

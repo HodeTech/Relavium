@@ -107,7 +107,7 @@ entire checklist with **no chat-specific exception**: provider keys stay in the 
 and are attached exactly as above (the chat surface holds only a key reference), the
 session runs under the same filesystem **scope tier**, `run_command` uses the same
 `allowedCommands` allowlist (exact-match, below), and no secret ever reaches the frontend.
-A chat-only relaxation of any rule here is a security violation, not a feature.
+A chat-only relaxation of any rule here is a security violation, not a feature — with the one exception [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) records: where a person is present, an allowlist miss for `run_command` is a request to them (a card), not a refusal, and nothing runs in `auto` without the person's approval: a remembered grant that is fresh or an exact command approved for the session runs unasked, anything else (a command the repository's allowlist admits included) shows a card, and a *Once* answer to that card runs the command too.
 
 - **Conversational content is the user's data, not a managed secret.** What the user types
   into a session and the model's replies are persisted in `history.db` (SQLCipher-encrypted on
@@ -128,10 +128,14 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   confidentiality floor (`isSensitiveReadPath`: `.ssh` / `.env*` / `.aws` / `.docker/config.json` / `.envrc` /
   `.dockercfg` / … — never listed nor read) + the binary/size guards; a user typing `@path` replaces the
   `confirmAction` prompt, **never** the floor. `!`-shell runs through the **one** `run_command` boundary via the
-  additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): `enforcePolicy(allowedCommands)`
-  **before** `confirmAction`, then `spawn`/`shell:false` (no metachar expansion). **`[chat].allowed_commands` defaults
-  EMPTY ⇒ `!`-shell disabled** — a non-empty chat default is the "chat-specific relaxation" this section forbids
-  (`run_command` has no argument/file floor, so even a read-only default reopens `!cat .env`). Both inject their
+  additive `AgentSession.runUserCommand` (reusing `#runTurn`'s dispatch context verbatim): the allowlist is judged first;
+  in a workflow (no approval regime) the allowlist is the only authority, a miss is refused and an empty set disables `run_command`; a plain, `--json` or one-shot surface has a regime whose hook refuses every governed call and hides the tool, so nothing runs there; and in an
+  interactive chat a miss reaches the mode-aware `confirmAction` as a request (`ask`/`accept-edits` show a card, `plan` refuses,
+  `auto` shows a card unless a remembered grant (and no file write a chat applied in the project since the grant, [ADR-0138](../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md)) or an earlier session answer pre-approved that exact argv; the repository's allowlist is not a pre-approval there —
+  [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), then `spawn`/`shell:false` (no
+  metachar expansion). **`[chat].allowed_commands` defaults EMPTY, pre-approving nothing** — a non-empty chat default is the
+  "chat-specific relaxation" this section forbids (`run_command` has no argument/file floor, so even a read-only default
+  reopens `!cat .env`). Both inject their
   bytes as **UNTRUSTED, nonce-fenced, bounded** context. **Editing the chat `allowed_commands` set, the input-layer
   boundary reuse, or the read-side confidentiality floor is a mandatory-review trigger** (below).
 
@@ -865,19 +869,24 @@ This is the **binding home** for the tool-policy rules; the rationale is
 restated). Three of the four rules below are **security tightenings** — public
 workflow-API tightenings, cheap now because no workflow exists yet, never sold as additive.
 
-- The `run_command` built-in tool spawns **model-driven shell execution**. Only commands
-  on the workflow's `allowedCommands` allowlist execute (an
-  unlisted command never runs). File-tool scope does not constrain arbitrary subprocess
+- The `run_command` built-in tool spawns **model-driven shell execution**. In a workflow only commands
+  on its `allowedCommands` allowlist execute (an
+  unlisted command never runs; an interactive chat is the one place a person can approve such a command,
+  on its card — see the command-card bullet below). File-tool scope does not constrain arbitrary subprocess
   arguments or provide OS filesystem isolation; an allowed command can access files or
   network resources using its own process authority. Review its argument surface and the
   host's actual resource/time controls rather than inferring an OS sandbox from a root grant.
   It never receives a provider key or any secret. Treat its output (stdout/stderr/exit code)
   as untrusted input.
 - **`run_command` matches exactly by default.** *(Security tightening — ADR-0029(a).)* An
-  `allowedCommands` entry is matched **exactly** against the resolved command — not as a
-  prefix or substring — so `git` does not authorize `git push --force` or `gitleaks`.
-  Glob/wildcard matching is **opt-in** via `allowedCommandGlobs`; the plain list is
-  exact-only.
+  `allowedCommands` entry is a command line, split into tokens by one quote-aware tokenizer
+  and matched **exactly, element by element**, against the resolved argv — not as a prefix,
+  a substring or a joined string — so `git` does not authorize `git push --force` or
+  `gitleaks`, and `cat a b` does not authorize `cat "a b"` (one argument with a space)
+  ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3).
+  Glob/wildcard matching is **opt-in** via `allowedCommandGlobs`, matched against the
+  space-joined argv and so unable to tell one argument with a space from two; the plain list
+  is exact-only. An entry with an open quote is rejected at load, never a silent non-match.
 - **Node `tools:` narrow-only, never escalate.** *(Security tightening — ADR-0029(b).)* A
   workflow agent-node's `tools:` may only **restrict** the agent's granted toolset, never
   add to it. A node listing a tool the agent was not granted is refused when the **run plan is built** — a
@@ -927,6 +936,51 @@ workflow-API tightenings, cheap now because no workflow exists yet, never sold a
   cross-surface contract, including the golden vectors a non-TypeScript host is verified
   against, is [mcp-integration.md](../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract)
   ([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md)).
+
+- **A remembered command grant is a keyed digest of one exact argv under one project root, kept
+  by the operator, and never the command.** *(ADR-0118 §2; MVP-4.)* The store is
+  `~/.relavium/command-grants.ndjson` (`0600`, append-only with tombstones), never a repository
+  file, so a clone cannot arrive pre-trusted. A record carries HMAC-SHA256 digests under a
+  per-installation key held in the OS keychain — generated on the first write, never on a read, and
+  never in a file, a log or an event — and a label (program name, argument count, ISO time) in which
+  the program is named only when `argv[0]` is a bare name that resolves on the `PATH`. A review
+  confirms: no argument, path or free-text `argv[0]` reaches the file, `relavium permissions list`
+  or a log; the grant digest binds the root digest and length-prefixes every element; **any
+  unparseable line, a symlink or non-regular file at the path, or a bound passed on read makes the
+  whole store read as "no grants"**; a revocation holds wherever it sits in the file (a replayed or
+  reordered grant line stays revoked) and withdraws every record of its argv; a locked keychain
+  means *nothing matches* and *Remember is not offered*; `revoke --all` needs no key, no project
+  root and no readable file. The store defends against forgery (the HMAC), torn writes and replay;
+  it does **not** defend against a process running as the same user that deletes lines or the file
+  (tombstones are not authenticated), restores an older copy, or reads the keychain key. The record's
+  MAC covers **every** field, the label (`program`, `args`) and the `id` included, so a relabelled or
+  re-`id`ed record is ignored; what it does not give is proof that the label *describes* the hidden
+  argv (a label is display text the store cannot check against a digest). A revocation is by record
+  `id`, wherever it sits in the file. The mode behavior (`ask` and `accept-edits` still show the card
+  for a remembered command, and only a *Session* answer given in the current chat removes it there;
+  `auto` runs unasked **only** a command the person remembered or approved for the session, and
+  asks about a remembered one again after a file write a chat applied in the project, until
+  *Remember* renews it, [ADR-0138](../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md))
+  is [chat-session.md](../reference/cli/chat-session.md#chat-modes--per-tool-approval-25e-adr-0057)'s;
+  headless paths and workflows never read the store. The format, bounds and failure table are
+  [command-permissions.md](../reference/cli/command-permissions.md). A review also confirms the write
+  marks: `command-write-marks.json` is keyed by the grants' root digest, authenticated by the
+  installation key, replaced whole (never appended), never overwritten when unreadable, and removed
+  by `revoke --all`; losing it can only make a remembered command run unasked again, as the chat
+  without the file did.
+- **The command card shows the whole command, and the answers it offers are the narrowest that fit.** *(ADR-0118 §1; MVP-4
+  step 4.)* A review confirms: the card's target is the entire argv as one quoted line and its body one row per argument
+  (`["cat","a b"]` and `["cat","a","b"]` read differently on the card, in the event preview and in the in-process copy);
+  a line too long for the title rows is a shortened target, so every approving answer stays locked until the full view has
+  been read, and a command the review document cannot hold (over 63 arguments, or a value over 4,096 characters) is a blocked
+  card, never an approvable one; every masked span of a command must be revealed and displayed before an approving answer counts
+  (a file card requires only the flagged ones); *This session* and *Remember* are withheld while the page does not show the whole
+  command, and for a command that names a protected path (Once only); *Remember* is also withheld for a code carrier, for a
+  command that a fresh grant already covers; it **is** offered for a command the repository's allowlist admits (the list pre-approves nothing in `auto`) and for a grant that a later file write outdated (it renews it), and it is withheld when the store cannot write; a Remember's session approval is linked to its
+  grant, so a revoke withdraws it; `Ctrl+O` is a two-step answer behind the same dwell, quiet, typeahead and lockout guards as `Ctrl+G`; the hook
+  narrows any answer the card did not offer to Once; a Remember that cannot be written approves the call once and says why
+  without the command; the code-carrier table and the protected-path check are warnings, never refusals, and are not the
+  boundary.
 
 ### Expression sandbox (`condition` / `transform` / `merge_fn`)
 
@@ -1027,21 +1081,26 @@ security invariants** a review must confirm are:
   provider-URL echo strips a stricter zero-width superset. **Never embed literal bidi bytes in
   source** — the sanitizer regex uses `\u` escapes.
 - **Interactive per-tool approval is fail-closed and cannot be widened by a keystroke.** During a
-  pending approval the card answers ONLY the Ctrl chords `Ctrl+Y` (once), `Ctrl+G` (session-wide, confirmed by Enter), `Ctrl+N` (deny) and
-  `Ctrl+R` (open a reject-with-reason capture), plus `[esc]`/Ctrl-C (stop the turn); while a card is open the card consumes every other key (the
+  pending approval the card answers ONLY the Ctrl chords `Ctrl+Y` (once), `Ctrl+G` (session-wide, confirmed by Enter), `Ctrl+O` (a command card only: remember this exact command for the project, confirmed by Enter), `Ctrl+N` (deny) and
+  `Ctrl+R` (open a reject-with-reason capture), plus `Esc`/`Ctrl+C`, which are matched BEFORE every answer chord and resolve an approval only as a **rejection** (`Esc` on an approval's full view only steps back to the card, answering nothing: [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §4; it never approves either): the call is settled as a user rejection before the abort is signalled, so no key can approve on the way out and the call is recorded rejected, never cancelled ([ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) §2; the registry keeps a decided `user_rejected` a denial even when the abort follows it in the same tick). `Esc` inside the reason box or the full view's search box only closes the box. The continue-checkpoint card's `Ctrl+Y` spends rounds, so it clears the same input guards ([ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §4); while a card is open the card consumes every other key (the
   VIEW-ONLY reasoning toggle, Ctrl+T, is reachable only when no card is open). A bare letter answers nothing (typing at a card must never decide it, PR #99), and any other modified chord
   (Ctrl/Alt) never silently picks the most-permissive approve/reject. The `Ctrl+R` reason is a USER-typed reject enrichment only — sanitized (terminal +
   bidi stripped, one line) and length-bounded before it rides the secret-free denial; it never
   changes the floor or "a user deny is final". Off a TTY (`--json` / piped / one-shot `agent run`)
   the one canonical `nonInteractiveApprovalPrompt` DENIES every governed dispatch — never a hang,
   never an auto-approve.
-- **A recoverable SCOPE denial is safe by construction.** On the `recoverToolFailures` chat surfaces,
-  exactly the two SCOPE denials refused BEFORE any side effect (a media scope denial + the fs pure
-  scope-tier escape) are fed back to the model with a **secret-free, path-free** reason so it adapts to
-  an in-bounds path — the floor still denies every attempt (no bypass; the bounded workspace-boundary
-  signal a probing model could gather is accepted, matching the pre-existing not-found-read feedback).
-  Every OTHER `tool_denied` — confidentiality (secret-store read), protected-path, symlink/hard-link,
-  egress-SSRF, and user/guardrail — stays FATAL. The authoritative enumeration of which denials are
+- **A recoverable refusal is safe by construction.** On the `recoverToolFailures` chat surfaces,
+  exactly three refusals decided BEFORE any side effect are fed back to the model with a **secret-free**
+  reason so it adapts: a media scope denial, the fs pure scope-tier escape, and the **lexical
+  protected-path arm** (a write whose path *text* names a protected directory — `.git`, `.relavium`, `.ssh`, the host's stage directory and, since PR #101, git's XDG user-global `.config/git/` (a run of consecutive segments, so a bare `git` elsewhere stays writable; git reads its `config` as it reads `~/.gitconfig`, and `git_status` runs without a card) — or a shell startup or git configuration file,
+  decided without any filesystem resolution; one fixed text that names neither the list nor the target) —
+  the floor still denies every attempt (no bypass; the bounded workspace-boundary signal a probing model
+  could gather is accepted, matching the pre-existing not-found-read feedback).
+  Every OTHER `tool_denied` — confidentiality (secret-store) refusals, a protected path only resolution
+  reveals, symlink/hard-link, egress-SSRF and a guardrail — stays FATAL, **except the person's own
+  rejection, a mode refusal and the headless *unavailable* refusal, which return as one fixed text per class**
+  ([ADR-0117](../decisions/0117-a-denied-tool-call-returns-to-the-model.md), MVP-3b; a text never depends on the
+  target's state, so it is no probe oracle). The authoritative enumeration of which denials are
   `recoverable` and which stay fatal (and why) is the canonical `recoverable` note in
   [tool-registry.md §error taxonomy](../reference/shared-core/tool-registry.md#error-taxonomy) — not
   restated here.
@@ -1091,7 +1150,8 @@ whether a program runs on a user's machine, and a weakening is invisible from th
 filter (`ResolverCapabilities.readFile`) — which must jail to the workspace root and reject path
 traversal, a duty the pure engine delegates to each host**, **the CLI chat input layer — the `@`-mention
 read path, the `!`-shell `runUserCommand` boundary, the `[chat].allowed_commands` set, or the read-side
-confidentiality floor (`isSensitiveReadPath`) ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))**,
+confidentiality floor (`isSensitiveReadPath`) ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)); the remembered-command grant store and the command card
+([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md), [command-permissions.md](../reference/cli/command-permissions.md))**,
 node `tools:` narrowing or `secret`-typed input handling, prompt/tool-call construction, **media byte delivery (`read_media` /
 Range / upload) and the media `url` carrier**, the DB encryption path, or a new dependency. For
 **managed mode**, also: the gateway authn/z path, key-pool selection, the metering/billing

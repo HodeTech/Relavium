@@ -1,5 +1,7 @@
 import type { ToolPreview } from '@relavium/core';
 
+import type { CommandCardFacts } from '../../chat/command-facts.js';
+import { sanitizeInline } from '../sanitize.js';
 import type { ReviewDocument } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
 
@@ -140,6 +142,72 @@ export interface CardWarningInput {
   readonly linesNotShown?: number;
   /** The card's drawable width, so a warning is wrapped by US and the row budget is exact. */
   readonly columns: number;
+  /** A command's standing, directory and warnings (ADR-0118 §1): drawn before the other warnings. Absent for any other call. */
+  readonly commandFacts?: CommandCardFacts | undefined;
+  /** The denial reason box is open: a command's plain rows (standing, directory) give way to it; its warnings stay. */
+  readonly denialOpen?: boolean | undefined;
+}
+
+/** `text` cut to `width` display columns from the FRONT, keeping its end (the part of a path that names where it is). */
+function keepEnd(text: string, width: number): string {
+  if (displayWidth(text) <= width) return text;
+  const kept: string[] = [];
+  let used = 1; // the ellipsis
+  for (const char of [...text].reverse()) {
+    const next = displayWidth(char);
+    if (used + next > width) break;
+    kept.unshift(char);
+    used += next;
+  }
+  return `\u2026${kept.join('')}`;
+}
+
+/** The standing row of a command card: where the command stands before the person answers. */
+export function commandStandingRow(facts: CommandCardFacts): string {
+  switch (facts.standing) {
+    case 'allowlisted':
+      // The allowlist is the project's file, not the person's: `auto` asks about such a command all the same.
+      return 'Standing: on this project’s allowlist';
+    case 'remembered':
+      if (facts.filesChanged === true) {
+        return 'Standing: remembered for this project; asks because files changed this session';
+      }
+      return facts.grantOutdated === true
+        ? 'Standing: remembered for this project; asks because files changed since'
+        : 'Standing: remembered for this project';
+    default:
+      return 'Standing: not pre-approved';
+  }
+}
+
+/**
+ * The rows a command card adds (ADR-0118 §1), as plain text, wrapped by the caller: the standing, the directory the host pins,
+ * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, but it is
+ * still shown through the one-line sanitizer.
+ */
+export function commandFactRows(
+  facts: CommandCardFacts,
+  columns = 76,
+  compact = false,
+): readonly string[] {
+  const label = 'Runs in: ';
+  const rows: string[] = [];
+  // While the reason box is open the card has no room to spare: the warnings stay, the plain rows go (the box is for typing).
+  if (!compact) {
+    const standing = commandStandingRow(facts);
+    const directory = sanitizeInline(facts.cwd) || '(the workspace)';
+    // One row when the directory still has room to say where it is (it keeps its END), else two: a row saved is a row of the command.
+    const separator = ' \u00b7 ';
+    const room = columns - displayWidth(standing) - separator.length - label.length;
+    if (room >= 24) rows.push(`${standing}${separator}${label}${keepEnd(directory, room)}`);
+    else rows.push(standing, `${label}${keepEnd(directory, Math.max(8, columns - label.length))}`);
+  }
+  // One row each: the key that is not offered is already missing from the legend, so these say why in few words.
+  if (facts.runsCode)
+    rows.push('\u26a0 Runs code: a shell, an inline script or a wrapper. Remember is not offered.');
+  if (facts.protectedPath)
+    rows.push('\u26a0 Names a protected path (its output goes to the model). Allow once only.');
+  return rows;
 }
 
 /** Word-wrap `text` to `width` display columns; a continuation row is indented two columns. */
@@ -166,7 +234,11 @@ export function wrapWords(text: string, width: number): readonly string[] {
  */
 export function cardWarnings(input: CardWarningInput): readonly string[] {
   const { document } = input;
-  const warnings: string[] = [];
+  const warnings: string[] =
+    input.commandFacts === undefined
+      ? []
+      : [...commandFactRows(input.commandFacts, input.columns, input.denialOpen === true)];
+  const factRows = warnings.length;
   // The lock sentence is the instruction for getting Allow back, so it is only true until the person has
   // inspected: afterwards the key rows offer Allow, and a warning that still says "locked" would contradict them
   //. The fact itself stays — it is what the person was shown.
@@ -179,7 +251,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   }
   if (document !== undefined && document.required.length > 0) {
     const count = document.masks.length;
-    const values = `${count} masked value${count === 1 ? '' : 's'} in this change.`;
+    // A command's masked value can show up in two places (its quoted line and its own row), and it is not a "change".
+    const values = `${count} masked value${count === 1 ? '' : 's'} in this ${input.commandFacts === undefined ? 'change' : 'command'}.`;
     warnings.push(
       input.inspected
         ? `\u26a0 ${values}`
@@ -197,7 +270,13 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   if (document !== undefined && document.preview.diff === undefined && linesNotShown > 0) {
     // The same slot, the same way out as the diff warning above: the full view lists the rest, and no Allow-all is offered.
     warnings.push(
-      `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`,
+      input.commandFacts === undefined
+        ? `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`
+        : `\u26a0 ${linesNotShown} row${linesNotShown === 1 ? '' : 's'} of this command ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v]${
+            input.commandFacts.offers.session || input.commandFacts.offers.remember
+              ? '; This session and Remember are offered only while every row is on screen.'
+              : '.'
+          }`,
     );
   }
   const diff = document?.preview.diff;
@@ -205,7 +284,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const endings = endingsWarning(diff);
     if (endings !== undefined) warnings.push(`\u26a0 Line endings: ${endings}.`);
   }
-  if (warnings.length === 0 && !input.inspected) {
+  // The generic lock sentence only when nothing above already explained the lock (a command's own fact rows never do).
+  if (warnings.length === factRows && !input.inspected) {
     warnings.push('\u26a0 Allow is locked until the required content has been inspected ([v]).');
   }
   return warnings.flatMap((warning) => wrapWords(warning, input.columns));
@@ -221,6 +301,9 @@ export const CARD_TYPEAHEAD_NOTE =
   'Keys were typed just before this answer — wait a moment, then press again.';
 export const CARD_LOCKOUT_NOTE =
   'This card opened right after your last answer — wait, then press again.';
+/** An Enter that came before the question could be read, or after it had lapsed: the question is gone and nothing was granted. */
+export const CARD_ENTER_NOTE =
+  'Too early or too late for Enter — nothing was allowed. Press the key again.';
 
 /** How a tool's `[Ctrl+G]` scope reads: what "always" would cover, in the person's words. */
 export function cardScopePhrase(toolId: string): string {
@@ -239,6 +322,12 @@ export interface CardKeyInput {
   readonly scope: string;
   /** The first `Ctrl+G` was pressed and the card is waiting for ENTER (PR #99 corrective sitting G1, security sitting H1). */
   readonly confirmAlways?: boolean;
+  /** The card is a command's (ADR-0118 §1): the grants are worded for THIS exact command, not for a tool. */
+  readonly command?: boolean;
+  /** Whether `Ctrl+O` (remember this exact command for this project) is offered. */
+  readonly remember?: boolean;
+  /** The first `Ctrl+O` was pressed and the card is waiting for ENTER. */
+  readonly confirmRemember?: boolean;
 }
 
 /**
@@ -250,15 +339,31 @@ export interface CardKeyInput {
  * confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
  */
 export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
+  if (input.confirmRemember === true)
+    return [
+      'Press Enter to allow this exact command now and remember it for this project',
+      'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn',
+    ];
   if (input.confirmAlways === true)
     return [
-      `Press Enter to allow all ${input.scope} this session`,
-      'Any other key cancels \u00b7 Esc stops the turn',
+      input.command === true
+        ? 'Press Enter to allow this exact command for this session'
+        : `Press Enter to allow all ${input.scope} this session`,
+      input.command === true
+        ? 'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn'
+        : 'Any other key cancels \u00b7 Esc stops the turn',
     ];
+  const session =
+    input.command === true
+      ? '   [Ctrl+G] Allow this session'
+      : `   [Ctrl+G] Allow all ${input.scope} this session`;
   const grants = input.inspected
-    ? `[Ctrl+Y] Allow${input.cacheable ? `   [Ctrl+G] Allow all ${input.scope} this session` : ''}`
-    : '(Allow is locked until you inspect the change)';
-  return [grants, '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn'];
+    ? `[Ctrl+Y] Allow${input.command === true ? ' once' : ''}${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Allow + remember' : ''}`
+    : input.command === true
+      ? '(Allow is locked until you read the whole command)'
+      : '(Allow is locked until you inspect the change)';
+  const full = input.command === true ? 'Full view' : 'Full diff';
+  return [grants, `[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] ${full}   Esc stops the turn`];
 }
 
 /** Rows a denial-reason capture takes beyond the key rows it replaces (the disclosure above the input). */

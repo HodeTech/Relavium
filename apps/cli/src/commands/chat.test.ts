@@ -37,6 +37,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import { createCommandGrantStore } from '../permissions/command-grants.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   ABORTED_EFFECT_ATTENTION_NOTICE,
@@ -1075,6 +1076,203 @@ describe('chatCommand', () => {
     expect(err()).toContain('Workflows (1):');
     expect(err()).toContain('deploy'); // the catalog entry's slug, whether the file is valid or flagged invalid
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('/permissions on a headless chat says remembered commands are not available, never ends the session, and takes no argument (ADR-0137 §2)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/permissions', '/permissions --revoke 1', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('Remembered commands are not available in this chat.');
+    expect(
+      out,
+      'the typed forms are gone: the dispatch rejects the token and says where the job went',
+    ).toContain(
+      "/permissions: unknown argument '--revoke'. Open /permissions and press d on a row to withdraw it.",
+    );
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  it('an interactive chat hands the driver a /permissions port over the real session approvals and remembered commands (ADR-0137 §2)', async () => {
+    const entries = new Map<string, string>();
+    const keychain = {
+      get: (account: string) => entries.get(account) ?? null,
+      set: (account: string, secret: string) => void entries.set(account, secret),
+      delete: (account: string) => entries.delete(account),
+    };
+    const seed = createCommandGrantStore({
+      homeDir: home,
+      projectRoot: cwd,
+      keychain,
+      findProgram: (name) => Promise.resolve(name === 'npm' ? '/usr/bin/npm' : undefined),
+    });
+    expect((await seed.remember(['npm', 'test'])).ok).toBe(true);
+    const { d } = deps(
+      [],
+      [
+        [
+          { type: 'tool_call_start', id: 'call-1', name: 'run_command' },
+          {
+            type: 'tool_call_delta',
+            id: 'call-1',
+            argsJsonDelta: JSON.stringify({ command: process.execPath, args: ['--version'] }),
+          },
+          { type: 'tool_call_end', id: 'call-1' },
+          stop('tool_use'),
+        ],
+        textTurn('Done.'),
+      ],
+    );
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        keychain,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
+          try {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            const port = ctx.permissions;
+            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            expect(port.surface).toBe('chat');
+            const turn = ctx.processLine('Run node --version');
+            await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
+            // The card names the session workspace and offers every answer (this is the production mode control).
+            expect(ctx.store.getSnapshot().approval?.facts?.offers).toEqual({
+              session: true,
+              remember: true,
+            });
+            ctx.store.answerApproval({ outcome: 'approve', scope: 'always' }); // "this session"
+            await turn;
+            const listed = port.load();
+            expect(listed.project).toMatchObject({
+              ok: true,
+              rows: [{ label: 'npm, 1 argument' }],
+            });
+            expect(listed.session?.map((row) => [row.argv, row.alsoRemembered])).toEqual([
+              [[process.execPath, '--version'], false],
+            ]);
+            // Withdraw the session approval by its argv, then the remembered command by its id: both reach their stores.
+            const sessionRow = listed.session?.[0];
+            if (sessionRow === undefined) throw new Error('expected the session approval');
+            expect(port.withdraw({ kind: 'session', row: sessionRow })).toEqual({
+              tone: 'done',
+              text: 'Session approval withdrawn. It needs approval again.',
+            });
+            const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
+            if (grantRow === undefined) throw new Error('expected the remembered command');
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'done',
+              text: 'Withdrawn. Auto mode asks about it again.',
+            });
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'note',
+              text: 'That row was already withdrawn.',
+            });
+            const after = port.load();
+            expect(after.session).toEqual([]);
+            expect(after.project).toEqual({ ok: true, rows: [] });
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          } finally {
+            off();
+          }
+        },
+      },
+    );
+    expect(
+      createCommandGrantStore({ homeDir: home, projectRoot: cwd, keychain }).matches([
+        'npm',
+        'test',
+      ]),
+      'the withdrawal reached the file',
+    ).toBe(false);
+  });
+
+  it('a Remember answered on the real card writes the grant and a linked session approval, and withdrawing the grant from the port takes both (ADR-0137 §2)', async () => {
+    const entries = new Map<string, string>();
+    const keychain = {
+      get: (account: string) => entries.get(account) ?? null,
+      set: (account: string, secret: string) => void entries.set(account, secret),
+      delete: (account: string) => entries.delete(account),
+    };
+    const { d } = deps(
+      [],
+      [
+        [
+          { type: 'tool_call_start', id: 'call-1', name: 'run_command' },
+          {
+            type: 'tool_call_delta',
+            id: 'call-1',
+            argsJsonDelta: JSON.stringify({ command: process.execPath, args: ['--version'] }),
+          },
+          { type: 'tool_call_end', id: 'call-1' },
+          stop('tool_use'),
+        ],
+        textTurn('Done.'),
+      ],
+    );
+    let notices: () => string[] = () => [];
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        keychain,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          notices = () =>
+            ctx.store
+              .getSnapshot()
+              .state.transcript.filter((entry) => entry.role === 'notice')
+              .map((entry) => entry.text);
+          const off = ctx.handle.subscribe((event) => ctx.store.apply(event));
+          try {
+            ctx.startSession();
+            await ctx.onActivated?.(() => !ctx.shouldStop());
+            const port = ctx.permissions;
+            if (port === undefined) throw new Error('an interactive chat opens the sheet');
+            const turn = ctx.processLine('Run node --version');
+            await vi.waitFor(() => expect(ctx.store.getSnapshot().approval).toBeDefined());
+            ctx.store.answerApproval({ outcome: 'approve', scope: 'remember' });
+            await turn;
+            expect(notices().join('\n')).toContain('Allowed now and remembered for this project.');
+            const listed = port.load();
+            expect(listed.project.ok && listed.project.rows).toHaveLength(1);
+            expect(listed.session, 'the Remember also approved it for the session').toHaveLength(1);
+            expect(listed.session?.[0]?.alsoRemembered, 'and the row says so').toBe(true);
+            const grantRow = listed.project.ok ? listed.project.rows[0] : undefined;
+            if (grantRow === undefined) throw new Error('expected the remembered command');
+            expect(port.withdraw({ kind: 'project', row: grantRow })).toEqual({
+              tone: 'done',
+              text: 'Withdrawn, with its session approval. It needs approval again.',
+            });
+            expect(port.load().session).toEqual([]);
+            await ctx.processLine('/exit');
+            return { kind: 'exit' };
+          } finally {
+            off();
+          }
+        },
+      },
+    );
+    expect(
+      createCommandGrantStore({ homeDir: home, projectRoot: cwd, keychain }).list(),
+      'the withdrawal reached the file',
+    ).toMatchObject({ ok: true, grants: [] });
+  });
+
+  it('/permissions refuses a stray word at the dispatch, like every other command', async () => {
+    const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain(
+      "/permissions: unknown argument 'now'. Open /permissions and press d on a row to withdraw it.",
+    );
   });
 
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
@@ -3997,6 +4195,41 @@ describe('drivePlain', () => {
     await done;
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
   });
+
+  it('the FIRST SIGINT reaches the turn that is in flight, not only the reader: it finalizes while the line is still being processed (ADR-0115 §4)', async () => {
+    const stdin = new PassThrough();
+    const { ctx } = await plainCtx(stdin);
+    let release: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const finalize = vi.fn();
+    const blocked: ChatDriveContext = {
+      ...ctx,
+      processLine: () => {
+        started = true;
+        return inFlight; // a turn that has not finished
+      },
+      finalize,
+    };
+    const before = process.listeners('SIGINT').slice();
+    const done = drivePlain(blocked);
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    stdin.write('a long turn\n');
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(finalize, 'nothing has asked the session to stop yet').not.toHaveBeenCalled();
+    handler('SIGINT');
+    expect(
+      finalize,
+      'the turn is still in flight, and the signal has already reached it',
+    ).toHaveBeenCalledTimes(1);
+    release();
+    await done;
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('makePlainPrinter', () => {
@@ -4350,5 +4583,41 @@ describe('driveJson (2.Q)', () => {
     handler('SIGINT'); // invoke directly (not process.emit) — it closes the readline, ending the loop
     await done;
     expect(process.listeners('SIGINT').filter((l) => !before.includes(l))).toHaveLength(0); // finally removed it
+  });
+
+  it('the FIRST SIGINT reaches the turn that is in flight, not only the reader (ADR-0115 §4)', async () => {
+    const stdin = new PassThrough();
+    const { ctx } = await jsonCtx(stdin);
+    let release: () => void = () => undefined;
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    const finalize = vi.fn();
+    const blocked: ChatDriveContext = {
+      ...ctx,
+      processLine: () => {
+        started = true;
+        return inFlight;
+      },
+      finalize,
+    };
+    const before = process.listeners('SIGINT').slice();
+    const done = driveJson(blocked);
+    const added = process.listeners('SIGINT').filter((l) => !before.includes(l));
+    const handler = added[0];
+    if (typeof handler !== 'function') throw new TypeError('expected a registered SIGINT handler');
+    stdin.write('a long turn\n');
+    await vi.waitFor(() => expect(started).toBe(true));
+    expect(finalize).not.toHaveBeenCalled();
+    handler('SIGINT');
+    expect(
+      finalize,
+      'the turn is still in flight, and the signal has already reached it',
+    ).toHaveBeenCalledTimes(1);
+    release();
+    await done;
+    // The stream's own finally finalizes again (idempotent), so only the moment of the signal is counted above.
+    expect(finalize).toHaveBeenCalled();
   });
 });

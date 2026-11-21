@@ -1,6 +1,13 @@
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { ToolDisplay } from './tool-display.js';
-import { cardKeyRows, endingsWarning, wrapWords, type CardKeyInput } from './tool-review-card.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
+import {
+  cardKeyRows,
+  commandFactRows,
+  endingsWarning,
+  wrapWords,
+  type CardKeyInput,
+} from './tool-review-card.js';
 import {
   escapeReviewCharacter,
   ROW_TOKENS_PER_COLUMN,
@@ -88,6 +95,8 @@ export interface FullWarningInput {
   readonly document: ReviewDocument | undefined;
   readonly pending: InspectionPending;
   readonly columns: number;
+  /** A command's standing, directory and warnings (ADR-0118 §1), shown above the locks on its full view too. */
+  readonly commandFacts?: CommandCardFacts | undefined;
 }
 
 /**
@@ -96,7 +105,10 @@ export interface FullWarningInput {
  * convention — the card's rule, from the card's function.
  */
 export function fullWarnings(input: FullWarningInput): readonly string[] {
-  const warnings: string[] = [];
+  const warnings: string[] =
+    input.kind === 'approval' && input.commandFacts !== undefined
+      ? [...commandFactRows(input.commandFacts, usableColumns(input.columns))]
+      : [];
   if (input.kind === 'approval') {
     if (input.pending.target) {
       // A target that hides a masked value is only "on screen" once that value is revealed too: say both keys.
@@ -246,19 +258,49 @@ export function fullNavLegend(input: NavLegendInput): readonly string[] {
   return [...packRows(move, width), ...packRows(tools, width)];
 }
 
+/**
+ * The second row while a session-wide or remember question waits in the FULL view (ADR-0137 §4). Any other key cancels the question
+ * and grants nothing; `Esc` is one of them and, here, also steps back to the card, so the card's `Esc stops the turn` would be false;
+ * `Ctrl+C` stops the turn from anywhere and is named, because the stop key stays named wherever it works. The command variants
+ * (an Enter confirms) and the tool variant (any key) differ only in their first words.
+ */
+export const FULL_CONFIRM_ENTER_ROW =
+  'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn';
+export const FULL_CONFIRM_ANY_ROW = 'Any other key cancels · Esc back · Ctrl+C stops the turn';
+/**
+ * The full view's second answer row: the refusals that exist here, the way back, and the stop key. `Esc` steps back to the card
+ * (ADR-0137 §4) and `Ctrl+C` stops the turn; the row names both, so neither is learned by pressing it.
+ */
+export const FULL_DENY_ROW =
+  '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+
 /** The grants row the card shows, then the refusals: the same words, minus the keys that only exist on the card, plus the way back. */
 export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
   const rows = cardKeyRows(input);
-  if (input.confirmAlways === true) return rows;
+  if (input.confirmAlways === true || input.confirmRemember === true)
+    return [
+      rows[0],
+      input.confirmRemember === true || input.command === true
+        ? FULL_CONFIRM_ENTER_ROW
+        : FULL_CONFIRM_ANY_ROW,
+    ];
   // The full view names what is owed in its warning row; the row here only says that Allow is off, not the card's generic cause.
-  return [
-    input.inspected ? rows[0] : '(Allow is locked — see the warning above)',
-    '[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn',
-  ];
+  return [input.inspected ? rows[0] : '(Allow is locked — see the warning above)', FULL_DENY_ROW];
+}
+
+/**
+ * The two answer rows while the full view's search box is open (ADR-0115 §3). The box owns the keyboard: a chord is not an answer in
+ * it and `b` is typing, so the card's rows would name keys that do nothing. `Esc` closes the box and `Ctrl+C` is what stops the turn.
+ */
+export function fullSearchRows(): readonly [string, string] {
+  return ['Enter finds · Esc closes the search box', 'Ctrl+C stops the turn'];
 }
 
 /** The sentence ADR-0129 §5 moved from the card to the full view. */
 export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or permission denials.';
+/** A command card's full view says the opposite of that sentence: a command is not held to the file tools' path rules. */
+export const FULL_COMMAND_NOTE =
+  'Approving runs exactly this command; file-tool path rules do not limit it.';
 /** The one line a details screen ends on. */
 export const DETAILS_CLOSE_NOTE =
   '[b] Back to the list   Esc closes · viewing never executes a tool';
@@ -278,6 +320,8 @@ export interface FullChromeInput {
   /** The card's key input, for an approval; absent for a details screen. */
   readonly keys: CardKeyInput | undefined;
   readonly searching: boolean;
+  /** A command's facts (ADR-0118 §1); absent for any other call. */
+  readonly commandFacts?: CommandCardFacts | undefined;
 }
 
 export interface FullChrome {
@@ -305,10 +349,17 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     document: input.document,
     pending: input.pending,
     columns: input.columns,
+    commandFacts: input.commandFacts,
   });
   const nav = fullNavLegend({ ...input.nav, columns: input.columns });
-  const answers = input.keys === undefined ? [] : fullAnswerRows(input.keys);
-  const note = input.kind === 'approval' ? FULL_PROTECTED_NOTE : DETAILS_CLOSE_NOTE;
+  const answers =
+    input.keys === undefined ? [] : input.searching ? fullSearchRows() : fullAnswerRows(input.keys);
+  const note =
+    input.kind !== 'approval'
+      ? DETAILS_CLOSE_NOTE
+      : input.commandFacts === undefined
+        ? FULL_PROTECTED_NOTE
+        : FULL_COMMAND_NOTE;
   const rows =
     header.length +
     (input.hasTarget ? 1 : 0) +
@@ -422,7 +473,7 @@ export function escapedFit(
 }
 
 /**
- * Split a key legend into its `[key]` labels, `Esc` and the words between, in one pass over the row. A label is a `[`, at least one
+ * Split a key legend into its `[key]` labels, `Esc`, `Ctrl+C` (the stop key every legend names) and the words between, in one pass over the row. A label is a `[`, at least one
  * character and the next `]`; a `[` with no `]` after it is plain text. (The same split a regular expression gave, which backtracked
  * quadratically on a long run of `[`.)
  */
@@ -438,6 +489,8 @@ export function keyLabelParts(row: string): readonly string[] {
       if (close > index + 1) end = close + 1;
     } else if (row.startsWith('Esc', index)) {
       end = index + 3;
+    } else if (row.startsWith('Ctrl+C', index)) {
+      end = index + 6;
     }
     if (end === -1) {
       index++;

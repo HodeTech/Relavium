@@ -20,7 +20,7 @@ import {
   type DbClient,
 } from '@relavium/db';
 import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavium/shared';
-import type { AskUserDelegate, AskUserRequest } from '@relavium/core';
+import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { render as renderInk, type Instance } from 'ink';
@@ -34,6 +34,13 @@ import {
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { findProjectConfigDir } from '../config/paths.js';
+import type { KeychainStore } from '../secrets/keychain.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
@@ -323,9 +330,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         releaseJoin();
         if (ui.controller.getSnapshot().mode === 'chat') {
           ui.controller.handleKey('c', CTRL_C);
+          ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
         }
         ui.controller.handleKey('c', CTRL_C);
+        ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await running;
       }
       expect(closeMcp).toHaveBeenCalledOnce();
@@ -382,9 +391,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     } finally {
       if (ui.controller.getSnapshot().mode === 'chat') {
         ui.controller.handleKey('c', CTRL_C);
+        ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
       }
       ui.controller.handleKey('c', CTRL_C);
+      ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await running;
     }
   });
@@ -499,6 +510,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(home.controller.getSnapshot().notice).toContain('another directory');
       expect(build).toHaveBeenCalledTimes(1);
       home.controller.handleKey('c', { ctrl: true });
+      home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
       expect(await running).toBe(0);
     },
   );
@@ -563,8 +575,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         expect(f.registry.termination !== undefined).toBe(faulted);
         if (!faulted) {
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           await flush();
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         }
         expect(await running).toBe(faulted ? 9 : 0);
         expect(hits).toBe(faulted ? 1 : 0);
@@ -658,6 +672,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     if (props === undefined) throw new Error('the injected render was never invoked');
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success); // the throwing unmount did not corrupt the clean exit
     expect(closeSpy).toHaveBeenCalledTimes(1); // …and the db was still closed
   });
@@ -670,6 +685,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
     props.controller.handleKey('c', CTRL_C); // Ctrl-C on the Home ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
 
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(closeSpy).toHaveBeenCalledTimes(1);
@@ -694,6 +710,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const drivePromise = driveHome(deps);
     if (captured === undefined) throw new Error('the injected render was never invoked');
     captured.controller.handleKey('c', CTRL_C);
+    captured.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
 
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(client.sqlite.open).toBe(false);
@@ -745,6 +762,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured();
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
     };
 
@@ -793,6 +811,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const done = driveHome(deps);
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C); // clean Home exit ⇒ driveHome resolves
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await done;
       return alt;
     };
@@ -821,6 +840,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(snap.attention.gates).toEqual([]);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -882,6 +902,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(snap.attention.failedRuns.map((run) => run.runId)).toEqual([runId]);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -934,8 +955,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(2);
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
   });
@@ -980,6 +1003,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(session.store.getSnapshot().review?.kind).toBe('details');
     session.store.closeDetails();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
     expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
     expect(session.store.getSnapshot().review).toBeUndefined();
@@ -991,6 +1015,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await running).toBe(EXIT_CODES.success);
   });
 
@@ -1033,6 +1058,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(invocation.registry.activeOwners).toBe(6);
       expect(props.controller.getSnapshot().session).toBe(original); // first replacement still initializes
       props.controller.handleKey('c', CTRL_C); // sticky /clear starts a second replacement
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await vi.waitFor(() => expect(permits).toHaveLength(2));
       expect(invocation.registry.activeOwners).toBe(8);
       permits[1]?.(); // second replacement wins while both native creations remain live
@@ -1044,9 +1070,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(props.controller.getSnapshot().session).toBe(winner);
       await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
       await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       expect(await drivePromise).toBe(EXIT_CODES.success);
     } finally {
       for (const permit of permits) permit();
@@ -1092,8 +1120,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     }
     expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   }, 10000);
 
@@ -1160,6 +1190,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           props.controller.handleKey('', { escape: true });
           expect(props.controller.getSnapshot().modelPicker).toBeUndefined();
           props.controller.handleKey('c', CTRL_C);
+          props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
           expect(await drive).toBe(0);
         }
       } finally {
@@ -1167,6 +1198,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', { escape: true });
         props.controller.handleKey('', { escape: true });
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await drive;
       }
       expect(close).toHaveBeenCalledOnce();
@@ -1235,8 +1267,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     }
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1278,9 +1312,230 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(builtProviders.at(-1)).toBeUndefined();
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0137: the in-Home chat is wired to the /permissions sheet through its own line handler, and a typed /permissions opens it', async () => {
+    // The wired-but-dead field: a Home session built without `permissions` would still pass every controller test that hands the controller
+    // a fake session, and `/permissions` would quietly answer "not available". This drives the REAL `startChat` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    const permissions = props.controller.getSnapshot().session?.permissions;
+    expect(permissions?.surface, 'the session carries the port').toBe('chat');
+    // The port reads the real store through the mocked keychain: no key was ever written, so the project's list is empty and readable.
+    expect(permissions?.load().project).toEqual({ ok: true, rows: [] });
+    expect(permissions?.load().session).toEqual([]);
+
+    type(props, '/permissions');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0137 §3: the bare Home is wired to the /permissions sheet over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
+    // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
+    // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome({ ...deps, openPermissions: true });
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    // The sheet is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('project');
+    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.project).toEqual({
+      ok: true,
+      rows: [],
+    });
+    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.session).toBeUndefined();
+    props.controller.handleKey('', { escape: true });
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0137 §3: an ordinary Home opens no sheet of its own, and the typed command opens the project list without ending the Home', async () => {
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+    props.controller.handleKey('/', {});
+    for (const ch of 'permissions') props.controller.handleKey(ch, {});
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().mode).toBe('home');
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {
+    const memoryKeychain = (): KeychainStore => {
+      const entries = new Map<string, string>();
+      return {
+        get: (account) => entries.get(account) ?? null,
+        set: (account, secret) => void entries.set(account, secret),
+        delete: (account) => entries.delete(account),
+      };
+    };
+    /** The store a chat and `relavium permissions` would open for this working directory: the same root, home and key. */
+    const projectStore = (keychain: KeychainStore): CommandGrantStore =>
+      createCommandGrantStore({
+        homeDir: testHomeDir,
+        projectRoot: commandGrantRoot(global.cwd, findProjectConfigDir(global.cwd, testHomeDir)),
+        keychain,
+        findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
+      });
+    const rowLabels = (props: RootAppProps): readonly string[] => {
+      const project = props.controller.getSnapshot().permissionsSheet?.snapshot.project;
+      return project?.ok === true ? project.rows.map((row) => row.label) : [];
+    };
+
+    it('lists the grants remembered for THIS project under THIS home: a wrong root or home would list nothing, silently', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome({ ...deps, openPermissions: true });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('reads a new store on every open: a key another terminal replaced does not leave the long-lived Home listing nothing', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const openFromPalette = (): void => {
+        props.controller.handleKey('/', {});
+        for (const ch of 'permissions') props.controller.handleKey(ch, {});
+        props.controller.handleKey('', ENTER);
+      };
+      openFromPalette();
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      // Another terminal: `relavium permissions revoke --all` (the file and the digest key go), then a chat remembers something new.
+      projectStore(keychain).revokeAll();
+      await projectStore(keychain).remember(['node', '--version']);
+      openFromPalette();
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('withdraws through the Home’s own wrapper, end to end: `d`, then `Enter`, removes the grant from the store a chat reads', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      expect(projectStore(keychain).list()).toMatchObject({
+        ok: true,
+        grants: [{ program: 'npm' }],
+      });
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome({ ...deps, openPermissions: true });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
+      // The controller runs on the real clock here: the sheet settles (400 ms), then the question must have stood for 800 ms.
+      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+      props.controller.handleKey('d', {});
+      expect(props.controller.getSnapshot().permissionsSheet?.armed).toBe(true);
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      props.controller.handleKey('', ENTER);
+      expect(props.controller.getSnapshot().permissionsSheet?.message?.tone).toBe('done');
+      expect(rowLabels(props)).toEqual([]);
+      expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('finds the project directory again on every read, as a chat does: a `.relavium/` that appeared since the Home started changes the root', async () => {
+      const keychain = memoryKeychain();
+      const sub = join(cwd, 'sub');
+      mkdirSync(sub);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), {
+        keychain,
+        global: { ...global, cwd: sub },
+      });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      // While the Home runs a project directory appears above its working directory (a checkout, a pull, another terminal's `init`); a
+      // chat built from this Home would key its grants by that root, so a grant remembered there is what the Home must list.
+      mkdirSync(join(cwd, '.relavium'));
+      await createCommandGrantStore({
+        homeDir: testHomeDir,
+        projectRoot: commandGrantRoot(sub, findProjectConfigDir(sub, testHomeDir)),
+        keychain,
+        findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
+      }).remember(['npm', 'test']);
+      props.controller.handleKey('/', {});
+      for (const ch of 'permissions') props.controller.handleKey(ch, {});
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the sheet', async () => {
+      const keylessResolver: ProviderResolver = {
+        resolveProvider: () => undefined,
+        keyFor: () => {
+          throw new Error('no key');
+        },
+      };
+      const capture: { props?: RootAppProps } = {};
+      const { deps } = makeDeps(
+        (p) => {
+          capture.props = p;
+        },
+        { providers: keylessResolver, keychain: memoryKeychain() },
+      );
+      // The production setup is the in-Home card, started when the renderer is ready, unless a legacy prompter is injected: take it out.
+      const { onboardingPrompter, ...production } = deps;
+      void onboardingPrompter;
+      const drivePromise = driveHome({ ...production, openPermissions: true });
+      const props = capture.props;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      await flush();
+      expect(props.nativePrompt?.getSnapshot().active, 'no card over the sheet').toBe(false);
+      expect(props.controller.getSnapshot().permissionsSheet).toBeDefined();
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
   });
 
   it('ADR-0132: the Home gives a fresh chat AND a /models-reseated chat the question delegate, each bound to its own store', async () => {
@@ -1300,28 +1555,45 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         },
       ],
     };
+    // The question delegate AND the continue-checkpoint hook come from one option (ADR-0136 §2): both must draw their card on the
+    // store the Home put on screen, on the fresh build and on the reseat.
     const drawsACard = async (
       store: ChatStoreController | undefined,
-      delegate: AskUserDelegate | undefined,
+      wired:
+        | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+        | undefined,
     ): Promise<boolean> => {
-      if (store === undefined || delegate === undefined) return false;
-      const pending = delegate(askRequest).catch(() => undefined);
-      const drawn = store.getSnapshot().question?.request === askRequest;
-      store.sealToolPreviews();
-      await pending;
-      return drawn;
+      if (store === undefined || wired?.askUser === undefined || wired.checkpoint === undefined)
+        return false;
+      const questionAbort = new AbortController();
+      const asked = wired.askUser(askRequest, questionAbort.signal).catch(() => undefined);
+      const questionDrawn = store.getSnapshot().question?.request === askRequest;
+      questionAbort.abort();
+      await asked;
+      const checkpointAbort = new AbortController();
+      const held = wired
+        .checkpoint({ rounds: 1, interval: 1 }, checkpointAbort.signal)
+        .catch(() => undefined);
+      const checkpointDrawn = store.getSnapshot().checkpoint?.rounds === 1;
+      checkpointAbort.abort();
+      await held;
+      return questionDrawn && checkpointDrawn;
     };
-    let freshAsk: AskUserDelegate | undefined;
-    let reseatAsk: AskUserDelegate | undefined;
+    let freshAsk:
+      | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+      | undefined;
+    let reseatAsk:
+      | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
+      | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
       buildSession: (options) => {
-        freshAsk = options.askUser;
+        freshAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
         return buildChatSession(options);
       },
       buildResumedSession: (options) => {
-        reseatAsk = options.askUser;
+        reseatAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
         return buildResumedChatSession(options);
       },
     });
@@ -1347,8 +1619,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1445,6 +1719,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     // The durable row's agent snapshot updates to the switched model after the reseated session ends.
     props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     const full = createSessionStore(client.db).loadFull(sessionId);
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8');
@@ -1452,6 +1727,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']); // the single carried exchange
 
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1698,8 +1974,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           expect(displayedReplies()).toBe(1); // reseat never reprints the earlier exchange
         }
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         await flush();
         props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
         expect(await running).toBe(0);
       } finally {
         instance?.unmount();
@@ -1762,8 +2040,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(errs.join('')).not.toContain('UNPRICED-MID-BUILD'); // …and it was NOT written to stderr
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1804,6 +2084,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(outros.some((o) => o.includes('all set'))).toBe(true);
 
     props.controller.handleKey('c', CTRL_C); // clean exit
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -1866,6 +2147,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
 
     expect(beforeWizardSettles).toEqual([
@@ -1971,6 +2253,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2040,6 +2323,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2129,6 +2413,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after onboarding');
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2166,6 +2451,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(closeSpy).not.toHaveBeenCalled();
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2237,6 +2523,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(select).not.toHaveBeenCalled(); // no wizard on a keyed run
 
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
@@ -2371,8 +2658,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const assistant = transcript.find((e) => e.role === 'assistant');
 
       props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await flush();
       props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
       return assistant?.text ?? '';
     };
@@ -2490,8 +2779,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       JSON.stringify(client.sqlite.prepare('SELECT content FROM session_messages').all()),
     ).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
     props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await driving;
   });
 
@@ -2762,8 +3053,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(errs.join('')).not.toContain('budget warning');
 
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await flush();
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
     });
   });
@@ -2776,6 +3069,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
       props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       await drivePromise;
       return props;
     };

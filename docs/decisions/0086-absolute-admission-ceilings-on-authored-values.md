@@ -261,3 +261,5 @@ The transition, stated rather than assumed:
   otherwise: they live as named constants in one place, and moving one upward is not a breaking change.
 - ADR-0040 now requires two files to read. Accepted for the reason in §8 — the alternative misrepresents a
   shipped design as dead.
+
+> Amended 2026-11-19 by [ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md): §9.3's host-override seam now exists for four **chat** limits (`checkpoint_tool_turns`, `max_tool_turns`, `max_tool_corrections`, `max_turns`), published as data in `@relavium/shared`, bounded, and lowered-only by a repository layer. The authored-value ceilings of §2 are untouched, and a breach is still a rejection, never a clamp.

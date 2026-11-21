@@ -4,6 +4,7 @@ import {
   CHAT_PALETTE_COMMANDS,
   formatReplHelp,
   HOME_PALETTE_COMMANDS,
+  HOME_CHAT_PALETTE_COMMANDS,
   PALETTE_COMMANDS,
   replCommandList,
   REPL_COMMANDS,
@@ -26,6 +27,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, numbe
     help: vi.fn(),
     showWorkflows: vi.fn(),
     showCost: vi.fn(),
+    managePermissions: vi.fn(),
     runDoctor: vi.fn(),
     setMode: vi.fn(),
     setReasoningEffort: vi.fn(),
@@ -65,6 +67,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',
@@ -72,6 +75,20 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'edit',
       'copy',
     ]);
+  });
+
+  it('/permissions takes no argument: it calls the capability once, with nothing typed after it', async () => {
+    const spy = spyContext();
+    await REPL_COMMANDS_BY_NAME.get('permissions')?.run(spy.ctx, []);
+    expect(vi.mocked(spy.ctx.managePermissions)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spy.ctx.managePermissions).mock.calls[0]).toEqual([]);
+    // The typed `--revoke` forms are gone (ADR-0137 §2): the command declares neither a flag nor a positional, so the dispatch rejects a
+    // typed token before the capability runs.
+    const command = REPL_COMMANDS_BY_NAME.get('permissions');
+    expect(command?.args ?? []).toEqual([]);
+    expect(command?.positional).toBeUndefined();
+    // A rejected token says where the job went, since the typed forms have no replacement in the grammar.
+    expect(command?.rejectHint).toBe('Open /permissions and press d on a row to withdraw it.');
   });
 
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {
@@ -95,6 +112,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['export', 'exportSession'],
       ['workflows', 'showWorkflows'],
       ['cost', 'showCost'],
+      ['permissions', 'managePermissions'],
       ['doctor', 'runDoctor'],
       ['mode', 'setMode'],
       ['effort', 'setReasoningEffort'],
@@ -134,7 +152,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /trim, /clear, /models, /scrollback, /edit, /copy',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /permissions, /trim, /clear, /models, /scrollback, /edit, /copy',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -153,6 +171,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cancel',
       'workflows',
       'cost',
+      'permissions',
       'doctor',
       'mode',
       'effort',
@@ -185,6 +204,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',
@@ -205,6 +225,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'details',
       'compact',
+      'permissions',
       'trim',
       'clear',
       'models',
@@ -223,7 +244,24 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'models',
       'providers',
       'init',
+      'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
       'resume',
+    ]);
+  });
+
+  it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {
+    for (const [name, set] of [
+      ['PALETTE', PALETTE_COMMANDS],
+      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['HOME', HOME_PALETTE_COMMANDS],
+      ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
+    ] as const) {
+      const names = set.map((command) => command.name);
+      expect(new Set(names).size, `${name}: ${names.join(', ')}`).toBe(names.length);
+    }
+    expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'permissions')).toHaveLength(1);
+    expect(HOME_CHAT_PALETTE_COMMANDS.find((c) => c.name === 'permissions')?.availableIn).toEqual([
+      'chat',
     ]);
   });
 });

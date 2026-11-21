@@ -49,6 +49,13 @@ export interface ReplCommandContext {
   readonly toggleReasoning: () => void | Promise<void>;
   /** Open the interactive, read-only list of this instance's recent tool calls. */
   readonly openDetails: () => void | Promise<void>;
+  /**
+   * `/permissions` where there is no sheet to open ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)
+   * §2): a plain, `--json` or one-shot chat, which has no store and no one to ask. The interactive hosts intercept the command and open
+   * the sheet before it gets here, as they do `/models`. The command takes no argument (the typed `--revoke` forms are gone, and the
+   * zero-argument rule rejects a typed token before this runs). Chat-only: the bare Home opens the sheet through its own controller.
+   */
+  readonly managePermissions: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -110,6 +117,8 @@ export interface ReplCommand {
   /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any token not
    *  listed here, so a zero-arg command still rejects `/exit now`. */
   readonly args?: readonly ReplArg[];
+  /** A sentence appended to the dispatch's rejection of a token this command does not accept: where a removed or mistyped form's job went. */
+  readonly rejectHint?: string;
   /** An optional single POSITIONAL value the command accepts (e.g. `/mode plan`) — the dispatch accepts a token
    *  in `values` (in addition to any declared flags) and rejects anything else, so an invalid value is caught
    *  before `run`. The palette still submits the BARE `/<name>` (no positional), so `run` handles the empty arg. */
@@ -260,6 +269,17 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     availableIn: ['chat'],
   },
   {
+    name: 'permissions',
+    label: 'Permissions',
+    description:
+      'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
+    // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
+    effect: 'read',
+    rejectHint: 'Open /permissions and press d on a row to withdraw it.',
+    run: (ctx) => ctx.managePermissions(),
+    availableIn: ['chat'],
+  },
+  {
     name: 'trim',
     label: 'Trim',
     description:
@@ -391,6 +411,16 @@ const HOME_INIT_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/** The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it. */
+const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
+  name: 'permissions',
+  label: 'Permissions',
+  description: 'Remembered commands for this project; d withdraws one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 const HOME_RESUME_COMMAND = freezeReplCommand({
   name: 'resume',
   label: 'Resume session',
@@ -413,6 +443,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
   HOME_INIT_COMMAND,
+  HOME_PERMISSIONS_COMMAND,
   HOME_RESUME_COMMAND,
 ]);
 

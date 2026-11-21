@@ -66,7 +66,7 @@ const CTRL_G = '\x07'; // ask for the session-wide grant (ENTER confirms)
 const CTRL_N = '\x0e'; // deny
 const CTRL_R = '\x12'; // deny with a reason (opens the reason box on the card)
 /** The full view's refusals row (ADR-0134): the card's refusals minus the card-only keys, plus the way back. */
-const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc stops the turn';
+const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
 
 /**
  * The suite drives the approval card with keys pressed right after a frame, as fast as the harness can. The product's
@@ -102,10 +102,19 @@ function fixture(
     { approvalGuard },
   );
   const errors: unknown[] = [];
+  // What the host was asked to do with a key the card did not take: a mode change, a line sent to the model.
+  const modeChanges: string[] = [];
+  const submitted: string[] = [];
   const session = {
     store,
     sessionId: 's',
-    processLine: async () => {},
+    onModeChange: (mode: string) => {
+      modeChanges.push(mode);
+    },
+    processLine: (line: string) => {
+      submitted.push(line);
+      return Promise.resolve();
+    },
     shouldStop: () => false,
     stopReason: () => 'exit' as const,
     teardown: async () => {},
@@ -130,11 +139,16 @@ function fixture(
     host === 'chat'
       ? createElement(ChatApp, {
           store,
-          onSubmit: async () => {},
+          onSubmit: (message: string) => {
+            submitted.push(message);
+            return Promise.resolve();
+          },
           shouldStop: () => false,
           onExit: () => {},
           onError: (error) => errors.push(error),
-          onModeChange: () => {},
+          onModeChange: (mode: string) => {
+            modeChanges.push(mode);
+          },
           alternateScreen: alternate,
           ...ports,
         })
@@ -161,7 +175,18 @@ function fixture(
     patchConsole: false,
     alternateScreen: alternate,
   });
+  // A card still open when the fixture is torn down is cancelled by the sealed store (it rejects, ADR-0115), and a test that
+  // dropped the promise, or chained a `then` on it, would fail the whole run with an unhandled rejection. During teardown only,
+  // that cancellation is therefore left unsettled; a rejection DURING a test (an abort the test asked for) passes through.
+  let tearingDown = false;
+  const requestApproval = store.requestApproval;
+  store.requestApproval = (...args) =>
+    requestApproval(...args).catch((cause: unknown) => {
+      if (tearingDown) return new Promise<never>(() => undefined);
+      throw cause;
+    });
   cleanups.push(() => {
+    tearingDown = true;
     store.sealToolPreviews();
     instance.unmount();
     input.destroy();
@@ -175,12 +200,15 @@ function fixture(
       await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    submitted.length = 0; // the Home's first message started the chat; only what comes after is under test
   };
   return {
     input,
     output,
     store,
     errors,
+    modeChanges,
+    submitted,
     ready,
     text: () => output.frames.join(''),
     /** The most recent complete frame (control sequences stripped) that contains `needle`. */
@@ -1236,7 +1264,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       expect(await answer).toEqual({ outcome: 'reject' });
     });
 
-    it('says only that Esc stops the turn while a denial reason is being typed, and Ctrl+N stays inert', async () => {
+    it('says only what Esc and Ctrl+C do while a denial reason is being typed, and Ctrl+N stays inert', async () => {
       const f = fixture(host, true, false);
       await f.ready();
       let answered = false;
@@ -1255,14 +1283,15 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('Esc stops the turn.');
+      // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
+      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
       expect(hint(f)).not.toContain('[Ctrl+N] denies');
       f.input.push(CTRL_N);
       await settle();
       expect(answered, 'what the hint does not promise, the key does not do').toBe(false);
     });
 
-    it('says only that Esc stops the turn while the full view is searching, and Ctrl+N stays inert', async () => {
+    it('says only what Esc and Ctrl+C do while the full view is searching, and Ctrl+N stays inert', async () => {
       const f = fixture(host, true, false);
       await f.ready();
       let answered = false;
@@ -1284,21 +1313,58 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('Esc stops the turn.');
+      // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
+      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
       expect(hint(f)).not.toContain('[Ctrl+N] denies');
       f.input.push(CTRL_N);
       await settle();
       expect(answered).toBe(false);
     });
+
+    it('says on an unreadable full view that Esc steps back and Ctrl+C stops the turn, and Esc really steps back (ADR-0137 §4)', async () => {
+      const f = fixture(host, true, false);
+      await f.ready();
+      let answered = false;
+      void f.store
+        .requestApproval(request, true, undefined, {
+          callId: 'hint-full',
+          preview: poemPreview(2),
+        })
+        .then(() => {
+          answered = true;
+        });
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await settle();
+      f.input.push('v');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+      await settle();
+      f.resize(79, 23);
+      await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
+      // The full view cannot be read, but Esc still leaves it without stopping the turn: no acknowledged frame is needed to step back.
+      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc back \u00b7 Ctrl+C stops the turn.');
+      expect(hint(f)).not.toContain('Esc stops the turn');
+      f.input.push('\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await settle();
+      expect(answered, 'stepping back stops nothing').toBe(false);
+      // Now on the card, whose own hint is unchanged: Esc stops the turn here.
+      await vi.waitFor(() =>
+        expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.'),
+      );
+      f.input.push(CTRL_N);
+      await settle();
+      expect(answered).toBe(true);
+    });
   });
 
   // D64 round 2, D4: Esc stops the whole turn (the card says so); the full view still said "abort". ADR-0134: the full
-  // view's answer rows are the card's two rows, and the second says `Esc stops the turn`.
+  // view's answer rows are the card's grants row and its own refusals row; since ADR-0137 §4 the second says `Esc back` (Esc steps
+  // back to the card) and `Ctrl+C stops the turn`.
   it.each([
     [true, '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session'],
     [false, '[Ctrl+Y] Allow'],
   ])(
-    'the full view says Esc stops the turn, not "abort" (cacheable=%s)',
+    'the full view says Esc goes back and Ctrl+C stops the turn, not "abort" (cacheable=%s)',
     async (cacheable, grants) => {
       const f = fixture(host, true, false);
       await f.ready();
@@ -1904,7 +1970,88 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
     }
   });
 
-  it("asks the same question in the full view, in the card's two rows", async () => {
+  it('after Esc steps back, an answer typed at once is refused and one after the card has been seen again counts, as after [b] (ADR-0137 §4)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'esc-guard', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      // The very next key: the card the Esc returned to has not been seen yet, and a key arrived a moment ago.
+      await press(f, CTRL_Y);
+      expect(answered(), 'a Ctrl+Y right after Esc answers nothing').toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+      await vi.waitFor(() => expect(f.lastFrameWith('Esc stops the turn')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(3000);
+      await press(f, CTRL_Y);
+      await vi.waitFor(() => expect(answered()).toEqual({ outcome: 'approve', scope: 'once' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Esc is not a foreign key: an answer 600 ms after the step back counts, where a stray key would have held it for the typeahead window (ADR-0137 §4, round 2)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'esc-not-foreign', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await vi.waitFor(() => expect(f.store.getSnapshot().approval).toBeDefined());
+      await pause(60);
+      // The 300 ms quiet gap and the 400 ms dwell on the new frame have passed; the 1.5 s typeahead window (a typed key) has not.
+      vi.advanceTimersByTime(600);
+      await press(f, CTRL_Y);
+      await vi.waitFor(() => expect(answered()).toEqual({ outcome: 'approve', scope: 'once' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('Esc while the session-wide question waits in the full view cancels it, grants nothing, and steps back to the card (ADR-0137 §4)', async () => {
+    fakeClock();
+    try {
+      const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
+      await f.ready();
+      const { answered } = await openCard(f, 'full-ask-esc', poemPreview(2));
+      vi.advanceTimersByTime(1000);
+      await press(f, 'v');
+      await vi.waitFor(() => expect(f.lastFrameWith('Review \u00b7 tool')).toBeDefined());
+      await pause(60);
+      vi.advanceTimersByTime(1000);
+      await press(f, CTRL_G);
+      await vi.waitFor(() =>
+        expect(f.lastFrameWith('Press Enter to allow all file writes this session')).toBeDefined(),
+      );
+      await press(f, '\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      expect(f.store.getSnapshot().alwaysConfirm, 'the question is gone').toBe(false);
+      expect(answered(), 'nothing was granted and nothing was stopped').toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+      // The Enter that would have confirmed it, a moment later, answers nothing.
+      vi.advanceTimersByTime(1000);
+      await press(f, '\r');
+      expect(answered()).toBeUndefined();
+      expect(f.store.getSnapshot().approval).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("asks the card's question in the full view, in its first row, and its own second row", async () => {
     fakeClock();
     try {
       const f = fixture(host, true, false, undefined, {}, DEFAULT_APPROVAL_GUARD);
@@ -1932,9 +2079,10 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
       expect(asking[grantsAt], 'the question takes the grants row').toBe(
         'Press Enter to allow all file writes this session',
       );
-      expect(asking[grantsAt + 1], 'and says what any other key does').toBe(
-        'Any other key cancels \u00b7 Esc stops the turn',
-      );
+      expect(
+        asking[grantsAt + 1],
+        'and says what any other key does, and what Esc and Ctrl+C do',
+      ).toBe('Any other key cancels \u00b7 Esc back \u00b7 Ctrl+C stops the turn');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
       expect(asking.findIndex((row) => row.startsWith('\u2500'))).toBe(
         before.findIndex((row) => row.startsWith('\u2500')),
@@ -2104,6 +2252,38 @@ describe('answer chords in the real host', () => {
         const [grants, rest] = keyRows(f);
         expect(grants).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
         expect(rest).toBe(KEYS_ROW_2);
+      });
+
+      it('the full view with its search box open names what the keys do there: Esc closes the box, Ctrl+C stops the turn (ADR-0115 §3)', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'rows-search');
+        await press(f, 'v');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
+        await pause(30);
+        await press(f, '/');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(true));
+        await vi.waitFor(() => expect(f.lastFrameWith('Esc closes the search box')).toBeDefined());
+        const frame = f.lastFrameWith('Esc closes the search box') ?? '';
+        expect(frame).toContain('Ctrl+C stops the turn');
+        expect(frame, 'the card’s legend would name keys that do nothing in the box').not.toContain(
+          'Esc stops the turn',
+        );
+        expect(frame).not.toContain('[Ctrl+N] Deny');
+        const mark = f.output.frames.length; // only frames drawn after the Esc count for the legend that follows
+        await press(f, '\x1b'); // Esc: closes the box and rejects nothing
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(false));
+        expect(outcome()).toBeUndefined();
+        await vi.waitFor(
+          () =>
+            expect(
+              f.output.frames
+                .slice(mark)
+                // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
+                .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
+                .join(''),
+            ).toContain('Esc back   Ctrl+C stops the turn'), // the full view's own legend: the box is closed, Esc now steps back
+        );
       });
 
       it('edit_file: the same rows name file edits as the session-wide scope', async () => {
@@ -2280,6 +2460,33 @@ describe('answer chords in the real host', () => {
       });
     });
 
+    describe('the card owns every key: what the retired approval prompt once mapped reaches nothing', () => {
+      // Characterization written before the legacy approval-prompt reducer and the older reason-draft path were deleted: the live
+      // path never reached them while a card was open, and this pins that it still does not.
+      it('Shift+Tab, Ctrl+T, Tab and a typed line change no mode, no panel and no composer, and answer nothing', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'characterize');
+        const before = f.store.getSnapshot();
+        for (const key of ['\x1b[Z', '\x14', '\t', 'what now?', '\r']) {
+          await press(f, key);
+          expect(outcome(), `${JSON.stringify(key)} must not answer`).toBeUndefined();
+        }
+        const after = f.store.getSnapshot();
+        expect(f.modeChanges, 'Shift+Tab asked for no mode change').toEqual([]);
+        expect(f.submitted, 'nothing typed at the card reached the composer or the model').toEqual(
+          [],
+        );
+        expect(after.mode).toBe(before.mode);
+        expect(after.reasoningVisible).toBe(before.reasoningVisible);
+        expect(after.approval, 'the call is still pending').toBeDefined();
+        expect(after.review?.denial, 'no reason box opened').toBeUndefined();
+        expect(f.errors).toEqual([]);
+        await press(f, CTRL_N);
+        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
+      });
+    });
+
     describe('Ctrl+R opens the reason box on the card, and the box owns the keyboard', () => {
       it('opens it on the card screen, takes letters and chords as typing, and Enter denies with the typed reason', async () => {
         const f = fixture(host, true, false);
@@ -2312,17 +2519,35 @@ describe('answer chords in the real host', () => {
         expect(f.errors).toEqual([]);
       });
 
-      it('Esc in the reason box stops the turn — the box says so, and the typed reason is not sent', async () => {
+      it('Esc in the reason box closes the box and rejects nothing; a second Esc stops the turn without the typed reason (ADR-0115 §3)', async () => {
         const f = fixture(host, true, false);
         await f.ready();
         const { outcome } = await open(f, request, poemPreview(2), 'reason-esc');
         await press(f, CTRL_R);
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
         await type(f, 'later');
-        expect(f.lastFrameWith('Reason to deny:') ?? '').toContain('Esc stops the turn');
+        const boxed = f.lastFrameWith('Reason to deny:') ?? '';
+        expect(boxed, 'the box says what Esc does in it').toContain('Esc closes this box');
+        expect(boxed, '...and that Ctrl+C is the stop here').toContain('Ctrl+C stops the turn');
         expect(outcome()).toBeUndefined();
         await press(f, '\x1b');
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBeUndefined());
+        expect(outcome(), 'closing the box leaves the call pending').toBeUndefined();
+        expect(f.store.getSnapshot().approval).toBeDefined();
+        await press(f, '\x1b');
         // The harness wires no abort handler, so the host turns the stop into a plain rejection of the call.
+        await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
+        expect(f.errors).toEqual([]);
+      });
+
+      it('Ctrl+C in the reason box rejects the call at once and drops the typed reason (ADR-0115 §1)', async () => {
+        const f = fixture(host, true, false);
+        await f.ready();
+        const { outcome } = await open(f, request, poemPreview(2), 'reason-ctrl-c');
+        await press(f, CTRL_R);
+        await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
+        await type(f, 'later');
+        await press(f, '\x03');
         await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
         expect(f.errors).toEqual([]);
       });
@@ -2661,6 +2886,30 @@ describe.each(['chat', 'home'] as const)(
       expect(outcome()).toBeUndefined();
       f.input.push(CTRL_Y);
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
+    });
+
+    it('Esc goes back to the card as [b] does: the approval stays pending, nothing is answered and the turn is not stopped; a second Esc then stops it (ADR-0137 §4)', async () => {
+      const { f, outcome } = await openFull(SIXTY());
+      const screen = view(f);
+      if (screen === undefined) throw new Error('no full view');
+      expect(screen.rows[screen.note - 1], 'the legend names Esc as the way back').toContain(
+        'Esc back',
+      );
+      const mark = f.output.frames.length;
+      f.input.push('\x1b');
+      await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
+      await vi.waitFor(() =>
+        expect(f.output.frames.slice(mark).some((frame) => frame.includes('Approval needed'))).toBe(
+          true,
+        ),
+      );
+      await pause(80);
+      expect(f.store.getSnapshot().approval, 'stepping back answers nothing').toBeDefined();
+      expect(outcome(), 'and stops nothing').toBeUndefined();
+      expect(f.errors).toEqual([]);
+      f.input.push('\x1b');
+      // The harness wires no abort handler, so the host turns the stop into a plain rejection of the call.
+      await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'reject' }));
     });
 
     it('shows Unicode code points only for non-ASCII characters on [p], and says so until [p] goes back to text', async () => {

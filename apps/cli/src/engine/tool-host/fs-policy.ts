@@ -294,24 +294,50 @@ export function fsPolicyFloorPaths(
   policy: FsPathPolicy | undefined,
   path: string,
 ): readonly string[] {
+  return floorViews(policy, path, true);
+}
+
+/**
+ * The same views as {@link fsPolicyFloorPaths}, decided from the path TEXT alone: the host scratch exemption is applied
+ * but the scratch subtree is not inspected, so no `lstat` is made and the result cannot depend on the state of the
+ * filesystem. The lexical protected-path refusal that may return to the model uses this one
+ * ([ADR-0117](../../../../../docs/decisions/0117-a-denied-tool-call-returns-to-the-model.md): a refusal returns only if it is the
+ * same for every target state); the inspecting variant still runs afterwards and stays fatal.
+ */
+export function fsPolicyLexicalFloorPaths(
+  policy: FsPathPolicy | undefined,
+  path: string,
+): readonly string[] {
+  return floorViews(policy, path, false);
+}
+
+function floorViews(
+  policy: FsPathPolicy | undefined,
+  path: string,
+  inspect: boolean,
+): readonly string[] {
   const data = policyData(policy);
   const views = new Set([path]);
   for (const pin of [data.workspace, ...data.grants, ...data.extra]) {
     if (isWithinFsRoot(pin.canonical, path))
       views.add(join(pin.lexical, relative(pin.canonical, path)));
   }
-  return [...views].map((view) => scratchFloorPath(data.scratch, view));
+  return [...views].map((view) => scratchFloorPath(data.scratch, view, inspect));
 }
 
 /** Exempt only the issued ancestor component; every other credential/protected component remains visible. */
-function scratchFloorPath(scratch: ScratchData | undefined, path: string): string {
+function scratchFloorPath(
+  scratch: ScratchData | undefined,
+  path: string,
+  inspect: boolean,
+): string {
   if (scratch === undefined) return path;
   for (const [root, anchor] of [
     [scratch.root.lexical, scratch.anchor.lexical],
     [scratch.root.canonical, scratch.anchor.canonical],
   ] as const) {
     if (isWithinFsRoot(root, path)) {
-      inspectScratchDescendants(root, path);
+      if (inspect) inspectScratchDescendants(root, path);
       return join(dirname(anchor), '__host_owned_scratch__', relative(anchor, path));
     }
   }

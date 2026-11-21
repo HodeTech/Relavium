@@ -5,8 +5,9 @@ import { DISABLE_BRACKETED_PASTE, reduceHomeKey, type HomeKey } from './home-inp
 const KEY = (over: Partial<HomeKey> = {}): HomeKey => ({ ...over });
 
 describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
-  it('Ctrl-C exits the Home (a clean exit, in every mode the caller routes here)', () => {
-    expect(reduceHomeKey('c', KEY({ ctrl: true }))).toEqual({ kind: 'exit' });
+  it('Ctrl+C is not a Home key action: the interrupt keymap decides it before this reducer runs (ADR-0115)', () => {
+    // It is not typing either: a Ctrl chord that no editor motion binds is `none`, never an appended `c`.
+    expect(reduceHomeKey('c', KEY({ ctrl: true }))).toEqual({ kind: 'none' });
   });
 
   it('Return submits the buffer (the caller reads the latest committed value)', () => {
@@ -49,10 +50,6 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
     expect(reduceHomeKey('w', KEY({ ctrl: true }))).toEqual({ kind: 'kill', motion: 'word-back' });
     // A plain Return still submits (reduceEditorMotion declines it so the surface owns submit).
     expect(reduceHomeKey('\r', KEY({ return: true }))).toEqual({ kind: 'submit' });
-  });
-
-  it('Ctrl-C takes precedence over a coincident return flag', () => {
-    expect(reduceHomeKey('c', KEY({ ctrl: true, return: true }))).toEqual({ kind: 'exit' });
   });
 });
 

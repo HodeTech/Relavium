@@ -11,6 +11,10 @@ import type {
 } from '@relavium/core';
 import { CHAT_MODES, type AbortSignalLike, type ChatMode } from '@relavium/shared';
 
+import type { GrantStanding } from '../permissions/command-grants.js';
+
+import { commandCardFacts, namesProtectedPath, type CommandCardFacts } from './command-facts.js';
+
 export { CHAT_MODES } from '@relavium/shared';
 export type { ChatMode } from '@relavium/shared';
 
@@ -54,7 +58,7 @@ export const MODE_DESCRIPTION: Record<ChatMode, string> = {
   plan: 'read-only — nothing is changed; the agent drafts a plan first',
   'accept-edits':
     'applies file edits without asking; still asks for commands and network; refuses protected paths',
-  auto: 'approves granted actions; scope and protected-path rules still apply',
+  auto: 'approves granted actions; a command still asks unless you remembered or approved it; scope and protected-path rules apply',
 };
 
 /** The fixed label the mode refusal carries to the model (ADR-0117 §2): the mode's name, never a target. */
@@ -84,11 +88,13 @@ function isChatMode(value: string): value is ChatMode {
 
 /**
  * The REPL's interactive answer to an approval prompt — RICHER than the engine's approve/reject because it
- * carries the once/always SCOPE (the engine only needs the final approve/reject). `always` is remembered for
- * the tool id for the rest of the session instance; `once` approves just this invocation.
+ * carries the SCOPE (the engine only needs the final approve/reject). `always` is remembered for the tool id for the rest of the
+ * session instance — for a command, for that exact argv; `once` approves just this invocation; `remember` (a command only, ADR-0118
+ * §1) records a keyed digest of the exact argv in the project's grants file (the file never holds the command) and also acts as
+ * `always` for this session.
  */
 export type ApprovalAnswer =
-  | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' }
+  | { readonly outcome: 'approve'; readonly scope: 'once' | 'always' | 'remember' }
   | {
       readonly outcome: 'reject';
       readonly reason?: string;
@@ -102,12 +108,16 @@ export type ApprovalAnswer =
  * (offer "always"), `false` at auto's protected-path fallback (a protected prompt re-asks every time, so the
  * REPL should grey out / omit the `always` choice rather than silently discard it). It is a UX signal only —
  * the `toDecision` floor still enforces the same rule if a prompt returns `always` anyway.
+ *
+ * For a command, `facts` is what its card says and offers (ADR-0118 §1): `always` then means THIS exact command for the
+ * session and `remember` means this exact command for this project; the hook narrows any answer the card did not offer.
  */
 export type ApprovalPrompt = (
   request: ToolApprovalRequest,
   cacheable: boolean,
   signal?: AbortSignalLike,
   live?: ToolApprovalLiveContext,
+  facts?: CommandCardFacts,
 ) => Promise<ApprovalAnswer>;
 
 /**
@@ -131,6 +141,9 @@ export function nonInteractiveApprovalPrompt(context: string): ApprovalPrompt {
  */
 export class ApprovalCache {
   readonly #always = new Set<string>();
+  /** Commands approved for the rest of this session, keyed by their exact argv (see {@link isAlwaysCommand}). */
+  readonly #commands = new Map<string, string | undefined>();
+  #wrote = false;
   /** Whether this tool id was previously "always"-approved this session. */
   isAlways(toolId: string): boolean {
     return this.#always.has(toolId);
@@ -139,6 +152,71 @@ export class ApprovalCache {
   rememberAlways(toolId: string): void {
     this.#always.add(toolId);
   }
+  /**
+   * Whether this EXACT argv was approved for the rest of this session ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)
+   * §2). A command is never approved by tool id: "allow `run_command` this session" would approve every later command, so the
+   * cache for a command is keyed by the argv, element by element (`["cat","a b"]` and `["cat","a","b"]` are different). Held in
+   * memory only; never persisted, so a resumed session asks again.
+   */
+  isAlwaysCommand(argv: readonly string[]): boolean {
+    return this.#commands.has(JSON.stringify(argv));
+  }
+  /** Remember one exact argv for the remainder of this session instance. */
+  rememberAlwaysCommand(argv: readonly string[], grantId?: string): void {
+    this.#commands.set(JSON.stringify(argv), grantId);
+  }
+  /**
+   * Take back the session approvals that a *Remember* created for the remembered grant `grantId`, so withdrawing that grant makes the
+   * command ask again in THIS chat too (the session approval a Remember adds would otherwise keep it running). The number withdrawn.
+   */
+  forgetCommandsByGrant(grantId: string): number {
+    let removed = 0;
+    for (const [key, id] of this.#commands) {
+      if (id !== grantId) continue;
+      this.#commands.delete(key);
+      removed += 1;
+    }
+    return removed;
+  }
+  /** The commands approved for this session, in the order they were approved (the `/permissions` sheet lists them so). */
+  commandApprovals(): readonly SessionCommandApproval[] {
+    const approvals: SessionCommandApproval[] = [];
+    for (const [key, grantId] of this.#commands) {
+      const parsed: unknown = JSON.parse(key);
+      if (Array.isArray(parsed) && parsed.every((element) => typeof element === 'string'))
+        approvals.push({ argv: parsed, remembered: grantId !== undefined });
+    }
+    return approvals;
+  }
+  /**
+   * Take back the session approval of exactly this argv; what it was, or `undefined` when there is none (it was withdrawn already).
+   * The sheet names a row by the argv, the key the cache itself uses, so a position that moved cannot name another command.
+   */
+  forgetCommandApproval(argv: readonly string[]): SessionCommandApproval | undefined {
+    const key = JSON.stringify(argv);
+    if (!this.#commands.has(key)) return undefined;
+    const grantId = this.#commands.get(key);
+    this.#commands.delete(key);
+    return { argv: [...argv], remembered: grantId !== undefined };
+  }
+  /**
+   * Note that this session approved a file write (ADR-0118 §2, the security sitting's ruling): from then on a REMEMBERED command no
+   * longer runs unasked in `auto`, because the write may have changed what the command does (`package.json`'s `test` script, a
+   * Makefile). A session approval of the exact argv, which the person gave knowingly, is not affected.
+   */
+  noteWrite(): void {
+    this.#wrote = true;
+  }
+  /** Whether {@link noteWrite} has been called in this session. */
+  get wrote(): boolean {
+    return this.#wrote;
+  }
+}
+
+/** A command approved for the rest of this session; `remembered` when a *Remember* made it (the project's grant also covers it). */
+export interface SessionCommandApproval {
+  readonly argv: readonly string[];
+  readonly remembered: boolean;
 }
 
 /**
@@ -169,6 +247,23 @@ export function governedToolIds(defs: readonly ToolDef[]): ReadonlySet<string> {
   return out;
 }
 
+/** What the command rows need of the remembered-grants store: matching always, and writing when the card may offer Remember. */
+export interface CommandGrantsPort {
+  readonly matches: (argv: readonly string[]) => boolean;
+  /**
+   * Where a remembered grant stands against the file writes recorded for this project (ADR-0138). A port without it treats a
+   * grant it matches as standing, which is the rule before the writes were recorded.
+   */
+  readonly standing?: (argv: readonly string[]) => GrantStanding;
+  /** Record that a file write was applied, so a grant made before it asks again in `auto` (ADR-0138). */
+  readonly noteFileWrite?: () => boolean;
+  /** Whether Remember can be offered for this command (the argv matters: renewing a grant needs no new slot). */
+  readonly canRemember?: (argv?: readonly string[]) => { readonly ok: boolean };
+  readonly remember?: (
+    argv: readonly string[],
+  ) => Promise<{ readonly ok: boolean; readonly reason?: string; readonly id?: string }>;
+}
+
 /** The inputs {@link buildTurnPolicy} needs beyond the mode itself — the session-scoped consent machinery. */
 export interface TurnPolicyDeps {
   readonly onToolLiveEvent?: ToolLiveObserver;
@@ -185,6 +280,21 @@ export interface TurnPolicyDeps {
   readonly canAsk?: boolean;
   /** The session once/always memory. */
   readonly cache: ApprovalCache;
+  /**
+   * The remembered command grants for this project root (ADR-0118 §2): a command that matches one is PRE-APPROVED, which is what
+   * lets `auto` run it without a card. Absent ⇒ nothing is remembered. A store that cannot answer says `false`.
+   */
+  readonly commandGrants?: CommandGrantsPort;
+  /**
+   * Whether the card offers "this exact command for the session" and "remember it" (ADR-0118 §1 "Session", "Remember"). `false` ⇒
+   * a command's card offers Once and Deny only. Switched on together with the command card that words them truthfully: a card
+   * that did not would read a session answer as "all `run_command` calls", which it must not.
+   */
+  readonly commandSessionGrants?: boolean;
+  /** The directory a command runs in — the host's, shown on the card and the anchor of its protected-path check. */
+  readonly commandCwd?: string;
+  /** Where a note for the person goes (a Remember that could not be written). Never given a command. */
+  readonly notify?: (message: string) => void;
   /**
    * Whether the approval REQUEST targets a protected path, so `auto` falls back to a prompt rather than
    * auto-approving (ADR-0057). Absent ⇒ `auto` auto-approves every governed action (the fs-layer
@@ -291,7 +401,137 @@ async function askPerson(
   if (deps.cache.isAlways(request.toolId)) return { outcome: 'approve' };
   const cacheable = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
   const answer = await deps.prompt(request, cacheable, signal, live);
-  return toDecision(answer, request.toolId, deps.cache, cacheable);
+  return toDecision(answer, request, deps.cache, cacheable);
+}
+
+/** The argv of a command request, or `undefined` for any other action class (or a hand-built request without one). */
+function commandArgv(request: ToolApprovalRequest): readonly string[] | undefined {
+  return request.action === 'process' ? request.argv : undefined;
+}
+
+/** Where the person's grant for this argv stands: the port's own answer, or `fresh` when it only matches. */
+function grantStanding(
+  grants: CommandGrantsPort | undefined,
+  argv: readonly string[],
+): GrantStanding {
+  if (grants === undefined) return 'none';
+  return grants.standing?.(argv) ?? (grants.matches(argv) ? 'fresh' : 'none');
+}
+
+/**
+ * A command runs unasked in `auto` only when the OPERATOR pre-approved it: a FRESH remembered grant covers its exact argv (no file
+ * write was recorded for the project after the grant was made, ADR-0138) and this chat has applied no file write either (see
+ * {@link ApprovalCache.noteWrite}). The repository's own `[chat]` allowlist is not that (security sitting, MVP-4 step 4 round 2, ruled
+ * by the maintainer): a cloned repository could write `allowed_command_globs = ["*"]`, and a prompt-injected default agent would then
+ * run anything unasked. A listed command shows its card, with the standing "on this project's allowlist". `ask` and `accept-edits` ask
+ * for every command either way. An exact argv approved earlier in THIS session is honoured by {@link askAboutCommand} in every mode,
+ * which is what removes the card there.
+ */
+function isPreApproved(argv: readonly string[], deps: TurnPolicyDeps): boolean {
+  // A grant is the person's word for an exact argv under the project root, not for what the argv names from where this chat runs:
+  // an argument that reaches a protected path from this working directory (`cat id_rsa` started inside `~/.ssh`) asks, as the card says.
+  return (
+    grantStanding(deps.commandGrants, argv) === 'fresh' &&
+    !deps.cache.wrote &&
+    !namesProtectedPath(argv, deps.commandCwd ?? '')
+  );
+}
+
+function throwIfAborted(signal: AbortSignalLike | undefined): void {
+  if (signal?.aborted === true) {
+    const error = new Error('the approval was cancelled');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+/** What a person is told when a Remember could not be written; fixed text, never a command, a path or a keychain message. */
+const REMEMBER_FAILURES: Readonly<Record<string, string>> = {
+  'no-key': 'the OS keychain is not available',
+  unreadable: 'the remembered-commands file could not be read',
+  unwritable: 'the remembered-commands file could not be written',
+  full: 'the remembered-commands file is full',
+};
+
+/**
+ * Ask the person about a command. The session cache is keyed by the exact argv, never by tool id. The card is given the facts
+ * ADR-0118 §1 lists (standing, a code carrier, a protected path, the directory) and the answers it may offer, and the answer
+ * is narrowed to what was offered: a prompt that returns an answer the card did not offer gets Once, never more.
+ *
+ * *Remember* writes the grant at the moment of the answer (it is the person's consent to this exact command, not to its
+ * outcome) and then behaves as *Session* too, so the same command does not ask again in this session. A grant that cannot be
+ * written approves this call only and says why.
+ */
+async function askAboutCommand(
+  request: ToolApprovalRequest,
+  argv: readonly string[],
+  deps: TurnPolicyDeps,
+  signal: AbortSignalLike | undefined,
+  live: ToolApprovalLiveContext | undefined,
+  filesChanged = false,
+  inAuto = false,
+): Promise<ToolApprovalDecision> {
+  if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
+  const grants = deps.commandGrants;
+  const standingNow = grantStanding(grants, argv);
+  // The same rule `askPerson` has (#W15-12): no remembered answer over a preview reduced to redaction markers or a delivered saved result.
+  const shown = live?.preview.kind !== 'saved-result' && !isBlankPreview(request.preview);
+  const facts = commandCardFacts({
+    argv,
+    commandAdmitted: request.commandAdmitted === true,
+    remembered: standingNow !== 'none',
+    grantOutdated: standingNow === 'stale',
+    // Only `auto` consults a grant, so only there does an outdated one say why it asks; `ask` and `accept-edits` ask about everything.
+    autoAsks: inAuto,
+    filesChanged,
+    cwd: deps.commandCwd ?? '',
+    sessionOffered: deps.commandSessionGrants === true && shown,
+    rememberAvailable:
+      deps.commandSessionGrants === true &&
+      shown &&
+      grants?.remember !== undefined &&
+      grants.canRemember?.(argv).ok === true,
+  });
+  const answer = await deps.prompt(request, facts.offers.session, signal, live, facts);
+  if (answer.outcome === 'reject') return toDecision(answer, request, deps.cache, false);
+  let scope = answer.scope;
+  let grantId: string | undefined;
+  // A session answer the card did not offer is floored to Once by `toDecision` (it caches only when `offers.session`).
+  if (scope === 'remember') {
+    if (!facts.offers.remember || grants?.remember === undefined) {
+      scope = 'once';
+    } else {
+      // A call cancelled while the person was answering (Esc, Ctrl+C) leaves no standing grant behind: the registry reads a throw
+      // under an aborted signal as the cancellation it is.
+      throwIfAborted(signal);
+      const written = await grants.remember(argv);
+      if (written.ok && signal?.aborted === true) {
+        // The write finished as the call was cancelled: the grant stands, so say so instead of the success notice.
+        deps.notify?.(
+          'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.',
+        );
+        throwIfAborted(signal);
+      }
+      if (written.ok) {
+        scope = 'always'; // remembered for the project, and for the rest of this session too
+        grantId = written.id;
+        deps.notify?.(
+          'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.',
+        );
+      } else {
+        const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
+        deps.notify?.(`Allowed once, but not remembered: ${why}.`);
+        scope = 'once';
+      }
+    }
+  }
+  return toDecision(
+    { outcome: 'approve', scope },
+    request,
+    deps.cache,
+    facts.offers.session,
+    grantId,
+  );
 }
 
 /**
@@ -307,11 +547,40 @@ async function askAboutProtectedTarget(
 ): Promise<ToolApprovalDecision> {
   const cacheable = false;
   const answer = await deps.prompt(request, cacheable, signal, live);
-  return toDecision(answer, request.toolId, deps.cache, cacheable);
+  return toDecision(answer, request, deps.cache, cacheable);
 }
 
-/** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
+/** Ask for a governed action: a command by its exact argv, any other class by its tool id. */
+function askForClass(
+  request: ToolApprovalRequest,
+  deps: TurnPolicyDeps,
+  signal: AbortSignalLike | undefined,
+  live: ToolApprovalLiveContext | undefined,
+): Promise<ToolApprovalDecision> {
+  const argv = commandArgv(request);
+  return argv === undefined
+    ? askPerson(request, deps, signal, live)
+    : askAboutCommand(request, argv, deps, signal, live);
+}
+
+/**
+ * The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. A file write the hook
+ * approves is noted in the session's cache (ADR-0118 §2): after one, a remembered command made before it asks in `auto` (here, and in every later chat until it is renewed: ADR-0138).
+ */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
+  const decide = modeDecision(mode, deps);
+  return async (request, signal, live): Promise<ToolApprovalDecision> => {
+    const decision = await decide(request, signal, live);
+    if (decision.outcome === 'approve' && request.action === 'fs_write') {
+      deps.cache.noteWrite();
+      // The same fact for later chats of this project (ADR-0138). A failure is told once by the store; the in-memory flag above holds here.
+      deps.commandGrants?.noteFileWrite?.();
+    }
+    return decision;
+  };
+}
+
+function modeDecision(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   return async (request, signal, live): Promise<ToolApprovalDecision> => {
     switch (mode) {
       case 'plan':
@@ -319,11 +588,11 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // depending on the target (ADR-0117); the turn continues and the model explains what it would do.
         return { outcome: 'reject', denialClass: 'mode', reason: PLAN_REFUSAL };
       case 'ask':
-        return askPerson(request, deps, signal, live);
+        return askForClass(request, deps, signal, live);
       case 'accept-edits': {
         // File edits inside the workspace are applied without a card; every other governed class keeps its
         // prompt, and a protected target or a delivered saved result is never waved through (ADR-0130).
-        if (request.action !== 'fs_write') return askPerson(request, deps, signal, live);
+        if (request.action !== 'fs_write') return askForClass(request, deps, signal, live);
         if (deps.isProtectedTarget?.(request) === true) {
           return askAboutProtectedTarget(request, deps, signal, live);
         }
@@ -335,6 +604,15 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // layer also hard-denies protected paths, so this is the graceful UX, not the security floor).
         if (deps.isProtectedTarget?.(request) === true) {
           return askAboutProtectedTarget(request, deps, signal, live);
+        }
+        // A COMMAND has a hard edge here (ADR-0118 §1): only a pre-approved one runs without a card. A command request that does
+        // not carry its argv cannot be judged pre-approved, so it asks like any other unknown (never the blanket approval below).
+        if (request.action === 'process') {
+          const argv = commandArgv(request);
+          if (argv === undefined) return askPerson(request, deps, signal, live);
+          return isPreApproved(argv, deps)
+            ? { outcome: 'approve' }
+            : askAboutCommand(request, argv, deps, signal, live, deps.cache.wrote, true);
         }
         return { outcome: 'approve' };
       }
@@ -353,9 +631,10 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
  */
 function toDecision(
   answer: ApprovalAnswer,
-  toolId: string,
+  request: ToolApprovalRequest,
   cache: ApprovalCache,
   allowAlwaysCache: boolean,
+  grantId?: string,
 ): ToolApprovalDecision {
   if (answer.outcome === 'reject') {
     return {
@@ -364,7 +643,17 @@ function toDecision(
       ...(answer.denialClass === undefined ? {} : { denialClass: answer.denialClass }),
     };
   }
-  return allowAlwaysCache && answer.scope === 'always'
-    ? { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlways(toolId) }
-    : { outcome: 'approve' };
+  if (!allowAlwaysCache || answer.scope !== 'always') return { outcome: 'approve' };
+  // A command is remembered by its exact argv; it is never remembered by tool id, which would approve every later command. A
+  // command request without an argv (a hand-built one) is not remembered at all.
+  if (request.action === 'process') {
+    const argv = request.argv;
+    return argv === undefined
+      ? { outcome: 'approve' }
+      : {
+          outcome: 'approve',
+          onDispatchSucceeded: () => cache.rememberAlwaysCommand(argv, grantId),
+        };
+  }
+  return { outcome: 'approve', onDispatchSucceeded: () => cache.rememberAlways(request.toolId) };
 }

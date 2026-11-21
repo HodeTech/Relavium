@@ -29,7 +29,7 @@ import {
   DEFAULT_APPROVAL_GUARD,
   type ApprovalGuard,
 } from './tool-review-model.js';
-import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 
 const START = Date.parse('2026-11-17T10:00:00.000Z');
@@ -890,6 +890,22 @@ describe('the session-wide Ctrl+G is asked with Ctrl+G and granted only by Enter
     },
   );
 
+  it('an Enter that comes too early says nothing was allowed; any other key that ends the question says nothing', () => {
+    const early = rig({ confirmAlways: true });
+    ask(early);
+    at(ASKED_AT + APPROVAL_CONFIRM_MIN_MS - 100);
+    enter(early);
+    expect(early.note()).toBe(CARD_ENTER_NOTE);
+    const other = rig({ confirmAlways: true });
+    ask(other);
+    at(ASKED_AT + 300);
+    other.key('x');
+    expect(
+      other.note(),
+      'a key that is not Enter needs no note: the card already says it cancels',
+    ).toBe('');
+  });
+
   it('counts the minimum to the millisecond', async () => {
     const early = rig({ confirmAlways: true });
     ask(early);
@@ -920,7 +936,10 @@ describe('the session-wide Ctrl+G is asked with Ctrl+G and granted only by Enter
       late.store.getSnapshot().alwaysConfirm,
       'and the prompt is gone at once, without waiting for another repaint',
     ).toBe(false);
+    // The Enter that came too late says nothing was allowed; the host draws that note, and a card is answerable once it is shown.
+    expect(late.note()).toBe(CARD_ENTER_NOTE);
     // The press is over: a new first Ctrl+G asks again, and ITS Enter grants.
+    late.show();
     at(ASKED_AT + APPROVAL_CONFIRM_MAX_MS + 100);
     late.chord('g');
     expect(late.store.getSnapshot().alwaysConfirm, 'it is a new first press').toBe(true);
@@ -1737,14 +1756,18 @@ describe('deny and navigation stay immediate', () => {
     expect(r.store.getSnapshot().review?.screen).toBe('card');
   });
 
-  it('lets Esc and Ctrl-C stop the turn at once', () => {
+  it('lets Esc and Ctrl+C stop the turn at once, each on a card of its own, and rejects the call first (ADR-0115 §2)', () => {
     const r = rig();
     r.open('card');
     r.show();
     at(1);
     expect(r.key('', { escape: true })).toBe('abort');
+    expect(r.pending(), 'the rejection is settled before the abort is signalled').toBe(false);
+    r.open('card two');
+    r.show();
     at(2);
     expect(r.key('c', { ctrl: true })).toBe('abort');
+    expect(r.pending()).toBe(false);
   });
 });
 
@@ -2435,5 +2458,35 @@ describe('approval answers are Ctrl chords (bare letters never answer)', () => {
         expect(r.answers).toStrictEqual([ALWAYS]);
       },
     );
+  });
+});
+
+describe('a sealed store cancels a pending approval; it does not reject it (ADR-0115 §2, ADR-0132 §4)', () => {
+  it('settles the hook with an AbortError, so a teardown that seals and aborts in one stack is recorded cancelled, never "declined"', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const pending = store.requestApproval(REQUEST, false);
+    let outcome: unknown = 'pending';
+    void pending.then(
+      (answer) => {
+        outcome = answer;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    store.sealToolPreviews();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(outcome).toMatchObject({ name: 'AbortError' });
+    expect(store.getSnapshot().approval).toBeUndefined();
+    expect(store.getSnapshot().review).toBeUndefined();
+  });
+
+  it('refuses a later approval on the sealed store as a cancellation too', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    store.sealToolPreviews();
+    await expect(store.requestApproval(REQUEST, false)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
   });
 });

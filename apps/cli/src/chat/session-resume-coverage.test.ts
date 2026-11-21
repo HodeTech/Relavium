@@ -340,10 +340,12 @@ describe('atomic resumed session display after first subsequent attempt', () => 
         );
       } finally {
         captured?.controller.handleKey('c', { ctrl: true });
+        captured?.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
         if (captured !== undefined) {
           const controller = captured.controller;
           await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
           controller.handleKey('c', { ctrl: true });
+          controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
         }
         await done;
         f.close();

@@ -7,6 +7,9 @@ import {
   type ToolApprovalRequest,
   type ToolApprovalLiveContext,
   type ToolLiveEvent,
+  type ToolPreview,
+  type ToolRoundCheckpoint,
+  type ToolRoundLimitDecision,
 } from '@relavium/core';
 
 import { createReviewDocument, reviewBytes, type ReviewPage } from './tool-review-projection.js';
@@ -26,7 +29,7 @@ import {
   type ReviewKeyAction,
   type ToolReviewState,
 } from './tool-review-model.js';
-import { CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
+import { CARD_ENTER_NOTE, CARD_LOCKOUT_NOTE, CARD_TYPEAHEAD_NOTE } from './tool-review-card.js';
 import type { ToolDisplay } from './tool-display.js';
 import {
   initialQuestionCard,
@@ -36,6 +39,8 @@ import {
   type QuestionCardState,
 } from './question-card-model.js';
 import { questionTranscriptText } from './question-card-record.js';
+import { reduceCheckpointKey, type CheckpointCardState } from './checkpoint-card.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { ChatKey } from './chat-input.js';
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { AbortSignalLike, Memory, ReasoningEffort } from '@relavium/shared';
@@ -55,6 +60,7 @@ import {
   appendWarning,
   approvalClosed,
   approvalOpened,
+  checkpointStopped,
   initialSessionViewState,
   reduceSessionEvent,
   reduceToolLiveEvent,
@@ -76,14 +82,38 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as a `Ctrl+Y yes / Ctrl+G always / Ctrl+N no / Ctrl+R reason / [esc] abort`
- *  prompt (ADR-0057, EA3/EA5). `[c]` opens the typed-reason capture (Step 14) — a reject carrying WHY, via the
- *  `ToolApprovalDecision.reject.reason` seam. */
+/**
+ * What the model is told when its command was too large for the approval card to show (no command content). It is the host's own
+ * limit, not the person's decision, so it travels as a `mode` refusal with this fixed label and not as the person's words.
+ */
+export const UNSHOWABLE_COMMAND_REASON =
+  'this command is too large for the approval card to show; run it as smaller commands';
+
+/** What the model is told when its command reached the card with a preview that held nothing to show (the host's own limit, not a decision). */
+export const EMPTY_COMMAND_REASON =
+  'this command came with nothing the approval card can show, so it was not run; use the standard command tool';
+
+/** Whether a preview has no target, no row and no diff: a card built from it would show a title and offer an answer over nothing. */
+function previewHoldsNothing(preview: ToolPreview | undefined): boolean {
+  return (
+    preview === undefined ||
+    ((preview.target ?? '').trim() === '' &&
+      preview.fields.every((field) => field.name.trim() === '' && field.value.trim() === '') &&
+      preview.diff === undefined)
+  );
+}
+
+/** A pending per-tool approval the REPL renders as the docked approval card (ADR-0057, EA3/EA5; ADR-0129): `Ctrl+Y` allow,
+ *  `Ctrl+G` allow for the session, `Ctrl+O` (a command only) remember it for the project, `Ctrl+N` deny, `Ctrl+R` deny with a
+ *  reason (a reject carrying WHY, via the `ToolApprovalDecision.reject.reason` seam), and `Esc`/`Ctrl+C`, which reject and stop
+ *  the turn (ADR-0115 §2; `Esc` on the full view only steps back to the card, ADR-0137 §4). */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   readonly live?: ToolApprovalLiveContext;
   /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */
   readonly cacheable: boolean;
+  /** A command's standing, directory, warnings and the answers its card offers (ADR-0118 §1); absent for any other call. */
+  readonly facts?: CommandCardFacts;
 }
 
 /** The immutable snapshot the ink component reads each frame (a stable reference between flushes). */
@@ -113,6 +143,8 @@ export interface ChatStoreSnapshot {
    * card — a new review object — or five seconds ends it without any bookkeeping at those places.
    */
   readonly alwaysConfirm: boolean;
+  /** The first `Ctrl+O` was pressed and the card is waiting for ENTER to remember the command. */
+  readonly rememberConfirm: boolean;
   /**
    * The open `ask_user` card ([ADR-0132](../../../../../docs/decisions/0132-the-model-can-ask-the-user-a-structured-question.md)), if the
    * model asked the person a question. A NEW object on every change, so the measured-frame acknowledgement can tell one frame
@@ -125,6 +157,13 @@ export interface ChatStoreSnapshot {
    * those needs its own proof that the frame was flushed, and a blocked card recovers when the terminal grows.
    */
   readonly questionFrame: object | undefined;
+  /**
+   * The open continue-checkpoint card ([ADR-0136](../../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)
+   * §4), if the turn has used its interval of tool rounds and is waiting for the person. Host-authored fixed text and numbers only.
+   */
+  readonly checkpoint: CheckpointCardState | undefined;
+  /** Identity of the frame the checkpoint card is showing: fresh when it opens and when the terminal is resized or resumed. */
+  readonly checkpointFrame: object | undefined;
   readonly toolDisplays: ReadonlyMap<string, ToolDisplay>;
   readonly tick: number;
   readonly color: boolean;
@@ -146,7 +185,16 @@ export interface ChatStoreController extends ChatStore {
   bindReviewVisibility: (visible: (() => boolean) | undefined) => void;
   bindReviewClipboard: (copy: ((text: string) => Promise<boolean>) | undefined) => void;
   acknowledgeReviewFrame: (review: ToolReviewState, page: ReviewPage | undefined) => void;
-  handleReviewInput: (input: string, key: ChatKey) => 'abort' | 'handled' | undefined;
+  /**
+   * The single keyboard owner of every card. `'abort'`: a card was settled as a stop and the surface must now abort the turn (an
+   * approval was already rejected, ADR-0115 §2). `'stop-answered'`: a `Ctrl+C` answered a checkpoint with "stop" (the engine ends
+   * the turn itself), so the surface starts the interrupt window and aborts nothing. `'handled'`: the key was consumed.
+   * `undefined`: no card took it.
+   */
+  handleReviewInput: (
+    input: string,
+    key: ChatKey,
+  ) => 'abort' | 'stop-answered' | 'handled' | undefined;
 
   /** Bind the frozen instance policy before the session receives input. */
   setMemoryPolicy: (memory: Readonly<Memory> | undefined) => void;
@@ -198,6 +246,20 @@ export interface ChatStoreController extends ChatStore {
   pasteIntoQuestion: (text: string) => boolean;
   /** Bind whether the question card's exact frame has been acknowledged visible (the host component owns the measurement). */
   bindQuestionVisibility: (visible: (() => boolean) | undefined) => void;
+  /**
+   * The checkpoint hook the session is given on an interactive driver (ADR-0136 §2): publish the checkpoint card and RESOLVE with
+   * the person's answer. Honors the abort signal: an abort while open REJECTS with an `AbortError`, and so does a sealed store. The
+   * engine ends the turn as a cancellation when its own signal is aborted, and otherwise as a classified `turn_limit` stop (it fails
+   * closed either way). At most one overlay is pending at a time, in both directions.
+   */
+  requestCheckpoint: (
+    info: ToolRoundCheckpoint,
+    signal?: AbortSignalLike,
+  ) => Promise<ToolRoundLimitDecision>;
+  /** Bind whether the checkpoint card's exact frame has been acknowledged visible (the host component owns the measurement). */
+  bindCheckpointVisibility: (visible: (() => boolean) | undefined) => void;
+  /** The host flushed the checkpoint card's exact `frame`: from now the dwell before `Ctrl+Y` counts. A stale frame is ignored. */
+  acknowledgeCheckpointFrame: (frame: object) => void;
 }
 
 /**
@@ -246,6 +308,9 @@ export function createChatStore(
   let approval: PendingApproval | undefined;
   // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
+  // Cancels the in-flight approval the way an abort does (ADR-0132 §4's rule for a sealed store): the call is recorded cancelled,
+  // never told the person declined. Set and cleared with `settleApproval`.
+  let cancelPendingApproval: (() => void) | undefined;
   // The open `ask_user` card and the settle pair of its pending promise (ADR-0132).
   let question: QuestionCardState | undefined;
   let pendingQuestion:
@@ -264,6 +329,18 @@ export function createChatStore(
   // A choosing key counts only once the frame is flushed AND has been on screen long enough to read (QUESTION_SETTLE_MS).
   const questionAcceptsKeys = (): boolean =>
     questionVisible?.() === true && Date.now() - questionFrameAt >= QUESTION_SETTLE_MS;
+  // The open continue-checkpoint card and the settle pair of its pending promise (ADR-0136).
+  let checkpoint: CheckpointCardState | undefined;
+  let pendingCheckpoint:
+    | {
+        readonly resolve: (answer: ToolRoundLimitDecision) => void;
+        readonly reject: (reason: Error) => void;
+      }
+    | undefined;
+  let checkpointVisible: (() => boolean) | undefined;
+  let checkpointFrame: object | undefined;
+  // When the checkpoint's current frame was acknowledged (monotonic), `undefined` while it has not been: `Ctrl+Y` waits for it.
+  let checkpointShownAt: number | undefined;
   let review: ToolReviewState | undefined;
   // What makes an affirmative approval key a DELIBERATE one (PR #99 security sitting E1 and the corrective sitting G1): the
   // review whose frame was acknowledged last and when, when the previous key of any kind arrived, when the last FOREIGN key
@@ -277,7 +354,14 @@ export function createChatStore(
   let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
   let lastResolvedAt = Number.NEGATIVE_INFINITY;
   // The session-wide grant is a two-step answer: the review the first `Ctrl+G` was pressed on and when. ENTER confirms it.
-  let alwaysAsk: { readonly review: ToolReviewState; readonly at: number } | undefined;
+  // `scope` is which answer it asks: the session-wide `Ctrl+G`, or `Ctrl+O` (remember this command for this project).
+  let alwaysAsk:
+    | {
+        readonly review: ToolReviewState;
+        readonly at: number;
+        readonly scope: 'always' | 'remember';
+      }
+    | undefined;
   // Whether this card has already shown its one refusal note.
   let refusalNoted = false;
   const alwaysAsked = (now: number): boolean =>
@@ -301,8 +385,11 @@ export function createChatStore(
     approval,
     review,
     alwaysConfirm: false,
+    rememberConfirm: false,
     question,
     questionFrame,
+    checkpoint,
+    checkpointFrame,
     toolDisplays,
     tick: tickCount,
     color,
@@ -316,9 +403,12 @@ export function createChatStore(
       reasoningVisible,
       approval,
       review,
-      alwaysConfirm: alwaysAsked(performance.now()),
+      alwaysConfirm: alwaysAsked(performance.now()) && alwaysAsk?.scope === 'always',
+      rememberConfirm: alwaysAsked(performance.now()) && alwaysAsk?.scope === 'remember',
       question,
       questionFrame,
+      checkpoint,
+      checkpointFrame,
       toolDisplays,
       tick: tickCount,
       color,
@@ -428,6 +518,26 @@ export function createChatStore(
     flush();
   };
 
+  /** Close the checkpoint card; the person's wait is not the turn's work. */
+  const clearCheckpoint = (): void => {
+    checkpoint = undefined;
+    checkpointFrame = undefined;
+    checkpointShownAt = undefined;
+    pendingCheckpoint = undefined;
+    state = approvalClosed(state, Date.now());
+  };
+  /** Settle the open checkpoint with the person's answer: it goes to the engine's hook and nowhere else (no event, no history field). */
+  const settleCheckpointWith = (answer: ToolRoundLimitDecision): void => {
+    const settling = pendingCheckpoint;
+    if (checkpoint === undefined || settling === undefined) return;
+    const rounds = checkpoint.rounds;
+    clearCheckpoint();
+    // Remember a "stop" for the turn's summary line: the engine ends the turn with `turn_limit`, and the view says who stopped it.
+    if (answer === 'stop') state = checkpointStopped(state, rounds);
+    settling.resolve(answer);
+    flush();
+  };
+
   return {
     applyToolLiveEvent: (event) => {
       if (sealed) return;
@@ -451,7 +561,10 @@ export function createChatStore(
       review = undefined;
       acknowledgedReview = undefined;
       reviewPage = undefined;
-      settleApproval?.({ outcome: 'reject' });
+      // A sealed store is a teardown, and the person never decided: an approval still open is CANCELLED, as a question and a
+      // checkpoint are below, not rejected. (A rejection would be recorded as "the user declined" when the seal and the abort land
+      // in one stack, ADR-0115 §2.)
+      cancelPendingApproval?.();
       // A question still open when the store seals is a CANCEL, never a skip (ADR-0132 §4): the call must be recorded
       // cancelled and the turn left to its own ending, not told the person declined.
       if (pendingQuestion !== undefined) {
@@ -460,6 +573,12 @@ export function createChatStore(
         questionFrame = undefined;
         pendingQuestion = undefined;
         state = approvalClosed(state, Date.now());
+        rejecting.reject(abortError());
+      }
+      // The same for a checkpoint: a store sealed under an open card is a cancellation of the turn, not an answer.
+      if (pendingCheckpoint !== undefined) {
+        const rejecting = pendingCheckpoint;
+        clearCheckpoint();
         rejecting.reject(abortError());
       }
       flush();
@@ -487,6 +606,13 @@ export function createChatStore(
       // A resize or a resume from suspend: the open question's frame must be measured and flushed again.
       if (question !== undefined) {
         mintQuestionFrame();
+        flush();
+      }
+      // The checkpoint too: the frame is minted anew and its dwell starts over, so a card the person has not seen since the
+      // resize cannot be continued by a key already in flight.
+      if (checkpoint !== undefined) {
+        checkpointFrame = {};
+        checkpointShownAt = undefined;
         flush();
       }
       if (review !== undefined) {
@@ -557,6 +683,38 @@ export function createChatStore(
         }
         return 'handled';
       }
+      // An open checkpoint card owns the keyboard (ADR-0136 §4). A stop is an answer to the engine's hook, never delayed and never
+      // an abort; `Ctrl+Y` spends, so it clears the same guards an approval's affirmative key does; every other key is typing at a
+      // card, which is a foreign key.
+      if (checkpoint !== undefined) {
+        const action = reduceCheckpointKey(input, key);
+        if (action.kind === 'stop' || action.kind === 'interrupt') {
+          lastResolvedAt = now;
+          settleCheckpointWith('stop');
+          return action.kind === 'interrupt' ? 'stop-answered' : 'handled';
+        }
+        if (action.kind === 'continue') {
+          const refusal = approvalKeyRefusal(approvalGuard, {
+            now,
+            shownAt: checkpointShownAt,
+            previousKeyAt,
+            lastForeignKeyAt,
+            lastResolvedAt,
+          });
+          // It also has to be on screen right now: custody lost (Ctrl-Z, a closed output) makes the frame unseen again.
+          if (refusal === undefined && checkpointVisible?.() === true) {
+            lastResolvedAt = now;
+            settleCheckpointWith('continue');
+            return 'handled';
+          }
+          // A held key goes on being held: an affirmative key inside the lockout restarts it, as at an approval card.
+          if (approvalGuard.lockoutMs > 0 && now - lastResolvedAt < approvalGuard.lockoutMs)
+            lastResolvedAt = now;
+          return 'handled';
+        }
+        lastForeignKeyAt = now;
+        return 'handled';
+      }
       if (review === undefined) {
         // No card exists: the composer owns this key and drops it while a turn runs. That is a person typing the next
         // instruction — a foreign key, evidence that a `Ctrl+Y` or `Ctrl+G` in the next second and a half is not an answer (G1).
@@ -565,6 +723,7 @@ export function createChatStore(
       }
       const calls = [...toolDisplays.values()];
       const cacheable = approval?.cacheable === true;
+      const rememberOffered = approval?.facts?.offers.remember === true;
       const visible = reviewVisible?.() === true;
       const action = reduceToolReviewKey(
         review,
@@ -574,6 +733,7 @@ export function createChatStore(
         reviewPage,
         cacheable,
         calls.length,
+        rememberOffered,
       );
       // What the guard compares THIS key against is what happened before it.
       const priorForeignKeyAt = lastForeignKeyAt;
@@ -590,17 +750,19 @@ export function createChatStore(
       const grant = mayConfirm
         ? reduceToolReviewKey(
             review,
-            'g',
+            asked.scope === 'remember' ? 'o' : 'g',
             { ctrl: true },
             visible,
             reviewPage,
             cacheable,
             calls.length,
+            rememberOffered,
           )
         : undefined;
       const confirmed =
         grant?.kind === 'approve' &&
-        grant.scope === 'always' &&
+        asked !== undefined &&
+        grant.scope === asked.scope &&
         approvalKeyRefusal(approvalGuard, {
           now,
           shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
@@ -620,8 +782,16 @@ export function createChatStore(
             // A key the card would act on once its frame is visible is the person using the card, not typing at it.
             (visible ||
               noteOnly(review, action) ||
-              reduceToolReviewKey(review, input, key, true, reviewPage, cacheable, calls.length)
-                .kind === 'none')))
+              reduceToolReviewKey(
+                review,
+                input,
+                key,
+                true,
+                reviewPage,
+                cacheable,
+                calls.length,
+                rememberOffered,
+              ).kind === 'none')))
       )
         lastForeignKeyAt = now;
       // A held key goes on being held: an affirmative key that arrives inside the lockout restarts it, so the key must be
@@ -637,11 +807,16 @@ export function createChatStore(
       // The question ends at the next key that is not its confirming Enter — typing, a held `Ctrl+G`, an early Enter, anything.
       if (!confirmed && alwaysAsk !== undefined) {
         alwaysAsk = undefined;
+        // An Enter outside its window is the likeliest silent failure (it follows the chord by a moment): say nothing was granted.
+        if (key.return === true && review !== undefined && action.kind !== 'abort') {
+          review = { ...review, message: CARD_ENTER_NOTE };
+          reviewPage = undefined;
+        }
         if (action.kind !== 'abort') flush();
       }
       if (confirmed) {
         lastResolvedAt = now;
-        settleApproval?.({ outcome: 'approve', scope: 'always' });
+        settleApproval?.({ outcome: 'approve', scope: asked.scope });
         flush();
         return 'handled';
       }
@@ -666,20 +841,32 @@ export function createChatStore(
           break;
         }
         case 'abort':
+          // Reject FIRST (ADR-0115 §2): the pending call is settled as a rejection by the person — recorded as rejected, which is
+          // true, and never as "cancelled, state unknown" — BEFORE the surface signals the abort. The settle resolves the hook's
+          // promise and drops the store's own abort listener, so the abort that follows cannot turn it into a cancellation; the
+          // turn then stops at its next boundary without another model call. A bare `Esc` and a `Ctrl+C` take the same path.
+          if (settleApproval !== undefined) {
+            lastResolvedAt = now;
+            settleApproval({ outcome: 'reject' });
+            flush();
+          }
           return 'abort';
         case 'deny':
           lastResolvedAt = now;
           settleApproval?.(
-            action.reason === undefined
-              ? { outcome: 'reject' }
-              : { outcome: 'reject', reason: action.reason },
+            action.reason !== undefined
+              ? { outcome: 'reject', reason: action.reason }
+              : review.facts !== undefined && review.document?.valid === false
+                ? // A command too large for the card is told so, in fixed words (never the command), so it does not retry the same line.
+                  { outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON }
+                : { outcome: 'reject' },
           );
           flush();
           break;
         case 'approve': {
-          // A `Ctrl+G` that arrives while the question is open is the key that CANCELS it (above): it neither grants nor asks
-          // again, so a held or repeated `Ctrl+G` never keeps a confirmation alive for an Enter to land on.
-          if (asked !== undefined && action.scope === 'always') break;
+          // A `Ctrl+G` or `Ctrl+O` that arrives while the question is open is the key that CANCELS it (above): it neither grants nor
+          // asks again, so a held or repeated chord never keeps a confirmation alive for an Enter to land on.
+          if (asked !== undefined && action.scope !== 'once') break;
           // A key that is not a deliberate answer changes nothing and is consumed (never composer text).
           const refusal = approvalKeyRefusal(approvalGuard, {
             now,
@@ -692,9 +879,10 @@ export function createChatStore(
             refuse(refusal);
             break;
           }
-          if (action.scope === 'always' && approvalGuard.confirmAlways) {
-            // The session-wide grant takes two presses: this one only asks; ENTER, no other key between, grants.
-            alwaysAsk = { review, at: now };
+          if (action.scope !== 'once' && approvalGuard.confirmAlways) {
+            // A grant that outlasts this call (the session-wide one, or remembering a command) takes two presses: this one only
+            // asks; ENTER, no other key between, grants.
+            alwaysAsk = { review, at: now, scope: action.scope };
             flush();
             break;
           }
@@ -825,17 +1013,29 @@ export function createChatStore(
       state = { ...state, compacting: false };
       flush();
     },
-    requestApproval: (request, cacheable, signal, live) =>
+    requestApproval: (request, cacheable, signal, live, facts) =>
       new Promise<ApprovalAnswer>((resolve, reject) => {
         // One overlay at a time, in BOTH directions: an approval under an open question card would be unreachable, because the
         // card consumes every key. (Tool calls dispatch sequentially, so this is unreachable today; the guard keeps it so.)
-        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
           reject(abortError());
           return;
         }
         // Honor an already-aborted turn: reject with an AbortError so the dispatch routes to cancel, not deny.
         if (signal?.aborted === true) {
           reject(abortError());
+          return;
+        }
+        // A command card is built from the command's own preview. Without one, or with one that holds nothing (no target, no row, no
+        // diff), there is nothing to show, and a card that shows nothing must not offer an answer: the person would approve an argv
+        // they cannot see (the built-in `run_command` always publishes rows; a hand-built tool might not). Refused in fixed words.
+        if (facts !== undefined && previewHoldsNothing(live?.preview)) {
+          resolve({ outcome: 'reject', denialClass: 'mode', reason: EMPTY_COMMAND_REASON });
           return;
         }
         const clear = (): void => {
@@ -845,6 +1045,7 @@ export function createChatStore(
           reviewPage = undefined;
           alwaysAsk = undefined;
           settleApproval = undefined;
+          cancelPendingApproval = undefined;
           state = approvalClosed(state, Date.now()); // the person's wait is not the turn's work
           signal?.removeEventListener('abort', onAbort);
         };
@@ -860,18 +1061,25 @@ export function createChatStore(
           clear();
           resolve(answer);
         };
-        approval = { request, cacheable, ...(live === undefined ? {} : { live }) };
+        cancelPendingApproval = onAbort;
+        approval = {
+          request,
+          cacheable,
+          ...(live === undefined ? {} : { live }),
+          ...(facts === undefined ? {} : { facts }),
+        };
         alwaysAsk = undefined;
         refusalNoted = false; // a card of its own gets its own note
         state = approvalOpened(state, Date.now());
         const fallback = {
           kind: 'operation',
           fields: [],
-        } satisfies import('@relavium/core').ToolPreview;
+        } satisfies ToolPreview;
         review = initialToolReview(
           'approval',
           live?.callId,
-          createReviewDocument(live?.preview ?? fallback),
+          createReviewDocument(live?.preview ?? fallback, { requireAllMasks: facts !== undefined }),
+          facts,
         );
         signal?.addEventListener('abort', onAbort);
         flush(); // render the approval card
@@ -885,7 +1093,12 @@ export function createChatStore(
     requestQuestion: (request, signal) =>
       new Promise<AskUserAnswer>((resolve, reject) => {
         // One overlay at a time, and never on a sealed store or an already-stopped turn: those are CANCELS.
-        if (sealed || settleApproval !== undefined || pendingQuestion !== undefined) {
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
           reject(abortError());
           return;
         }
@@ -937,6 +1150,59 @@ export function createChatStore(
     bindQuestionVisibility: (visible) => {
       questionVisible = visible;
     },
+    requestCheckpoint: (info, signal) =>
+      new Promise<ToolRoundLimitDecision>((resolve, reject) => {
+        // One overlay at a time, and never on a sealed store or an already-stopped turn: those are CANCELS.
+        if (
+          sealed ||
+          settleApproval !== undefined ||
+          pendingQuestion !== undefined ||
+          pendingCheckpoint !== undefined
+        ) {
+          reject(abortError());
+          return;
+        }
+        if (signal?.aborted === true) {
+          reject(abortError());
+          return;
+        }
+        const onAbort = (): void => {
+          if (pendingCheckpoint === undefined) return;
+          clearCheckpoint();
+          reject(abortError());
+          flush();
+        };
+        signal?.addEventListener('abort', onAbort);
+        pendingCheckpoint = {
+          resolve: (answer) => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve(answer);
+          },
+          reject: (reason) => {
+            signal?.removeEventListener('abort', onAbort);
+            reject(reason);
+          },
+        };
+        const opened = Date.now();
+        // The turn's working time so far, the person's own waits excluded (as the busy line counts it).
+        const elapsedMs =
+          state.turnStartedAtMs === undefined
+            ? 0
+            : Math.max(0, opened - state.turnStartedAtMs - state.approvalWaitMs);
+        checkpoint = { rounds: info.rounds, interval: info.interval, elapsedMs };
+        checkpointFrame = {};
+        checkpointShownAt = undefined;
+        state = approvalOpened(state, opened);
+        flush();
+      }),
+    bindCheckpointVisibility: (visible) => {
+      checkpointVisible = visible;
+    },
+    acknowledgeCheckpointFrame: (frame) => {
+      if (checkpoint === undefined || frame !== checkpointFrame || checkpointShownAt !== undefined)
+        return;
+      checkpointShownAt = performance.now();
+    },
   };
 }
 
@@ -973,9 +1239,33 @@ function abortError(): Error {
 /** Whether a `state` action changes nothing but the note: every other field of the review is the very same value. */
 function noteOnly(before: ToolReviewState, action: ReviewKeyAction): boolean {
   if (action.kind !== 'state' || action.state.message === before.message) return false;
-  const was = before as unknown as Record<string, unknown>;
-  const now = action.state as unknown as Record<string, unknown>;
-  return Object.keys(was).every((name) => name === 'message' || was[name] === now[name]);
+  const was = fieldsOf(before);
+  const now = fieldsOf(action.state);
+  if (was.size !== now.size) return false;
+  for (const [name, value] of was) {
+    if (name !== 'message' && now.get(name) !== value) return false;
+  }
+  return true;
+}
+
+/** The own fields of a review state by name, typed `unknown` at this one boundary (no cast: `Object.entries` hands back `any`). */
+function fieldsOf(state: ToolReviewState): ReadonlyMap<string, unknown> {
+  const fields = new Map<string, unknown>();
+  for (const [name, value] of Object.entries(state)) fields.set(name, value);
+  return fields;
+}
+
+/**
+ * What a tool row shows as its target: the preview's, except a command's, which is its program and how many arguments it had (the
+ * arguments themselves may hold a credential, and the row stays in the transcript; `/details` and the card show them).
+ */
+function rowTarget(event: Extract<ToolLiveEvent, { phase: 'preview' }>): string | undefined {
+  if (event.toolId !== 'run_command') return event.preview.target;
+  const program = event.preview.fields[0]?.value ?? event.preview.target;
+  const count = event.preview.fields.length - 1;
+  return program === undefined || count <= 0
+    ? program
+    : `${program} (${String(count)} ${count === 1 ? 'argument' : 'arguments'})`;
 }
 
 function boundedDisplayText(source: string, limit: number): string {
@@ -1002,7 +1292,10 @@ function updateToolDisplay(
     outcome: 'running',
   };
   if (event.phase === 'preview') {
-    const document = withDocument ? createReviewDocument(event.preview) : undefined;
+    // A command's arguments are masked as the engine's event preview masks them (ADR-0118 §1): what the card hides, its details hide.
+    const document = withDocument
+      ? createReviewDocument(event.preview, { command: event.toolId === 'run_command' })
+      : undefined;
     if (event.preview.kind === 'saved-result' || document === undefined) {
       const delivery = { ...next };
       delete delivery.document;
@@ -1011,9 +1304,11 @@ function updateToolDisplay(
     }
     return {
       ...next,
-      ...(event.preview.target === undefined
+      // A command's row names the PROGRAM only, as it always did: its arguments can carry a credential, and the card (which gates
+      // secret-shaped spans behind a reveal) is where they are shown. The details view reads them from the retained document.
+      ...(rowTarget(event) === undefined
         ? {}
-        : { target: boundedDisplayText(event.preview.target, 512) }),
+        : { target: boundedDisplayText(rowTarget(event) ?? '', 512) }),
       ...(event.preview.diff === undefined ? {} : { stats: event.preview.diff.stats }),
       ...(document === undefined ? {} : { document }),
     };
@@ -1031,16 +1326,19 @@ function detailsDocument(selected: ToolDisplay) {
   // Nothing to add to what the call already retained: it is the same document, not a second projection of it.
   // (An invalid one retains no preview, and its details are rebuilt from the empty one it carries.)
   if (selected.document?.valid === true && selected.summary === undefined) return selected.document;
-  return createReviewDocument({
-    ...(preview ?? { kind: 'operation', fields: [] }),
-    fields: [
-      ...(preview?.fields ?? []),
-      ...(preview === undefined
-        ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
-        : []),
-      ...(selected.summary === undefined
-        ? []
-        : [{ name: 'Result summary', value: selected.summary }]),
-    ],
-  });
+  return createReviewDocument(
+    {
+      ...(preview ?? { kind: 'operation', fields: [] }),
+      fields: [
+        ...(preview?.fields ?? []),
+        ...(preview === undefined
+          ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
+          : []),
+        ...(selected.summary === undefined
+          ? []
+          : [{ name: 'Result summary', value: selected.summary }]),
+      ],
+    },
+    { command: selected.toolId === 'run_command' },
+  );
 }

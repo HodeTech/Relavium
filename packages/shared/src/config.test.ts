@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { CHAT_LIMITS, isChatLimitInBounds } from './chat-limits.js';
 import { GlobalConfigSchema, McpServerRegistrationSchema, ProjectConfigSchema } from './config.js';
 import { MCP_CONNECT_TIMEOUT_CEILING_MS } from './constants.js';
 
@@ -387,6 +388,69 @@ describe('config schemas', () => {
     expect(
       ProjectConfigSchema.safeParse({ chat: { allowed_commands: 'git status' } }).success,
     ).toBe(false);
+  });
+
+  it('bounds the four chat limits and rejects a breach instead of clamping it (ADR-0136 §1)', () => {
+    const limits = {
+      max_turns: 1000,
+      max_tool_turns: 256,
+      checkpoint_tool_turns: 1,
+      max_tool_corrections: 0,
+    };
+    expect(ProjectConfigSchema.safeParse({ chat: limits }).success).toBe(true);
+    // The same keys are the operator's base in the global `[preferences]`.
+    expect(GlobalConfigSchema.safeParse({ preferences: limits }).success).toBe(true);
+    for (const [key, bad] of [
+      ['max_turns', 1001],
+      ['max_turns', 0],
+      ['max_tool_turns', 257],
+      ['max_tool_turns', 0],
+      ['checkpoint_tool_turns', 257],
+      ['checkpoint_tool_turns', 0],
+      ['max_tool_corrections', 11],
+      ['max_tool_corrections', -1],
+      ['max_tool_corrections', 1.5],
+    ] as const) {
+      expect(ProjectConfigSchema.safeParse({ chat: { [key]: bad } }).success, `${key}=${bad}`).toBe(
+        false,
+      );
+      expect(
+        GlobalConfigSchema.safeParse({ preferences: { [key]: bad } }).success,
+        `[preferences] ${key}=${bad}`,
+      ).toBe(false);
+    }
+  });
+
+  it('publishes the limits as data the schema reads (one source for loader, engine and docs)', () => {
+    expect(CHAT_LIMITS).toEqual({
+      checkpoint_tool_turns: { min: 1, max: 256, default: 32 },
+      max_tool_turns: { min: 1, max: 256, default: 16 },
+      max_tool_corrections: { min: 0, max: 10, default: 3 },
+      max_turns: { min: 1, max: 1000, default: 50 },
+    });
+    expect(isChatLimitInBounds('max_turns', 1000)).toBe(true);
+    expect(isChatLimitInBounds('max_turns', 1001)).toBe(false);
+    expect(isChatLimitInBounds('max_tool_corrections', 0)).toBe(true);
+    expect(isChatLimitInBounds('max_tool_turns', 2.5)).toBe(false);
+  });
+
+  it('refuses an allowed_commands entry that is not a command line (ADR-0118 §3)', () => {
+    // A quote left open used to be a silent non-match; it is a loud strict-config error now.
+    const open = ProjectConfigSchema.safeParse({ chat: { allowed_commands: ['echo "a b'] } });
+    expect(open.success).toBe(false);
+    // A whitespace-only entry has no token and can never match.
+    expect(ProjectConfigSchema.safeParse({ chat: { allowed_commands: ['   '] } }).success).toBe(
+      false,
+    );
+    // A balanced quote is fine, and the diagnostic is a fixed string that never echoes the rejected entry.
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { allowed_commands: ['echo "a b"'] } }).success,
+    ).toBe(true);
+    if (!open.success) expect(JSON.stringify(open.error.issues)).not.toContain('a b');
+    // Globs are not command lines: they stay free text.
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { allowed_command_globs: ['git "*'] } }).success,
+    ).toBe(true);
   });
 });
 

@@ -11,8 +11,13 @@ catalog:
   eslint: ^9.17.0
   eslint-config-prettier: ^9.1.0
   prettier: ^3.4.2
-  # Exact cooled pin: a fresh install must not resolve a newer unreviewed release (§9a).
-  turbo: 2.11.11
+  # Exact pin: a fresh install must not resolve a newer unreviewed release (§9a). This pin was NOT cooled when it
+  # entered: turbo 2.11.13 was published 2026-11-18T15:28:52Z and committed in d5693343 on 2026-11-19T09:16:16Z, about
+  # 17 h 48 min later, inside the 72-hour window docs/standards/architectural-principles.md §9a blocks. The
+  # maintainer reviewed it and KEPT the pin on 2026-11-21; that decision is the recorded justification (no reason for
+  # the original bump was written down). The 72-hour window ended 2026-11-21T15:28:52Z, the 7-day patch bar of §9a
+  # ends 2026-11-25T15:28:52Z and the 14-day preference ends 2026-12-02T15:28:52Z.
+  turbo: 2.11.13
   typescript: ^5.7.2
   typescript-eslint: ^8.18.1
   vitest: ^3.0.0

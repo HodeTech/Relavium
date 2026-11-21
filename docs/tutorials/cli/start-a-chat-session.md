@@ -72,7 +72,7 @@ You do **not** need a `.relavium.yaml` workflow to start a chat — that is the 
    ```
 
 4. **Watch the agent use a tool.** When the agent needs to act on your machine — read a
-   file, run an allowlisted command — it issues a tool call and the result streams back
+   file, run a command you approve — it issues a tool call and the result streams back
    inline. Chat uses the **same** built-in `ToolRegistry` as a workflow agent (the same
    tools, the same result shapes), catalogued in
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md):
@@ -84,14 +84,17 @@ You do **not** need a `.relavium.yaml` workflow to start a chat — that is the 
    ```
 
 5. **Notice the filesystem scope.** Every file-touching tool runs under the session's
-   filesystem **scope tier** — by default the agent may only touch the current workspace
-   and `~/.relavium/tmp/`. Ask it to read a file outside that scope and it is refused, not
-   silently allowed. The active tier resolves from the `[chat]` block of
+   filesystem **scope tier** — by default the agent may only touch the session's workspace
+   and any root you admitted explicitly (`--allow-fs-root`, or `[chat].extra_roots` in a project
+   file); `~/.relavium/tmp/` is no longer a default grant. Ask it to read a file outside that
+   scope and it is refused, not silently allowed. The active tier resolves from the `[chat]` block of
    [config-spec.md](../../reference/contracts/config-spec.md), which references the same
    `fs_scope` the workflow side uses (see the scope tiers in
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md#filesystem-permission-tiers)).
-   The same guardrails apply: `run_command` only ever runs commands on the
-   `allowedCommands` allowlist (empty/absent ⇒ disabled), and `git_commit` is behind
+   The same guardrails apply: `run_command` runs only a command the
+   `allowedCommands` allowlist admits where no one can answer (empty/absent ⇒ disabled there), and in an
+   interactive chat a command outside it is a card you answer
+   ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)); `git_commit` is behind
    approval.
 
 6. **End the session.** Type `/exit` to close the REPL cleanly. The process exits with the

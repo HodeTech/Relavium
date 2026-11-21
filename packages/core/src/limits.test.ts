@@ -8,11 +8,19 @@
  * one review away from shipping.
  */
 
+import { CHAT_LIMITS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { buildRunPlan } from './dag.js';
-import { WorkflowGraphError } from './errors.js';
-import { ADMISSION_CEILINGS, DEFAULT_MAX_PARALLEL } from './limits.js';
+import { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
+import { DEFAULT_SESSION_MAX_TURNS } from './engine/agent-session.js';
+import { WorkflowGraphError, type GraphIssue } from './errors.js';
+import {
+  ABSOLUTE_TOOL_ROUNDS,
+  ADMISSION_CEILINGS,
+  DEFAULT_MAX_PARALLEL,
+  collectTurnLimitIssues,
+} from './limits.js';
 import { parseWorkflow } from './parser.js';
 
 /** A workflow with `count` trivially-connected nodes — the cheapest way to cross the node/edge ceilings. */
@@ -362,5 +370,86 @@ workflow:
     expect(fields.filter((f) => f.includes('max_attempts'))).toHaveLength(
       ADMISSION_CEILINGS.fallbackChainEntries + 1,
     );
+  });
+});
+
+describe('the chat turn limits (ADR-0136)', () => {
+  it('keeps the published bounds and the absolute backstop in step', () => {
+    // The checkpoint interval and the hard stop may be set up to the number the engine will never pass.
+    expect(CHAT_LIMITS.checkpoint_tool_turns.max).toBe(ABSOLUTE_TOOL_ROUNDS);
+    expect(CHAT_LIMITS.max_tool_turns.max).toBe(ABSOLUTE_TOOL_ROUNDS);
+    expect(ABSOLUTE_TOOL_ROUNDS * ADMISSION_CEILINGS.toolCallsPerResponse).toBe(4096);
+  });
+
+  it('collects every out-of-bounds limit at once and never clamps', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: 0, maxToolCorrections: 11, checkpointToolTurns: 257 },
+      1001,
+      issues,
+    );
+    expect(issues.map((i) => i.field)).toEqual([
+      'maxToolTurns',
+      'maxToolCorrections',
+      'checkpointToolTurns',
+      'maxTurns',
+    ]);
+    expect(issues.every((i) => i.kind === 'ceiling_exceeded')).toBe(true);
+    // Each message names the field, the value and the bound.
+    expect(issues[3]?.message).toContain('1001');
+    expect(issues[3]?.message).toContain('1 to 1000');
+  });
+
+  it('rejects a fraction and NaN, which a range comparison alone would let through', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: 2.5, maxToolCorrections: Number.NaN, checkpointToolTurns: 1.5 },
+      Number.NaN,
+      issues,
+    );
+    expect(issues.map((i) => i.field)).toEqual([
+      'maxToolTurns',
+      'maxToolCorrections',
+      'checkpointToolTurns',
+      'maxTurns',
+    ]);
+  });
+
+  it('refuses a REQUIRED limit that is absent (an untyped caller), while an optional one may be', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: undefined as never, maxToolCorrections: 3 },
+      undefined,
+      issues,
+    );
+    collectTurnLimitIssues(
+      { maxToolTurns: 16, maxToolCorrections: undefined as never },
+      undefined,
+      issues,
+    );
+    expect(issues.map((i) => i.field)).toEqual(['maxToolTurns', 'maxToolCorrections']);
+    const optionalOnly: GraphIssue[] = [];
+    collectTurnLimitIssues({ maxToolTurns: 16, maxToolCorrections: 3 }, undefined, optionalOnly);
+    expect(optionalOnly).toEqual([]);
+  });
+
+  it('keeps the published defaults equal to the engine defaults they must agree with', () => {
+    // Two sources of one number: the published chat default and the engine constant a surface falls back to.
+    expect(CHAT_LIMITS.max_tool_turns.default).toBe(DEFAULT_AGENT_TURN_LIMITS.maxToolTurns);
+    expect(CHAT_LIMITS.max_tool_corrections.default).toBe(
+      DEFAULT_AGENT_TURN_LIMITS.maxToolCorrections,
+    );
+    expect(CHAT_LIMITS.max_turns.default).toBe(DEFAULT_SESSION_MAX_TURNS);
+  });
+
+  it('admits the inclusive bounds, and a zero correction budget the engine already supports', () => {
+    const issues: GraphIssue[] = [];
+    collectTurnLimitIssues(
+      { maxToolTurns: 256, maxToolCorrections: 0, checkpointToolTurns: 1 },
+      1000,
+      issues,
+    );
+    collectTurnLimitIssues({ maxToolTurns: 1, maxToolCorrections: 10 }, undefined, issues);
+    expect(issues).toEqual([]);
   });
 });

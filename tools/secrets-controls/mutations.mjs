@@ -351,7 +351,7 @@ function coreProjectionControl(id, before, after, targets, marker = coreProjecti
   );
 }
 /** The complete registry test file the journal-identity control runs. */
-const REGISTRY_CASES = 116;
+const REGISTRY_CASES = 127;
 /** The complete scrubber test file every LLM diagnostic control runs. */
 const LLM_SCRUB_CASES = 224;
 function diagnosticControl(id, before, after, targets, marker = diagnosticMarker) {
@@ -746,7 +746,7 @@ export const mutations = [
       });`,
     '      command.exitOverride();',
     ['apps/cli/src/run.test.ts'],
-    28,
+    34,
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY',
     ['human verbose', 'JSON', 'JSON verbose'].map((mode) => ({
@@ -852,7 +852,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '',
     ['apps/cli/src/commands/chat.test.ts'],
-    165,
+    171,
     "reports fixed continuity and review notice on stderr after live 'human' /export",
     'W2_EXPORT_LIVE_NOTICE',
     [
@@ -872,7 +872,7 @@ export const mutations = [
     '        emitOutput(SESSION_EXPORT_REVIEW_NOTICE.trimEnd());\n',
     '        deps.io.writeErr(SESSION_EXPORT_REVIEW_NOTICE);\n',
     ['apps/cli/src/commands/chat.test.ts'],
-    165,
+    171,
     "renders the live export 'success' through the interactive transcript",
     'W2_EXPORT_LIVE_RENDERED_NOTICE',
   ),

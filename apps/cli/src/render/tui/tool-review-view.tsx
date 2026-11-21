@@ -193,7 +193,12 @@ export function ToolReviewHost(
       <Text>
         {identity?.valid === false
           ? 'Review unavailable — the tool identity does not fit; enlarge terminal.'
-          : 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'}{' '}
+          : review.facts !== undefined && review.document?.valid === false
+            ? 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.'
+            : review.screen === 'card'
+              ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
+              : // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
+                'Review unavailable — enlarge terminal, narrow change, or [p] code points.'}{' '}
         {reviewExitHint(review)}
       </Text>
     );
@@ -266,6 +271,21 @@ export function reviewScreen(
   };
 }
 
+/**
+ * What a command card adds to its answer rows (ADR-0118 §1): the grants are worded for THIS exact command, `Ctrl+O` is offered
+ * when the store can write one (and the page shows everything it would remember), and its question has its own sentence.
+ */
+function commandKeys(
+  snapshot: ChatStoreSnapshot,
+  review: ToolReviewState,
+  page: ReviewPage | undefined,
+): { command?: true; remember?: boolean; confirmRemember?: boolean } {
+  const facts = review.facts;
+  if (facts === undefined) return {};
+  const remember = reviewOffersAlways(review, page, facts.offers.remember);
+  return { command: true, remember, confirmRemember: snapshot.rememberConfirm && remember };
+}
+
 /** The full view's chrome for one frame: what `fullChrome` needs from the store, the review and the page being drawn. */
 function buildFullChrome(
   snapshot: ChatStoreSnapshot,
@@ -303,21 +323,27 @@ function buildFullChrome(
           cacheable,
           scope: escaped(cardScopePhrase(snapshot.approval?.request.toolId ?? '')),
           confirmAlways: snapshot.alwaysConfirm && cacheable,
+          ...commandKeys(snapshot, review, page),
         }
       : undefined,
     searching: review.searching,
+    commandFacts: approval ? review.facts : undefined,
   });
 }
 
 /**
- * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn, Esc stops it. Inside a
- * modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model
- * only lets those states act on a frame the person can read — so only Esc is true there.
+ * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn; on the card Esc stops it, on the
+ * full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4). Inside a modal sub-state (a typed denial reason, the
+ * full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets those states act on a frame the person can
+ * read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
  */
 function reviewExitHint(review: ToolReviewState): string {
   if (review.kind !== 'approval') return 'Esc closes.';
   const modal = review.denial !== undefined || review.searching;
-  return modal ? 'Esc stops the turn.' : '[Ctrl+N] denies · Esc stops the turn.';
+  if (modal) return 'Esc closes the box · Ctrl+C stops the turn.';
+  return review.screen === 'card'
+    ? '[Ctrl+N] denies · Esc stops the turn.'
+    : '[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.';
 }
 
 const RULE_LABEL = ' Approval needed ';
@@ -328,11 +354,13 @@ function approvalRule(columns: number): string {
 }
 
 /** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
-function keyTone(part: string, color: boolean): Record<string, unknown> {
+export function keyTone(part: string, color: boolean): Record<string, unknown> {
   if (!color) return {};
-  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]') return { color: 'green', bold: true };
+  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]' || part === '[Ctrl+O]')
+    return { color: 'green', bold: true };
   if (part === '[Ctrl+N]') return { color: 'red', bold: true };
-  if (part === 'Esc') return { color: 'yellow', bold: true };
+  // `Esc` and `Ctrl+C` are the exits (back, or stop): the stop key is as visible as any answer.
+  if (part === 'Esc' || part === 'Ctrl+C') return { color: 'yellow', bold: true };
   // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
   if (part.startsWith('[') && part.endsWith(']')) return { color: 'cyan', bold: true };
   return { dimColor: true };
@@ -355,7 +383,17 @@ function keyed<T>(
   });
 }
 
-function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): ReactElement {
+function KeyRow({
+  row,
+  color,
+  question = false,
+}: Readonly<{ row: string; color: boolean; question?: boolean }>): ReactElement {
+  if (question)
+    return (
+      <Text wrap="truncate-end" bold>
+        {row}
+      </Text>
+    );
   return (
     <Text wrap="truncate-end">
       {keyed(keyLabelParts(row), (part) => part).map(({ key, item: part }) => (
@@ -370,6 +408,24 @@ function KeyRow({ row, color }: Readonly<{ row: string; color: boolean }>): Reac
 /** Strip a framing label (`target `, `tool `) from a projected row: it is generated text, never source. */
 function withoutLabel(row: string, label: string): string {
   return row.startsWith(`${label} `) ? row.slice(label.length + 1) : row;
+}
+
+/** A call's fields on the card, as the full view draws them: a name in bold, a value indented under it (a bare value just indented). */
+function cardRowText(
+  row: string,
+  label: string | undefined,
+  kind: ReviewPage['kinds'][number],
+): string {
+  if (label === 'field name') return withoutLabel(row, label);
+  if (label === 'field value') return `  ${withoutLabel(row, label) || '(empty)'}`;
+  return cardBodyRow(row, kind);
+}
+function cardRowProps(
+  label: string | undefined,
+  kind: ReviewPage['kinds'][number],
+  color: boolean,
+): Record<string, unknown> {
+  return label === 'field name' ? { bold: true } : rowTone(kind, color);
 }
 
 /** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
@@ -421,7 +477,12 @@ function ReviewCard({
       ]
     : targetRows.length === 0
       ? [`${verb} ${inputDisplay(sanitizeUntrustedInline(toolId))}`]
-      : targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `  ${row}`));
+      : targetRows.map((row, index) =>
+          index === 0
+            ? `${verb} ${row}`
+            : // A command's title wraps under its own first word, so a continuation of the line is not mistaken for an argument's row below.
+              `${' '.repeat(review.facts === undefined ? 2 : verb.length + 1)}${row}`,
+        );
   const identityText = withoutLabel(identity?.rows[0] ?? '', 'tool');
   const stats = cardStats(document);
   // The lock is read from the page being drawn (its shortened target), not only from the state an acknowledged
@@ -435,8 +496,10 @@ function ReviewCard({
     changesNotShown: page?.hiddenChanges ?? 0,
     linesNotShown: page?.hiddenLines ?? 0,
     columns: Math.max(1, columns - 2),
+    commandFacts: review.facts,
+    denialOpen: review.denial !== undefined,
   });
-  const keys = cardKeyRows({
+  const keyInput = {
     inspected,
     cacheable: reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     scope: escaped(cardScopePhrase(toolId)),
@@ -444,7 +507,10 @@ function ReviewCard({
     confirmAlways:
       snapshot.alwaysConfirm &&
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
-  });
+    ...commandKeys(snapshot, review, page),
+  };
+  const keys = cardKeyRows(keyInput);
+  const questionOpen = keyInput.confirmAlways || keyInput.confirmRemember === true;
   const cut = (page?.hiddenLines ?? 0) > 0;
   return (
     <>
@@ -459,23 +525,33 @@ function ReviewCard({
       {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
         return (
-          <Text key={key} {...rowTone(kind, color)}>
-            {cardBodyRow(row, kind) || ' '}
+          <Text key={key} {...cardRowProps(page?.labels[index], kind, color)}>
+            {cardRowText(row, page?.labels[index], kind) || ' '}
           </Text>
         );
       })}
-      <Box justifyContent="space-between">
-        <Text {...dimProps(color)}>
-          {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
-        </Text>
-        {cut && (
+      {review.facts === undefined && (
+        <Box justifyContent="space-between">
           <Text {...dimProps(color)}>
-            {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
+            {[identityText, stats].filter((part) => part.length > 0).join(' \u00b7 ')}
           </Text>
-        )}
-      </Box>
+          {cut && (
+            <Text {...dimProps(color)}>
+              {`\u2026 ${page?.hiddenLines ?? 0} more line${page?.hiddenLines === 1 ? '' : 's'} (${page?.hiddenBytes ?? 0} bytes hidden)`}
+            </Text>
+          )}
+        </Box>
+      )}
       {warnings.map((warning, index) => (
-        <Text key={`warn-${index}`} {...colorProps(color, 'yellow')}>
+        // A warning is yellow; a plain fact (a command's standing and directory) is dimmed, so the one row that matters stands out.
+        <Text
+          key={`warn-${index}`}
+          {...(review.facts !== undefined &&
+          !warning.startsWith('\u26a0') &&
+          !warning.startsWith(' ')
+            ? dimProps(color)
+            : colorProps(color, 'yellow'))}
+        >
           {warning}
         </Text>
       ))}
@@ -485,10 +561,20 @@ function ReviewCard({
             {denialReasonDisclosure(Math.max(1, columns - 2)).join('\n')}
           </Text>
           <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
-          <Text wrap="truncate-end">{'Enter denies and continues \u00b7 Esc stops the turn'}</Text>
+          <Text wrap="truncate-end">
+            {'Enter denies and continues \u00b7 Esc closes this box \u00b7 Ctrl+C stops the turn'}
+          </Text>
         </Box>
       ) : (
-        keys.map((row, index) => <KeyRow key={`keys-${index}`} row={row} color={color} />)
+        keys.map((row, index) => (
+          <KeyRow
+            key={`keys-${index}`}
+            row={row}
+            color={color}
+            // The question a wider grant asks is what the person must read now: its first row is the card's plainest text.
+            question={index === 0 && questionOpen}
+          />
+        ))
       )}
       {review.message !== '' && <Text>{escaped(review.message)}</Text>}
     </>

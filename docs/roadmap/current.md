@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-18
+> Last updated: 2026-11-21
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -36,19 +36,20 @@ evidence summary, the recorded Wave 3 splits and the process amendments.
 | Phase 2.5 — CLI Consolidation | Complete (M2.5-4, PR #69, 2026-07-08) |
 | Phase 2.6.5 — Core reliability | Complete with approved deferrals, 49/51 (PR #92, 2026-10-11; [merge checkpoint](phases/phase-2.6.5-core-reliability-remediation.md#w8-merge-checkpoint--2026-10-11)). CR-70, CR-93 and CR-95's long half stay deferred in [deferred-tasks.md](deferred-tasks.md) |
 | Phase 2.5.5 — Hardening | Waves 0–2 merged (Wave 2: PR #94, 2026-10-15). Wave 3 Steps 1–8 merged (PR #95, 2026-10-18); PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 accepted and merged to `main` with the D61 checkpoint (PR #96, 2026-11-04). **Steps 9c–19 paused** (25 of 32 increments). NI's Windows clause closed on 2026-10-26 |
-| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). **MVP-4 is next**; the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
+| Phase 2.6 — Conversational authoring | 2.6.C done; 2.6.F done except its release clause; 2.6.Q P1–P5 landed. **MVP-1, MVP-2 and MVP-3 (with MVP-3b, MVP-3c and MVP-3d) are complete on `main`** (PR #97, PR #98 and PR #99, merged 2026-11-18). Between MVP-3 and MVP-4 the native adapter's first increment (concurrent processes on one operator home, [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)) and two CI decisions also landed on `main` (PR #100, 2026-11-18). **MVP-4 steps 1–7 are implemented on `development`** (two review rounds each, three for step 5; steps 1–4 on 2026-11-19, step 5 — the `/permissions` sheet — on 2026-11-20 and 21, steps 6 and 7 — `Esc` out of the full view and the Home entry points — on 2026-11-21; [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md), Accepted 2026-11-20, added steps 5, 6 and 7, all implemented before the pull request; **[PR #101](https://github.com/HodeTech/Relavium/pull/101) (`development`→`main`) was opened on 2026-11-21 and is open**, and its review (three reports) was answered on the same day by corrections on `development`, listed in [PR #101 review corrections](phases/phase-2.6-conversational-authoring.md#pr-101-review-corrections--2026-11-21) with what was fixed, refuted, deferred and what needs a human; the [implementation record](phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress); the remaining workstreams and whole-phase exit stay open (D73, [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)) |
 | Phases 3–7 | Not started — desktop, VS Code, then Product Phase 2 (managed inference, cloud) |
 | Publication | npm serves `0.1.1`. Nothing newer can be published yet: Step 9a.1's interim guard, on `main` since PR #96, refuses every artifact until D59's superseding release ADR is Accepted |
-| Branches | `main` is at `002dda58`: the fourth `development`→`main` checkpoint, [PR #99](https://github.com/HodeTech/Relavium/pull/99), merged 2026-11-18 after MVP-3, MVP-3b, MVP-3c and MVP-3d. Its tree is identical to `development`'s head `bb6f1671`, which is one merge commit behind. The [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records closure and its two CI observations (the final head's `coverage` job hit its 45-minute limit; one acceptance-tool test timed out once in the merge commit's push run, which a re-run cleared); the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
-| Open CI observations | The required `coverage` job did not complete on PR #99's final head (stopped at its 45-minute limit in both runs; it took 26–38 minutes before), and one acceptance-tool test timed out once in a secrets-control shard on `main`'s merge run. Both are open items in [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); neither is classified as flaky without a measured rate |
+| Branches | `main` is at `1e71f652`: the fifth `development`→`main` checkpoint, [PR #100](https://github.com/HodeTech/Relavium/pull/100), merged 2026-11-18 at 23:54Z (2026-11-19 in the maintainer's time zone). It carried the native adapter's Inc 1 ([ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md)), the CI decisions C4 (CI runs once per commit: `push` on `main` and `development`, no `pull_request` trigger) and Y2/C3 (the enforced coverage run covers `packages/` only), the CI failure review's fixes and the MVP-4 preparation analyses. At the merge its tree was identical to `development`'s head `639134b2` and `development` was fast-forwarded to the merge commit, so the two branches had the same content; since then `development` is ahead of `main` by MVP-4 (steps 1–7, 78 commits when PR #101 was opened) and the PR #101 review corrections. The [PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records the evidence and what is still owed; the [MVP-3 merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) and the earlier PR #98, PR #97 and PR #96 records remain under [History](#history). |
+| Open CI observations | PR #100's final-head run `44402914088` (`2ce6a252`) passed all 29 jobs, and the narrowed `coverage` job took 10–12 minutes (it took 26–45+ before), so PR #99's limit observation is closed (the `coverage` job had stopped at the 45-minute limit on PR #99's final head in both runs; the merge commit's identical tree passed it in 41 min 10 s). The completed runs that were missing exist and passed: `44424575691` on `639134b2` (the docs-only final head of PR #100, `push`, success), `44424607930` on the merge commit `1e71f652` (`push`, success) and `44895457644` on `9c5985ac` (the head of PR #101 when it was opened, `push`, success). Open: one acceptance-tool test timed out once in a secrets-control shard on `main`'s PR #99 merge run (its case bound is 30 s now, the cause is not measured); a scheduled `model-catalog` live effort test hit its five-second default on 2026-11-18. See [deferred-tasks.md](deferred-tasks.md#pr-99-merge-ci-observations-2026-11-18); none is classified as flaky without a measured rate |
 
 ### What a CLI user meets today
 
 The published npm package remains `0.1.1`; the following describes the current
-`main` checkout after PR #99. MVP-1 supplies visible run outputs, run ids, liveness
+`main` checkout after PR #100. MVP-1 supplies visible run outputs, run ids, liveness
 and useful missing-key handling. MVP-2 adds readable Markdown and wrapping, native
 provider setup and key management, safe project initialization, and searchable
-session discovery/resume with visible history. MVP-3 makes the chat agent able to edit.
+session discovery/resume with visible history. MVP-3 makes the chat agent able to edit. Several `relavium` processes on one operator home can now write at the same time: each
+waits its turn for the staging inventory instead of failing a write (PR #100, ADR-0135).
 
 The built-in chat agent starts in `ask`: it asks before an effect, `plan` only reads,
 `accept-edits` accepts file edits and `auto` is unchanged
@@ -70,15 +71,21 @@ owns MVP-2's.
 
 ## Next work — the CLI MVP
 
+**PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 started on `development` on 2026-11-19 (see its entry under [Next work](#next-work--the-cli-mvp)).** The
+[PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records what it carried, the final-head evidence (29 of 29 jobs green on `2ce6a252`;
+the docs-only final head `639134b2` was merged before its own run finished; that run, `44424575691`, did complete and passed, as did the merge commit's, `44424607930`) and what is still owed: a separate security sitting on the `capture_parent` change and the delta since round 4, the maintainer's reading of ADR-0135,
+and Inc 2 and Inc 3 of the native adapter.
+
 **PR #99 merged (2026-11-18): MVP-3, MVP-3b, MVP-3c and MVP-3d are complete on `main`.** The
 [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records what the PR carried, its
 final-head evidence and its two CI observations: the required `coverage` job stopped at GitHub's 45-minute limit in both
 final-head runs, so no green final-head coverage run exists (the other 28 jobs of each run passed; the merge commit's identical
 tree passed `coverage` in 41 min 10 s); and one acceptance-tool test hit its 10-second limit in the first attempt of the merge
 commit's push run, which a re-run cleared. SonarCloud's gate is OK on the PR and on `main`. The dated blocks below keep the wording they had when written; where they say
-final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 is next**, and
-[ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) and
-[ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) must be accepted before it starts.
+final-head CI, scanner or maintainer acceptance is owed, the checkpoint supersedes them. **MVP-4 steps 1–7 are implemented on `development`** (2026-11-19 to 21; two review rounds each, three for step 5; [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) steps 5 to 7 are in): [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md),
+[ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and
+[ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) were revised or written and accepted on 2026-11-19, and its seven steps (four at the start; [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) added three) are recorded in the
+[implementation record](phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record).
 
 **Manual-test correction (2026-11-15): implementation and local review complete.**
 The reported pre-correction code rejected the observed project parent's
@@ -243,7 +250,7 @@ first run exposed; the chord change was verified afterwards (19,945 tests: 19,92
 blocker, high or medium finding. The [record](phases/phase-2.6-conversational-authoring.md#pr-99-independent-review-corrections-2026-11-17)
 owns the details and what is not claimed. The native adapter findings are their own
 increment after this round (its first part, concurrent processes on one operator home, was
-done on 2026-11-18 ahead of MVP-4 under
+done on 2026-11-18 ahead of MVP-4 and merged in PR #100 under
 [ADR-0135](../decisions/0135-concurrent-processes-on-one-operator-home-wait-for-the-allocation-claim.md);
 the [register](deferred-tasks.md) owns the evidence and what is still owed); the PR's final-head checks and the maintainer's acceptance
 are recorded in the merge checkpoint.
@@ -415,12 +422,12 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    smoke and the map-controls check are CI-owned; whether the corrective sitting and these gates satisfy D64's "one new complete round", and
    the final-head platform checks, are the maintainer's call; the maintainer merged PR #99 on 2026-11-18. The acceptance wording above is historical
    (see [the phase register](phases/phase-2.6-conversational-authoring.md#mvp-3c--the-failed-turn-stays-and-mvp-3d--ask_user-2026-11-16)).
-4. **MVP-4 — The agent runs commands and keeps its footing.** 2.6.G · **Permission management** as ruled by D63
-   (MVP-A15; `!` uses the same card); the default agent gains `run_command`; the keymap, including Ctrl-C at a
+4. **MVP-4 — The agent runs commands and keeps its footing.** *(Started 2026-11-19 and implemented on `development` through 2026-11-21 (steps 1–7); [PR #101](https://github.com/HodeTech/Relavium/pull/101) was opened 2026-11-21 and its review corrections are on `development`; [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) and [ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) revised and accepted first; seven steps in the [implementation record](phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record), and the [PR #101 review corrections](phases/phase-2.6-conversational-authoring.md#pr-101-review-corrections--2026-11-21).)* 2.6.G · **Permission management** as ruled by D63
+   (MVP-A15; `!` uses the same card; Once, Session, Remember and Deny, with `relavium permissions` and the chat's `/permissions`, a keyboard-owning sheet since [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md); the Home's tab bar and composed pane are MVP-8's); the default agent gains `run_command`; the keymap, including Ctrl-C at a
    pending approval rejecting it (MVP-A12; row 11b split); the rest of the denials returned to the model
-   (MVP-A10: the protected-path and allowlist classes; the user, mode and headless classes landed in MVP-3b); the
+   (MVP-A10: the protected-path class, and the allowlist miss as a card or a fixed refusal; the user, mode and headless classes landed in MVP-3b); the
    failed-turn marker is **no longer here** — it is MVP-3c (the CR-71 residual, D67; CR-71 itself closed in W7);
-   configurable, finite turn ceilings with conservative defaults (MVP-A11).
+   configurable, finite turn limits (MVP-A11, refined by ADR-0136: a continue checkpoint on surfaces with a person).
    The [2026-11-15 context/latency investigation](../analysis/chat-context-command-and-latency-2026-11-15.md)
    supplies [implementation notes](phases/phase-2.6-conversational-authoring.md#chat-investigation-follow-ups--2026-11-15)
    for the command/shell boundary and truthful tool outcomes. The maintainer
@@ -430,6 +437,13 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    context correction (Accepted 2026-11-15, implemented on `development` the same
    day; independent reviews and a security sitting are owed); it does not
    advance CR-70.
+   **Steps 5–7 (2026-11-20, [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md), Accepted).** The maintainer asked for a first-class `/permissions` and a full view that
+   leaves like the rest of the card's screens. **Step 5:** the sheet (a docked, keyboard-owning overlay; a permission is withdrawn by
+   identity with `d`/`Delete` then `Enter`; the typed `--revoke` forms are removed), a small shared frame and legend builder, the scrub
+   function exported from the core, the references. **Step 6 (implemented 2026-11-21; two review rounds and two security sittings done):** `Esc` returns from the full view to the card
+   (`Ctrl+C` stops; the legends, including the confirm question the ADR had not named; the Home needed no new routing; an approval never shows the call list). **Step 7 (implemented 2026-11-21; two review rounds done):** the bare Home
+   `/permissions` and a bare `relavium permissions` on a TTY open the same sheet (project section only). Steps 5 and 6 carry the D64 tier; step 7 (reviewed per milestone) was also run with an independent security sitting in each of its two rounds, because it reaches the grant store and the keychain from a new place.
+
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file
    and environment block (MVP-A16); 2.6.E · **Type-ahead message queue**; `chat --model/--provider` and a one-shot
    prompt mode (MVP-A17).
@@ -450,6 +464,13 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
      it also brings running a workflow and answering gates and budget gates inside the Home. Its run-hosting ADR
      (ADR-0122 §10) is written and accepted before it starts.
    - It also gives `import` and `models pricing` their in-TUI forms or a recorded milestone.
+   - **Carried in from [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) (2026-11-20).** The command-grant **sheet and the Home's `/permissions` entry exist after MVP-4
+     steps 5 and 7**; this milestone adds the **tab**, which *composes* that sheet (withdraw-only for command grants: a grant can only be
+     made on a command card) with the sections for domain allowlists, MCP servers and egress endpoints, which own add and remove. It does
+     not build a second permissions screen. A run hosted in the Home shows approval cards: the `Esc` ladder of that ADR §4 applies
+     unchanged (back out of the full view, stop on the card), and the Home's card routing must treat the back result as `[b]`, never
+     as an abort. The older overlays (`/models`, `/effort`, the palette, the session picker) move onto the shared frame and legend
+     builder in the common-language increment, not here; if that has not landed, the tab uses the frame as it is.
 9. **MVP-9 — MCP and provider management.** Phase 2.6 ADR row 7; MCP servers attached to the default agent under
    ADR-0084 consent (MVP-A21); 2.6.I · **`/providers`**, `/mcp`, **`relavium mcp list/add/remove/test`** and MCP
    header auth; the masked `provider set-key` prompt (MVP-A20).
@@ -464,8 +485,8 @@ MVP-1, MVP-2 and MVP-3 (with MVP-3b/3c/3d) are complete on `main`. The next impl
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0115 and
-0121 (and 0118 for MVP-4, 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0117 and ADR-0119 were accepted 2026-11-16). ADR-0116/0120 are accepted; MVP-3
+the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0121
+(and 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0115, ADR-0117, ADR-0118, ADR-0119 and ADR-0136 are accepted). ADR-0116/0120 are accepted; MVP-3
 keeps their pre-build design and post-implementation security gates. All open
 obligations are in [deferred-tasks.md](deferred-tasks.md).
 
@@ -699,11 +720,11 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D60 | MVP | `LICENSE` §2 grants no usage right without a written agreement | ✅ **Ruled 2026-11-04 — unchanged.** Recorded risk for the published package |
 | D61 | Gate 0 | `development`→`main` checkpoint before the MVP | ✅ **Ruled 2026-11-04 — yes,** a scoped checkpoint PR right after this reset; merging is the maintainer's action · **Done 2026-11-04:** PR #96 merged as `b3cf117e` ([checkpoint](phases/phase-2.5.5-hardening-and-remediation.md#d61-checkpoint--pr-96-merged-2026-11-04)) |
 | D62 | MVP-3 | Default chat agent posture | ✅ **Ruled 2026-11-04:** read/search/find plus `write_file`/`edit_file` (hidden in ask/plan, per-call diff approval in accept-edits) plus `run_command` under D63; egress stays opt-in; the default mode stays `ask` with a `[chat].default_mode` setting and a one-time hint. Needs an ADR-0057 amendment and a security review. *(Updated 2026-11-16 by [ADR-0130](../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md): the edit tools are offered in `ask` with a card on every call; `accept-edits` applies workspace file edits without a card; a repository config layer cannot choose `accept-edits`.)* |
-| D63 | MVP-4 | `run_command` approval semantics | ✅ **Ruled 2026-11-04:** a typed card for any non-allowlisted command — once, session or remember; remembered grants live outside the repository in operator-owned config keyed by project root; accept-edits keeps prompting; headless stays fail-closed. New ADR (amends ADR-0029(a)/0061/0063) and a security sitting |
+| D63 | MVP-4 | `run_command` approval semantics | ✅ **Ruled 2026-11-04:** a typed card for any non-allowlisted command — once, session or remember; remembered grants live outside the repository in operator-owned config keyed by project root; accept-edits keeps prompting; headless stays fail-closed. New ADR (amends ADR-0029(a)/0061/0063) and a security sitting · **Refined 2026-11-19 ([ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md)):** remembered grants are an operator-owned append-only file with a keyed digest, not a `config.toml` write (ADR-0063 is not amended); the session answer is the exact argv; `ask` and `accept-edits` keep a card for pre-approved commands, and only `auto` runs them silently |
 | D64 | MVP | Acceptance bar for MVP increments | ✅ **Ruled 2026-11-04 — tiered** (see [Next work](#next-work--the-cli-mvp)) |
 | D65 | MVP | Paused Wave 3 increments' user-visible pieces | ✅ **Ruled 2026-11-04:** six recorded splits (10b, 15a, 15c, 11b, 16b, 17a) and #61 move into the MVP; Steps 12/14 stay paused |
 | D66 | Gate 0 | `current.md`'s history | ✅ **Ruled 2026-11-04:** relocate the unique records, delete the duplicated history, keep every inbound anchor |
-| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 · **Amended 2026-11-16:** the interruption marker moves to its own increment ahead of MVP-4 (MVP-3c, ADR-0119 Accepted); user/mode/headless denials returned in MVP-3b |
+| D67 | MVP-4 | Context fidelity and "a user deny is final" | ✅ **Ruled 2026-11-04:** the CR-71 residual un-deferred into MVP-4 (content-free marker; CR-71 itself closed in W7), denials returned to the model, finite configurable ceilings; CR-70 with ADR-0096 §5 in v0.2.1 · **Amended 2026-11-16:** the interruption marker moves to its own increment ahead of MVP-4 (MVP-3c, ADR-0119 Accepted); user/mode/headless denials returned in MVP-3b · **Refined 2026-11-19 ([ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)):** "finite configurable ceilings" becomes a continue checkpoint on surfaces with a person plus an absolute backstop, with a conservative hard stop elsewhere |
 | D68 | MVP-1/2/4 | First-run defaults and the keymap | ✅ **Ruled 2026-11-04:** env-var key fallback, the interactive output budget, the default model following the stored key, a minimal `init`, and one keymap ADR (Ctrl+C interrupts the turn, a second press ends the session, Ctrl+C at a pending approval rejects it first) superseding the 2026-10-19 `/cancel` wording |
 | D69 | MVP | Order of the added lanes | ✅ **Ruled 2026-11-04:** authoring → web → Home → MCP · **Amended 2026-11-08 by D75:** the Home (MVP-8) moves ahead of authoring, right after MVP-4 |
 | D70 | MVP | npm pre-release before v0.2.0 | ✅ **Ruled 2026-11-04 — none** |
@@ -713,6 +734,8 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D74 | MVP-2 | MVP-2 under D73 | ✅ **Settled 2026-11-08 under the maintainer's delegation:** every MVP-2 item gets an in-TUI form; MVP-A24…A30 added; slices 2a, 2b and 2c; the decisions in the [MVP-2 plan](phases/phase-2.6-conversational-authoring.md#mvp-2-plan--home-first-2026-11-08) |
 | D75 | MVP | When the rest of the Home hub lands (MVP-8: workflows, runs, gates, agents and status in the Home, with the run-hosting ADR) | ✅ **Ruled 2026-11-08 (maintainer):** right after MVP-4, ahead of MVP-5, authoring and web; the order is under [Next work](#next-work--the-cli-mvp) |
 | D76 | MVP-2 | Acceptance tier for MVP-2a's markdown renderer | ✅ **Ruled 2026-11-08 (maintainer):** D64's milestone review plus a scoped security sitting on the parser's bounds, link display and sanitize order; ADR-0114 accepted the same day |
+| D77 | MVP-4 | `Esc` and `Ctrl+C` at a card, and `Esc` in a card's text box | ✅ **Ruled 2026-11-19 (maintainer):** both reject first and stop the turn at a card, only `Ctrl+C` starts the 2 s exit window; `Esc` in the reason box, the full view's search box and the `ask_user` own-answer field closes the box first (supersedes one sentence of ADR-0132 §3). [ADR-0115](../decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md) |
+| D78 | MVP-4 | Tool-round ceilings, and Remember with its management commands | ✅ **Ruled 2026-11-19 (maintainer):** a productive turn does not die at a fixed number of tool rounds: a surface with a person asks to continue every N rounds under an absolute backstop; the full D63 answer set (Once, Session, Remember, Deny) ships in MVP-4 with `relavium permissions list\|revoke` and the chat's `/permissions`. [ADR-0136](../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md), [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) |
 
 ### Departures from the phase files' own sequencing
 
@@ -774,7 +797,9 @@ Finished work is recorded in its register; this page no longer restates it.
   merged 2026-11-11 in PR #98; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-2-merge-checkpoint-2026-11-11)
   closes the four-step implementation and correction records. MVP-3, with MVP-3b, MVP-3c and MVP-3d, merged
   2026-11-18 in PR #99; its [merge checkpoint](phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18)
-  closes the implementation, review, security and maintainer gates and records its two CI observations.
+  closes the implementation, review, security and maintainer gates and records its two CI observations. PR #100
+  (merged 2026-11-18) carried the native adapter's Inc 1 (ADR-0135) and the CI decisions C4 and Y2/C3 between MVP-3 and MVP-4; its
+  [merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records the evidence and what is still owed.
 - **Phases 1, 2 and 2.5** — [phase 1](phases/phase-1-engine-and-llm.md), [phase 2](phases/phase-2-cli.md) and
   [phase 2.5](phases/phase-2.5-cli-consolidation.md).
 - **Repository checkpoint (recorded 2026-07-26; publication status corrected 2026-10-13):** the

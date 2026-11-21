@@ -19,6 +19,31 @@ import { displayWidth } from './viewport.js';
 const COLUMNS = 80;
 const WIDTH = COLUMNS - 2;
 
+const clusterSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const graphemes = (text: string): string[] =>
+  [...clusterSegmenter.segment(text)].map((part) => part.segment);
+
+/**
+ * The UTF-16 offsets at which a row of `rows` ends or begins INSIDE a grapheme cluster of the rows' concatenation (none for a
+ * correct wrap). `Intl.Segmenter` is the oracle, so the check does not share a splitter with the code under test.
+ */
+function cutsInsideClusters(rows: readonly string[]): number[] {
+  const starts = new Set<number>();
+  let at = 0;
+  for (const cluster of graphemes(rows.join(''))) {
+    starts.add(at);
+    at += cluster.length;
+  }
+  starts.add(at);
+  const inside: number[] = [];
+  let offset = 0;
+  for (const row of rows) {
+    offset += row.length;
+    if (!starts.has(offset)) inside.push(offset);
+  }
+  return inside;
+}
+
 describe('the card budget this layout is derived from (ADR-0132 §2)', () => {
   it('twelve rows at 80×24 leave exactly nine for the body', () => {
     expect(cardRowBudget(24) - CARD_RULE_ROWS - CARD_KEY_ROWS).toBe(QUESTION_CARD_MAX_BODY_ROWS);
@@ -43,10 +68,37 @@ describe('hardWrap', () => {
     expect(hardWrap('漢漢', 3)).toEqual(['漢', '漢']);
   });
 
-  it('never splits a grapheme: an emoji sequence and a combining mark stay whole', () => {
+  it('never splits a grapheme: no row begins or ends inside a cluster, at any width', () => {
     const family = '👨\u200d👩\u200d👧';
-    expect(hardWrap(`ab${family}cd`, 4).join('')).toBe(`ab${family}cd`);
-    expect(hardWrap('e\u0301e\u0301e\u0301', 1).join('')).toBe('e\u0301e\u0301e\u0301');
+    const texts = [
+      `ab${family}cd`,
+      'e\u0301e\u0301e\u0301',
+      'q\u0307q\u0307x\u0323\u0307',
+      '🇯🇵🇺🇸x',
+      '👍🏽a👍🏽',
+      '1\uFE0F\u20E3a',
+      'क्षत्र',
+      'a漢\u0301b',
+    ];
+    for (const text of texts) {
+      expect(
+        graphemes(text).some((cluster) => [...cluster].length > 1),
+        `${JSON.stringify(text)} must contain a multi-code-point cluster or this proves nothing`,
+      ).toBe(true);
+      for (let width = 1; width <= 9; width += 1) {
+        const rows = hardWrap(text, width);
+        expect(rows.join(''), `${JSON.stringify(text)} at ${String(width)}`).toBe(text);
+        expect(cutsInsideClusters(rows), `${JSON.stringify(text)} at ${String(width)}`).toEqual([]);
+      }
+    }
+    // The cluster the old test used, with the exact rows: the family is one two-cell unit, so it moves whole to the next row.
+    expect(hardWrap(`ab${family}cd`, 3)).toEqual(['ab', `${family}c`, 'd']);
+  });
+
+  it('the oracle itself can fail: it names a cut that falls inside a cluster', () => {
+    expect(cutsInsideClusters(['e', '\u0301x'])).toEqual([1]);
+    expect(cutsInsideClusters(['👨\u200d', '👩'])).toEqual([3]);
+    expect(cutsInsideClusters(['e\u0301', 'x'])).toEqual([]);
   });
 
   it('returns one empty row for an empty string', () => {
@@ -74,11 +126,31 @@ const ALPHABETS: readonly (readonly string[])[] = [
   ['😀', '🚀'],
   ['é', 'ñ', 'ü', ' '],
   ['w', 'i', 'd', 'e', 'W', 'M'],
-  ['a\u0301', 'e\u0302', 'o\u0308'],
-  ['👨\u200d👩\u200d👧', 'x'],
+  // Multi-code-point clusters the validator ACCEPTS (NFC, no format characters), so they reach the card: a combining mark with
+  // no precomposed form, an emoji with a skin-tone modifier, a flag, a keycap, an Indic conjunct. (A ZWJ sequence or a decomposed
+  // `e` + U+0301 is REFUSED for model text; the generator once used both and silently fell back to `xxxxxxxx` every time.)
+  ['q\u0307', 'x\u0323', 'z\u0303'],
+  ['👍🏽', '🇯🇵', '🇺🇸'],
+  ['1\uFE0F\u20E3', 'क्ष', 'a'],
 ];
 
-/** The longest string over `alphabet` within `maxBytes` that the real validator accepts (so it is admissible by construction). */
+/**
+ * A byte ceiling of 150 holds at most 74 cells of wide clusters, so a text made of clusters alone never wraps at 76 cells. These
+ * are mostly one-cell ASCII, which does reach the row boundary, with a cluster in the mix to land on it.
+ */
+const EDGE_ALPHABETS: readonly (readonly string[])[] = [
+  'q\u0307',
+  '👍🏽',
+  '🇯🇵',
+  '1\uFE0F\u20E3',
+  'क्ष',
+].map((cluster) => [...'abcdefghijkl', cluster]);
+
+/**
+ * The longest string over `alphabet` within `maxBytes`, trimmed (the validator forbids edge whitespace). It is admissible by
+ * construction, and it PROVES it: a text the real validator refuses is an error in the test, never replaced by a stand-in
+ * (a silent stand-in is how the cluster alphabets once went untested).
+ */
 function longest(random: () => number, alphabet: readonly string[], maxBytes: number): string {
   let out = '';
   for (let guard = 0; guard < 400; guard += 1) {
@@ -87,11 +159,14 @@ function longest(random: () => number, alphabet: readonly string[], maxBytes: nu
     if (Buffer.byteLength(candidate, 'utf8') > maxBytes) break;
     out = candidate;
   }
-  // The validator forbids edge whitespace and a leading marker; repair the generated text, never the validator.
   const trimmed = out.trim();
-  return plainTextRefusal(trimmed, maxBytes) === undefined
-    ? trimmed
-    : 'x'.repeat(Math.min(maxBytes, 8));
+  const refusal = plainTextRefusal(trimmed, maxBytes);
+  if (refusal !== undefined) {
+    throw new Error(
+      `the generator made ${JSON.stringify(trimmed)}, which the validator refuses: ${refusal}`,
+    );
+  }
+  return trimmed;
 }
 
 function generate(random: () => number, questionCount: number, multi: boolean): AskUserRequest {
@@ -183,10 +258,30 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
     }
   });
 
+  it('every alphabet yields text the validator accepts, and the cluster alphabets really carry clusters', () => {
+    const multiCodePoint = (text: string): boolean =>
+      graphemes(text).some((cluster) => [...cluster].length > 1);
+    for (const alphabet of ALPHABETS) {
+      const text = longest(mulberry32(11), alphabet, ASK_USER_BOUNDS.questionBytes); // throws on a refusal
+      expect(text.length).toBeGreaterThan(8);
+      expect(text, 'not the old `xxxxxxxx` stand-in').not.toBe('x'.repeat(8));
+    }
+    const clustered = ALPHABETS.filter((alphabet) => alphabet.some(multiCodePoint));
+    expect(clustered.length).toBeGreaterThanOrEqual(3);
+  });
+
   it('holds for 300 generated calls across alphabets, with every row within the card width and no model text lost', () => {
     const random = mulberry32(20261116);
+    let withClusters = 0;
     for (let n = 0; n < 300; n += 1) {
       const request = generate(random, 1 + Math.floor(random() * 4), random() < 0.5);
+      if (
+        request.questions.some((q) =>
+          graphemes(q.question).some((cluster) => [...cluster].length > 1),
+        )
+      )
+        withClusters += 1;
+      const cutChecked = new Set<number>();
       for (const state of statesOf(request)) {
         const view = projectQuestionCard(state, COLUMNS);
         expect(view.body.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS);
@@ -202,6 +297,12 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
         // Every row of model text starts with the host's gutter; strip it and the rows rejoin to exactly the question.
         expect(questionRows.every((row) => row.startsWith('│ '))).toBe(true);
         expect(questionRows.map((row) => row.slice(2)).join('')).toBe(question.question);
+        // ...and no row of it begins or ends inside a grapheme cluster (Intl.Segmenter is the oracle). A question's rows do not
+        // depend on the state, so each is checked once per call.
+        if (!cutChecked.has(state.index)) {
+          cutChecked.add(state.index);
+          expect(cutsInsideClusters(questionRows.map((row) => row.slice(2)))).toEqual([]);
+        }
         const text = view.body.map((row) => row.text);
         for (const option of question.options)
           expect(text.some((row) => row.endsWith(option.label))).toBe(true);
@@ -211,7 +312,70 @@ describe('the worst admissible call fits the card at 80×24 (ADR-0132 §2, the c
           expect(text.some((row) => row === `│ ${highlighted.description}`)).toBe(true);
       }
     }
+    // The generator really exercised clusters: a question with a multi-code-point cluster in it is most of the calls (174 of 300 at this seed).
+    expect(withClusters, 'calls whose question carries a cluster').toBeGreaterThan(100);
   }, 60_000);
+});
+
+describe('a grapheme cluster at the wrap boundary stays whole in the card (ADR-0132 §2)', () => {
+  // The question rows are 76 cells wide (80 columns, two of margin, two of gutter): these put a cluster across that edge.
+  const CLUSTERS = ['👍🏽', '🇯🇵', '1\uFE0F\u20E3', 'क्ष', 'q\u0307', 'x\u0323'];
+  const ROW_CELLS = COLUMNS - 2 - 2;
+
+  function questionRowsOf(text: string): string[] {
+    const request: AskUserRequest = {
+      questions: [
+        {
+          header: 'Edge',
+          question: text,
+          multiSelect: false,
+          options: [
+            { label: 'one', description: 'First' },
+            { label: 'two', description: 'Second' },
+          ],
+        },
+      ],
+    };
+    return projectQuestionCard(initialQuestionCard(request), COLUMNS)
+      .body.filter((row) => row.tone === 'question')
+      .map((row) => row.text.slice(2));
+  }
+
+  it('no cut falls inside a cluster, for every cluster at every offset around the edge', () => {
+    for (const cluster of CLUSTERS) {
+      for (let before = ROW_CELLS - 6; before <= ROW_CELLS + 2; before += 1) {
+        const text = `${'a'.repeat(before)}${cluster}bc`;
+        expect(plainTextRefusal(text, ASK_USER_BOUNDS.questionBytes), 'admissible').toBeUndefined();
+        const rows = questionRowsOf(text);
+        expect(rows.join(''), `${JSON.stringify(cluster)} after ${String(before)}`).toBe(text);
+        expect(
+          cutsInsideClusters(rows),
+          `${JSON.stringify(cluster)} after ${String(before)}`,
+        ).toEqual([]);
+      }
+    }
+  });
+
+  it('generated questions that really wrap: no cut falls inside a cluster', () => {
+    const random = mulberry32(20261121);
+    let wrapped = 0;
+    for (let n = 0; n < 200; n += 1) {
+      const alphabet = EDGE_ALPHABETS[n % EDGE_ALPHABETS.length] ?? [];
+      const text = longest(random, alphabet, ASK_USER_BOUNDS.questionBytes); // throws on a refusal
+      const rows = questionRowsOf(text);
+      expect(rows.join('')).toBe(text);
+      expect(cutsInsideClusters(rows), JSON.stringify(text)).toEqual([]);
+      if (rows.length > 1) wrapped += 1;
+    }
+    expect(wrapped, 'the calls whose question needed a second row').toBeGreaterThan(150);
+  });
+
+  it('a wide cluster that does not fit the room left moves whole to the next row', () => {
+    for (const cluster of ['👍🏽', '🇯🇵']) {
+      const rows = questionRowsOf(`${'a'.repeat(ROW_CELLS - 1)}${cluster}b`);
+      expect(rows).toEqual(['a'.repeat(ROW_CELLS - 1), `${cluster}b`]);
+    }
+  });
 });
 
 describe('what the card says', () => {
@@ -331,12 +495,16 @@ describe('what the card says', () => {
       '↑↓ move · Enter choose · type your own · ←→ questions · Ctrl+S skip all',
     );
     expect(first[0]).not.toMatch(/\bs skip/); // no bare letter is a command
-    expect(first[1]).toBe('Esc or Ctrl-C stops the turn');
+    expect(first[1]).toBe('Esc or Ctrl+C stops the turn');
     const second = projectQuestionCard({ ...state, index: 1 }, COLUMNS).keys[0];
     expect(second).toBe('↑↓ move · Space tick · Enter continue · ←→ questions · Ctrl+S skip all');
-    const inField = projectQuestionCard({ ...state, field: { text: '', cursor: 0 } }, COLUMNS)
-      .keys[0];
-    expect(inField).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    const fieldKeys = projectQuestionCard(
+      { ...state, field: { text: '', cursor: 0 } },
+      COLUMNS,
+    ).keys;
+    expect(fieldKeys[0]).toBe('Enter save · ↑ back to the list · Ctrl+S skip all');
+    // With the field open Esc closes it first (ADR-0115 §3), so the stop row stops promising that Esc stops the turn.
+    expect(fieldKeys[1]).toBe('Esc closes · Ctrl+C stops the turn');
     const review = projectQuestionCard({ ...state, index: 2 }, COLUMNS).keys[0];
     expect(review).toBe('Enter send answers · ←→ questions · Ctrl+S skip all');
     // A one-question call has no tabs, so its legend does not mention them.
@@ -418,9 +586,9 @@ describe('answers guide, they do not block (ADR-0132 §6, security sitting)', ()
 
   it('says so on the stop row only where a write needs no card (accept-edits, auto)', () => {
     const state = initialQuestionCard(request);
-    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl-C stops the turn');
+    expect(projectQuestionCard(state, COLUMNS).keys[1]).toBe('Esc or Ctrl+C stops the turn');
     const guided = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
-    expect(guided).toBe('Esc or Ctrl-C stops the turn · an answer is guidance, not a veto');
+    expect(guided).toBe('Esc or Ctrl+C stops the turn · an answer is guidance, not a veto');
     expect(displayWidth(guided)).toBeLessThanOrEqual(COLUMNS - 2);
   });
 });
@@ -529,5 +697,170 @@ describe('the Review tab (ADR-0132 §3)', () => {
     const rows = projectQuestionCard({ ...state, entries }, COLUMNS).body;
     expect(rows.find((row) => row.text.includes('beta.ts'))?.tone).toBe('chosen');
     expect(rows.find((row) => row.text.includes('alpha.ts'))?.tone).toBe('highlight');
+  });
+});
+
+/**
+ * ADR-0132 §3: the Review tab "lists every answer as it will be sent". Enter sends the whole text, so the tab shows the whole
+ * text, wrapped over the rows the card's body bound leaves; where even that cannot hold it, the row says how many characters it
+ * hides. It was one clipped line per answer (review finding V6a-04).
+ */
+describe('the Review tab shows the whole answer, or says how much it hides (ADR-0132 §3)', () => {
+  const GLYPH_ROW = /^[●○] /u;
+  const NOTICE = /… (\d+) more characters? not shown$/u;
+
+  function requestOf(count: number): AskUserRequest {
+    return {
+      questions: Array.from({ length: count }, (_, i) => ({
+        header: `Notes${String(i + 1)}`,
+        question: `q${String(i + 1)}`,
+        multiSelect: false,
+        options: [
+          { label: 'yes', description: 'Yes' },
+          { label: 'no', description: 'No' },
+        ],
+      })),
+    };
+  }
+
+  /** The Review tab with each question answered by its own text (`undefined` leaves it unanswered). */
+  function reviewOf(own: readonly (string | undefined)[]): QuestionCardState {
+    const base = initialQuestionCard(requestOf(own.length));
+    return {
+      ...base,
+      index: own.length,
+      entries: base.entries.map((entry, i) => {
+        const text = own[i];
+        return text === undefined ? entry : { ...entry, own: text };
+      }),
+    };
+  }
+
+  /** The line one answer would be on a single, unbounded row. */
+  const fullLine = (index: number, text: string): string =>
+    `● ${String(index + 1)} Notes${String(index + 1)} → “${text}”`;
+
+  /** The rows of the answers alone: the title above them and the note below are not part of any answer. */
+  const answerRowsOf = (state: QuestionCardState): string[] =>
+    projectQuestionCard(state, COLUMNS)
+      .body.slice(1, -1)
+      .map((row) => row.text);
+
+  /** Group the answer rows by answer: a row that starts with a dot begins one, an indented row continues the last. */
+  function grouped(rows: readonly string[]): string[][] {
+    const groups: string[][] = [];
+    for (const row of rows) {
+      if (GLYPH_ROW.test(row)) groups.push([row]);
+      else groups.at(-1)?.push(row);
+    }
+    return groups;
+  }
+
+  /** What a group shows of its line, and how many characters it says it hides (0 when it says nothing). */
+  function readGroup(group: readonly string[]): {
+    readonly shown: string;
+    readonly hidden: number;
+  } {
+    const text = group.map((row, at) => (at === 0 ? row : row.slice(4)));
+    const last = text.at(-1) ?? '';
+    const match = NOTICE.exec(last);
+    if (match === null) return { shown: text.join(''), hidden: 0 };
+    const kept = last.slice(0, last.length - match[0].length - 1); // the row is `${kept} ${notice}`
+    return { shown: [...text.slice(0, -1), kept].join(''), hidden: Number(match[1]) };
+  }
+
+  it('an answer that fits the rows left is shown whole, wrapped under its own row', () => {
+    const own = 'word '.repeat(30).trim(); // 149 characters: one clipped line before
+    const rows = answerRowsOf(reviewOf([own, 'ok']));
+    const [first, second] = grouped(rows);
+    expect(first?.length).toBe(3);
+    expect(first?.slice(1).every((row) => row.startsWith('    '))).toBe(true);
+    expect(readGroup(first ?? [])).toEqual({ shown: fullLine(0, own), hidden: 0 });
+    expect(second).toEqual([fullLine(1, 'ok')]);
+    expect(rows.join('\n')).not.toContain('not shown');
+    for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(COLUMNS - 2);
+  });
+
+  it('an answer that cannot fit says exactly how many characters it hides, never a bare ellipsis', () => {
+    const own = `${'abcdefghij'.repeat(50)}`; // 500 characters, the person's whole allowance
+    const rows = answerRowsOf(reviewOf([own, 'ok']));
+    const [first] = grouped(rows);
+    const { shown, hidden } = readGroup(first ?? []);
+    expect(hidden).toBeGreaterThan(0);
+    expect(fullLine(0, own).startsWith(shown)).toBe(true);
+    expect([...fullLine(0, own)].length - [...shown].length).toBe(hidden);
+    expect(rows.filter((row) => row.includes('not shown'))).toHaveLength(1);
+  });
+
+  it('a short answer keeps one row and the long one takes the rows it leaves', () => {
+    const rows = projectQuestionCard(reviewOf(['ok', 'fine', 'x'.repeat(500)]), COLUMNS).body;
+    expect(rows).toHaveLength(QUESTION_CARD_MAX_BODY_ROWS);
+    const [a, b, c] = grouped(rows.slice(1, -1).map((row) => row.text));
+    expect([a?.length, b?.length, c?.length]).toEqual([1, 1, 5]);
+  });
+
+  it('wrapped text never poses as a row of its own: only the real answers start with a dot', () => {
+    // The forged row is slid across the first row's edge, so at some offset it lands exactly at the start of a continuation row.
+    for (let before = 50; before <= 80; before += 1) {
+      const forged = `${'a'.repeat(before)}● 2 Notes2 → “yes”${'b'.repeat(40)}`;
+      const rows = answerRowsOf(reviewOf([forged, 'ok']));
+      expect(
+        rows.filter((row) => GLYPH_ROW.test(row)),
+        `after ${String(before)}`,
+      ).toHaveLength(2);
+    }
+  });
+
+  it('for generated answers of every length and alphabet: within the bound and the width, whole or counted, no cut inside a cluster', () => {
+    const random = mulberry32(20261121);
+    const alphabets = [...ALPHABETS, ['👨‍👩‍👧', 'a', ' '], [...'abcdefghijkl', '🇯🇵']];
+    let counted = 0;
+    let whole = 0;
+    for (let n = 0; n < 300; n += 1) {
+      const count = 2 + Math.floor(random() * 3);
+      const own = Array.from({ length: count }, () => {
+        if (random() < 0.15) return undefined;
+        const alphabet = alphabets[Math.floor(random() * alphabets.length)] ?? ['x'];
+        let text = '';
+        const length = Math.floor(random() * 501);
+        for (let k = 0; k < length; k += 1)
+          text += alphabet[Math.floor(random() * alphabet.length)] ?? 'x';
+        return text;
+      });
+      const rows = answerRowsOf(reviewOf(own));
+      expect(rows.length).toBeLessThanOrEqual(QUESTION_CARD_MAX_BODY_ROWS - 2);
+      for (const row of rows) expect(displayWidth(row)).toBeLessThanOrEqual(COLUMNS - 2);
+      const groups = grouped(rows);
+      expect(groups).toHaveLength(count);
+      groups.forEach((group, index) => {
+        const text = own[index];
+        if (text === undefined) {
+          expect(group).toEqual([
+            `○ ${String(index + 1)} Notes${String(index + 1)} → not answered yet`,
+          ]);
+          return;
+        }
+        const line = fullLine(index, text);
+        const { shown, hidden } = readGroup(group);
+        expect(line.startsWith(shown), `answer ${String(index)} shows a prefix of its line`).toBe(
+          true,
+        );
+        expect(
+          [...line].length - [...shown].length,
+          `answer ${String(index)} says what it hides`,
+        ).toBe(hidden);
+        if (hidden === 0) whole += 1;
+        else counted += 1;
+        const shownRows = group.map((row, at) => (at === 0 ? row : row.slice(4)));
+        const last = shownRows.at(-1) ?? '';
+        const match = NOTICE.exec(last);
+        if (match !== null)
+          shownRows[shownRows.length - 1] = last.slice(0, last.length - match[0].length - 1);
+        expect(cutsInsideClusters(shownRows), `answer ${String(index)}`).toEqual([]);
+      });
+    }
+    // Both outcomes really happened, or the property proves only one of them.
+    expect(whole).toBeGreaterThan(100);
+    expect(counted).toBeGreaterThan(30);
   });
 });

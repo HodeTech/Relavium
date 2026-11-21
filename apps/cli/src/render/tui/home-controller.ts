@@ -16,6 +16,16 @@ import {
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
+import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import {
+  disarmPermissionsSheet,
+  sheetCanArm,
+  type PermissionsSheetState,
+} from './permissions-sheet.js';
+import {
+  foldPermissionsSheetThroughPort,
+  openPermissionsSheetThroughPort,
+} from './permissions-sheet-port.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
@@ -31,7 +41,6 @@ import {
   insertAtCursor,
   pasteIsEditable,
   reduceChatKey,
-  reduceEditorMotion,
   type ChatKey,
   type ChatKeyAction,
   type EditorState,
@@ -49,7 +58,15 @@ import {
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { TranscriptEntry } from './session-view-model.js';
-import { sanitizeApprovalReason } from './chat-projection.js';
+import {
+  DISARMED,
+  INTERRUPT_ARM_WINDOW_MS,
+  isInterruptKey,
+  pressInterrupt,
+  pressOtherKey,
+  type InterruptContext,
+  type InterruptState,
+} from './interrupt-keymap.js';
 import {
   foldMentionKey,
   mentionOpensAt,
@@ -69,8 +86,9 @@ import {
 import {
   commandLine,
   isShellLine,
+  parseShellLine,
+  SHELL_UNTERMINATED_QUOTE_NOTICE,
   shellDenyHint,
-  tokenizeCommand,
   type ShellCommand,
 } from './shell.js';
 import { reduceHomeKey, type HomeKey } from './home-input.js';
@@ -118,6 +136,9 @@ export interface HomeChatSession {
    *  pick (a per-turn session override, NO reseat) + the `/effort` command. Absent ⇒ the effort sub-step is not
    *  offered. The current tier is read live from `store` (`ChatStoreSnapshot.reasoningEffort`), not tracked here. */
   readonly onSetEffort?: (effort: ReasoningEffort) => void;
+  /** The `/permissions` sheet's port (ADR-0137 §2): a typed or palette-selected bare `/permissions` opens the sheet over this chat.
+   *  Absent ⇒ the command is dispatched and says remembered commands are not available. */
+  readonly permissions?: PermissionsPort;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
@@ -196,9 +217,13 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
-  /** The in-flight `[c]` typed-reason capture (Step 14) — `undefined` ⇒ closed. CHAT-scoped; opened FROM a pending
-   *  approval to record WHY the user denies. A keyboard-owning submode; on submit it rejects with the reason. */
-  readonly reasonDraft: EditorState | undefined;
+  /** The open `/permissions` sheet (ADR-0137 §2, §3) — `undefined` ⇒ closed. In a live in-Home chat with a wired port it shows both lists;
+   *  on the bare Home it shows the project's only. A keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can
+   *  arrive while it is open. */
+  readonly permissionsSheet: PermissionsSheetState | undefined;
+  /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
+   *  footer hint says so. Cleared by any other key and by the window running out. */
+  readonly interruptArmed: boolean;
 }
 
 /**
@@ -252,9 +277,11 @@ export interface HomeControllerDeps {
     carriedTranscript: readonly TranscriptEntry[],
   ) => Promise<HomeChatSession>;
   readonly homeStore: HomeStore;
+  /** The monotonic clock the interrupt keymap's arming window runs on (ADR-0115 §1). Default `performance.now`; a test injects its own. */
+  readonly now?: () => number;
   /** Original Home invocation; observe publication before local recovery and retain entered doctor work. */
   readonly workOwner?: Pick<InvocationWorkOwner, 'enter' | 'failure'>;
-  /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
+  /** The Home exited cleanly (a second Ctrl+C inside the arming window, or Ctrl+D / EOF on an empty prompt) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
   /** An unexpected error escaping a chat turn (a re-thrown turn-core bug) — `driveHome` tears down + propagates. */
   readonly onError: (err: unknown) => void;
@@ -270,6 +297,9 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
+  /** The bare Home's `/permissions` sheet port (ADR-0137 §3): the project's remembered commands only, there being no chat. Absent ⇒
+   *  the Home has no sheet to open (a test may omit it); a live chat's own port is `HomeChatSession.permissions`. */
+  readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
   readonly pickSession?: () => Promise<string | undefined>;
@@ -292,10 +322,25 @@ export interface HomeController {
   readonly setProviderState: (keyless: boolean, notice?: string) => void;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
   readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
+  /** A key the host consumed before the controller (an open card takes every key): it still ends the armed interrupt state, so
+   *  `Ctrl+C`, a key, `Ctrl+C` is two first presses and never an exit (ADR-0115 §1). */
+  readonly disarmInterrupt: () => void;
+  /** A `Ctrl+C` a card consumed as its own answer without aborting (a checkpoint's "stop"): the interrupt window starts, or the
+   *  chat ends if it was already armed (ADR-0115 §1, ADR-0136 §2). */
+  readonly interruptAnswered: () => void;
   /** Handle a bracketed paste as ONE native event (ink 7 `usePaste`, a channel separate from `useInput`):
    *  insert it into the prompt buffer, or drop it while a keyboard-owning overlay/submode, a pending approval,
    *  or a mid-turn/build/`!`-shell/submit state is active. Paste never reaches the key reducers. */
   readonly handlePaste: (text: string) => void;
+  /** The terminal's size, told by the host whenever it changes: the permissions sheet needs it to know whether it can show a
+   *  withdrawal's question (ADR-0137 §2). Until it is told, the sheet assumes a terminal that can. */
+  readonly setTerminalSize: (columns: number, rows: number) => void;
+  /**
+   * Open the `/permissions` sheet as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3): the sheet
+   * opens at once and, when the person closes it, the Home ends with success instead of staying open behind it. If the sheet cannot
+   * open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
+   */
+  readonly openPermissionsAsCommand: () => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -324,11 +369,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     noticeRevision: 0,
     modelPicker: undefined,
     effortPicker: undefined,
-    reasonDraft: undefined,
+    permissionsSheet: undefined,
+    interruptArmed: false,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
   let history: InputHistory = EMPTY_HISTORY;
+  /** The terminal's size as the host last told it ({@link HomeController.setTerminalSize}); `undefined` until it has. */
+  let terminal: { readonly columns: number; readonly rows: number } | undefined;
   let cancelFired = false;
   let exiting = false; // permanent stop seals deferred business results as well as database reads
   const isCurrentChat = (active: HomeChatSession): boolean =>
@@ -417,7 +465,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     state.mode === 'chat' && state.session?.store.getSnapshot().state.status === 'running';
   /** Whether a native bracketed paste (ink 7 `usePaste`) may append to the prompt buffer — only when the main
    *  Home/chat prompt is the active editable target: no build/turn/`!`-shell/submit in flight, no keyboard-owning
-   *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`, the `[c]` reason capture), and
+   *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`), and
    *  NO pending approval (a paste must never reach the fail-closed approval floor — ADR-0057). */
   const pasteEditable = (): boolean =>
     state.mode !== 'loading' && // the build window is Home-only; every other gate is the SHARED paste predicate
@@ -430,7 +478,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mentionOpen: state.mention !== undefined,
       modelPickerOpen: state.modelPicker !== undefined,
       effortPickerOpen: state.effortPicker !== undefined,
-      reasonCaptureOpen: state.reasonDraft !== undefined,
+      permissionsSheetOpen: state.permissionsSheet !== undefined,
       approvalPending:
         state.session?.store.getSnapshot().approval !== undefined ||
         state.session?.store.getSnapshot().review !== undefined,
@@ -441,15 +489,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     notify();
   };
 
+  // A bare `relavium permissions` opens the sheet as the run's whole job: closing it ends the run (ADR-0137 §3).
+  let permissionsIsTheCommand = false;
   const exitHome = (): void => {
-    if (exiting) return; // idempotent — a second Ctrl-C (or a race) must not settle `driveHome` twice
+    if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
     exiting = true;
+    stopInterruptTimer();
     deps.onExit();
   };
 
   const failHome = (err: unknown): void => {
     if (exiting) return; // an exit/error already settled `driveHome` — drop this late failure
     exiting = true;
+    stopInterruptTimer();
     deps.onError(err);
   };
 
@@ -479,7 +531,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
-          reasonDraft: undefined,
+          permissionsSheet: undefined, // and the `/permissions` sheet: a chat's own is gone with the chat, and the Home's is closed on a return
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -514,7 +566,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           void fresh.teardown().catch(() => undefined); // exited mid-build ⇒ reap the just-built fresh session
           return;
         }
-        // Guard a SUPERSEDING /clear: a mid-build Ctrl-C→/cancel re-routes to a SECOND clearChat(old) (the old
+        // Guard a SUPERSEDING /clear: a mid-build second Ctrl+C → /cancel re-routes to a SECOND clearChat(old) (the old
         // handler's stopReason is sticky-'clear'), starting a second build. If an earlier build already swapped a
         // fresh session in (state.session !== old), reap THIS now-superseded build instead of swapping it in and
         // leaking the earlier fresh session's MCP child. Mirrors the failure arm's `state.session === old` guard.
@@ -546,7 +598,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          reasonDraft: undefined,
+          permissionsSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -626,7 +678,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          reasonDraft: undefined,
+          permissionsSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -791,7 +843,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         mention: undefined,
         modelPicker: undefined,
         effortPicker: undefined,
-        reasonDraft: undefined,
+        permissionsSheet: undefined,
         shellBusy: false,
         shellCommand: undefined,
         submitBusy: true,
@@ -818,6 +870,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           '/resume accepts no arguments. Use its picker to select a session.',
         );
       } else openResume();
+      return true;
+    }
+    if (state.session === undefined && /^\/permissions(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/permissions') set({ notice: '/permissions accepts no arguments.' });
+      else if (deps.permissions === undefined)
+        set({ notice: 'Remembered commands are not available here.' });
+      else openPermissionsSheet(undefined);
       return true;
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
@@ -885,7 +945,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mention: undefined,
       modelPicker: undefined,
       effortPicker: undefined,
-      reasonDraft: undefined,
+      permissionsSheet: undefined,
       historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
@@ -1239,6 +1299,90 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
+  // ---- The in-Home `/permissions` sheet (ADR-0137 §2) ---------------------------------------------------------
+  // Open on the data read NOW, in the chat's current mode: only at an idle prompt with nothing pending, so a card cannot arrive while
+  // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so.
+  const openPermissionsSheet = (active: HomeChatSession | undefined): void => {
+    const port = active === undefined ? deps.permissions : active.permissions;
+    if (port === undefined) return;
+    if (active === undefined) {
+      // The bare Home: only from the Home itself, with nothing being built or resumed. (`submitBusy` and `nativeActionBusy` are defence in
+      // depth: the keys that start those are gated while one runs, so a test can only reach the mode check.)
+      if (state.mode !== 'home' || state.submitBusy || state.nativeActionBusy) return;
+    } else {
+      const snap = active.store.getSnapshot();
+      // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
+      // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+      if (
+        snap.state.status === 'running' ||
+        state.shellBusy ||
+        state.submitBusy ||
+        snap.review !== undefined ||
+        snap.question !== undefined ||
+        snap.checkpoint !== undefined ||
+        snap.approval !== undefined
+      )
+        return;
+    }
+    // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
+    const opened = openPermissionsSheetThroughPort(
+      port,
+      active?.store.getSnapshot().mode,
+      interruptNow(),
+    );
+    if (opened.sheet !== undefined) set({ permissionsSheet: opened.sheet });
+    else if (active !== undefined) active.store.note(opened.note);
+    else set({ notice: opened.note });
+  };
+  // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
+  // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
+  const routePermissionsSheetKey = (
+    active: HomeChatSession | undefined,
+    input: string,
+    key: ChatKey,
+  ): boolean => {
+    const open = state.permissionsSheet;
+    const port = active === undefined ? deps.permissions : active.permissions;
+    if (open === undefined) return false;
+    // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
+    // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
+    const pending = active?.store.getSnapshot();
+    if (
+      pending !== undefined &&
+      (pending.review !== undefined ||
+        pending.question !== undefined ||
+        pending.checkpoint !== undefined ||
+        pending.approval !== undefined)
+    ) {
+      set({ permissionsSheet: undefined });
+      return false;
+    }
+    if (port === undefined) {
+      set({ permissionsSheet: undefined });
+      return true;
+    }
+    const canArm =
+      terminal === undefined ||
+      sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
+    const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
+    if (result.sheet === undefined && permissionsIsTheCommand) {
+      // The sheet a command opened is closing: the run ends with it, and the last frame it leaves (the scrollback of the inline renderer) is
+      // the sheet's, not a Home prompt, so the closed state is never published. Unless it closed because of a fault: then the Home stays,
+      // with the note, so that the person can read it. Either way the command is over: a sheet opened later is an ordinary one.
+      permissionsIsTheCommand = false;
+      if (result.note === undefined) {
+        exitHome();
+        return true;
+      }
+    }
+    set({ permissionsSheet: result.sheet });
+    if (result.note !== undefined) {
+      if (active !== undefined) active.store.note(result.note);
+      else set({ notice: result.note });
+    }
+    return true;
+  };
+
   // ---- The in-Home `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) -------------------
   // Whether `/effort` should open the overlay: a live chat with the setter wired AND a reasoning-capable bound model.
   // A non-reasoning model returns false, so the surface falls through to the `/effort` notice (parity with ChatApp).
@@ -1306,6 +1450,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
+    managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
     openDetails: () => undefined,
     setMode: (argument) => {
       managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
@@ -1383,6 +1528,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProjectInit();
         } else if (step.command.name === 'resume') {
           openResume();
+        } else if (step.command.name === 'permissions' && active === undefined) {
+          // home: bare `/permissions` opens the sheet over the Home with the project's list only (ADR-0137 §3).
+          if (deps.permissions === undefined)
+            set({ notice: 'Remembered commands are not available here.' });
+          else openPermissionsSheet(undefined);
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -1391,6 +1541,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // chat: `/models` opens the reseat picker (ADR-0059) — parity with the typed-`/models` intercept, so the
           // palette route + the typed route behave identically (never the "interactive terminal" dispatch hint).
           openModelPicker();
+        } else if (step.command.name === 'permissions' && active.permissions !== undefined) {
+          // chat: bare `/permissions` opens the sheet (ADR-0137 §2) — parity with the typed intercept below.
+          openPermissionsSheet(active);
         } else if (step.command.name === 'effort' && canOpenEffortPicker(active)) {
           // chat: bare `/effort` on a reasoning-capable model opens the interactive overlay (ADR-0066 §6) — parity
           // with the typed-`/effort` intercept; a non-reasoning model falls through to the notice below.
@@ -1631,13 +1784,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
   // form in the transcript, and clear exactly the consumed attachments.
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
-    submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
     const trimmed = line.trim();
-    if (managementCommand(trimmed)) return;
-    const parsed =
+    const shellLine =
       active.runShellCommand !== undefined && isShellLine(trimmed)
-        ? tokenizeCommand(trimmed.slice(1))
+        ? parseShellLine(trimmed.slice(1))
         : undefined;
+    if (shellLine?.kind === 'unterminated_quote') {
+      // An open quote is refused, never run to the end of the line (ADR-0118 §3); the line stays in the editor and, since
+      // the buffer is NOT cleared, a pending mention read is left alone (the epoch is bumped only where it is consumed).
+      active.store.note(SHELL_UNTERMINATED_QUOTE_NOTICE);
+      return;
+    }
+    submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
+    if (managementCommand(trimmed)) return;
+    const parsed = shellLine?.kind === 'command' ? shellLine.cmd : undefined;
     if (parsed !== undefined) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
@@ -1657,6 +1817,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Bare `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the
     // informational notice — parity with the standalone ChatApp. A non-reasoning model falls through to the slash
     // dispatch (the ctx handler's "no controllable tier" notice). `/effort <tier>` (with an arg) is not intercepted.
+    if (trimmed === '/permissions' && active.permissions !== undefined) {
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      openPermissionsSheet(active);
+      return;
+    }
     if (trimmed === '/effort' && canOpenEffortPicker(active)) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
@@ -1682,16 +1848,111 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     sendChatLine(active, message, display);
   };
 
+  // --- The one interrupt keymap (ADR-0115 §1) -------------------------------------------------------------------------
+  // `interrupt` is its whole state on the injected monotonic clock; `interruptArmed` (in the snapshot) only drives the footer
+  // hint, and the timer takes the hint down when the window runs out.
+  const interruptNow = deps.now ?? ((): number => performance.now());
+  let interrupt: InterruptState = DISARMED;
+  let interruptTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopInterruptTimer = (): void => {
+    if (interruptTimer !== undefined) clearTimeout(interruptTimer);
+    interruptTimer = undefined;
+  };
+  const showInterruptHint = (armed: boolean): void => {
+    stopInterruptTimer();
+    if (armed && !exiting) {
+      interruptTimer = setTimeout(() => {
+        interruptTimer = undefined;
+        if (exiting || !state.interruptArmed) return;
+        // A timer callback has no input handler around it to route a listener's failure, so it is routed here.
+        try {
+          set({ interruptArmed: false });
+        } catch (error) {
+          failHome(error);
+        }
+      }, INTERRUPT_ARM_WINDOW_MS);
+      interruptTimer.unref();
+    }
+    if (state.interruptArmed !== armed && !exiting) set({ interruptArmed: armed });
+  };
+  const disarmInterrupt = (): void => {
+    if (interrupt.armedAt === undefined) return;
+    interrupt = pressOtherKey();
+    showInterruptHint(false);
+  };
+  // What `Esc` does mid-turn: abort the turn and keep the session. A session wired without `onAbort` still must not leave a pending
+  // approval hanging, so it is rejected directly: the stop key is never dead at a decision.
+  const abortActive = (active: HomeChatSession): void => {
+    if (active.onAbort !== undefined) {
+      active.onAbort();
+    } else if (active.store.getSnapshot().approval !== undefined) {
+      active.store.answerApproval({ outcome: 'reject' });
+    }
+  };
+  // `/cancel` ends the (resumable) session and returns to the Home; at most once, so a held key cannot fire redundant turns.
+  const cancelActive = (active: HomeChatSession): void => {
+    if (cancelFired) return;
+    cancelFired = true;
+    sendChatLine(active, '/cancel');
+  };
+  // Where the person is. An open card is not a context of its own here: it implies a running turn, and the host settles it (an
+  // approval as a rejection, before the abort) in the store before the key reaches the controller.
+  const interruptContext = (active: HomeChatSession | undefined): InterruptContext => {
+    if (
+      state.palette !== undefined ||
+      state.modelPicker !== undefined ||
+      state.search !== undefined ||
+      state.mention !== undefined ||
+      (state.effortPicker !== undefined && active !== undefined) ||
+      state.permissionsSheet !== undefined
+    )
+      return { kind: 'overlay' };
+    if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
+    const busy =
+      active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
+    return busy ? { kind: 'work' } : { kind: 'prompt', hasText: state.input.text.length > 0 };
+  };
+  // Returns whether the key was consumed; `false` leaves an open overlay to close itself on `Ctrl+C`, arming nothing.
+  const handleInterrupt = (): boolean => {
+    const active = state.mode === 'chat' ? state.session : undefined;
+    if (active !== undefined && tearingDown === active) return true; // a key arriving mid-teardown drives nothing
+    const decision = pressInterrupt(interrupt, interruptContext(active), interruptNow());
+    interrupt = decision.state;
+    switch (decision.action) {
+      case 'end-session':
+        showInterruptHint(false);
+        if (active === undefined) {
+          exitHome();
+        } else {
+          abortActive(active);
+          cancelActive(active);
+        }
+        return true;
+      case 'stop-and-arm':
+        if (active !== undefined) abortActive(active);
+        showInterruptHint(true);
+        return true;
+      case 'clear-text':
+        submitEpoch += 1; // the buffer is consumed: a pending `@` mention read must not splice its marker into the empty draft
+        history = resetHistoryNav(history);
+        set({ input: emptyEditor() });
+        return true;
+      case 'arm-hint':
+        showInterruptHint(true);
+        return true;
+      case 'close-overlay':
+        showInterruptHint(false);
+        return false;
+      case 'exit-now':
+        exitHome();
+        return true;
+    }
+  };
+
   // Apply one reduced chat-key action: edits/motions fold the buffer, submit runs a `!`-command or sends a message,
-  // and the surface actions (cancel / cycle-mode / abort / approve / reject) drive the session.
+  // and the surface actions (cycle-mode / abort / toggle-reasoning) drive the session.
   const applyChatAction = (active: HomeChatSession, action: ChatKeyAction): void => {
     switch (action.kind) {
-      case 'cancel':
-        if (!cancelFired) {
-          cancelFired = true;
-          sendChatLine(active, '/cancel'); // /cancel ends the (resumable) session → back to Home
-        }
-        return;
       case 'append':
       case 'backspace':
       case 'newline':
@@ -1717,60 +1978,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         active.store.toggleReasoning();
         return;
       case 'abort':
-        // Esc — mid-turn abort (keeps the session; distinct from /cancel). `onAbort` aborts the turn, whose
-        // signal also rejects any in-flight approval. If `onAbort` is absent (a session wired without it), a
-        // PENDING approval would otherwise hang — reject it directly so Esc is never a dead key at a decision.
-        if (active.onAbort !== undefined) {
-          active.onAbort();
-        } else if (active.store.getSnapshot().approval !== undefined) {
-          active.store.answerApproval({ outcome: 'reject' });
-        }
-        return;
-      case 'approve':
-        active.store.answerApproval({ outcome: 'approve', scope: action.scope });
-        return;
-      case 'reject':
-        active.store.answerApproval({ outcome: 'reject' });
-        return;
-      case 'reject-with-reason':
-        // `[c]` — open the typed-reason capture (Step 14); the next keys fill it (handleChatKey routes them),
-        // then submit rejects WITH the reason. The approval stays pending until then (parity with `relavium chat`).
-        set({ reasonDraft: emptyEditor() });
+        // Esc — the mid-turn abort: it stops the turn and keeps the session, and never arms (ADR-0115 §2).
+        abortActive(active);
         return;
       case 'none':
         return;
     }
   };
 
-  // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — returns `true` when it handled the key.
-  // It ONLY opens from a pending approval; if that approval settled out-of-band, the capture is stale → drop it.
-  // Esc CANCELS back to the Ctrl+Y/Ctrl+G/Ctrl+N prompt (still pending — not an abort); plain Enter rejects WITH the
-  // sanitized+bounded reason; every other key edits the buffer. Parity with the standalone ChatApp; the floor is
-  // unchanged (this only enriches a reject — a governed dispatch still cannot proceed without an explicit decision).
-  // Extracted (like routeMentionKey/routeSearchKey) so handleChatKey stays flat.
-  const routeReasonKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
-    const openReason = state.reasonDraft;
-    if (openReason === undefined) return false;
-    if (active.store.getSnapshot().approval === undefined) {
-      set({ reasonDraft: undefined }); // the approval vanished — discard the orphaned capture
-    } else if (key.escape === true) {
-      set({ reasonDraft: undefined }); // cancel the reason; the approval stays pending
-    } else if (key.return === true && key.shift !== true) {
-      const reason = sanitizeApprovalReason(openReason.text);
-      set({ reasonDraft: undefined });
-      active.store.answerApproval(
-        reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
-      );
-    } else {
-      const edit = reduceEditorMotion(input, key);
-      if (edit !== undefined) set({ reasonDraft: applyEditorAction(openReason, edit) });
-    }
-    return true; // while the capture is open it OWNS every key
-  };
-
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
-    if (routeReasonKey(active, input, key)) return; // the `[c]` typed-reason capture owns the keyboard while open
     // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
     const running =
@@ -1786,7 +2003,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       active.store.note('cleared pending attachments');
       return;
     }
-    applyChatAction(active, reduceChatKey(input, key, state.input.text, running, approvalPending));
+    applyChatAction(active, reduceChatKey(input, key, state.input.text, running));
   };
 
   const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
@@ -1796,11 +2013,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     const action = reduceHomeKey(input, key);
-    if (action.kind === 'exit') {
-      exitHome();
-      return;
-    }
-    if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl-C above still bails)
+    if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
     const sessions = state.snapshot.recentSessions;
     const focused = state.continueSessionId;
     if (focused !== undefined) {
@@ -1858,6 +2071,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
   // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
   const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+    // `Ctrl+C` is the interrupt keymap's before anything else (ADR-0115 §1); any other key ends the armed state.
+    if (isInterruptKey(input, key)) {
+      if (handleInterrupt()) return;
+    } else {
+      disarmInterrupt();
+    }
     // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
     if (state.palette !== undefined) {
       handlePaletteKey(input, key);
@@ -1876,6 +2095,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       routeEffortPickerKey(state.session, input, key);
       return;
     }
+    // The `/permissions` sheet (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither withdraws.
+    if (state.permissionsSheet !== undefined && routePermissionsSheetKey(state.session, input, key))
+      return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
       return;
@@ -1903,13 +2125,41 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
       if (!exiting && !state.nativeActionBusy) dispatchKey(input, key);
     },
+    disarmInterrupt,
+    interruptAnswered() {
+      const active = state.mode === 'chat' ? state.session : undefined;
+      if (exiting || state.nativeActionBusy || active === undefined || tearingDown === active)
+        return;
+      const decision = pressInterrupt(interrupt, { kind: 'card' }, interruptNow());
+      interrupt = decision.state;
+      if (decision.action === 'end-session') {
+        showInterruptHint(false);
+        cancelActive(active);
+      } else {
+        showInterruptHint(true);
+      }
+    },
+    setTerminalSize(columns, rows) {
+      terminal = { columns, rows };
+    },
+    openPermissionsAsCommand() {
+      if (exiting) return;
+      permissionsIsTheCommand = true;
+      openPermissionsSheet(undefined);
+      // It did not open (the port could not be read): stay in the Home, whose notice says why.
+      if (state.permissionsSheet === undefined) permissionsIsTheCommand = false;
+    },
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
+      disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
-      // and the `[c]` reason capture. Type-ahead behind a busy/overlay state is deferred (2.5.B).
+      // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
+      // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
+      if (state.permissionsSheet !== undefined)
+        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;

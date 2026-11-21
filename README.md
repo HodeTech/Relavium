@@ -178,8 +178,12 @@ and search, exact edits, inspectable file writes that keep their security metada
 modes, an interrupted turn that stays as a marker, and `ask_user` with its question and answer kept with the session. The
 [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-3-merge-checkpoint-2026-11-18) records the review and
 verification and its two open CI observations (the final head's coverage job hit its time limit, and one acceptance-tool test
-timed out once in the merge commit's push run, which a re-run cleared). MVP-4
-(command permissions, the interrupt keymap and turn ceilings) follows; the
+timed out once in the merge commit's push run, which a re-run cleared). Between MVP-3 and MVP-4,
+[PR #100](https://github.com/HodeTech/Relavium/pull/100) (2026-11-18) made several `relavium` processes on one home able to write at the same
+time (each waits for the staging inventory instead of failing) and made CI run once per commit; its
+[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) lists what is still owed. MVP-4
+(command permissions, the interrupt keymap, turn limits, the `/permissions` sheet and the Home entry points; ADR-0115, 0118, 0136, 0137 and 0138) is implemented on `development`
+(steps 1–7), and its pull request, [PR #101](https://github.com/HodeTech/Relavium/pull/101), was opened on 2026-11-21 and is under review; the
 published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source

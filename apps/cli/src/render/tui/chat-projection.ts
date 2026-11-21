@@ -1,5 +1,4 @@
 import type { ToolDisplay } from './tool-display.js';
-import type { ToolApprovalRequest } from '@relavium/core';
 import type { Memory, ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
@@ -110,6 +109,9 @@ export function formatTurnSummary(summary: TurnSummary): string {
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;
+  } else if (summary.errorCode === 'turn_limit' && summary.stoppedAtCheckpoint !== undefined) {
+    // The person answered the continue checkpoint "stop" (ADR-0136 §2): say that, not "error: turn_limit".
+    head = `stopped at a checkpoint after ${summary.stoppedAtCheckpoint} tool round${summary.stoppedAtCheckpoint === 1 ? '' : 's'}`;
   } else if (
     reason.length > 0 &&
     (SAFE_MESSAGE_CODES.has(summary.errorCode) || PROVIDER_MESSAGE_CODES.has(summary.errorCode))
@@ -214,7 +216,7 @@ export function contextOverflowRemedy(
 export function errorRecoveryHint(
   code: string | undefined,
   message?: string,
-  context?: Pick<TurnSummary, 'memoryPolicy' | 'toolsRan'>,
+  context?: Pick<TurnSummary, 'memoryPolicy' | 'toolsRan' | 'stoppedAtCheckpoint'>,
 ): string | undefined {
   switch (code) {
     case 'provider_rate_limit':
@@ -254,6 +256,8 @@ export function errorRecoveryHint(
       // the target, which is the only place the truth lives.
       return 'A tool may have completed its effect before the error — this is not retried automatically, because retrying could repeat it. The session is still active; check the target before asking again.';
     case 'turn_limit':
+      if (context?.stoppedAtCheckpoint !== undefined)
+        return 'You stopped the turn at a checkpoint. The session is still active; send another message to continue.';
       // Two producers: the per-turn tool-call ceiling AND the session HARD round cap (agent-session.ts). "Send
       // another message" fixes the first but is re-blocked by the second — so cover both without asserting a cause.
       return 'The turn hit a turn/tool-call limit. The session is still active; send another message — if it is blocked again immediately, the session hit its hard turn cap (`/clear` to start fresh).';
@@ -747,15 +751,4 @@ export function formatSessionFooterWithMode(
   // its own name. `state.model` absent (pre-session) ⇒ the label falls back to the tier name.
   const effortLabel = effortRowLabel(state.model ?? '', reasoningEffort).label;
   return `${withMode} · effort: ${effortLabel}`;
-}
-
-/**
- * The secret-free target line for an approval prompt — the resolved path / command / host from the preview
- * (the registry already stripped any secret / query string). Sanitized for display; empty when the action
- * class carries no pre-dispatch target (e.g. `web_search` / `mcp_call`, where the action class alone is shown).
- */
-export function formatApprovalTarget(request: ToolApprovalRequest): string {
-  const { path, command, host } = request.preview;
-  const target = path ?? command ?? host ?? '';
-  return target.length > 0 ? sanitizeInline(target) : '';
 }

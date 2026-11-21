@@ -27,6 +27,7 @@ import {
   type ToolDef,
   type ToolHost,
   type ToolRegistry,
+  type ToolRoundLimitHook,
   ToolExecutionError,
   unwiredEffectJournal,
 } from '@relavium/core';
@@ -39,18 +40,20 @@ import {
   type ProviderId,
 } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient } from '@relavium/mcp';
-import { UsageCoverageFold, type UsageCoverageSnapshot } from '@relavium/shared';
-import type {
-  AbortSignalLike,
-  AgentSessionRecord,
-  Budget,
-  McpServerRegistration,
-  ReasoningEffort,
-  SessionContext,
-  SessionMessage,
-  ToolPolicy,
-  MediaBilledModality,
-  UsageInvocation,
+import {
+  CHAT_LIMITS,
+  UsageCoverageFold,
+  type AbortSignalLike,
+  type AgentSessionRecord,
+  type Budget,
+  type McpServerRegistration,
+  type ReasoningEffort,
+  type SessionContext,
+  type SessionMessage,
+  type ToolPolicy,
+  type MediaBilledModality,
+  type UsageCoverageSnapshot,
+  type UsageInvocation,
 } from '@relavium/shared';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
@@ -117,6 +120,12 @@ export interface BuildChatSessionOptions {
    * value, so the engine's advertise gate and the CLI's cannot disagree. Absent ⇒ the tool is never offered.
    */
   readonly askUser?: AskUserDelegate;
+  /**
+   * The continue checkpoint ([ADR-0136](../../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)):
+   * present only on a surface with a person who can answer, from the same boolean as {@link askUser}. With it a turn pauses every
+   * `checkpoint_tool_turns` rounds and asks; without it `max_tool_turns` is a hard stop.
+   */
+  readonly checkpoint?: ToolRoundLimitHook;
   /** Resolved operator home, explicitly supplied by production surfaces. */
   readonly operatorHomeDir?: string;
   /** Explicit resource factory for hermetic embeddings and tests. */
@@ -371,7 +380,9 @@ type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
   | 'startingMode'
   | 'askUser'
+  | 'checkpoint'
   | 'chat'
+  | 'oneShot'
   | 'maxTokensEstimate'
   | 'deadlineTimer'
   | 'now'
@@ -563,10 +574,11 @@ function buildSessionRuntime(
       }),
   };
   // The chat `ToolPolicy` (ADR-0055's single source) extended with the `[chat].allowed_commands` /
-  // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒
-  // `run_command` denied (the secure `empty ⇒ disabled` symmetry). Threaded into `SessionDeps.toolPolicy`, it is
-  // what BOTH a model `run_command` (advertised only if the agent grants it) AND the user `!`-shell
-  // (`runUserCommand`) enforce — the ONE allowlist, never a chat-specific fork.
+  // `allowed_command_globs` `!`-shell allowlist (2.5.D, ADR-0061). Absent/empty ⇒ the factory default (`{}`) ⇒ nothing is
+  // PRE-approved. Threaded into `SessionDeps.toolPolicy`, it is what BOTH a model `run_command` (advertised only if the agent
+  // grants it) AND the user `!`-shell (`runUserCommand`) are judged against — the ONE allowlist, never a chat-specific fork. An
+  // unattended dispatch (a workflow, a headless surface) still fails closed on a miss; an interactive chat hands the miss to the
+  // mode-aware approval hook as a request (ADR-0118 §1).
   const chatToolPolicy: ToolPolicy = {
     ...factoryEnv.policy,
     ...(opts.chat.allowedCommands === undefined
@@ -859,9 +871,9 @@ function buildSessionRuntime(
       emit({ ...event, ...accountingFields() });
     },
     // The chat-default `ToolPolicy` comes from the factory (ADR-0055's single source), not an implicit engine
-    // default: today it is `{}` (gated tools deny-all; `run_command` disabled via empty allowedCommands — a
-    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`
-    // "empty/absent ⇒ run_command disabled"). Extended with the `[chat].allowed_commands` `!`-shell allowlist
+    // default: today it is `{}` (gated tools deny-all; nothing pre-approved via an empty allowedCommands — a
+    // standalone chat has no workflow allowedCommands to inherit, the secure default per config-spec.md `[chat]`:
+    // where no one can answer a card `run_command` is disabled, and in an interactive chat a command asks). Extended with the `[chat].allowed_commands` `!`-shell allowlist
     // (ADR-0061) — see `chatToolPolicy` above. A 2.5.E/ADR-0057 per-mode allowlist flows through automatically.
     toolPolicy: chatToolPolicy,
     ...(opts.askUser === undefined ? {} : { askUser: opts.askUser }),
@@ -869,7 +881,29 @@ function buildSessionRuntime(
     // transient egress error) by feeding it back to the model so it can adapt / explain, instead of ending the
     // turn with a bare `tool_failed` (ADR-0057 UX). A WORKFLOW node keeps the default (fail-fast) — this opt-in
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
-    limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+    // The chat limits are configurable within published bounds (ADR-0136): `[chat]` and the operator's `[preferences]`,
+    // resolved with a repository able only to lower them. `max_tool_turns` is the HARD STOP where nobody can answer; where a
+    // person can (`opts.checkpoint`, wired by the interactive surfaces only) the turn pauses every `checkpoint_tool_turns`
+    // rounds and asks to continue, under the engine's absolute backstop.
+    // A one-shot `agent run` is unattended and not a chat session: it keeps the engine's own bounds (16 and 3) and reads
+    // none of these keys, so an operator's raised `[preferences]` limit never reaches a CI job.
+    limits:
+      opts.oneShot === true
+        ? { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true }
+        : {
+            ...DEFAULT_AGENT_TURN_LIMITS,
+            maxToolTurns: opts.chat.maxToolTurns ?? CHAT_LIMITS.max_tool_turns.default,
+            maxToolCorrections:
+              opts.chat.maxToolCorrections ?? CHAT_LIMITS.max_tool_corrections.default,
+            recoverToolFailures: true,
+            ...(opts.checkpoint === undefined
+              ? {}
+              : {
+                  onToolRoundLimit: opts.checkpoint,
+                  checkpointToolTurns:
+                    opts.chat.checkpointToolTurns ?? CHAT_LIMITS.checkpoint_tool_turns.default,
+                }),
+          },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
     // Context compaction (ADR-0062): auto_compact / compact_threshold govern measured automatic compaction, and
     // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the
@@ -1361,6 +1395,7 @@ export interface BuildResumedChatSessionOptions extends Pick<
   BuildChatSessionOptions,
   | 'startingMode'
   | 'askUser'
+  | 'checkpoint'
   | 'afterTurnCompaction'
   | 'onCompactionStart'
   | 'operatorHomeDir'

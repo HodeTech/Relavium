@@ -72,13 +72,16 @@ interface ToolDef<Args = unknown, Result = unknown> {
 
   /**
    * Where this tool's guardrail target lives in the effective args, so the registry enforces the
-   * allowlist generically: a `spawnsProcess` tool returns the resolved `command` string the
-   * `allowedCommands` allowlist matches; an `http` egress tool returns the `url`. Omitted ⇒ no target
+   * allowlist generically: a `spawnsProcess` tool returns the resolved command — its `argv` (compared
+   * element by element with each exact `allowedCommands` entry) and the space-joined `command` string (read by
+   * `allowedCommandGlobs`); an `http` egress tool returns the `url`. Omitted ⇒ no target
    * (the generic allowlist check is skipped — e.g. a pre-approved `git_status` or an `os`/delegate tool).
    * SECURITY: a `spawnsProcess` / `egress:'http'` tool that omits this has its allowlist check silently
-   * skipped (fail-open) — supply it, or pin the model-controlled args as config-only.
+   * skipped (fail-open) — supply it, or pin the model-controlled args as config-only. A target that supplies a
+   * `command` but no `argv` fails CLOSED: the registry treats `command` as one program name, so a multi-token
+   * entry can never match it.
    */
-  readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; url?: string; path?: string }
+  readonly policyTarget?: (args: Args) => PolicyTarget; // { command?: string; argv?: readonly string[]; url?: string; path?: string }
 
   /**
    * Pure dispatcher: validated+merged effective args in, the FULL result out. Performs side effects
@@ -143,7 +146,7 @@ interface ToolHost {
 
 interface ProcessCapability {
   /**
-   * Spawn an already-allowlist-checked command with **`shell: false`**. The HOST resolves the executable
+   * Spawn an already-authorized command (the allowlist admitted it, or in an interactive chat the person approved it) with **`shell: false`**. The HOST resolves the executable
    * (platform PATH lookup — `npm`/`git` are unresolvable without it) and supplies the platform-minimal
    * base environment, then merges ONLY the engine-declared extra vars under an audited allowlist —
    * **never** the full ambient `process.env`. The engine cannot build a platform base env (it is
@@ -265,8 +268,8 @@ host is touched once, in the middle.
 1. **Resolve by exact id, then check the grant.** Look up `toolCall.name` by **exact match** — unknown / misspelled → `UnknownToolError` listing the available ids (**never** fuzzy / nearest-name, [ADR-0029](../../decisions/0029-tool-policy-hardening.md)). Then verify the id is in `ctx.grantedToolIds` (the node's narrowed grant, 0029(b)); a registered-but-not-granted tool (e.g. a hallucinated / injected `tool_call`) → `ToolPolicyError`. The registry holding a `ToolDef` is **not** authorization to dispatch it.
 2. **Assemble the effective argument set.** Start from the model-supplied args (for an agent tool-call) and/or `ctx.config.input_mapping` (for a `tool` node, where there are no model args), apply `input_mapping`, then merge `configOnlyParams` **last (config wins)**.
 3. **Validate the COMPLETE effective set** via `tool.parseArgs` **and** the secret-taint check — `input_mapping`/config-derived values are validated identically to model args; a secret-tainted value reaching a non-credential arg is rejected (0029(c)). A miss → `ToolArgsInvalidError`.
-4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` (+ opt-in `allowedCommandGlobs`, deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**.
-4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, an `os` action (`read_clipboard` / `notify` — the clipboard is an un-jailed exfiltration sink), or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret); just before invoking that hook, the **engine's `confirmDispatch`** emits `agent:approval_requested` (via `ctx.approval.emitApprovalRequested`) for **every** governed dispatch reaching this gate — whether the host then prompts a human (`ask` on every governed call; `accept-edits` for everything except a workspace file edit) or decides without one (`plan` refuses with a fixed text that returns to the model; `auto` approves). A protected path never reaches this gate: it is refused while the write is prepared, in every mode. **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (never retried; in an agent session the refusal is returned to the model as the call's result and the turn continues — [ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), the section "Refusals that return to the model" below); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
+4. **Enforce the guardrail policy on the EFFECTIVE args** (the resolved command / URL is now the real value): exact `allowedCommands` — each entry a command line split by the shared quote-aware tokenizer and compared to `PolicyTarget.argv` **element by element** ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3: `cat a b` admits `["cat","a","b"]`, never `["cat","a b"]`) — (+ opt-in `allowedCommandGlobs`, matched against the space-joined `PolicyTarget.command`; deny-all-empty); per egress kind (table below); `git_commit` refused unless `ctx.gateApproved`. A denial → `ToolPolicyError` → **before any host call**. **One exception, by design** ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1): when `ctx.approval` is present and the call is classified a `process` action, an allowlist **miss does not throw** — it reaches step 4b as a request carrying `commandAdmitted: false`, and the host's hook decides (a regime with no hook still fails closed there). Without an approval regime (a workflow) a miss throws as above; a plain, `--json` or one-shot surface has a regime whose hook refuses every governed call.
+4b. **Per-tool approval — the interactive consent gate ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3).** Runs only when `ctx.approval` is present (the **interactive-approval regime** — the chat path; absent ⇒ the workflow author-trust path, unchanged) and the dispatch is a **governed class**: `fsWrite`, an `egress` of any kind, an `os` action (`read_clipboard` / `notify` — the clipboard is an un-jailed exfiltration sink), or a `spawnsProcess` with a model-controlled `command` target (so the pre-approved `git_status`, which exposes no command, is **not** gated — matching step 4). The engine consults the host-injected `ctx.approval.confirm` hook with a **secret-free preview** (resolved path / command / host — never a full URL/query, never a secret); just before invoking that hook, the **engine's `confirmDispatch`** emits `agent:approval_requested` (via `ctx.approval.emitApprovalRequested`) for **every** governed dispatch reaching this gate — whether the host then prompts a human (`ask` on every governed call; `accept-edits` for everything except a workspace file edit) or decides without one (`plan` refuses with a fixed text that returns to the model; `auto` approves, except a command nothing pre-approved, which it asks about). A protected path never reaches this gate: it is refused while the write is prepared, in every mode. **Fail-closed:** under an active regime a governed dispatch *requires* a decision — an **absent `confirm` hook ⇒ denied** (`ToolDeniedByUserError`, reason `no_approval_hook`), never silently allowed, so a wiring bug cannot let `ask` mode write. A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`) carrying the existing **`tool_denied`** code (never retried; in an agent session the refusal is returned to the model as the call's result and the turn continues — [ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), the section "Refusals that return to the model" below); an abort while prompting routes to the **cancellation** path (cancel precedence). The host's `confirm` owns the mode policy (ask / plan / accept-edits / auto), the once/always cache, and the protected-paths rule — the engine stays mode-agnostic. This composes *after* step 4 and, when an `ActionGuard` ([action-guard-seam.md](action-guard-seam.md)) is also injected, *alongside* it (the org governor's `decide`/`commit` and the user's `confirm` each only further restrict).
 5. **Call the host capability** (the single side effect), threading `ctx.signal`. Absent capability → `ToolUnavailableError`; an `AbortSignal`-origin failure → the **cancellation** path (`cancelled`, never `tool_failed` — preserves ADR-0036 cancel precedence); any other host throw → `ToolExecutionError`. A host capability MAY itself throw a typed `ToolDispatchError` subclass for a **deterministic host-side denial** (e.g. the CLI `fs` arm throwing a `tool_denied` when a path escapes the FS scope tier, or `ToolUnavailableError` for a read-only fail-close) — the registry passes any `ToolDispatchError` through **verbatim**, exactly as it does an engine-side `ToolPolicyError`, so such a denial is fatal (never burns the node-retry budget); only a *raw* host throw becomes the retryable `ToolExecutionError`.
 5b. **Split off a media attachment**, if the dispatch returned one (`CR-50`,
    [ADR-0089](../../decisions/0089-media-correctness-four-boundaries.md) §1). A tool that answers with media
@@ -295,7 +298,7 @@ claim is discarded, with a failed discard conservatively retaining the unresolve
 check does not guard settlement of an effect that already started. Session hosts use it to enforce their
 live durability latch independently of journal tier or cached effect identity.
 
-> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget), with **one Step-14 exception**: a `recoverable` SCOPE denial (`media_scope_denied` / the fs pure scope-tier escape — refused before any side effect) IS fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`) so the model can adapt to an in-bounds path (see the `recoverable` note under the error taxonomy). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
+> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget), with **one Step-14 exception**: a `recoverable` SCOPE denial (`media_scope_denied` / the fs pure scope-tier escape — refused before any side effect) IS fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`) so the model can adapt to an in-bounds path (see the `recoverable` note under the error taxonomy). A `ToolDeniedByUserError` whose reason is `user_rejected` is **also fed back** on those surfaces ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), implemented in MVP-3b): the person's rejection, a mode refusal and the headless *unavailable* refusal each return as one fixed-text `isError` result and draw on the correction budget, and an identical repeat the person already declined in the turn is refused without asking again. The two wiring faults (`no_approval_hook`, `approval_error`), a revoked starting-`auto` authority and a workflow run (which never sets `recoverToolFailures`) stay fatal. See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
 interface ToolDispatchContext {
@@ -381,12 +384,22 @@ interface ToolApprovalRequest {
    * sets it.
    */
   readonly unredactedPreview?: ToolActionPreview;
+  /**
+   * The command as an argv — the program and its literal arguments, spawned without a shell — for a `process` request, else
+   * absent (ADR-0118 §1). The host's session cache and remembered grants are keyed by this, element by element: `["cat","a b"]`
+   * and `["cat","a","b"]` are different commands, which is why the preview quotes the line (`cat 'a b'` and `cat a b`) and the
+   * card shows one row per element. Frozen, UNSCRUBBED and in-process only, like `unredactedPreview`: never on
+   * `agent:approval_requested`.
+   */
+  readonly argv?: readonly string[];
+  /** Whether the allowlist admitted this call. Present only for a `process` request; a miss under a regime arrives as `false`. */
+  readonly commandAdmitted?: boolean;
 }
 
 /** Secret-free (ENFORCED, not asserted), display-only — never a full URL/query, never a secret. */
 interface ToolActionPreview {
   readonly path?: string;    // fs_write — the resolved target path, scrubbed WHOLE-STRING
-  readonly command?: string; // process — the resolved command string, scrubbed whole
+  readonly command?: string; // process — the command as ONE quoted line (`quoteCommandLine(argv)`), scrubbed whole
   readonly host?: string;    // egress — the target host ONLY
 }
 
@@ -427,9 +440,16 @@ ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-pl
   `agent:approval_requested` event, so it never crosses the event / IPC / `--json` boundary.
 - **A `command` preview can be shaped to blind the approver.** The command is fully model-controlled and the
   detector's patterns are public, so an injected model can match one deliberately and be displayed as
-  `[redacted]` — which reads as "we protected you" rather than "you cannot see this". Bounded by
-  `allowedCommands`/`allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real;
-  surfacing "this was redacted" to the prompt is an open follow-up.
+  `[redacted]` — which reads as "we protected you" rather than "you cannot see this". Bounded, where no one can answer, by
+  `allowedCommands`/`allowedCommandGlobs` being deny-all by default; in an interactive chat a command outside them reaches the
+  card ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1), so there the bound is the
+  card itself — the command card shows the whole command as one quoted line and every argument on its own row, and every masked
+  span must be revealed before an approving answer counts — and the fs/egress floors, but real; surfacing "this was redacted" to the prompt
+  is an open follow-up.
+
+`scrubbedCommandDisplay(argv)` (exported from `@relavium/core`, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2) is the same scrub for an argv a host holds **without** a tool call: it returns the line the command card's title shows for that command (quoted, element-wise scrubbed, with the joined line as the oracle). The CLI's `/permissions` sheet uses it for the session approvals; it adds no behaviour, only the one function exported instead of copied.
+
+`secretShapedRanges(text)` (also exported from `@relavium/core`) says **where** that scrub's secret projection masks a text, as sorted, non-overlapping ranges of the *original* text (UTF-16 offsets): for a surface that shows the text itself and has to hide the same spans, which it cannot read back from the replacement text. The ranges are the projection's first pass and are exact only when that pass is the whole projection; a text whose split header labels the pass joins first, or one that needs a second pass, is one range over the whole text (over-masking is the safe direction). The command card uses it so that what the event preview hides, the card hides ([command-permissions.md](../cli/command-permissions.md), "The command card"). A `!` command's raw line never reaches the provider either: the `<command … cmd="…">` frame that carries its output names `scrubbedCommandDisplay`'s line, while the process is spawned with the typed argv.
 
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
 fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the
@@ -447,7 +467,7 @@ The canonical guardrail home is [security-review.md §Sandbox-and-tool-policy](.
 | Guardrail | Engine-pure check (the policy) | Host mechanism |
 |-----------|-------------------------------|----------------|
 | Node `tools:` grant | `id ∈ ctx.grantedToolIds` (exact); registered ≠ granted | — |
-| `run_command` allowlist | resolved command matched **exactly** vs `allowedCommands`; opt-in glob via `allowedCommandGlobs`; **empty/absent ⇒ deny-all** | `process.spawn`, `shell:false`, FS scope tier + CPU/mem/time budget |
+| `run_command` allowlist | resolved argv compared **element by element** with each `allowedCommands` entry (a tokenized command line); opt-in glob via `allowedCommandGlobs` over the joined string; **empty/absent ⇒ deny-all** in a workflow (no approval regime); under a regime a miss is a request to the host's hook (ADR-0118 §1) | `process.spawn`, `shell:false`, FS scope tier + CPU/mem/time budget |
 | Subprocess environment | engine supplies the **declared** vars + the policy | host resolves the executable + the platform-minimal base env, merges only allowlisted declared vars — **never** ambient `process.env` |
 | `http_request` (egress `http`) | **HTTPS-only**, **exact-FQDN** `allowedDomains`, **empty/absent ⇒ deny-all**; an `input_mapping`-derived URL runs the same check (0029(d)) | `egress.fetch` runs the shared SSRF primitive + connect-pinning (1.AE) |
 | `web_search` (egress `search`) | untrusted-data-validated **query** (transits a query, **not** an FQDN allowlist — [security-review.md §Prompt-injection](../../standards/security-review.md#prompt-injection-posture)) | `egress.fetch` to the configured provider; key via host-resolved `credentialRef` |
@@ -544,7 +564,7 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 |-------|------|-----------------|-------|
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
 | `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** — EXCEPT `media_scope_denied` is `recoverable` (a Step-14 SCOPE denial; see the note below) |
-| `ToolDeniedByUserError` | an interactive **per-tool approval** denial ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3) — `user_rejected` (rejected by the user / mode policy), `no_approval_hook` (fail-closed: a governed dispatch under an active regime with no confirm hook wired), `approval_error` (fail-closed: the hook threw a non-abort error, so consent could not be obtained) | `tool_denied` | **fatal** (never retried; not loop-correctable — re-asking re-prompts/re-denies, like `ToolPolicyError`) |
+| `ToolDeniedByUserError` | an interactive **per-tool approval** denial ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3) — `user_rejected` (rejected by the user / mode policy), `no_approval_hook` (fail-closed: a governed dispatch under an active regime with no confirm hook wired), `approval_error` (fail-closed: the hook threw a non-abort error, so consent could not be obtained) | `tool_denied` | **returns to the model** for `user_rejected` on a `recoverToolFailures` surface ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), one fixed text per class, drawing on the correction budget); **fatal** for `no_approval_hook`, `approval_error`, a revoked starting-`auto` authority and every workflow run |
 | `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint, or a tiered call's journal projection does not settle or projects two member names alike | `validation` | fatal (loop-correctable first) |
 | `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `tool_unavailable` | **fatal** (names the tool + the unwired arm actionably — never a bare `internal`; EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |
@@ -561,13 +581,12 @@ while everything else ends the turn. Two disjoint sources set it:
   effect), stamped at the wrap from `governedAction`; a governed / side-effecting failure stays `false` (fail-fast,
   so the model never re-attempts a non-idempotent side effect — a half-run command, a POST that may have landed).
 - A **SCOPE denial** (Step 14) — a `tool_denied` refused BEFORE any side effect, so it is safe to feed back and the
-  model can adapt to an in-bounds path (the floor still denies every attempt). Exactly two carry it: the engine's
+  model can adapt to an in-bounds path (the floor still denies every attempt). Exactly three refusals decided before any side effect carry it (two scope denials and the lexical protected-path arm): the engine's
   `ToolPolicyError('media_scope_denied')`, and the CLI `fs` arm's **pure scope-tier escape** (`FsScopeDeniedError`
   `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
   is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
-  the payload write). Every OTHER `tool_denied` stays fatal (`false`): a `ToolDeniedByUserError` (user reject /
-  fail-closed), the other `ToolPolicyError` guardrail reasons, an egress **SSRF** denial, and the fs
-  **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding those back would re-deny,
+  the payload write), and the CLI `fs` arm's **lexical protected-path arm** (`FsScopeDeniedError` with the fixed `PROTECTED_PATH_REFUSAL`, decided from the path text alone before any resolution — see [built-in-tools.md](built-in-tools.md#refusals-that-return-to-the-model)). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included: where an approval regime is present a miss is no error but a request to the host's hook, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1, and in a workflow, which has none, it is a fatal `command_not_allowed`), an egress **SSRF** denial, and the fs
+  **confidentiality** (secret-store read) / post-resolution protected-path / symlink refusals — feeding those back would re-deny,
   risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
   `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path
   and the same round-bounded feedback already existed for an idempotent not-found read.)

@@ -71,7 +71,7 @@ existing non-retryable `cancelled` failure without provider/key/effect work; pur
 already occurred. Human-gate message/assignee resolution also rechecks after its final await, so
 cancellation there cannot become a newly published pause.
 
-The core streams one turn (emitting `agent:token` per text delta, accumulating text / tool-call / reasoning parts), and on a `tool_use` stop appends the assistant turn (**including its reasoning `ContentPart`** for the same-provider replay, [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)), dispatches each tool call, appends the results, and continues — bounded by a **runner-default max-tool-turns cap** (a DoS guard; the authored hard cap + the loud `turn_limit` surfacing is the 1.V session knob).
+The core streams one turn (emitting `agent:token` per text delta, accumulating text / tool-call / reasoning parts), and on a `tool_use` stop appends the assistant turn (**including its reasoning `ContentPart`** for the same-provider replay, [ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)), dispatches each tool call, appends the results, and continues — bounded by a **tool-round limit** (`AgentTurnLimits.maxToolTurns`, default 16; a DoS guard; the authored hard cap + the loud `turn_limit` surfacing is the 1.V session knob). The limit counts rounds *dispatched* and is checked when the model asks for another round, **before it runs**: the held round does not execute, so a turn makes at most `maxToolTurns + 1` provider calls and dispatches at most `maxToolTurns` rounds. A host that can ask a person wires the optional `AgentTurnLimits.onToolRoundLimit` hook, and the limit becomes a **checkpoint** (default every `checkpointToolTurns` rounds) under an absolute backstop of 256 rounds ([ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md); the contract is in [agent-session-spec.md](../contracts/agent-session-spec.md#within-turn-limits-and-the-checkpoint)). A workflow agent node wires no hook, so its limit stays a hard stop.
 
 The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards/error-handling.md)) — **cancel wins** over all others:
 
@@ -84,7 +84,7 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 | absent host capability (`ToolUnavailableError`) | `tool_unavailable` | false | a host/config gap — names the unwired arm actionably, never a bare `internal` (EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | official `LlmError.context_overflow` | `context_overflow` | no | fixed engine-authored message names the actual attempted model and its authoritative window (or `size unknown`), and whether tools ran; never provider text |
 | chain-exhausted `LlmError` | `provider_auth` / `provider_rate_limit` / `provider_unavailable` / `content_filter` (content_filter, 1.AG/ADR-0045 §6) / `validation` (bad_request) / `internal` (unknown) | per `LlmError.retryable` | classified from `error.kind`, never `error.message` |
-| max-tool-turns hit | `turn_limit` | false | |
+| tool-round limit hit with the next round held (hard stop), or a checkpoint answered "stop" | `turn_limit` | false | the held round does not run |
 
 ## Events
 
@@ -177,7 +177,7 @@ their overflow mapping also uses fixed facts and preserves custom-endpoint autho
 
 [ADR-0097](../../decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md) sizes the
 frozen amount as **calls × eligible chain attempts × largest current E**. Advertised tools give
-`maxToolTurns + 1` calls; no lowered tools or inline media gives one. Generative media has one
+`maxToolTurns + 1` calls (a conservative upper bound per pause: with a checkpoint a turn can run further, and the pre-egress check stays armed for every call); no lowered tools or inline media gives one. Generative media has one
 primary call/attempt and zero text tokens. Node retry does not multiply A; cooldown remains in
 the eligible plan. Capability/streaming skips and unknown pricing are structured exclusions.
 Non-strict partial media pricing retains its priced part; strict gaps are excluded/refused.

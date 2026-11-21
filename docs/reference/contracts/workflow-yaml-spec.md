@@ -394,8 +394,9 @@ Workflow-wide tool guardrails live under a top-level `tools:` block. This is the
 workflow:
   # …
   tools:
-    allowedCommands:            # EXACT-match allowlist for `run_command` (the whole resolved command)
+    allowedCommands:            # EXACT-match allowlist for `run_command` (each entry a command line, compared with the argv element by element)
       - 'npm test'              # matched exactly — 'npm test --coverage' would NOT match
+      - 'echo "a b"'            # quotes group: this admits the argv ["echo", "a b"], not ["echo", "a", "b"]
       - 'npm run lint'
       - 'git diff'
     allowedCommandGlobs:        # optional, opt-in pattern matching (riskier — use sparingly)
@@ -406,8 +407,8 @@ workflow:
 
 | Field | Required | Notes |
 | --- | --- | --- |
-| `tools.allowedCommands` | required to use `run_command` | **Exact-match** allowlist of permitted shell commands — the full resolved command must equal an entry (`'git'` does **not** permit `git push`). **Empty or absent ⇒ `run_command` is disabled.** Engine-enforced ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)). |
-| `tools.allowedCommandGlobs` | no | Opt-in glob patterns for `run_command` (e.g. `'npm run *'`). Riskier than exact match; off by default. |
+| `tools.allowedCommands` | required to use `run_command` | **Exact-match** allowlist of permitted shell commands — each entry is a command line split into tokens (whitespace separates; single and double quotes group; no escapes, no expansion — [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3) and the call's argv must equal those tokens **element by element** (`'git'` does **not** permit `git push`, and `'cat a b'` permits `["cat","a","b"]` but not `["cat","a b"]`). An entry with an open quote, with no token, or with an empty program token (`''`) fails validation. **Empty or absent ⇒ `run_command` is disabled.** Engine-enforced ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)). |
+| `tools.allowedCommandGlobs` | no | Opt-in glob patterns for `run_command` (e.g. `'npm run *'`), matched against the space-joined argv — so a glob cannot tell one argument containing a space from two. Riskier than exact match; off by default. |
 | `tools.allowedDomains` | required to use `http_request` | Exact-FQDN allowlist for `http_request`. **HTTPS only**, and private/loopback/link-local/metadata ranges are blocked (the same SSRF guard as a provider base URL and MCP server URLs — [security-review.md](../../standards/security-review.md), [ADR-0029](../../decisions/0029-tool-policy-hardening.md)). **Empty or absent ⇒ `http_request` is disabled** (deny-all, symmetric with `allowedCommands`). |
 
 The command allowlist is **independent of the filesystem scope tier** (a workflow can be FS-sandboxed *and* still carry an empty command allowlist). The FS tier itself is set in project config (`fs_scope`), not here — see [config-spec.md](config-spec.md) and [built-in-tools.md](../shared-core/built-in-tools.md#filesystem-permission-tiers).

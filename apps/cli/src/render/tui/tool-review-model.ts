@@ -3,7 +3,9 @@ import {
   denialReasonDisclosure,
   sanitizeApprovalReason,
 } from './chat-projection.js';
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { ChatKey } from './chat-input.js';
+import { isInterruptKey } from './interrupt-keymap.js';
 import {
   CARD_KEY_ROWS,
   CARD_MAX_BODY_ROWS,
@@ -77,13 +79,14 @@ export const APPROVAL_TYPEAHEAD_MS = 1500;
  */
 export const APPROVAL_LOCKOUT_MS = 2000;
 /**
- * The session-wide grant (`Ctrl+G`) is a TWO-step answer, and the second step is a DIFFERENT key: the first `Ctrl+G` asks, and only
- * ENTER — no other key between, and pressed at least {@link APPROVAL_CONFIRM_MIN_MS} and at most
- * {@link APPROVAL_CONFIRM_MAX_MS} after the `Ctrl+G` — grants. A second `Ctrl+G` can never be the confirmation: the same key twice
- * is what a held key and its auto-repeat produce, whatever the gap between them (PR #99 security sitting H1, when the grant was
- * still a bare `a`, measured a gap-based second `a` granting at 350 ms per key, and a held `a` granting at its first
- * auto-repeat for initial delays of 375 ms to 1 s; the chord keeps that rule, and typing can no longer produce the first press). Any key between — including another `Ctrl+G` — cancels the question, and so does
- * an Enter that comes sooner than the minimum: an Enter that quick follows the letter as typing does, not as the reading of a
+ * The two wider grants are TWO-step answers, and the second step is a DIFFERENT key: the first `Ctrl+G` (this tool or command for the
+ * session) or `Ctrl+O` (this exact command for the project, ADR-0118 §1) asks, and only ENTER — no other key between, and pressed
+ * at least {@link APPROVAL_CONFIRM_MIN_MS} and at most {@link APPROVAL_CONFIRM_MAX_MS} after the chord — grants. A second press of
+ * the same chord can never be the confirmation: the same key twice is what a held key and its auto-repeat produce, whatever the
+ * gap between them (PR #99 security sitting H1, when the grant was still a bare `a`, measured a gap-based second `a` granting at
+ * 350 ms per key, and a held `a` granting at its first auto-repeat for initial delays of 375 ms to 1 s; the chord keeps that rule,
+ * and typing can no longer produce the first press). Any key between — including the other chord — cancels the question, and so
+ * does an Enter that comes sooner than the minimum: an Enter that quick follows the letter as typing does, not as the reading of a
  * prompt that has just changed.
  */
 export const APPROVAL_CONFIRM_MIN_MS = 800;
@@ -101,7 +104,7 @@ export interface ApprovalGuard {
   readonly typeaheadMs?: number;
   /** {@link APPROVAL_LOCKOUT_MS}. */
   readonly lockoutMs?: number;
-  /** Whether `Ctrl+G` needs the Enter confirmation (default true). `false` makes the first press grant, as before. */
+  /** Whether `Ctrl+G` and `Ctrl+O` need the Enter confirmation (default true). `false` makes the first press grant, as before. */
   readonly confirmAlways?: boolean;
 }
 export const DEFAULT_APPROVAL_GUARD: Required<ApprovalGuard> = Object.freeze({
@@ -127,7 +130,7 @@ export function resolveApprovalGuard(guard: ApprovalGuard | undefined): Required
 export type ApprovalRefusal = 'lockout' | 'typeahead' | 'quiet' | 'dwell';
 
 /**
- * Why an affirmative key (`Ctrl+Y`, `Ctrl+G`) does NOT count as the person's DELIBERATE answer, or `undefined` when it does. Every layer
+ * Why an affirmative key (`Ctrl+Y`, `Ctrl+G`, `Ctrl+O`) does NOT count as the person's DELIBERATE answer, or `undefined` when it does. Every layer
  * must pass (`0` switches one off):
  *  - dwell: the review's frame has been on screen for `settleMs` (a review whose frame was never acknowledged has not been
  *    on screen at all);
@@ -179,13 +182,17 @@ export interface ToolReviewState {
   readonly selected: number;
   readonly denial: string | undefined;
   readonly message: string;
+  /** A command's standing, directory, warnings and the answers its card offers (ADR-0118 §1); absent for any other call. */
+  readonly facts?: CommandCardFacts;
 }
 export function initialToolReview(
   kind: 'approval' | 'details',
   callId?: string,
   document?: ReviewDocument,
+  facts?: CommandCardFacts,
 ): ToolReviewState {
   return {
+    ...(facts === undefined ? {} : { facts }),
     kind,
     screen: initialReviewScreen(kind, document),
     callId,
@@ -317,7 +324,7 @@ export function acknowledgeToolReview(state: ToolReviewState, page: ReviewPage):
 }
 export type ReviewKeyAction =
   | { readonly kind: 'state'; readonly state: ToolReviewState }
-  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
+  | { readonly kind: 'approve'; readonly scope: 'once' | 'always' | 'remember' }
   | { readonly kind: 'deny'; readonly reason?: string }
   | { readonly kind: 'abort' | 'copy' | 'close' | 'select' | 'none' };
 
@@ -333,10 +340,11 @@ export type ReviewKeyAction =
  *  - `Ctrl+Y` — allow this call once;
  *  - `Ctrl+G` — ask for the session-wide grant (a TWO-step answer: ENTER, never another chord, confirms — see
  *    {@link APPROVAL_CONFIRM_MIN_MS});
+ *  - `Ctrl+O` — a command card only: ask to remember this exact command for this project (a TWO-step answer, like `Ctrl+G`);
  *  - `Ctrl+N` — deny;
  *  - `Ctrl+R` — deny with a reason (opens the reason box on the card).
  */
-export type ReviewAnswer = 'allow' | 'always' | 'deny' | 'reason';
+export type ReviewAnswer = 'allow' | 'always' | 'remember' | 'deny' | 'reason';
 export function reviewAnswerKey(input: string, key: ChatKey): ReviewAnswer | undefined {
   if (key.ctrl !== true || key.meta === true) return undefined;
   switch (input) {
@@ -344,6 +352,8 @@ export function reviewAnswerKey(input: string, key: ChatKey): ReviewAnswer | und
       return 'allow';
     case 'g':
       return 'always';
+    case 'o':
+      return 'remember';
     case 'n':
       return 'deny';
     case 'r':
@@ -362,9 +372,23 @@ export function reduceToolReviewKey(
   page: ReviewPage | undefined,
   cacheable: boolean,
   callCount: number,
+  rememberOffered = false,
 ): ReviewKeyAction {
-  if (key.escape || (key.ctrl && !key.meta && input === 'c'))
-    return { kind: state.kind === 'approval' ? 'abort' : 'close' };
+  // `Ctrl+C` stops, everywhere (ADR-0115 §1): it rejects the approval and stops the turn, or closes a details view. `Esc` steps
+  // back ONE level (ADR-0115 §3, ADR-0137 §4): inside the reason box or the search box of an approval it closes the box and
+  // returns to where it opened, the typed text discarded, the call still pending; on the full view (or a call list) it returns to
+  // the card, the call still pending and nothing answered; only on the card with no box open does it reject the call and stop the
+  // turn. Stepping back grants nothing, so it needs no acknowledged frame: a person who cannot read the full view (a terminal too
+  // small, an unreadable identity) must still be able to leave it without stopping the turn, as `Ctrl+N` denies without a frame.
+  if (isInterruptKey(input, key)) return { kind: state.kind === 'approval' ? 'abort' : 'close' };
+  if (key.escape) {
+    if (state.kind !== 'approval') return { kind: 'close' };
+    if (state.denial !== undefined) return reviewChange(state, { denial: undefined, message: '' });
+    if (state.searching)
+      return reviewChange(state, { searching: false, query: undefined, message: '' });
+    if (state.screen !== 'card') return backToTheCard(state);
+    return { kind: 'abort' };
+  }
   if (key.ctrl || key.meta) {
     // A chord answers only an approval card, and never where a text field owns the keyboard: inside the reason box or the
     // search box (or the call list) a chord is not an answer, whatever the letter.
@@ -375,11 +399,18 @@ export function reduceToolReviewKey(
     // review (an unreadable identity, a terminal too small) must still be able to refuse it without stopping the
     // turn. Every answer that GRANTS something stays behind the visible frame.
     if (answer === 'deny') return { kind: 'deny' };
-    return visible ? reduceApprovalAnswer(state, answer, page, cacheable) : { kind: 'none' };
+    return visible
+      ? reduceApprovalAnswer(state, answer, page, cacheable, rememberOffered)
+      : { kind: 'none' };
   }
   const modal = reduceModalReviewKey(state, input, key, visible, callCount);
   if (modal !== undefined) return modal;
-  if (input === 'v' && state.screen === 'card')
+  // A command the review cannot hold has nothing to open: its full view would be the same refusal on a blank screen.
+  if (
+    input === 'v' &&
+    state.screen === 'card' &&
+    !(state.facts !== undefined && state.document?.valid === false)
+  )
     return reviewChange(state, {
       screen: 'full',
       // The full view opens where the card does — on the first change — unless the target the card shortened must be read
@@ -431,7 +462,10 @@ export function isAffirmativeReviewKey(
     state.screen !== 'list' &&
     state.denial === undefined &&
     !state.searching &&
-    (answer === 'allow' || answer === 'always')
+    // `Ctrl+O` belongs to a command card only: on any other card it stays the foreign key it always was.
+    (answer === 'allow' ||
+      answer === 'always' ||
+      (answer === 'remember' && state.facts !== undefined))
   );
 }
 
@@ -539,7 +573,9 @@ export function toolReviewPage(
     const cardChrome =
       CARD_RULE_ROWS +
       Math.max(1, target?.rows.length ?? 0) +
-      1 +
+      // The tool-identity row: a command card has none (its title already says `Run`, and its warnings say what is not shown),
+      // which is the row it needs for its facts.
+      (state.facts === undefined ? 1 : 0) +
       cardWarnings({
         document,
         shortenedTarget,
@@ -548,9 +584,13 @@ export function toolReviewPage(
         changesNotShown,
         linesNotShown,
         columns: Math.max(1, columns - 2),
+        commandFacts: state.facts,
+        denialOpen: state.denial !== undefined,
       }).length +
       (state.denial === undefined ? CARD_KEY_ROWS : cardDenialExtraRows(denialRows) + 1) +
-      (state.message === '' ? 0 : 1);
+      // A command card keeps the note's row free from its first frame: a refusal note must not take a row from the command and with
+      // it the answers that are offered only while every row is on screen.
+      (state.message === '' && state.facts === undefined ? 0 : 1);
     return Math.min(CARD_MAX_BODY_ROWS, cardRowBudget(rows) - cardChrome);
   };
   const fullRows = fullBodyRows(
@@ -655,6 +695,17 @@ function nearerLanding(
   return compareCursors(off, jumped) < 0 === forward ? off : jumped;
 }
 
+/** Leave the full view (or a list) of an approval for its card: the call stays pending and nothing is answered. `[b]` and `Esc` both. */
+function backToTheCard(state: ToolReviewState): ReviewKeyAction {
+  return reviewChange(state, {
+    screen: 'card',
+    reveal: false,
+    numeric: false,
+    message: '',
+    cursor: REVIEW_START,
+  });
+}
+
 function reduceFullReviewKey(
   state: ToolReviewState,
   input: string,
@@ -671,13 +722,7 @@ function reduceFullReviewKey(
   if (input === 'c') return { kind: 'copy' };
   if (input === 'b')
     return state.kind === 'approval'
-      ? reviewChange(state, {
-          screen: 'card',
-          reveal: false,
-          numeric: false,
-          message: '',
-          cursor: REVIEW_START,
-        })
+      ? backToTheCard(state)
       : reviewChange(state, {
           screen: 'list',
           reveal: false,
@@ -770,6 +815,7 @@ function reduceApprovalAnswer(
   answer: ReviewAnswer,
   page: ReviewPage | undefined,
   cacheable: boolean,
+  rememberOffered: boolean,
 ): ReviewKeyAction {
   if (answer === 'reason') {
     return state.screen === 'card' ? reviewChange(state, { denial: '' }) : { kind: 'none' };
@@ -778,9 +824,10 @@ function reduceApprovalAnswer(
   if (
     reviewInspected(state, page?.requiredTarget) &&
     page?.valid !== false &&
-    (answer === 'allow' || reviewOffersAlways(state, page, cacheable))
+    (answer === 'allow' ||
+      reviewOffersAlways(state, page, answer === 'remember' ? rememberOffered : cacheable))
   )
-    return { kind: 'approve', scope: answer === 'always' ? 'always' : 'once' };
+    return { kind: 'approve', scope: answer === 'allow' ? 'once' : answer };
   return { kind: 'none' };
 }
 

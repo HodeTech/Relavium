@@ -247,7 +247,7 @@ admitted); uses any space but the ordinary one; builds one character (grapheme) 
 has leading or trailing whitespace; or begins with a marker a list could draw (`1.`, `2)`, `[x]`, `[ ]`, `( )`, a bullet). The
 host's own drawing is refused **anywhere** in the string, not only at its start — the cursor `›`, the own-answer glyph `✎`, the
 field cursor `█`, the box-drawing range `─`–`╿` (including the gutter `│`), the tick shapes `(•)`, `( )`, `[x]`, `[ ]`, and the
-approval card's key tokens `[Ctrl+Y]`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]` and `[v]` (and the single-letter tokens `[y]`, `[a]`, `[n]`, `[c]` the card drew before its answers became chords) — because a question is hard-wrapped and a forged row can start at any
+key tokens a card draws: `[v]`, any `[Ctrl+<letter>]` in any case (`[Ctrl+Y]`, `[Ctrl+G]`, `[Ctrl+N]`, `[Ctrl+R]`, `[Ctrl+O]`, `[Ctrl+S]`, `[Ctrl+C]`, `[ctrl+g]`, … — so a chord a later card adds needs no list change) and `[Esc]` (and the single-letter tokens `[y]`, `[a]`, `[n]`, `[c]` the card drew before its answers became chords) — because a question is hard-wrapped and a forged row can start at any
 byte. A **label** must also be unique within its question after NFC, trimming, whitespace collapse and a locale-independent
 lower-casing (`toLowerCase`; no `ß`/`ς` folding), must not fold to `other`, must not contain `type your own`, and must not begin
 with `✎`. Look-alike letters (a Cyrillic `а`) are not detected — [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md)
@@ -268,7 +268,10 @@ refused inside model text, so the renderer owns column 0 of every wrapped line; 
 narrower, which the bounds already allow (a code point is never wider in columns than in bytes, and 150 bytes fit two 76-column
 rows). In `accept-edits` and `auto`, where no card follows a write, the stop row also reads `· an answer is guidance, not a veto`.
 The **Review** tab lists every question with its answer exactly as it will be sent (`● 2 Also → one, “my text”`, `○ 3 Last → not answered yet`) and a
-line saying what `Enter` does; it is shorter than a question tab, so it always fits. Host text (hints, the own-answer note) is **not** behind the gutter —
+line saying what `Enter` does, within the same nine-row body bound as a question tab. An answer is shown **whole**: it wraps under its own row, indented (column 0
+stays the host's, so answer text cannot pose as a row), and the rows left after the title and the note are shared — a short answer takes one, a long one takes what is left. Where even
+that cannot hold an answer, its last row ends with how many characters it leaves out (`… 123 more characters not shown`), so the tab never shows less than `Enter` will send without saying so.
+Host text (hints, the own-answer note) is **not** behind the gutter —
 the gutter always means "the agent wrote this".
 
 **Delegate** (`SessionDeps.askUser`, copied into the dispatch context): `(request, signal) => Promise<AskUserAnswer>`.
@@ -292,17 +295,17 @@ satisfies this by requiring an answer on every question's own acknowledged frame
 | Answered | `{ "status": "answered", "answers": [{ "header", "selected": [<labels>], "other"? }] }` — one entry per question in order; `selected` is empty when only text of the person's own was given; `other` is present only when given, one line, secret-shaped runs masked |
 | Skipped (`Ctrl+S`) | `{ "status": "skipped", "message": "The user chose to skip this question. Continue with your best judgment, or ask in your reply. Do not ask again this turn." }` |
 | After a skip, same turn | `{ "status": "not_asked", "reason": "skipped_earlier", "message": "The user already skipped a question in this turn, so no question was shown. Continue with your best judgment, or ask in your reply." }` |
-| Stopped (`Esc`, `Ctrl-C`) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
+| Stopped (`Esc`, `Ctrl+C`; `Esc` first closes an open own-answer field) | no result: the call is recorded `cancelled` and the turn ends ([ADR-0119](../../decisions/0119-an-interrupted-turn-stays-as-a-content-free-marker.md)) |
 | No delegate | the typed `tool_unavailable` (a throw, not a result; the tool is not offered in that case) |
 
 A skip closes questions for the rest of the turn. That is enforced inside the tool from per-turn state (`skipped`) on the dispatch
 context the session builds once per turn, so every surface behaves alike. There is **no count of cards per turn**: a turn is already
-bounded by the engine (16 tool rounds, 16 calls per response), a call carries up to four questions, and the person holds an instant,
+bounded by the engine (a limit on tool rounds that becomes a checkpoint a person can continue past, [ADR-0136](../../decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md), under an absolute backstop of 256 rounds; 16 calls per response), a call carries up to four questions, and the person holds an instant,
 turn-wide circuit breaker — `Ctrl+S` ends every further question this turn. A fixed ceiling would only stop a task that genuinely needs more
 answers. These are successful results, so by [ADR-0131](../../decisions/0131-a-round-that-made-progress-resets-the-correction-budget.md)
 §1 each one **resets** the correction budget.
-A session-ending cancel (`/cancel`, `Ctrl-C` outside a card, the process signals) and a crash roll the turn back
-(ADR-0119); only `Esc`/`Ctrl-C` **at the card** abort the turn and retain it.
+A session-ending cancel (`/cancel`, a second `Ctrl+C` inside the arming window, the process signals) and a crash roll the turn back
+(ADR-0119); only `Esc`/`Ctrl+C` **at the card** abort the turn and retain it.
 
 **Keys** (the card is routed before the composer and before `Shift+Tab`, and ignores choosing keys until its exact frame
 has been acknowledged visible — the approval card's measured-frame acknowledgement, keyed on a **frame the store mints** when the card
@@ -319,7 +322,8 @@ auto-repeating key cannot answer a question the person has not had time to read;
 | `Enter` | single-select: choose the highlighted option and move on; multi-select: **confirm** the question (needs a tick or text; otherwise a hint) and move on; on the `✎` row: open the field — except in a multi-select question whose text is already saved, where it confirms | non-empty: **save** the text. Single-select: it is the answer, move on. Multi-select: it is **saved and counts, but the question stays open** (a note says so) — the person may keep picking, and the next `Enter` confirms. Empty: back to the list and **clear** any saved text and draft | all answered: **send**. Otherwise: go to the first unanswered question with a note — a hole is never sent |
 | `Backspace` | on the `✎` row with saved text: reopen the field to edit it | deletes | — |
 | `Ctrl+S` | **skip the whole call**; answers given so far are discarded | skip | skip |
-| `Esc`, `Ctrl-C` | **stop the turn** | **stop the turn** | **stop the turn** |
+| `Esc` | **stop the turn** | **close the field** (the typed text discarded, the call still pending); a second `Esc` stops the turn | **stop the turn** |
+| `Ctrl+C` | **stop the turn** (and arm the interrupt keymap) | **stop the turn** | **stop the turn** |
 
 No bare letter is a command, so typing — including an `s` — never skips. A one-question call sends from the question itself (there is no
 Review tab); a call with several questions sends only from Review, so every answer can be seen and changed first.
@@ -391,7 +395,7 @@ changes no permission; and know that the question and the answer are kept with t
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
 | `edit_file` | Replace exact text in a previously observed unchanged UTF-8 file. | `{ path, bytesWritten }` | Scoped read evidence, exact matching, bounded diff approval and durable effect admission; binary or stale sources refuse. |
 | `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }`; `type` is `file`, `directory` or `symlink` (a link is reported from its own directory entry; its target is never resolved or followed) | Respects FS scope. |
-| `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** — see below. Never runs unlisted commands. |
+| `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** in a workflow — see below; a headless chat surface refuses every governed call, and in an interactive chat a command outside it needs a person's approval ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1). |
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
 | `web_search` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |
 | `git_status` | Run `git status` / `git log` / `git diff` in the workspace (read-only). | the raw `git` process result | The model picks only the subcommand; any extra flags are **author-pinned via config**, not model-supplied (a model-controlled `--no-index`/`-p --all` would read arbitrary files / dump history). |
@@ -415,7 +419,7 @@ changes no permission; and know that the question and the answer are kept with t
 > yet, and the engine never offers them to the model, so a grant of either is inert rather than failing. `ask_user` is the third
 > delegate-backed tool: wired only by the interactive chat surfaces, so a grant of it on a workflow node is inert in the same way.
 
-> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
+> **Mandatory guardrails (security tightenings — [ADR-0029](../../decisions/0029-tool-policy-hardening.md)):** `run_command` only executes commands that **exactly match** (element by element, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §3) the workflow's `allowedCommands` allowlist (opt-in glob via `allowedCommandGlobs`; defined under `spec.tools.allowedCommands` — see [workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#tool-policy-spectools); empty or absent ⇒ disabled). `http_request` is **HTTPS-only**, matches `allowedDomains` by **exact FQDN** (empty/absent ⇒ disabled), and **blocks private/loopback/link-local/metadata IP ranges** — the same vetted SSRF primitive applied to provider base URLs and MCP server URLs ([security-review.md](../../standards/security-review.md)). `git_commit` retains its registry gate floor and is refused by current production agent producers, as the table records. All are enforced by the engine, not by convention. `run_command` is the **only** allowlisted shell-exec built-in — there is no separate `run_javascript` tool (sandboxed JS evaluation is the engine's job for `condition`/`transform` expressions, not a callable tool).
 
 > **Return shapes.** The *Returns* column is the **logical** shape. Until a provider-specific normalizer lands, `http_request` / `web_search` / `mcp_call` / `git_status` dispatch the **raw host response** (`EgressResponse` / the MCP tool result / the `git` `ProcessResult`); a downstream `transform` node shapes it. The file tools (`read_file` / `write_file` / `list_directory`) and `run_command` already return the documented shape.
 
@@ -474,8 +478,9 @@ a one-shot `agent run`) and never in a workflow node. There is **one fixed text 
 class, identical for every target state**; the only variable parts are the user's own
 typed words and the mode's fixed label, both bounded to 300 code points with
 control characters, bidirectional overrides and line separators flattened to a
-space. The code owns the strings in `packages/core/src/engine/denial-text.ts`; this
-table is their canonical description, so the two must change together.
+space. The code owns the strings in `packages/core/src/engine/denial-text.ts` (and, for the
+protected-path row, `apps/cli/src/engine/tool-host/fs.ts`); this table is their canonical
+description, so the two must change together.
 
 | Class | Model-facing text |
 |---|---|
@@ -483,6 +488,7 @@ table is their canonical description, so the two must change together.
 | `mode` | This action is not available in the current mode *(+ ` (<mode label>)`, e.g. `plan mode is read-only`)*. Nothing was run or changed. Describe what you would do, so the user can switch modes or do it themselves. |
 | `unavailable` | No one is available to approve this action in this session, so it was not run. Nothing was changed. Continue without it, or describe what you would have done. |
 | repeat | The user already declined an identical call in this turn, so it was not run again. Nothing was run or changed. Propose something different, or ask the user what they prefer. |
+| protected path *(a write the host refuses from the path text alone)* | `write_file: this path is protected and cannot be written; choose a different path`. A fixed string (`PROTECTED_PATH_REFUSAL` in `apps/cli/src/engine/tool-host/fs.ts`) that names neither the protected list nor the target, so it is the same whether or not the target exists. |
 
 A repeat is the same tool name with the same canonical arguments within one turn.
 Each returned refusal counts toward the correction budget, which counts
@@ -490,6 +496,18 @@ Each returned refusal counts toward the correction budget, which counts
 success resets it (ADR-0131 §1). A refusal after an effect was admitted, a
 saved-result delivery, a revoked starting-`auto` authority and the wiring faults stay
 fatal.
+
+**Which protected-path refusals return.** Only the **lexical arm**: a write whose
+path *text* names a protected directory (`.git`, `.relavium`, `.ssh`, the host's own
+staging directory, and git's XDG user-global `.config/git/`, which is matched as a run of consecutive segments so a bare `git` elsewhere stays writable) or a shell startup or config file. It is decided before any
+filesystem resolution (the host's scratch subtree is not even inspected), so its outcome cannot depend on the target's
+state ([ADR-0117](../../decisions/0117-a-denied-tool-call-returns-to-the-model.md), 2026-11-19 implementation note;
+ADR-0117's own test). A refusal by the **credential-store arm** (`.env`, `.npmrc`,
+`.aws`, `.docker/config.json`, credential dotfiles), and one that only resolution
+reveals (a link into a protected directory), stay **fatal**: saying so would tell the
+model which paths hold credentials or which names are links. (`.ssh`, `.relavium` and
+`.gitconfig` are members of both predicates; the lexical check runs first, so a write to them
+returns.)
 
 ## Tool result bounding
 
@@ -744,7 +762,7 @@ including literal and wildcard globs before separator normalization. On Windows 
 equivalent forward-slash and mixed-separator UNC prefixes also refuse; this does not
 change POSIX double-slash absolute-path semantics. A full tier does not bypass this floor.
 
-The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/`, `legacy_credentials/`, `.gnupg/`, `.password-store/`, and the nested stores `Library/Keychains/`, `.local/share/keyrings/`, `.config/gnupg/` and `.config/op/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; the GitHub CLI token file `gh/hosts.yml` (`GitHub CLI/hosts.yml` on Windows); repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
+The read floor refuses `.ssh/`, `.relavium/`, `.aws/`, `.env/`, `.kube/`, `.azure/`, `.terraform.d/`, `gcloud/`, `legacy_credentials/`, `.gnupg/`, `.password-store/`, and the nested stores `Library/Keychains/`, `.local/share/keyrings/`, `.config/gnupg/` and `.config/op/`; dotenv files `.env`/`.env.*`; `.docker/config.json`; the GitHub CLI token file `gh/hosts.yml` (`GitHub CLI/hosts.yml` on Windows); repository `.git/config` / `.git/config.worktree` (including linked worktrees and bare `*.git` repositories) and git's XDG `credentials`; and credential basenames `.gitconfig`, `.git-credentials`, `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.envrc`, `.dockercfg`, `application_default_credentials.json`, `credentials.tfrc.json`, `.terraformrc` and `terraform.rc`. The write floor inherits the entire sensitive-read credential set above and additionally refuses whole `.git/` directories, git's XDG user-global configuration directory `.config/git/` (git reads its `config` exactly as it reads `~/.gitconfig`, `core.fsmonitor` and `[alias] x = !cmd` included, and `git_status` runs without a card; PR #101) and shell-startup files; `.relavium/` and `.ssh/` are already included in that inherited set. Components are folded for Windows case, trailing dot/space and alternate-stream aliases. The shared [declared-env predicate](../../../packages/shared/src/declared-env.ts) refuses credential/config redirects for subprocesses; it is not a filesystem grant.
 
 Chat uses the full-capability `chat-read-write` host with writes/egress/os gated by the per-tool approval floor: default `ask` shows a card for every governed action and `plan` refuses them ([ADR-0130](../../decisions/0130-chat-modes-ask-prompts-plan-reads-accept-edits-accepts.md)). Credential/protected-path refusals remain mode-independent. `read_file` still fails closed on binary/media until its durable-handle host path is wired. Existing tool-fs bounded fd reads and hard-link controls remain, including the scoped [pnpm virtual-store read residual](../../roadmap/deferred-tasks.md). That exemption does not apply to CAS.
 

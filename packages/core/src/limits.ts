@@ -28,7 +28,14 @@
  * file rather than of any single field, so half of them have no schema expression at all (§7).
  */
 
-import type { Agent, Workflow, WorkflowNode } from '@relavium/shared';
+import {
+  CHAT_LIMITS,
+  isChatLimitInBounds,
+  type Agent,
+  type ChatLimitKey,
+  type Workflow,
+  type WorkflowNode,
+} from '@relavium/shared';
 
 import type { GraphIssue } from './errors.js';
 import { nodeReferenceSites } from './interpolation/collect.js';
@@ -130,6 +137,56 @@ export const ADMISSION_CEILINGS = {
    */
   retainedSettledRuns: 100,
 } as const;
+
+/**
+ * The most tool rounds ONE turn may dispatch, whatever any answer, config or host says
+ * ([ADR-0136](../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §3).
+ *
+ * A checkpoint lets a person keep a productive turn going; this constant is the number that keeps "finite" true even
+ * if they never stop answering "continue". When 256 rounds have been dispatched and the model asks for the 257th the turn
+ * ends with `turn_limit` at once, even where a person could answer. One turn therefore makes at most
+ * `ABSOLUTE_TOOL_ROUNDS + 1` provider calls and dispatches at most `ABSOLUTE_TOOL_ROUNDS × toolCallsPerResponse` tool
+ * calls (4,096). Not configurable on purpose; `CHAT_LIMITS.checkpoint_tool_turns.max` and
+ * `CHAT_LIMITS.max_tool_turns.max` equal it, which a test pins.
+ */
+export const ABSOLUTE_TOOL_ROUNDS = 256;
+
+/**
+ * The host-supplied turn limits a session admits ([ADR-0136](../../../docs/decisions/0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) §1):
+ * each inside its published bound in `CHAT_LIMITS`, or a rejection that names the field, the value and the bound.
+ * Issues are appended, never thrown, like {@link collectAgentCeilingIssues}, so a host sees every fault at once.
+ */
+export function collectTurnLimitIssues(
+  limits: {
+    readonly maxToolTurns: number;
+    readonly maxToolCorrections: number;
+    readonly checkpointToolTurns?: number | undefined;
+  },
+  maxTurns: number | undefined,
+  issues: GraphIssue[],
+): void {
+  const check = (
+    field: string,
+    value: number | undefined,
+    key: ChatLimitKey,
+    required = false,
+  ): void => {
+    // An optional field may be absent; a REQUIRED one (`maxToolTurns`, `maxToolCorrections`) may not, or the loop would run on
+    // a limit it does not have. `undefined` fails the bounds check below, which is what makes it an issue.
+    if (value === undefined && !required) return;
+    if (value !== undefined && isChatLimitInBounds(key, value)) return;
+    const { min, max } = CHAT_LIMITS[key];
+    issues.push({
+      field,
+      message: `\`${field}\` is ${String(value)}, outside the allowed ${String(min)} to ${String(max)}; a session does not clamp a limit, it refuses it`,
+      kind: 'ceiling_exceeded',
+    });
+  };
+  check('maxToolTurns', limits.maxToolTurns, 'max_tool_turns', true);
+  check('maxToolCorrections', limits.maxToolCorrections, 'max_tool_corrections', true);
+  check('checkpointToolTurns', limits.checkpointToolTurns, 'checkpoint_tool_turns');
+  check('maxTurns', maxTurns, 'max_turns');
+}
 
 /**
  * What an omitted `max_parallel` means (ADR-0086 §3).

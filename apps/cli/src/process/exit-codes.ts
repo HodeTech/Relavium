@@ -14,7 +14,7 @@ export const EXIT_CODES = {
   /** Run paused at a human gate (CI / non-interactive mode) — resume with `relavium gate`. */
   gatePaused: 3,
   /**
-   * A chat session ended by the user — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream
+   * A chat session ended by the user — via `/exit`, `/cancel` (or a second Ctrl+C inside the arming window in TTY mode), or an input-stream
    * EOF — from a `relavium chat` (2.M) or `relavium chat-resume` (2.N) REPL (both drive the same loop).
    */
   chatEnded: 4,

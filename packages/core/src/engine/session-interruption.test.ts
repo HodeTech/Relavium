@@ -378,9 +378,44 @@ describe('which turns are retained (ADR-0119 §1)', () => {
     const [terminal] = terminals(events);
     expect(terminal).toMatchObject({ error: { code: 'turn_limit' } });
     expect(terminal?.interruption).toEqual({ reason: 'turn_limit' });
-    expect(terminal?.toolHistory?.length).toBeGreaterThan(0);
+    // Exactly the one round that ran: the second round the model asked for was HELD at the limit, so it is in no receipt and
+    // no later turn is told it happened (before ADR-0136 it ran and appeared here as a second entry).
+    expect(terminal?.toolHistory).toHaveLength(1);
     await session.sendMessage('after the loop');
     expect(textOf(requests.at(-1)?.messages[0])).toContain('it reached a limit on tool use');
+  });
+
+  it('threads a host checkpoint hook through the session: continue runs the held round, stop retains the turn as turn_limit (ADR-0136)', async () => {
+    const asked: { rounds: number; interval: number }[] = [];
+    const { session, events } = rig(
+      [
+        callsTurn([{ id: 'a', name: 'read_file' }]),
+        callsTurn([{ id: 'b', name: 'read_file' }]),
+        callsTurn([{ id: 'c', name: 'read_file' }]),
+        textTurn('after'),
+      ],
+      {
+        limits: {
+          maxToolTurns: 16,
+          checkpointToolTurns: 1,
+          onToolRoundLimit: (info) => {
+            asked.push(info);
+            return Promise.resolve(asked.length === 1 ? 'continue' : 'stop');
+          },
+        },
+      },
+    );
+    session.start();
+    await session.sendMessage('loop');
+    // Asked after round 1 (continue: round 2 runs) and after round 2 (stop: round 3 is held).
+    expect(asked).toEqual([
+      { rounds: 1, interval: 1 },
+      { rounds: 2, interval: 1 },
+    ]);
+    const [terminal] = terminals(events);
+    expect(terminal).toMatchObject({ error: { code: 'turn_limit' } });
+    expect(terminal?.interruption).toEqual({ reason: 'turn_limit' });
+    expect(terminal?.toolHistory).toHaveLength(2);
   });
 
   it('keeps today’s rollback for the exits ADR-0119 §1 excludes', async () => {

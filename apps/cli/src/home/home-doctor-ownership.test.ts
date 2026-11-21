@@ -160,6 +160,7 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
         'report',
       );
       controller.handleKey('c', { ctrl: true });
+      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(settled, 'DOCTOR_RAW_REPORT_MUST_JOIN_ORIGINAL_HOME').toBe(false);
       expect(closes).toBe(0);
@@ -176,15 +177,18 @@ it.each(cases)('actual Home doctor retains original publication and work: %s', a
       );
       remove();
       controller.handleKey('c', { ctrl: true });
+      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     } else if (mode === 'known-refusal') {
       await vi.waitFor(() => expect(controller.getSnapshot().notice).toContain('check(s) failed'));
       expect(controller.getSnapshot().notice).toContain('invalid shape');
       remove();
       controller.handleKey('c', { ctrl: true });
+      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     } else {
       await vi.waitFor(() => expect(hits).toBe(1));
       remove();
       controller.handleKey('c', { ctrl: true });
+      controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
     }
     const faulted = [
       'checking-fault',
