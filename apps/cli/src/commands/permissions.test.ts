@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  COMMAND_GRANTS_KEY_ACCOUNT,
   commandGrantsPath,
   createCommandGrantStore,
   type CommandGrantStore,
@@ -44,6 +45,8 @@ class FakeKeychain implements KeychainStore {
     this.entries.set(account, secret);
   }
   delete(account: string): boolean {
+    // A locked keychain refuses a delete as it refuses a read (the seam's contract: a backend failure throws), and the entry stays.
+    if (this.locked) throw new KeychainUnavailableError('locked');
     return this.entries.delete(account);
   }
 }
@@ -412,7 +415,7 @@ describe('relavium permissions revoke', () => {
     expect(existsSync(file())).toBe(false);
   });
 
-  it('--all forgets the digest key as well, and still works when the keychain is locked', async () => {
+  it('--all forgets the digest key as well; with a locked keychain it still works and the key stays', async () => {
     await storeFor(project).remember(['npm', 'test']);
     expect(keychain.entries.size).toBe(1);
     expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
@@ -421,9 +424,20 @@ describe('relavium permissions revoke', () => {
       'the key went with the file, so a restored copy would not verify',
     ).toBe(0);
     await storeFor(project).remember(['npm', 'test']);
+    const key = keychain.entries.get(COMMAND_GRANTS_KEY_ACCOUNT);
+    expect(key, 'a key exists to be kept').toBeDefined();
     keychain.locked = true;
-    expect(permissionsRevokeCommand({ all: true }, deps().deps)).toBe(EXIT_CODES.success);
-    expect(existsSync(file())).toBe(false);
+    const run = deps();
+    expect(permissionsRevokeCommand({ all: true }, run.deps)).toBe(EXIT_CODES.success);
+    expect(existsSync(file()), 'the file went').toBe(false);
+    expect(
+      keychain.entries.get(COMMAND_GRANTS_KEY_ACCOUNT),
+      'the locked keychain refused the delete: the key stays, as command-permissions.md says',
+    ).toBe(key);
+    expect(run.out(), 'and the command reports what it did, not the keychain failure').toMatch(
+      /^Removed every remembered command, for every project\./,
+    );
+    expect(run.err(), 'the failure of the key is ignored, not printed').toBe('');
   });
 
   it('--all says what it did, in both forms, including that there was nothing to remove', () => {

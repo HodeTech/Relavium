@@ -46,6 +46,8 @@ class FakeKeychain implements KeychainStore {
     this.entries.set(account, this.failure === 'truncates' ? secret.slice(0, 4) : secret);
   }
   delete(account: string): boolean {
+    // A locked keychain refuses a delete as it refuses a read (the seam's contract: a backend failure throws), and the entry stays.
+    if (this.failure === 'throws') throw new KeychainUnavailableError('locked');
     return this.entries.delete(account);
   }
 }
@@ -966,9 +968,31 @@ describe('revoke --all forgets the key, so a restored older copy stops validatin
 
   it('works with a locked keychain (the file goes; the key stays and the failure is ignored)', async () => {
     await store().remember(['npm', 'test']);
+    const key = keychain.entries.get(COMMAND_GRANTS_KEY_ACCOUNT);
+    expect(key, 'a key exists to be kept').toBeDefined();
     keychain.failure = 'throws';
     expect(removeCommandGrantsFile(home, keychain)).toEqual({ ok: true, removed: true });
     expect(existsSync(file())).toBe(false);
+    expect(
+      keychain.entries.get(COMMAND_GRANTS_KEY_ACCOUNT),
+      'the locked keychain refused the delete, so the key is exactly as it was',
+    ).toBe(key);
+  });
+
+  it('with a locked keychain and no file, there is nothing to remove, and the failure is ignored there too', () => {
+    useKey();
+    keychain.failure = 'throws';
+    expect(removeCommandGrantsFile(home, keychain)).toEqual({ ok: true, removed: false });
+    expect(keychain.entries.has(COMMAND_GRANTS_KEY_ACCOUNT)).toBe(true);
+  });
+
+  it('the store’s own revokeAll with a locked keychain removes the file and leaves the key', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    keychain.failure = 'throws';
+    expect(grants.revokeAll()).toEqual({ ok: true, removed: true });
+    expect(existsSync(file())).toBe(false);
+    expect(keychain.entries.has(COMMAND_GRANTS_KEY_ACCOUNT)).toBe(true);
   });
 
   it('keeps the key when the file could not be removed: the grants in it still verify', () => {
