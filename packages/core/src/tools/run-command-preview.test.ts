@@ -142,6 +142,24 @@ describe('the event preview of a command masks everything the joined projection 
     }
   });
 
+  it('a secret split over two arguments is masked wherever the joined line masks it, not only when the mask COUNT differs (PR #101 review)', async () => {
+    // Each argument alone is harmless (`api_key:` has no value, a bare quoted value has no key), and quoting breaks the context the
+    // detector reads, so the mask count of the quoted candidate equalled the joined line's while the secret itself stayed readable.
+    for (const args of [
+      ["token='abc", `${SECRET}'`],
+      ['api_key:', `'${SECRET}'`],
+      ['{"password":', `"${SECRET}"}`],
+    ] as const) {
+      const joined = redactSecretShapedText(['tool', ...args].join(' '));
+      expect(joined, `the joined line masks it: ${args.join(' ')}`).not.toContain(SECRET);
+      const { request } = await asked('tool', args);
+      expect(request.preview.command, args.join(' ')).toBe('tool [redacted]');
+    }
+    // Arguments that are not touched by a mask of the joined line keep their text.
+    const { request } = await asked('git', ['commit', '-m', 'fix the build']);
+    expect(request.preview.command).toBe("git commit -m 'fix the build'");
+  });
+
   it('a bare `--flag value` pair is read by neither scrubber today: the preview shows what the joined oracle shows', async () => {
     // Recorded, not promised: this shape used to sit in the test above, where its assertion was skipped because the oracle leaks it.
     // A detector that learns the shape should turn this into a masked case beside the two above.

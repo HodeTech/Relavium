@@ -29,6 +29,7 @@ import {
   projectSecretShapedValue,
   redactInlineMedia,
   redactSecretShapedText,
+  secretShapedRanges,
   redactSecretShapedValue,
 } from './bounding.js';
 import {
@@ -1102,10 +1103,31 @@ function scrubbedCommandLine(target: PolicyTarget, quoted: string): string {
   const scrubbedQuoted = redactSecretShapedText(quoted);
   const masks = (text: string): number => text.split(REDACTED).length - 1;
   const candidate = masks(scrubbedQuoted) > masks(elementwise) ? scrubbedQuoted : elementwise;
-  if (masks(redactSecretShapedText(argv.join(' '))) <= masks(candidate)) return candidate;
-  return argv.length > 1
-    ? quoteCommandLine([redactSecretShapedText(argv[0] ?? ''), REDACTED])
-    : candidate;
+  const fallback =
+    argv.length > 1
+      ? quoteCommandLine([redactSecretShapedText(argv[0] ?? ''), REDACTED])
+      : candidate;
+  if (masks(redactSecretShapedText(argv.join(' '))) > masks(candidate)) return fallback;
+  // Counting masks does not say WHICH text is masked: a secret split over two arguments (`api_key:` then `'S3cr3t'`) gives the joined
+  // line one mask and the candidate one, on a different argument. So the joined line's masks are also located, and an argument one of
+  // them touches that the element-by-element scrub left as it was (neither the label nor the bare value is a secret on its own)
+  // falls back too. Only ever adds a mask: the fallback is the same output the count comparison already chooses.
+  return joinedMasksLeaveAnArgument(argv) ? fallback : candidate;
+}
+
+/** Whether a mask of the joined line touches an argument that scrubbing that argument alone changes nothing in. */
+function joinedMasksLeaveAnArgument(argv: readonly string[]): boolean {
+  const joined = argv.join(' ');
+  const ranges = secretShapedRanges(joined);
+  if (ranges.length === 0) return false;
+  let start = 0;
+  for (const element of argv) {
+    const end = start + element.length;
+    const touched = ranges.some((range) => range.start < end && range.end > start);
+    if (touched && redactSecretShapedText(element) === element) return true;
+    start = end + 1; // the separating space
+  }
+  return false;
 }
 
 /**
