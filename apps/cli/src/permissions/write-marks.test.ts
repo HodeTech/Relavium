@@ -369,7 +369,9 @@ describe('a remembered grant against the writes recorded for its project (ADR-01
     );
     // ...and the entry that does not verify under KEY is still only ignored when read with KEY.
     const read = readWriteMarks(marksFile(), KEY);
-    expect(read.kind === 'ready' && latestWriteMark(read.marks, ROOT_B)).toBe(undefined);
+    expect(
+      read.kind === 'ready' ? latestWriteMark(read.marks, ROOT_B) : 'not readable',
+    ).toBeUndefined();
   });
 
   it('a chat that cached a key the keychain has since replaced signs its mark with the current key', async () => {

@@ -75,7 +75,7 @@ import {
 
 import { canonicalJson, RelaviumError, SessionToolHistoryEntrySchema } from '@relavium/shared';
 
-import { ADMISSION_CEILINGS } from '../limits.js';
+import { ABSOLUTE_TOOL_ROUNDS, ADMISSION_CEILINGS } from '../limits.js';
 import { ToolDeniedByUserError, ToolDispatchError } from '../tools/errors.js';
 import type {
   ToolCallPart,
@@ -96,7 +96,6 @@ import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import { denialResultText, REPEATED_DENIAL_TEXT } from './denial-text.js';
 import { sessionJsonBytes } from './session-json-bytes.js';
-import { ABSOLUTE_TOOL_ROUNDS } from '../limits.js';
 
 /**
  * What the checkpoint hook is told: the tool rounds dispatched so far and the rounds a "continue" will grant — the

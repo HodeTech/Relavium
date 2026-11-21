@@ -281,7 +281,7 @@ function hiddenNotice(hidden: number): string {
 function answerRows(lines: readonly string[], allowed: number, width: number): string[] {
   const indent = (line: string, at: number): string =>
     at === 0 ? line : `${REVIEW_INDENT}${line}`;
-  if (lines.length <= allowed) return lines.map(indent);
+  if (lines.length <= allowed) return lines.map((line, at) => indent(line, at));
   const shown = lines.slice(0, allowed);
   const last = shown.length - 1;
   const total = [...lines.join('')].length;

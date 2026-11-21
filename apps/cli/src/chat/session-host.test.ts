@@ -2395,9 +2395,9 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         const events = await built.recordedEvents;
         const completed = events.find((event) => event.type === 'session:turn_completed');
         // The turn CONTINUES: a lexically protected path is a refusal the model can answer, not a dead end.
-        expect(completed?.type === 'session:turn_completed' ? completed.error : 'no event').toBe(
-          undefined,
-        );
+        expect(
+          completed?.type === 'session:turn_completed' ? completed.error : 'no event',
+        ).toBeUndefined();
         // The model's next request carries one fixed refusal text as an error result, naming no list and no target
         // state — the same words whether or not `.git/config` exists.
         expect(requests).toHaveLength(2);

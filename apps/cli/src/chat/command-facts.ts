@@ -88,16 +88,24 @@ function givesInlineCode(rest: readonly string[]): boolean {
 /** `find` runs another command with these; the wrapped command is not parsed, `find` itself is flagged. */
 const FIND_EXEC_FLAGS: ReadonlySet<string> = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
+/** `text` without the run of trailing characters `drop` accepts. A loop, not `/[x]+$/u`, which backtracks quadratically on a long near-miss. */
+function stripTrailing(text: string, drop: (character: string) => boolean): string {
+  let end = text.length;
+  while (end > 0 && drop(text.charAt(end - 1))) end -= 1;
+  return text.slice(0, end);
+}
+
 /** The program's base name, compared case-folded and without a trailing `.exe` (`C:\Tools\Python.EXE` is `python`). */
 export function programName(program: string): string {
   // Windows ignores a trailing dot or space and an alternate data stream suffix (`cmd.exe.`, `cmd.exe `, `cmd.exe::$DATA`), so a
   // name written that way must not hide a shell from the table. A drive designator with no separator (`C:cmd.exe`, the drive's
   // current directory) is dropped first, or the stream rule would eat the program name itself.
-  const base = (program.split(/[\\/]/u).at(-1) ?? '')
-    .toLowerCase()
-    .replace(/^[a-z]:/u, '')
-    .replace(/:.*$/u, '')
-    .replace(/[. ]+$/u, '');
+  const named = (program.split(/[\\/]/u).at(-1) ?? '').toLowerCase().replace(/^[a-z]:/u, '');
+  // `/:.*/su` takes everything from the first colon on, a newline included (a name that holds one is no real file name).
+  const base = stripTrailing(
+    named.replace(/:.*/su, ''),
+    (character) => character === '.' || character === ' ',
+  );
   return base.endsWith('.exe') ? base.slice(0, -4) : base;
 }
 
@@ -109,7 +117,10 @@ export function codeCarrier(argv: readonly string[]): CodeCarrierKind | undefine
   const rest = argv.slice(1);
   if (SHELLS.has(name)) return 'shell';
   // `python3.12`, `node22`, `perl5.36`: the version is not part of the family.
-  const family = name.replace(/[0-9.]+$/u, '');
+  const family = stripTrailing(
+    name,
+    (character) => character === '.' || (character >= '0' && character <= '9'),
+  );
   if (name === 'deno' && rest[0] === 'eval') return 'inline-code';
   if ((INTERPRETERS.has(name) || INTERPRETERS.has(family)) && givesInlineCode(rest))
     return 'inline-code';

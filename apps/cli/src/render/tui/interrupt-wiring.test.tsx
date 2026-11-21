@@ -347,5 +347,6 @@ describe('the rows of the keymap the table drives through the standalone chat (A
     await press(m, CTRL_C);
     await until(() => m.frame().includes(HINT));
     await until(() => !m.frame().includes(HINT), INTERRUPT_ARM_WINDOW_MS + 1500); // the real hint timer takes it down
+    expect(m.frame()).not.toContain(HINT);
   }, 15_000); // a real two-second timer: the default 5 s budget would turn a loaded machine into a failure
 });

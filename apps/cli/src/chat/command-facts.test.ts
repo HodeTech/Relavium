@@ -300,6 +300,19 @@ describe('a Windows spelling of a program name does not hide a shell (round 1 se
     expect(codeCarrier(['build.sh'])).toBeUndefined();
     expect(programName('node_modules/.bin/tsc.')).toBe('tsc');
   });
+  // Sonar S8786: the three suffix rules were regexes that backtrack quadratically on a long near-miss (20,000 characters took
+  // 0.6 s, 200,000 about a minute). The name comes from a model-written argv, so it is hostile input to a security gate.
+  it('reads a very long near-miss name in linear time, and the answer is unchanged', () => {
+    const spaced = `x${'. '.repeat(100_000)}x`;
+    const colons = `ab${':'.repeat(100_000)}\nb`;
+    const digits = `${'1'.repeat(200_000)}x`;
+    const started = performance.now();
+    expect(programName(spaced)).toBe(spaced);
+    expect(programName(colons)).toBe('ab');
+    expect(codeCarrier([digits])).toBeUndefined();
+    expect(programName(`cmd.exe${' .'.repeat(100_000)}`)).toBe('cmd');
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
 });
 
 describe('what a command card offers by where the command stands (ADR-0118 §1, ADR-0138)', () => {

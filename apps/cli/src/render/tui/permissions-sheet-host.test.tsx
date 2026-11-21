@@ -355,6 +355,7 @@ describe('the permissions sheet in the standalone chat', () => {
     await afterSettle();
     view.stdin.write('d');
     await until(() => frame(view).includes('Any other key keeps it.'));
+    expect(frame(view)).toContain('Any other key keeps it.');
   });
 
   it('closes cleanly: after Esc the keyboard is the composer’s again (the ref is cleared, not only the state)', async () => {
@@ -428,6 +429,8 @@ describe('the permissions sheet in the standalone chat', () => {
     void store.requestApproval(request, false);
     await until(() => !frame(view).includes('Permissions ·'));
     await until(() => frame(view).includes('Esc stops the turn'));
+    expect(frame(view)).toContain('Esc stops the turn');
+    expect(frame(view)).not.toContain('Permissions ·');
   });
 
   it('survives a port that throws on a withdrawal: the sheet says nothing changed and stays usable', async () => {
@@ -448,6 +451,7 @@ describe('the permissions sheet in the standalone chat', () => {
     await until(() => frame(view).includes('Could not withdraw that row; nothing changed.'));
     view.stdin.write(ESC);
     await until(() => !frame(view).includes('Permissions ·'));
+    expect(frame(view)).not.toContain('Permissions ·');
   });
 
   it('closes, and says so, when the list cannot be read again after a withdrawal: it never stays armed on a stale list', async () => {

@@ -119,7 +119,7 @@ describe('every masked span of a command is a requirement (security sitting, MVP
     const preview = withSecret(['curl', '-H', `Authorization: Bearer ${SECRET}`]);
     const command = createReviewDocument(preview, { requireAllMasks: true });
     expect(command.masks.length).toBeGreaterThan(0);
-    expect(command.required.length).toBe(command.masks.length);
+    expect(command.required).toHaveLength(command.masks.length);
     const plain = createReviewDocument(preview);
     expect(plain.required.length, 'the file-card rule is unchanged').toBeLessThan(
       plain.masks.length,

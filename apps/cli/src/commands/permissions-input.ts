@@ -3,7 +3,7 @@ import type { CommandInput } from './input.js';
 import type { PermissionsRevokeArgs } from './permissions.js';
 
 /** The number `relavium permissions list` prints: a plain decimal from 1, short enough that it cannot be a pasted command. */
-const GRANT_NUMBER = /^[1-9][0-9]{0,5}$/u;
+const GRANT_NUMBER = /^[1-9]\d{0,5}$/u;
 
 /**
  * `permissions revoke <number>` or `permissions revoke --all` — exactly one of them. Validated before any file or keychain is

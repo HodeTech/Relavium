@@ -745,7 +745,7 @@ export class AgentSession {
     );
     if (turnLimitIssues.length > 0) throw new WorkflowGraphError(turnLimitIssues);
     const max = params.deps.maxTurns;
-    this.#maxTurns = max === undefined ? DEFAULT_SESSION_MAX_TURNS : max;
+    this.#maxTurns = max ?? DEFAULT_SESSION_MAX_TURNS;
     // A frozen COPY of what was admitted: the host's own object can be changed later, and that must not reach the loop unchecked.
     this.#limits = Object.freeze({ ...(params.deps.limits ?? DEFAULT_AGENT_TURN_LIMITS) });
   }
