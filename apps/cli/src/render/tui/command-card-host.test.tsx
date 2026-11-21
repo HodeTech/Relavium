@@ -637,12 +637,28 @@ describe.each(['chat', 'home'] as const)(
         expect(f.lastFrameWith('Allow once')).toBeUndefined();
         expect(f.lastFrameWith('A command is waiting')).toBeUndefined();
       }
-      // The control: a preview that holds something opens its card and answers nothing by itself.
-      const f = fast();
-      await f.ready();
-      const answers = open(f, ['echo', 'x']);
-      await vi.waitFor(() => expect(f.lastFrameWith('echo x')).toBeDefined(), { timeout: 5000 });
-      expect(answers).toEqual([]);
+      // The controls: a preview that holds something opens its card and answers nothing by itself, with a target, and with only a row
+      // (whitespace around it is not what makes it empty).
+      for (const { held, shows } of [
+        { held: { callId: 'call', preview: preview(['echo', 'x']) }, shows: 'echo x' },
+        {
+          held: {
+            callId: 'call',
+            preview: { kind: 'operation', fields: [{ name: '', value: 'visible-row' }] },
+          } satisfies { callId: string; preview: ToolPreview },
+          shows: 'visible-row',
+        },
+      ]) {
+        const f = fast();
+        await f.ready();
+        const answers: unknown[] = [];
+        void f.store
+          .requestApproval(request(['echo', 'x']), true, undefined, held, facts())
+          .then((answer) => answers.push(answer))
+          .catch(() => undefined);
+        await vi.waitFor(() => expect(f.lastFrameWith(shows)).toBeDefined(), { timeout: 5000 });
+        expect(answers).toEqual([]);
+      }
     });
 
     it('more than 63 arguments is a blocked card that says why: no approving answer counts, not even a chord with its Enter, and Deny still does', async () => {
