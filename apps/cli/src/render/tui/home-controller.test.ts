@@ -814,6 +814,46 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().attachments).toEqual([]);
   });
 
+  it('a `!` command that carries a credential runs with the typed argv, yet the message that reaches the model names the scrubbed line', async () => {
+    const token = 'sk-abcdefghijklmnop1234567890';
+    const shellCalls: { command: string; args: readonly string[] }[] = [];
+    const made = makeSession({
+      runShellCommand: (command, args) => {
+        shellCalls.push({ command, args });
+        return Promise.resolve({ kind: 'ran', exitCode: 0, stdout: 'ok', stderr: '' });
+      },
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    made.lines.length = 0;
+
+    type(c, `!curl -H "Authorization: Bearer ${token}" --password=S3cr3tValue9Zq`);
+    c.handleKey('', ENTER);
+    await flush();
+    // The process is spawned with exactly what was typed.
+    expect(shellCalls).toEqual([
+      {
+        command: 'curl',
+        args: ['-H', `Authorization: Bearer ${token}`, '--password=S3cr3tValue9Zq'],
+      },
+    ]);
+    type(c, 'what happened?');
+    c.handleKey('', ENTER);
+    await flush();
+    const sent = made.lines[0] ?? '';
+    expect(sent).toMatch(/^what happened\?\n\n<command id="[0-9a-f]{32}" cmd="curl /);
+    expect(sent).not.toContain(token);
+    expect(sent).not.toContain('S3cr3tValue9Zq');
+  });
+
   it('a `!` line with an open quote is refused, runs nothing, sends nothing and stays in the editor (ADR-0118 §3)', async () => {
     const shellCalls: { command: string; args: readonly string[] }[] = [];
     const made = makeSession({

@@ -1,3 +1,4 @@
+import { scrubbedCommandDisplay } from '@relavium/core';
 import { quoteCommandLine, tokenizeCommandLine } from '@relavium/shared';
 
 import type { ChatMode } from '../../chat/chat-mode.js';
@@ -57,8 +58,9 @@ export function parseShellLine(rest: string): ShellLineParse {
 
 /**
  * The command as ONE line a person could paste back (`quoteCommandLine`): an argument with a space or a quote is
- * quoted, so `cat "a b"` and `cat a b` read differently — for the allowlist-deny hint, the chip and the injection `cmd`
- * attr.
+ * quoted, so `cat "a b"` and `cat a b` read differently — for the allowlist-deny hint and the chip, which are shown only to the
+ * person who typed it. What is sent onward (the injection frame's `cmd` attribute) is the scrubbed line
+ * ({@link formatCommandInjection}).
  */
 export function commandLine(cmd: ShellCommand): string {
   return quoteCommandLine([cmd.command, ...cmd.args]);
@@ -95,5 +97,9 @@ export function formatCommandInjection(
   nonce: string,
 ): string {
   const body = stderr.length > 0 ? `${stdout}\n[stderr]\n${stderr}` : stdout;
-  return frameUntrusted('command', { cmd: commandLine(cmd), exit: String(exitCode) }, body, nonce);
+  // The frame goes to the provider and into the session's history, so its `cmd` is the line the approval card's event preview
+  // shows (`scrubbedCommandDisplay`), never the raw one: a `!curl -H "Authorization: Bearer …"` must not carry its credential
+  // to the model in an attribute (ADR-0118 §1). The process still ran the raw argv; this is only what is written about it.
+  const shown = scrubbedCommandDisplay([cmd.command, ...cmd.args]);
+  return frameUntrusted('command', { cmd: shown, exit: String(exitCode) }, body, nonce);
 }

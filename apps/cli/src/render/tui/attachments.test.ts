@@ -61,6 +61,33 @@ describe('@/! pending-attachment model (2.5.D chip redesign)', () => {
     expect(out2.message).toContain('<command');
   });
 
+  it('buildOutbound sends a carried command as the scrubbed line, and keeps the argv that was run', () => {
+    const token = 'sk-abcdefghijklmnop1234567890';
+    const carried = cmd('curl', [
+      '-H',
+      `Authorization: Bearer ${token}`,
+      'password=S3cr3tValue9Zq',
+    ]);
+    const out = buildOutbound('what happened?', [carried]);
+    // The message goes to the provider and is written to the history: neither carries the credentials of the typed line.
+    expect(out.message).toContain('<command');
+    expect(out.message).not.toContain(token);
+    expect(out.message).not.toContain('S3cr3tValue9Zq');
+    expect(out.message).toContain('OUT'); // the output is carried as before
+    // The attachment the caller clears, and the argv it holds, are the ones that were run.
+    expect(out.consumed).toEqual([carried]);
+    expect(carried).toMatchObject({
+      cmd: {
+        command: 'curl',
+        args: ['-H', `Authorization: Bearer ${token}`, 'password=S3cr3tValue9Zq'],
+      },
+    });
+    // A command with nothing to hide is framed exactly as it always was.
+    expect(buildOutbound('x', [cmd('git', ['status'])]).message).toMatch(
+      /^x\n\n<command id="[0-9a-f]{32}" cmd="git status" exit="0">\nOUT\n<\/command:[0-9a-f]{32}>$/,
+    );
+  });
+
   it('buildOutbound with no attachments returns the prose unchanged', () => {
     expect(buildOutbound('just a message', [])).toEqual({
       message: 'just a message',
