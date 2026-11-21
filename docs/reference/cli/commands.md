@@ -199,7 +199,7 @@ The interactive `/` palette + slash commands inside the **Home and chat** are a 
 Bare `/mode` is available in idle Home as startup-default settings; its exact
 current/default behavior belongs to [chat-session.md](chat-session.md#proposed-mvp-3-interaction-contract).
 The Home-tree palettes additionally expose `/providers`, `/init` and `/resume` in the
-landing and its live chat. They rehost shared cores; they never spawn a shell
+landing and its live chat, and the landing also offers `/permissions` (the project's remembered commands, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3). They rehost shared cores; they never spawn a shell
 subcommand. Standalone chat keeps its existing palette. See [Home](home.md).
 
 ### `relavium run`
@@ -679,9 +679,11 @@ file between the two. The chat's sheet withdraws by the grant's identity instead
 
 | Invocation | Behaviour | Exit |
 |---|---|---|
-| `relavium permissions`, stdout **and** stdin a TTY, no `--json`, not CI | Opens the sheet (the project's remembered commands only, `Permissions · this project`); `Esc` or `Ctrl+C` closes it and the run ends. If the list cannot be read the Home opens with the reason in its notice | `0` |
-| `relavium permissions`, stdout or stdin piped, or `--json`, or CI | The group's help and a missing-subcommand error, exactly as before | unchanged (usage error) |
-| `relavium permissions --help`, `relavium permissions <unknown>`, `list …`, `revoke …` | Unchanged | unchanged |
+| `relavium permissions` (optionally followed by one `--`), stdout **and** stdin a TTY, no `--json`, not CI | Opens the sheet (the project's remembered commands only, `Permissions · this project`); `Esc` or `Ctrl+C` closes it and the run ends. A store that cannot be read (no keychain, a corrupt or unreadable file) opens the sheet with its fixed sentence in place of the rows | `0` |
+| `relavium permissions`, stdout or stdin piped, or `--json`, or CI | The group's help **on stderr** (stdout empty); `--json` gives the structured `invalid_invocation` error on stderr instead, exactly as before | `2` |
+| `relavium permissions --help`, `permissions <unknown>`, `list …`, `revoke …`, and any form with more than one `--` or one before the word | Unchanged | unchanged |
+
+**It opens the whole Home**, not a smaller host (it reuses the terminal ownership, signals and restoration the Home already has), so it also opens the history database and runs the Home's start-up reconcile, which `list` and `revoke` never do, and it inherits the Home's own refusals: a working directory a chat cannot use as its workspace (a credential or secret-store directory such as `.relavium` itself), a configuration that cannot be loaded, an unusable history database. Those fail as the Home fails, with the Home's error and exit code; `relavium permissions list` from the same place still works. It does not start the first-run provider setup, which is not what the person came for. The Home's `/permissions` (typed after `/`, pasted, or reached from the palette) reads its own store afresh on every open, so a key replaced by another terminal's `revoke --all` is never listed as empty by a long-lived Home.
 
 The sheet is the one the chat opens (`/permissions`): [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet) owns its keys, rows and sentences. A withdrawal there is by the grant's identity, not by a number.
 

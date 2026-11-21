@@ -178,10 +178,12 @@ function isBareInvocation(rest: readonly string[]): boolean {
   return !rest.slice(2).some((token) => token !== '--');
 }
 
-/** The command group named alone: `relavium permissions`, with nothing after it but an optional `--`. */
+/** The command group named alone: `relavium permissions`, with nothing after it but at most one `--` (more of them were an error before). */
 function isBareGroup(rest: readonly string[], group: string): boolean {
-  const tokens = rest.slice(2).filter((token) => token !== '--');
-  return tokens.length === 1 && tokens[0] === group;
+  const tokens = rest.slice(2);
+  return (
+    tokens[0] === group && (tokens.length === 1 || (tokens.length === 2 && tokens[1] === '--'))
+  );
 }
 
 function stripErrorPrefix(message: string): string {

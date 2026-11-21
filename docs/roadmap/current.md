@@ -441,7 +441,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    leaves like the rest of the card's screens. **Step 5:** the sheet (a docked, keyboard-owning overlay; a permission is withdrawn by
    identity with `d`/`Delete` then `Enter`; the typed `--revoke` forms are removed), a small shared frame and legend builder, the scrub
    function exported from the core, the references. **Step 6 (implemented 2026-11-21; two review rounds and two security sittings done):** `Esc` returns from the full view to the card
-   (`Ctrl+C` stops; the legends, including the confirm question the ADR had not named; the Home needed no new routing; an approval never shows the call list). **Step 7:** the bare Home
+   (`Ctrl+C` stops; the legends, including the confirm question the ADR had not named; the Home needed no new routing; an approval never shows the call list). **Step 7 (implemented 2026-11-21; review rounds owed):** the bare Home
    `/permissions` and a bare `relavium permissions` on a TTY open the same sheet (project section only). Steps 5 and 6 carry the D64 tier.
 
 5. **MVP-5 — Context and parity (D71).** Anthropic prompt caching (2.5.5.B · #172); a project instructions file

@@ -415,8 +415,7 @@ const HOME_INIT_COMMAND = freezeReplCommand({
 const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
   name: 'permissions',
   label: 'Permissions',
-  description:
-    'Open the permissions sheet: the commands remembered for this project; d withdraws one.',
+  description: 'Remembered commands for this project; d withdraws one.',
   effect: 'read',
   availableIn: ['home'],
   run: () => undefined,

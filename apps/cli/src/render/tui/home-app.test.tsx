@@ -1321,6 +1321,43 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Enlarge the terminal'));
   });
 
+  it('PgDn reaches the sheet, not a long Home notice that landed after it opened (the notice window is paged by PgUp and PgDn)', async () => {
+    const many: PermissionsPort = {
+      ...homePort,
+      load: () => ({
+        project: {
+          ok: true,
+          rows: Array.from({ length: 12 }, (_, i) => ({
+            id: `g${String(i)}`,
+            label: 'npm, 1 argument',
+            remembered: '2026-11-19 12:00Z',
+          })),
+        },
+        session: undefined,
+      }),
+    };
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: many, size: { cols: 100, rows: 30 } });
+    await openFromPalette(m);
+    const long = Array.from({ length: 40 }, (_, i) => `notice line ${String(i)}`).join('\n');
+    m.c.setProviderState(false, long); // a late notice (a background setup result) arrives behind the open sheet
+    await untilTrue(() => m.c.getSnapshot().notice === long);
+    m.harness.stdin.write('\x1b[6~');
+    // the key went to the sheet: a page is six rows
+    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 6);
+  });
+
+  it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
+    await openFromPalette(m);
+    const open = m.harness.lastFrame() ?? '';
+    expect(open).not.toContain('/ for commands');
+    m.harness.stdin.write('\u001b');
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('/ for commands'));
+  });
+
   it('PgUp reaches the sheet, not the Home notice behind it', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort });

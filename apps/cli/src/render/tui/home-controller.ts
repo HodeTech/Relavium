@@ -531,7 +531,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
-          permissionsSheet: undefined, // and the `/permissions` sheet, chat-scoped the same way
+          permissionsSheet: undefined, // and the `/permissions` sheet: a chat's own is gone with the chat, and the Home's is closed on a return
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -1369,9 +1369,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (result.note !== undefined) {
       if (active !== undefined) active.store.note(result.note);
       else set({ notice: result.note });
-    } else if (result.sheet === undefined && permissionsIsTheCommand) {
-      // The person closed the sheet a command opened: there is nothing behind it to stay for.
-      exitHome();
+    }
+    if (result.sheet === undefined && permissionsIsTheCommand) {
+      // The sheet a command opened is gone: the run ends with it, unless it closed because of a fault, when the Home stays so that the
+      // note can be read. Either way the command is over: a sheet opened later is an ordinary one that returns to the Home.
+      permissionsIsTheCommand = false;
+      if (result.note === undefined) exitHome();
     }
     return true;
   };
@@ -1443,7 +1446,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
-    managePermissions: () => undefined, // `/permissions` is chat-only (ADR-0118 §2); the Home's full screen for grants is MVP-8's
+    managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
     openDetails: () => undefined,
     setMode: (argument) => {
       managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);

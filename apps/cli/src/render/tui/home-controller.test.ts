@@ -3630,6 +3630,30 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
     });
   });
 
+  it('a pasted or leading-space /permissions reaches the Home as a line, not a palette: it opens the sheet; with an argument or a longer word it does not', async () => {
+    const { port } = portOf();
+    const { c } = home(port);
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet?.surface).toBe('project');
+    c.handleKey('', { escape: true });
+    c.handlePaste('/permissionsx');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().permissionsSheet, 'a longer word is another command').toBeUndefined();
+    expect(c.getSnapshot().notice).toBe('Unknown command. Did you mean /permissions?');
+  });
+
+  it('with no port a pasted /permissions says so and starts no chat', async () => {
+    const { c, startChat } = home(undefined);
+    c.handlePaste('/permissions');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().notice).toBe('Remembered commands are not available here.');
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
   it('a pasted /permissions inside a chat opens the CHAT’s sheet (both lists), never the Home’s project-only one', async () => {
     const { port } = portOf();
     const chatPort: PermissionsPort = {
@@ -3775,7 +3799,7 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       expect(onExit).toHaveBeenCalledTimes(1);
     });
 
-    it('does not end the run when the sheet closed because the list could not be read again: the Home stays, and says why', () => {
+    it('does not end the run when the sheet closed because the list could not be read again: the Home stays, and says why', async () => {
       const { port } = portOf();
       let loads = 0;
       const t = clock();
@@ -3798,8 +3822,20 @@ describe('the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
       t.advance(SHEET_CONFIRM_DWELL_MS);
       c.handleKey('', ENTER);
       expect(c.getSnapshot().permissionsSheet).toBeUndefined();
-      expect(c.getSnapshot().notice).toMatch(/Could not read the permissions again\.$/u);
+      expect(c.getSnapshot().notice).toBe(
+        'Withdrawn. Auto mode asks about it again. Could not read the permissions again.',
+      );
       expect(onExit, 'the person must be able to read the note').not.toHaveBeenCalled();
+      // The command is over: a sheet opened later is an ordinary one, and closing it returns to the Home instead of ending the run.
+      loads = 0;
+      await openSheet(c);
+      expect(c.getSnapshot().permissionsSheet).toBeDefined();
+      c.handleKey('', { escape: true });
+      expect(c.getSnapshot().permissionsSheet).toBeUndefined();
+      expect(
+        onExit,
+        'the flag did not outlive the sheet that closed on a fault',
+      ).not.toHaveBeenCalled();
     });
 
     it('stays in the Home with the reason when the sheet cannot open, and a later typed /permissions then closes without ending the run', async () => {

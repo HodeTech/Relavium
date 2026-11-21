@@ -106,7 +106,11 @@ import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../ren
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createPermissionsPort } from '../permissions/chat-permissions.js';
-import { commandGrantRoot, createCommandGrantStore } from '../permissions/command-grants.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
@@ -1788,17 +1792,26 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             .catch((cause: unknown) => ownership?.surface.work.failure(cause));
         resolve(EXIT_CODES.success);
       };
+      const openHomeGrants = (): CommandGrantStore =>
+        createCommandGrantStore({
+          homeDir,
+          projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
+          keychain,
+        });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
         // `relavium permissions` read. Nothing is read until the sheet is opened.
         permissions: createPermissionsPort(
           {
-            grants: createCommandGrantStore({
-              homeDir,
-              projectRoot: commandGrantRoot(deps.global.cwd, projectConfigDir),
-              keychain,
-            }),
+            // A store holds the digest key it first read for as long as it lives, and this Home lives as long as the person uses it:
+            // another terminal's `revoke --all`, then a new grant, would leave a long-lived store listing nothing while a chat that
+            // starts afterwards runs the new grant unasked. So every read and every withdrawal opens its own store.
+            grants: {
+              list: () => openHomeGrants().list(),
+              revokeById: (id) => openHomeGrants().revokeById(id),
+              matches: (argv) => openHomeGrants().matches(argv),
+            },
             session: undefined,
           },
           'project',
@@ -1933,7 +1946,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          if (!automaticSetupStarted && !homeInputSealed && deps.onboardingPrompter === undefined) {
+          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the sheet it came for.
+          if (
+            !automaticSetupStarted &&
+            !homeInputSealed &&
+            deps.onboardingPrompter === undefined &&
+            deps.openPermissions !== true
+          ) {
             automaticSetupStarted = true;
             const operation = () => openProviders('automatic');
             const pending =

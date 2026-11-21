@@ -122,11 +122,6 @@ native host. Other shell scaffolding/gate prompts retain their existing contract
 
 ## Project initialization
 
-**`/permissions` on the bare Home (MVP-4 step 7, 2026-11-21).** The landing palette offers `/permissions`: it opens the permissions sheet
-docked under the Home with the project's remembered commands only, and closing it returns to the Home. A bare `relavium permissions` on a
-terminal starts the Home with that sheet open and ends the run when it is closed.
-Contract: [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet), [commands.md](commands.md#relavium-permissions).
-
 **Accepted on development, MVP-2 step 3 (2026-11-10).**
 `/init` is available in the landing and Home-chat palettes. Its card lists the
 exact three directories before writing and defaults to **No**. Only an explicit
@@ -139,6 +134,13 @@ existing/nested projects, link refusal, cleanup and global-state exclusion. An
 already initialized project produces a notice without a write confirmation or
 repair. Global workflows/agents remain untouched; `/doctor` names the move/import
 remedy. No unsolicited initialization prompt is shown.
+
+## `/permissions` on the bare Home (MVP-4 step 7, 2026-11-21)
+
+The landing palette offers `/permissions` (a line that reaches the Home as a paste, or typed with a leading space, does the same, since a `/` at an empty prompt opens the palette): it opens the permissions sheet docked under the Home with the project's remembered commands only, over a store opened afresh on every read, and closing it returns to the Home. While it is open it owns every key (the prompt and the footer are hidden, `Ctrl+C` closes it and arms no exit, PgUp and PgDn reach it, not a Home notice behind it).
+
+A bare `relavium permissions` on a terminal (the gate above) starts this Home with the sheet already open, and without the first-run provider setup, and ends the run with exit `0` when the sheet is closed with `Esc` or `Ctrl+C`; it is the whole Home, so it opens the history database and inherits the Home's start-up refusals. Anywhere else (a pipe, `--json`, CI) the command group is unchanged.
+Contract: [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet), [commands.md](commands.md#relavium-permissions).
 
 ## The management strip
 
@@ -272,7 +274,7 @@ The invocation-backed Home shares **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
-| **Clean Home exit** | a second `Ctrl+C` inside the arming window / `Ctrl+D` or EOF on an empty prompt in `home` mode | `0` |
+| **Clean Home exit** | a second `Ctrl+C` inside the arming window / `Ctrl+D` or EOF on an empty prompt in `home` mode; or, for a bare `relavium permissions`, closing the sheet it opened (`Esc` or `Ctrl+C`) | `0` |
 | **Signal-driven, without a stronger infrastructure fault** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT); infrastructure faults follow the [canonical precedence](commands.md#failure-classification-and-remedies) |
 
 An external signal stops admission and requests terminal restoration and cleanup of every actual host, including an in-flight build. Repeated signals share the original finite deadline and cannot restart cleanup or force an immediate second-signal exit. The physical exit backstop bounds the invocation; it does not certify terminal, MCP or database release. The shared database closes only after actual host/work settlement, and failed or held cleanup retains its owners and signal custody. Infrastructure faults may strengthen the final disposition; read the [canonical remedies](commands.md#failure-classification-and-remedies) before repeating uncertain work. The ownerless library compatibility path is not this product invocation lifecycle.

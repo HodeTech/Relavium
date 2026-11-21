@@ -34,6 +34,13 @@ import {
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
+import { findProjectConfigDir } from '../config/paths.js';
+import type { KeychainStore } from '../secrets/keychain.js';
+import {
+  commandGrantRoot,
+  createCommandGrantStore,
+  type CommandGrantStore,
+} from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
@@ -1382,6 +1389,96 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {
+    const memoryKeychain = (): KeychainStore => {
+      const entries = new Map<string, string>();
+      return {
+        get: (account) => entries.get(account) ?? null,
+        set: (account, secret) => void entries.set(account, secret),
+        delete: (account) => entries.delete(account),
+      };
+    };
+    /** The store a chat and `relavium permissions` would open for this working directory: the same root, home and key. */
+    const projectStore = (keychain: KeychainStore): CommandGrantStore =>
+      createCommandGrantStore({
+        homeDir: testHomeDir,
+        projectRoot: commandGrantRoot(global.cwd, findProjectConfigDir(global.cwd, testHomeDir)),
+        keychain,
+        findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
+      });
+    const rowLabels = (props: RootAppProps): readonly string[] => {
+      const project = props.controller.getSnapshot().permissionsSheet?.snapshot.project;
+      return project?.ok === true ? project.rows.map((row) => row.label) : [];
+    };
+
+    it('lists the grants remembered for THIS project under THIS home: a wrong root or home would list nothing, silently', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome({ ...deps, openPermissions: true });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(rowLabels(props)).toEqual(['npm, 1 argument']);
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('reads a new store on every open: a key another terminal replaced does not leave the long-lived Home listing nothing', async () => {
+      const keychain = memoryKeychain();
+      await projectStore(keychain).remember(['npm', 'test']);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { keychain });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const openFromPalette = (): void => {
+        props.controller.handleKey('/', {});
+        for (const ch of 'permissions') props.controller.handleKey(ch, {});
+        props.controller.handleKey('', ENTER);
+      };
+      openFromPalette();
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      // Another terminal: `relavium permissions revoke --all` (the file and the digest key go), then a chat remembers something new.
+      projectStore(keychain).revokeAll();
+      await projectStore(keychain).remember(['node', '--version']);
+      openFromPalette();
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']));
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('is not a first run: a bare `relavium permissions` on a Home with no provider key opens no setup card over the sheet', async () => {
+      const keylessResolver: ProviderResolver = {
+        resolveProvider: () => undefined,
+        keyFor: () => {
+          throw new Error('no key');
+        },
+      };
+      const capture: { props?: RootAppProps } = {};
+      const { deps } = makeDeps(
+        (p) => {
+          capture.props = p;
+        },
+        { providers: keylessResolver, keychain: memoryKeychain() },
+      );
+      // The production setup is the in-Home card, started when the renderer is ready, unless a legacy prompter is injected: take it out.
+      const { onboardingPrompter, ...production } = deps;
+      void onboardingPrompter;
+      const drivePromise = driveHome({ ...production, openPermissions: true });
+      const props = capture.props;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      await flush();
+      expect(props.nativePrompt?.getSnapshot().active, 'no card over the sheet').toBe(false);
+      expect(props.controller.getSnapshot().permissionsSheet).toBeDefined();
+      props.controller.handleKey('', { escape: true });
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
   });
 
   it('ADR-0132: the Home gives a fresh chat AND a /models-reseated chat the question delegate, each bound to its own store', async () => {

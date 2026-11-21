@@ -374,6 +374,20 @@ describe('run — bare-invocation Home gate', () => {
       expect(out() + err()).toContain('Usage: relavium permissions');
     });
 
+    it('accepts at most one `--` after the word, and none before it: more of them were an error before and stay one', async () => {
+      for (const args of [
+        ['--', 'permissions'],
+        ['permissions', '--', '--'],
+        ['--', '--', 'permissions'],
+        ['permissions', '--', 'x'],
+      ]) {
+        const { io } = interactiveIo();
+        const { openHome, calls } = fakeOpenHome(EXIT_CODES.chatEnded);
+        await run(argv(...args), io, openHome);
+        expect(calls(), args.join(' ')).toHaveLength(0);
+      }
+    });
+
     it('is only the bare group: `permissions --help` and an unknown subcommand never open the Home', async () => {
       // (`permissions list` and `revoke` are not run here: they read the real OS keychain; the routing is the same one-token test.)
       for (const args of [
