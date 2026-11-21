@@ -342,7 +342,7 @@ describe('withdrawSessionApproval', () => {
     const row = { argv: ['npm', 'test'], text: 'npm test', alsoRemembered: true };
     const covered = deps({ session: [['npm', 'test']], matches: () => true });
     expect(withdrawSessionApproval(row, covered)).toEqual(
-      note('Session approval withdrawn. It is still remembered: auto mode runs it unasked.'),
+      note('Session approval withdrawn. It is still remembered; auto may run it unasked.'),
     );
     // A Remember's link to a grant that has since been revoked elsewhere proves nothing: no grant covers it now.
     const gone = deps({ linked: [{ argv: ['npm', 'test'], grantId: 'a' }], matches: () => false });

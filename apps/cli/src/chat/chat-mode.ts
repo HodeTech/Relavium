@@ -257,7 +257,8 @@ export interface CommandGrantsPort {
   readonly standing?: (argv: readonly string[]) => GrantStanding;
   /** Record that a file write was applied, so a grant made before it asks again in `auto` (ADR-0138). */
   readonly noteFileWrite?: () => boolean;
-  readonly canRemember?: () => { readonly ok: boolean };
+  /** Whether Remember can be offered for this command (the argv matters: renewing a grant needs no new slot). */
+  readonly canRemember?: (argv?: readonly string[]) => { readonly ok: boolean };
   readonly remember?: (
     argv: readonly string[],
   ) => Promise<{ readonly ok: boolean; readonly reason?: string; readonly id?: string }>;
@@ -408,14 +409,6 @@ function commandArgv(request: ToolApprovalRequest): readonly string[] | undefine
   return request.action === 'process' ? request.argv : undefined;
 }
 
-/**
- * A command runs unasked in `auto` only when the OPERATOR pre-approved it: a remembered grant covers its exact argv (and this
- * session has not written a file since, see {@link ApprovalCache.noteWrite}). The repository's own `[chat]` allowlist is not that
- * (security sitting, MVP-4 step 4 round 2, ruled by the maintainer): a cloned repository could write `allowed_command_globs =
- * ["*"]`, and a prompt-injected default agent would then run anything unasked. A listed command shows its card, with the standing
- * "on this project's allowlist". `ask` and `accept-edits` ask for every command either way. An exact argv approved earlier in THIS
- * session is honoured by {@link askAboutCommand} in every mode, which is what removes the card there.
- */
 /** Where the person's grant for this argv stands: the port's own answer, or `fresh` when it only matches. */
 function grantStanding(
   grants: CommandGrantsPort | undefined,
@@ -425,6 +418,15 @@ function grantStanding(
   return grants.standing?.(argv) ?? (grants.matches(argv) ? 'fresh' : 'none');
 }
 
+/**
+ * A command runs unasked in `auto` only when the OPERATOR pre-approved it: a FRESH remembered grant covers its exact argv (no file
+ * write was recorded for the project after the grant was made, ADR-0138) and this chat has applied no file write either (see
+ * {@link ApprovalCache.noteWrite}). The repository's own `[chat]` allowlist is not that (security sitting, MVP-4 step 4 round 2, ruled
+ * by the maintainer): a cloned repository could write `allowed_command_globs = ["*"]`, and a prompt-injected default agent would then
+ * run anything unasked. A listed command shows its card, with the standing "on this project's allowlist". `ask` and `accept-edits` ask
+ * for every command either way. An exact argv approved earlier in THIS session is honoured by {@link askAboutCommand} in every mode,
+ * which is what removes the card there.
+ */
 function isPreApproved(argv: readonly string[], deps: TurnPolicyDeps): boolean {
   // A grant is the person's word for an exact argv under the project root, not for what the argv names from where this chat runs:
   // an argument that reaches a protected path from this working directory (`cat id_rsa` started inside `~/.ssh`) asks, as the card says.
@@ -467,6 +469,7 @@ async function askAboutCommand(
   signal: AbortSignalLike | undefined,
   live: ToolApprovalLiveContext | undefined,
   filesChanged = false,
+  inAuto = false,
 ): Promise<ToolApprovalDecision> {
   if (deps.cache.isAlwaysCommand(argv)) return { outcome: 'approve' };
   const grants = deps.commandGrants;
@@ -478,6 +481,8 @@ async function askAboutCommand(
     commandAdmitted: request.commandAdmitted === true,
     remembered: standingNow !== 'none',
     grantOutdated: standingNow === 'stale',
+    // Only `auto` consults a grant, so only there does an outdated one say why it asks; `ask` and `accept-edits` ask about everything.
+    autoAsks: inAuto,
     filesChanged,
     cwd: deps.commandCwd ?? '',
     sessionOffered: deps.commandSessionGrants === true && shown,
@@ -485,7 +490,7 @@ async function askAboutCommand(
       deps.commandSessionGrants === true &&
       shown &&
       grants?.remember !== undefined &&
-      grants.canRemember?.().ok === true,
+      grants.canRemember?.(argv).ok === true,
   });
   const answer = await deps.prompt(request, facts.offers.session, signal, live, facts);
   if (answer.outcome === 'reject') return toDecision(answer, request, deps.cache, false);
@@ -511,7 +516,7 @@ async function askAboutCommand(
         scope = 'always'; // remembered for the project, and for the rest of this session too
         grantId = written.id;
         deps.notify?.(
-          'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.',
+          'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.',
         );
       } else {
         const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
@@ -560,7 +565,7 @@ function askForClass(
 
 /**
  * The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. A file write the hook
- * approves is noted in the session's cache (ADR-0118 §2): after one, a remembered command asks once in `auto`.
+ * approves is noted in the session's cache (ADR-0118 §2): after one, a remembered command made before it asks in `auto` (here, and in every later chat until it is renewed: ADR-0138).
  */
 function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
   const decide = modeDecision(mode, deps);
@@ -607,7 +612,7 @@ function modeDecision(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
           if (argv === undefined) return askPerson(request, deps, signal, live);
           return isPreApproved(argv, deps)
             ? { outcome: 'approve' }
-            : askAboutCommand(request, argv, deps, signal, live, deps.cache.wrote);
+            : askAboutCommand(request, argv, deps, signal, live, deps.cache.wrote, true);
         }
         return { outcome: 'approve' };
       }

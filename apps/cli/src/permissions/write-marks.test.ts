@@ -379,10 +379,10 @@ describe('a remembered grant against the writes recorded for its project (ADR-01
     removeCommandGrantsFile(home, keychain); // another terminal: `revoke --all`
     const chatB = store(project);
     await chatB.remember(TEST); // creates K2
+    expect(store(project).standing(TEST)).toBe('fresh');
     clock += 1000;
-    expect(chatB.noteFileWrite()).toBe(true);
-    clock += 1000;
-    expect(chatA.noteFileWrite()).toBe(true); // A wrote a file: it must sign under K2, not K1
+    // Chat A is the only one that writes a file: it must sign under K2, the key in the keychain now, or nothing verifies its mark.
+    expect(chatA.noteFileWrite()).toBe(true);
     expect(store(project).standing(TEST)).toBe('stale');
   });
 
@@ -406,6 +406,39 @@ describe('a remembered grant against the writes recorded for its project (ADR-01
     expect(grants.canRemember()).toEqual({ ok: true });
     writeFileSync(marksFile(), 'garbage');
     expect(grants.canRemember()).toEqual({ ok: false, reason: 'unreadable' });
+  });
+
+  it('the card’s gate lets a grant at the per-root bound be RENEWED, and still refuses a new command there', async () => {
+    const grants = store(project);
+    for (let index = 0; index < COMMAND_GRANT_LIMITS.perRoot; index += 1) {
+      await grants.remember(['npm', 'run', String(index)]);
+    }
+    expect(grants.canRemember(['npm', 'run', 'new'])).toEqual({ ok: false, reason: 'full' });
+    expect(grants.canRemember()).toEqual({ ok: false, reason: 'full' });
+    expect(grants.canRemember(['npm', 'run', '0'])).toEqual({ ok: true });
+  });
+
+  it('Remember over a grant that nothing can renew (the marks cannot be read) is refused, not reported as remembered', async () => {
+    const grants = store(project);
+    await grants.remember(TEST);
+    writeFileSync(marksFile(), 'garbage');
+    const lines = (): number =>
+      readFileSync(commandGrantsPath(home), 'utf8')
+        .split('\n')
+        .filter((line) => line !== '').length;
+    const before = lines();
+    expect(await grants.remember(TEST)).toEqual({ ok: false, reason: 'unreadable' });
+    expect(lines()).toBe(before);
+  });
+
+  it('a reset keychain (the key is gone, the file is not) says on `list` that records were ignored, instead of an empty list', async () => {
+    await store(project).remember(TEST);
+    keychain.entries.delete(COMMAND_GRANTS_KEY_ACCOUNT);
+    const listed = store(project).list();
+    expect(listed).toEqual({ ok: true, grants: [], ignored: 1 });
+    expect(messages.some((message) => message.includes('not made with this installation'))).toBe(
+      true,
+    );
   });
 
   it('Remember on a grant that stands is reported, not duplicated', async () => {

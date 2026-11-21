@@ -718,7 +718,7 @@ describe('the command card hook, round 1 test review: what reaches the prompt an
     });
     await policy.confirm!(command(['npm', 'test'], false), undefined, undefined);
     expect(notes).toEqual([
-      'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.',
+      'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.',
     ]);
   });
 });
@@ -799,6 +799,11 @@ describe('a remembered grant that a recorded file write outdated, a listed comma
         const r = build(mode, { standing: () => standing });
         await r.confirm(command(TEST, false), undefined, undefined);
         expect(r.prompt, `${mode} ${standing}`).toHaveBeenCalledTimes(1);
+        // Only `auto` consults a grant, so only there does an outdated one say why the card asks; Remember still renews it anywhere.
+        expect(r.facts(), `${mode} ${standing}`).toMatchObject({
+          grantOutdated: false,
+          offers: { remember: standing !== 'fresh' },
+        });
       }
     }
   });
@@ -874,7 +879,7 @@ describe('a remembered grant that a recorded file write outdated, a listed comma
 
 describe('a Remember answered while the call is being cancelled leaves no grant the person did not see (ADR-0118 §2)', () => {
   const NOTE_SUCCESS =
-    'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode. /permissions lists it and takes it back.';
+    'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.';
   const NOTE_CANCELLED =
     'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.';
   const ARGV = ['npm', 'test'] as const;

@@ -207,6 +207,8 @@ export interface CommandFactsInput {
   readonly filesChanged?: boolean;
   /** The remembered grant is older than the last file write recorded for this project (ADR-0138). */
   readonly grantOutdated?: boolean;
+  /** The mode is `auto`, the only one that consults a grant: an outdated grant is only a reason the card asks there. */
+  readonly autoAsks?: boolean;
   readonly cwd: string;
   /** Whether the host offers a session answer at all (a delivered saved result, a blank preview or the headless path do not). */
   readonly sessionOffered: boolean;
@@ -230,7 +232,7 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
         ? 'allowlisted'
         : 'not-pre-approved',
     filesChanged: input.filesChanged === true && input.remembered,
-    grantOutdated: input.grantOutdated === true && input.remembered,
+    grantOutdated: input.grantOutdated === true && input.remembered && input.autoAsks === true,
     runsCode,
     protectedPath,
     cwd: input.cwd,

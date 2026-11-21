@@ -322,10 +322,19 @@ describe('what a command card offers by where the command stands (ADR-0118 §1, 
       session: true,
       remember: false,
     });
-    const outdated = commandCardFacts({ ...base, remembered: true, grantOutdated: true });
+    const outdated = commandCardFacts({
+      ...base,
+      remembered: true,
+      grantOutdated: true,
+      autoAsks: true,
+    });
     expect(outdated.standing).toBe('remembered');
     expect(outdated.grantOutdated).toBe(true);
     expect(outdated.offers).toEqual({ session: true, remember: true });
+    // Outside `auto` a grant is not consulted, so the card does not say it asks because of one; Remember still renews it.
+    const elsewhere = commandCardFacts({ ...base, remembered: true, grantOutdated: true });
+    expect(elsewhere.grantOutdated).toBe(false);
+    expect(elsewhere.offers).toEqual({ session: true, remember: true });
     // Outdated says nothing about a command no grant covers.
     expect(commandCardFacts({ ...base, grantOutdated: true }).grantOutdated).toBe(false);
   });
@@ -343,6 +352,7 @@ describe('what a command card offers by where the command stands (ADR-0118 §1, 
       commandAdmitted: true,
       remembered: true,
       grantOutdated: true,
+      autoAsks: true,
     });
     expect(later.standing).toBe('remembered');
     expect(later.grantOutdated).toBe(true);

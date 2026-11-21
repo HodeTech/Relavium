@@ -198,7 +198,9 @@ export interface CommandGrantStore {
    */
   noteFileWrite: () => boolean;
   /** Whether Remember can be offered right now: the key is usable, the file is readable and writable, and a bound has room. */
-  canRemember: () =>
+  canRemember: (
+    argv?: readonly string[],
+  ) =>
     | { readonly ok: true }
     | { readonly ok: false; readonly reason: CommandGrantUnavailable | 'full' };
   /** Persist a grant for this exact argv. Idempotent: an existing live grant is reported, not duplicated. */
@@ -423,7 +425,10 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
         report(unreadableMessage(path, 'a line is not a grant or a revocation'));
         return { ok: false };
       }
-      if (key === undefined) continue;
+      if (key === undefined) {
+        foreign += 1; // no key, so nothing in the file can be verified: counted, and told like any record this key did not make
+        continue;
+      }
       const { mac, ...fields } = grant.data;
       if (!sameDigest(mac, grantRecordMac(key, fields))) {
         foreign += 1;
@@ -486,23 +491,28 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
   const marksPath = join(dirname(path), COMMAND_WRITE_MARKS_FILE);
 
   /**
-   * Whether a file write was recorded for this root after the grant was last made (ADR-0138). A file of marks that cannot be read
-   * is told once and counts as "yes": without it nothing says no write happened, and asking is the safe answer.
+   * Where a grant made at `renewedAt` stands against the writes recorded for its root (ADR-0138): `fresh`, `stale` (a write was
+   * recorded after it, in this root or keyless), or `unreadable` (the file of marks cannot be read, told once: without it nothing says
+   * no write happened, so the grant counts as stale and nothing can renew it).
    */
-  const writtenSince = (key: Buffer, root: string, renewedAt: string): boolean => {
+  const markState = (
+    key: Buffer,
+    root: string,
+    renewedAt: string,
+  ): 'fresh' | 'stale' | 'unreadable' => {
     const marks = readWriteMarks(marksPath, key);
-    if (marks.kind === 'absent') return false;
+    if (marks.kind === 'absent') return 'fresh';
     if (marks.kind === 'unreadable') {
       report(
         `The write-mark file ${marksPath} was ignored (${marks.why}); remembered commands will ask again in auto mode until it is repaired. ${REVOKE_ALL_HINT}`,
       );
-      return true;
+      return 'unreadable';
     }
     const renewed = Date.parse(renewedAt);
     // A write applied while the keychain was unavailable could not be signed for a root: it outdates every grant older than it.
-    if (marks.unkeyedMs !== undefined && !(renewed > marks.unkeyedMs)) return true;
+    if (marks.unkeyedMs !== undefined && !(renewed > marks.unkeyedMs)) return 'stale';
     const latest = latestWriteMark(marks.marks, root);
-    return latest !== undefined && !(renewed > latest);
+    return latest !== undefined && !(renewed > latest) ? 'stale' : 'fresh';
   };
 
   const standing = (argv: readonly string[]): GrantStanding => {
@@ -517,7 +527,7 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
       sameDigest(record.grant, candidate),
     );
     if (grant === undefined) return 'none';
-    return writtenSince(state.key, root, grant.renewedAt) ? 'stale' : 'fresh';
+    return markState(state.key, root, grant.renewedAt) === 'fresh' ? 'fresh' : 'stale';
   };
 
   const noteFileWrite = (): boolean => {
@@ -595,7 +605,7 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     }
   };
 
-  const canRemember = (): ReturnType<CommandGrantStore['canRemember']> => {
+  const canRemember = (argv?: readonly string[]): ReturnType<CommandGrantStore['canRemember']> => {
     const state = readKey();
     // An absent key can be generated at the first write; an unusable keychain cannot. The write path re-checks.
     if (state.kind === 'unavailable') return { ok: false, reason: 'no-key' };
@@ -608,7 +618,15 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
       return { ok: false, reason: 'unreadable' };
     }
     const root = state.kind === 'ready' ? rootDigest(state.key, canonical) : '0'.repeat(64); // no grants can exist without a key
-    return room(folded.fold, root);
+    // Renewing a grant adds no grant (a twin folds into it): only the line and size bounds apply, as in `remember`.
+    const renewal =
+      state.kind === 'ready' &&
+      argv !== undefined &&
+      argv.length > 0 &&
+      rootGrants(folded.fold, root).some((record) =>
+        sameDigest(record.grant, grantDigest(state.key, root, argv)),
+      );
+    return room(folded.fold, root, renewal);
   };
 
   const remember = async (argv: readonly string[]): Promise<RememberResult> => {
@@ -633,9 +651,12 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     );
     // A grant that stands as it is is reported, not duplicated. One that a recorded file write has outdated is renewed: a new record
     // for the same argv (a twin, folded into the one grant) dated now, so `auto` runs it unasked again.
-    if (existing !== undefined && !writtenSince(key, root, existing.renewedAt)) {
+    const mark = existing === undefined ? 'fresh' : markState(key, root, existing.renewedAt);
+    if (existing !== undefined && mark === 'fresh') {
       return { ok: true, id: existing.id, alreadyRemembered: true };
     }
+    // A renewal that nothing can make fresh (the marks cannot be read) is refused, not reported as remembered.
+    if (mark === 'unreadable') return { ok: false, reason: 'unreadable' };
     const space = room(folded.fold, root, existing !== undefined);
     if (!space.ok) return space;
     const fields: Omit<GrantRecord, 'mac'> = {
@@ -662,7 +683,13 @@ export function createCommandGrantStore(deps: CommandGrantStoreDeps): CommandGra
     const folded = readFold(state.kind === 'ready' ? state.key : undefined);
     if (!folded.ok) return { ok: false, reason: 'unreadable' };
     // No key yet means no grant was ever written under this machine's key: the honest answer is an empty list, not a fault.
-    if (state.kind === 'absent') return { ok: true, grants: [] };
+    if (state.kind === 'absent') {
+      return {
+        ok: true,
+        grants: [],
+        ...(folded.fold.foreign > 0 ? { ignored: folded.fold.foreign } : {}),
+      };
+    }
     const root = rootDigest(state.key, canonical);
     return {
       ok: true,

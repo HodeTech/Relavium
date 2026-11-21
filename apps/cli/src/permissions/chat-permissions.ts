@@ -211,7 +211,7 @@ export function withdrawSessionApproval(
   if (gone === undefined) return note('That row was already withdrawn.');
   // A remembered grant that covers the command keeps `auto` running it unasked, so the sentence says so instead of promising a question.
   return covered
-    ? note('Session approval withdrawn. It is still remembered: auto mode runs it unasked.')
+    ? note('Session approval withdrawn. It is still remembered; auto may run it unasked.')
     : done('Session approval withdrawn. It needs approval again.');
 }
 

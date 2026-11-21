@@ -145,14 +145,23 @@ that asks again in `auto`.
   asks if a write was recorded since the grant. `list` shows the grant once, dated by its latest record.
 - **The file.** `~/.relavium/command-write-marks.json`, mode `0600` in the `0700` directory, read as a regular file only (the same refusals as the
   grants file: a symbolic link, a FIFO, a device, a directory), **replaced whole** (a sibling created exclusively, then renamed over it), never
-  appended to. `{"v":1,"marks":[{"root":"<hex64>","at":"<ISO-8601>","mac":"<hex64>"}]}`. `root` is the grants' root digest; `mac` is HMAC-SHA256
-  under the installation key over a version tag, the root and the time, NUL-separated. An entry whose MAC does not verify is ignored (it was
-  minted without the key). At most 256 roots (the oldest mark is dropped) and 64 KiB.
+  appended to. `{"v":1,"marks":[{"root":"<hex64>","at":"<ISO-8601>","mac":"<hex64>"}],"unkeyed":"<ISO-8601>"}` (`unkeyed` is optional, see below).
+  `root` is the grants' root digest; `mac` is HMAC-SHA256 under the installation key over a version tag, the root and the time, NUL-separated.
+  An entry whose MAC does not verify is ignored when reading (it was minted without the key, or under a key the keychain has since replaced),
+  and **kept as it is when the file is rewritten**, so a chat that holds an old key cannot erase what a newer key wrote. At most 256 roots (the
+  oldest mark is dropped) and 64 KiB. The key is read from the keychain afresh for every write, as for a *Remember*.
+- **A write while the keychain is unavailable.** No key means no root digest and no MAC, yet the grants made earlier verify again when the
+  keychain answers, so such a write is recorded as `unkeyed`: one unauthenticated time that outdates **every** grant older than it, whatever
+  its root. It needs no MAC because it can only make a grant stricter. It is reported once. With no key *and none ever made* nothing is
+  written: no grant exists, and a grant made later is newer than the write.
 - **It fails toward asking.** A file that cannot be read (a refusal above, text that does not parse, a shape that is not exactly this one, a time that is
   not a time, over the size bound) makes **every** remembered command stale, is reported once with its recovery, and is **never overwritten**:
   replacing an unreadable file would give every other project a clean slate. `relavium permissions revoke --all` removes it with the grants and the key.
-  A mark that cannot be written is reported once and leaves the in-memory fact as the rule for that chat. With no key yet nothing is written: no grant exists,
-  and a grant made later is newer than the write.
+  A mark that cannot be written is reported once and leaves the in-memory fact as the rule for that chat. While the file cannot be read *Remember* is not offered
+  (a record added then could not make anything fresh) and a direct request is refused as `unreadable`. `revoke --all` removes the marks only after the grants file is
+  gone, so a removal that fails does not leave the grants standing without the marks that outdate them.
+- **Whose writes.** A write is recorded against the root of the chat that applied it. A chat rooted at a parent directory that edits a file inside a nested
+  project (a directory with its own `.relavium/`) does not outdate that project's grants; a file written by an MCP tool (an egress-class action) is not seen either.
 - **What it does not defend against.** There is no lock, so two chats of different projects that write in the same instant can drop one entry (that
   project's grants read as fresh again, which is the behaviour before the marks). A process running as the same operating-system user can delete
   the file, as it can delete a revocation (see *What the store defends against*).
@@ -412,7 +421,7 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   approval again.`; and, when a plain session approval of the same command stands, `Withdrawn, but a session approval of it remains: it
   is still approved here.` (only the approvals *this* grant covered count: another remembered command's approval does not). A session
   row: `✓ Session approval withdrawn. It needs approval again.` or, when a remembered grant covers the command, `Session approval
-  withdrawn. It is still remembered: auto mode runs it unasked.`
+  withdrawn. It is still remembered; auto may run it unasked.`
 - **Withdrawing is by identity.** A remembered row is held by its grant `id` and a session row by its exact argv. The store is read
   again before a project withdrawal; a row that is gone says `That row was already withdrawn.` and the sheet reloads. Two records of
   one argv are one grant and both are withdrawn. Withdrawing a remembered row also takes this chat's linked session approval; a
