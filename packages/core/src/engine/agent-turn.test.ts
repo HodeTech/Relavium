@@ -1731,6 +1731,20 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
     return { promise, open };
   }
 
+  /**
+   * Run `work` with V8's stack-trace capture off and put the limit back whatever happens. Only for a run whose errors nobody
+   * reads a stack from: the capture is what a many-round turn spends its time on (see the backstop test).
+   */
+  async function withoutStackTraces<T>(work: () => Promise<T>): Promise<T> {
+    const saved = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
+    try {
+      return await work();
+    } finally {
+      Error.stackTraceLimit = saved;
+    }
+  }
+
   describe('where nobody can answer (a hard stop)', () => {
     it('holds the round it refuses: nothing runs at the limit, and the turn ends with turn_limit', async () => {
       const { provider, calls } = counted(toolRounds(40));
@@ -1840,7 +1854,8 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
       const { provider, calls } = counted(toolRounds(300));
       const { registry, dispatched } = counting();
       const asked: { rounds: number; interval: number }[] = [];
-      await expect(
+      // Only the run itself goes without stack traces (see the comment below); the assertions run with them restored.
+      const outcome = await withoutStackTraces(() =>
         runAgentTurn(
           baseParams(provider, {
             registry,
@@ -1854,8 +1869,12 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
               },
             },
           }),
+        ).then(
+          () => 'resolved',
+          (error: unknown) => error,
         ),
-      ).rejects.toMatchObject({ code: 'turn_limit' });
+      );
+      expect(outcome).toMatchObject({ code: 'turn_limit' });
       // Asked at 100 and 200; at 256 rounds the model asked for the 257th and nothing is asked: the backstop ends it.
       // The last "continue" grants only what is left of the backstop (56), and the card says so: the interval is not 100.
       expect(asked).toEqual([
@@ -1864,10 +1883,14 @@ describe('runAgentTurn — the tool-round limit and its checkpoint (ADR-0136)', 
       ]);
       expect(dispatched()).toBe(ABSOLUTE_TOOL_ROUNDS);
       expect(calls()).toBe(ABSOLUTE_TOOL_ROUNDS + 1);
-      // 256 rounds over a growing transcript is O(n²) work (about 4 s here); a loaded or instrumented run needs room,
-      // and an interval equal to the backstop reaches the very same `rounds >= ABSOLUTE_TOOL_ROUNDS` branch, so it needs no
-      // second 256-round run.
-    }, 60_000);
+      // The cost is real and quadratic: every provider call deep-copies and inspects the WHOLE request through the seam's inert-data
+      // guard (`packages/llm/src/inert-data.ts`), and its intrinsic brand probes (`Reflect.apply(Boolean.prototype.valueOf, …)`)
+      // THROW a TypeError per object per call, so 256 rounds is about 260k objects probed, each paying V8's stack-trace capture
+      // (measured: 5.5 s of the 5.7 s, 0.9 s with `Error.stackTraceLimit = 0`; 50 s was reported under load and coverage).
+      // The payload per round is already minimal (`{}` args, `'OK'`), so the stack capture is the lever, not the transcript.
+      // An interval equal to the backstop reaches the very same `rounds >= ABSOLUTE_TOOL_ROUNDS` branch, so it needs no second
+      // 256-round run, and nothing here shortens the real constant.
+    }, 30_000);
 
     it('treats anything but the literal "continue" as a stop (a buggy host fails closed)', async () => {
       const answers: readonly unknown[] = [undefined, null, 'Continue', 'yes', 1, true, {}];
