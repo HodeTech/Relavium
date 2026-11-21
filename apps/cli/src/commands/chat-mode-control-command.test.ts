@@ -61,6 +61,7 @@ describe('the chat mode control, command card wiring', () => {
     expect(approval?.facts).toEqual({
       standing: 'not-pre-approved',
       filesChanged: false,
+      grantOutdated: false,
       runsCode: false,
       protectedPath: false,
       cwd: m.workspace,
