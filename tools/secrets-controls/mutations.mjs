@@ -746,7 +746,7 @@ export const mutations = [
       });`,
     '      command.exitOverride();',
     ['apps/cli/src/run.test.ts'],
-    28,
+    34,
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY: human keeps parser values opaque',
     'SECRETS_CAUSAL_RUN_COMMANDER_OPACITY',
     ['human verbose', 'JSON', 'JSON verbose'].map((mode) => ({
