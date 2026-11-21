@@ -537,6 +537,8 @@ After step 4's first review round (2026-11-19; the findings were verified agains
 
 > Amended 2026-11-21 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): a chat that is already open keeps its own session approval of a command revoked elsewhere until the person withdraws that row in its sheet (the row then no longer says `(also remembered)`); there is no `--session` form.
 - **`/permissions` reports what it did not understand** (an unknown flag, `--session` or a number without `--revoke`, a second number) with its usage line instead of listing or revoking something else.
+
+> Amended 2026-11-21 by [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md): `/permissions` takes no argument now; a typed form is the dispatch's own rejection of an unknown argument plus the hint `Open /permissions and press d on a row to withdraw it.`, and the usage line named here was never part of the sheet.
 - **Declined, with reasons:** a "who is asking" label on a `!` card (the person typed it, and the card already names the command); a separate below-floor wording for a command card (the wording is shared by every card on purpose); a session export is not given the allowlist or the grants (an export carries no authority, as for the network tools).
 - **Equivalent mutants accepted:** the blocked card's approving answers are refused by three independent layers (no acknowledged frame, an invalid page, the document's validity), so removing any one leaves the behaviour unchanged; the host tests pin the behaviour, not the layer.
 
