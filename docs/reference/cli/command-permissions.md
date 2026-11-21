@@ -32,6 +32,11 @@ that offers *Remember* is [the command card](#the-command-card) below.
   so two paths to one tree share grants and a fresh clone elsewhere shares none. The chat and
   `relavium permissions` derive it with the same function, so a grant made in one is the grant the other
   lists.
+- **Not bound to the working directory or the environment.** The root is what a grant keys on; the host pins the directory a
+  command runs in and the model cannot choose it, so the card's `Runs in` row is information and not part of the grant
+  ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2 decides this). The one place the
+  directory still matters: in `auto` a grant does not skip the card for a command whose arguments name a protected path from where
+  the chat runs (`cat id_rsa` started inside `~/.ssh`).
 - **Not a runtime guarantee.** A grant binds the argv, not what the program reads: `npm test` keeps being
   approved after `package.json`'s `test` script changes. ADR-0118 §2 records this as a decision, not a
   deferral.
@@ -135,7 +140,9 @@ that asks again in `auto`.
   root has no mark; **stale** otherwise. `auto` runs a fresh grant unasked and asks about a stale one; `ask` and `accept-edits` ask about
   every command either way. `matches` (is it remembered?) is the same for both; `standing` is `none`, `fresh` or `stale`.
 - **Renewal.** *Remember* on a stale grant appends a new record for the same argv, which folds into the one grant (a twin, dated now) and makes
-  it fresh. A *Session* answer ends the asking for that chat only. `list` shows the grant once, dated by its latest record.
+  it fresh. A *Session* answer ends the asking for that chat only. A *Remember* also approves the command for the chat it is made in
+  (it behaves as *This session* too, see the answers below), so that chat does not ask about it again even after a write; a later chat
+  asks if a write was recorded since the grant. `list` shows the grant once, dated by its latest record.
 - **The file.** `~/.relavium/command-write-marks.json`, mode `0600` in the `0700` directory, read as a regular file only (the same refusals as the
   grants file: a symbolic link, a FIFO, a device, a directory), **replaced whole** (a sibling created exclusively, then renamed over it), never
   appended to. `{"v":1,"marks":[{"root":"<hex64>","at":"<ISO-8601>","mac":"<hex64>"}]}`. `root` is the grants' root digest; `mac` is HMAC-SHA256
@@ -169,6 +176,10 @@ Revoke one with `relavium permissions revoke <number>`, or all of them with `rel
 an empty list; the human form says *No remembered commands for this project.* Both exit `0`. Every label is
 sanitized to one line before it is printed. Another project's grants are never listed.
 
+When records were **ignored** (they were not made with this installation's key: a reset keychain, a file brought from another
+machine), `list` says so on **stderr**, naming the count, the file and `relavium permissions revoke --all`, so a list that shows nothing
+is not mistaken for "nothing was ever remembered". Standard output, and a `--json` stream, are unchanged.
+
 ## `relavium permissions revoke`
 
 ```bash
@@ -186,7 +197,13 @@ relavium permissions revoke --all [--json]
   file](#the-write-marks) beside it (best effort: it is keyed by the same key and useless without the grants), and deletes the digest key
   from the keychain (best effort: a locked keychain is ignored). It needs no project root and no readable
   file, so it is the recovery from a locked keychain, an unreadable file, an unusable key entry or a full
-  store (a symlink at the path is removed, not what it points at). The next grant generates a new key.
+  store (a symlink at the path is removed, not what it points at). The next grant generates a new key. The refusals that name `revoke --all`
+  as the way out say it "removes the file and clears the entry"; read them with the failure table above: with a locked keychain the entry
+  stays (the failure is ignored), and a directory at the path is not removed (exit `1`, remove it by hand).
+  **One key per account, one file per home:** the digest key is a single keychain entry for the operating-system account, while the grants
+  file lives in the home directory in use (`~/.relavium`). `revoke --all` run under another `HOME` (a test home, a container) removes **that**
+  home's file and clears the **account's** key, so the grants file of every other home stops validating: nothing in it matches, and once a new key exists its records read as
+  ignored and `list` says so on stderr, until grants are made again. It is the recovery tool for one machine, not a per-home reset.
 - Exactly one of `<number>` and `--all`; neither or both is an invalid invocation (`2`). The refusal never
   echoes what was typed.
 - `--json` writes `{ "action": "revoke", "index", "id", "program", "args" }` or
@@ -202,8 +219,9 @@ Neither is reachable by the model: the manifest is a CLI projection, not a tool.
 A command reaches the person as the approval card the chat already has
 ([chat-session.md](chat-session.md#chat-modes--per-tool-approval-25e-adr-0057): docked, bounded, every affirmative
 chord behind the dwell, quiet, typeahead and lockout guards) — in `ask` and `accept-edits` every command, even an allowlisted
-or remembered one, and in `auto` every command except one the person remembered (while this session has approved no file
-write) or approved for this session; the repository's allowlist does not skip the card there — with the additions of
+or remembered one (only a *Session* answer given in the current chat removes the card there), and in `auto` every command except one the person
+remembered (while no file write recorded for the project is newer than the grant) or approved for this session; the repository's
+allowlist does not skip the card there — with the additions of
 [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1. The `!` escape and a model's
 `run_command` reach the same card; the `!` escape no longer sends anyone to a config file.
 
@@ -217,9 +235,12 @@ write) or approved for this session; the repository's allowlist does not skip th
   delimited on its own line. A title that wraps continues under the command (indented by the verb), never at the margin of the
   argument rows. A command whose rows do not all fit the card (six elements fit at 80×24, with every answer, and a refusal note
   does not take a row from them) says `⚠ N rows of this command are not shown — press [v]` and offers only *Once* there, because
-  *This session* and *Remember* are offered only while every row is on screen. That holds in the full view too: it lists every
-  row and offers them while the whole command fits on its first page (about eight elements at 80×24, more on a taller terminal);
-  a longer command can be answered *Once* only.
+  *This session* and *Remember* (where either is offered at all) need every row on screen. The card adds `; This session and Remember
+  are offered only while every row is on screen` when it would otherwise offer *This session* or *Remember*, and the sentence ends at
+  `[v]` when it would offer neither. The sentence names both answers even where one of them is withheld for another reason (a code
+  carrier gets no *Remember*, and nor does a command a grant already covers; the card's own warning and its answer row say so). That holds in the full view too:
+  it lists every row and offers them while the whole command fits on its first page (about eight elements at 80×24, more on a taller
+  terminal); a longer command can be answered *Once* only.
 - `Standing: on this project’s allowlist | remembered for this project | not pre-approved` (the allowlist is the project’s
   file, not the person’s; a remembered command in `auto` after a file write says `remembered for this project; asks because
   files changed this session`, or, when the write was recorded in an earlier chat, `remembered for this project; asks because
@@ -244,8 +265,11 @@ write) or approved for this session; the repository's allowlist does not skip th
 - A command with more than 63 arguments, or any argument or the quoted line over 4,096 characters, cannot be shown in full;
   its card is **blocked**: it says `A command is waiting, but it is too large for this card to show …`, no approving answer
   counts, `Ctrl+N` (and `Esc`) still answer, and the refusal reaches the model as a `mode` refusal with a fixed label (the host's
-  limit, never the person's words) telling it to run smaller commands. A command card the host cannot build a preview for is
-  refused the same way instead of being drawn empty.
+  limit, never the person's words) telling it to run smaller commands. A command card the host cannot build a preview for, **or whose
+  preview holds no target, no row and no diff**, is refused the same way, in the fixed words `this command came with nothing the
+  approval card can show, so it was not run; use the standard command tool`, before any card opens: a card that shows nothing must not
+  offer an answer, so nobody approves an argv they cannot see. The built-in `run_command` always publishes a target and one row per
+  argument; the case is a hand-built tool's.
 
 **The answers** (each affirmative one is a Ctrl chord typing cannot produce):
 

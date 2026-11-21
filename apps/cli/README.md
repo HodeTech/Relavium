@@ -63,9 +63,12 @@ to edit a file: in the default `ask` mode the edit's diff appears on an approval
 inspects live tool calls. Bare `/mode` separates the current mode from saving a
 startup default. Existing saved sessions keep their frozen tool grants; start a
 new built-in conversation to gain the new editing tools and `run_command`. Every
-command the agent (or a `!` line) wants to run is shown on an approval card, unless
-you already approved it, as one
-quoted line with its arguments, where it stands and where it runs; the card offers
+command the agent (or a `!` line) wants to run is shown on an approval card, as one
+quoted line with its arguments, where it stands and where it runs. In `ask` and
+`accept-edits` only an answer you gave for this session (*Allow this session*, or a
+*Remember*, which also approves it for that chat) removes the card; `auto` also runs a
+command you remembered without asking, until a file write in the project outdates it, and
+the repository's own allowlist removes no card there. The card offers
 once, this session or, for a command that runs only itself, remembering it for the
 project (`/permissions` and `relavium permissions` list and withdraw what was
 remembered). The

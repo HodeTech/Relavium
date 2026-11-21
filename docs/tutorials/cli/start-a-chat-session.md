@@ -84,9 +84,10 @@ You do **not** need a `.relavium.yaml` workflow to start a chat — that is the 
    ```
 
 5. **Notice the filesystem scope.** Every file-touching tool runs under the session's
-   filesystem **scope tier** — by default the agent may only touch the current workspace
-   and `~/.relavium/tmp/`. Ask it to read a file outside that scope and it is refused, not
-   silently allowed. The active tier resolves from the `[chat]` block of
+   filesystem **scope tier** — by default the agent may only touch the session's workspace
+   and any root you admitted explicitly (`--allow-fs-root`, or `[chat].extra_roots` in a project
+   file); `~/.relavium/tmp/` is no longer a default grant. Ask it to read a file outside that
+   scope and it is refused, not silently allowed. The active tier resolves from the `[chat]` block of
    [config-spec.md](../../reference/contracts/config-spec.md), which references the same
    `fs_scope` the workflow side uses (see the scope tiers in
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md#filesystem-permission-tiers)).

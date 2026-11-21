@@ -385,9 +385,11 @@ interface ToolApprovalRequest {
    */
   readonly unredactedPreview?: ToolActionPreview;
   /**
-   * The command as an argv — the program and its literal arguments, as spawned — for a `process` request, else absent
-   * (ADR-0118 §1). Frozen, UNSCRUBBED and in-process only, like `unredactedPreview`: never on `agent:approval_requested`.
-   * `["cat","a","b"]` and `["cat","a b"]` are different commands although their display lines are alike.
+   * The command as an argv — the program and its literal arguments, spawned without a shell — for a `process` request, else
+   * absent (ADR-0118 §1). The host's session cache and remembered grants are keyed by this, element by element: `["cat","a b"]`
+   * and `["cat","a","b"]` are different commands, which is why the preview quotes the line (`cat 'a b'` and `cat a b`) and the
+   * card shows one row per element. Frozen, UNSCRUBBED and in-process only, like `unredactedPreview`: never on
+   * `agent:approval_requested`.
    */
   readonly argv?: readonly string[];
   /** Whether the allowlist admitted this call. Present only for a `process` request; a miss under a regime arrives as `false`. */
@@ -583,7 +585,7 @@ while everything else ends the turn. Two disjoint sources set it:
   `ToolPolicyError('media_scope_denied')`, and the CLI `fs` arm's **pure scope-tier escape** (`FsScopeDeniedError`
   `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
   is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
-  the payload write), and the CLI `fs` arm's **lexical protected-path arm** (`FsScopeDeniedError` with the fixed `PROTECTED_PATH_REFUSAL`, decided from the path text alone before any resolution — see [built-in-tools.md](built-in-tools.md#refusals-that-return-to-the-model)). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included, until [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) lands), an egress **SSRF** denial, and the fs
+  the payload write), and the CLI `fs` arm's **lexical protected-path arm** (`FsScopeDeniedError` with the fixed `PROTECTED_PATH_REFUSAL`, decided from the path text alone before any resolution — see [built-in-tools.md](built-in-tools.md#refusals-that-return-to-the-model)). Every OTHER `tool_denied` stays fatal (`false`), except the person's own decision: a `ToolDeniedByUserError` with reason `user_rejected` is `recoverable` too (ADR-0117, MVP-3b), while its fail-closed wiring faults stay fatal. The rest: the other `ToolPolicyError` guardrail reasons (the command-allowlist miss included: where an approval regime is present a miss is no error but a request to the host's hook, [ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1, and in a workflow, which has none, it is a fatal `command_not_allowed`), an egress **SSRF** denial, and the fs
   **confidentiality** (secret-store read) / post-resolution protected-path / symlink refusals — feeding those back would re-deny,
   risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
   `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path

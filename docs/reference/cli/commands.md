@@ -162,7 +162,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium models refresh --catalog` | Metadata only — the models.dev catalog. **Needs no provider key.** |
 | `relavium models pricing <model>` | Hand-enter a user price for a model the registry does not know, so the cost cap enforces it. See [`relavium models`](#relavium-models). |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
-| `relavium permissions list` / `revoke <number>\|--all` | Review and take back the commands remembered for this project. See [`relavium permissions`](#relavium-permissions). |
+| `relavium permissions list` / `revoke <number>\|--all` | Review the commands remembered for this project and take one back (`revoke <number>`), or take back **every project's** (`revoke --all`, which removes the whole file, its write marks and the digest key). See [`relavium permissions`](#relavium-permissions). |
 
 ## Command manifest
 
@@ -667,7 +667,7 @@ Look at, and take back, the commands this project's operator chose to **Remember
 ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat opens a sheet of the same grants, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)). `list`
 shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
 command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
-whole file, for every project, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
+whole file, for every project, removes the write-mark file beside it, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
 database and make no network request. Success exits `0` (an empty list is not a fault); the other exit codes,
 the `--json` records and the failure table are in [command-permissions.md](command-permissions.md), the
 canonical home.
@@ -724,7 +724,7 @@ also retain their [owned signal dispositions](#invocation-owners-and-fatal-order
 | `1` | Workflow failed, or a classified operational/history/storage refusal; see the [surface dispositions](#failure-classification-and-remedies) |
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
-| `4` | A chat session ended — via `/exit`, `/cancel` (or a second Ctrl+C inside the arming window in TTY mode, or the first SIGINT in the plain and `--json` drivers), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
+| `4` | A chat session ended — via `/exit`, `/cancel` (or a second Ctrl+C inside the arming window in TTY mode, or the first SIGINT a chat receives — in the plain and `--json` drivers, and in a standalone chat when the console delivers `Ctrl-C` as a signal rather than a key), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md). The **Home** is not a chat: its own SIGINT exit is `128 + 2` = `130` ([home.md](home.md#signal-lifecycle--exit-codes)), and a chat it hosts has its `4` consumed by the Home's mode loop |
 | `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
 | `6` | Ownership was refused before starting, or this host was fenced out and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). Inspect current history; the successor may already have finished |
 | `7` | An external **effect** needs attention, including a prior unresolved attempt or an admitted effect whose final receipt remained unresolved after host joining ([effect-journal.md](../shared-core/effect-journal.md) §4, §8). **Do not retry**: inspect the target, then resolve the row out of band |
