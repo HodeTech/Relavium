@@ -336,6 +336,18 @@ export interface FullChrome {
   readonly rows: number;
 }
 
+/** The answer rows of the full view: none for a details screen, the search rows while a search is typed, else the approval's. */
+function fullAnswers(keys: CardKeyInput | undefined, searching: boolean): readonly string[] {
+  if (keys === undefined) return [];
+  return searching ? fullSearchRows() : fullAnswerRows(keys);
+}
+
+/** The closing note of the full view: a details screen's, a command's, or the protected-path sentence of any other approval. */
+function fullNote(kind: ScreenKind, commandFacts: CommandCardFacts | undefined): string {
+  if (kind !== 'approval') return DETAILS_CLOSE_NOTE;
+  return commandFacts === undefined ? FULL_PROTECTED_NOTE : FULL_COMMAND_NOTE;
+}
+
 /** Everything the full view draws around its body, and how many rows that is. The one source the model and the view share. */
 export function fullChrome(input: FullChromeInput): FullChrome {
   const header = fullHeaderRows({
@@ -352,14 +364,8 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     commandFacts: input.commandFacts,
   });
   const nav = fullNavLegend({ ...input.nav, columns: input.columns });
-  const answers =
-    input.keys === undefined ? [] : input.searching ? fullSearchRows() : fullAnswerRows(input.keys);
-  const note =
-    input.kind !== 'approval'
-      ? DETAILS_CLOSE_NOTE
-      : input.commandFacts === undefined
-        ? FULL_PROTECTED_NOTE
-        : FULL_COMMAND_NOTE;
+  const answers = fullAnswers(input.keys, input.searching);
+  const note = fullNote(input.kind, input.commandFacts);
   const rows =
     header.length +
     (input.hasTarget ? 1 : 0) +

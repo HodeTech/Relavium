@@ -394,6 +394,14 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
   return { copied, flashCopied };
 }
 
+/** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
+function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
+  if (interruptArmed) return 'Press Ctrl+C again to end the session';
+  return emptyDraft
+    ? '/ for commands · /exit or Ctrl+C twice to end'
+    : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft';
+}
+
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const {
     state,
@@ -639,11 +647,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           (which surfaces Ctrl+J for a newline). The palette renders its own nav hints when open. */}
       {showIdlePrompt && (
         <Text {...dimProps(color)} wrap="truncate-end">
-          {props.interruptArmed === true
-            ? 'Press Ctrl+C again to end the session'
-            : editor.text.length === 0
-              ? '/ for commands · /exit or Ctrl+C twice to end'
-              : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft'}
+          {idleHint(props.interruptArmed === true, editor.text.length === 0)}
         </Text>
       )}
 

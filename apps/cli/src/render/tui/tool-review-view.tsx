@@ -191,14 +191,11 @@ export function ToolReviewHost(
   if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
-        {identity?.valid === false
-          ? 'Review unavailable — the tool identity does not fit; enlarge terminal.'
-          : review.facts !== undefined && review.document?.valid === false
-            ? 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.'
-            : review.screen === 'card'
-              ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
-              : // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
-                'Review unavailable — enlarge terminal, narrow change, or [p] code points.'}{' '}
+        {reviewUnavailableText({
+          identityInvalid: identity?.valid === false,
+          commandTooLarge: review.facts !== undefined && review.document?.valid === false,
+          onCard: review.screen === 'card',
+        })}{' '}
         {reviewExitHint(review)}
       </Text>
     );
@@ -348,6 +345,44 @@ function reviewExitHint(review: ToolReviewState): string {
 
 const RULE_LABEL = ' Approval needed ';
 
+/** What the card says in place of itself when it cannot be drawn: the identity, a command too large to show, or the screen. */
+function reviewUnavailableText(why: {
+  readonly identityInvalid: boolean;
+  readonly commandTooLarge: boolean;
+  readonly onCard: boolean;
+}): string {
+  if (why.identityInvalid)
+    return 'Review unavailable — the tool identity does not fit; enlarge terminal.';
+  if (why.commandTooLarge)
+    return 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.';
+  // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
+  return why.onCard
+    ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
+    : 'Review unavailable — enlarge terminal, narrow change, or [p] code points.';
+}
+
+/** The card's title rows: a delivered saved result's, an unlabelled call's, or the verb and the target's rows. */
+function cardTitleRows(input: {
+  readonly savedResult: boolean;
+  readonly verb: string;
+  readonly toolId: string;
+  readonly targetRows: readonly string[];
+  /** A command's card: its title wraps under its own first word. */
+  readonly command: boolean;
+}): string[] {
+  const { verb, targetRows } = input;
+  if (input.savedResult)
+    return [
+      'Deliver saved result \u2014 no new filesystem operation',
+      ...targetRows.map((row) => `  ${row}`),
+    ];
+  if (targetRows.length === 0)
+    return [`${verb} ${inputDisplay(sanitizeUntrustedInline(input.toolId))}`];
+  // A command's title wraps under its own first word, so a continuation of the line is not mistaken for an argument's row below.
+  const indent = ' '.repeat(input.command ? verb.length + 1 : 2);
+  return targetRows.map((row, index) => (index === 0 ? `${verb} ${row}` : `${indent}${row}`));
+}
+
 /** The thin rule that opens the card: it says the turn is waiting on the person, and is yellow where colour is on. */
 function approvalRule(columns: number): string {
   return `\u2500${RULE_LABEL}${'\u2500'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
@@ -470,19 +505,13 @@ function ReviewCard({
   const targetRows = (target?.rows ?? []).map((row) => withoutLabel(row, 'target'));
   // A delivered saved result is not a new operation: its card says so, and shows no invented fresh diff.
   const savedResult = document?.preview.kind === 'saved-result';
-  const titleRows = savedResult
-    ? [
-        'Deliver saved result \u2014 no new filesystem operation',
-        ...targetRows.map((row) => `  ${row}`),
-      ]
-    : targetRows.length === 0
-      ? [`${verb} ${inputDisplay(sanitizeUntrustedInline(toolId))}`]
-      : targetRows.map((row, index) =>
-          index === 0
-            ? `${verb} ${row}`
-            : // A command's title wraps under its own first word, so a continuation of the line is not mistaken for an argument's row below.
-              `${' '.repeat(review.facts === undefined ? 2 : verb.length + 1)}${row}`,
-        );
+  const titleRows = cardTitleRows({
+    savedResult,
+    verb,
+    toolId,
+    targetRows,
+    command: review.facts !== undefined,
+  });
   const identityText = withoutLabel(identity?.rows[0] ?? '', 'tool');
   const stats = cardStats(document);
   // The lock is read from the page being drawn (its shortened target), not only from the state an acknowledged
@@ -542,10 +571,10 @@ function ReviewCard({
           )}
         </Box>
       )}
-      {warnings.map((warning, index) => (
+      {keyed(warnings, (warning) => warning).map(({ key, item: warning }) => (
         // A warning is yellow; a plain fact (a command's standing and directory) is dimmed, so the one row that matters stands out.
         <Text
-          key={`warn-${index}`}
+          key={key}
           {...(review.facts !== undefined &&
           !warning.startsWith('\u26a0') &&
           !warning.startsWith(' ')
@@ -566,9 +595,9 @@ function ReviewCard({
           </Text>
         </Box>
       ) : (
-        keys.map((row, index) => (
+        keyed(keys, (row) => row).map(({ key, item: row, index }) => (
           <KeyRow
-            key={`keys-${index}`}
+            key={key}
             row={row}
             color={color}
             // The question a wider grant asks is what the person must read now: its first row is the card's plainest text.

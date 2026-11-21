@@ -2,6 +2,7 @@ import type { ChatMode } from '../../chat/chat-mode.js';
 import type {
   PermissionEntry,
   PermissionsSnapshot,
+  SessionApprovalRow,
   WithdrawAnswer,
 } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
@@ -244,68 +245,83 @@ export function foldPermissionsSheetKey(
 ): PermissionsSheetStep {
   if (isInterruptKey(input, key)) return { kind: 'close' };
   const entries = sheetEntries(state.snapshot);
-  if (state.armed) {
-    // `Esc` and a navigation key keep the row and are not typing (ADR-0137 §2: only a key that is not navigation is); every other key
-    // keeps it too and is. A navigation key does not move the row either: it drops the question, as every key but `Enter` does.
-    const kept: PermissionsSheetStep = {
+  if (state.armed) return foldArmedKey(key, state, entries, canArm, now);
+  if (key.escape === true) return { kind: 'close' };
+  const cursor = movedCursor(key, state.cursor, entries.length);
+  // An arrow key (or a page key) is a person choosing a row, not typing: it says the keys that follow are deliberate.
+  if (cursor !== undefined)
+    return {
       kind: 'state',
       state: {
         ...state,
-        armed: false,
+        cursor: clampCursor(cursor, entries.length),
         message: undefined,
-        typed: key.escape === true || isNavigationKey(key) ? state.typed : true,
+        typed: false,
       },
     };
-    // The question is not on screen: the frame says how to leave, and `Esc` does.
-    if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
-    const entry = entries[state.cursor];
-    if (isPlainEnter(key) && entry !== undefined) {
-      const held = now - state.armedAt;
-      if (held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS)
-        return {
-          kind: 'withdraw',
-          entry,
-          state: { ...state, armed: false, message: undefined },
-        };
-      return {
-        kind: 'state',
-        state: { ...state, armed: false, message: notice(SHEET_ENTER_NOTE) },
-      };
-    }
-    return kept;
-  }
-  if (key.escape === true) return { kind: 'close' };
-  const count = entries.length;
-  // An arrow key (or a page key) is a person choosing a row, not typing: it says the keys that follow are deliberate.
-  const move = (cursor: number): PermissionsSheetStep => ({
+  if (isWithdrawKey(input, key)) return foldWithdrawKey(state, entries, canArm, now);
+  return { kind: 'state', state: { ...state, typed: true, message: undefined } };
+}
+
+/** Where a navigation key would put the cursor (before it is clamped), or `undefined` for any other key. */
+function movedCursor(key: ChatKey, cursor: number, count: number): number | undefined {
+  if (key.upArrow === true) return cursor - 1;
+  if (key.downArrow === true) return cursor + 1;
+  if (key.pageUp === true) return cursor - PAGE;
+  if (key.pageDown === true) return cursor + PAGE;
+  if (key.home === true) return 0;
+  if (key.end === true) return count - 1;
+  return undefined;
+}
+
+/** A key while a withdrawal's question is up: only a plain `Enter` inside the dwell window confirms; every other key keeps the row. */
+function foldArmedKey(
+  key: ChatKey,
+  state: PermissionsSheetState,
+  entries: readonly SheetEntry[],
+  canArm: boolean,
+  now: number,
+): PermissionsSheetStep {
+  // `Esc` and a navigation key keep the row and are not typing (ADR-0137 §2: only a key that is not navigation is); every other key
+  // keeps it too and is. A navigation key does not move the row either: it drops the question, as every key but `Enter` does.
+  const kept: PermissionsSheetStep = {
     kind: 'state',
     state: {
       ...state,
-      cursor: clampCursor(cursor, count),
+      armed: false,
       message: undefined,
-      typed: false,
+      typed: key.escape === true || isNavigationKey(key) ? state.typed : true,
     },
-  });
-  if (key.upArrow === true) return move(state.cursor - 1);
-  if (key.downArrow === true) return move(state.cursor + 1);
-  if (key.pageUp === true) return move(state.cursor - PAGE);
-  if (key.pageDown === true) return move(state.cursor + PAGE);
-  if (key.home === true) return move(0);
-  if (key.end === true) return move(count - 1);
-  if (isWithdrawKey(input, key)) {
-    if (!canArm || entries[state.cursor] === undefined)
-      return { kind: 'state', state: { ...state, typed: true } };
-    if (state.typed)
-      return { kind: 'state', state: { ...state, message: notice(SHEET_TYPED_NOTE) } };
-    // Too soon is not typing: a person who pressed `d` early and presses it again after a moment is choosing.
-    if (now - state.openedAt < SHEET_SETTLE_MS)
-      return { kind: 'state', state: { ...state, message: notice(SHEET_WAIT_NOTE) } };
+  };
+  // The question is not on screen: the frame says how to leave, and `Esc` does.
+  if (!canArm) return key.escape === true ? { kind: 'close' } : kept;
+  const entry = entries[state.cursor];
+  if (isPlainEnter(key) && entry !== undefined) {
+    const held = now - state.armedAt;
+    if (held >= SHEET_CONFIRM_DWELL_MS && held <= SHEET_CONFIRM_WINDOW_MS)
+      return { kind: 'withdraw', entry, state: { ...state, armed: false, message: undefined } };
     return {
       kind: 'state',
-      state: { ...state, armed: true, armedAt: now, message: undefined },
+      state: { ...state, armed: false, message: notice(SHEET_ENTER_NOTE) },
     };
   }
-  return { kind: 'state', state: { ...state, typed: true, message: undefined } };
+  return kept;
+}
+
+/** `d` (or `Delete`) with no question up: it arms only a settled sheet, with a row selected, when nothing has been typed. */
+function foldWithdrawKey(
+  state: PermissionsSheetState,
+  entries: readonly SheetEntry[],
+  canArm: boolean,
+  now: number,
+): PermissionsSheetStep {
+  if (!canArm || entries[state.cursor] === undefined)
+    return { kind: 'state', state: { ...state, typed: true } };
+  if (state.typed) return { kind: 'state', state: { ...state, message: notice(SHEET_TYPED_NOTE) } };
+  // Too soon is not typing: a person who pressed `d` early and presses it again after a moment is choosing.
+  if (now - state.openedAt < SHEET_SETTLE_MS)
+    return { kind: 'state', state: { ...state, message: notice(SHEET_WAIT_NOTE) } };
+  return { kind: 'state', state: { ...state, armed: true, armedAt: now, message: undefined } };
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
@@ -377,61 +393,109 @@ function rowLine(
 ): BodyLine {
   const selected = entry === state.cursor;
   const armed = selected && state.armed;
-  const chip = !selected ? '' : armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
-  const right = chip === '' ? tail : tail === '' ? chip : `${chip}${CHIP_GAP}${tail}`;
+  const chip = rowChip(selected, armed);
+  const right = rowRight(chip, tail);
   const text = flushRow(`${selected ? MARKER : NO_MARKER}${label}`, right, width);
+  return {
+    kind: rowKind(selected, armed),
+    text,
+    spans: rowSpans(text, right, chip, tail, armed),
+    entry,
+  };
+}
+
+/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `[Enter] withdraw`. */
+function rowChip(selected: boolean, armed: boolean): string {
+  if (!selected) return '';
+  return armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
+}
+
+/** The right-hand side of a row: the chip and the value, the one that exists, or both with a gap. */
+function rowRight(chip: string, tail: string): string {
+  if (chip === '') return tail;
+  return tail === '' ? chip : `${chip}${CHIP_GAP}${tail}`;
+}
+
+function rowKind(selected: boolean, armed: boolean): SheetLineKind {
+  if (armed) return 'armed';
+  return selected ? 'selected' : 'row';
+}
+
+/** The coloured spans of a row: the chip's key in its role, the value dimmed; none when the row was too narrow for the right-hand side. */
+function rowSpans(
+  text: string,
+  right: string,
+  chip: string,
+  tail: string,
+  armed: boolean,
+): SheetSpan[] {
   const spans: SheetSpan[] = [];
-  if (right !== '' && text.endsWith(right)) {
-    const at = text.length - right.length;
-    if (chip !== '')
-      spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
-    if (tail !== '') {
-      const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
-      spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
-    }
+  if (right === '' || !text.endsWith(right)) return spans;
+  const at = text.length - right.length;
+  if (chip !== '')
+    spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
+  if (tail !== '') {
+    const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
+    spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
   }
-  return { kind: armed ? 'armed' : selected ? 'selected' : 'row', text, spans, entry };
+  return spans;
 }
 
 /** The whole body, before it is windowed: the headings, the rows, and the empty or failure text of a section. */
 function bodyLines(state: PermissionsSheetState, width: number): readonly BodyLine[] {
-  const lines: BodyLine[] = [];
   const { project, session } = state.snapshot;
-  let entryIndex = 0;
-  if (project.ok) {
-    lines.push({
-      kind: 'heading',
-      text: `This project · remembered (${String(project.rows.length)})`,
-    });
-    if (project.rows.length === 0) {
-      for (const text of wrapWords(emptyProjectText(state), width))
-        lines.push({ kind: 'text', text: text.trimEnd() });
-    }
-    for (const item of project.rows) {
-      lines.push(rowLine(escaped(item.label), escaped(item.remembered), entryIndex, state, width));
-      entryIndex += 1;
-    }
-  } else {
+  const lines = projectLines(state, width);
+  if (session !== undefined)
+    lines.push(...sessionLines(state, session, project.ok ? project.rows.length : 0, width));
+  return lines;
+}
+
+/** The project section: its heading, then its rows or the empty text, or the failure text of a store that could not be read. */
+function projectLines(state: PermissionsSheetState, width: number): BodyLine[] {
+  const { project } = state.snapshot;
+  const lines: BodyLine[] = [];
+  if (!project.ok) {
     lines.push({ kind: 'heading', text: 'This project · remembered' });
     for (const text of wrapWords(project.text, width))
       lines.push({ kind: 'text', text: text.trimEnd() });
+    return lines;
   }
-  if (session !== undefined) {
-    lines.push({ kind: 'heading', text: `This session · approved (${String(session.length)})` });
-    if (session.length === 0) lines.push({ kind: 'text', text: EMPTY_SESSION_TEXT });
-    for (const item of session) {
-      lines.push(
-        rowLine(
-          escaped(item.text),
-          item.alsoRemembered ? '(also remembered)' : '',
-          entryIndex,
-          state,
-          width,
-        ),
-      );
-      entryIndex += 1;
-    }
+  lines.push({
+    kind: 'heading',
+    text: `This project · remembered (${String(project.rows.length)})`,
+  });
+  if (project.rows.length === 0) {
+    for (const text of wrapWords(emptyProjectText(state), width))
+      lines.push({ kind: 'text', text: text.trimEnd() });
   }
+  project.rows.forEach((item, entry) => {
+    lines.push(rowLine(escaped(item.label), escaped(item.remembered), entry, state, width));
+  });
+  return lines;
+}
+
+/** The session section: its heading, then its rows (numbered after the project's) or the empty text. */
+function sessionLines(
+  state: PermissionsSheetState,
+  session: readonly SessionApprovalRow[],
+  firstEntry: number,
+  width: number,
+): BodyLine[] {
+  const lines: BodyLine[] = [
+    { kind: 'heading', text: `This session · approved (${String(session.length)})` },
+  ];
+  if (session.length === 0) lines.push({ kind: 'text', text: EMPTY_SESSION_TEXT });
+  session.forEach((item, at) => {
+    lines.push(
+      rowLine(
+        escaped(item.text),
+        item.alsoRemembered ? '(also remembered)' : '',
+        firstEntry + at,
+        state,
+        width,
+      ),
+    );
+  });
   return lines;
 }
 
@@ -551,11 +615,7 @@ export function permissionsSheetLines(
     };
   // A windowed list keeps one height: a window that had to be shorter is padded below, so the sheet does not change size under the cursor.
   while (all.length > height && body.length < height) body.push({ kind: 'text', text: '' });
-  const items = state.armed
-    ? SHEET_LEGEND_ARMED_ITEMS
-    : sheetEntries(state.snapshot).length > 0
-      ? SHEET_LEGEND_IDLE_ITEMS
-      : SHEET_LEGEND_EMPTY_ITEMS;
+  const items = legendItems(state);
   const legendText = clipLine(legend(items), width);
   return [
     ruleLine(state, width),
@@ -570,15 +630,26 @@ export function permissionsSheetLines(
   ];
 }
 
+/** The legend's items: the armed question's, or the idle list's, or the empty list's. */
+function legendItems(state: PermissionsSheetState): typeof SHEET_LEGEND_IDLE_ITEMS {
+  if (state.armed) return SHEET_LEGEND_ARMED_ITEMS;
+  return sheetEntries(state.snapshot).length > 0
+    ? SHEET_LEGEND_IDLE_ITEMS
+    : SHEET_LEGEND_EMPTY_ITEMS;
+}
+
+/** What withdrawing the entry would mean, in one sentence. */
+function withdrawHint(entry: SheetEntry): string {
+  if (entry.kind === 'project')
+    return 'Press d to withdraw it: auto mode will ask about this command again.';
+  return entry.row.alsoRemembered
+    ? 'Press d to withdraw the session approval; the project still remembers it.'
+    : 'Press d to withdraw it: this command will need approval again.';
+}
+
 /** What withdrawing the selected row will do, said before it is done: the row under the list while nothing else needs saying. */
 function hintLine(entry: SheetEntry, width: number): SheetLine {
-  const text =
-    entry.kind === 'project'
-      ? 'Press d to withdraw it: auto mode will ask about this command again.'
-      : entry.row.alsoRemembered
-        ? 'Press d to withdraw the session approval; the project still remembers it.'
-        : 'Press d to withdraw it: this command will need approval again.';
-  const shown = clipLine(text, width);
+  const shown = clipLine(withdrawHint(entry), width);
   // The key is the one thing on the line that is not dimmed: it is what the line is about.
   return {
     kind: 'hint',

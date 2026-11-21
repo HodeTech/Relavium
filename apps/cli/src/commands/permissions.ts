@@ -141,24 +141,31 @@ export function permissionsRevokeCommand(
   args: PermissionsRevokeArgs,
   deps: PermissionsDeps,
 ): ExitCode {
-  if (args.all) {
-    // The recovery needs no project root and no readable file. It also forgets the digest key (best effort: a locked keychain is
-    // ignored), so an older copy of the file restored later stops validating.
-    const homeDir = homeOf(deps);
-    const removed = removeCommandGrantsFile(homeDir, deps.keychain ?? createOsKeychainStore());
-    if (!removed.ok) throw unavailable(removed.reason, homeDir);
-    if (deps.global.json) {
-      writeRecords(deps, [{ action: 'revoke-all', removed: removed.removed }]);
-    } else {
-      write(
-        deps,
-        removed.removed
-          ? 'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions sheet.\n'
-          : 'There were no remembered commands to remove.\n',
-      );
-    }
-    return EXIT_CODES.success;
+  return args.all ? revokeAll(deps) : revokeOne(args, deps);
+}
+
+/** `revoke --all`: take back every remembered command, for every project. */
+function revokeAll(deps: PermissionsDeps): ExitCode {
+  // The recovery needs no project root and no readable file. It also forgets the digest key (best effort: a locked keychain is
+  // ignored), so an older copy of the file restored later stops validating.
+  const homeDir = homeOf(deps);
+  const removed = removeCommandGrantsFile(homeDir, deps.keychain ?? createOsKeychainStore());
+  if (!removed.ok) throw unavailable(removed.reason, homeDir);
+  if (deps.global.json) {
+    writeRecords(deps, [{ action: 'revoke-all', removed: removed.removed }]);
+  } else {
+    write(
+      deps,
+      removed.removed
+        ? 'Removed every remembered command, for every project. A chat that is already open keeps the session approvals a Remember gave it until it withdraws those rows in its /permissions sheet.\n'
+        : 'There were no remembered commands to remove.\n',
+    );
   }
+  return EXIT_CODES.success;
+}
+
+/** `revoke <number>`: one remembered command of this project, by the number `list` printed. */
+function revokeOne(args: PermissionsRevokeArgs, deps: PermissionsDeps): ExitCode {
   const { store, homeDir } = openStore(deps);
   if (args.index === undefined) {
     throw new CliError(

@@ -181,6 +181,12 @@ function pathCandidates(argument: string): readonly string[] {
 /** Where a command stands before the person answers. A command approved earlier this session never reaches a card. */
 export type CommandStanding = 'allowlisted' | 'remembered' | 'not-pre-approved';
 
+/** Where a command stands: the person's own grant first, then the repository's allowlist, else neither. */
+function commandStanding(remembered: boolean, commandAdmitted: boolean): CommandStanding {
+  if (remembered) return 'remembered';
+  return commandAdmitted ? 'allowlisted' : 'not-pre-approved';
+}
+
 export interface CommandOffers {
   /** `Ctrl+G`, Enter: this exact argv for the rest of this session (in memory). */
   readonly session: boolean;
@@ -237,11 +243,7 @@ export function commandCardFacts(input: CommandFactsInput): CommandCardFacts {
   return {
     // The person's own grant outranks the repository's allowlist on the standing row: it is the stronger fact, and the one `auto`
     // acts on (the allowlist pre-approves nothing there).
-    standing: input.remembered
-      ? 'remembered'
-      : input.commandAdmitted
-        ? 'allowlisted'
-        : 'not-pre-approved',
+    standing: commandStanding(input.remembered, input.commandAdmitted),
     filesChanged: input.filesChanged === true && input.remembered,
     grantOutdated: input.grantOutdated === true && input.remembered && input.autoAsks === true,
     runsCode,

@@ -572,24 +572,37 @@ export function secretShapedRanges(text: string): readonly SecretShapedRange[] {
   if (joinSplitHeaderLabels(text) !== text) return whole;
   const firstPass = secretRanges(text, false);
   if (replaceRanges(text, firstPass) !== projected) return whole;
-  // The runs the projection replaces (`replaceRanges`): overlapping ranges are one run, which a touching range does not join.
+  const masked: SecretShapedRange[] = [];
+  for (const run of replacedRuns(firstPass)) {
+    const hidden = hiddenSpan(text, run);
+    if (hidden !== undefined) masked.push(hidden);
+  }
+  return masked;
+}
+
+/** The runs the projection replaces (`replaceRanges`): overlapping ranges are one run, which a touching range does not join. */
+function replacedRuns(
+  ranges: readonly SecretRange[],
+): { start: number; end: number; replacement: string }[] {
   const runs: { start: number; end: number; replacement: string }[] = [];
-  for (const range of [...firstPass].sort((left, right) => left.start - right.start)) {
+  for (const range of [...ranges].sort((left, right) => left.start - right.start)) {
     const last = runs.at(-1);
     if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
     else runs.push({ start: range.start, end: range.end, replacement: range.replacement });
   }
-  const masked: SecretShapedRange[] = [];
-  for (const run of runs) {
-    // A scheme credential's replacement carries its own separating space, so the whitespace before the token is not
-    // part of what is hidden.
-    let { start } = run;
-    if (run.replacement.startsWith(' '))
-      while (/\s/.test(text[start] ?? '') && start < run.end) start += 1;
-    // A run with nothing in it hides nothing: the projection only inserts its mask there.
-    if (run.end > start) masked.push({ start, end: run.end });
-  }
-  return masked;
+  return runs;
+}
+
+/**
+ * What a replaced run hides of the original text, or `undefined` for a run with nothing in it (the projection only inserts its mask
+ * there). A scheme credential's replacement carries its own separating space, so the whitespace before the token is not part of what is
+ * hidden.
+ */
+function hiddenSpan(text: string, run: SecretRange): SecretShapedRange | undefined {
+  let { start } = run;
+  if (run.replacement.startsWith(' '))
+    while (/\s/.test(text[start] ?? '') && start < run.end) start += 1;
+  return run.end > start ? { start, end: run.end } : undefined;
 }
 
 /**

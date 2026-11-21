@@ -747,10 +747,11 @@ export function createChatStore(
         asked !== undefined &&
         isAlwaysConfirmKey(review, key) &&
         now - asked.at >= APPROVAL_CONFIRM_MIN_MS;
+      const confirmChord = asked?.scope === 'remember' ? 'o' : 'g';
       const grant = mayConfirm
         ? reduceToolReviewKey(
             review,
-            asked.scope === 'remember' ? 'o' : 'g',
+            confirmChord,
             { ctrl: true },
             visible,
             reviewPage,
@@ -761,8 +762,7 @@ export function createChatStore(
         : undefined;
       const confirmed =
         grant?.kind === 'approve' &&
-        asked !== undefined &&
-        grant.scope === asked.scope &&
+        grant.scope === asked?.scope &&
         approvalKeyRefusal(approvalGuard, {
           now,
           shownAt: acknowledgedReview === review ? acknowledgedAt : undefined,
@@ -854,12 +854,10 @@ export function createChatStore(
         case 'deny':
           lastResolvedAt = now;
           settleApproval?.(
-            action.reason !== undefined
-              ? { outcome: 'reject', reason: action.reason }
-              : review.facts !== undefined && review.document?.valid === false
-                ? // A command too large for the card is told so, in fixed words (never the command), so it does not retry the same line.
-                  { outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON }
-                : { outcome: 'reject' },
+            denialAnswer(
+              action.reason,
+              review.facts !== undefined && review.document?.valid === false,
+            ),
           );
           flush();
           break;
@@ -1255,6 +1253,15 @@ function fieldsOf(state: ToolReviewState): ReadonlyMap<string, unknown> {
   return fields;
 }
 
+/** The answer a denial settles the approval with: the person's reason, else the fixed words for a command too large to show, else none. */
+function denialAnswer(reason: string | undefined, unshowableCommand: boolean): ApprovalAnswer {
+  if (reason !== undefined) return { outcome: 'reject', reason };
+  // A command too large for the card is told so, in fixed words (never the command), so it does not retry the same line.
+  if (unshowableCommand)
+    return { outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON };
+  return { outcome: 'reject' };
+}
+
 /**
  * What a tool row shows as its target: the preview's, except a command's, which is its program and how many arguments it had (the
  * arguments themselves may hold a credential, and the row stays in the transcript; `/details` and the card show them).
@@ -1263,9 +1270,9 @@ function rowTarget(event: Extract<ToolLiveEvent, { phase: 'preview' }>): string 
   if (event.toolId !== 'run_command') return event.preview.target;
   const program = event.preview.fields[0]?.value ?? event.preview.target;
   const count = event.preview.fields.length - 1;
-  return program === undefined || count <= 0
-    ? program
-    : `${program} (${String(count)} ${count === 1 ? 'argument' : 'arguments'})`;
+  if (program === undefined || count <= 0) return program;
+  const noun = count === 1 ? 'argument' : 'arguments';
+  return `${program} (${String(count)} ${noun})`;
 }
 
 function boundedDisplayText(source: string, limit: number): string {

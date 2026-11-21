@@ -269,14 +269,12 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   const linesNotShown = input.linesNotShown ?? 0;
   if (document !== undefined && document.preview.diff === undefined && linesNotShown > 0) {
     // The same slot, the same way out as the diff warning above: the full view lists the rest, and no Allow-all is offered.
+    const plural = linesNotShown === 1 ? '' : 's';
+    const verb = linesNotShown === 1 ? 'is' : 'are';
     warnings.push(
       input.commandFacts === undefined
-        ? `\u26a0 ${linesNotShown} line${linesNotShown === 1 ? '' : 's'} of this call ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v] for the full view.`
-        : `\u26a0 ${linesNotShown} row${linesNotShown === 1 ? '' : 's'} of this command ${linesNotShown === 1 ? 'is' : 'are'} not shown \u2014 press [v]${
-            input.commandFacts.offers.session || input.commandFacts.offers.remember
-              ? '; This session and Remember are offered only while every row is on screen.'
-              : '.'
-          }`,
+        ? `\u26a0 ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press [v] for the full view.`
+        : `\u26a0 ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press [v]${commandRowsOfferNote(input.commandFacts.offers)}`,
     );
   }
   const diff = document?.preview.diff;
@@ -330,6 +328,28 @@ export interface CardKeyInput {
   readonly confirmRemember?: boolean;
 }
 
+/** The sentence that ends a command card's "rows not shown" warning: what stays unavailable while a row is off screen. */
+function commandRowsOfferNote(offers: CommandCardFacts['offers']): string {
+  return offers.session || offers.remember
+    ? '; This session and Remember are offered only while every row is on screen.'
+    : '.';
+}
+
+/** The first key row once the call has been inspected: Allow, and the grants the card offers beside it. */
+function allowRow(input: CardKeyInput, session: string): string {
+  const once = input.command === true ? ' once' : '';
+  const sessionKey = input.cacheable ? session : '';
+  const remember = input.remember === true ? '   [Ctrl+O] Allow + remember' : '';
+  return `[Ctrl+Y] Allow${once}${sessionKey}${remember}`;
+}
+
+/** The first key row while Allow is locked: what the person has to do first. */
+function lockedAllowRow(command: boolean): string {
+  return command
+    ? '(Allow is locked until you read the whole command)'
+    : '(Allow is locked until you inspect the change)';
+}
+
 /**
  * The two key rows: the grants, then the refusals and the rest. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the
  * legend spells them out; the rows are laid out so that, at 80 columns, the longest scope phrase still leaves both rows whole
@@ -358,10 +378,8 @@ export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
       ? '   [Ctrl+G] Allow this session'
       : `   [Ctrl+G] Allow all ${input.scope} this session`;
   const grants = input.inspected
-    ? `[Ctrl+Y] Allow${input.command === true ? ' once' : ''}${input.cacheable ? session : ''}${input.remember === true ? '   [Ctrl+O] Allow + remember' : ''}`
-    : input.command === true
-      ? '(Allow is locked until you read the whole command)'
-      : '(Allow is locked until you inspect the change)';
+    ? allowRow(input, session)
+    : lockedAllowRow(input.command === true);
   const full = input.command === true ? 'Full view' : 'Full diff';
   return [grants, `[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] ${full}   Esc stops the turn`];
 }

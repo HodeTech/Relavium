@@ -104,6 +104,25 @@ function Section(
   );
 }
 
+/**
+ * The context-aware hint bar of the Home (2.5.C S6): the second `Ctrl+C` while the first is armed, the session picker's keys while one
+ * is open, at an empty prompt the `/` palette beside the start-a-chat affordance, and once composing the submit hint.
+ */
+function homeHint(state: {
+  readonly interruptArmed: boolean;
+  readonly resuming: boolean;
+  readonly emptyDraft: boolean;
+  readonly hasRecentSessions: boolean;
+}): string {
+  if (state.interruptArmed) return 'Press Ctrl+C again to exit';
+  if (state.resuming)
+    return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
+  if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+  return state.hasRecentSessions
+    ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
+    : '/ for commands · type a message to start a chat · Ctrl+C twice to exit';
+}
+
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
   const interruptArmed = props.interruptArmed === true;
@@ -337,15 +356,12 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               from an empty buffer) alongside the start-a-chat affordance; once composing, swap to the submit hint
               (which surfaces Ctrl+J for a newline). */}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {interruptArmed
-              ? 'Press Ctrl+C again to exit'
-              : props.continueSessionId !== undefined
-                ? '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit'
-                : editor.text.length === 0
-                  ? snapshot.recentSessions.length > 0
-                    ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
-                    : '/ for commands · type a message to start a chat · Ctrl+C twice to exit'
-                  : 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit'}
+            {homeHint({
+              interruptArmed,
+              resuming: props.continueSessionId !== undefined,
+              emptyDraft: editor.text.length === 0,
+              hasRecentSessions: snapshot.recentSessions.length > 0,
+            })}
           </Text>
         </Box>
       )}

@@ -454,6 +454,40 @@ const REMEMBER_FAILURES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * What a *Remember* answer comes to: the grant written for this exact argv and the scope `Session` too (`always`), or `once` when the card did
+ * not offer it or the grant could not be written (said once, in fixed words). A call cancelled while the person was answering (Esc, Ctrl+C)
+ * leaves no standing grant behind: the registry reads a throw under an aborted signal as the cancellation it is.
+ */
+async function rememberCommand(
+  argv: readonly string[],
+  offered: boolean,
+  deps: TurnPolicyDeps,
+  signal: AbortSignalLike | undefined,
+): Promise<{ readonly scope: 'once' | 'always'; readonly grantId: string | undefined }> {
+  const grants = deps.commandGrants;
+  if (!offered || grants?.remember === undefined) return { scope: 'once', grantId: undefined };
+  throwIfAborted(signal);
+  const written = await grants.remember(argv);
+  if (written.ok && signal?.aborted === true) {
+    // The write finished as the call was cancelled: the grant stands, so say so instead of the success notice.
+    deps.notify?.(
+      'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.',
+    );
+    throwIfAborted(signal);
+  }
+  if (written.ok) {
+    deps.notify?.(
+      'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.',
+    );
+    // remembered for the project, and for the rest of this session too
+    return { scope: 'always', grantId: written.id };
+  }
+  const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
+  deps.notify?.(`Allowed once, but not remembered: ${why}.`);
+  return { scope: 'once', grantId: undefined };
+}
+
+/**
  * Ask the person about a command. The session cache is keyed by the exact argv, never by tool id. The card is given the facts
  * ADR-0118 §1 lists (standing, a code carrier, a protected path, the directory) and the answers it may offer, and the answer
  * is narrowed to what was offered: a prompt that returns an answer the card did not offer gets Once, never more.
@@ -498,32 +532,9 @@ async function askAboutCommand(
   let grantId: string | undefined;
   // A session answer the card did not offer is floored to Once by `toDecision` (it caches only when `offers.session`).
   if (scope === 'remember') {
-    if (!facts.offers.remember || grants?.remember === undefined) {
-      scope = 'once';
-    } else {
-      // A call cancelled while the person was answering (Esc, Ctrl+C) leaves no standing grant behind: the registry reads a throw
-      // under an aborted signal as the cancellation it is.
-      throwIfAborted(signal);
-      const written = await grants.remember(argv);
-      if (written.ok && signal?.aborted === true) {
-        // The write finished as the call was cancelled: the grant stands, so say so instead of the success notice.
-        deps.notify?.(
-          'Remembered for this project, but the call was cancelled. /permissions lists it and takes it back.',
-        );
-        throwIfAborted(signal);
-      }
-      if (written.ok) {
-        scope = 'always'; // remembered for the project, and for the rest of this session too
-        grantId = written.id;
-        deps.notify?.(
-          'Allowed now and remembered for this project. This chat will not ask about it again; later chats ask in ask mode and run it unasked in auto mode until a file write changes the project. /permissions lists it and takes it back.',
-        );
-      } else {
-        const why = REMEMBER_FAILURES[written.reason ?? ''] ?? 'it could not be written';
-        deps.notify?.(`Allowed once, but not remembered: ${why}.`);
-        scope = 'once';
-      }
-    }
+    const remembered = await rememberCommand(argv, facts.offers.remember, deps, signal);
+    scope = remembered.scope;
+    grantId = remembered.grantId;
   }
   return toDecision(
     { outcome: 'approve', scope },
