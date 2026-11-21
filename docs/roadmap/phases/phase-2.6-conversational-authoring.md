@@ -6072,7 +6072,7 @@ Each step ends with a review round, its fixes, a second review round and its fix
 4. **Where the VS Code extension's *Allow Always* lives (C·K13).** The spec appended to a committed workflow, the exposure ADR-0118 rejected for the chat; it now records an open decision for the extension's phase and an ADR.
 5. **Design rulings parked in the register:** the grants directory's mode (M1), a safe truncate-back for a torn append (H2, K8), scoping the keychain account by home (H15), counting approved process commands as writes (K2), a card warning for project-code runners (K4), the replayable mutation artifact, and moving the process logs out of ADR-0118 and ADR-0137 (V4a-06).
 6. **The PR description** (a human edit): it says `Ctrl+C` stops everywhere (not during a keychain read), it says "one high" where this record lists two (steps 2 and 4), and its checklist is stale (C·V4b-04, V4b-05; B's "one high" contradiction).
-7. **Findings being fixed in parallel by other agents, not in the tree these documents were written against (`2bc73222`):** B6 (the *Remember* cancellation guards), H1 (the keychain fake's `delete`), H11 (the split-secret test), H12 (the backstop test's cost), U1, U2 and T1. The register keeps each `[ ]` until the commit is named.
+7. **Findings being fixed in parallel by other agents, not in the tree these documents were written against (`2bc73222`):** B6 (the *Remember* cancellation guards), H1 (the keychain fake's `delete`), H12 (the backstop test's cost), U1, U2 and T1. The register keeps each `[ ]` until the commit is named.
 
 **Fixed (commit).**
 
@@ -6082,10 +6082,10 @@ Each step ends with a review round, its fixes, a second review round and its fix
 | S2, K1: the write marker was shorter than a session | A file write a chat applied is recorded per project (`~/.relavium/command-write-marks.json`); a remembered grant older than it asks again in `auto`, in every chat, until renewed; `revoke --all` removes the file | `5d2ac9ab`, [ADR-0138](../../decisions/0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md); `4c049cdf` (a root at its grant bound can still renew) |
 | H13: a grant skipped the card for an argument naming a protected path from the working directory | `auto` asks when an argument reaches a protected path from where the chat runs | `5d2ac9ab` |
 | V2-01 (and B's "`revokeAll` key cache"): a *Remember* could write under a key another process had cleared | a *Remember* reads the keychain afresh | `5d2ac9ab` |
-| H14: `permissions list` said "no remembered commands" when records were ignored | `list` says so on stderr (count, file, `revoke --all`) | `5d2ac9ab` |
+| H14: `permissions list` said "no remembered commands" when records were ignored | `list` says so on stderr (count, file, `revoke --all`); the chat's store already told it once. The Home's sheet store passes no `notify` and says nothing (open, in the register) | `5d2ac9ab` |
 | The sheet's `auto` note | `Auto runs approved commands; remembered ones ask again after a file write.` | `5d2ac9ab` |
 | S1: git's XDG user-global config was not write-protected (older than the PR, on `main`) | `~/.config/git/` is refused as a run of segments, like `.gitconfig` | `2a852e4e` |
-| B4: the card's masked copy and `/details` showed credentials the event preview masks | the card, `c` and `/details` hide every span `secretShapedRanges` says the event hides | `b092ec1a`, `120e13a6` |
+| B4, H11: the card's masked copy and `/details` showed credentials the event preview masks, and the split-secret test skipped its assertion whenever the oracle leaked | the card, `c` and `/details` hide every span `secretShapedRanges` says the event hides; the test asserts unconditionally | `b092ec1a`, `120e13a6` |
 | B5: a `!` command's frame sent the raw line to the model and the history | the frame's `cmd` is the scrubbed line; the process still runs the typed argv | `a7b2e4dc` |
 | H9: a command card could open over an empty preview | refused in fixed words before any card opens | `4494245d`, `6b5caf86` |
 | C1-1 / V6a-01: `as unknown as` in `chat-store.ts` (CLAUDE.md rule 1); a fractional round limit rounded up; `ToolActionPreview.command` JSDoc said "space-joined" | cast-free comparison; rounds down; JSDoc names the quoted line | `4494245d` |
