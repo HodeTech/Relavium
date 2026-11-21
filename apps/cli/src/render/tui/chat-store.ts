@@ -1292,7 +1292,10 @@ function updateToolDisplay(
     outcome: 'running',
   };
   if (event.phase === 'preview') {
-    const document = withDocument ? createReviewDocument(event.preview) : undefined;
+    // A command's arguments are masked as the engine's event preview masks them (ADR-0118 §1): what the card hides, its details hide.
+    const document = withDocument
+      ? createReviewDocument(event.preview, { command: event.toolId === 'run_command' })
+      : undefined;
     if (event.preview.kind === 'saved-result' || document === undefined) {
       const delivery = { ...next };
       delete delivery.document;
@@ -1323,16 +1326,19 @@ function detailsDocument(selected: ToolDisplay) {
   // Nothing to add to what the call already retained: it is the same document, not a second projection of it.
   // (An invalid one retains no preview, and its details are rebuilt from the empty one it carries.)
   if (selected.document?.valid === true && selected.summary === undefined) return selected.document;
-  return createReviewDocument({
-    ...(preview ?? { kind: 'operation', fields: [] }),
-    fields: [
-      ...(preview?.fields ?? []),
-      ...(preview === undefined
-        ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
-        : []),
-      ...(selected.summary === undefined
-        ? []
-        : [{ name: 'Result summary', value: selected.summary }]),
-    ],
-  });
+  return createReviewDocument(
+    {
+      ...(preview ?? { kind: 'operation', fields: [] }),
+      fields: [
+        ...(preview?.fields ?? []),
+        ...(preview === undefined
+          ? [{ name: 'Preview unavailable', value: 'Not retained for this call.' }]
+          : []),
+        ...(selected.summary === undefined
+          ? []
+          : [{ name: 'Result summary', value: selected.summary }]),
+      ],
+    },
+    { command: selected.toolId === 'run_command' },
+  );
 }
