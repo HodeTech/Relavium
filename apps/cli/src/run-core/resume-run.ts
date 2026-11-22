@@ -199,10 +199,14 @@ export interface ResumeRunPorts {
   /**
    * The values for the run's masked `secret` slots, by name. Called only after the selection, the decision
    * and the price pre-check passed and only for a run that has masked slots and a host that said it will
-   * supply them. Receives the copyable invocation the refusals name, when one exists.
+   * supply them. Receives the copyable invocation the refusals name, when one exists, and the declared
+   * masked slot names, so a host can validate what it collected before it answers. The names are the ones
+   * `resumeRun` itself checks the answer against afterwards; the shell's reader ignores them.
    */
   readonly secretInputs: (context: {
     readonly resumeInvocation: string | undefined;
+    /** The names of the run's masked `secret` slots, frozen: a port cannot change what its answer is checked against. */
+    readonly maskedSlots: readonly string[];
   }) => Promise<Readonly<Record<string, string>>>;
   /** The MCP stdio consent gate, built at the point the connector's options are assembled. */
   readonly consentGate: (homeDir: string) => StdioConsentGate;
@@ -647,7 +651,10 @@ async function resolveSecretInputs(
         `they are never persisted. ${secretPipeHint(resumeInvocation)}`,
     );
   }
-  const supplied = await ports.secretInputs({ resumeInvocation });
+  const supplied = await ports.secretInputs({
+    resumeInvocation,
+    maskedSlots: Object.freeze([...masked]),
+  });
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {
     throw new CliError(

@@ -3,18 +3,15 @@ import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
 import type { RendererCreationOwner } from './workflow-terminal.js';
 import { WorkflowLifetime } from './workflow-lifetime.js';
+import { finishLeg } from '../run-core/finish-leg.js';
 import { prepareRun } from '../run-core/prepare-run.js';
 import { RunResources } from '../run-core/run-resources.js';
 
 import type { WorkflowDefinition, WorkflowEngine } from '@relavium/core';
 
 import type { BuildEngineOptions } from '../engine/build-engine.js';
-import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { type StdioConsentGate } from '../engine/mcp-servers.js';
-import {
-  sweepHostMediaBestEffort as defaultSweepMedia,
-  sweepMediaAtTerminal,
-} from '../engine/media-gc.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
@@ -22,7 +19,7 @@ import type { OpenedHistory } from '../history/open.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
-import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
+import type { ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
@@ -34,7 +31,7 @@ import {
   type StdinSecretContext,
   type StdinSecretSource,
 } from '../secrets/read-secret.js';
-import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
+import { driveRun } from './drive.js';
 import { parseInputArgs } from './inputs.js';
 
 export interface RunCommandArgs {
@@ -198,59 +195,21 @@ async function runOwned(
       json: deps.global.json,
     });
 
-    const departure = await handle.depart();
-    if (departure.kind === 'continue')
-      throw new CliError('internal', 'run departure was not acknowledged');
-    const exitCode = outcomeToExitCode(
+    // The shared epilogue (`finishLeg`): the departure, the exit code, the retention passes and the line a
+    // taken-over run says. This is a `start` leg, so a takeover is said on stderr after the sweeps.
+    return await finishLeg({
+      leg: 'start',
+      runId: handle.runId,
+      lifetime,
+      io: deps.io,
+      json: deps.global.json,
+      handle,
       outcome,
-      handle.durability(),
-      handle.terminalError(),
-      departure,
-      false,
-    );
-
-    // Both retention passes are optional: do not start new maintenance after the original deadline.
-    // Already-entered work and mandatory engine/input/MCP/database joins retain their own barriers.
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — best-effort, keyed on a TERMINAL outcome: the clean-terminal reclaim
-    // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
-    // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
-    // sweepMediaAtTerminal for the guard + the never-fail-the-run swallow.
-    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
-    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
-    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
-    // survive precisely because its run is over.
-    // `history` is undefined for an in-memory embedding/test path, which has no journal to sweep.
-    if (
-      isTerminalOutcome(outcome) &&
-      history !== undefined &&
-      lifetime.invocation.registry.budget.remainingMs() !== 0
-    ) {
-      sweepCommittedEffects(deps.io, history.db, handle.runId, lifetime.effectNoticeOwner);
-    }
-    await sweepMediaAtTerminal({
-      sweep: deps.sweepMedia ?? defaultSweepMedia,
-      isTerminal: isTerminalOutcome(outcome),
       db: history?.db,
-      casRoot: prepared.mediaCasRoot,
-      currentRunId: handle.runId,
-      graceMs: prepared.mediaGcGraceMs,
-      budget: lifetime.invocation.registry.budget,
+      mediaCasRoot: prepared.mediaCasRoot,
+      mediaGcGraceMs: prepared.mediaGcGraceMs,
+      sweepMedia: deps.sweepMedia ?? defaultSweepMedia,
     });
-
-    // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
-    // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
-    // Off the HANDLE, not a `subscribe()` — see the note in `gate.ts`. `start()`'s ordering happens to be
-    // safe for a subscriber, but the two surfaces must not answer this differently.
-    // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
-    // final summary falls through to a bare "run ended" and the user is left with an exit code and no
-    // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`
-    // hitting the same takeover deserves the same sentence. stderr, so `--json` stdout stays a clean stream.
-    if (exitCode === EXIT_CODES.runOwnedElsewhere) {
-      deps.io.writeErr(
-        `run ${handle.runId} was taken over by another process; this one stopped without recording an outcome — read \`relavium logs ${handle.runId}\` for what actually happened\n`,
-      );
-    }
-    return exitCode;
   } catch (cause) {
     // Record before an entered MCP/DB cleanup tail can hold the rejection from execute().
     if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);

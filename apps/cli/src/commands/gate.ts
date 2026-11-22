@@ -3,6 +3,7 @@ import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
 import { WorkflowLifetime } from './workflow-lifetime.js';
 import type { RendererCreationOwner } from './workflow-terminal.js';
+import { finishLeg } from '../run-core/finish-leg.js';
 import { resumeRun, secretPipeHint, type ResumeRunPorts } from '../run-core/resume-run.js';
 import { RunResources } from '../run-core/run-resources.js';
 import { Readable } from 'node:stream';
@@ -14,11 +15,7 @@ import type { GateDecision } from '@relavium/shared';
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
 import type { BuildEngineOptions } from '../engine/build-engine.js';
-import { sweepCommittedEffects } from '../engine/effect-retention.js';
-import {
-  sweepHostMediaBestEffort as defaultSweepMedia,
-  sweepMediaAtTerminal,
-} from '../engine/media-gc.js';
+import { sweepHostMediaBestEffort as defaultSweepMedia } from '../engine/media-gc.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import { budgetDecisionFromFlags, type BudgetDecisionFlags } from '../gate/budget.js';
@@ -36,8 +33,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
-import { sanitizeInline } from '../render/sanitize.js';
-import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
+import { driveRun } from './drive.js';
 
 // The selection, the save-to root and the hold notice are the shared resume core's; they are re-exported
 // here because this module has always been where they are imported from.
@@ -228,68 +224,22 @@ async function resumeGateOwned(
       json: deps.global.json,
     });
 
-    const departure = await handle.depart();
-    if (departure.kind === 'continue')
-      throw new CliError('internal', 'run departure was not acknowledged');
-    const exitCode = outcomeToExitCode(
+    // The shared epilogue (`finishLeg`): the departure, the exit code, the retention passes, and the two
+    // rules only a resumed leg has — a taken-over run refuses with `run_owned_elsewhere` before any sweep,
+    // and a run that closed already settled is a clean exit-0 no-op.
+    return await finishLeg({
+      leg: 'resume',
+      runId: args.runId,
+      lifetime,
+      io: deps.io,
+      json: deps.global.json,
+      handle,
       outcome,
-      handle.durability(),
-      handle.terminalError(),
-      departure,
-      true,
-    );
-
-    // An uncertain NONTERMINAL outcome is fenced, including a buffered stale pause. A delivered
-    // terminal with uncertainty instead belongs to the outbox/exit-5 path below. A durable later
-    // pause still exits 3. Neither durability nor the outcome alone makes these distinctions.
-    if (exitCode === EXIT_CODES.runOwnedElsewhere) {
-      throw new CliError(
-        'run_owned_elsewhere',
-        `this process could not confirm ownership of run ${args.runId} during the resume and stopped — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
-      );
-    }
-    if (outcome === undefined && exitCode === EXIT_CODES.success) {
-      // **Two very different runs close with no `run:*` event, and telling them apart matters.** A closed
-      // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
-      // settled it between our pre-check and the engine's) is an idempotent no-op. A run FENCED mid-resume
-      // (ADR-0079 §5) also emits no terminal by design — and reporting that as "already settled … exit 0"
-      // is the worst available answer: this process cannot report settlement, even when its earlier gate
-      // decision is already durable, and an automation loop records success. The disposition separates them at no
-      // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      const notice = `run ${sanitizeInline(args.runId)} already settled; nothing to resume\n`;
-      if (deps.global.json) deps.io.writeErr(notice);
-      else deps.io.writeOut(notice);
-      return EXIT_CODES.success;
-    }
-
-    // Both retention passes are optional: do not start new maintenance after the original deadline.
-    // Already-entered work and mandatory engine/input/MCP/database joins retain their own barriers.
-    // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
-    // `run` does (the SAME helper). A re-pause (a second gate / budget pause) is NOT terminal, so the still-paused
-    // run's media survives for the next resume; a GC failure is swallowed (never a correctness break).
-    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
-    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
-    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
-    // survive precisely because its run is over.
-    if (isTerminalOutcome(outcome) && lifetime.invocation.registry.budget.remainingMs() !== 0) {
-      sweepCommittedEffects(deps.io, db, args.runId, lifetime.effectNoticeOwner);
-    }
-    await sweepMediaAtTerminal({
-      sweep: deps.sweepMedia ?? defaultSweepMedia,
-      isTerminal: isTerminalOutcome(outcome),
       db,
-      casRoot: mediaCasRoot,
-      currentRunId: args.runId,
-      graceMs: config.mediaGcGraceMs,
-      budget: lifetime.invocation.registry.budget,
+      mediaCasRoot,
+      mediaGcGraceMs: config.mediaGcGraceMs,
+      sweepMedia: deps.sweepMedia ?? defaultSweepMedia,
     });
-    // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
-    // **Read off the HANDLE, never from a `subscribe()` here.** The resume gate settles `run:failed` INSIDE
-    // `resumeFromCheckpoint`'s await, before this code has a handle to subscribe to, and `subscribe` has no
-    // replay — a review measured a late subscriber seeing `undefined` and this surface reporting exit 1 for
-    // a run that had stopped for an unresolved external effect. `terminalError()` is captured on the
-    // handle's own construction-time subscription, which no ordering can outrun.
-    return exitCode;
   } catch (err) {
     // The pre-connect guard owns child cleanup; this command owns the run-style interruption exit.
     // Once resume has started, the handle/engine error remains authoritative.
