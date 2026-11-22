@@ -314,9 +314,10 @@ const SECRET_STDIN_CONTEXT = (
 
 /**
  * The shell's secret port for a resume: `name=value` lines from the bounded stdin reader (or the injected
- * fixture reader), parsed by the shared secret-line parser. The core refuses a missing, unexpected or empty
- * slot ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
- * §6); this only supplies what was piped.
+ * fixture reader), parsed by the shared secret-line parser. The run core's `resolveSecretInputs` refuses a
+ * missing or unexpected slot name ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §6); it does NOT refuse a blank value — that refusal is `parseSecretLines`, called here, so a host port
+ * that does not use it must refuse a blank value itself.
  */
 function readGateSecrets(
   args: ResumeGateArgs,

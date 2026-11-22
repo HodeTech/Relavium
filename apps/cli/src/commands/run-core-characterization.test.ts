@@ -46,6 +46,7 @@ import { fingerprint, resolveStdioSpawn, type ResolvedStdioSpawn } from '../engi
 import type { OpenedHistory } from '../history/open.js';
 import { isCliError, toUserFacing } from '../process/errors.js';
 import { createCliInvocation, type CliInvocation } from '../process/invocation.js';
+import { FATAL_TERMINATION_MS } from '../process/invocation-registry.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createProviderResolver } from '../engine/providers.js';
@@ -364,6 +365,9 @@ async function localDigest(cwd: string): Promise<string> {
   );
 }
 
+/** A well-formed `--allow-mcp-stdio` digest that names no declaration these workflows make. */
+const WRONG_DIGEST = `v1:${'0'.repeat(64)}`;
+
 /** Replace what differs between machines and runs inside a consent refusal: the root, node and the digest. */
 const scrubConsent = (text: string): string =>
   text
@@ -398,6 +402,10 @@ interface Hung {
 
 const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+// Real time, not ticks: how long the hang is given to reach its teardown warning, and how often it is polled.
+const HANG_OBSERVATION_DEADLINE_MS = 10_000;
+const HANG_POLL_MS = 5;
+
 async function observeHang(
   invoke: (io: CliIo, invocation: CliInvocation) => Promise<number>,
   normalize: (text: string) => string,
@@ -412,7 +420,13 @@ async function observeHang(
   void invoke(capture.io, control.invocation).then(mark, mark);
   // The release tail is asynchronous: wait for the teardown warning that shows the close was refused,
   // then give anything the shell might still do after it (the database close) every chance to run.
-  for (let n = 0; n < 500 && !capture.err().includes('MCP teardown failed'); n += 1) await tick();
+  // The wait is bound by wall-clock time, not by a count of ticks: the path includes real `node:fs/promises`
+  // calls, which the thread pool answers at its own pace under load.
+  const deadline = Date.now() + HANG_OBSERVATION_DEADLINE_MS;
+  while (!capture.err().includes('MCP teardown failed')) {
+    if (Date.now() > deadline) throw new Error('the MCP teardown warning never appeared');
+    await new Promise<void>((resolve) => setTimeout(resolve, HANG_POLL_MS));
+  }
   for (let n = 0; n < 20; n += 1) await tick();
   const atHang = {
     settled,
@@ -421,7 +435,7 @@ async function observeHang(
     closes: historyCloses,
     activeOwners: control.registry.activeOwners,
   };
-  control.advance(3000);
+  control.advance(FATAL_TERMINATION_MS);
   const boundExit = await control.invocation.finiteExit.exited;
   for (let n = 0; n < 20; n += 1) await tick();
   return {
@@ -435,8 +449,10 @@ async function observeHang(
 }
 
 // ---------------------------------------------------------------------------------------------------
-// Expected values. Recorded from the pre-extraction code; edited only to add a new case, never to
-// follow a behaviour change.
+// Expected values. The original cases were recorded from the pre-extraction code; the cases added later
+// (commit 0c3d100b onward) were recorded from the committed post-extraction code and reproduce at the
+// pre-extraction commit 022e182d (checked 2026-11-22; see the step-2 entry in the phase record). Edited only
+// to add a new case, never to follow a behaviour change.
 // ---------------------------------------------------------------------------------------------------
 
 const EXPECTED: Readonly<Record<string, Observed>> = {
@@ -1335,6 +1351,38 @@ const EXPECTED: Readonly<Record<string, Observed>> = {
     promptBindings: [],
     order: [],
   },
+  // Round-2 additions (MVP-8 step 2): a well-formed digest that names no declaration is refused like no flag.
+  // Recorded from the committed code and verified to fail when the allowed-digest list accepts any digest.
+  'budget.allow-mcp-stdio.wrong-digest': {
+    result: {
+      code: 'invalid_invocation',
+      exitCode: 2,
+      message:
+        'this run would start 1 local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each \u2014 the digest is a hash of the declaration, not a secret.',
+    },
+    out: [''],
+    err: ['  local: <node>  <digest>', ''],
+    observedExit: 2,
+    activeOwners: 0,
+    closes: 1,
+    order: [],
+  },
+  'gate.allow-mcp-stdio.wrong-digest': {
+    result: {
+      code: 'invalid_invocation',
+      exitCode: 2,
+      message:
+        'this run would start 1 local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each \u2014 the digest is a hash of the declaration, not a secret.',
+    },
+    out: [''],
+    err: ['  local: <node>  <digest>', ''],
+    observedExit: 2,
+    activeOwners: 0,
+    closes: 1,
+    prompts: [],
+    promptBindings: [],
+    order: [],
+  },
   'gate.stop.engine': {
     result: 1,
     out: [''],
@@ -2005,6 +2053,31 @@ describe('run core characterization — relavium budget resume', () => {
         order: startMcpClient.mock.calls.map(() => 'spawn'),
       });
     });
+
+    it('a digest that names no declaration is refused like no flag: nothing spawns, the expected digest is listed', async () => {
+      const paused = await seed(declaresServer);
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const h = createHarness();
+      const observed = await h.observe((io, invocation) =>
+        budgetCommand(
+          {
+            runId: paused.runId,
+            approveAmount: String(paused.amount),
+            allowMcpStdio: [WRONG_DIGEST],
+          },
+          { ...budgetDeps(io, invocation, false), startMcpClient },
+        ),
+      );
+      expect(startMcpClient).not.toHaveBeenCalled();
+      expect(generated, 'a refused resume dispatches no agent').toBe(0);
+      const listed = observed.err.join('\n');
+      expect(listed, 'the digest to pass is listed').toContain(await localDigest(root));
+      expect(listed, 'the wrong digest is not what is listed').not.toContain(WRONG_DIGEST);
+      expectObserved('budget.allow-mcp-stdio.wrong-digest', {
+        ...scrubObserved(observed, scrubConsent),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
   });
 });
 
@@ -2286,6 +2359,32 @@ describe('run core characterization — the MCP consent prompt', () => {
       );
       expect(startMcpClient).not.toHaveBeenCalled();
       expectObserved('gate.allow-mcp-stdio.refused', {
+        ...withPrompts(observed, h.normalize),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
+
+    it('a digest that names no declaration is refused like no flag: nothing spawns, the expected digest is listed', async () => {
+      const h = createHarness();
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const { runId, allowed } = await parked(h, startMcpClient);
+      startMcpClient.mockClear();
+      const observed = await h.observe((io, invocation) =>
+        gateCommand(
+          { runId, approve: true, allowMcpStdio: [WRONG_DIGEST] },
+          {
+            ...gateDeps(io, invocation, false),
+            startMcpClient,
+            selectRenderer: plainRenderer,
+            selectGatePrompter: () => undefined,
+          },
+        ),
+      );
+      expect(startMcpClient).not.toHaveBeenCalled();
+      const listed = observed.err.join('\n');
+      expect(listed, 'the digest to pass is listed').toContain(allowed);
+      expect(listed, 'the wrong digest is not what is listed').not.toContain(WRONG_DIGEST);
+      expectObserved('gate.allow-mcp-stdio.wrong-digest', {
         ...withPrompts(observed, h.normalize),
         order: startMcpClient.mock.calls.map(() => 'spawn'),
       });

@@ -544,6 +544,10 @@ describe('a stale gate card after another process decided the gate, on the real 
     expect(exitCodeOf(scene)).toBe(EXIT_CODES.durabilityUncertain);
     // The database protected itself — B's rows are intact — but the assertions of the real tests see the fault.
     expect(eventRows(scene.observer, scene.runId)).toEqual(scene.afterB);
-    await expect(expectFencedAndUntouched(scene)).rejects.toThrow();
+    // The control must fail on the FIRST thing the real tests assert: A's own stream carried a terminal
+    // (`run:failed`), which a fenced run never claims. Any other throw would be a different fault.
+    await expect(expectFencedAndUntouched(scene)).rejects.toThrow(
+      /type: 'run:failed'[\s\S]*to deeply equal \[\]/,
+    );
   }, 30_000);
 });

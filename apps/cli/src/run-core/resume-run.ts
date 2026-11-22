@@ -616,10 +616,11 @@ export function secretPipeHint(resumeInvocation: string | undefined): string {
  * `ps`, shell history and CI logs. The name in the line is not itself a secret, and carrying it there rather
  * than in a repeated flag removes the order dependency that would silently swap two credentials.
  *
- * Every masked slot must be supplied and nothing else may be. Unexpected source names are refused without
- * reflecting their untrusted bytes, and an empty value is refused explicitly rather than by omission — the
- * engine would accept `''` as "re-supplied", and a blank line in a piped heredoc is the likeliest way to
- * produce one by accident.
+ * Every masked slot must be supplied and nothing else may be. This function checks only the NAMES: a missing
+ * slot and an unexpected one (refused without reflecting its untrusted bytes). A blank value is NOT checked
+ * here — the refusal lives in the shell's `parseSecretLines`, because the engine would accept `''` as
+ * "re-supplied" and a blank line in a piped heredoc is the likeliest way to produce one by accident. A host
+ * port other than the CLI's (the Home's) must therefore refuse a blank value itself.
  */
 async function resolveSecretInputs(
   inputs: Record<string, unknown>,
