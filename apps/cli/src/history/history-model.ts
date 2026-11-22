@@ -1,9 +1,14 @@
 import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { sanitizeInline } from '../render/sanitize.js';
 import { formatDuration } from '../render/tui/format.js';
-import { isFinishedRun, shortRunId, spanMs } from './run-detail-model.js';
+import {
+  MAX_PROJECT_ROOT_CHARS,
+  isFinishedRun,
+  scrubbedBounded,
+  shortRunId,
+  spanMs,
+} from './run-detail-model.js';
 
 /**
  * The pure view model of the Home's History browser rows (ADR-0140 §2, "History"; MVP-8 step 1). One row per run
@@ -94,14 +99,16 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       status: run.status,
       glyph: RUN_STATUS_GLYPH[run.status],
       word: run.status,
-      label: sanitizeInline(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
+      label: scrubbedBounded(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
       ageText: ageText(run.createdAt, input.nowMs),
       ...(durationMs === undefined ? {} : { durationMs, durationText: formatDuration(durationMs) }),
       pinned: input.pinnedRunIds.has(run.id),
       ...(Number.isNaN(createdAtMs) ? {} : { createdAtMs }),
       createdAt: run.createdAt,
       totalCostMicrocents: run.totalCostMicrocents,
-      ...(run.projectRoot === undefined ? {} : { projectRoot: sanitizeInline(run.projectRoot) }),
+      ...(run.projectRoot === undefined
+        ? {}
+        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
     };
   });
 }

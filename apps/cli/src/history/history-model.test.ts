@@ -11,6 +11,7 @@ import {
   nextCursor,
   nextStatusFilter,
 } from './history-model.js';
+import { MAX_IDENTIFIER_CHARS, MAX_PROJECT_ROOT_CHARS } from './run-detail-model.js';
 
 const NOW = Date.parse('2026-11-22T12:00:00.000Z');
 const MINUTE = 60_000;
@@ -114,6 +115,30 @@ describe('buildHistoryRows', () => {
     });
     expect(named?.label).toBe('build step');
     expect(unnamed?.label).toBe('wf 2');
+  });
+
+  it('bounds and scrubs the label and the project root read back from the history file', () => {
+    const secret = `sk-ant-api03-${'P'.repeat(40)}`;
+    const [huge] = buildHistoryRows({
+      runs: [run('a', { workflowId: 'w'.repeat(200_000), projectRoot: `/${'p'.repeat(200_000)}` })],
+      nowMs: NOW,
+      pinnedRunIds: new Set(),
+    });
+    expect(huge?.label).toBe(`${'w'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(huge?.projectRoot).toBe(`/${'p'.repeat(MAX_PROJECT_ROOT_CHARS - 1)}…`);
+    const [masked] = buildHistoryRows({
+      runs: [run('b', { projectRoot: `/work/${secret}` })],
+      nowMs: NOW,
+      pinnedRunIds: new Set(),
+      workflowLabels: new Map([['workflow-id', `flow ${secret}`]]),
+    });
+    expect(masked?.label).not.toContain('sk-ant-api03');
+    expect(masked?.label.startsWith('flow ')).toBe(true);
+    expect(masked?.projectRoot).not.toContain('sk-ant-api03');
+    expect(masked?.projectRoot?.startsWith('/work/')).toBe(true);
+    // An ordinary deep path is kept whole.
+    const deep = `/${Array.from({ length: 40 }, () => 'segment').join('/')}`;
+    expect(rowsOf([run('c', { projectRoot: deep })])[0]?.projectRoot).toBe(deep);
   });
 
   it('gives a duration for a finished run with both timestamps, and none otherwise', () => {

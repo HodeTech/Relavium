@@ -7,10 +7,15 @@ import {
   type RunRecord,
   type SkippedRunEvent,
 } from '@relavium/db';
-import type { RunEvent } from '@relavium/shared';
+import { RUN_LEASE_TTL_MS, type RunEvent } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { budgetResumeHints } from '../gate/budget.js';
+import {
+  budgetIdentifier,
+  budgetPromptDetails,
+  budgetPromptLabel,
+  budgetResumeHints,
+} from '../gate/budget.js';
 import { humanGateResumeHints, pendingGateDisplays } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 import { CliError } from '../process/errors.js';
@@ -93,10 +98,11 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
  * **A dead owner ends it too.** A run whose process was killed (or whose media park outlived its owner) never
  * gets a terminal event, so a poll that found nothing also asks, at most once per
  * {@link FOLLOW_LIVENESS_INTERVAL_MS} of the injected clock, whether the run still has an owner: the run row gone,
- * or no lease row, or a lease that has expired, ends the follow with one stderr note and exit `0` (see
- * {@link followOwnerVerdict}), but only after one more read of the log: the owner commits its closing event and
- * releases its lease in that order, and the lease check can land between the two. A run with a live lease keeps
- * being followed. Framework-free.
+ * or a lease that expired a full TTL ago, or no lease row on a run older than a TTL, ends the follow with one
+ * stderr note and exit `0` (see {@link followOwnerVerdict}), but only after one more read of the log: the owner
+ * commits its closing event and releases its lease in that order, and the lease check can land between the two.
+ * If that read returns anything, the verdict is not acted on: the events are printed and the follow goes on, to
+ * judge again at its next check. A run with a live lease keeps being followed. Framework-free.
  */
 export async function logsFollowCommand(
   args: LogsCommandArgs,
@@ -123,6 +129,9 @@ export async function logsFollowCommand(
       cursor = tail.scannedThroughSeq;
       writeSkippedNote(deps.io, tail.skipped);
       for (const event of tail.events) {
+        // A run that closes in the failure view with no failure before it says so, as the log it replays does.
+        if (failedOnly && !state.sawFailure && closesWithoutFailure(event))
+          writeNoFailureLine(deps);
         state = observeFollow(state, event);
         if (!failedOnly || inFailureView(event)) writeFollowed(deps, run.id, event, failedOnly);
       }
@@ -145,11 +154,11 @@ export async function logsFollowCommand(
         if (verdict !== undefined) {
           // The owner may have committed its closing event and released its lease between the read above and the
           // lease check, so a verdict alone must not end the follow before that event is shown: read once more,
-          // and print what it returns, first. If that read closed the run (or parked it at a gate) the top of the
-          // loop ends on it as it always does, and the note, which would say the run was left unsettled, is not
-          // written; otherwise nothing more will come, and the note says why.
-          readAndPrintTail();
-          if (followEnd(state) !== undefined) continue;
+          // and print what it returns, first. Whatever it returns, the follow goes on: a closing event, or a gate
+          // park, ends it at the top of the loop as it always does (the note, which would say the run was left
+          // unsettled, is not written), and any other event shows the run was still writing, so the verdict is
+          // judged again at the next check. Only a read that returns nothing ends the follow on the note.
+          if (readAndPrintTail().length > 0) continue;
           writeOwnerNote(deps, run.id, verdict);
           return EXIT_CODES.success;
         }
@@ -161,26 +170,49 @@ export async function logsFollowCommand(
   }
 }
 
-/** Why a followed run can no longer grow: its row is gone, or it holds no live lease. */
+/** Why a followed run can no longer grow: its row is gone, or nothing is renewing a lease on it. */
 type OwnerVerdict = 'run-gone' | 'no-owner';
 
 /**
- * Whether a followed run can no longer grow. Two cases: the run row is gone, or the run holds no live lease — no
- * lease row, or one whose `expiresAt` is at or before `nowMs`. A run parked on a media job alone keeps its lease
- * while the engine polls the job, so it keeps being followed; a run parked at a gate released its lease, but the
- * loop has already ended on that gate before this runs. `undefined` means the follow carries on.
+ * Whether a followed run can no longer grow. Two cases: the run row is gone, or nothing owns the run. A run parked
+ * on a media job alone keeps its lease while the engine polls the job, so it keeps being followed; a run parked at
+ * a gate released its lease, but the loop has already ended on that gate before this runs. `undefined` means the
+ * follow carries on.
+ *
+ * The no-owner rule is ADR-0079's (the 2026-11-06 amendment) and ADR-0140 §2's `stalled` rule: the owner renews its
+ * lease every `RUN_LEASE_HEARTBEAT_MS` and tolerates missed beats, and a wall clock that jumps (a sleeping laptop)
+ * can pass `expiresAt` before the next beat lands, so a lease counts as gone only a full `RUN_LEASE_TTL_MS` after it
+ * expired; and a run with no lease row counts only once it is older than that, because a younger run may not have
+ * taken its lease yet, or was started by a version that takes none.
  */
 function followOwnerVerdict(
   reader: RunHistoryReader,
   runId: string,
   nowMs: number,
 ): OwnerVerdict | undefined {
-  if (reader.loadRun(runId) === undefined) return 'run-gone';
+  const run = reader.loadRun(runId);
+  if (run === undefined) return 'run-gone';
   const lease = reader.loadRunLeases([runId]).get(runId);
-  return lease !== undefined && lease.expiresAt > nowMs ? undefined : 'no-owner';
+  if (lease === undefined) return startedWithinLeaseTtl(run, nowMs) ? undefined : 'no-owner';
+  return nowMs >= lease.expiresAt + RUN_LEASE_TTL_MS ? 'no-owner' : undefined;
 }
 
-/** The one stderr note that says why a follow ended on a verdict (never stdout, so `--json`'s stream stays pure). */
+/**
+ * Whether `run` started within one lease TTL of `nowMs`, on either side, as the engine's reconcile measures it
+ * (ADR-0079): a start slightly in the future (skew between processes) counts as recent, but one more than a TTL
+ * ahead means a clock moved, and the run falls back to the lease rule. A run that has not started is counted from
+ * its creation; a time that does not parse is never recent.
+ */
+function startedWithinLeaseTtl(run: RunRecord, nowMs: number): boolean {
+  const age = nowMs - Date.parse(run.startedAt ?? run.createdAt);
+  return age > -RUN_LEASE_TTL_MS && age < RUN_LEASE_TTL_MS;
+}
+
+/**
+ * The stderr note that says why a follow ended on a verdict (never stdout, so `--json`'s stream stays pure). It
+ * reports what was looked for and not found, since a run a version that takes no lease started cannot be told from a
+ * dead one, and it says nothing about the log's future.
+ */
 function writeOwnerNote(deps: LogsCommandDeps, runId: string, verdict: OwnerVerdict): void {
   const id = sanitizeInline(runId);
   if (verdict === 'run-gone') {
@@ -190,8 +222,8 @@ function writeOwnerNote(deps: LogsCommandDeps, runId: string, verdict: OwnerVerd
     return;
   }
   deps.io.writeErr(
-    `note: run ${id} has no live owner, so its log will not grow. ` +
-      `\`relavium status ${id}\` shows where it stands; the next \`relavium run\` or Home start settles it.\n`,
+    `note: no running process found for run ${id}; following stops.\n` +
+      `\`relavium status ${id}\` shows where it stands.\n`,
   );
 }
 
@@ -247,14 +279,20 @@ interface FollowState {
   readonly terminal: boolean;
   /** The run's latest `run:paused` named a gate and nothing has answered it since. */
   readonly parkedAtGate: boolean;
+  /** An event that carries a failure has been seen: the failure view has something to show besides the close. */
+  readonly sawFailure: boolean;
 }
 
-const QUIET_RUN: FollowState = { terminal: false, parkedAtGate: false };
+const QUIET_RUN: FollowState = { terminal: false, parkedAtGate: false, sawFailure: false };
 
 function observeFollow(state: FollowState, event: RunEvent): FollowState {
   switch (event.type) {
-    case 'run:completed':
+    case 'node:failed':
+    case 'node:retrying':
+      return { ...state, sawFailure: true };
     case 'run:failed':
+      return { ...state, terminal: true, sawFailure: true };
+    case 'run:completed':
     case 'run:cancelled':
       return { ...state, terminal: true };
     // The aggregate park, emitted once the run is idle with gates pending: node-boundary granularity, and never for
@@ -277,16 +315,40 @@ function followEnd(state: FollowState): 'terminal' | 'gate' | undefined {
 
 /** The events `--failed` keeps: the ones that carry a failure, and the run's closing event. */
 function inFailureView(event: RunEvent): boolean {
+  return carriesFailure(event) || closesWithoutFailure(event);
+}
+
+/** An event that carries a failure: a node's, a node's retry, or the run's own. */
+function carriesFailure(event: RunEvent): boolean {
   switch (event.type) {
     case 'node:failed':
     case 'node:retrying':
     case 'run:failed':
-    case 'run:completed':
-    case 'run:cancelled':
       return true;
     default:
       return false;
   }
+}
+
+/** A closing event that is not itself a failure: a failure view that ends on one has no failure to show. */
+function closesWithoutFailure(event: RunEvent): boolean {
+  return event.type === 'run:completed' || event.type === 'run:cancelled';
+}
+
+/**
+ * The one line a failure view prints, before the closing event, when the run closed and nothing failed in it: a
+ * header and a lone closing row would not say whether no failure happened or the view hid one. Human mode only,
+ * since under `--json` stdout is the events and nothing else (the closing event is the answer).
+ */
+const NO_FAILURE_LINE = 'no failure events in this run.\n';
+
+function writeNoFailureLine(deps: LogsCommandDeps): void {
+  if (!deps.global.json) deps.io.writeOut(NO_FAILURE_LINE);
+}
+
+/** Whether a failure view of `events` closes with nothing to show but the close: the line above belongs to it. */
+function closedWithoutFailure(events: readonly RunEvent[]): boolean {
+  return events.some(closesWithoutFailure) && !events.some(carriesFailure);
 }
 
 /** One event as `--follow` receives it: one NDJSON line under `--json`, else the human row. One write per line. */
@@ -300,32 +362,60 @@ function writeFollowed(
   else writeHumanEvent(deps.io, runId, event, !failedOnly);
 }
 
+/** One pending gate as the gate notice shows it: its title, any notes on it, and the commands that answer it. */
+interface GateAnswer {
+  readonly title: string;
+  readonly notes: readonly string[];
+  readonly commands: readonly string[];
+}
+
 /**
- * The line that says a followed run is waiting and how to answer it. It names the same commands `relavium status`
- * prints for each pending gate (one gate's, and a count of the rest). Under `--json` it goes to stderr, so stdout
- * stays a pure `RunEvent` stream.
+ * The lines that say a followed run is waiting and how to answer it. They are the ones `relavium status` prints for
+ * a pending gate, the same helpers' text, with each command on its own indented row (a recorded id is a UUID, and a
+ * line that joined the commands wrapped in the middle of one): the first gate's title (for a budget gate, its
+ * allowance, then the excluded-candidate notes) and commands, and a count of the rest. Under `--json` it goes to
+ * stderr, so stdout stays a pure `RunEvent` stream.
  */
 function writeGateNotice(deps: LogsCommandDeps, reader: RunHistoryReader, runId: string): void {
   const id = sanitizeInline(runId);
-  const gates = readPerRunOrDegrade<readonly (readonly string[])[]>([], () => {
+  const gates = readPerRunOrDegrade<readonly GateAnswer[]>([], () => {
     const pending = pendingGateDisplays(reader.loadRunEventLog(runId).events);
     return [
-      ...pending.pendingBudgetGates.map((gate) =>
-        budgetResumeHints(runId, gate.gateId, gate.allowance),
+      ...pending.pendingBudgetGates.map(
+        (gate): GateAnswer => ({
+          title: `pending budget gate ${budgetIdentifier(gate.gateId)} at ${budgetIdentifier(gate.nodeId)} — ${budgetPromptLabel(gate.allowance)}`,
+          notes: budgetPromptDetails(gate.allowance),
+          commands: budgetResumeHints(runId, gate.gateId, gate.allowance),
+        }),
       ),
-      ...pending.pendingGates.map((gate) =>
-        humanGateResumeHints(runId, gate.gateId, gate.gateType),
+      ...pending.pendingGates.map(
+        (gate): GateAnswer => ({
+          title: `pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}`,
+          notes: [],
+          commands: humanGateResumeHints(runId, gate.gateId, gate.gateType),
+        }),
       ),
     ];
   }).value;
   const [first, ...rest] = gates;
-  const answer =
+  const lines =
     first === undefined
-      ? `\`relavium status ${id}\` shows how to answer it`
-      : `${first.join('; ')}${rest.length === 0 ? '' : ` (${rest.length} more: \`relavium status ${id}\` lists them)`}`;
-  const line = `${sanitizeInline(`run ${id} is paused at a gate — ${answer}`)}\n`;
-  if (deps.global.json) deps.io.writeErr(line);
-  else deps.io.writeOut(line);
+      ? [`run ${id} is paused at a gate; \`relavium status ${id}\` shows how to answer it.`]
+      : [
+          `run ${id} is paused at a gate:`,
+          `  ${first.title}`,
+          ...first.notes.map((note) => `    ${note}`),
+          ...first.commands.map((command) => `    ${command}`),
+          ...(rest.length === 0
+            ? []
+            : [
+                `  ${rest.length} more pending gate${rest.length === 1 ? '' : 's'}: \`relavium status ${id}\` lists ${rest.length === 1 ? 'it' : 'them'}`,
+              ]),
+        ];
+  // Every line carries recorded text (an id, a node id, a note), so each gets the one-line floor before the write.
+  const text = lines.map((line) => `${sanitizeInline(line)}\n`).join('');
+  if (deps.global.json) deps.io.writeErr(text);
+  else deps.io.writeOut(text);
 }
 
 /** The stderr note for rows a newer binary wrote (ADR-0074 §5); nothing when no row was skipped. */
@@ -374,6 +464,7 @@ function writeHumanLog(
   io.writeOut(
     `run ${sanitizeInline(run.id)} — ${sanitizeInline(run.status)} (${failedOnly ? `${shown.length} of ${total}` : total})\n`,
   );
+  if (failedOnly && closedWithoutFailure(events)) io.writeOut(NO_FAILURE_LINE);
   for (const event of shown) writeHumanEvent(io, run.id, event, !failedOnly);
 }
 

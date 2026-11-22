@@ -3,12 +3,16 @@ import type { RunEvent, ToolActivityEntry } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DID_NOT_FINISH,
+  DID_NOT_RUN,
+  IN_PROGRESS,
   MAX_ERROR_MESSAGE_CHARS,
   MAX_IDENTIFIER_CHARS,
   NOT_RECORDED,
   NOT_RECORDED_FOR_ATTEMPT,
   NOT_RECORDED_OLDER_LOG,
   NO_RESULT_RECORDED,
+  absenceText,
   boundedIdentifier,
   buildRunDetailModel,
   buildToolActivity,
@@ -122,7 +126,10 @@ const OPEN_RUN_FIELDS = {
   totalCostMicrocents: 0,
   createdAt: '2026-11-22T10:00:00.000Z',
   updatedAt: '2026-11-22T10:01:30.000Z',
-  inputJson: '{}',
+  outputJson: null,
+  outputByteLength: null,
+  errorJson: null,
+  errorByteLength: null,
 } as const;
 
 function runRecord(overrides: Partial<RunDetailRecord> = {}): RunDetailRecord {
@@ -361,7 +368,7 @@ describe('node tokens: the settled rows, else a completed step row, else not rec
     });
   });
 
-  it('says `not recorded`, never ↑0 ↓0, for a node with neither: a failed or running node with no settled row', () => {
+  it('says `not recorded`, never ↑0 ↓0, for a failed node with no settled row, and says why for a node left running', () => {
     const model = buildRunDetailModel({
       run: runRecord({ status: 'failed' }),
       steps: [
@@ -371,7 +378,8 @@ describe('node tokens: the settled rows, else a completed step row, else not rec
       events: [coverageStarted(0), started(1, 'a'), failed(2, 'a'), started(3, 'b')],
     });
     expect(rowOf(model.rows, 'a').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
-    expect(rowOf(model.rows, 'b').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    // `b` is left `running` under a finished run: it never finished, which is not the same as "never recorded".
+    expect(rowOf(model.rows, 'b').tokens).toEqual({ source: 'none', text: DID_NOT_FINISH });
     // A completed node whose step rows were not read has no step figure to show either.
     const unread = buildRunDetailModel({
       run: runRecord(),
@@ -420,6 +428,223 @@ describe('node tokens: the settled rows, else a completed step row, else not rec
     });
     expect(withoutRows.header.tokens).toEqual({ input: 10, output: 5 });
     expect(withoutRows.header.tokensText).toBe('↑10 ↓5');
+  });
+
+  it('says `not recorded`, not a bare ↑0 ↓0, for the header of a run with no settled row and zero run totals', () => {
+    const zero = { totalInputTokens: 0, totalOutputTokens: 0 };
+    // An empty run: nothing was read, nothing was billed.
+    const empty = buildRunDetailModel({
+      run: runRecord(zero),
+      steps: [],
+      events: [coverageStarted(0)],
+    });
+    expect(empty.header.tokensText).toBe(NOT_RECORDED);
+    expect(empty.header.tokens).toEqual({ input: 0, output: 0 });
+    // A failed run whose node failed before any billed attempt: the run row's totals were never written.
+    const unbilled = buildRunDetailModel({
+      run: runRecord({ ...zero, status: 'failed' }),
+      steps: [stepRow('a', { status: 'failed' })],
+      events: [coverageStarted(0), started(1, 'a'), failed(2, 'a')],
+    });
+    expect(unbilled.header.tokensText).toBe(NOT_RECORDED);
+  });
+
+  it('keeps a recorded header figure: non-zero run totals (even one of the two), or any settled row', () => {
+    const noRows = [coverageStarted(0), started(1, 'a')];
+    // One total non-zero is a count, not "never written".
+    expect(
+      buildRunDetailModel({
+        run: runRecord({ totalInputTokens: 0, totalOutputTokens: 5 }),
+        steps: [],
+        events: noRows,
+      }).header.tokensText,
+    ).toBe('↑0 ↓5');
+    expect(
+      buildRunDetailModel({
+        run: runRecord({ totalInputTokens: 7, totalOutputTokens: 0 }),
+        steps: [],
+        events: noRows,
+      }).header.tokensText,
+    ).toBe('↑7 ↓0');
+    // A settled row is a recorded figure even when it reports no tokens, whatever the run row holds.
+    expect(
+      buildRunDetailModel({
+        run: runRecord({ totalInputTokens: 0, totalOutputTokens: 0 }),
+        steps: [],
+        events: [
+          coverageStarted(0),
+          started(1, 'a'),
+          settled(2, 'a', 1, { inputTokens: 0, outputTokens: 0 }),
+        ],
+      }).header.tokensText,
+    ).toBe('↑0 ↓0');
+  });
+
+  it('sums every step row of a completed node in the step-row fallback, not just the last one', () => {
+    // No settled row, so the node's tokens come from its step rows; both of its attempts completed (a resume
+    // re-dispatch), and each row carries its own figures.
+    const model = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+        stepRow('a', { attemptNumber: 2, inputTokens: 4, outputTokens: 2 }),
+      ],
+      events: [coverageStarted(0), started(1, 'a', 1), started(2, 'a', 2), completed(3, 'a')],
+    });
+    expect(rowOf(model.rows, 'a').tokens).toEqual({
+      source: 'step',
+      input: 11,
+      output: 5,
+      text: '↑11 ↓5',
+    });
+  });
+});
+
+describe('an absent figure says why it is absent', () => {
+  /** A figure's three carriers on a row: tokens, cost, tool trace. */
+  const absentTexts = (row: NodeRow): readonly string[] => [
+    row.tokens.text,
+    row.cost.text,
+    row.toolActivity.text,
+  ];
+
+  it('says `did not run` for a skipped row: no step row, and a step row whose status is skipped', () => {
+    const noStep = buildRunDetailModel({
+      run: runRecord(),
+      steps: [],
+      events: [coverageStarted(0), skipped(1, 'left', 'branch_not_taken')],
+    });
+    const row = rowOf(noStep.rows, 'left');
+    expect(row.status).toBe('skipped');
+    expect(absentTexts(row)).toEqual([DID_NOT_RUN, DID_NOT_RUN, DID_NOT_RUN]);
+    expect(row.tokens).toEqual({ source: 'none', text: DID_NOT_RUN });
+    expect(row.cost).toMatchObject({ source: 'none', text: DID_NOT_RUN });
+    expect(row.toolActivity).toEqual({ recorded: false, text: DID_NOT_RUN });
+    const withStep = buildRunDetailModel({
+      run: runRecord(),
+      steps: [stepRow('left', { status: 'skipped' })],
+      events: [coverageStarted(0), skipped(1, 'left', 'upstream_unreachable')],
+    });
+    expect(absentTexts(rowOf(withStep.rows, 'left'))).toEqual([
+      DID_NOT_RUN,
+      DID_NOT_RUN,
+      DID_NOT_RUN,
+    ]);
+  });
+
+  it('says `did not finish` for a row with no terminal event under a finished run, in every finished state', () => {
+    for (const status of ['completed', 'failed', 'cancelled'] as const) {
+      const model = buildRunDetailModel({
+        run: runRecord({ status }),
+        steps: [stepRow('a', { status: 'running' })],
+        events: [coverageStarted(0), started(1, 'a')],
+      });
+      const row = rowOf(model.rows, 'a');
+      expect(row.status).toBe('stopped');
+      expect(absentTexts(row)).toEqual([DID_NOT_FINISH, DID_NOT_FINISH, DID_NOT_FINISH]);
+    }
+    // No step row at all: the log alone says it started and never ended.
+    const logOnly = buildRunDetailModel({
+      run: runRecord({ status: 'failed' }),
+      steps: [],
+      events: [coverageStarted(0), started(1, 'a')],
+    });
+    expect(rowOf(logOnly.rows, 'a').status).toBe('stopped');
+    expect(absentTexts(rowOf(logOnly.rows, 'a'))).toEqual([
+      DID_NOT_FINISH,
+      DID_NOT_FINISH,
+      DID_NOT_FINISH,
+    ]);
+  });
+
+  it('says `in progress` for a row still running in a run that has not finished', () => {
+    for (const status of ['running', 'paused'] as const) {
+      const model = buildRunDetailModel({
+        run: openRunRecord({ status }),
+        steps: [stepRow('a', { status: 'running' })],
+        events: [coverageStarted(0), started(1, 'a')],
+      });
+      const row = rowOf(model.rows, 'a');
+      expect(row.status).toBe('running');
+      expect(absentTexts(row)).toEqual([IN_PROGRESS, IN_PROGRESS, IN_PROGRESS]);
+      expect(row.toolActivity).toEqual({ recorded: false, text: IN_PROGRESS });
+    }
+  });
+
+  it('keeps `not recorded` for a completed or failed row whose data is genuinely absent', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'failed' }),
+      // Their step rows are read, but the log holds only the start of each: no settled row, no terminal, and the
+      // step rows carry no figure a completed node could show.
+      steps: [stepRow('done', { status: 'completed' }), stepRow('broke', { status: 'failed' })],
+      events: [coverageStarted(0), started(1, 'done'), started(2, 'broke')],
+    });
+    for (const nodeId of ['done', 'broke']) {
+      const row = rowOf(model.rows, nodeId);
+      expect(row.toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
+      expect(row.cost).toMatchObject({ source: 'none', text: NOT_RECORDED });
+    }
+    expect(rowOf(model.rows, 'broke').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    // A completed node whose step rows were not read has no figure to show either.
+    const unread = buildRunDetailModel({
+      run: runRecord(),
+      steps: [],
+      events: [coverageStarted(0), started(1, 'c'), completed(2, 'c', { toolActivity: [] })],
+    });
+    expect(rowOf(unread.rows, 'c').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    expect(rowOf(unread.rows, 'c').cost).toMatchObject({ text: NOT_RECORDED });
+  });
+
+  it('never replaces a figure that exists: a stopped row with a settled call and a boundary cost keeps them', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'failed', totalCostMicrocents: 3_000_000 }),
+      steps: [
+        stepRow('a', { status: 'running' }),
+        stepRow('b', { status: 'running', costMicrocents: 2_000_000 }),
+      ],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 3_000_000, { inputTokens: 9, outputTokens: 4 }),
+        started(3, 'b'),
+      ],
+    });
+    expect(rowOf(model.rows, 'a').tokens).toMatchObject({ source: 'attempts', text: '↑9 ↓4' });
+    expect(rowOf(model.rows, 'a').cost).toMatchObject({
+      source: 'attempts',
+      microcents: 3_000_000,
+    });
+    expect(rowOf(model.rows, 'b').cost).toMatchObject({
+      source: 'boundary',
+      microcents: 2_000_000,
+    });
+    // The row with neither still says why.
+    expect(rowOf(model.rows, 'b').tokens).toEqual({ source: 'none', text: DID_NOT_FINISH });
+  });
+
+  it('maps every row status to its sentence', () => {
+    const cases: readonly [Parameters<typeof absenceText>[0], boolean, string][] = [
+      ['skipped', true, DID_NOT_RUN],
+      ['skipped', false, DID_NOT_RUN],
+      ['stopped', true, DID_NOT_FINISH],
+      ['running', false, IN_PROGRESS],
+      ['pending', true, DID_NOT_RUN],
+      ['pending', false, IN_PROGRESS],
+      ['completed', true, NOT_RECORDED],
+      ['completed', false, NOT_RECORDED],
+      ['failed', true, NOT_RECORDED],
+      ['failed', false, NOT_RECORDED],
+    ];
+    for (const [status, runFinished, text] of cases) {
+      expect([status, runFinished, absenceText(status, runFinished)]).toEqual([
+        status,
+        runFinished,
+        text,
+      ]);
+    }
+    expect(DID_NOT_RUN).toBe('did not run');
+    expect(DID_NOT_FINISH).toBe('did not finish');
+    expect(IN_PROGRESS).toBe('in progress');
   });
 });
 
@@ -738,7 +963,9 @@ describe('skipped nodes', () => {
       skippedReason: 'branch not taken',
       nodeType: 'agent',
       attemptCount: 0,
-      cost: { source: 'none', text: NOT_RECORDED },
+      tokens: { source: 'none', text: DID_NOT_RUN },
+      cost: { source: 'none', text: DID_NOT_RUN },
+      toolActivity: { recorded: false, text: DID_NOT_RUN },
     });
     expect(rowOf(model.rows, 'right')).toMatchObject({
       status: 'skipped',
@@ -783,8 +1010,15 @@ describe('tool activity', () => {
       text: NOT_RECORDED_OLDER_LOG,
     });
     expect(NOT_RECORDED_OLDER_LOG).toBe('not recorded (older log)');
-    // A node with no terminal makes no claim about an older log: it simply has no record yet.
-    expect(rowOf(model.rows, 'b').toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
+    // A node with no terminal makes no claim about an older log. `b` was left `running` under a finished run, so
+    // it says it never finished; a completed row whose terminal was not read (a cut log) says `not recorded`.
+    expect(rowOf(model.rows, 'b').toolActivity).toEqual({ recorded: false, text: DID_NOT_FINISH });
+    const cut = buildRunDetailModel({
+      run: runRecord(),
+      steps: [stepRow('d')],
+      events: [started(1, 'd')],
+    });
+    expect(rowOf(cut.rows, 'd').toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
     // The same wording for a failed terminal.
     const failedModel = buildRunDetailModel({
       run: runRecord({ status: 'failed' }),
@@ -885,7 +1119,8 @@ describe('tool activity', () => {
         },
       ],
     });
-    expect(NO_RESULT_RECORDED).toBe('no result recorded (the node ended first)');
+    // No cause is stated: a fatal tool failure ends the node with the call unpaired just as a cut does.
+    expect(NO_RESULT_RECORDED).toBe('no result recorded');
   });
 
   it('shows a success with no measured duration as plain `ok`, and never says a recorded result is missing', () => {
@@ -1023,6 +1258,51 @@ describe('the header', () => {
     expect(model.rows[0]?.nodeId).toBe('node\u001b[2J\nid');
   });
 
+  it('bounds and scrubs the labels read back from the history file: a node id, a node type, a workflow, a tool id', () => {
+    const secret = `sk-ant-api03-${'L'.repeat(40)}`;
+    const huge = buildRunDetailModel({
+      run: runRecord({ workflowId: 'w'.repeat(200_000) }),
+      steps: [stepRow('n'.repeat(200_000), { nodeType: 't'.repeat(200_000) })],
+      events: [],
+    });
+    const clipped = (letter: string): string => `${letter.repeat(MAX_IDENTIFIER_CHARS)}…`;
+    expect(huge.rows[0]?.label).toBe(clipped('n'));
+    expect(huge.rows[0]?.nodeType).toBe(clipped('t'));
+    expect(huge.header.workflow).toBe(clipped('w'));
+    // The raw id is the lookup identity, and is never cut.
+    expect(huge.rows[0]?.nodeId).toHaveLength(200_000);
+
+    const masked = buildRunDetailModel({
+      run: runRecord({ workflowId: `flow ${secret}` }),
+      steps: [stepRow(`node ${secret}`, { nodeType: `type ${secret}` })],
+      events: [],
+    });
+    for (const shown of [masked.rows[0]?.label, masked.rows[0]?.nodeType, masked.header.workflow]) {
+      expect(shown).not.toContain('sk-ant-api03');
+    }
+    expect(masked.rows[0]?.label.startsWith('node ')).toBe(true);
+    expect(masked.header.workflow.startsWith('flow ')).toBe(true);
+    // A slug the caller resolved goes through the same filter.
+    const slug = buildRunDetailModel({
+      run: runRecord(),
+      steps: [],
+      events: [],
+      workflowSlug: `slug ${secret}`,
+    });
+    expect(slug.header.workflow).not.toContain('sk-ant-api03');
+
+    const trace = buildToolActivity({
+      ...completedEvent(),
+      toolActivity: [
+        { toolId: 't'.repeat(200_000), ok: true, resultRecorded: true },
+        { toolId: `tool ${secret}`, ok: true, resultRecorded: true },
+      ],
+    });
+    const ids = trace.recorded ? trace.entries.map((entry) => entry.toolId) : [];
+    expect(ids[0]).toBe(clipped('t'));
+    expect(ids[1]).not.toContain('sk-ant-api03');
+  });
+
   it('shows a failed run`s stored error sanitized, scrubbed of secrets and bounded', () => {
     const message = `bad\u001b[31m\nnews sk-ant-api03-${'A'.repeat(40)} ${'x'.repeat(400)}`;
     const model = buildRunDetailModel({
@@ -1157,6 +1437,34 @@ describe('readStoredError and clipCodePoints', () => {
     const shown = boundedIdentifier(text, (value) => value.replace(secret, '[MASKED]'));
     expect(shown).toBe(`${'a'.repeat(100)} [MASKED]`);
     expect(shown).not.toContain('sk-ant');
+  });
+
+  it('says only the size of a document the read refused (null text with a byte length), and nothing for one that is not there', () => {
+    // The detail read size-gates the document in SQL: an over-bound one arrives as null text and its byte length.
+    expect(readStoredError(null, 5_000_000)).toEqual({
+      message: 'error record too large to show (5000000 bytes)',
+    });
+    expect(readStoredError(undefined, 7)).toEqual({
+      message: 'error record too large to show (7 bytes)',
+    });
+    // Both null: the run did not fail, so there is no error to show.
+    expect(readStoredError(null, null)).toBeUndefined();
+    expect(readStoredError(null)).toBeUndefined();
+    // A text that was returned is read as text, whatever byte length rides with it.
+    expect(readStoredError(JSON.stringify({ code: 'tool_failed' }), 999)).toEqual({
+      code: 'tool_failed',
+    });
+    // The header says it too.
+    const header = buildRunDetailModel({
+      run: runRecord({ status: 'failed', errorJson: null, errorByteLength: 2_000_000 }),
+      steps: [],
+      events: [],
+    }).header;
+    expect(header.error).toEqual({ message: 'error record too large to show (2000000 bytes)' });
+    expect(
+      buildRunDetailModel({ run: runRecord({ status: 'failed' }), steps: [], events: [] }).header
+        .error,
+    ).toBeUndefined();
   });
 
   it('has no error for an absent document and a fixed sentence for an unreadable one', () => {

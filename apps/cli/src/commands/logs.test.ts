@@ -6,7 +6,12 @@ import {
   type Db,
   type DbClient,
 } from '@relavium/db';
-import { RunEventSchema, isCorruptRunEventError, type RunEvent } from '@relavium/shared';
+import {
+  RUN_LEASE_TTL_MS,
+  RunEventSchema,
+  isCorruptRunEventError,
+  type RunEvent,
+} from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { CommandLifetime } from '../process/command-lifetime.js';
@@ -549,9 +554,50 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
         await (how === 'completed' ? append(COMPLETED) : append({ type: 'run:cancelled' }));
         const { io, out } = captureIo();
         expect(logsCommand({ runId: 'end-1', failed: true }, deps(io))).toBe(EXIT_CODES.success);
-        expect(out()).toBe(`run end-1 — ${how} (1 of 4 events)\n[3] ${row}\n`);
+        expect(out()).toBe(
+          `run end-1 — ${how} (1 of 4 events)\nno failure events in this run.\n[3] ${row}\n`,
+        );
       },
     );
+
+    it('under --json says nothing extra for a run that closed without a failure: the closing event is the answer', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'end-1', state: 'running' });
+      await appender('end-1', 3)(COMPLETED);
+      const { io, out, err } = captureIo();
+      expect(logsCommand({ runId: 'end-1', failed: true }, deps(io, true))).toBe(
+        EXIT_CODES.success,
+      );
+      expect(parseNdjson<{ type: string }>(out()).map((event) => event.type)).toEqual([
+        'run:completed',
+      ]);
+      expect(out().trimEnd().split('\n')).toHaveLength(1);
+      expect(err()).toBe('');
+    });
+
+    it('says nothing failed only when nothing did: a cancelled run with a failed node is not told so', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'end-1', state: 'running' });
+      const append = appender('end-1', 3);
+      await append({ type: 'node:started', nodeId: 'b', nodeType: 'transform' });
+      await append({ type: 'node:failed', nodeId: 'b', error: BOOM });
+      await append({ type: 'run:cancelled' });
+      const { io, out } = captureIo();
+      logsCommand({ runId: 'end-1', failed: true }, deps(io));
+      expect(out()).toBe(
+        [
+          'run end-1 — cancelled (2 of 6 events)',
+          '[4] node:failed b — internal',
+          '[5] run:cancelled — cancelled',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    it('does not claim a run that is still going has no failure: it has not closed', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'running' });
+      const { io, out } = captureIo();
+      logsCommand({ runId: 'run-1', failed: true }, deps(io));
+      expect(out()).not.toContain('no failure events');
+    });
 
     it('prints a header and no rows for a run that is still going and has not failed', async () => {
       await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'running' });
@@ -656,11 +702,88 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       ).resolves.toBe(EXIT_CODES.success);
       expect(waits).toEqual([]);
       const lines = out().trimEnd().split('\n');
-      expect(lines.at(-1)).toBe(
-        'run gate-1 is paused at a gate — approve: relavium gate gate-1 --gate g1 --approve; reject: relavium gate gate-1 --gate g1 --reject',
-      );
-      expect(lines.at(-2)).toBe('[5] run:paused');
+      expect(lines.slice(-5)).toEqual([
+        '[5] run:paused',
+        'run gate-1 is paused at a gate:',
+        '  pending gate g1 (approval) at g',
+        '    approve: relavium gate gate-1 --gate g1 --approve',
+        '    reject: relavium gate gate-1 --gate g1 --reject',
+      ]);
       expect(err()).toBe('');
+    });
+
+    it('puts each command of the gate notice on its own row, and no row wraps at 100 columns for these ids', async () => {
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'gate-1',
+        state: 'paused',
+        gate: { gateId: 'g1', gateType: 'approval' },
+      });
+      await appender('gate-1', 5)({ type: 'run:paused', pendingGateCount: 1, gateIds: ['g1'] });
+      const { io, out } = captureIo();
+      await logsFollowCommand(
+        { runId: 'gate-1' },
+        deps(io, false, { sleep: scriptedSleep([]).sleep }),
+      );
+      const notice = out().split('\n[5] run:paused\n')[1]?.trimEnd().split('\n') ?? [];
+      expect(notice).toHaveLength(4);
+      for (const row of notice) {
+        expect(row.length).toBeLessThanOrEqual(100);
+        expect(row.match(/relavium /gu)?.length ?? 0).toBeLessThanOrEqual(1); // never two commands in one row
+      }
+      expect(notice.filter((row) => row.includes('relavium gate'))).toHaveLength(2);
+    });
+
+    it('keeps every command on a row of its own for recorded ids the size of a UUID', async () => {
+      const runId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+      const gateId = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+      await seedRun(db, {
+        slug: 'demo',
+        runId,
+        state: 'paused',
+        gate: { gateId, gateType: 'approval' },
+      });
+      await appender(runId, 5)({ type: 'run:paused', pendingGateCount: 1, gateIds: [gateId] });
+      const { io, out } = captureIo();
+      await logsFollowCommand({ runId }, deps(io, false, { sleep: scriptedSleep([]).sleep }));
+      const notice = out().split('\n[5] run:paused\n')[1]?.trimEnd().split('\n') ?? [];
+      expect(notice).toEqual([
+        `run ${runId} is paused at a gate:`,
+        `  pending gate ${gateId} (approval) at g`,
+        `    approve: relavium gate ${runId} --gate ${gateId} --approve`,
+        `    reject: relavium gate ${runId} --gate ${gateId} --reject`,
+      ]);
+    });
+
+    it('names the first gate and counts the rest when several are pending', async () => {
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'gate-1',
+        state: 'paused',
+        gates: [
+          { gateId: 'g1', gateType: 'approval' },
+          { gateId: 'g2', gateType: 'approval' },
+          { gateId: 'g3', gateType: 'approval' },
+        ],
+      });
+      await appender(
+        'gate-1',
+        7,
+      )({
+        type: 'run:paused',
+        pendingGateCount: 3,
+        gateIds: ['g1', 'g2', 'g3'],
+      });
+      const { io, out } = captureIo();
+      await logsFollowCommand(
+        { runId: 'gate-1' },
+        deps(io, false, { sleep: scriptedSleep([]).sleep }),
+      );
+      const notice = out().split('\n[7] run:paused\n')[1]?.trimEnd().split('\n') ?? [];
+      expect(notice).toHaveLength(5);
+      expect(notice[0]).toBe('run gate-1 is paused at a gate:');
+      expect(notice[1]).toMatch(/^ {2}pending gate g[123] \(approval\) at g$/u);
+      expect(notice.at(-1)).toBe('  2 more pending gates: `relavium status gate-1` lists them');
     });
 
     it('ends at a gate pause under --json with the notice on stderr, so stdout stays pure NDJSON', async () => {
@@ -681,7 +804,13 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       ]);
       expect(out()).not.toContain('paused at a gate');
       expect(err()).toBe(
-        'run gate-1 is paused at a gate — approve: relavium gate gate-1 --gate g1 --approve; reject: relavium gate gate-1 --gate g1 --reject\n',
+        [
+          'run gate-1 is paused at a gate:',
+          '  pending gate g1 (approval) at g',
+          '    approve: relavium gate gate-1 --gate g1 --approve',
+          '    reject: relavium gate gate-1 --gate g1 --reject',
+          '',
+        ].join('\n'),
       );
     });
 
@@ -694,9 +823,49 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
         EXIT_CODES.success,
       );
       expect(waits).toEqual([]);
-      expect(out().trimEnd().split('\n').at(-1)).toMatch(
-        /^run bud-1 is paused at a gate — .*relavium budget resume bud-1 --gate b1 /u,
+      // The allowance label first, as `status` prints it, then the one command a legacy gate takes.
+      expect(out().trimEnd().split('\n').slice(-3)).toEqual([
+        'run bud-1 is paused at a gate:',
+        '  pending budget gate b1 at g — legacy gate: no frozen allowance',
+        '    reject: relavium budget resume bud-1 --gate b1 --abort',
+      ]);
+    });
+
+    it('puts the excluded-candidate notes of a budget gate under its allowance, before its commands, as status does', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'bud-1', state: 'running' });
+      const append = appender('bud-1', 3);
+      await append({ type: 'node:started', nodeId: 'g', nodeType: 'agent' });
+      await append({
+        type: 'budget:paused',
+        nodeId: 'g',
+        gateId: 'b1',
+        spentMicrocents: 100,
+        limitMicrocents: 50,
+        allowanceQuote: {
+          kind: 'unpriced',
+          excludedEntries: [
+            {
+              index: 0,
+              provider: 'openai',
+              endpoint: 'official',
+              model: 'ghost-model',
+              reason: 'unpriced_model',
+            },
+          ],
+        },
+      });
+      await append({ type: 'run:paused', pendingGateCount: 1, gateIds: ['b1'] });
+      const { io, out } = captureIo();
+      await logsFollowCommand(
+        { runId: 'bud-1' },
+        deps(io, false, { sleep: scriptedSleep([]).sleep }),
       );
+      expect(out().trimEnd().split('\n').slice(-4)).toEqual([
+        'run bud-1 is paused at a gate:',
+        '  pending budget gate b1 at g — reject only: no priced allowance',
+        '    Excluded openai candidate 1 "ghost-model": unpriced model',
+        '    reject: relavium budget resume bud-1 --gate b1 --abort',
+      ]);
     });
 
     it('keeps following a run whose gate was answered after it parked, and a run parked on a media job alone', async () => {
@@ -829,11 +998,18 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
   });
 
   describe('--follow liveness: a run nobody owns never gets a terminal event', () => {
-    const NO_OWNER =
-      /note: run f1 has no live owner, so its log will not grow\. `relavium status f1` /u;
+    /** The note a no-owner verdict ends the follow on: two short rows, plain words, no claim about the log's future. */
+    const noOwnerNote = (id: string): string =>
+      `note: no running process found for run ${id}; following stops.\n` +
+      `\`relavium status ${id}\` shows where it stands.\n`;
+
+    /** A run that began long before the clock the test starts at, so the absent-lease age rule does not hold it back. */
+    const OLD_RUN_MS = T0 - 10 * RUN_LEASE_TTL_MS;
+    const seedOldRun = async (runId: string, state: 'running' | 'paused' = 'running') =>
+      seedRun(db, { slug: 'demo', runId, state, atMs: OLD_RUN_MS });
 
     it('ends with exit 0 and one stderr note once a poll that found nothing finds no lease, and stdout stays the plain log', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1');
       const plain = captureIo();
       logsCommand({ runId: 'f1' }, deps(plain.io));
       const clock = fakeClock(T0);
@@ -843,10 +1019,28 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
         logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
       ).resolves.toBe(EXIT_CODES.success);
       expect(waits).toEqual([FOLLOW_POLL_INTERVAL_MS]);
-      expect(err()).toMatch(NO_OWNER);
-      expect(err().trimEnd().split('\n')).toHaveLength(1);
+      expect(err()).toBe(noOwnerNote('f1'));
       expect(out()).toBe(plain.out());
-      expect(out()).not.toContain('no live owner');
+      expect(out()).not.toContain('no running process');
+    });
+
+    it('words the no-owner note in at most two short rows of plain language, without the words owner or settle', async () => {
+      const runId = '0f8fad5b-d9cb-469f-a165-70867728950e';
+      await seedOldRun(runId);
+      const clock = fakeClock(T0);
+      const { io, err } = captureIo();
+      await logsFollowCommand(
+        { runId },
+        deps(io, false, {
+          sleep: scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]).sleep,
+          now: clock.now,
+        }),
+      );
+      const rows = err().trimEnd().split('\n');
+      expect(rows).toHaveLength(2);
+      for (const row of rows) expect(row.length).toBeLessThanOrEqual(100);
+      expect(err()).not.toMatch(/owner|settle|Home/iu);
+      expect(rows[1]).toBe(`\`relavium status ${runId}\` shows where it stands.`);
     });
 
     /** The row another process commits in the instant between the follower's tail read and its lease check. */
@@ -875,12 +1069,26 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
      * reading on a full interval has passed since the start, so the check is due.
      */
     function racingClock(race: () => void): () => number {
+      return movableRacingClock(race).now;
+    }
+
+    /** {@link racingClock}, whose time the script can then move on, so a later check can come due. */
+    function movableRacingClock(race: () => void): {
+      now: () => number;
+      advance: (ms: number) => void;
+    } {
       let reads = 0;
-      return () => {
-        reads += 1;
-        if (reads === 1) return T0;
-        if (reads === 2) race();
-        return T0 + FOLLOW_LIVENESS_INTERVAL_MS;
+      let moved = 0;
+      return {
+        now: () => {
+          reads += 1;
+          if (reads === 1) return T0;
+          if (reads === 2) race();
+          return T0 + FOLLOW_LIVENESS_INTERVAL_MS + moved;
+        },
+        advance: (ms) => {
+          moved += ms;
+        },
       };
     }
 
@@ -889,7 +1097,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
     };
 
     it('prints the closing event the owner committed between the tail read and the lease check, and ends 0 with no note', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1');
       setLease('f1', T0 + 3_600_000); // live until the owner lets it go
       const { io, out, err } = captureIo();
       // No wait is scripted: the poll guard fails the test if the follow sleeps instead of ending.
@@ -908,7 +1116,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
     });
 
     it('under --json prints that closing event as the last NDJSON line, with nothing on stderr', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1');
       setLease('f1', T0 + 3_600_000);
       const { io, out, err } = captureIo();
       const now = racingClock(() => {
@@ -946,32 +1154,84 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(err()).toBe('');
     });
 
-    it('prints a late event that does not close the run, then ends on the no-owner note', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+    it('prints a late event that does not close the run, goes on following, and judges the verdict again at its next check', async () => {
+      await seedOldRun('f1');
       setLease('f1', T0 + 3_600_000);
       const { io, out, err } = captureIo();
-      const now = racingClock(() => {
+      const clock = movableRacingClock(() => {
         insertEvent({ type: 'node:started', nodeId: 'n2', nodeType: 'transform' }, 3);
         releaseLease();
       });
+      // One wait is scripted: the late event must not end the follow on the verdict, so it waits, and the check
+      // that comes due after it (the clock moved a full interval) ends it on the note.
+      const { sleep, waits } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toEqual([FOLLOW_POLL_INTERVAL_MS]);
+      expect(out()).toContain('[3] node:started n2');
+      expect(err()).toBe(noOwnerNote('f1'));
+    });
+
+    it('goes on following after a late event, and ends at the closing event that follows it with no note', async () => {
+      await seedOldRun('f1');
+      setLease('f1', T0 + 3_600_000);
+      const { io, out, err } = captureIo();
+      const clock = movableRacingClock(() => {
+        insertEvent({ type: 'node:started', nodeId: 'n2', nodeType: 'transform' }, 3);
+        releaseLease();
+      });
+      const { sleep, waits } = scriptedSleep([
+        () => insertEvent(COMPLETED, 4), // the late event was not the end: the owner went on and closed the run
+      ]);
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toHaveLength(1);
+      expect(out()).toContain('[4] run:completed — completed');
+      expect(err()).toBe('');
+    });
+
+    it('ends with the gate notice, not the no-owner note, when the owner parks the run at a gate and lets go of its lease', async () => {
+      // A parked run releases its lease right after it commits `run:paused`: the natural race for this check.
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'f1',
+        state: 'paused',
+        gate: { gateId: 'g1', gateType: 'approval' },
+        atMs: OLD_RUN_MS,
+      });
+      setLease('f1', T0 + 3_600_000);
+      const { io, out, err } = captureIo();
+      const now = racingClock(() => {
+        insertEvent({ type: 'run:paused', pendingGateCount: 1, gateIds: ['g1'] }, 5);
+        releaseLease();
+      });
+      // No wait is scripted: the poll guard fails the test if the follow sleeps instead of ending.
       await expect(
         logsFollowCommand(
           { runId: 'f1' },
           deps(io, false, { sleep: scriptedSleep([]).sleep, now }),
         ),
       ).resolves.toBe(EXIT_CODES.success);
-      expect(out()).toContain('[3] node:started n2');
-      expect(err()).toMatch(NO_OWNER);
+      expect(out().trimEnd().split('\n').slice(-5)).toEqual([
+        '[5] run:paused',
+        'run f1 is paused at a gate:',
+        '  pending gate g1 (approval) at g',
+        '    approve: relavium gate f1 --gate g1 --approve',
+        '    reject: relavium gate f1 --gate g1 --reject',
+      ]);
+      expect(err()).toBe('');
     });
 
     it('under --json the note is on stderr only, and stdout stays a pure NDJSON stream', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1');
       const clock = fakeClock(T0);
       const { io, out, err } = captureIo();
       const { sleep } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
       await logsFollowCommand({ runId: 'f1' }, deps(io, true, { sleep, now: clock.now }));
-      expect(err()).toMatch(NO_OWNER);
-      expect(out()).not.toContain('no live owner');
+      expect(err()).toBe(noOwnerNote('f1'));
+      expect(out()).not.toContain('no running process');
       expect(parseNdjson<{ sequenceNumber: number }>(out()).map((e) => e.sequenceNumber)).toEqual([
         0, 1, 2,
       ]);
@@ -998,24 +1258,26 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(err()).toBe('');
     });
 
-    it('ends when the lease it was following lapses, and not before', async () => {
+    it('ends when the lease it was following lapses a full TTL ago, and not when it merely expires', async () => {
       await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
       setLease('f1', T0 + 2_000);
       const clock = fakeClock(T0);
       const { io, err } = captureIo();
       const { sleep, waits } = scriptedSleep([
         () => clock.advance(1_500), // T0+1500: due, the lease (to T0+2000) is live
-        () => clock.advance(1_500), // T0+3000: due, the lease has expired
+        () => clock.advance(1_500), // T0+3000: due, the lease has expired, but a beat may only be late: still followed
+        () => clock.advance(RUN_LEASE_TTL_MS - 2_000), // T0+TTL+1000, a second short of a full TTL past the expiry
+        () => clock.advance(1_000), // T0+TTL+2000: a full TTL past the expiry, with no renewal: gone
       ]);
       await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
-      expect(waits).toHaveLength(2);
-      expect(err()).toMatch(NO_OWNER);
+      expect(waits).toHaveLength(4);
+      expect(err()).toBe(noOwnerNote('f1'));
     });
 
-    it('treats a lease that expires exactly now as gone, and one that outlives now by a millisecond as live', async () => {
+    it('treats a lease as gone exactly one TTL after its expiry, and live a millisecond before', async () => {
       await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
       const at = captureIo();
-      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS);
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS);
       const clockAt = fakeClock(T0);
       await logsFollowCommand(
         { runId: 'f1' },
@@ -1024,25 +1286,69 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
           now: clockAt.now,
         }),
       );
-      expect(at.err()).toMatch(NO_OWNER);
+      expect(at.err()).toBe(noOwnerNote('f1'));
 
-      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS + 1);
-      const after = captureIo();
-      const clockAfter = fakeClock(T0);
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS + 1);
+      const before = captureIo();
+      const clockBefore = fakeClock(T0);
       const { sleep, waits } = scriptedSleep([
-        () => clockAfter.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+        () => clockBefore.advance(FOLLOW_LIVENESS_INTERVAL_MS),
         () => appender('f1', 3)(COMPLETED),
       ]);
       await logsFollowCommand(
         { runId: 'f1' },
-        deps(after.io, false, { sleep, now: clockAfter.now }),
+        deps(before.io, false, { sleep, now: clockBefore.now }),
       );
       expect(waits).toHaveLength(2);
-      expect(after.err()).toBe('');
+      expect(before.err()).toBe('');
+    });
+
+    it('does not judge a run with no lease until it is older than one TTL: a run that has only just begun may not have taken it', async () => {
+      // Started at T0 - TTL + interval + 1, the clock stops a millisecond short of one TTL of age at the check.
+      const startedAtMs = T0 - RUN_LEASE_TTL_MS + FOLLOW_LIVENESS_INTERVAL_MS + 1;
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running', atMs: startedAtMs });
+      const young = captureIo();
+      const clockYoung = fakeClock(T0);
+      const { sleep, waits } = scriptedSleep([
+        () => clockYoung.advance(FOLLOW_LIVENESS_INTERVAL_MS), // due; the run is TTL - 1 ms old: not judged
+        () => appender('f1', 3)(COMPLETED),
+      ]);
+      await logsFollowCommand(
+        { runId: 'f1' },
+        deps(young.io, false, { sleep, now: clockYoung.now }),
+      );
+      expect(waits).toHaveLength(2);
+      expect(young.err()).toBe('');
+    });
+
+    it('judges a run with no lease from the moment it is one TTL old', async () => {
+      const startedAtMs = T0 - RUN_LEASE_TTL_MS + FOLLOW_LIVENESS_INTERVAL_MS;
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running', atMs: startedAtMs });
+      const old = captureIo();
+      const clock = fakeClock(T0);
+      const { sleep, waits } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
+      await logsFollowCommand({ runId: 'f1' }, deps(old.io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(1);
+      expect(old.err()).toBe(noOwnerNote('f1'));
+    });
+
+    it('judges a run with no lease whose start lies more than one TTL in the future: a clock moved back', async () => {
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'f1',
+        state: 'running',
+        atMs: T0 + RUN_LEASE_TTL_MS + FOLLOW_LIVENESS_INTERVAL_MS,
+      });
+      const future = captureIo();
+      const clock = fakeClock(T0);
+      const { sleep, waits } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
+      await logsFollowCommand({ runId: 'f1' }, deps(future.io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(1);
+      expect(future.err()).toBe(noOwnerNote('f1'));
     });
 
     it('asks at most once per second of the injected clock, and not in the first second', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1');
       const clock = fakeClock(T0);
       const { io, err } = captureIo();
       // No lease at all. A check on every empty poll would end this after the first wait; the interval, from the
@@ -1053,7 +1359,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       ]);
       await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
       expect(waits).toHaveLength(2);
-      expect(err()).toMatch(NO_OWNER);
+      expect(err()).toBe(noOwnerNote('f1'));
     });
 
     it('rates the next check from the last one, not from the start', async () => {
@@ -1071,7 +1377,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       ]);
       await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
       expect(waits).toHaveLength(3);
-      expect(err()).toMatch(NO_OWNER);
+      expect(err()).toBe(noOwnerNote('f1'));
     });
 
     it('ends, with its own note, when the run row is gone', async () => {
@@ -1143,7 +1449,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
     });
 
     it('ends a run parked on a media job alone when its owner is gone, and follows one whose lease is live', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'media-1', state: 'paused' }); // no gate: a media park
+      await seedOldRun('media-1', 'paused'); // no gate: a media park
       const gone = captureIo();
       const clockGone = fakeClock(T0);
       await logsFollowCommand(
@@ -1153,7 +1459,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
           now: clockGone.now,
         }),
       );
-      expect(gone.err()).toContain('run media-1 has no live owner');
+      expect(gone.err()).toBe(noOwnerNote('media-1'));
 
       setLease('media-1', T0 + 3_600_000);
       const live = captureIo();
@@ -1171,7 +1477,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
     });
 
     it('lets a stop that arrives during the wait win over a check that is already due', async () => {
-      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      await seedOldRun('f1'); // old enough that the due check would end the follow, were the stop not to win
       const clock = fakeClock(T0);
       const fixture = invocationFixture();
       const captured = captureIo();
@@ -1193,7 +1499,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       );
       expect(exit).toBe(EXIT_CODES.success);
       expect(waited).toBe(1);
-      expect(captured.err()).not.toContain('no live owner');
+      expect(captured.err()).not.toContain('no running process');
     });
   });
 
@@ -1324,6 +1630,65 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
           '',
         ].join('\n'),
       );
+    });
+
+    it('says nothing failed, before the closing row, when the run closes during the follow with no failure', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const append = appender('f1', 3);
+      const { io, out } = captureIo();
+      const { sleep } = scriptedSleep([() => runNode(append, 'n2'), () => append(COMPLETED)]);
+      await logsFollowCommand({ runId: 'f1', failed: true }, deps(io, false, { sleep }));
+      expect(out()).toBe(
+        [
+          'run f1 — running (0 of 3 events)',
+          'no failure events in this run.',
+          '[5] run:completed — completed',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    it('says nothing failed once, for a log that already closed without a failure, and ends at once', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'done-1', state: 'completed' });
+      const { io, out } = captureIo();
+      const { sleep, waits } = scriptedSleep([]);
+      await logsFollowCommand({ runId: 'done-1', failed: true }, deps(io, false, { sleep }));
+      expect(waits).toEqual([]);
+      expect(out()).toBe(
+        [
+          'run done-1 — completed (1 of 4 events)',
+          'no failure events in this run.',
+          '[3] run:completed — completed',
+          '',
+        ].join('\n'),
+      );
+    });
+
+    it('does not say nothing failed once a failure was shown, and says nothing extra under --json', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const append = appender('f1', 3);
+      const failing = captureIo();
+      const { sleep } = scriptedSleep([
+        async () => {
+          await append({ type: 'node:started', nodeId: 'b', nodeType: 'transform' });
+          await append({ type: 'node:failed', nodeId: 'b', error: BOOM });
+        },
+        () => append({ type: 'run:cancelled' }),
+      ]);
+      await logsFollowCommand({ runId: 'f1', failed: true }, deps(failing.io, false, { sleep }));
+      expect(failing.out()).not.toContain('no failure events');
+
+      await seedRun(db, { slug: 'demo', runId: 'f2', state: 'running' });
+      const json = captureIo();
+      const second = scriptedSleep([() => appender('f2', 3)(COMPLETED)]);
+      await logsFollowCommand(
+        { runId: 'f2', failed: true },
+        deps(json.io, true, { sleep: second.sleep }),
+      );
+      expect(parseNdjson<{ type: string }>(json.out()).map((event) => event.type)).toEqual([
+        'run:completed',
+      ]);
+      expect(json.err()).toBe('');
     });
 
     it('under --json prints those events as NDJSON, and a gate notice still goes to stderr', async () => {

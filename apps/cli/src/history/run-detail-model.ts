@@ -33,16 +33,23 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  * **Cost is never a bare zero.** A node's money is read in this order and the row says which it used:
  * (1) the sum of the node's `cost:attempt_settled` rows (exact, ADR-0076); (2) failing that, the node's boundary
  * cost from `step_executions.cost_microcents`, marked approximate (`~`) because under a fan-out it is a delta of
- * the run-wide counter; (3) failing both, `not recorded`. The column defaults to `0`, so a `0` there is
- * indistinguishable from "never written" and is treated as absent, never shown as a price.
+ * the run-wide counter; (3) failing both, the row's absence sentence (below). The column defaults to `0`, so a `0`
+ * there is indistinguishable from "never written" and is treated as absent, never shown as a price.
  *
  * **Tokens follow the cost, never a bare zero either.** A node's tokens are read in this order and the row says
  * which it used: (1) the sum of the `inputTokens` and `outputTokens` of the node's `cost:attempt_settled` rows,
  * the very attempts that give its cost, so a node that failed after a billed call and a node that succeeded on its
  * second attempt both show every attempt's tokens beside a cost that covers every attempt; (2) failing that, the
  * step row's tokens, for a COMPLETED node only (the step row of a failed attempt carries no tokens, so its `0` is
- * "never written", not a count); (3) failing both, `not recorded`. The run header's total is the same sum over the
- * whole log when the log holds any `cost:attempt_settled` row, and the run row's own totals otherwise.
+ * "never written", not a count); (3) failing both, the row's absence sentence. The run header's total is the same sum
+ * over the whole log when the log holds any `cost:attempt_settled` row, and the run row's own totals otherwise (and
+ * `not recorded` when those are both `0` too).
+ *
+ * **An absent figure says why it is absent** ({@link absenceText}). A skipped row says `did not run` for its tokens,
+ * cost and tool trace; a row left `stopped` (its last attempt has no terminal event and the run has finished) says
+ * `did not finish`; a row still running in a run that has not finished says `in progress`. Only a completed or
+ * failed row whose data is genuinely absent (an older log, or no settled row and no step figure) says
+ * `not recorded` — anywhere else that sentence would read as data that was lost.
  *
  * **Attempt grouping (the load-bearing rule).** `cost:attempt_settled.attemptNumber` counts WITHIN a fallback
  * chain and resets to 1 on every node retry, so it does NOT join `node:started.attemptNumber`, which is the
@@ -52,8 +59,28 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  * it still counts toward the node's total and belongs to no attempt.
  */
 
-/** What a node row says when no cost was recorded — never `0`, never empty. */
+/**
+ * What a completed or failed row says when a figure (tokens, cost, tool trace) is genuinely absent from what was
+ * read — an older log, or no settled row and no step figure. Never `0`, never empty. A row that did not run, did
+ * not finish or is still running says that instead ({@link absenceText}): `not recorded` there reads as lost data.
+ */
 export const NOT_RECORDED = 'not recorded';
+
+/** What a skipped row says for tokens, cost and tool trace: the node never ran, so there is nothing to record. */
+export const DID_NOT_RUN = 'did not run';
+
+/** What a row says when its last attempt has no terminal event and the run has finished (status `stopped`). */
+export const DID_NOT_FINISH = 'did not finish';
+
+/** What a row says while it is still running in a run that has not finished. */
+export const IN_PROGRESS = 'in progress';
+
+/** Every sentence a row's figure can carry when it has nothing to show; see {@link absenceText}. */
+export type AbsenceText =
+  | typeof NOT_RECORDED
+  | typeof DID_NOT_RUN
+  | typeof DID_NOT_FINISH
+  | typeof IN_PROGRESS;
 
 /**
  * What a node's tool trace says when its terminal event carries no `toolActivity` field at all. Every node
@@ -63,10 +90,12 @@ export const NOT_RECORDED = 'not recorded';
 export const NOT_RECORDED_OLDER_LOG = 'not recorded (older log)';
 
 /**
- * What a tool-trace entry says when its call has no recorded result (`resultRecorded: false`): the node ended with
- * the call still unpaired. Only that entry says it: a refusal is a recorded result.
+ * What a tool-trace entry says when its call has no recorded result (`resultRecorded: false`). It states the fact and
+ * no cause: a node that ended before the call was answered and a tool that threw (a fatal failure ends the node
+ * with no `agent:tool_result`) look the same in the log, and the node's own error says why it failed. Only that
+ * entry says it: a refusal is a recorded result.
  */
-export const NO_RESULT_RECORDED = 'no result recorded (the node ended first)';
+export const NO_RESULT_RECORDED = 'no result recorded';
 
 /** What a node page's tool trace says for an attempt other than the one its terminal event closed. */
 export const NOT_RECORDED_FOR_ATTEMPT = 'not recorded for this attempt';
@@ -95,12 +124,41 @@ export function isFinishedRun(status: RunStatus): boolean {
   return FINISHED_RUN_STATUSES.has(status);
 }
 
+/**
+ * What a figure of a row (its tokens, its cost, its tool trace) says when it has nothing to show, by the row's own
+ * state: a skipped row `did not run`; a row `stopped` (its last attempt has no terminal event and the run has
+ * finished) `did not finish`; a row still `running` in a run that has not finished `in progress`; and only a
+ * completed or failed row, whose data is genuinely absent (an older log, or no settled row and no step figure),
+ * says `not recorded`. A `pending` row has not started: `did not run` once the run has finished, `in progress`
+ * (the run is) before. This never invents a figure; it only says why there is none.
+ */
+export function absenceText(status: NodeRowStatus, runFinished: boolean): AbsenceText {
+  switch (status) {
+    case 'skipped':
+      return DID_NOT_RUN;
+    case 'pending':
+      return runFinished ? DID_NOT_RUN : IN_PROGRESS;
+    case 'stopped':
+      return DID_NOT_FINISH;
+    case 'running':
+      return IN_PROGRESS;
+    case 'completed':
+    case 'failed':
+      return NOT_RECORDED;
+  }
+}
+
 /** The most code points of a stored error message a page shows. */
 export const MAX_ERROR_MESSAGE_CHARS = 300;
 /** An identifier is cut to this many code points BEFORE its (non-scrubbing) filter runs, so a pathological row costs a bound. */
 const MAX_ERROR_SCRUB_CHARS = 65_536;
 /** The most code points of one stored identifier (an error code, a node id, a model name) a page shows. */
 export const MAX_IDENTIFIER_CHARS = 128;
+/**
+ * The most code points of one stored project root (a path) a row shows. A path is longer than an identifier and is
+ * read from its tail, so it gets the largest path an operating system accepts (`PATH_MAX`, 4096) rather than 128.
+ */
+export const MAX_PROJECT_ROOT_CHARS = 4096;
 
 /**
  * The first characters of a run id, for a row: cut first (so a forged id costs a bound), then through the
@@ -287,24 +345,26 @@ export type NodeCost =
       readonly text: string;
     }
   | {
-      /** Neither exists. The text is {@link NOT_RECORDED}, never a zero amount. */
+      /** Neither exists. The text says why ({@link absenceText}): `not recorded` for a row that finished, never a zero amount. */
       readonly source: 'none';
       readonly approximate: false;
       readonly unpricedCalls: 0;
-      readonly text: typeof NOT_RECORDED;
+      readonly text: AbsenceText;
     };
 
 /**
  * A node's cost from its settled rows, else its boundary cost, else nothing. `boundaryMicrocents` is the node's
  * `step_executions.cost_microcents`; a value of `0` is "absent" (the column defaults to it), so it never reaches
- * the screen as a price.
+ * the screen as a price. `absence` is what the row says when it has neither ({@link absenceText}); it defaults to
+ * `not recorded`.
  */
 export function buildNodeCost(input: {
   readonly settled: readonly CostAttemptSettledEvent[];
   readonly boundaryMicrocents: number;
   readonly coverage: UsageCoverage | undefined;
+  readonly absence?: AbsenceText;
 }): NodeCost {
-  const { settled, boundaryMicrocents, coverage } = input;
+  const { settled, boundaryMicrocents, coverage, absence = NOT_RECORDED } = input;
   if (settled.length > 0) {
     let microcents = 0;
     let unpricedCalls = 0;
@@ -329,7 +389,7 @@ export function buildNodeCost(input: {
       text: `~${formatReportedCost(boundaryMicrocents, coverage, 0)}`,
     };
   }
-  return { source: 'none', approximate: false, unpricedCalls: 0, text: NOT_RECORDED };
+  return { source: 'none', approximate: false, unpricedCalls: 0, text: absence };
 }
 
 /** A node's (or an attempt's) tokens, with the source they were read from. There is no cached count: the column is never written. */
@@ -349,9 +409,9 @@ export type NodeTokens =
       readonly text: string;
     }
   | {
-      /** Neither exists. The text is {@link NOT_RECORDED}, never `↑0 ↓0`. */
+      /** Neither exists. The text says why ({@link absenceText}): `not recorded` for a row that finished, never `↑0 ↓0`. */
       readonly source: 'none';
-      readonly text: typeof NOT_RECORDED;
+      readonly text: AbsenceText;
     };
 
 /** The `inputTokens` and `outputTokens` of `rows`, summed. */
@@ -391,13 +451,14 @@ export function completedStepTokens(
  * A node's (or an attempt's) tokens, by the rule of the module note: the sum of its `cost:attempt_settled` rows
  * when it has any (the same rows {@link buildNodeCost} sums), else the step row's figures when
  * `completedStep` is given (the caller gives it for a completed node only, see {@link completedStepTokens}), else
- * `not recorded`.
+ * what `absence` says ({@link absenceText}; `not recorded` by default).
  */
 export function buildNodeTokens(input: {
   readonly settled: readonly CostAttemptSettledEvent[];
   readonly completedStep: { readonly input: number; readonly output: number } | undefined;
+  readonly absence?: AbsenceText;
 }): NodeTokens {
-  const { settled, completedStep } = input;
+  const { settled, completedStep, absence = NOT_RECORDED } = input;
   if (settled.length > 0) {
     const sum = sumSettledTokens(settled);
     return { source: 'attempts', ...sum, text: formatTokens(sum) };
@@ -405,7 +466,7 @@ export function buildNodeTokens(input: {
   if (completedStep !== undefined) {
     return { source: 'step', ...completedStep, text: formatTokens(completedStep) };
   }
-  return { source: 'none', text: NOT_RECORDED };
+  return { source: 'none', text: absence };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -414,7 +475,7 @@ export function buildNodeTokens(input: {
 
 /** One call of a node's tool trace, content-free (ADR-0140 §4). */
 export interface ToolActivityRowView {
-  /** Sanitized. */
+  /** Scrubbed, one line and cut to {@link MAX_IDENTIFIER_CHARS} code points: it is read back from the history file. */
   readonly toolId: string;
   readonly ok: boolean;
   /** A result paired with the call. `false` only for a call the node ended before it was answered. */
@@ -431,19 +492,18 @@ export interface ToolActivityRowView {
 }
 
 /**
- * A node's tool trace. `recorded: false` is one of three statements, and the text says which: the node has no
- * terminal event (yet, or the log was cut) — `not recorded`; or its terminal carries no `toolActivity` field,
- * which only a log written before the field existed lacks — `not recorded (older log)`; or the terminal closed a
- * different attempt than the one the page shows — `not recorded for this attempt`. `recorded: true` with no
- * entries is a node that made no tool call (`no tool calls`), a different statement from all three.
+ * A node's tool trace. `recorded: false` is one of a few statements, and the text says which: the node has no
+ * terminal event, and the text says why by the row's state ({@link absenceText}) — `did not run` (skipped),
+ * `did not finish` (stopped under a finished run), `in progress`, or, for a completed or failed row whose terminal
+ * was not read (the log was cut), `not recorded`; or its terminal carries no `toolActivity` field, which only a
+ * log written before the field existed lacks — `not recorded (older log)`; or the terminal closed a different
+ * attempt than the one the page shows — `not recorded for this attempt`. `recorded: true` with no entries is a
+ * node that made no tool call (`no tool calls`), a different statement from all of them.
  */
 export type ToolActivityView =
   | {
       readonly recorded: false;
-      readonly text:
-        | typeof NOT_RECORDED
-        | typeof NOT_RECORDED_OLDER_LOG
-        | typeof NOT_RECORDED_FOR_ATTEMPT;
+      readonly text: AbsenceText | typeof NOT_RECORDED_OLDER_LOG | typeof NOT_RECORDED_FOR_ATTEMPT;
     }
   | {
       readonly recorded: true;
@@ -458,7 +518,7 @@ export type ToolActivityView =
  * with no duration exactly as an unpaired call is, and must never be described as one.
  */
 function toolActivityRow(entry: ToolActivityEntry): ToolActivityRowView {
-  const toolId = sanitizeInline(entry.toolId);
+  const toolId = scrubbedBounded(entry.toolId);
   const duration = entry.durationMs === undefined ? {} : { durationMs: entry.durationMs };
   if (!entry.resultRecorded) {
     return {
@@ -487,11 +547,15 @@ function toolActivityRow(entry: ToolActivityEntry): ToolActivityRowView {
   };
 }
 
-/** The tool trace of a node's last terminal event. */
+/**
+ * The tool trace of a node's last terminal event. `absence` is what the row says when it has no terminal
+ * ({@link absenceText}); it defaults to `not recorded`.
+ */
 export function buildToolActivity(
   terminal: NodeCompletedEvent | NodeFailedEvent | undefined,
+  absence: AbsenceText = NOT_RECORDED,
 ): ToolActivityView {
-  if (terminal === undefined) return { recorded: false, text: NOT_RECORDED };
+  if (terminal === undefined) return { recorded: false, text: absence };
   const stored = terminal.toolActivity;
   if (stored === undefined) return { recorded: false, text: NOT_RECORDED_OLDER_LOG };
   const entries = stored.map(toolActivityRow);
@@ -508,16 +572,17 @@ export function buildToolActivity(
 /**
  * The tool trace of the node's terminal event, for the attempt a page shows. A terminal records the one attempt
  * that produced it (`attemptNumber`, absent meaning 1), so another attempt's page must not borrow it: its trace is
- * `not recorded for this attempt`.
+ * `not recorded for this attempt`. With no terminal at all it says `absence` ({@link buildToolActivity}).
  */
 export function buildToolActivityForAttempt(
   terminal: NodeCompletedEvent | NodeFailedEvent | undefined,
   attemptNumber: number,
+  absence: AbsenceText = NOT_RECORDED,
 ): ToolActivityView {
   if (terminal !== undefined && (terminal.attemptNumber ?? 1) !== attemptNumber) {
     return { recorded: false, text: NOT_RECORDED_FOR_ATTEMPT };
   }
-  return buildToolActivity(terminal);
+  return buildToolActivity(terminal, absence);
 }
 
 /** A stored error, sanitized and bounded. */
@@ -580,20 +645,30 @@ export function scrubbedBounded(text: string, max: number = MAX_IDENTIFIER_CHARS
 /** The largest stored `error_json` a page reads: 1 MiB, the output preview's bound ({@link MAX_STORED_OUTPUT_BYTES}'s twin). */
 export const MAX_STORED_ERROR_BYTES = 1_048_576;
 
+/** The fixed sentence for a stored error above {@link MAX_STORED_ERROR_BYTES}: it is never read, only its size is said. */
+function oversizedError(bytes: number): StoredErrorView {
+  return { message: `error record too large to show (${bytes} bytes)` };
+}
+
 /**
  * Read a stored `error_json` (`{ code, message, nodeId? }`) for display. The text is data from the history file.
- * A document above {@link MAX_STORED_ERROR_BYTES} is refused with a fixed sentence before it is parsed, so what is
- * scrubbed below is bounded. The message and the code are then each scrubbed whole, passed through the one-line
- * floor, and only then cut ({@link scrubbedBounded}) to {@link MAX_ERROR_MESSAGE_CHARS} and
+ * The detail reads size-gate the document in SQL (`MAX_RUN_DETAIL_DOCUMENT_BYTES`): an over-bound document arrives as
+ * `null` text with its `byteLength`, and is refused here with the fixed sentence without ever being read; `null` text
+ * with no byte length is no error at all. A text above {@link MAX_STORED_ERROR_BYTES} is refused the same way before
+ * it is parsed, so what is scrubbed below is bounded. The message and the code are then each scrubbed whole, passed
+ * through the one-line floor, and only then cut ({@link scrubbedBounded}) to {@link MAX_ERROR_MESSAGE_CHARS} and
  * {@link MAX_IDENTIFIER_CHARS}; the node id passes the floor and the same cut. An unreadable document yields a
  * fixed sentence, never a throw.
  */
-export function readStoredError(json: string | undefined): StoredErrorView | undefined {
-  if (json === undefined) return undefined;
-  const size = Buffer.byteLength(json, 'utf8');
-  if (size > MAX_STORED_ERROR_BYTES) {
-    return { message: `error record too large to show (${size} bytes)` };
+export function readStoredError(
+  json: string | null | undefined,
+  byteLength?: number | null,
+): StoredErrorView | undefined {
+  if (json === undefined || json === null) {
+    return typeof byteLength === 'number' ? oversizedError(byteLength) : undefined;
   }
+  const size = Buffer.byteLength(json, 'utf8');
+  if (size > MAX_STORED_ERROR_BYTES) return oversizedError(size);
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -645,7 +720,10 @@ export interface NodeRow {
   readonly attemptCount: number;
   /** The last attempt's duration. */
   readonly durationMs?: number;
-  /** The node's tokens, by the rule of the module note: its settled rows, else a completed step row, else `not recorded`. */
+  /**
+   * The node's tokens, by the rule of the module note: its settled rows, else a completed step row, else the row's
+   * absence sentence ({@link absenceText}: `did not run`, `did not finish`, `in progress` or `not recorded`).
+   */
   readonly tokens: NodeTokens;
   readonly cost: NodeCost;
   /** Why the node was skipped, as words; present for a `skipped` row with a recorded reason. */
@@ -665,6 +743,7 @@ export interface RunDetailHeader {
    * rows that give the cost beside it), else the run row's own totals.
    */
   readonly tokens: { readonly input: number; readonly output: number };
+  /** {@link tokens} as text, or `not recorded` when there is no settled row and the run row's totals are both `0`. */
   readonly tokensText: string;
   readonly totalCostMicrocents: number;
   /** The run total, qualified by the coverage the log establishes — never a bare number. */
@@ -775,17 +854,25 @@ export function spanMs(
 /**
  * The run header's tokens: the sum over the whole log's `cost:attempt_settled` rows when it holds any, so the figure
  * covers the same attempts the run's cost does (the run row keeps no tokens for a node that failed after a billed
- * call); the run row's own totals when the log holds none (an older log, or one that was not read).
+ * call); the run row's own totals when the log holds none (an older log, or one that was not read). With no settled
+ * row AND both totals `0` (an empty run, or a failed run with no billed attempt) the figure is `not recorded`, never
+ * a bare `↑0 ↓0`: the column defaults to `0`, so that zero is "never written", not a count. A settled row, however
+ * small, is a recorded figure, as are non-zero totals.
  */
 function runTokens(
   run: RunDetailRecord,
   events: readonly RunEvent[],
-): { readonly input: number; readonly output: number } {
+): { readonly input: number; readonly output: number; readonly text: string } {
   const settledRows = events.filter(
     (event): event is CostAttemptSettledEvent => event.type === 'cost:attempt_settled',
   );
-  if (settledRows.length > 0) return sumSettledTokens(settledRows);
-  return { input: run.totalInputTokens, output: run.totalOutputTokens };
+  if (settledRows.length > 0) {
+    const sum = sumSettledTokens(settledRows);
+    return { ...sum, text: formatTokens(sum) };
+  }
+  const totals = { input: run.totalInputTokens, output: run.totalOutputTokens };
+  const unrecorded = totals.input === 0 && totals.output === 0;
+  return { ...totals, text: unrecorded ? NOT_RECORDED : formatTokens(totals) };
 }
 
 /** Build the run detail page's model. See the module note for the cost and attempt rules. */
@@ -810,10 +897,11 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
         0,
       );
       const skipped = log?.skipped;
+      const absence = absenceText(status, runFinished);
       return {
         nodeId,
-        label: sanitizeInline(nodeId),
-        ...(nodeType === undefined ? {} : { nodeType: sanitizeInline(nodeType) }),
+        label: scrubbedBounded(nodeId),
+        ...(nodeType === undefined ? {} : { nodeType: scrubbedBounded(nodeType) }),
         status,
         glyph: NODE_ROW_GLYPH[status],
         attemptCount:
@@ -822,16 +910,18 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
         tokens: buildNodeTokens({
           settled: allSettled(log),
           completedStep: completedStepTokens(nodeSteps, status),
+          absence,
         }),
         cost: buildNodeCost({
           settled: allSettled(log),
           boundaryMicrocents,
           coverage: facts.nodes.get(nodeId) ?? facts.run,
+          absence,
         }),
         ...(status === 'skipped' && skipped !== undefined
           ? { skippedReason: SKIP_REASON_TEXT[skipped.reason] }
           : {}),
-        toolActivity: buildToolActivity(log?.lastTerminal),
+        toolActivity: buildToolActivity(log?.lastTerminal, absence),
       };
     },
   );
@@ -841,19 +931,19 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const unattributedMicrocents = Math.max(0, run.totalCostMicrocents - attributed);
   const firstFailed = rows.find((row) => row.status === 'failed');
   const durationMs = spanMs(run.startedAt, run.completedAt);
-  const error = readStoredError(run.errorJson);
-  const tokens = runTokens(run, events);
+  const error = readStoredError(run.errorJson, run.errorByteLength);
+  const { text: tokensText, ...tokens } = runTokens(run, events);
 
   return {
     header: {
       runId: run.id,
       shortId: shortRunId(run.id),
       status: run.status,
-      workflow: sanitizeInline(input.workflowSlug ?? run.workflowId),
+      workflow: scrubbedBounded(input.workflowSlug ?? run.workflowId),
       ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
       ...(durationMs === undefined ? {} : { durationMs }),
       tokens,
-      tokensText: formatTokens(tokens),
+      tokensText,
       totalCostMicrocents: run.totalCostMicrocents,
       costText: formatCostShort(run.totalCostMicrocents, facts.run, facts.unpricedCalls),
       ...(error === undefined ? {} : { error }),

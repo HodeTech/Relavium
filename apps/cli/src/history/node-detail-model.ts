@@ -3,10 +3,11 @@ import type { RunEvent } from '@relavium/shared';
 import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
 import { maskedAsMember } from '../render/run-outputs.js';
-import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { stripTerminalControls } from '../render/sanitize.js';
 import { formatCostUsd, formatDuration } from '../render/tui/format.js';
 import {
   NODE_ROW_GLYPH,
+  absenceText,
   allSettled,
   boundedIdentifier,
   buildNodeCost,
@@ -52,8 +53,10 @@ import {
  *
  * **Tokens follow the cost, and carry no cached count.** A node's tokens are the sum of the `inputTokens` and
  * `outputTokens` of its `cost:attempt_settled` rows (the same rows that give its cost), else the step row's tokens
- * for a completed node, else `not recorded` (see `buildNodeTokens`); an attempt row follows the same rule over the
- * rows of its own attempt. `step_executions.cached_tokens` is never written (it is always `0`), so a page that
+ * for a completed node, else the row's absence sentence — `not recorded` for a finished node, `did not finish` for
+ * one left stopped, `in progress` for one still running (see `buildNodeTokens` and `absenceText`); an attempt row
+ * follows the same rule over the rows of its own attempt, and the whole node is as far along as its LAST attempt
+ * row says, whichever attempt the page inspects. `step_executions.cached_tokens` is never written (it is always `0`), so a page that
  * drew it would state "0 cached" as a fact. The column stays in the db type and is not read here.
  *
  * **The tool trace belongs to one attempt.** A node's terminal event records the attempt that produced it, so the
@@ -245,6 +248,11 @@ function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: (
   sink.push(`${closing}}`);
 }
 
+/** The fixed sentence for a stored output that is too large to read: only its size is said, never its content. */
+function oversizedOutputPreview(bytes: number): OutputPreview {
+  return { ...boundText(`output too large to preview (${bytes} bytes)`), masked: false };
+}
+
 /**
  * A node's stored `output_json` as the bounded, masked preview. A string value is shown as itself (it is the
  * common case and keeps its own line breaks); anything else is shown as indented JSON, written only as far as
@@ -253,9 +261,7 @@ function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: (
  */
 export function buildOutputPreview(outputJson: string): OutputPreview {
   const size = Buffer.byteLength(outputJson, 'utf8');
-  if (size > MAX_STORED_OUTPUT_BYTES) {
-    return { ...boundText(`output too large to preview (${size} bytes)`), masked: false };
-  }
+  if (size > MAX_STORED_OUTPUT_BYTES) return oversizedOutputPreview(size);
   let masked = false;
   const onMask = (): void => {
     masked = true;
@@ -291,9 +297,9 @@ export interface AttemptRowView {
   readonly status: NodeRowStatus;
   readonly glyph: string;
   readonly durationMs?: number;
-  /** The attempt's own tokens: its settled calls, else its step row when it completed, else `not recorded`. */
+  /** The attempt's own tokens: its settled calls, else its step row when it completed, else the attempt's absence sentence. */
   readonly tokens: NodeTokens;
-  /** The attempt's own settled model calls; `not recorded` when the log holds none for it. */
+  /** The attempt's own settled model calls; the attempt's absence sentence (`not recorded` for a finished one) when the log holds none for it. */
   readonly cost: NodeCost;
 }
 
@@ -331,14 +337,14 @@ export interface NodeDetailModel {
   readonly durationText?: string;
   /**
    * The whole node's tokens, beside the whole node's cost: every attempt's settled calls, else the step rows when the
-   * node completed, else `not recorded`. One attempt's own figure is on its {@link AttemptRowView}. There is no
-   * cached count: the column is never written (see the module note).
+   * node completed, else the node's absence sentence. One attempt's own figure is on its {@link AttemptRowView}.
+   * There is no cached count: the column is never written (see the module note).
    */
   readonly tokens: NodeTokens;
-  /** The whole node: every attempt's settled calls, else the boundary cost, else `not recorded`. */
+  /** The whole node: every attempt's settled calls, else the boundary cost, else the node's absence sentence. */
   readonly cost: NodeCost;
   readonly attempts: readonly AttemptRowView[];
-  /** The distinct models the node's settled calls actually ran on, in first-use order, one-line and cut to 128 characters, at most 20. */
+  /** The distinct models the node's settled calls actually ran on, in first-use order, scrubbed, one-line and cut to 128 characters, at most 20. */
   readonly modelsUsed: readonly string[];
   /** What the workflow authored, one-line and cut to 128 characters; absent fields are simply not shown. */
   readonly authored: { readonly agent?: string; readonly model?: string };
@@ -347,7 +353,10 @@ export interface NodeDetailModel {
   readonly timeline: readonly TimelineRowView[];
   /** Timeline rows beyond {@link MAX_TIMELINE_ROWS}. */
   readonly timelineOmitted: number;
-  /** The inspected attempt's trace: its terminal's, or `not recorded for this attempt` when the terminal closed another. */
+  /**
+   * The inspected attempt's trace: its terminal's; `not recorded for this attempt` when the terminal closed another;
+   * and with no terminal the attempt's absence sentence (`did not finish`, `in progress`, or `not recorded`).
+   */
   readonly toolActivity: ToolActivityView;
 }
 
@@ -374,7 +383,7 @@ function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefin
       return {
         ...base,
         label: 'Model call settled',
-        detail: `${sanitizeInline(event.model)} · ${event.priced ? formatCostUsd(event.costMicrocents) : 'price unknown'}`,
+        detail: `${scrubbedBounded(event.model)} · ${event.priced ? formatCostUsd(event.costMicrocents) : 'price unknown'}`,
       };
     case 'human_gate:paused':
       return { ...base, label: 'Gate opened', detail: scrubbedBounded(event.gateType) };
@@ -389,6 +398,18 @@ function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefin
     default:
       return undefined;
   }
+}
+
+/**
+ * The preview of the inspected attempt's stored output. The detail read size-gates the document in SQL: an over-bound
+ * output arrives as `null` text with its byte length and is refused with the fixed sentence without being read; `null`
+ * text with no byte length is an attempt that recorded no output, which has no preview.
+ */
+function storedOutputPreview(detail: StepDetailRecord): OutputPreview | undefined {
+  if (detail.outputJson !== null) return buildOutputPreview(detail.outputJson);
+  return detail.outputByteLength === null
+    ? undefined
+    : oversizedOutputPreview(detail.outputByteLength);
 }
 
 /** Build the node detail page's model. See the module note. */
@@ -424,27 +445,38 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
         tokens: buildNodeTokens({
           settled: attemptSettled,
           completedStep: completedStepTokens([row], attemptStatus),
+          absence: absenceText(attemptStatus, runFinished),
         }),
-        cost: buildNodeCost({ settled: attemptSettled, boundaryMicrocents: 0, coverage }),
+        cost: buildNodeCost({
+          settled: attemptSettled,
+          boundaryMicrocents: 0,
+          coverage,
+          absence: absenceText(attemptStatus, runFinished),
+        }),
       };
     });
 
   const models: string[] = [];
   for (const row of settled) {
-    const model = boundedIdentifier(row.model);
+    const model = scrubbedBounded(row.model);
     if (!models.includes(model) && models.length < MAX_MODELS_LISTED) models.push(model);
   }
 
   const timelineAll = [...events]
     .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
     .flatMap((event) => timelineRow(event, nodeId) ?? []);
-  const error = readStoredError(detail.errorJson);
+  const error = readStoredError(detail.errorJson, detail.errorByteLength);
+  const outputPreview = storedOutputPreview(detail);
   const lastKnown = lastAttemptRow(attemptRows) ?? detail;
+  // The node as a whole is as far along as its LAST attempt row says, whichever attempt the page inspects: this is
+  // what its whole-node tokens and cost say when they have nothing to show.
+  const nodeStatus = resolveNodeStatus({ step: lastKnown, log, runFinished });
+  const nodeAbsence = absenceText(nodeStatus, runFinished);
 
   return {
     nodeId,
-    label: sanitizeInline(nodeId),
-    nodeType: sanitizeInline(lastKnown.nodeType),
+    label: scrubbedBounded(nodeId),
+    nodeType: scrubbedBounded(lastKnown.nodeType),
     status,
     glyph: NODE_ROW_GLYPH[status],
     attemptNumber: detail.attemptNumber,
@@ -453,12 +485,10 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
       : { durationMs: detail.durationMs, durationText: formatDuration(detail.durationMs) }),
     tokens: buildNodeTokens({
       settled,
-      completedStep: completedStepTokens(
-        attemptRows,
-        resolveNodeStatus({ step: lastKnown, log, runFinished }),
-      ),
+      completedStep: completedStepTokens(attemptRows, nodeStatus),
+      absence: nodeAbsence,
     }),
-    cost: buildNodeCost({ settled, boundaryMicrocents, coverage }),
+    cost: buildNodeCost({ settled, boundaryMicrocents, coverage, absence: nodeAbsence }),
     attempts,
     modelsUsed: models,
     authored: {
@@ -470,11 +500,13 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
         : { model: boundedIdentifier(input.authored.model) }),
     },
     ...(error === undefined ? {} : { error }),
-    ...(detail.outputJson === undefined
-      ? {}
-      : { outputPreview: buildOutputPreview(detail.outputJson) }),
+    ...(outputPreview === undefined ? {} : { outputPreview }),
     timeline: timelineAll.slice(0, MAX_TIMELINE_ROWS),
     timelineOmitted: Math.max(0, timelineAll.length - MAX_TIMELINE_ROWS),
-    toolActivity: buildToolActivityForAttempt(log?.lastTerminal, detail.attemptNumber),
+    toolActivity: buildToolActivityForAttempt(
+      log?.lastTerminal,
+      detail.attemptNumber,
+      absenceText(status, runFinished),
+    ),
   };
 }

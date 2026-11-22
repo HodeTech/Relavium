@@ -1,9 +1,8 @@
 import type { RunLeaseSummary, RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { sanitizeInline } from '../render/sanitize.js';
 import { RUN_STATUS_GLYPH } from './history-model.js';
-import { shortRunId } from './run-detail-model.js';
+import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detail-model.js';
 
 /**
  * The pure classification of the Home's Active tab (ADR-0140 §2, "Active"; ADR-0139 §3 and §7; MVP-8 step 1).
@@ -213,7 +212,7 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
     rows.push({
       runId: run.id,
       shortId: shortRunId(run.id),
-      label: sanitizeInline(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
+      label: scrubbedBounded(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
       status: run.status,
       glyph: RUN_STATUS_GLYPH[run.status],
       class: verdict.class,
@@ -223,7 +222,9 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       stalled,
       ...(stalled ? { stalledReason: STALLED_REASON } : {}),
       createdAt: run.createdAt,
-      ...(run.projectRoot === undefined ? {} : { projectRoot: sanitizeInline(run.projectRoot) }),
+      ...(run.projectRoot === undefined
+        ? {}
+        : { projectRoot: scrubbedBounded(run.projectRoot, MAX_PROJECT_ROOT_CHARS) }),
     });
   }
   return rows.sort((a, b) => groupRank(a.class) - groupRank(b.class) || newestFirst(a, b));

@@ -15,6 +15,9 @@ import {
   buildOutputPreview,
 } from './node-detail-model.js';
 import {
+  DID_NOT_FINISH,
+  DID_NOT_RUN,
+  IN_PROGRESS,
   MAX_IDENTIFIER_CHARS,
   NOT_RECORDED,
   NOT_RECORDED_FOR_ATTEMPT,
@@ -127,7 +130,15 @@ function stepSummary(overrides: Partial<StepSummaryRecord> = {}): StepSummaryRec
 }
 
 function stepDetail(overrides: Partial<StepDetailRecord> = {}): StepDetailRecord {
-  return { ...stepSummary({ attemptNumber: 2, durationMs: 1500 }), cachedTokens: 0, ...overrides };
+  return {
+    ...stepSummary({ attemptNumber: 2, durationMs: 1500 }),
+    cachedTokens: 0,
+    outputJson: null,
+    outputByteLength: null,
+    errorJson: null,
+    errorByteLength: null,
+    ...overrides,
+  };
 }
 
 /** A node `x` that retried once; its settled rows carry within-chain attempt numbers that reset (1, 2, then 1). */
@@ -571,6 +582,42 @@ describe('buildNodeDetailModel', () => {
     expect(model.outputPreview?.text).toBe('partial\noutput');
   });
 
+  it('says only the size of an output or an error the read refused (null text with a byte length)', () => {
+    // The detail read size-gates each document in SQL: an over-bound one arrives as null text and its byte length.
+    const model = buildNodeDetailModel({
+      detail: stepDetail({
+        status: 'failed',
+        outputJson: null,
+        outputByteLength: 3_000_000,
+        errorJson: null,
+        errorByteLength: 2_000_000,
+      }),
+      attempts: [],
+      events: [],
+    });
+    expect(model.outputPreview).toEqual({
+      text: 'output too large to preview (3000000 bytes)',
+      truncated: false,
+      lines: 1,
+      chars: 'output too large to preview (3000000 bytes)'.length,
+      masked: false,
+    });
+    expect(model.error).toEqual({ message: 'error record too large to show (2000000 bytes)' });
+    // A text that was returned is previewed as text, whatever byte length rides with it.
+    const returned = buildNodeDetailModel({
+      detail: stepDetail({
+        outputJson: JSON.stringify('shown'),
+        outputByteLength: 7,
+        errorJson: JSON.stringify({ code: 'tool_failed' }),
+        errorByteLength: 25,
+      }),
+      attempts: [],
+      events: [],
+    });
+    expect(returned.outputPreview?.text).toBe('shown');
+    expect(returned.error).toEqual({ code: 'tool_failed' });
+  });
+
   it('has no error and no preview when the attempt recorded neither', () => {
     const model = buildNodeDetailModel({ detail: stepDetail(), attempts: [], events: [] });
     expect(model.error).toBeUndefined();
@@ -933,5 +980,171 @@ describe('buildNodeDetailModel', () => {
       events: [],
     });
     expect(masked.error?.code).not.toContain('sk-ant-api03');
+  });
+
+  it('falls back to an attempt`s own step row for its tokens when the attempt completed with no settled call (source step)', () => {
+    // Two attempts with no settled call at all, both completed (a resume re-dispatch): each attempt row falls back
+    // to ITS OWN step row, not to the node's, and a failed attempt's `0` stays "not recorded".
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+      attempts: [
+        stepSummary({ attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+        stepSummary({ attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      ],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 2)],
+    });
+    expect(model.attempts[0]?.tokens).toEqual({
+      source: 'step',
+      input: 7,
+      output: 3,
+      text: '↑7 ↓3',
+    });
+    expect(model.attempts[1]?.tokens).toEqual({
+      source: 'step',
+      input: 30,
+      output: 6,
+      text: '↑30 ↓6',
+    });
+    const failedFirst = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1 }),
+      attempts: [
+        stepSummary({ attemptNumber: 1, status: 'failed', inputTokens: 9, outputTokens: 9 }),
+        stepSummary({ attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      ],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 2)],
+    });
+    expect(failedFirst.attempts[0]?.tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    expect(failedFirst.attempts[1]?.tokens).toMatchObject({ source: 'step', text: '↑30 ↓6' });
+  });
+
+  it('judges the whole node by its LAST attempt row, even when the page inspects an earlier attempt', () => {
+    // Attempt 1 failed (a failed row carries no tokens) and attempt 2 completed with 30 / 6. The page inspects
+    // attempt 1, whose own status is `failed`; the node as a whole COMPLETED, so its tokens come from the step rows.
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1, status: 'failed', inputTokens: 0, outputTokens: 0 }),
+      attempts: [
+        stepSummary({ attemptNumber: 1, status: 'failed', inputTokens: 0, outputTokens: 0 }),
+        stepSummary({ attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      ],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 2)],
+    });
+    expect(model.status).toBe('failed');
+    expect(model.tokens).toEqual({ source: 'step', input: 30, output: 6, text: '↑30 ↓6' });
+    // ...while the inspected attempt's own row has nothing to show.
+    expect(model.attempts[0]?.tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+  });
+
+  it('says why an absent figure is absent: did not run, did not finish, in progress, and not recorded for a finished attempt', () => {
+    const absent = (
+      overrides: Partial<StepDetailRecord>,
+      runFinished: boolean,
+    ): readonly string[] => {
+      const model = buildNodeDetailModel({
+        detail: stepDetail({ attemptNumber: 1, inputTokens: 0, outputTokens: 0, ...overrides }),
+        attempts: [],
+        events: [coverageStarted(0), started(1, 'x', 1)],
+        runFinished,
+      });
+      return [
+        model.tokens.text,
+        model.cost.text,
+        model.toolActivity.text,
+        model.attempts[0]?.tokens.text ?? '',
+        model.attempts[0]?.cost.text ?? '',
+      ];
+    };
+    expect(absent({ status: 'skipped' }, true)).toEqual(Array(5).fill(DID_NOT_RUN));
+    expect(absent({ status: 'running' }, true)).toEqual(Array(5).fill(DID_NOT_FINISH));
+    expect(absent({ status: 'running' }, false)).toEqual(Array(5).fill(IN_PROGRESS));
+    // A failed attempt (and a completed node with no step figure to show) is genuinely absent.
+    expect(absent({ status: 'failed' }, true)).toEqual(Array(5).fill(NOT_RECORDED));
+    expect(absent({ status: 'failed' }, false)).toEqual(Array(5).fill(NOT_RECORDED));
+  });
+
+  it('gives the whole node the sentence of its last attempt and the inspected attempt the sentence of its own row', () => {
+    // Attempt 1 failed (finished); attempt 2 is still running. Inspecting attempt 1: its own row and trace say
+    // `not recorded`, the node as a whole is in progress.
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1, status: 'failed', inputTokens: 0, outputTokens: 0 }),
+      attempts: [
+        stepSummary({ attemptNumber: 1, status: 'failed', inputTokens: 0, outputTokens: 0 }),
+        stepSummary({ attemptNumber: 2, status: 'running', inputTokens: 0, outputTokens: 0 }),
+      ],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 2)],
+    });
+    expect(model.tokens).toEqual({ source: 'none', text: IN_PROGRESS });
+    expect(model.cost).toMatchObject({ source: 'none', text: IN_PROGRESS });
+    expect(model.toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
+    expect(model.attempts.map((attempt) => attempt.tokens.text)).toEqual([
+      NOT_RECORDED,
+      IN_PROGRESS,
+    ]);
+    expect(model.attempts.map((attempt) => attempt.cost.text)).toEqual([NOT_RECORDED, IN_PROGRESS]);
+  });
+
+  it('does not touch a figure that exists: a stopped attempt with a settled call keeps its tokens and cost', () => {
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1, status: 'running' }),
+      attempts: [],
+      events: [
+        coverageStarted(0),
+        started(1, 'x', 1),
+        settled(2, 'x', 3_000_000, { inputTokens: 9, outputTokens: 4 }),
+      ],
+      runFinished: true,
+    });
+    expect(model.status).toBe('stopped');
+    expect(model.tokens).toMatchObject({ source: 'attempts', text: '↑9 ↓4' });
+    expect(model.cost).toMatchObject({ source: 'attempts', microcents: 3_000_000 });
+    expect(model.toolActivity).toEqual({ recorded: false, text: DID_NOT_FINISH });
+  });
+
+  it('bounds and scrubs the model of a timeline row and of the models list: a 200000-character name is clipped, a secret masked', () => {
+    const secret = `sk-ant-api03-${'M'.repeat(40)}`;
+    const huge = 'm'.repeat(200_000);
+    const model = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [
+        started(1, 'x'),
+        settled(2, 'x', 1, { model: huge }),
+        settled(3, 'x', 1, { model: `leaky ${secret}` }),
+      ],
+    });
+    const rows = model.timeline.filter((row) => row.label === 'Model call settled');
+    expect(rows[0]?.detail?.split(' · ')[0]).toBe(`${'m'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(rows[1]?.detail).not.toContain('sk-ant-api03');
+    expect(rows[1]?.detail).toContain('leaky');
+    // The same field in the models list gets the same treatment (it is the one stored value).
+    expect(model.modelsUsed[0]).toBe(`${'m'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(model.modelsUsed[1]).not.toContain('sk-ant-api03');
+    // A plain model name and a one-line floor still hold.
+    const plain = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [started(1, 'x'), settled(2, 'x', 1, { model: 'claude\u001b[31m\nmodel' })],
+    });
+    expect(plain.timeline[1]?.detail?.split(' · ')[0]).toBe('claude model');
+  });
+
+  it('bounds and scrubs the node id and type the page is labelled with', () => {
+    const secret = `sk-ant-api03-${'N'.repeat(40)}`;
+    const huge = buildNodeDetailModel({
+      detail: stepDetail({ nodeId: 'n'.repeat(200_000), nodeType: 't'.repeat(200_000) }),
+      attempts: [],
+      events: [],
+    });
+    expect(huge.label).toBe(`${'n'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(huge.nodeType).toBe(`${'t'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    // The raw id survives only as the lookup identity.
+    expect(huge.nodeId).toHaveLength(200_000);
+    const masked = buildNodeDetailModel({
+      detail: stepDetail({ nodeId: `node ${secret}`, nodeType: `type ${secret}` }),
+      attempts: [],
+      events: [],
+    });
+    expect(masked.label).not.toContain('sk-ant-api03');
+    expect(masked.label.startsWith('node ')).toBe(true);
+    expect(masked.nodeType).not.toContain('sk-ant-api03');
   });
 });

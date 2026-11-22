@@ -8,6 +8,7 @@ import {
   type ActiveRow,
   type ClassifyActiveInput,
 } from './active-model.js';
+import { MAX_IDENTIFIER_CHARS, MAX_PROJECT_ROOT_CHARS } from './run-detail-model.js';
 
 const HERE = '/work/project';
 const NOW = Date.parse('2026-11-22T12:00:00.000Z');
@@ -405,6 +406,31 @@ describe('free-form values read back from the history file', () => {
     // The decision compared the stored value (another project), the row shows the sanitized one.
     expect(row.class).toBe('other-paused-elsewhere');
     expect(row.projectRoot).toBe('/work/other evil');
+  });
+
+  it('bounds and scrubs the project root and the label, without changing the class decision', () => {
+    const secret = `sk-ant-api03-${'Q'.repeat(40)}`;
+    const huge = only(
+      classify([
+        run('r', {
+          status: 'paused',
+          workflowId: 'w'.repeat(200_000),
+          projectRoot: `/${'p'.repeat(200_000)}`,
+        }),
+      ]),
+    );
+    expect(huge.class).toBe('other-paused-elsewhere');
+    expect(huge.label).toBe(`${'w'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(huge.projectRoot).toBe(`/${'p'.repeat(MAX_PROJECT_ROOT_CHARS - 1)}…`);
+    const masked = only(
+      classify([run('r', { status: 'paused', projectRoot: `/work/${secret}` })], {
+        workflowLabels: new Map([['wf-id', `flow ${secret}`]]),
+      }),
+    );
+    expect(masked.projectRoot).not.toContain('sk-ant-api03');
+    expect(masked.projectRoot?.startsWith('/work/')).toBe(true);
+    expect(masked.label).not.toContain('sk-ant-api03');
+    expect(masked.label.startsWith('flow ')).toBe(true);
   });
 
   it('passes the short id through the one-line floor and keeps the full id as the identity', () => {
