@@ -57,6 +57,7 @@ import {
   type NodeSkippedReason,
   RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
+  isAppendConflictError,
   isLeaseFencedError,
   type Retry,
   type RunDurability,
@@ -717,6 +718,36 @@ class RunExecution {
    * was finishing. That is precisely the divergence ADR-0079 exists to prevent, reintroduced by §4 itself.
    */
   #ownership: RunOwnership = 'unclaimed';
+  /**
+   * The log head this process left behind when a gate park handed its claim back, captured by `#reclaim`
+   * when it re-takes that claim and cleared by the first write the store ACKNOWLEDGES under it. `undefined`
+   * whenever no re-taken claim is still unproven.
+   *
+   * **Why a re-taken claim needs proving (the stale gate card, ADR-0079 §4/§5).** A park deletes the lease
+   * row, so another process can resume the run, move its log on and hand the lease back in turn. Its fence
+   * is gone with its row, and this process's re-acquire then succeeds under a FRESH fence that the store
+   * accepts. Only the compare-and-append (ADR-0078 §2) can tell that the log moved — and its refusal used to
+   * read as a store fault, so this process failed the run and wrote `run:failed{internal}` (or Ctrl-C's
+   * `run:cancelled`) at a sequence the other process had used: refused by SQLite and held in the outbox for
+   * good, while the run was healthy and paused at its next gate.
+   *
+   * **The choice: classify at the write, not read in `#reclaim`.** The register offered both. A head read in
+   * `#reclaim` needs a port `RunStore` does not have (a new method breaks every store double and the SQLite
+   * store), or a full checkpoint load whose ADR-0075 strict read can fail a plain cancel, and it would be a
+   * second statement outside the write's transaction. The guarded append already compares the head INSIDE
+   * that transaction, atomically with the fence, so the only change needed is to read its refusal correctly:
+   * until a write under the re-taken claim is acknowledged, an `AppendConflictError` whose durable head is not
+   * this one means another writer moved the log, and that is ownership loss (§5) — no terminal, no outbox
+   * entry, the re-taken row released by its exact fence. A terminal is exempt from the append guard, so while
+   * this is set a terminal is guarded against this head; that is the Ctrl-C case, whose first write is the
+   * terminal. The CR-11 hand-back rule is unchanged: the claim is still handed back at every re-pause and
+   * re-taken before writing; the re-take is only trusted once a write under it lands.
+   *
+   * Compared against THIS head rather than against "last asked", so a conflict caused by this process's own
+   * failed ask (the log did not move; the guard is failing closed as ADR-0078 intends) keeps its ordinary
+   * store-fault handling instead of being misread as a takeover.
+   */
+  #reclaimedHead: number | undefined;
   /**
    * Builds a per-node effect journal from a run correlation (ADR-0080). Injected as a FACTORY rather than a
    * port, because the correlation differs per node and per retry attempt and only the run loop knows both.
@@ -4365,7 +4396,13 @@ class RunExecution {
     } catch {
       acquired = false;
     }
-    if (acquired) return true;
+    if (acquired) {
+      // The re-take is unproven until a write under it lands — see {@link #reclaimedHead}. `??=` keeps the
+      // head of an EARLIER re-take that no acknowledged write has proven yet: that is still the last head this
+      // process knows to be durable, while "last asked" may have moved past it on a failed ask.
+      this.#reclaimedHead ??= this.#lastAskedSequenceNumber;
+      return true;
+    }
     this.#loseOwnership();
     return false;
   }
@@ -5384,6 +5421,9 @@ class RunExecution {
         return { kind: 'refused' };
       }
       let acknowledgement: DurableAppendAcknowledgement;
+      // Read after ownership is reconciled below (a reclaim there sets the head), and kept for the catch.
+      let reclaimedHead: number | undefined;
+      let writeFence: RunFence | undefined;
       try {
         // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
         // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
@@ -5413,11 +5453,21 @@ class RunExecution {
         // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
         // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
         // The two claims are independent fields precisely so this asymmetry is expressible.
+        //
+        // **Except under an unproven re-take** ({@link #reclaimedHead}): a terminal is then guarded against
+        // the head this process left at its park. After a park another process may have moved the log and
+        // released, and the fresh fence cannot see that; this head check is what does. Not "last asked":
+        // a failed ask of this process's own must not keep its terminal from landing.
+        reclaimedHead = this.#reclaimedHead;
+        writeFence = this.#fence;
+        const headGuard = guarded ? expectedLastSequenceNumber : reclaimedHead;
         await this.#host.store.persistEvent(event, {
-          ...(guarded ? { expectedLastSequenceNumber } : {}),
-          ...(this.#fence === undefined ? {} : { fence: this.#fence }),
+          ...(headGuard === undefined ? {} : { expectedLastSequenceNumber: headGuard }),
+          ...(writeFence === undefined ? {} : { fence: writeFence }),
         });
         acknowledgement = { kind: 'persisted' };
+        // The log was where this process left it and the claim is held: the re-take is proven.
+        this.#reclaimedHead = undefined;
         if (terminal) {
           this.#lastAskedSequenceNumber = event.sequenceNumber;
           this.#terminalDurability = 'durable';
@@ -5429,8 +5479,19 @@ class RunExecution {
         // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
         // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
         // recording anything here would be a durable lie about somebody else's run.
-        if (isLeaseFencedError(writeError)) {
+        //
+        // **…and nor is a stale head under an unproven re-take** ({@link #reclaimedHead}, the stale gate
+        // card). The log moved past the head this process left at its park, so another process resumed the
+        // run while it was parked: the same loss, discovered by the append guard because the fence was fresh.
+        // Unlike a fence refusal the lease row is THIS process's — it re-took a vacant lease — so it is handed
+        // back by its exact fence (a no-op if anyone else holds it now), or the next resume waits out a TTL.
+        const movedSincePark =
+          reclaimedHead !== undefined &&
+          isAppendConflictError(writeError) &&
+          writeError.actualLastSequenceNumber !== reclaimedHead;
+        if (isLeaseFencedError(writeError) || movedSincePark) {
           this.#loseOwnership();
+          if (movedSincePark && writeFence !== undefined) await this.#releaseLeaseRow(writeFence);
           if (terminal) return acknowledgement; // §5 again, on the race path: deliver nothing
         } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed

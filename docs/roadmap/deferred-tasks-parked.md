@@ -1724,6 +1724,15 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
   `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
   `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
   *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
+  **Implemented 2026-11-22 on `development`, uncommitted; stays open until its D64 review round and separate security
+  sitting.** Classified at the write, not read in `#reclaim()`: a claim `#reclaim()` re-takes stays unproven until a
+  write under it is acknowledged. Until then a terminal is guarded against the head this process left at its park, and
+  an `AppendConflictError` whose durable head differs from that head is ownership loss: no terminal, no outbox entry,
+  the re-taken row released by its exact fence, and `uncertain` with no terminal (exit `6`). The answer and the Ctrl-C
+  case are both covered. `InMemoryRunStore` now refuses a duplicate `(runId, seq)` with an untyped error, as SQLite's
+  index does. Tests: `packages/core/src/engine/stale-gate-card.e2e.test.ts` (two engines on one reference store;
+  `@relavium/core` has no SQLite dependency, so a native two-process SQLite twin in `apps/cli` is still owed) and
+  `execution-host.test.ts`.
 - [~] **No test pins the own-export read's size-plus-one bound.** *Low; test gap.* *(export-1)* A file that grows
   between the descriptor's `fstat` and the read is caught only by that extra byte. **Re-check:** grow the file from an
   `fstatSync` hook in the race test. *(low · apps/cli/src/process/owned-storage.ts)*

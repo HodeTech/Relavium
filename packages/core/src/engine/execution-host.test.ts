@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   isAppendConflictError,
   isCorruptRunEventError,
+  isLeaseFencedError,
   RunAlreadyTerminalError,
   RunEventSchema,
   type RunEvent,
@@ -552,5 +553,39 @@ describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2
     // Another run's terminal does not close this one.
     await store.persistEvent({ ...started(0), runId: 'r2' });
     await expect(store.persistEvent({ ...failed(1), runId: 'r2' })).resolves.toBeUndefined();
+  });
+
+  it('mirrors UNIQUE(run_id, seq) — a duplicate sequence is refused, unguarded or not, per run', async () => {
+    // The stale gate card (deferred-tasks-parked.md): an UNGUARDED terminal at a sequence another writer had
+    // used. SQLite's unique index refused it; this reference landed it, so a core test could not see the
+    // defect. The refusal is untyped like SQLite's — never a stale belief and never a lost claim.
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent(skipped(3), { expectedLastSequenceNumber: 0 });
+
+    const refusals: unknown[] = [];
+    for (const duplicate of [failed(3), skipped(3), started(0)]) {
+      await store.persistEvent(duplicate).then(
+        () => refusals.push('accepted'),
+        (error: unknown) => refusals.push(error),
+      );
+    }
+    expect(refusals).toHaveLength(3);
+    for (const refusal of refusals) {
+      expect(refusal).toBeInstanceOf(Error);
+      expect(String(refusal)).toMatch(
+        /UNIQUE constraint failed: run_events\.run_id, run_events\.seq/,
+      );
+      expect(isAppendConflictError(refusal)).toBe(false);
+      expect(isLeaseFencedError(refusal)).toBe(false);
+      expect(refusal).not.toBeInstanceOf(RunAlreadyTerminalError);
+    }
+    expect(store.eventsFor('r1').map((e) => [e.sequenceNumber, e.type])).toEqual([
+      [0, 'run:started'],
+      [3, 'node:skipped'],
+    ]);
+    // A fresh sequence still lands, and the same sequence in another run is not a duplicate.
+    await expect(store.persistEvent(skipped(4))).resolves.toBeUndefined();
+    await expect(store.persistEvent({ ...skipped(3), runId: 'r2' })).resolves.toBeUndefined();
   });
 });
