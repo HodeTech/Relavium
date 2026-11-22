@@ -17,13 +17,24 @@
  * being hidden by a laxer store.
  */
 
-import type { DurableWriteContext, GateDecision, RunEvent, RunLeasePort } from '@relavium/shared';
+import type {
+  DurableWriteContext,
+  GateDecision,
+  RunEvent,
+  RunFence,
+  RunLeasePort,
+} from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
-import { createInMemoryHost, InMemoryRunStore, type RunStore } from './execution-host.js';
+import {
+  createInMemoryCheckpointer,
+  createInMemoryHost,
+  InMemoryRunStore,
+  type RunStore,
+} from './execution-host.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
 
@@ -63,13 +74,65 @@ class GateStub implements NodeExecutor {
 /**
  * One "process" on the shared store. The id source is distinct per process because the engine mints its OWNER
  * from it: two reference hosts would both answer `id-1`, and the lease would then read B as A renewing.
+ *
+ * `faultable` puts a store fault in front of this process's writes, and only this process's: once `armFault()`
+ * is called, the next write it makes is refused with a plain disk error before it reaches the shared store —
+ * the store failed, not the claim. Its lease calls are then recorded on the SAME shared lease table, so a test
+ * can name the exact fence a release used. Without the option the process is the plain reference host.
  */
-function processOn(store: InMemoryRunStore, name: string) {
-  const host = createInMemoryHost({ store });
+function processOn(
+  store: InMemoryRunStore,
+  name: string,
+  options?: { readonly faultable?: boolean },
+) {
+  const base = createInMemoryHost({ store });
+  let armed = false;
+  const faulted: RunEvent[] = [];
+  const acquired: RunFence[] = [];
+  const released: RunFence[] = [];
+  const faultingView: RunStore = {
+    resolveWorkflowId: (slug: string) => store.resolveWorkflowId(slug),
+    listInterruptedRuns: () => store.listInterruptedRuns(),
+    readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+    persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => {
+      if (armed) {
+        armed = false;
+        faulted.push(event);
+        return Promise.reject(new Error('disk I/O error'));
+      }
+      return store.persistEvent(event, ctx);
+    },
+  };
+  const recordingLeases: RunLeasePort = {
+    acquire: async (runId, ownerId, ttlMs) => {
+      const fence = await base.runLeases.acquire(runId, ownerId, ttlMs);
+      if (fence !== undefined) acquired.push(fence);
+      return fence;
+    },
+    heartbeat: (runId, fence, ttlMs) => base.runLeases.heartbeat(runId, fence, ttlMs),
+    release: (runId, fence) => {
+      released.push(fence);
+      return base.runLeases.release(runId, fence);
+    },
+    read: (runId) => base.runLeases.read(runId),
+  };
+  // `base` bound the store's ONE lease table (or joined it), so the recorder wraps the table every process shares.
+  const host =
+    options?.faultable === true
+      ? {
+          ...base,
+          store: faultingView,
+          checkpointer: createInMemoryCheckpointer(store),
+          runLeases: recordingLeases,
+        }
+      : base;
   let next = 0;
   const ids = { newId: () => `${name}-${String(++next)}` };
   const engine = new WorkflowEngine({ host: { ...host, ids }, executor: new GateStub() });
-  return { host, engine };
+  const armFault = (): void => {
+    armed = true;
+  };
+  return { host, engine, armFault, faulted, acquired, released };
 }
 
 async function untilAsync(predicate: () => Promise<boolean>, what: string): Promise<void> {
@@ -101,9 +164,9 @@ const approve = (by: string): GateDecision => ({ decision: 'approved', decidedBy
  * Terminal A parks at g1 with its card still open; terminal B decides g1, runs to g2, parks and exits. Returns
  * A still parked in memory on g1, and the log exactly as B left it.
  */
-async function staleCardScene() {
+async function staleCardScene(options?: { readonly faultableA?: boolean }) {
   const store = new InMemoryRunStore();
-  const a = processOn(store, 'terminal-a');
+  const a = processOn(store, 'terminal-a', { faultable: options?.faultableA === true });
   const handleA = a.engine.start({ workflow: TWO_GATES });
   const runId = handleA.runId;
   const eventsA: RunEvent[] = [];
@@ -223,6 +286,31 @@ describe('a stale gate card after another process decided the gate (ADR-0079 §4
     await scene.drainedA;
 
     await expectFencedAndUntouched(scene);
+    await expectStillCompletes(scene);
+  });
+
+  it("a store fault on A's first write after the re-take, with the log moved by B, still stops A as fenced", async () => {
+    // Only an ACKNOWLEDGED write proves the re-take, so a FAILED one must leave the park's head in place. Here
+    // A's gate decision — its first write under the re-taken claim — fails for a store fault before the store
+    // can compare its head, so nothing tells A yet that B moved the log. The run's terminal follows, and it is
+    // what must still be guarded against the park's head: a head record cleared before the write, or in its
+    // catch, sends that terminal unguarded under A's fresh fence, and A reports `run:failed` for a healthy run
+    // paused at g2 instead of the fenced outcome (both placements measured against this test).
+    const scene = await staleCardScene({ faultableA: true });
+    const { a } = scene;
+    const acquiredAtPark = a.acquired.length;
+    const releasedAtPark = a.released.length;
+    a.armFault();
+    await a.engine.resume(scene.runId, scene.firstGate, approve('terminal-a'));
+    await scene.drainedA;
+
+    // The fault hit A's first write after the re-take: the gate decision, refused before the shared store.
+    expect(a.faulted.map((event) => event.type)).toEqual(['human_gate:resumed']);
+    await expectFencedAndUntouched(scene);
+    // A re-took the vacant lease once, and handed it back by exactly that fence — nothing else was released.
+    const retaken = a.acquired.slice(acquiredAtPark);
+    expect(retaken).toHaveLength(1);
+    expect(a.released.slice(releasedAtPark)).toEqual(retaken);
     await expectStillCompletes(scene);
   });
 });
