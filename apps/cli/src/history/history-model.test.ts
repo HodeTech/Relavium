@@ -147,6 +147,18 @@ describe('buildHistoryRows', () => {
     expect(rowsOf([run('b', { createdAt: 'garbage' })])[0]?.createdAtMs).toBeUndefined();
   });
 
+  it('passes the project root and the short id through the one-line floor (both are read back from the history file)', () => {
+    const [row] = rowsOf([
+      run('ab\u001b[2Jcd\nef\u0007gh-tail', {
+        projectRoot: '/work\u001b]0;pwn\u0007/\u202eevil\nroot',
+      }),
+    ]);
+    expect(row?.projectRoot).toBe('/work/evil root');
+    expect(row?.shortId).toBe('abcd');
+    // The full id stays the identity a drill-down and a pin use.
+    expect(row?.id).toBe('ab\u001b[2Jcd\nef\u0007gh-tail');
+  });
+
   it('keeps the page order and drops nothing', () => {
     const rows = rowsOf([
       run('c', { status: 'running' }),

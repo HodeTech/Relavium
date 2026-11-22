@@ -45,6 +45,13 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
 /** What a node row says when no cost was recorded — never `0`, never empty. */
 export const NOT_RECORDED = 'not recorded';
 
+/**
+ * What a node's tool trace says when its terminal event carries no `toolActivity` field at all. Every node
+ * terminal written since the field landed carries it (an empty array for a node that made no call), so absence
+ * means the log was written by an older binary — never "no tool calls".
+ */
+export const NOT_RECORDED_OLDER_LOG = 'not recorded (older log)';
+
 /** What a tool-trace entry says when its call has no recorded result. */
 export const NO_RESULT_RECORDED = 'no result recorded';
 
@@ -76,6 +83,16 @@ export function isFinishedRun(status: RunStatus): boolean {
 export const MAX_ERROR_MESSAGE_CHARS = 300;
 /** A stored error is cut to this many code points BEFORE the scrubber runs, so a pathological row costs a bound. */
 const MAX_ERROR_SCRUB_CHARS = 65_536;
+/** The most code points of one stored identifier (an error code, a node id, a model name) a page shows. */
+export const MAX_IDENTIFIER_CHARS = 128;
+
+/**
+ * The first characters of a run id, for a row: cut first (so a forged id costs a bound), then through the
+ * one-line floor — a run id is read back from `history.db`, which accepts any text in that column.
+ */
+export function shortRunId(id: string): string {
+  return sanitizeInline(id.slice(0, 8));
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // One pass over the events, grouped per node.
@@ -313,12 +330,16 @@ export interface ToolActivityRowView {
 }
 
 /**
- * A node's tool trace. `recorded: false` means the terminal event carries no `toolActivity` (an older log, or no
- * terminal at all) — the page says `not recorded`. `recorded: true` with no entries is a node that made no tool
- * call, which is a different statement.
+ * A node's tool trace. `recorded: false` is one of two statements, and the text says which: the node has no
+ * terminal event (yet, or the log was cut) — `not recorded`; or its terminal carries no `toolActivity` field,
+ * which only a log written before the field existed lacks — `not recorded (older log)`. `recorded: true` with no
+ * entries is a node that made no tool call (`no tool calls`), a different statement from both.
  */
 export type ToolActivityView =
-  | { readonly recorded: false; readonly text: typeof NOT_RECORDED }
+  | {
+      readonly recorded: false;
+      readonly text: typeof NOT_RECORDED | typeof NOT_RECORDED_OLDER_LOG;
+    }
   | {
       readonly recorded: true;
       readonly entries: readonly ToolActivityRowView[];
@@ -331,8 +352,9 @@ export type ToolActivityView =
 export function buildToolActivity(
   terminal: NodeCompletedEvent | NodeFailedEvent | undefined,
 ): ToolActivityView {
-  const stored = terminal?.toolActivity;
-  if (stored === undefined) return { recorded: false, text: NOT_RECORDED };
+  if (terminal === undefined) return { recorded: false, text: NOT_RECORDED };
+  const stored = terminal.toolActivity;
+  if (stored === undefined) return { recorded: false, text: NOT_RECORDED_OLDER_LOG };
   const entries = stored.map((entry): ToolActivityRowView => {
     const toolId = sanitizeInline(entry.toolId);
     // An unpaired call (the node ended before its result) is `ok: false` with no duration; a failed RESULT has one.
@@ -346,7 +368,7 @@ export function buildToolActivity(
       outcome: entry.ok ? 'ok' : 'failed',
     };
   });
-  const truncated = terminal?.toolActivityTruncated ?? 0;
+  const truncated = terminal.toolActivityTruncated ?? 0;
   const total = entries.length + truncated;
   return {
     recorded: true,
@@ -383,10 +405,28 @@ export function clipCodePoints(
 }
 
 /**
+ * One stored identifier for a row: cut to a bound before the filter reads it, filtered to one line (by default
+ * the one-line floor; pass the scrubbing variant for text that could carry a secret), then cut to
+ * {@link MAX_IDENTIFIER_CHARS} code points, with `…` marking a cut. The filter runs BEFORE the final cut, so a
+ * secret is masked before any of it can be clipped away from the context that identifies it.
+ */
+export function boundedIdentifier(
+  text: string,
+  filter: (text: string) => string = sanitizeInline,
+): string {
+  const clipped = clipCodePoints(
+    filter(clipCodePoints(text, MAX_ERROR_SCRUB_CHARS).text),
+    MAX_IDENTIFIER_CHARS,
+  );
+  return clipped.truncated ? `${clipped.text}…` : clipped.text;
+}
+
+/**
  * Read a stored `error_json` (`{ code, message, nodeId? }`) for display. The text is data from the history file:
  * the message passes the secret scrubber and the one-line floor, then is cut to
- * {@link MAX_ERROR_MESSAGE_CHARS}; the code and node id pass the one-line floor. An unreadable document yields a
- * fixed sentence, never a throw.
+ * {@link MAX_ERROR_MESSAGE_CHARS}; the code passes the same scrubber and floor and is cut to
+ * {@link MAX_IDENTIFIER_CHARS}, and the node id passes the floor and the same cut. Each is cut to a bound before
+ * the scrubber reads it. An unreadable document yields a fixed sentence, never a throw.
  */
 export function readStoredError(json: string | undefined): StoredErrorView | undefined {
   if (json === undefined) return undefined;
@@ -409,9 +449,9 @@ export function readStoredError(json: string | undefined): StoredErrorView | und
     shownMessage = clipped.truncated ? `${clipped.text}…` : clipped.text;
   }
   return {
-    ...(typeof code === 'string' ? { code: sanitizeInline(code) } : {}),
+    ...(typeof code === 'string' ? { code: boundedIdentifier(code, sanitizeUntrustedInline) } : {}),
     ...(shownMessage === undefined ? {} : { message: shownMessage }),
-    ...(typeof nodeId === 'string' ? { nodeId: sanitizeInline(nodeId) } : {}),
+    ...(typeof nodeId === 'string' ? { nodeId: boundedIdentifier(nodeId) } : {}),
   };
 }
 
@@ -628,7 +668,7 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   return {
     header: {
       runId: run.id,
-      shortId: run.id.slice(0, 8),
+      shortId: shortRunId(run.id),
       status: run.status,
       workflow: sanitizeInline(input.workflowSlug ?? run.workflowId),
       ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),

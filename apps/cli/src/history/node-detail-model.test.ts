@@ -1,8 +1,11 @@
 import type { StepDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import * as scrubModule from '@relavium/llm/scrub-secrets';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  MAX_KEY_SCRUB_CHARS,
+  MAX_STORED_OUTPUT_BYTES,
   MAX_TIMELINE_ROWS,
   OUTPUT_PREVIEW_MAX_CHARS,
   OUTPUT_PREVIEW_MAX_LINES,
@@ -10,7 +13,15 @@ import {
   buildNodeDetailModel,
   buildOutputPreview,
 } from './node-detail-model.js';
-import { NOT_RECORDED } from './run-detail-model.js';
+import { MAX_IDENTIFIER_CHARS, NOT_RECORDED, NOT_RECORDED_OLDER_LOG } from './run-detail-model.js';
+
+// The real scrubber, counted: the walk's cost is the number of strings it hands the scrubber, so a test can say
+// "the walk stopped" by how many it saw.
+vi.mock('@relavium/llm/scrub-secrets', async (importOriginal) => {
+  const actual = await importOriginal<typeof scrubModule>();
+  return { ...actual, scrubSecrets: vi.fn(actual.scrubSecrets) };
+});
+const scrubCalls = (): number => vi.mocked(scrubModule.scrubSecrets).mock.calls.length;
 
 const RUN_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const T = '2026-11-22T10:00:00.000Z';
@@ -57,6 +68,20 @@ const completed = (sequenceNumber: number, nodeId: string): RunEvent => ({
   tokensUsed: { input: 1, output: 1 },
   durationMs: 1500,
   toolActivity: [{ toolId: 'read_file', ok: true, durationMs: 4 }],
+});
+/** A node terminal in the shape of a log written before `toolActivity` existed, or with the given trace. */
+const completedWithTrace = (
+  sequenceNumber: number,
+  nodeId: string,
+  toolActivity?: { toolId: string; ok: boolean; durationMs?: number }[],
+): RunEvent => ({
+  type: 'node:completed',
+  ...base(sequenceNumber),
+  nodeId,
+  output: 'ok',
+  tokensUsed: { input: 1, output: 1 },
+  durationMs: 1500,
+  ...(toolActivity === undefined ? {} : { toolActivity }),
 });
 const retrying = (sequenceNumber: number, nodeId: string, attemptNumber: number): RunEvent => ({
   type: 'node:retrying',
@@ -212,6 +237,143 @@ describe('buildOutputPreview', () => {
   });
 });
 
+describe('buildOutputPreview: the cost is a bound, not the stored document', () => {
+  beforeEach(() => {
+    vi.mocked(scrubModule.scrubSecrets).mockClear();
+  });
+
+  it('refuses a stored document above the size bound with a fixed sentence, without parsing it', () => {
+    const eightMiB = JSON.stringify('x'.repeat(8 * 1024 * 1024 - 2));
+    expect(Buffer.byteLength(eightMiB)).toBe(8 * 1024 * 1024);
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      const started = performance.now();
+      const preview = buildOutputPreview(eightMiB);
+      expect(preview.text).toBe('output too large to preview (8388608 bytes)');
+      expect(preview).toMatchObject({ truncated: false, masked: false, lines: 1 });
+      expect(parse).not.toHaveBeenCalled();
+      expect(scrubCalls()).toBe(0);
+      expect(performance.now() - started).toBeLessThan(500);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('puts the line at exactly 1 MiB: that many bytes is read, one byte more is refused', () => {
+    expect(MAX_STORED_OUTPUT_BYTES).toBe(1_048_576);
+    const atBound = JSON.stringify('y'.repeat(MAX_STORED_OUTPUT_BYTES - 2));
+    expect(Buffer.byteLength(atBound)).toBe(MAX_STORED_OUTPUT_BYTES);
+    expect(buildOutputPreview(atBound)).toMatchObject({ truncated: true, chars: 4000 });
+    expect(buildOutputPreview(atBound).text).toBe('y'.repeat(4000));
+    const over = JSON.stringify('y'.repeat(MAX_STORED_OUTPUT_BYTES - 1));
+    expect(buildOutputPreview(over).text).toBe(
+      `output too large to preview (${MAX_STORED_OUTPUT_BYTES + 1} bytes)`,
+    );
+  });
+
+  it('counts bytes, not characters: a document of multi-byte text over the bound is refused', () => {
+    const wide = JSON.stringify('\u20ac'.repeat(400_000)); // 3 bytes each, 400,000 characters
+    expect(wide.length).toBeLessThan(MAX_STORED_OUTPUT_BYTES);
+    expect(buildOutputPreview(wide).text).toMatch(/^output too large to preview \(\d+ bytes\)$/u);
+  });
+
+  it('previews a large document under the bound, bounded, and quickly', () => {
+    const rows = Array.from({ length: 30_000 }, (_, index) => ({ n: index, text: `row ${index}` }));
+    const stored = JSON.stringify(rows);
+    expect(Buffer.byteLength(stored)).toBeGreaterThan(500_000);
+    expect(Buffer.byteLength(stored)).toBeLessThan(MAX_STORED_OUTPUT_BYTES);
+    const started = performance.now();
+    const preview = buildOutputPreview(stored);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(preview).toMatchObject({ truncated: true, lines: OUTPUT_PREVIEW_MAX_LINES });
+    // The preview is the head of what a full pretty-print would show, cut at the line bound.
+    expect(preview.text).toBe(
+      JSON.stringify(rows, null, 2).split('\n').slice(0, OUTPUT_PREVIEW_MAX_LINES).join('\n'),
+    );
+  });
+
+  it('stops walking once the preview is full: a first leaf that fills the bound means the rest is never visited', () => {
+    const doc = {
+      first: 'x'.repeat(10_000),
+      rest: Array.from({ length: 5_000 }, (_, index) => `leaf ${index}`),
+    };
+    const preview = buildOutputPreview(JSON.stringify(doc));
+    expect(preview).toMatchObject({ truncated: true, chars: OUTPUT_PREVIEW_MAX_CHARS });
+    // The key `first`, the one leaf and the whole-text pass — not one call per leaf of `rest`.
+    expect(scrubCalls()).toBeLessThan(10);
+  });
+
+  it('stops walking at the line bound too, when every leaf is short', () => {
+    const preview = buildOutputPreview(
+      JSON.stringify(Array.from({ length: 5_000 }, (_, index) => `leaf ${index}`)),
+    );
+    expect(preview).toMatchObject({ truncated: true, lines: OUTPUT_PREVIEW_MAX_LINES });
+    expect(scrubCalls()).toBeLessThan(OUTPUT_PREVIEW_MAX_LINES + 10);
+  });
+
+  it('writes what it shows exactly as an indented JSON dump would, for every shape that fits', () => {
+    const shapes: unknown[] = [
+      { a: [1, 2], b: 'x', c: null, d: true, e: {}, f: [], g: { h: [{}, [], [[]]] } },
+      [],
+      {},
+      [[[]], {}],
+      42,
+      null,
+      false,
+      { '': '', 'k "quoted"': 'line\nbreak', unicode: '\u20ac\u{1F600}' },
+    ];
+    for (const shape of shapes) {
+      const preview = buildOutputPreview(JSON.stringify(shape));
+      expect(preview.text).toBe(JSON.stringify(shape, null, 2));
+      expect(preview.truncated).toBe(false);
+    }
+  });
+
+  it('keeps an own `__proto__` member (it is only written, never assigned)', () => {
+    const preview = buildOutputPreview('{"__proto__": {"polluted": 1}, "b": 2}');
+    expect(preview.text).toBe('{\n  "__proto__": {\n    "polluted": 1\n  },\n  "b": 2\n}');
+  });
+
+  it('cuts a long object key before the scrubber reads it, and marks the cut', () => {
+    const key = 'k'.repeat(MAX_KEY_SCRUB_CHARS + 500);
+    const preview = buildOutputPreview(JSON.stringify({ [key]: 1 }));
+    expect(preview.text).toBe(`{\n  "${'k'.repeat(MAX_KEY_SCRUB_CHARS)}…": 1\n}`);
+    // The scrubber was handed the cut key, never the whole one.
+    expect(vi.mocked(scrubModule.scrubSecrets).mock.calls[0]?.[0]).toHaveLength(
+      MAX_KEY_SCRUB_CHARS,
+    );
+    // A key exactly at the bound is kept whole.
+    const exact = 'e'.repeat(MAX_KEY_SCRUB_CHARS);
+    expect(buildOutputPreview(JSON.stringify({ [exact]: 1 })).text).toBe(`{\n  "${exact}": 1\n}`);
+  });
+
+  it('still masks a secret-shaped key and a secret-shaped value that sit under the cap, in a document it stops early', () => {
+    const secret = `sk-ant-api03-${'D'.repeat(40)}`;
+    const preview = buildOutputPreview(
+      JSON.stringify({
+        [secret]: 'value',
+        note: `held ${secret}`,
+        filler: Array.from({ length: 2_000 }, (_, index) => `f${index}`),
+      }),
+    );
+    expect(preview.text).not.toContain('sk-ant-api03');
+    expect(preview.masked).toBe(true);
+    expect(preview.truncated).toBe(true);
+    expect(preview.text).toContain('"note": "held ');
+  });
+
+  it('says truncated when the walk stopped early, even if the whole-text pass then left the shown text under the bound', () => {
+    // The first leaf alone fills the character bound, so the walk stops and never writes `b`. The whole-text scrub
+    // then masks that value (it follows an API-key header name), leaving a short text that no bound would cut.
+    const preview = buildOutputPreview(JSON.stringify({ 'x-api-key': 'a'.repeat(4_500), b: 1 }));
+    expect(preview.masked).toBe(true);
+    expect(preview.text).toContain('[REDACTED]');
+    expect(preview.text).not.toContain('"b"');
+    expect(preview.chars).toBeLessThan(OUTPUT_PREVIEW_MAX_CHARS);
+    expect(preview.truncated).toBe(true);
+  });
+});
+
 describe('buildNodeDetailModel', () => {
   it('groups each attempt`s cost by the node:started boundaries even though the settled rows` own attempt numbers reset', () => {
     const model = buildNodeDetailModel({
@@ -308,7 +470,7 @@ describe('buildNodeDetailModel', () => {
     expect(model.outputPreview).toBeUndefined();
   });
 
-  it('carries the inspected attempt`s status, duration, tokens and cached tokens', () => {
+  it('carries the inspected attempt`s status, duration and tokens, and no cached count (the column is never written)', () => {
     const model = buildNodeDetailModel({
       detail: stepDetail({ cachedTokens: 7, inputTokens: 11, outputTokens: 22 }),
       attempts: [],
@@ -320,8 +482,10 @@ describe('buildNodeDetailModel', () => {
       attemptNumber: 2,
       durationMs: 1500,
       durationText: '1.5s',
-      tokens: { input: 11, output: 22, cached: 7 },
     });
+    // `toEqual` on the whole object: a `cached` key, even `0`, would state "0 cached" as a fact.
+    expect(model.tokens).toEqual({ input: 11, output: 22 });
+    expect('cached' in model.tokens).toBe(false);
   });
 
   it('shows an attempt row left running under a finished run as stopped, and as running otherwise', () => {
@@ -338,10 +502,27 @@ describe('buildNodeDetailModel', () => {
       recorded: true,
       entries: [{ toolId: 'read_file', ok: true, durationMs: 4, outcome: 'ok' }],
     });
+    // No terminal event yet: nothing is claimed about the cause.
     expect(
       buildNodeDetailModel({ detail: stepDetail(), attempts: [], events: [started(1, 'x')] })
         .toolActivity,
     ).toEqual({ recorded: false, text: NOT_RECORDED });
+    // A terminal with no `toolActivity` field is a log written before the field existed; an empty array is a
+    // node that made no tool call.
+    expect(
+      buildNodeDetailModel({
+        detail: stepDetail(),
+        attempts: [],
+        events: [started(1, 'x'), completedWithTrace(2, 'x')],
+      }).toolActivity,
+    ).toEqual({ recorded: false, text: NOT_RECORDED_OLDER_LOG });
+    expect(
+      buildNodeDetailModel({
+        detail: stepDetail(),
+        attempts: [],
+        events: [started(1, 'x'), completedWithTrace(2, 'x', [])],
+      }).toolActivity,
+    ).toEqual({ recorded: true, entries: [], truncated: 0, text: 'no tool calls' });
   });
 
   it('builds the timeline from this node`s durable events only, in sequence order, with no invented Scheduled row', () => {
@@ -388,5 +569,89 @@ describe('buildNodeDetailModel', () => {
     expect(model.label).toBe('bad id');
     expect(model.nodeType).toBe('agent');
     expect(model.nodeId).toBe('bad\u001b[2J\nid');
+  });
+  it('shows a node with settled rows AND a boundary cost by the settled sum, exact, never the boundary figure', () => {
+    // The realistic shape: the writer stores the node's boundary cost on the step row AND the log settled calls.
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ costMicrocents: 9_000_000 }),
+      attempts: [stepSummary({ attemptNumber: 1, costMicrocents: 9_000_000 })],
+      events: [coverageStarted(0), started(1, 'x'), settled(2, 'x', 3_000_000), completed(3, 'x')],
+    });
+    expect(model.cost).toMatchObject({
+      source: 'attempts',
+      microcents: 3_000_000,
+      approximate: false,
+    });
+    expect(model.cost.text).toBe('$0.0300');
+    expect(model.cost.text.startsWith('~')).toBe(false);
+  });
+
+  it('counts a settled row that precedes every node:started in the node total and its models, but in no attempt', () => {
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1 }),
+      attempts: [stepSummary({ attemptNumber: 1 })],
+      events: [
+        coverageStarted(0),
+        settled(1, 'x', 1_000_000, { model: 'before-start' }),
+        started(2, 'x'),
+        settled(3, 'x', 2_000_000, { model: 'after-start' }),
+        completed(4, 'x'),
+      ],
+    });
+    expect(model.cost).toMatchObject({ source: 'attempts', microcents: 3_000_000 });
+    expect(model.modelsUsed).toEqual(['before-start', 'after-start']);
+    expect(model.attempts[0]?.cost).toMatchObject({ microcents: 2_000_000 });
+  });
+
+  it('cuts each model name and each authored name to 128 characters, and lists at most 20 models', () => {
+    const long = 'm'.repeat(MAX_IDENTIFIER_CHARS + 50);
+    const events: RunEvent[] = [started(1, 'x')];
+    for (let index = 0; index < 30; index++) {
+      events.push(settled(2 + index, 'x', 1, { model: `model-${index}` }));
+    }
+    events.push(settled(40, 'x', 1, { model: long }));
+    const model = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events,
+      authored: { agentSlug: long, model: `${long}\u001b[31m` },
+    });
+    expect(model.modelsUsed).toHaveLength(20);
+    expect(model.modelsUsed[0]).toBe('model-0');
+    const clipped = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [started(1, 'x'), settled(2, 'x', 1, { model: long })],
+    });
+    expect(clipped.modelsUsed).toEqual([`${'m'.repeat(MAX_IDENTIFIER_CHARS)}…`]);
+    expect(model.authored.agent).toBe(`${'m'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(model.authored.model).toBe(`${'m'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+  });
+
+  it('clips a stored error code and node id to 128 characters and masks a secret in the code', () => {
+    const secret = `sk-ant-api03-${'F'.repeat(40)}`;
+    const model = buildNodeDetailModel({
+      detail: stepDetail({
+        status: 'failed',
+        errorJson: JSON.stringify({
+          code: `${'c'.repeat(300)}`,
+          message: 'boom',
+          nodeId: `${'n'.repeat(300)}`,
+        }),
+      }),
+      attempts: [],
+      events: [],
+    });
+    expect(model.error?.code).toBe(`${'c'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(model.error?.nodeId).toBe(`${'n'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    const masked = buildNodeDetailModel({
+      detail: stepDetail({
+        status: 'failed',
+        errorJson: JSON.stringify({ code: `bad ${secret}`, message: 'boom' }),
+      }),
+      attempts: [],
+      events: [],
+    });
+    expect(masked.error?.code).not.toContain('sk-ant-api03');
   });
 });

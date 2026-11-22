@@ -6,20 +6,22 @@ import {
   type Db,
   type DbClient,
 } from '@relavium/db';
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { RunEventSchema, isCorruptRunEventError, type RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { CommandLifetime } from '../process/command-lifetime.js';
-import { isCliError } from '../process/errors.js';
+import { isCliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support.js';
 import {
+  FOLLOW_LIVENESS_INTERVAL_MS,
   FOLLOW_POLL_INTERVAL_MS,
   logsCommand,
   logsFollowCommand,
+  readHistory,
   type LogsCommandDeps,
 } from './logs.js';
 
@@ -439,6 +441,29 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
     };
   }
 
+  /** An injected clock the script moves: no real time passes, so a liveness rule is a function of what the script did. */
+  function fakeClock(startMs: number): { now: () => number; advance: (ms: number) => void } {
+    let current = startMs;
+    return {
+      now: () => current,
+      advance: (ms) => {
+        current += ms;
+      },
+    };
+  }
+
+  const T0 = 1_750_000_000_000;
+
+  /** The lease row another process holds (or held) on a run: `expiresAt` is what a liveness verdict reads. */
+  function setLease(runId: string, expiresAt: number): void {
+    client.sqlite.prepare('DELETE FROM run_leases WHERE run_id = ?').run(runId);
+    client.sqlite
+      .prepare(
+        'INSERT INTO run_leases (run_id, owner_id, generation, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(runId, 'owner-1', 1, expiresAt, T0, T0);
+  }
+
   /** `node:started n2`, `node:completed n2` — a node that runs to its end. */
   async function runNode(
     append: (body: Record<string, unknown>) => Promise<void>,
@@ -800,6 +825,352 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(waits).toEqual([lifetime.work.signal]);
       expect(lifetime.work.signal.aborted).toBe(true);
       expect(captured.out().trimEnd().split('\n')).toHaveLength(4); // the header and the three events, nothing after
+    });
+  });
+
+  describe('--follow liveness: a run nobody owns never gets a terminal event', () => {
+    const NO_OWNER =
+      /note: run f1 has no live owner, so its log will not grow\. `relavium status f1` /u;
+
+    it('ends with exit 0 and one stderr note once a poll that found nothing finds no lease, and stdout stays the plain log', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const plain = captureIo();
+      logsCommand({ runId: 'f1' }, deps(plain.io));
+      const clock = fakeClock(T0);
+      const { io, out, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toEqual([FOLLOW_POLL_INTERVAL_MS]);
+      expect(err()).toMatch(NO_OWNER);
+      expect(err().trimEnd().split('\n')).toHaveLength(1);
+      expect(out()).toBe(plain.out());
+      expect(out()).not.toContain('no live owner');
+    });
+
+    it('under --json the note is on stderr only, and stdout stays a pure NDJSON stream', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const clock = fakeClock(T0);
+      const { io, out, err } = captureIo();
+      const { sleep } = scriptedSleep([() => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
+      await logsFollowCommand({ runId: 'f1' }, deps(io, true, { sleep, now: clock.now }));
+      expect(err()).toMatch(NO_OWNER);
+      expect(out()).not.toContain('no live owner');
+      expect(parseNdjson<{ sequenceNumber: number }>(out()).map((e) => e.sequenceNumber)).toEqual([
+        0, 1, 2,
+      ]);
+    });
+
+    it('keeps following a run with a live lease, and ends 0 at the terminal event with nothing on stderr', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 3_600_000);
+      const append = appender('f1', 3);
+      const clock = fakeClock(T0);
+      const { io, out, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([
+        () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS), // the check is due next poll: the lease is live
+        async () => {
+          clock.advance(FOLLOW_LIVENESS_INTERVAL_MS);
+          await append(COMPLETED);
+        },
+      ]);
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toHaveLength(2);
+      expect(out()).toContain('[3] run:completed — completed');
+      expect(err()).toBe('');
+    });
+
+    it('ends when the lease it was following lapses, and not before', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 2_000);
+      const clock = fakeClock(T0);
+      const { io, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([
+        () => clock.advance(1_500), // T0+1500: due, the lease (to T0+2000) is live
+        () => clock.advance(1_500), // T0+3000: due, the lease has expired
+      ]);
+      await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(2);
+      expect(err()).toMatch(NO_OWNER);
+    });
+
+    it('treats a lease that expires exactly now as gone, and one that outlives now by a millisecond as live', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const at = captureIo();
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS);
+      const clockAt = fakeClock(T0);
+      await logsFollowCommand(
+        { runId: 'f1' },
+        deps(at.io, false, {
+          sleep: scriptedSleep([() => clockAt.advance(FOLLOW_LIVENESS_INTERVAL_MS)]).sleep,
+          now: clockAt.now,
+        }),
+      );
+      expect(at.err()).toMatch(NO_OWNER);
+
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS + 1);
+      const after = captureIo();
+      const clockAfter = fakeClock(T0);
+      const { sleep, waits } = scriptedSleep([
+        () => clockAfter.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+        () => appender('f1', 3)(COMPLETED),
+      ]);
+      await logsFollowCommand(
+        { runId: 'f1' },
+        deps(after.io, false, { sleep, now: clockAfter.now }),
+      );
+      expect(waits).toHaveLength(2);
+      expect(after.err()).toBe('');
+    });
+
+    it('asks at most once per second of the injected clock, and not in the first second', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const clock = fakeClock(T0);
+      const { io, err } = captureIo();
+      // No lease at all. A check on every empty poll would end this after the first wait; the interval, from the
+      // moment the follow started, ends it only once a full second has passed on the injected clock.
+      const { sleep, waits } = scriptedSleep([
+        () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS - 1),
+        () => clock.advance(1),
+      ]);
+      await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(2);
+      expect(err()).toMatch(NO_OWNER);
+    });
+
+    it('rates the next check from the last one, not from the start', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 3_600_000);
+      const clock = fakeClock(T0);
+      const { io, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([
+        () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS), // due: live
+        () => {
+          setLease('f1', 0); // the owner is gone from here on, but the last check was half a second ago
+          clock.advance(FOLLOW_LIVENESS_INTERVAL_MS / 2);
+        },
+        () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS / 2), // a full second since the last check: due
+      ]);
+      await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(3);
+      expect(err()).toMatch(NO_OWNER);
+    });
+
+    it('ends, with its own note, when the run row is gone', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const clock = fakeClock(T0);
+      const { io, err, out } = captureIo();
+      const { sleep, waits } = scriptedSleep([
+        () => {
+          client.sqlite.prepare('DELETE FROM runs WHERE id = ?').run('f1');
+          clock.advance(FOLLOW_LIVENESS_INTERVAL_MS);
+        },
+      ]);
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toHaveLength(1);
+      expect(err()).toBe(
+        'note: run f1 is no longer in the history, so there is nothing more to follow.\n',
+      );
+      expect(out()).not.toContain('no longer in the history');
+    });
+
+    it('never asks about a run parked at a gate: it ends on the gate, however far the clock has run', async () => {
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'gate-1',
+        state: 'paused',
+        gate: { gateId: 'g1', gateType: 'approval' },
+      });
+      await appender('gate-1', 5)({ type: 'run:paused', pendingGateCount: 1, gateIds: ['g1'] });
+      let jumping = T0;
+      const now = (): number => {
+        jumping += 10 * FOLLOW_LIVENESS_INTERVAL_MS;
+        return jumping;
+      };
+      const { io, out, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([]);
+      await logsFollowCommand({ runId: 'gate-1' }, deps(io, false, { sleep, now }));
+      expect(waits).toEqual([]);
+      expect(out()).toContain('run gate-1 is paused at a gate');
+      expect(err()).toBe('');
+    });
+
+    it('does not mistake a gate that was answered for a lost owner while the lease is live', async () => {
+      await seedRun(db, {
+        slug: 'demo',
+        runId: 'gate-1',
+        state: 'paused',
+        gate: { gateId: 'g1', gateType: 'approval' },
+      });
+      const append = appender('gate-1', 5);
+      await append({ type: 'run:paused', pendingGateCount: 1, gateIds: ['g1'] });
+      await append({
+        type: 'human_gate:resumed',
+        nodeId: 'g',
+        decision: 'approved',
+        decidedBy: 'cli',
+      });
+      setLease('gate-1', T0 + 3_600_000);
+      const clock = fakeClock(T0);
+      const { io, err } = captureIo();
+      const { sleep, waits } = scriptedSleep([
+        () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+        () => append(COMPLETED),
+      ]);
+      await logsFollowCommand({ runId: 'gate-1' }, deps(io, false, { sleep, now: clock.now }));
+      expect(waits).toHaveLength(2);
+      expect(err()).toBe('');
+    });
+
+    it('ends a run parked on a media job alone when its owner is gone, and follows one whose lease is live', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'media-1', state: 'paused' }); // no gate: a media park
+      const gone = captureIo();
+      const clockGone = fakeClock(T0);
+      await logsFollowCommand(
+        { runId: 'media-1' },
+        deps(gone.io, false, {
+          sleep: scriptedSleep([() => clockGone.advance(FOLLOW_LIVENESS_INTERVAL_MS)]).sleep,
+          now: clockGone.now,
+        }),
+      );
+      expect(gone.err()).toContain('run media-1 has no live owner');
+
+      setLease('media-1', T0 + 3_600_000);
+      const live = captureIo();
+      const clockLive = fakeClock(T0);
+      const { sleep, waits } = scriptedSleep([
+        () => clockLive.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+        () => appender('media-1', 6)({ type: 'run:cancelled' }),
+      ]);
+      await logsFollowCommand(
+        { runId: 'media-1' },
+        deps(live.io, false, { sleep, now: clockLive.now }),
+      );
+      expect(waits).toHaveLength(2);
+      expect(live.err()).toBe('');
+    });
+
+    it('lets a stop that arrives during the wait win over a check that is already due', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const clock = fakeClock(T0);
+      const fixture = invocationFixture();
+      const captured = captureIo();
+      const lifetime = new CommandLifetime(fixture.invocation, captured.io, () => () => undefined);
+      let waited = 0;
+      const sleep: NonNullable<LogsCommandDeps['sleep']> = () => {
+        waited += 1;
+        clock.advance(10 * FOLLOW_LIVENESS_INTERVAL_MS); // a check is due on the next poll...
+        lifetime.work.stop(); // ...but the owner is stopped first
+        return waited > 1
+          ? Promise.reject(new Error('poll guard: waited again after the stop'))
+          : Promise.resolve();
+      };
+      const exit = await lifetime.execute(() =>
+        logsFollowCommand(
+          { runId: 'f1' },
+          deps(lifetime.io, false, { sleep, now: clock.now, commandLifetime: lifetime }),
+        ),
+      );
+      expect(exit).toBe(EXIT_CODES.success);
+      expect(waited).toBe(1);
+      expect(captured.err()).not.toContain('no live owner');
+    });
+  });
+
+  describe('a damaged row while following', () => {
+    it('fails the command with the damaged-row error (exit 1) at the moment it is read, and does not poll again', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const { io, out } = captureIo();
+      // A type this binary knows, with a body that does not parse: damaged, not newer.
+      const { sleep, waits } = scriptedSleep([
+        () => {
+          client.sqlite
+            .prepare(
+              'INSERT INTO run_events (id, run_id, seq, event_type, payload_json, ts) VALUES (?, ?, ?, ?, ?, ?)',
+            )
+            .run(
+              'damaged-row-1',
+              'f1',
+              3,
+              'node:started',
+              JSON.stringify({ type: 'node:started' }),
+              0,
+            );
+        },
+      ]);
+      const failure: unknown = await logsFollowCommand(
+        { runId: 'f1' },
+        deps(io, false, { sleep }),
+      ).catch((cause: unknown) => cause);
+      expect(isCorruptRunEventError(failure)).toBe(true);
+      const shown = toUserFacing(failure);
+      expect(shown.exitCode).toBe(EXIT_CODES.workflowFailed);
+      expect(shown.message).toContain('run f1 has a damaged event row at seq 3');
+      expect(waits).toHaveLength(1); // read once more after that wait, failed there, and never waited again
+      expect(out().trimEnd().split('\n')).toHaveLength(4); // the header and the three events it had read
+    });
+  });
+
+  describe('readHistory', () => {
+    it('accumulates a page with a very large skipped list without a spread (no RangeError)', () => {
+      const skippedRows = 600_000;
+      const page = {
+        events: [],
+        scannedThroughSeq: skippedRows - 1,
+        skipped: Array.from({ length: skippedRows }, (_, index) => ({
+          sequenceNumber: index,
+          type: 'test:never_a_real_event',
+        })),
+      };
+      // A short page (no events) ends the read, as the real tail read does at the end of a log.
+      const history = readHistory({ loadRunEventsAfter: () => page }, 'f1');
+      expect(history.skipped).toHaveLength(skippedRows);
+      expect(history.scannedThroughSeq).toBe(skippedRows - 1);
+      expect(history.events).toEqual([]);
+    });
+
+    it('accumulates events and skipped rows across full pages in order', () => {
+      const event = (sequenceNumber: number): RunEvent => ({
+        type: 'run:cancelled',
+        runId: 'f1',
+        timestamp: '2026-11-22T10:00:00.000Z',
+        sequenceNumber,
+      });
+      const full = Array.from({ length: 1000 }, (_, index) => event(index));
+      const pages = [
+        {
+          events: full,
+          scannedThroughSeq: 999,
+          skipped: [{ sequenceNumber: 500, type: 'future' }],
+        },
+        {
+          events: [event(1000)],
+          scannedThroughSeq: 1001,
+          skipped: [{ sequenceNumber: 1001, type: 'future' }],
+        },
+      ];
+      const cursors: number[] = [];
+      let call = 0;
+      const history = readHistory(
+        {
+          loadRunEventsAfter: (_runId, afterSeq) => {
+            cursors.push(afterSeq);
+            return pages[call++] ?? { events: [], scannedThroughSeq: afterSeq, skipped: [] };
+          },
+        },
+        'f1',
+      );
+      expect(cursors).toEqual([-1, 999]);
+      expect(history.events.map((e) => e.sequenceNumber)).toEqual(
+        Array.from({ length: 1001 }, (_, index) => index),
+      );
+      expect(history.skipped.map((row) => row.sequenceNumber)).toEqual([500, 1001]);
+      expect(history.scannedThroughSeq).toBe(1001);
     });
   });
 

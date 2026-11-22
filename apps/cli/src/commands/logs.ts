@@ -32,6 +32,13 @@ export interface LogsCommandArgs {
 /** How long `--follow` waits between polls that found nothing new (ADR-0140 §7). Fixed, not configurable. */
 export const FOLLOW_POLL_INTERVAL_MS = 500;
 
+/**
+ * How often `--follow` asks whether anything still owns the run it is waiting on, counted on the injected clock
+ * from the moment the follow starts (so a run that has only just begun is not judged in its first second). A
+ * dead owner never writes the terminal event the follow waits for.
+ */
+export const FOLLOW_LIVENESS_INTERVAL_MS = 1000;
+
 /** How many skipped-row sequence numbers the ADR-0074 §5 note names before it elides — same bound-the-diagnostic
  *  reasoning as the fixed native background-diagnostic bound: the COUNT is the signal, the numbers are the lead. */
 const MAX_REPORTED_SKIPS = 8;
@@ -47,6 +54,8 @@ export interface LogsCommandDeps {
   ) => { db: Db; close: () => void };
   /** The wait between `--follow` polls; abort-aware. Tests inject one so no real time passes. */
   readonly sleep?: typeof hostSleep;
+  /** The clock (epoch ms) `--follow` rates its liveness check by and compares a lease's expiry with. Defaults to `Date.now`. */
+  readonly now?: () => number;
 }
 
 /**
@@ -79,7 +88,13 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
  * reading the durable events written after it and print each as it arrives, until the run is terminal or parked at
  * a gate. It ends with exit `0` whatever the run's own outcome (a log reader reports no run's result); a signal
  * ends it through the command lifetime's existing stop (the next write or poll finds the owner stopped, and the
- * wait itself is abort-aware), so the signal exits stay the process's own. Framework-free.
+ * wait itself is abort-aware), so the signal exits stay the process's own.
+ *
+ * **A dead owner ends it too.** A run whose process was killed (or whose media park outlived its owner) never
+ * gets a terminal event, so a poll that found nothing also asks, at most once per
+ * {@link FOLLOW_LIVENESS_INTERVAL_MS} of the injected clock, whether the run still has an owner: the run row gone,
+ * or no lease row, or a lease that has expired, ends the follow with one stderr note and exit `0` (see
+ * {@link followEndsForWantOfOwner}). A run with a live lease keeps being followed. Framework-free.
  */
 export async function logsFollowCommand(
   args: LogsCommandArgs,
@@ -93,6 +108,8 @@ export async function logsFollowCommand(
     writeSkippedNote(deps.io, history.skipped);
     writeLog(deps, run, history.events, failedOnly);
 
+    const now = deps.now ?? Date.now;
+    let lastLivenessCheckMs = now();
     let cursor = history.scannedThroughSeq;
     let state = history.events.reduce(observeFollow, QUIET_RUN);
     for (;;) {
@@ -112,12 +129,49 @@ export async function logsFollowCommand(
         if (!failedOnly || inFailureView(event)) writeFollowed(deps, run.id, event, failedOnly);
       }
       if (tail.events.length === 0) {
+        // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
+        // not on every poll, whether anyone is still going to write to it.
+        const checkedAtMs = now();
+        if (checkedAtMs - lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
+          lastLivenessCheckMs = checkedAtMs;
+          if (followEndsForWantOfOwner(deps, reader, run.id, checkedAtMs))
+            return EXIT_CODES.success;
+        }
         await (deps.sleep ?? hostSleep)(FOLLOW_POLL_INTERVAL_MS, deps.commandLifetime?.work.signal);
       }
     }
   } finally {
     if (deps.commandLifetime === undefined) close();
   }
+}
+
+/**
+ * Whether a followed run can no longer grow, and the one stderr note that says why (never stdout, so `--json`'s
+ * stream stays pure). Two cases end it: the run row is gone, or the run holds no live lease — no lease row, or one
+ * whose `expiresAt` is at or before `nowMs`. A run parked on a media job alone keeps its lease while the engine
+ * polls the job, so it keeps being followed; a run parked at a gate released its lease, but the loop has already
+ * ended on that gate before this runs.
+ */
+function followEndsForWantOfOwner(
+  deps: LogsCommandDeps,
+  reader: RunHistoryReader,
+  runId: string,
+  nowMs: number,
+): boolean {
+  const id = sanitizeInline(runId);
+  if (reader.loadRun(runId) === undefined) {
+    deps.io.writeErr(
+      `note: run ${id} is no longer in the history, so there is nothing more to follow.\n`,
+    );
+    return true;
+  }
+  const lease = reader.loadRunLeases([runId]).get(runId);
+  if (lease !== undefined && lease.expiresAt > nowMs) return false;
+  deps.io.writeErr(
+    `note: run ${id} has no live owner, so its log will not grow. ` +
+      `\`relavium status ${id}\` shows where it stands; the next \`relavium run\` or Home start settles it.\n`,
+  );
+  return true;
 }
 
 /** Open the history reader the way every `logs` mode does: resolved home, command-lifetime custody of the close. */
@@ -140,9 +194,12 @@ function requireRun(reader: RunHistoryReader, runId: string): RunRecord {
   return run;
 }
 
-/** The whole existing log, read through the poll's own tail read so the cursor it ends on is exact. */
-function readHistory(
-  reader: RunHistoryReader,
+/**
+ * The whole existing log, read through the poll's own tail read so the cursor it ends on is exact. Exported for
+ * its test only (a fake reader proves the accumulation holds at sizes a real log would take minutes to build).
+ */
+export function readHistory(
+  reader: Pick<RunHistoryReader, 'loadRunEventsAfter'>,
   runId: string,
 ): {
   readonly events: readonly RunEvent[];
@@ -154,8 +211,10 @@ function readHistory(
   let scannedThroughSeq = -1;
   for (;;) {
     const page = reader.loadRunEventsAfter(runId, scannedThroughSeq, MAX_RUN_TAIL_EVENTS);
-    events.push(...page.events);
-    skipped.push(...page.skipped);
+    // A loop, not `push(...rows)`: a spread passes every element as an argument and throws a RangeError past about
+    // 125,000 of them, and a log full of rows a newer binary wrote can skip that many.
+    for (const event of page.events) events.push(event);
+    for (const row of page.skipped) skipped.push(row);
     scannedThroughSeq = page.scannedThroughSeq;
     // The tail read holds out for a full page while readable rows remain, so a short page is the end of the log.
     if (page.events.length < MAX_RUN_TAIL_EVENTS) return { events, skipped, scannedThroughSeq };

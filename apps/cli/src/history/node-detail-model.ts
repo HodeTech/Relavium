@@ -7,8 +7,10 @@ import { formatCostUsd, formatDuration } from '../render/tui/format.js';
 import {
   NODE_ROW_GLYPH,
   allSettled,
+  boundedIdentifier,
   buildNodeCost,
   buildToolActivity,
+  clipCodePoints,
   foldUsageFacts,
   indexNodeEvents,
   lastAttemptRow,
@@ -29,13 +31,20 @@ import {
  * A node's INPUT is deliberately absent. `step_executions.input_json` is never written, and the rendered input
  * can be secret-derived (ADR-0113): the page shows the authored template, which is the caller's to supply.
  *
- * **The output is a bounded projection.** {@link boundText} is the one function that caps it (40 lines, 4,000
- * code points — the final summary's bounds). Before it is bounded the stored document is masked: every string
- * leaf and key goes through the shared secret scrubber on its own, so one field's text never joins its
- * neighbour's, the pretty-printed whole is scrubbed once more, and terminal controls are stripped. That is a
- * FLOOR, not the final summary's whole renderer (which also masks a member whose NAME labels a credential and is
- * not exported): the engine already masked secrets at the write boundary (ADR-0050), and MVP-8 step 3 should
- * replace this floor with that renderer's exported core when it builds the screen.
+ * **The output is a bounded projection, and its cost is a bound.** {@link boundText} is the one function that
+ * caps it (40 lines, 4,000 code points — the final summary's bounds). A stored document above
+ * {@link MAX_STORED_OUTPUT_BYTES} is refused with a fixed sentence before it is parsed. Below that, the document
+ * is rendered as indented JSON by a walk that STOPS once it holds more than the bound can show, so the work is
+ * proportional to the preview and not to the document. What the walk does emit is masked: every string leaf and
+ * every key (cut to {@link MAX_KEY_SCRUB_CHARS} first) goes through the shared secret scrubber on its own, so one
+ * field's text never joins its neighbour's; the emitted text is scrubbed once more as a whole, and terminal
+ * controls are stripped. That is a FLOOR, not the final summary's whole renderer (which also masks a member whose
+ * NAME labels a credential and is not exported): the engine already masked secrets at the write boundary
+ * (ADR-0050), and MVP-8 step 3 should replace this floor with that renderer's exported core when it builds the
+ * screen.
+ *
+ * **Tokens carry no cached count.** `step_executions.cached_tokens` is never written (it is always `0`), so a
+ * page that drew it would state "0 cached" as a fact. The column stays in the db type and is not read here.
  */
 
 /** Lines of a node's output a page shows (the final summary's bound). */
@@ -44,8 +53,17 @@ export const OUTPUT_PREVIEW_MAX_LINES = 40;
 export const OUTPUT_PREVIEW_MAX_CHARS = 4000;
 /** Timeline rows a page keeps; the rest are counted, not kept. */
 export const MAX_TIMELINE_ROWS = 100;
+/**
+ * The largest stored output document the preview will parse: 1 MiB. The engine bounds one node's serialized
+ * output at 256 KiB at the durable boundary (`size-bounds.ts`, `nodeOutputBytes`), so a larger document was not
+ * written by this binary — it is a damaged or foreign row, and parsing it would cost time (and freeze the Home)
+ * for text a 40-line page cannot show. Four times the engine's bound leaves room for a bound raised later.
+ */
+export const MAX_STORED_OUTPUT_BYTES = 1_048_576;
 /** A string leaf is cut to this many code points before the scrubber reads it, so one value costs a bound. */
 const MAX_LEAF_SCRUB_CHARS = 32_768;
+/** An object key is cut to this many code points before the scrubber reads it; a cut key ends in `…`. */
+export const MAX_KEY_SCRUB_CHARS = 256;
 /** The model names a node's rows may carry, so a runaway log cannot grow the page without bound. */
 const MAX_MODELS_LISTED = 20;
 
@@ -95,55 +113,150 @@ export interface OutputPreview extends BoundedText {
   readonly masked: boolean;
 }
 
+/** A string leaf, cut to {@link MAX_LEAF_SCRUB_CHARS} and scrubbed on its own. `onMask` fires when it changed. */
+function scrubLeaf(value: string, onMask: () => void): string {
+  const clipped =
+    value.length > MAX_LEAF_SCRUB_CHARS ? value.slice(0, MAX_LEAF_SCRUB_CHARS) : value;
+  const out = scrubSecrets(clipped);
+  if (out !== clipped) onMask();
+  return out;
+}
+
+/** An object key, cut to {@link MAX_KEY_SCRUB_CHARS} code points, scrubbed on its own, and ended with `…` if it was cut. */
+function scrubKey(key: string, onMask: () => void): string {
+  const clipped = clipCodePoints(key, MAX_KEY_SCRUB_CHARS);
+  const out = scrubSecrets(clipped.text);
+  if (out !== clipped.text) onMask();
+  return clipped.truncated ? `${out}…` : out;
+}
+
 /**
- * A copy of a parsed JSON value with every string — and every object key — scrubbed on its own. The input came
- * from `JSON.parse`, so it holds no cycle, no `toJSON` and no `undefined`. An own `__proto__` member is kept with
- * `defineProperty` (assignment would hit the prototype setter and drop it).
+ * The text the walk has emitted so far, and whether it already holds more than the bound can show. Past that
+ * point the walk is over: {@link PreviewSink.push} drops what it is given and says (through `dropped`) that the
+ * document was not shown to its end.
  */
-function scrubLeaves(value: unknown, onMask: () => void): unknown {
+class PreviewSink {
+  private readonly parts: string[] = [];
+  private codePoints = 0;
+  private newlines = 0;
+  /** More than the bound can show has been emitted. */
+  full = false;
+  /** Something was refused after the sink was full. */
+  dropped = false;
+
+  push(text: string): void {
+    if (this.full) {
+      this.dropped = true;
+      return;
+    }
+    this.parts.push(text);
+    for (const point of text) {
+      this.codePoints += 1;
+      if (point === '\n') this.newlines += 1;
+    }
+    // One past the bound on either axis, so the bounding function sees the cut and says so.
+    if (this.codePoints > OUTPUT_PREVIEW_MAX_CHARS || this.newlines > OUTPUT_PREVIEW_MAX_LINES) {
+      this.full = true;
+    }
+  }
+
+  text(): string {
+    return this.parts.join('');
+  }
+}
+
+/**
+ * Write a parsed JSON value into `sink` exactly as `JSON.stringify(value, null, 2)` would — with every string and
+ * every key scrubbed on its own — and stop as soon as the sink is full. The input came from `JSON.parse`, so it
+ * holds no cycle, no `toJSON` and no `undefined`. Every nesting level and every member starts a line, so the
+ * recursion is bounded by the line bound too.
+ */
+function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: () => void): void {
+  if (sink.full) {
+    sink.dropped = true;
+    return;
+  }
   if (typeof value === 'string') {
-    const clipped =
-      value.length > MAX_LEAF_SCRUB_CHARS ? value.slice(0, MAX_LEAF_SCRUB_CHARS) : value;
-    const out = scrubSecrets(clipped);
-    if (out !== clipped) onMask();
-    return out;
+    sink.push(JSON.stringify(scrubLeaf(value, onMask)));
+    return;
   }
-  if (typeof value !== 'object' || value === null) return value;
-  if (Array.isArray(value)) return value.map((item): unknown => scrubLeaves(item, onMask));
-  const copy: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value)) {
-    const maskedKey = scrubSecrets(key);
-    if (maskedKey !== key) onMask();
-    Object.defineProperty(copy, maskedKey, {
-      value: scrubLeaves(item, onMask),
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
+  if (typeof value !== 'object' || value === null) {
+    sink.push(JSON.stringify(value));
+    return;
   }
-  return copy;
+  const closing = `\n${'  '.repeat(depth)}`;
+  const inner = `\n${'  '.repeat(depth + 1)}`;
+  if (Array.isArray(value)) {
+    const items: readonly unknown[] = value;
+    if (items.length === 0) {
+      sink.push('[]');
+      return;
+    }
+    sink.push('[');
+    for (const [index, item] of items.entries()) {
+      if (sink.full) {
+        sink.dropped = true;
+        return;
+      }
+      sink.push(index === 0 ? inner : `,${inner}`);
+      writePretty(item, depth + 1, sink, onMask);
+    }
+    sink.push(`${closing}]`);
+    return;
+  }
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    sink.push('{}');
+    return;
+  }
+  sink.push('{');
+  for (const [index, [key, item]] of entries.entries()) {
+    if (sink.full) {
+      sink.dropped = true;
+      return;
+    }
+    sink.push(`${index === 0 ? '' : ','}${inner}${JSON.stringify(scrubKey(key, onMask))}: `);
+    writePretty(item, depth + 1, sink, onMask);
+  }
+  sink.push(`${closing}}`);
 }
 
 /**
  * A node's stored `output_json` as the bounded, masked preview. A string value is shown as itself (it is the
- * common case and keeps its own line breaks); anything else is shown as indented JSON. An unreadable document
- * yields a fixed sentence, never a throw.
+ * common case and keeps its own line breaks); anything else is shown as indented JSON, written only as far as
+ * the bound can show. A document above {@link MAX_STORED_OUTPUT_BYTES} is not parsed at all, and an unreadable
+ * one yields a fixed sentence, never a throw.
  */
 export function buildOutputPreview(outputJson: string): OutputPreview {
+  const size = Buffer.byteLength(outputJson, 'utf8');
+  if (size > MAX_STORED_OUTPUT_BYTES) {
+    return { ...boundText(`output too large to preview (${size} bytes)`), masked: false };
+  }
   let masked = false;
   const onMask = (): void => {
     masked = true;
   };
   let shown: string;
+  let dropped = false;
   try {
-    const value = scrubLeaves(JSON.parse(outputJson), onMask);
-    shown = typeof value === 'string' ? value : (JSON.stringify(value, null, 2) ?? '');
+    const value: unknown = JSON.parse(outputJson);
+    if (typeof value === 'string') {
+      shown = scrubLeaf(value, onMask);
+      dropped = value.length > MAX_LEAF_SCRUB_CHARS;
+    } else {
+      const sink = new PreviewSink();
+      writePretty(value, 0, sink, onMask);
+      shown = sink.text();
+      dropped = sink.dropped;
+    }
   } catch {
     return { ...boundText('[the stored output could not be read]'), masked: false };
   }
   const whole = scrubSecrets(shown);
   if (whole !== shown) masked = true;
-  return { ...boundText(stripTerminalControls(whole)), masked };
+  const bounded = boundText(stripTerminalControls(whole));
+  // A walk that stopped early cut the document even if masking left the emitted text under the bound.
+  return { ...bounded, truncated: bounded.truncated || dropped, masked };
 }
 
 /** One attempt of the node, with the cost of the model calls that its `node:started` bounds. */
@@ -190,13 +303,14 @@ export interface NodeDetailModel {
   readonly attemptNumber: number;
   readonly durationMs?: number;
   readonly durationText?: string;
-  readonly tokens: { readonly input: number; readonly output: number; readonly cached: number };
+  /** The inspected attempt's tokens. There is no cached count: the column is never written (see the module note). */
+  readonly tokens: { readonly input: number; readonly output: number };
   /** The whole node: every attempt's settled calls, else the boundary cost, else `not recorded`. */
   readonly cost: NodeCost;
   readonly attempts: readonly AttemptRowView[];
-  /** The distinct models the node's settled calls actually ran on, in first-use order, sanitized. */
+  /** The distinct models the node's settled calls actually ran on, in first-use order, one-line and cut to 128 characters, at most 20. */
   readonly modelsUsed: readonly string[];
-  /** What the workflow authored, sanitized; absent fields are simply not shown. */
+  /** What the workflow authored, one-line and cut to 128 characters; absent fields are simply not shown. */
   readonly authored: { readonly agent?: string; readonly model?: string };
   readonly error?: StoredErrorView;
   readonly outputPreview?: OutputPreview;
@@ -286,7 +400,7 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
 
   const models: string[] = [];
   for (const row of settled) {
-    const model = sanitizeInline(row.model);
+    const model = boundedIdentifier(row.model);
     if (!models.includes(model) && models.length < MAX_MODELS_LISTED) models.push(model);
   }
 
@@ -306,17 +420,17 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
     ...(detail.durationMs === undefined
       ? {}
       : { durationMs: detail.durationMs, durationText: formatDuration(detail.durationMs) }),
-    tokens: { input: detail.inputTokens, output: detail.outputTokens, cached: detail.cachedTokens },
+    tokens: { input: detail.inputTokens, output: detail.outputTokens },
     cost: buildNodeCost({ settled, boundaryMicrocents, coverage }),
     attempts,
     modelsUsed: models,
     authored: {
       ...(input.authored?.agentSlug === undefined
         ? {}
-        : { agent: sanitizeInline(input.authored.agentSlug) }),
+        : { agent: boundedIdentifier(input.authored.agentSlug) }),
       ...(input.authored?.model === undefined
         ? {}
-        : { model: sanitizeInline(input.authored.model) }),
+        : { model: boundedIdentifier(input.authored.model) }),
     },
     ...(error === undefined ? {} : { error }),
     ...(detail.outputJson === undefined

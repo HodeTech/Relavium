@@ -3,13 +3,17 @@ import type { RunEvent, ToolActivityEntry } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_IDENTIFIER_CHARS,
   NOT_RECORDED,
+  NOT_RECORDED_OLDER_LOG,
   NO_RESULT_RECORDED,
+  boundedIdentifier,
   buildRunDetailModel,
   buildToolActivity,
   clipCodePoints,
   indexNodeEvents,
   readStoredError,
+  shortRunId,
   type NodeRow,
 } from './run-detail-model.js';
 
@@ -182,6 +186,27 @@ describe('node cost: the source rules', () => {
     expect(rowOf(model.rows, 'twice').cost).toMatchObject({ microcents: 4_000_000 });
   });
 
+  it('gives settled rows precedence over a non-zero boundary cost: the settled sum, exact, never the boundary figure', () => {
+    // The realistic shape: the node settled model calls AND its step row carries a (different) boundary cost.
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 9_000_000 }),
+      steps: [stepRow('a', { costMicrocents: 9_000_000 })],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 1_000_000),
+        settled(3, 'a', 2_000_000),
+        completed(4, 'a'),
+      ],
+    });
+    const cost = rowOf(model.rows, 'a').cost;
+    expect(cost).toMatchObject({ source: 'attempts', microcents: 3_000_000, approximate: false });
+    expect(cost.text).toBe('$0.0300');
+    expect(cost.text.startsWith('~')).toBe(false);
+    // Only the settled sum is attributed: the boundary figure is not added, and the rest is unattributed.
+    expect(model.unattributedMicrocents).toBe(6_000_000);
+  });
+
   it('says `not recorded` — never a zero amount — when neither source exists', () => {
     const model = buildRunDetailModel({
       run: runRecord(),
@@ -335,6 +360,40 @@ describe('attempt grouping: the node:started partition', () => {
     expect(row.cost).toMatchObject({ source: 'attempts', microcents: 7_000_000 });
   });
 
+  it('takes the attempt count from the node:started events, not from the step rows', () => {
+    // Three dispatches in the log, but one step row (the table keeps the last attempt's row).
+    const events = [started(1, 'x', 1), started(2, 'x', 2), started(3, 'x', 3), completed(4, 'x')];
+    const model = buildRunDetailModel({
+      run: runRecord(),
+      steps: [stepRow('x', { attemptNumber: 3 })],
+      events,
+    });
+    expect(rowOf(model.rows, 'x').attemptCount).toBe(3);
+    // And the other way round: more step rows than node:started events in the log.
+    const fewer = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('x', { attemptNumber: 1, status: 'failed' }),
+        stepRow('x', { attemptNumber: 2 }),
+        stepRow('x', { attemptNumber: 3 }),
+      ],
+      events: [started(1, 'x', 3), completed(2, 'x')],
+    });
+    expect(rowOf(fewer.rows, 'x').attemptCount).toBe(1);
+  });
+
+  it('falls back to the step-row count only when the log holds no node:started for the node', () => {
+    const model = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('x', { attemptNumber: 1, status: 'failed' }),
+        stepRow('x', { attemptNumber: 2 }),
+      ],
+      events: [],
+    });
+    expect(rowOf(model.rows, 'x').attemptCount).toBe(2);
+  });
+
   it('keeps a settled row that precedes every node:started out of every attempt but inside the node total', () => {
     const logs = indexNodeEvents([
       settled(1, 'x', 1_000_000),
@@ -344,6 +403,38 @@ describe('attempt grouping: the node:started partition', () => {
     const log = logs.get('x');
     expect(log?.settledBeforeStart.map((row) => row.costMicrocents)).toEqual([1_000_000]);
     expect(log?.groups.map((group) => group.settled.length)).toEqual([1]);
+  });
+});
+
+describe('a settled row that precedes every node:started', () => {
+  it('counts toward the node`s total although it belongs to no attempt', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 3_000_000 }),
+      steps: [stepRow('x')],
+      events: [
+        coverageStarted(0),
+        settled(1, 'x', 1_000_000),
+        started(2, 'x'),
+        settled(3, 'x', 2_000_000),
+        completed(4, 'x'),
+      ],
+    });
+    const row = rowOf(model.rows, 'x');
+    expect(row.cost).toMatchObject({ source: 'attempts', microcents: 3_000_000 });
+    expect(row.attemptCount).toBe(1);
+    expect(model.unattributedMicrocents).toBe(0);
+  });
+
+  it('is the node`s only source when no node:started was read at all (a log cut short)', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 1_500_000 }),
+      steps: [stepRow('x')],
+      events: [coverageStarted(0), settled(1, 'x', 1_500_000)],
+    });
+    expect(rowOf(model.rows, 'x').cost).toMatchObject({
+      source: 'attempts',
+      microcents: 1_500_000,
+    });
   });
 });
 
@@ -552,28 +643,58 @@ describe('execution order', () => {
 });
 
 describe('tool activity', () => {
-  it('says `not recorded` when the terminal event carries no toolActivity, and when there is no terminal', () => {
+  it('says `not recorded (older log)` when the terminal event carries no toolActivity field, and plain `not recorded` when there is no terminal', () => {
     expect(buildToolActivity(undefined)).toEqual({ recorded: false, text: NOT_RECORDED });
     const model = buildRunDetailModel({
       run: runRecord(),
       steps: [stepRow('a'), stepRow('b', { status: 'running' })],
       events: [started(1, 'a'), completed(2, 'a'), started(3, 'b')],
     });
-    expect(rowOf(model.rows, 'a').toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
+    expect(rowOf(model.rows, 'a').toolActivity).toEqual({
+      recorded: false,
+      text: NOT_RECORDED_OLDER_LOG,
+    });
+    expect(NOT_RECORDED_OLDER_LOG).toBe('not recorded (older log)');
+    // A node with no terminal makes no claim about an older log: it simply has no record yet.
     expect(rowOf(model.rows, 'b').toolActivity).toEqual({ recorded: false, text: NOT_RECORDED });
+    // The same wording for a failed terminal.
+    const failedModel = buildRunDetailModel({
+      run: runRecord({ status: 'failed' }),
+      steps: [stepRow('c', { status: 'failed' })],
+      events: [started(1, 'c'), failed(2, 'c')],
+    });
+    expect(rowOf(failedModel.rows, 'c').toolActivity).toEqual({
+      recorded: false,
+      text: NOT_RECORDED_OLDER_LOG,
+    });
   });
 
-  it('distinguishes an EMPTY trace (no tool calls) from an absent one', () => {
+  it('distinguishes an EMPTY trace (`no tool calls`) from an absent one and from a non-empty one', () => {
     const model = buildRunDetailModel({
       run: runRecord(),
-      steps: [stepRow('a')],
-      events: [started(1, 'a'), completed(2, 'a', { toolActivity: [] })],
+      steps: [stepRow('a'), stepRow('b', { status: 'failed' }), stepRow('c')],
+      events: [
+        started(1, 'a'),
+        completed(2, 'a', { toolActivity: [] }),
+        started(3, 'b'),
+        failed(4, 'b', { toolActivity: [] }),
+        started(5, 'c'),
+        completed(6, 'c', { toolActivity: [{ toolId: 'read_file', ok: true, durationMs: 3 }] }),
+      ],
     });
-    expect(rowOf(model.rows, 'a').toolActivity).toEqual({
+    for (const nodeId of ['a', 'b']) {
+      expect(rowOf(model.rows, nodeId).toolActivity).toEqual({
+        recorded: true,
+        entries: [],
+        truncated: 0,
+        text: 'no tool calls',
+      });
+    }
+    expect(rowOf(model.rows, 'c').toolActivity).toEqual({
       recorded: true,
-      entries: [],
+      entries: [{ toolId: 'read_file', ok: true, durationMs: 3, outcome: 'ok' }],
       truncated: 0,
-      text: 'no tool calls',
+      text: '1 tool call',
     });
   });
 
@@ -699,7 +820,80 @@ describe('the header', () => {
   });
 });
 
+describe('the run id and project root are read back from the history file', () => {
+  it('passes a run id with control characters through the one-line floor, in the header', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ id: 'ab\u001b[2Jcd\nef\u0007gh-rest' }),
+      steps: [],
+      events: [],
+    });
+    expect(model.header.shortId).toBe('abcd');
+    // The raw id survives as the identity a drill-down looks up with, as the node id does.
+    expect(model.header.runId).toBe('ab\u001b[2Jcd\nef\u0007gh-rest');
+  });
+
+  it('cuts first (a forged id costs a bound) and keeps a plain id as its first 8 characters', () => {
+    expect(shortRunId(RUN_ID)).toBe('aaaaaaaa');
+    expect(shortRunId('x'.repeat(1_000_000))).toBe('xxxxxxxx');
+    expect(shortRunId('\u202eabcdefgh')).not.toContain('\u202e');
+  });
+});
+
 describe('readStoredError and clipCodePoints', () => {
+  it('clips a stored code and node id to 128 code points after the one-line floor, marking the cut', () => {
+    const view = readStoredError(
+      JSON.stringify({
+        code: `${'c'.repeat(200)}\u001b[31m`,
+        message: 'm',
+        nodeId: `${'n'.repeat(MAX_IDENTIFIER_CHARS + 1)}`,
+      }),
+    );
+    expect(view?.code).toBe(`${'c'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(view?.nodeId).toBe(`${'n'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    // Exactly at the bound is kept whole, and a cut never splits a code point.
+    expect(readStoredError(JSON.stringify({ code: 'k'.repeat(MAX_IDENTIFIER_CHARS) }))?.code).toBe(
+      'k'.repeat(MAX_IDENTIFIER_CHARS),
+    );
+    expect(
+      readStoredError(JSON.stringify({ code: '\u{1F600}'.repeat(MAX_IDENTIFIER_CHARS + 5) }))?.code,
+    ).toBe(`${'\u{1F600}'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+  });
+
+  it('cuts a pathological code or node id to a bound before any filter reads it', () => {
+    const view = readStoredError(
+      JSON.stringify({ code: 'c'.repeat(5_000_000), nodeId: 'n'.repeat(5_000_000) }),
+    );
+    expect(Array.from(view?.code ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
+    expect(Array.from(view?.nodeId ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
+    // The bound is on what the filter is handed, not only on what is shown.
+    const handed: number[] = [];
+    boundedIdentifier('x'.repeat(5_000_000), (text) => {
+      handed.push(text.length);
+      return text;
+    });
+    expect(handed).toEqual([65_536]);
+  });
+
+  it('masks a secret in the stored code, as it does in the message', () => {
+    const secret = `sk-ant-api03-${'G'.repeat(40)}`;
+    const view = readStoredError(
+      JSON.stringify({ code: `leak ${secret}`, message: `leak ${secret}` }),
+    );
+    expect(view?.code).not.toContain('sk-ant-api03');
+    expect(view?.message).not.toContain('sk-ant-api03');
+    // The node id is an identifier the workflow authored: it passes the floor and the cut, not the scrubber.
+    expect(readStoredError(JSON.stringify({ nodeId: 'plain-node' }))?.nodeId).toBe('plain-node');
+  });
+
+  it('boundedIdentifier runs its filter before the final cut, so a secret is masked before any of it can be clipped', () => {
+    const secret = `sk-ant-api03-${'H'.repeat(40)}`;
+    const text = `${'a'.repeat(100)} ${secret}`;
+    // Cut first, the secret would be left half-written (and unrecognizable); filtered first, it is masked whole.
+    const shown = boundedIdentifier(text, (value) => value.replace(secret, '[MASKED]'));
+    expect(shown).toBe(`${'a'.repeat(100)} [MASKED]`);
+    expect(shown).not.toContain('sk-ant');
+  });
+
   it('has no error for an absent document and a fixed sentence for an unreadable one', () => {
     expect(readStoredError(undefined)).toBeUndefined();
     expect(readStoredError('{not json')).toEqual({ message: 'the error record could not be read' });

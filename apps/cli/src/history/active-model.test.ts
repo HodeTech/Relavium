@@ -318,6 +318,57 @@ describe('ordering', () => {
   });
 });
 
+describe('an unreadable creation time', () => {
+  it('orders by the text, newest (largest) first, when either time cannot be read, then by id', () => {
+    // `Date.parse` cannot read these; the fallback compares the stored text, descending, as the readable case does.
+    const rows = classify([
+      run('a', { createdAt: 'garbage-a' }),
+      run('b', { createdAt: 'garbage-c' }),
+      run('c', { createdAt: 'garbage-b' }),
+    ]);
+    expect(rows.map((row) => row.runId)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('puts an unreadable time against a readable one by the same text rule, in either input order', () => {
+    // 'zzz' sorts after '2026-…' as text, so descending text order puts the unreadable row first; as TIMES the
+    // pair is undefined, so the row must not be ranked by a NaN comparison (which would leave input order).
+    const unreadable = run('bad', { createdAt: 'zzz' });
+    const readable = run('good', { createdAt: '2026-11-22T11:00:00.000Z' });
+    expect(classify([readable, unreadable]).map((row) => row.runId)).toEqual(['bad', 'good']);
+    expect(classify([unreadable, readable]).map((row) => row.runId)).toEqual(['bad', 'good']);
+    const low = run('low', { createdAt: '!!!' }); // sorts BEFORE '2026-…' as text
+    expect(classify([low, readable]).map((row) => row.runId)).toEqual(['good', 'low']);
+    expect(classify([readable, low]).map((row) => row.runId)).toEqual(['good', 'low']);
+  });
+
+  it('breaks a tie between equal unreadable texts by id descending, and keeps the stored text on the row', () => {
+    const rows = classify([
+      run('m', { createdAt: 'same' }),
+      run('z', { createdAt: 'same' }),
+      run('a', { createdAt: 'same' }),
+    ]);
+    expect(rows.map((row) => row.runId)).toEqual(['z', 'm', 'a']);
+    expect(rows[0]?.createdAt).toBe('same');
+  });
+});
+
+describe('free-form values read back from the history file', () => {
+  it('passes the project root through the one-line floor, without changing the class decision', () => {
+    const forged = '/work/other\u001b]0;pwn\u0007\u202e\nevil';
+    const row = only(classify([run('r', { status: 'paused', projectRoot: forged })]));
+    // The decision compared the stored value (another project), the row shows the sanitized one.
+    expect(row.class).toBe('other-paused-elsewhere');
+    expect(row.projectRoot).toBe('/work/other evil');
+  });
+
+  it('passes the short id through the one-line floor and keeps the full id as the identity', () => {
+    const id = 'ab\u001b[2Jcd\nef\u0007gh-tail';
+    const row = only(classify([run(id)]));
+    expect(row.shortId).toBe('abcd');
+    expect(row.runId).toBe(id);
+  });
+});
+
 describe('labels', () => {
   it('shows the slug when resolved, the workflow id otherwise, and sanitizes either', () => {
     const labelled = only(

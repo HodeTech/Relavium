@@ -3,7 +3,7 @@ import type { RunStatus } from '@relavium/shared';
 
 import { sanitizeInline } from '../render/sanitize.js';
 import { formatDuration } from '../render/tui/format.js';
-import { isFinishedRun, spanMs } from './run-detail-model.js';
+import { isFinishedRun, shortRunId, spanMs } from './run-detail-model.js';
 
 /**
  * The pure view model of the Home's History browser rows (ADR-0140 §2, "History"; MVP-8 step 1). One row per run
@@ -48,7 +48,7 @@ export function ageText(iso: string, nowMs: number): string {
 export interface HistoryRow {
   /** The run id — the identity a drill-down and a pin use. Draw {@link shortId}. */
   readonly id: string;
-  /** The first 8 characters of the id. */
+  /** The first 8 characters of the id, through the one-line floor. */
   readonly shortId: string;
   readonly status: RunStatus;
   readonly glyph: string;
@@ -66,7 +66,10 @@ export interface HistoryRow {
   readonly createdAt: string;
   /** The raw run total. Never draw it: the browser qualifies it with the run's coverage first. */
   readonly totalCostMicrocents: number;
-  /** The directory the run started in, when it recorded one — what a widened list needs to say whose run it is. */
+  /**
+   * The directory the run started in, when it recorded one — what a widened list needs to say whose run it is.
+   * Read back from `history.db`, so it has passed the one-line floor: it is for display, never for comparison.
+   */
   readonly projectRoot?: string;
 }
 
@@ -87,7 +90,7 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
     const createdAtMs = Date.parse(run.createdAt);
     return {
       id: run.id,
-      shortId: run.id.slice(0, 8),
+      shortId: shortRunId(run.id),
       status: run.status,
       glyph: RUN_STATUS_GLYPH[run.status],
       word: run.status,
@@ -98,7 +101,7 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       ...(Number.isNaN(createdAtMs) ? {} : { createdAtMs }),
       createdAt: run.createdAt,
       totalCostMicrocents: run.totalCostMicrocents,
-      ...(run.projectRoot === undefined ? {} : { projectRoot: run.projectRoot }),
+      ...(run.projectRoot === undefined ? {} : { projectRoot: sanitizeInline(run.projectRoot) }),
     };
   });
 }

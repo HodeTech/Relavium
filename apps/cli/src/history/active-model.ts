@@ -3,6 +3,7 @@ import type { RunStatus } from '@relavium/shared';
 
 import { sanitizeInline } from '../render/sanitize.js';
 import { RUN_STATUS_GLYPH } from './history-model.js';
+import { shortRunId } from './run-detail-model.js';
 
 /**
  * The pure classification of the Home's Active tab (ADR-0140 §2, "Active"; ADR-0139 §3 and §7; MVP-8 step 1).
@@ -24,9 +25,9 @@ import { RUN_STATUS_GLYPH } from './history-model.js';
  * (`run:paused` carries `pendingGateCount` and `pendingMediaJobNodeIds`). This model therefore does NOT guess.
  * The caller passes `pendingGateCounts` (run id to its pending gate count, read from the log) for the paused runs
  * of this project; a run absent from that map is `paused-gate-unknown` and is NOT actionable, so a media park is
- * never offered a gate card it cannot answer. MUST BE RESOLVED IN MVP-8 STEP 3: the Active tab's reader has to
- * read the pending gates of every paused run in this project (per-run isolated, as `readPerRunOrDegrade` does)
- * and fill that map; until it does, no paused row is actionable. ADR-0139 §3 also leaves open whether a media
+ * never offered a gate card it cannot answer. MUST BE RESOLVED IN MVP-8 STEP 4 (the Active tab): the tab's reader
+ * has to read the pending gates of every paused run in THIS project (per-run isolated, as `readPerRunOrDegrade`
+ * does) and fill that map; until it does, no paused row is actionable. ADR-0139 §3 also leaves open whether a media
  * park can be continued with no decision; if step 2 lands that, `other-paused-media` becomes actionable here.
  *
  * Precedence, so a run is in exactly one class: `held`/`hosted` are decided by the run's id; then the status
@@ -51,6 +52,7 @@ export const STALLED_REASON = 'settled by the next start';
 
 export interface ActiveRow {
   readonly runId: string;
+  /** The first 8 characters of the id, through the one-line floor. */
   readonly shortId: string;
   /** The workflow's slug when resolved, else its id; sanitized. */
   readonly label: string;
@@ -66,6 +68,7 @@ export interface ActiveRow {
   readonly stalled: boolean;
   readonly stalledReason?: typeof STALLED_REASON;
   readonly createdAt: string;
+  /** Through the one-line floor: for display, never for comparison (the class decision used the stored value). */
   readonly projectRoot?: string;
 }
 
@@ -183,7 +186,7 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       isStalled(input.leases.get(run.id), input.nowMs, input.leaseTtlMs);
     rows.push({
       runId: run.id,
-      shortId: run.id.slice(0, 8),
+      shortId: shortRunId(run.id),
       label: sanitizeInline(input.workflowLabels?.get(run.workflowId) ?? run.workflowId),
       status: run.status,
       glyph: RUN_STATUS_GLYPH[run.status],
@@ -194,7 +197,7 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       stalled,
       ...(stalled ? { stalledReason: STALLED_REASON } : {}),
       createdAt: run.createdAt,
-      ...(run.projectRoot === undefined ? {} : { projectRoot: run.projectRoot }),
+      ...(run.projectRoot === undefined ? {} : { projectRoot: sanitizeInline(run.projectRoot) }),
     });
   }
   return rows.sort((a, b) => groupRank(a.class) - groupRank(b.class) || newestFirst(a, b));
