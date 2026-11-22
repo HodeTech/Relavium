@@ -1726,7 +1726,7 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
   *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
   **Implemented 2026-11-22 on `development` and committed in `0494fad5`; stays open until its D64 review round and
   separate security sitting are recorded.** Classified at the write, not read in `#reclaim()`: a claim `#reclaim()` re-takes stays unproven until a
-  write under it is acknowledged. Until then a terminal is guarded against the head this process left at its park, and
+  write under it is acknowledged. Until then a terminal is guarded against the last sequence this process asked for at its park, and
   an `AppendConflictError` whose durable head differs from that head is ownership loss: no terminal, no outbox entry,
   the re-taken row released by its exact fence, and `uncertain` with no terminal (exit `6`). The answer and the Ctrl-C
   case are both covered. `InMemoryRunStore` now refuses a duplicate `(runId, seq)` with an untyped error, as SQLite's

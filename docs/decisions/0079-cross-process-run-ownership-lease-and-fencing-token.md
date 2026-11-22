@@ -316,7 +316,7 @@ Both recorded triggers are now answered. The long-lived-host trigger is not met:
 > already used. The rule is now:
 >
 > - **A re-take is unproven until a write under it is acknowledged.** In that window, a refused write whose
->   durable head differs from the head the process left at its park is **ownership loss** (§5), not a store
+>   durable head differs from the last sequence the process asked for at its park is **ownership loss** (§5), not a store
 >   fault: no terminal, no terminal-outbox entry, the re-taken lease released by its exact fence, and the
 >   fenced outcome (`uncertain` with no terminal, CLI exit `6`). A refusal whose durable head still equals
 >   that head is the process's own failed ask failing closed, and keeps its ordinary store-fault handling.

@@ -55,7 +55,7 @@ Considered instead: a denormalized `runs.last_event_seq` column (rejected — it
 
 > **Amended 2026-11-22 (the stale gate card, MVP-8 step 2).** The run terminal is no longer exempt from this
 > guard during a re-take window: after a gate park hands the claim back and the process re-takes it, and until
-> the store acknowledges a write under that claim, the terminal is guarded against the head the process left at
+> the store acknowledges a write under that claim, the terminal is guarded against the last sequence the process asked for at
 > its park, and a refusal whose durable head differs from that head is ownership loss rather than a store fault,
 > so it gets no terminal-outbox entry (§4). Outside that window the terminal's exemption stands. The rule and its
 > reasons are in [ADR-0079's stale gate card amendment](0079-cross-process-run-ownership-lease-and-fencing-token.md#stale-gate-card-amendment--2026-11-22).
