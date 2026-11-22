@@ -4403,7 +4403,7 @@ class RunExecution {
     if (acquired) {
       // The re-take is unproven until a write under it lands — see {@link #reclaimedHead}. `??=` keeps the
       // head of an EARLIER re-take that no acknowledged write has proven yet: that is still the last head this
-      // process knows to be durable, while "last asked" may have moved past it on a failed ask.
+      // process recorded at an earlier park, while "last asked" may have moved past it on a failed ask.
       this.#reclaimedHead ??= this.#lastAskedSequenceNumber;
       return true;
     }
@@ -5459,7 +5459,7 @@ class RunExecution {
         // The two claims are independent fields precisely so this asymmetry is expressible.
         //
         // **Except under an unproven re-take** ({@link #reclaimedHead}): a terminal is then guarded against
-        // the head this process left at its park. After a park another process may have moved the log and
+        // the last sequence this process asked for at its park. After a park another process may have moved the log and
         // released, and the fresh fence cannot see that; this head check is what does. Not the live
         // `#lastAskedSequenceNumber` (a failed ask of this process's own has moved it on, and must not keep
         // its terminal from landing) but the value `#reclaim` captured, which was the last sequence asked.
@@ -5486,7 +5486,7 @@ class RunExecution {
         // recording anything here would be a durable lie about somebody else's run.
         //
         // **…and nor is a stale head under an unproven re-take** ({@link #reclaimedHead}, the stale gate
-        // card). The log moved past the head this process left at its park, so another process resumed the
+        // card). The log moved past the last sequence this process asked for at its park, so another process resumed the
         // run while it was parked: the same loss, discovered by the append guard because the fence was fresh.
         // Unlike a fence refusal the lease row is THIS process's — it re-took a vacant lease — so it is handed
         // back by its exact fence (a no-op if anyone else holds it now), or the next resume waits out a TTL.
