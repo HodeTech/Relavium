@@ -27,6 +27,7 @@ import {
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
 import { captureIo } from '../test-support.js';
+import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { RunHost, type HostedLaunch, type HostedStartRequest } from './run-host.js';
 import {
@@ -805,7 +806,7 @@ describe('the MCP consent card of a hosted leg', () => {
     expect(r.channel.ui.getSnapshot().active).toBe(false);
   });
 
-  it('is the START card: a resumed leg gets none, and a grant the machine no longer holds is refused with the digest', async () => {
+  it('is asked at a resume too: a grant the machine no longer holds is asked about again, through the same card', async () => {
     writeWorkflow('mcp.relavium.yaml', MCP_GATED);
     const r = rig();
     const { opened } = await toConsentCard(r);
@@ -814,21 +815,54 @@ describe('the MCP consent card of a hosted leg', () => {
     await idle(r);
     const parked = r.host.snapshot().last;
     expect(parked?.handedOff, 'the leg is parked at its gate').toBe(true);
-    // The grant is withdrawn (another terminal, a hand edit): the resumed leg must ask the machine, and it has no card to ask with.
+    // The grant is withdrawn (another terminal, a hand edit): the resumed leg must ask the machine, and it asks through the card.
     rmSync(mcpConsentPath(r.home));
-    const resumed = await r.host.resume({
+    const answer = createGateResumer({ host: r.host, flow: r.channel.flow })({
       runId: parked?.runId ?? '',
       kind: 'human',
       decision: approvalDecision(),
     });
-    expect(resumed).toMatchObject({ kind: 'refused', reason: 'rejected' });
-    expect(resumed.kind === 'refused' ? resumed.message : '').toContain(
-      'not approved on this machine',
+    await shows(r, 'chord', "Allow MCP server 'local'");
+    expect(r.startMcpClient, 'nothing is started while the card is up').toHaveBeenCalledTimes(1);
+    keys(r).ctrlY();
+    expect(await answer).toMatchObject({ kind: 'started', leg: 'resume' });
+    expect(
+      r.startMcpClient,
+      'the server was started again, once it was approved',
+    ).toHaveBeenCalledTimes(2);
+    expect(existsSync(mcpConsentPath(r.home)), 'the approval is the per-machine grant again').toBe(
+      true,
     );
+    expect(r.snapshots.filter((json) => json.includes('"kind":"chord"')).length).toBeGreaterThan(1);
+    await idle(r);
+    expect(runStatuses()).toEqual(['completed']);
+  });
+
+  it('a refusal at a resume starts nothing and leaves the gate pending for another answer', async () => {
+    writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+    const r = rig();
+    const { opened } = await toConsentCard(r);
+    keys(r).ctrlY();
+    await opened;
+    await idle(r);
+    const parked = r.host.snapshot().last;
+    rmSync(mcpConsentPath(r.home));
+    const answer = createGateResumer({ host: r.host, flow: r.channel.flow })({
+      runId: parked?.runId ?? '',
+      kind: 'human',
+      decision: approvalDecision(),
+    });
+    await shows(r, 'chord', "Allow MCP server 'local'");
+    keys(r).ctrlN();
+    const refused = await answer;
+    expect(refused).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(refused.kind === 'refused' ? refused.message : '').toContain('was not approved');
     expect(r.startMcpClient, 'the server was started once, by the start leg').toHaveBeenCalledTimes(
       1,
     );
-    expect(r.snapshots.filter((json) => json.includes('"kind":"chord"'))).toHaveLength(1);
+    expect(existsSync(mcpConsentPath(r.home)), 'a refusal records no grant').toBe(false);
+    expect(runStatuses(), 'the gate is still pending').toEqual(['paused']);
+    expect(r.registry.activeOwners).toBe(0);
   });
 
   it('is the only prompt: a host with no card wired opens none and refuses with the digest', async () => {

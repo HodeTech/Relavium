@@ -1,0 +1,668 @@
+/**
+ * The Home's human-gate card
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §4): what a run parked at a human gate
+ * shows, and the only keys that answer it. Pure apart from the answer it hands to the run host: no ink, no clock of its own (both are
+ * injected), nothing here reads a database.
+ *
+ * - **Chords only.** `Ctrl+Y` approves and `Ctrl+N` rejects, and only when the gate's own type accepts that decision
+ *   (`decisionsForGateType`, carried on each gate): an `input` gate takes a typed value or a rejection, so `Ctrl+Y` there answers
+ *   nothing. A bare letter, a pasted block, `Enter`, an arrow and a chord with `meta` answer nothing. `Esc` and `Ctrl+C` decide
+ *   nothing either: they leave the card pending (`Esc` is the run view's key, `Ctrl+C` its interrupt ladder's) and neither can reject,
+ *   because a rejection continues the run (the author routes on it).
+ * - **The guards of the other native cards.** An affirmative chord passes dwell, quiet gap, typeahead and lockout (`createChordGuard`)
+ *   and counts only while this exact frame is painted and measured (`painted`); a rejection is never delayed. The dwell restarts for
+ *   every new frame: a different gate under the cursor, a re-read of the gates, an answer that moved the cursor.
+ * - **A cursor over the open gates.** With more than one, `↑`/`↓` move it and an answer applies to the gate under it only.
+ * - **One answer in flight.** While an answer is out the card takes no other. A gate that is answered leaves the card at once, whatever
+ *   the host says, so no key can answer it twice; what the host says (the leg started, the run's durable state, a refusal) is shown
+ *   as the outcome. An overdue gate is the same: its deadline passing changes the words, never the keys.
+ * - **Author text is behind a gutter.** A gate's message can interpolate model output. Each of its rows is drawn behind the host's
+ *   `│ ` gutter, host glyphs and answer-chord tokens are removed from it, and it passes the untrusted-text floor, so nothing in it
+ *   can look like the card's own rows or keys (ADR-0132's forged-legend rule).
+ */
+
+import type { GateDecision } from '@relavium/shared';
+
+import { approvalDecision, rejectionDecision } from '../../gate/decision.js';
+import { humanGateResumeHints } from '../../gate/pending.js';
+import type { RunGate } from '../../home/run-gates.js';
+import type { HostedLaunch, HostedResumeRequest, RunHost } from '../../home/run-host.js';
+import { CliError } from '../../process/errors.js';
+import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
+import type { ChatKey } from './chat-input.js';
+import { createChordGuard, reduceChordKey, type ChordStamp } from './chord-guard.js';
+import type { StatusColor } from './format.js';
+import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
+import type { NativePromptFlow } from './native-prompt-channel.js';
+import type { ApprovalGuard } from './tool-review-model.js';
+import { clipLine } from './sheet-frame.js';
+import { wrapText } from './viewport.js';
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The controller.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** Where the card is. */
+export type RunCardPhase =
+  /** Waiting for a chord, or for the person to leave. */
+  | 'open'
+  /** An answer is out: no other is taken until the host replies. */
+  | 'answering'
+  /** The host started the leg that carries the answer. */
+  | 'answered'
+  /** The host found nothing to answer: the gate was decided, or the run ended, and the notice says which. */
+  | 'settled'
+  /** No gate is open. */
+  | 'empty';
+
+/** One state of the card, as the view and the tests read it. Replaced, never mutated: its identity is the frame's. */
+export interface RunCardSnapshot {
+  readonly runId: string;
+  /** The gates still open, in the order the log raised them. */
+  readonly gates: readonly RunGate[];
+  /** Which of them the next chord answers. */
+  readonly cursor: number;
+  readonly phase: RunCardPhase;
+  /** The host's words for the last answer (an outcome or a refusal), or `undefined`. Plain text: the projection cleans it. */
+  readonly notice: string | undefined;
+  /** `notice` is a refusal: nothing was answered and the gate is still open. */
+  readonly refused: boolean;
+}
+
+/** What one key did, for the host that routed it. Nothing here is the answer itself: that goes to `resume`. */
+export type RunCardKeyOutcome =
+  /** The key meant nothing to the card: it is typing, a paste, `Esc`, `Ctrl+C` or a chord the gate does not accept. */
+  | { readonly kind: 'ignored' }
+  /** The cursor moved. */
+  | { readonly kind: 'moved' }
+  /** An affirmative chord that a guard layer (or an unpainted frame) refused. The gate is untouched. */
+  | { readonly kind: 'refused' }
+  /** An answer was sent for this gate. */
+  | { readonly kind: 'answered'; readonly gateId: string; readonly decision: GateDecision };
+
+export interface RunCardDeps {
+  readonly runId: string;
+  readonly gates: readonly RunGate[];
+  /** Answer one gate: the run host's `resume`, with the native flow around it (see {@link createGateResumer}). */
+  readonly resume: (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch>;
+  /** The monotonic clock the guard runs on (default `performance.now`). */
+  readonly now?: () => number;
+  /** The guard's numbers (default the product's own); `0` switches a layer off. */
+  readonly guard?: ApprovalGuard | undefined;
+  /**
+   * Whether this exact snapshot is on screen right now, measured and flushed at 80×24. The default is `false`: a host that has not
+   * said so can never approve anything.
+   */
+  readonly painted?: (snapshot: RunCardSnapshot) => boolean;
+}
+
+export interface RunCard {
+  readonly subscribe: (listener: () => void) => () => void;
+  readonly getSnapshot: () => RunCardSnapshot;
+  /** One key from the host's one input owner. */
+  readonly input: (input: string, key: ChatKey) => RunCardKeyOutcome;
+  /** A bracketed paste: it answers nothing, and it counts as typing for the guard. */
+  readonly paste: (text: string) => void;
+  /** A key reached the host while this card's frame could not take it (not painted, or the terminal too small): typing, for the guard. */
+  readonly unseenInput: () => void;
+  /** The host measured and flushed this exact snapshot as a new frame: the dwell counts from here. */
+  readonly shown: (snapshot: RunCardSnapshot) => void;
+  /** The run's gates, read again: the cursor stays on its gate when that is still open. */
+  readonly update: (gates: readonly RunGate[]) => void;
+  readonly dispose: () => void;
+}
+
+/** The host's words, through the untrusted-text floor: a refusal can quote a message the run core composed from stored text. */
+function plain(message: string): string {
+  return sanitizeUntrustedInline(message);
+}
+
+/** The decision a chord means for a gate, or `undefined` when the gate does not accept it. */
+function decisionFor(chord: 'allow' | 'deny', gate: RunGate): GateDecision | undefined {
+  const kind = chord === 'allow' ? 'approved' : 'rejected';
+  if (!gate.accepts.includes(kind)) return undefined;
+  return kind === 'approved' ? approvalDecision() : rejectionDecision();
+}
+
+/** Where the cursor lands in `gates` after a re-read: on `gateId` when it is still there, else clamped. */
+function cursorAfter(
+  gates: readonly RunGate[],
+  gateId: string | undefined,
+  previous: number,
+): number {
+  const kept = gateId === undefined ? -1 : gates.findIndex((gate) => gate.gateId === gateId);
+  return kept >= 0 ? kept : Math.max(0, Math.min(previous, gates.length - 1));
+}
+
+/** Two reads of the same gates: a periodic re-read that found nothing new must not mint a new frame (and restart the dwell). */
+function sameGates(a: readonly RunGate[], b: readonly RunGate[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((gate, index) => {
+      const other = b[index];
+      return (
+        other !== undefined &&
+        gate.gateId === other.gateId &&
+        gate.nodeId === other.nodeId &&
+        gate.gateType === other.gateType &&
+        gate.message === other.message &&
+        gate.expiresAt === other.expiresAt &&
+        gate.timeoutAction === other.timeoutAction
+      );
+    })
+  );
+}
+
+const SEND_FAILED: HostedLaunch = Object.freeze({
+  kind: 'refused',
+  reason: 'rejected',
+  message: 'The answer could not be sent.',
+});
+
+export function createRunCard(deps: RunCardDeps): RunCard {
+  const guard = createChordGuard({
+    now: deps.now ?? (() => performance.now()),
+    guard: deps.guard,
+  });
+  const painted = deps.painted ?? (() => false);
+  const listeners = new Set<() => void>();
+  let disposed = false;
+  let snapshot: RunCardSnapshot = Object.freeze({
+    runId: deps.runId,
+    gates: deps.gates,
+    cursor: 0,
+    phase: deps.gates.length === 0 ? 'empty' : 'open',
+    notice: undefined,
+    refused: false,
+  });
+  guard.begin();
+
+  const publish = (next: Omit<RunCardSnapshot, 'runId'>): void => {
+    snapshot = Object.freeze({ runId: deps.runId, ...next });
+    for (const listener of listeners) listener();
+  };
+  const focused = (): RunGate | undefined => snapshot.gates[snapshot.cursor];
+
+  /** The host refused: nothing was answered, so the gate is open again where it was, with the host's words. */
+  const reopen = (before: RunCardSnapshot, gate: RunGate, message: string): void => {
+    // A re-read that landed meanwhile saw the gate still pending (the answer had not been recorded): keep what it read.
+    const gates = snapshot.gates.some((entry) => entry.gateId === gate.gateId)
+      ? snapshot.gates
+      : before.gates;
+    guard.begin();
+    publish({
+      gates,
+      cursor: Math.max(0, cursorAfter(gates, gate.gateId, before.cursor)),
+      phase: 'open',
+      notice: plain(message),
+      refused: true,
+    });
+  };
+
+  /** The host took the answer: the leg started, or there was nothing to answer and the host says what the log holds. */
+  const accepted = (launch: Exclude<HostedLaunch, { kind: 'refused' }>, gate: RunGate): void => {
+    const gates = snapshot.gates.filter((entry) => entry.gateId !== gate.gateId);
+    guard.begin(); // whatever is under the cursor now is a new frame: its dwell starts when it is shown
+    const base = { gates, cursor: cursorAfter(gates, undefined, 0), refused: false };
+    if (launch.kind === 'settled') {
+      // Nothing ran: the gate was decided, or the run ended, before this answer arrived. The gates that remain are still answerable.
+      publish({
+        ...base,
+        phase: gates.length === 0 ? 'settled' : 'open',
+        notice: plain(launch.message),
+      });
+      return;
+    }
+    publish({
+      ...base,
+      phase: 'answered',
+      notice: 'Answered. The run continues in the background.',
+    });
+  };
+
+  const send = (gate: RunGate, decision: GateDecision): void => {
+    // The gate leaves the card the moment it is answered: from here no key can answer it a second time, whatever the host replies.
+    const before = snapshot;
+    publish({
+      gates: before.gates.filter((entry) => entry.gateId !== gate.gateId),
+      cursor: 0,
+      phase: 'answering',
+      notice: undefined,
+      refused: false,
+    });
+    let reply: Promise<HostedLaunch>;
+    try {
+      reply = deps.resume({ runId: gate.runId, gate: gate.gateId, kind: 'human', decision });
+    } catch {
+      reply = Promise.resolve(SEND_FAILED);
+    }
+    void reply
+      .catch((): HostedLaunch => SEND_FAILED)
+      .then((launch) => {
+        if (disposed) return;
+        if (launch.kind === 'refused') reopen(before, gate, launch.message);
+        else accepted(launch, gate);
+      });
+  };
+
+  const move = (delta: 1 | -1, stamp: ChordStamp): RunCardKeyOutcome => {
+    guard.foreign(stamp);
+    const count = snapshot.gates.length;
+    if (count < 2) return { kind: 'ignored' };
+    guard.begin(); // a different gate under the cursor is a new frame
+    publish({ ...snapshot, cursor: (snapshot.cursor + delta + count) % count });
+    return { kind: 'moved' };
+  };
+
+  return {
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot: () => snapshot,
+    input: (input, key) => {
+      const stamp = guard.stamp();
+      const gate = focused();
+      if (snapshot.phase !== 'open' || gate === undefined) {
+        guard.foreign(stamp);
+        return { kind: 'ignored' };
+      }
+      // `Esc` and `Ctrl+C` are the view's keys and decide nothing here.
+      if (key.escape === true || (key.ctrl === true && input.toLowerCase() === 'c')) {
+        guard.foreign(stamp);
+        return { kind: 'ignored' };
+      }
+      if (key.upArrow === true && key.ctrl !== true && key.meta !== true) return move(-1, stamp);
+      if (key.downArrow === true && key.ctrl !== true && key.meta !== true) return move(1, stamp);
+      const chord = reduceChordKey(input, key);
+      const decision = chord === undefined ? undefined : decisionFor(chord, gate);
+      if (chord === undefined || decision === undefined) {
+        guard.foreign(stamp);
+        return { kind: 'ignored' };
+      }
+      if (guard.decide(stamp, chord, painted(snapshot)) === undefined) return { kind: 'refused' };
+      send(gate, decision);
+      return { kind: 'answered', gateId: gate.gateId, decision };
+    },
+    paste: () => {
+      guard.foreign(guard.stamp());
+    },
+    unseenInput: () => {
+      guard.foreign(guard.stamp());
+    },
+    shown: (frame) => {
+      if (frame === snapshot && snapshot.phase === 'open') guard.shown();
+    },
+    update: (gates) => {
+      if (disposed) return;
+      const under = focused()?.gateId;
+      const cursor = cursorAfter(gates, under, snapshot.cursor);
+      if (snapshot.phase === 'answering') {
+        // The answer in flight settles the card; a re-read only refreshes what is still open.
+        if (!sameGates(gates, snapshot.gates)) publish({ ...snapshot, gates, cursor });
+        return;
+      }
+      if (gates.length === 0) {
+        if (snapshot.phase === 'open') publish({ ...snapshot, gates, cursor: 0, phase: 'empty' });
+        return;
+      }
+      if (snapshot.phase === 'open' && sameGates(gates, snapshot.gates)) return;
+      if (snapshot.phase !== 'open' || gates[cursor]?.gateId !== under) guard.begin();
+      publish({
+        gates,
+        cursor,
+        phase: 'open',
+        // What the last answer said belongs to the card it answered: it stays while the card stays open, and goes with a new one.
+        notice: snapshot.phase === 'open' ? snapshot.notice : undefined,
+        refused: snapshot.phase === 'open' && snapshot.refused,
+      });
+    },
+    dispose: () => {
+      disposed = true;
+      listeners.clear();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The answer, with the native flow around it.
+// ---------------------------------------------------------------------------------------------------------------------
+
+type SlotFlow = Pick<NativePromptFlow, 'password'>;
+
+/**
+ * The values of a resumed run's masked slots, one native masked field per slot, in the order the run core names them. The value lives
+ * in the prompt channel and in this call's result; nothing is kept. A field that is left (`Esc`, `Ctrl+C`) leaves the whole answer,
+ * and the gate stays pending.
+ */
+export function createSlotSecretPort(
+  flow: SlotFlow,
+): (names: readonly string[]) => Promise<Readonly<Record<string, string>>> {
+  return async (names) => {
+    const out: Record<string, string> = Object.create(null) as Record<string, string>;
+    for (const [index, name] of names.entries()) {
+      const answer = await flow.password({
+        message: `Secret input ${String(index + 1)} of ${String(names.length)}: ${name}`,
+        validate: (value) => (value.trim() === '' ? 'A secret input cannot be blank.' : undefined),
+        escape: 'cancel',
+      });
+      if (typeof answer !== 'string')
+        throw new CliError(
+          'invalid_invocation',
+          'The answer was cancelled. The gate is still pending.',
+        );
+      out[name] = answer;
+    }
+    return out;
+  };
+}
+
+/**
+ * `RunHost.resume` with the native flow around it. A resumed leg may need the Home's own prompts while it prepares (a masked slot,
+ * and the MCP consent card for a local program this machine holds no grant for), and the channel answers only while a flow is open, so
+ * this opens one for exactly that long: from the answer to the leg's start, never for the leg itself.
+ *
+ * With another prompt already open the flow cannot begin: that is a refusal ("busy"), not a queue.
+ */
+export function createGateResumer(deps: {
+  readonly host: Pick<RunHost, 'resume'>;
+  readonly flow: Pick<NativePromptFlow, 'begin' | 'end' | 'busy' | 'password'>;
+}): (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch> {
+  return async (request) => {
+    try {
+      deps.flow.begin();
+    } catch {
+      return {
+        kind: 'refused',
+        reason: 'busy',
+        message: 'Another prompt is open. Finish it, then answer the gate.',
+      };
+    }
+    try {
+      deps.flow.busy('Answering the gate…');
+      return await deps.host.resume({ ...request, secrets: createSlotSecretPort(deps.flow) });
+    } finally {
+      await deps.flow.end();
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The projection.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** How many rows of a gate's message the card shows. */
+export const RUN_CARD_MESSAGE_ROWS = 4;
+/** How many gates the list shows at once. */
+export const RUN_CARD_LIST_ROWS = 4;
+/** The host's gutter: every row of author text starts with it, so column 0 belongs to the host. */
+export const RUN_CARD_GUTTER = '│ ';
+
+/** The card's states, each with a glyph and a word (colour only reinforces them). */
+export type RunCardState =
+  | 'waiting'
+  | 'overdue'
+  | 'answering'
+  | 'answered'
+  | 'decided'
+  | 'not-answered'
+  | 'none';
+
+interface Appearance {
+  readonly glyph: string;
+  readonly word: string;
+  readonly tone: StatusColor;
+}
+
+export const RUN_CARD_APPEARANCE: Readonly<Record<RunCardState, Appearance>> = {
+  waiting: { glyph: '‖', word: 'waiting for you', tone: 'yellow' },
+  overdue: { glyph: '⚠', word: 'overdue', tone: 'red' },
+  answering: { glyph: '◌', word: 'answering', tone: 'cyan' },
+  answered: { glyph: '✓', word: 'answered', tone: 'green' },
+  decided: { glyph: '○', word: 'already decided', tone: 'gray' },
+  'not-answered': { glyph: '✗', word: 'not answered', tone: 'red' },
+  none: { glyph: '○', word: 'no open gate', tone: 'gray' },
+};
+
+export type RunCardRole =
+  | 'title'
+  | 'author'
+  | 'fact'
+  | 'warn'
+  | 'note'
+  | 'list'
+  | 'cursor'
+  | 'keys';
+
+export interface RunCardRow {
+  readonly text: string;
+  readonly role: RunCardRole;
+}
+
+export interface RunCardProjection {
+  /** `false` below 80×24: only `tooSmall` and `keys` are shown, and no key answers. */
+  readonly fits: boolean;
+  readonly tooSmall: string | undefined;
+  readonly state: RunCardState;
+  readonly glyph: string;
+  readonly word: string;
+  readonly tone: StatusColor;
+  readonly rows: readonly RunCardRow[];
+  /** The gate under the cursor is overdue. */
+  readonly overdue: boolean;
+}
+
+export interface RunCardProjectionInput {
+  readonly columns: number;
+  readonly rows: number;
+  /** Wall-clock milliseconds, for the deadline: the only clock the projection reads. */
+  readonly nowMs: number;
+}
+
+/** Host glyphs and card-drawing characters, none of which an author's text may carry (`HOST_GLYPH` of the ask-user tool, widened). */
+const HOST_GLYPHS = /[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu;
+/** An answer-chord token: `Ctrl+Y`, `control-n`, `^Y`. */
+const CHORD_TOKENS = /\b(?:ctrl|control)\s*[+-]\s*[a-z]\b|(?<![\w^])\^[a-z]\b/giu;
+
+/** One line of author text, safe to put behind the gutter: untrusted-text floor, no host glyph, no answer chord. */
+function authorLine(text: string): string {
+  return sanitizeUntrustedInline(text).replace(HOST_GLYPHS, ' ').replace(CHORD_TOKENS, '[chord]');
+}
+
+/** The author's message as at most {@link RUN_CARD_MESSAGE_ROWS} rows of `width` columns, each a row of author text. */
+function messageRows(message: string, width: number): readonly string[] {
+  const rows = message
+    .split('\n')
+    .flatMap((line) => wrapText(authorLine(line), width))
+    .map((line) => line.trimEnd())
+    .filter((line) => line !== '');
+  if (rows.length <= RUN_CARD_MESSAGE_ROWS) return rows;
+  const kept = rows.slice(0, RUN_CARD_MESSAGE_ROWS);
+  kept[RUN_CARD_MESSAGE_ROWS - 1] = clipLine(`${kept[RUN_CARD_MESSAGE_ROWS - 1] ?? ''}…`, width);
+  return kept;
+}
+
+/** The instant the deadline passes, or `undefined` for a gate with none (or one that does not parse). */
+function deadline(gate: RunGate): number | undefined {
+  if (gate.expiresAt === undefined) return undefined;
+  const at = Date.parse(gate.expiresAt);
+  return Number.isFinite(at) ? at : undefined;
+}
+
+export function isGateOverdue(gate: RunGate, nowMs: number): boolean {
+  const at = deadline(gate);
+  return at !== undefined && nowMs >= at;
+}
+
+function stateOf(
+  snapshot: RunCardSnapshot,
+  gate: RunGate | undefined,
+  nowMs: number,
+): RunCardState {
+  switch (snapshot.phase) {
+    case 'answering':
+      return 'answering';
+    case 'answered':
+      return 'answered';
+    case 'settled':
+      return 'decided';
+    case 'empty':
+      return 'none';
+    case 'open':
+      if (snapshot.refused) return 'not-answered';
+      return gate !== undefined && isGateOverdue(gate, nowMs) ? 'overdue' : 'waiting';
+  }
+}
+
+function policyWords(gate: RunGate): string {
+  if (gate.timeoutAction === 'approve') return 'On timeout: the gate is approved.';
+  if (gate.timeoutAction === 'reject') return 'On timeout: the run fails (run_timeout).';
+  return 'No timeout policy was recorded for it.';
+}
+
+/** The keys the open card offers, in the legend's grammar. Only what the gate accepts, and only host text. */
+function keysFor(snapshot: RunCardSnapshot, gate: RunGate | undefined): string {
+  switch (snapshot.phase) {
+    case 'answering':
+      return 'Answering… · Esc leaves the view';
+    case 'answered':
+    case 'settled':
+    case 'empty':
+      return 'Esc closes';
+    case 'open': {
+      const parts: string[] = [];
+      if (snapshot.gates.length > 1) parts.push('↑/↓ choose a gate');
+      if (gate?.accepts.includes('approved') === true) parts.push('Ctrl+Y approves');
+      if (gate?.accepts.includes('rejected') === true) parts.push('Ctrl+N rejects');
+      parts.push('Esc leaves it pending');
+      return parts.join(' · ');
+    }
+  }
+}
+
+function gateFacts(gate: RunGate, width: number, overdue: boolean): readonly RunCardRow[] {
+  const rows: RunCardRow[] = [
+    {
+      role: 'fact',
+      text: clipLine(
+        `node ${sanitizeInline(gate.nodeId)} · ${sanitizeInline(gate.gateType)} gate` +
+          (gate.expiresAt === undefined || overdue
+            ? ''
+            : ` · expires ${sanitizeInline(gate.expiresAt)}`),
+        width,
+      ),
+    },
+  ];
+  if (overdue) {
+    rows.push(
+      {
+        role: 'warn',
+        text: clipLine(`Overdue since ${sanitizeInline(gate.expiresAt ?? '')}.`, width),
+      },
+      { role: 'warn', text: clipLine(policyWords(gate), width) },
+      {
+        role: 'fact',
+        text: clipLine(
+          'Your answer is still taken; if another process settled it first, this says so.',
+          width,
+        ),
+      },
+    );
+  }
+  if (gate.accepts.includes('approved')) {
+    rows.push({
+      role: 'fact',
+      text: clipLine('Rejecting does not stop the run: the workflow routes on a rejection.', width),
+    });
+  } else {
+    // An input gate takes a typed value, which this card does not: say where the answer goes instead of offering a key for it.
+    const hint = humanGateResumeHints(gate.runId, gate.gateId, gate.gateType)[0];
+    rows.push({
+      role: 'fact',
+      text: clipLine(
+        `This gate takes a typed value, which this card cannot take.${hint === undefined ? '' : ` ${hint}`}`,
+        width,
+      ),
+    });
+  }
+  return rows;
+}
+
+function listRows(snapshot: RunCardSnapshot, width: number): readonly RunCardRow[] {
+  const count = snapshot.gates.length;
+  if (count < 2) return [];
+  const first = Math.max(
+    0,
+    Math.min(snapshot.cursor - Math.floor(RUN_CARD_LIST_ROWS / 2), count - RUN_CARD_LIST_ROWS),
+  );
+  const window = snapshot.gates.slice(first, first + RUN_CARD_LIST_ROWS);
+  const rows: RunCardRow[] = window.map((gate, index): RunCardRow => {
+    const at = first + index;
+    const here = at === snapshot.cursor;
+    return {
+      role: here ? 'cursor' : 'list',
+      text: clipLine(
+        `${here ? '▸' : ' '} ${sanitizeInline(gate.gateId)} · ${sanitizeInline(gate.gateType)} · node ${sanitizeInline(gate.nodeId)}`,
+        width,
+      ),
+    };
+  });
+  if (count > window.length)
+    rows.push({ role: 'list', text: clipLine(`  … ${String(count)} gates open`, width) });
+  return rows;
+}
+
+/**
+ * The card as the terminal shows it. Pure: the same snapshot, size and time are always the same rows. Below 80×24 it is the enlarge
+ * line and the key line only, and the view takes no key as an answer.
+ */
+export function projectRunCard(
+  snapshot: RunCardSnapshot,
+  input: RunCardProjectionInput,
+): RunCardProjection {
+  const gate = snapshot.gates[snapshot.cursor];
+  const fits = homeFitsTerminal(input.columns, input.rows);
+  const state = stateOf(snapshot, gate, input.nowMs);
+  const appearance = RUN_CARD_APPEARANCE[state];
+  const overdue = state === 'overdue';
+  const width = Math.max(1, Math.floor(input.columns) - 2);
+  const keys: RunCardRow = { role: 'keys', text: clipLine(keysFor(snapshot, gate), width) };
+  if (!fits) {
+    return {
+      fits,
+      tooSmall: tooSmallMessage(input.columns, input.rows),
+      state,
+      ...appearance,
+      rows: [keys],
+      overdue,
+    };
+  }
+  const place =
+    snapshot.gates.length > 1
+      ? `  ·  gate ${String(snapshot.cursor + 1)} of ${String(snapshot.gates.length)}`
+      : '';
+  const rows: RunCardRow[] = [
+    {
+      role: 'title',
+      text: clipLine(
+        `${appearance.glyph} ${appearance.word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
+        width,
+      ),
+    },
+  ];
+  if (snapshot.phase === 'open' && gate !== undefined) {
+    const gutter = RUN_CARD_GUTTER;
+    for (const line of messageRows(gate.message, Math.max(1, width - gutter.length)))
+      rows.push({ role: 'author', text: `${gutter}${line}` });
+    rows.push(...gateFacts(gate, width, overdue));
+    rows.push(...listRows(snapshot, width));
+  }
+  if (snapshot.notice !== undefined)
+    rows.push(
+      ...wrapText(sanitizeInline(snapshot.notice), width)
+        .slice(0, 2)
+        .map((text): RunCardRow => ({ role: 'note', text: clipLine(text, width) })),
+    );
+  rows.push(keys);
+  return { fits, tooSmall: undefined, state, ...appearance, rows, overdue };
+}

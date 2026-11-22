@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 
 import type { RunHandle, WorkflowDefinition, WorkflowEngine } from '@relavium/core';
 import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
-import type { GateDecision } from '@relavium/shared';
+import { MaskedSecretSchema, type GateDecision } from '@relavium/shared';
 
 import { driveRun, type RunOutcome } from '../commands/drive.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -239,6 +239,28 @@ function refuseBlankSecrets(
     }
     return out;
   });
+}
+
+/** A non-null, non-array object (a guard, so no cast). */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Whether a parked run's frozen inputs hold a masked `secret` slot. A durable record keeps only the slot (`{ secret: true, ref }`),
+ * so the value must be supplied again to resume; a run with none has nothing to ask for, and the run core refuses a secret port it
+ * was told to expect and did not need. A value that does not parse is left to the core to name.
+ */
+function carriesMaskedSlots(inputJson: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(inputJson);
+    return (
+      isRecord(parsed) &&
+      Object.keys(parsed).some((name) => MaskedSecretSchema.safeParse(parsed[name]).success)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function declaredSecretNames(def: WorkflowDefinition): readonly string[] {
@@ -624,11 +646,18 @@ export class RunHost {
    * The leg's `io` reports non-TTY (nothing about a leg is interactive), so the gate's own terminal check would refuse every
    * unapproved server. The card is not a terminal question: it is the Home's own native prompt, on the Home's own input owner. So
    * the gate is told its prompter is a card (`nativeCard`), and only when this host really has one: with none the gate cannot ask,
-   * and a server nothing approved is refused with its digest. The card is the START card (ADR-0139 §4): a resumed leg reuses what
-   * the machine already approved and asks nothing new, so it gets no card whatever this host has.
+   * and a server nothing approved is refused with its digest.
+   *
+   * **A start and a resume are the same check.** The per-machine grant log is the only thing that approves a program, so a resumed
+   * leg runs the gate exactly as a start does: a server this machine already approved starts without a question, and one it holds
+   * no grant for (the grant was withdrawn, or the run was started on another machine, or by a script that passed a digest for one
+   * invocation only) is asked about, through the same card. Skipping the check on a resume would let a parked run start a local
+   * program nothing on this machine approved (the register's entry on the resumed hosted leg, ADR-0084 §1). The frozen tool grants
+   * are a different thing (`preserveFrozenGrants`): they say which tools an approved server may be called for, never whether it
+   * may be spawned.
    */
-  #consentGate(context: LegContext, homeDir: string, leg: LegKind): StdioConsentGate {
-    const card = leg === 'start' ? this.#consent : undefined;
+  #consentGate(context: LegContext, homeDir: string): StdioConsentGate {
+    const card = this.#consent;
     return createConsentGate({
       io: context.io,
       global: this.#global,
@@ -652,7 +681,7 @@ export class RunHost {
       },
       {
         secretInputs: (def) => refuseBlankSecrets(request.secrets, declaredSecretNames(def)),
-        consentGate: (homeDir) => this.#consentGate(context, homeDir, 'start'),
+        consentGate: (homeDir) => this.#consentGate(context, homeDir),
       },
       lifetime,
       resources,
@@ -679,7 +708,11 @@ export class RunHost {
       {
         runId: request.runId,
         gate: request.gate,
-        secretStdin: request.secrets !== undefined,
+        // The Home may offer a secret port for every answer, because it cannot know what the run holds: it is asked only for a run
+        // whose record carries a masked slot, and a run with none is resumed as the shell resumes it, with nothing to re-supply.
+        secretStdin:
+          request.secrets !== undefined &&
+          carriesMaskedSlots(loadRunSnapshot(this.#db, request.runId)?.inputJson ?? ''),
         kind: request.kind,
         decision: request.decision,
       },
@@ -688,7 +721,7 @@ export class RunHost {
       {
         openDb: () => ({ db: this.#db, close: () => undefined }),
         secretInputs: ({ maskedSlots }) => refuseBlankSecrets(request.secrets, maskedSlots),
-        consentGate: (homeDir) => this.#consentGate(context, homeDir, 'resume'),
+        consentGate: (homeDir) => this.#consentGate(context, homeDir),
       },
       lifetime,
       resources,

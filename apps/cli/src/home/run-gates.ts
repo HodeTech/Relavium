@@ -1,0 +1,169 @@
+import { decisionsForGateType } from '@relavium/core';
+import type { RunHistoryReader } from '@relavium/db';
+import type { GateDecision, HumanGatePausedEvent, RunEvent } from '@relavium/shared';
+
+import { pendingGateDisplays, type PendingBudgetGate } from '../gate/pending.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
+
+/**
+ * The open gates of the runs parked in THIS project
+ * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §4, §7): what the Home's gate card
+ * and, later, its Active tab and strip read. A read, never a decision: it grants nothing and resumes nothing.
+ *
+ * - **Only this project's runs.** The page is asked for the project's paused runs, and every row it returns is checked against the
+ *   project root once more here, so a reader that over-returns can never hand another directory's run to a card (a run is
+ *   actionable only in its own workspace, ADR-0139 §7).
+ * - **Chunks of at most {@link RUN_GATES_CHUNK} runs.** The reader pages by keyset, one page of that many ids at a time (the largest
+ *   page the summary read accepts, and the largest id list `loadRunLeases` takes), and stops at {@link RUN_GATES_MAX_RUNS}: a project
+ *   that parks without ever answering costs one bounded read per call, never an unbounded one.
+ * - **Per-run isolation.** Each run's log is read inside `readPerRunOrDegrade`: one damaged log degrades that run (it is named in
+ *   `degradedRunIds` and carries no gate), and the others are read. Any other fault is not a per-run condition and propagates.
+ * - **Text is the card's to clean.** `message` is the workflow author's text (it can interpolate model output) and is returned as
+ *   stored; the card's projection sanitizes it, as it does every string it draws.
+ */
+
+/** The most runs one page of the read asks for, and the most ids a lease read takes. */
+export const RUN_GATES_CHUNK = 200;
+/** The most parked runs one call reads; a project with more reports `truncated`. */
+export const RUN_GATES_MAX_RUNS = 1000;
+
+export type RunGateType = HumanGatePausedEvent['gateType'];
+export type RunGateTimeoutAction = NonNullable<HumanGatePausedEvent['timeoutAction']>;
+
+/** One open human gate of a parked run: what to show, and which decisions the gate accepts. */
+export interface RunGate {
+  readonly runId: string;
+  readonly gateId: string;
+  readonly nodeId: string;
+  readonly gateType: RunGateType;
+  /** The author's message, as stored. */
+  readonly message: string;
+  /** The gate's absolute deadline, when one was authored. */
+  readonly expiresAt?: string;
+  /** What the engine does at the deadline (approve, or fail the run with `run_timeout`), when one was authored. */
+  readonly timeoutAction?: RunGateTimeoutAction;
+  /** The decision kinds this gate's type accepts (`decisionsForGateType`): nothing else is ever offered. */
+  readonly accepts: readonly GateDecision['decision'][];
+}
+
+/** One parked run of this project and what it is waiting on. */
+export interface RunGates {
+  readonly runId: string;
+  readonly workflowId: string;
+  /** Its open human gates, in the order the log raised them; empty for a media park or a budget-only park. */
+  readonly gates: readonly RunGate[];
+  /** Its open budget gates (the budget card's, not the human gate card's). */
+  readonly budgetGates: readonly PendingBudgetGate[];
+  /** The run's event log could not be read: `gates` is a stand-in, not an answer. */
+  readonly degraded: boolean;
+}
+
+export interface ProjectRunGates {
+  readonly runs: readonly RunGates[];
+  /** The ids of the runs whose log could not be read. */
+  readonly degradedRunIds: readonly string[];
+  /** The project parks more runs than one call reads. */
+  readonly truncated: boolean;
+}
+
+/** The reads this module needs: a keyset page of summaries, one run's detail and a run's state events. */
+export type RunGatesReader = Pick<
+  RunHistoryReader,
+  'listRunSummaries' | 'loadRunDetail' | 'loadRunStateEvents'
+>;
+
+/** The timeout policy each `human_gate:paused` event carried, by gate id (the display projection leaves it out). */
+function timeoutActions(events: readonly RunEvent[]): ReadonlyMap<string, RunGateTimeoutAction> {
+  const byGate = new Map<string, RunGateTimeoutAction>();
+  for (const event of events) {
+    if (event.type === 'human_gate:paused' && event.timeoutAction !== undefined)
+      byGate.set(event.gateId, event.timeoutAction);
+  }
+  return byGate;
+}
+
+function gatesOfRun(
+  reader: Pick<RunGatesReader, 'loadRunStateEvents'>,
+  run: { readonly id: string; readonly workflowId: string },
+): RunGates {
+  const read = readPerRunOrDegrade<Omit<RunGates, 'degraded'>>(
+    { runId: run.id, workflowId: run.workflowId, gates: [], budgetGates: [] },
+    () => {
+      const events = reader.loadRunStateEvents(run.id);
+      const pending = pendingGateDisplays(events);
+      const actions = timeoutActions(events);
+      return {
+        runId: run.id,
+        workflowId: run.workflowId,
+        gates: pending.pendingGates.map((gate): RunGate => {
+          const action = actions.get(gate.gateId);
+          return {
+            runId: run.id,
+            gateId: gate.gateId,
+            nodeId: gate.nodeId,
+            gateType: gate.gateType,
+            message: gate.message,
+            ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+            ...(action === undefined ? {} : { timeoutAction: action }),
+            accepts: decisionsForGateType(gate.gateType),
+          };
+        }),
+        budgetGates: pending.pendingBudgetGates,
+      };
+    },
+  );
+  return { ...read.value, degraded: read.degraded };
+}
+
+/**
+ * Every parked run of `projectRoot` with the gates it is waiting on, newest run first. A run of another directory is never
+ * returned, whatever the reader hands back.
+ */
+export function readProjectRunGates(
+  reader: RunGatesReader,
+  projectRoot: string,
+  options?: { readonly maxRuns?: number },
+): ProjectRunGates {
+  const maxRuns = Math.min(Math.max(1, options?.maxRuns ?? RUN_GATES_MAX_RUNS), RUN_GATES_MAX_RUNS);
+  const runs: RunGates[] = [];
+  const degradedRunIds: string[] = [];
+  let before: { readonly createdAt: number; readonly id: string } | undefined;
+  let truncated = false;
+  for (;;) {
+    const page = reader.listRunSummaries({
+      limit: RUN_GATES_CHUNK,
+      status: 'paused',
+      projectRoot,
+      ...(before === undefined ? {} : { before }),
+    });
+    for (const run of page) {
+      if (run.projectRoot !== projectRoot) continue;
+      if (runs.length >= maxRuns) {
+        truncated = true;
+        break;
+      }
+      const read = gatesOfRun(reader, run);
+      runs.push(read);
+      if (read.degraded) degradedRunIds.push(run.id);
+    }
+    const last = page.at(-1);
+    if (truncated || page.length < RUN_GATES_CHUNK || last === undefined) break;
+    before = { createdAt: Date.parse(last.createdAt), id: last.id };
+  }
+  return { runs, degradedRunIds, truncated };
+}
+
+/**
+ * One run's gates, when the run is parked in `projectRoot`: `undefined` for a run that does not exist, is not paused or belongs to
+ * another directory. The run view re-reads with this after an answer, so the card shows what the log now says.
+ */
+export function readRunGates(
+  reader: Pick<RunGatesReader, 'loadRunDetail' | 'loadRunStateEvents'>,
+  projectRoot: string,
+  runId: string,
+): RunGates | undefined {
+  const run = reader.loadRunDetail(runId);
+  if (run === undefined || run.status !== 'paused' || run.projectRoot !== projectRoot)
+    return undefined;
+  return gatesOfRun(reader, run);
+}
