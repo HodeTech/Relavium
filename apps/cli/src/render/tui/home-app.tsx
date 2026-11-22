@@ -33,8 +33,8 @@ import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
-import { HomeView } from './home-view.js';
-import { homeFitsTerminal } from './home-projection.js';
+import { ExitGuardCard, HomeView } from './home-view.js';
+import { homeFitsTerminal, hostedRunLabel } from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
@@ -665,13 +665,21 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (key.return && current.continueSessionId !== undefined && !homeFrame.visible(current))
       return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
-      if (key.escape || (key.ctrl && (input === 'c' || input === 'd')))
+      // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
+      if (
+        key.escape ||
+        (key.ctrl &&
+          (input === 'c' ||
+            input === 'd' ||
+            (current.exitGuard !== undefined && (input === 'y' || input === 'n'))))
+      )
         controller.handleKey(input, key);
       return true;
     }
     if (
       current.mode !== 'home' ||
       current.notice === undefined ||
+      current.exitGuard !== undefined ||
       current.palette !== undefined ||
       current.modelPicker !== undefined ||
       current.permissionsSheet !== undefined ||
@@ -693,6 +701,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       showBanner: props.showBanner,
       isEmpty: current.snapshot.isEmpty,
       hasSessions: current.snapshot.recentSessions.length > 0,
+      reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
       page: same ? previous.page : 0,
     });
     if (layout === undefined || layout.maxPage === 0) return false;
@@ -862,9 +871,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {'> '}
           {sanitizeInline(state.pendingMessage)}
         </Text>
-        <Text {...dimProps(color)} wrap="truncate-end">
-          Starting chat… · Ctrl+C to exit
-        </Text>
+        {state.exitGuard === undefined ? (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            Starting chat… · Ctrl+C to exit
+          </Text>
+        ) : (
+          <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
+        )}
         {nativeAcknowledgement && (
           <NativePromptView
             snapshot={prompt}
@@ -915,6 +928,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           continueSessionId={state.continueSessionId}
           noticePage={noticePage}
           interruptArmed={state.interruptArmed}
+          hostedRun={state.hostedRun}
+          exitGuard={state.exitGuard}
         />
       )}
       {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (

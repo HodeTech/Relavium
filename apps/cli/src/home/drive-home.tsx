@@ -1854,6 +1854,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         launchRun: () => runLaunch.open(),
+        // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
+        // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
+        hostedRuns,
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
         // `relavium permissions` read. Nothing is read until the sheet is opened.
         permissions: createPermissionsPort(

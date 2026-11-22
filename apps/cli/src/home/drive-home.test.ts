@@ -61,7 +61,7 @@ import {
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
 import { shouldOpenHome } from './should-open-home.js';
-import { RunHost } from './run-host.js';
+import { RunHost, type RunHostSnapshot } from './run-host.js';
 
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
@@ -663,6 +663,56 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(closeRun).toHaveBeenCalledOnce();
     },
   );
+
+  it('hands its run host to the exit guard: with a leg executing, two Ctrl+C ask instead of leaving, and Ctrl+Y cancels the leg and leaves', async () => {
+    const f = invocationFixture();
+    const run = new RunHost({
+      invocation: f.invocation,
+      io,
+      global,
+      db: client.db,
+      // A temporary operator home, as every other Home in this file is given: this host starts no leg, but it must never be able to
+      // reach the real one.
+      homeDir: testHomeDir,
+    });
+    const idle: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+    const executing: RunHostSnapshot = {
+      launching: false,
+      active: { leg: 'start', runId: 'run-exit-guard', cancelling: false },
+      last: undefined,
+    };
+    let live = true;
+    vi.spyOn(run, 'snapshot').mockImplementation(() => (live ? executing : idle));
+    const cancel = vi.spyOn(run, 'cancel').mockImplementation(() => {
+      live = false; // the leg settles as soon as it is told to stop
+      return true;
+    });
+    vi.spyOn(run, 'close').mockResolvedValue(undefined);
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      { run },
+    );
+    const running = driveHome(deps);
+    await vi.waitFor(() => expect(captured).toBeDefined());
+    const props = captured;
+    if (props === undefined) throw new Error('Home not mounted');
+    let settled = false;
+    void running.then(() => {
+      settled = true;
+    });
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // a leg is executing: the second press asks
+    await flush();
+    expect(props.controller.getSnapshot().exitGuard).toBe('confirm');
+    expect(settled, 'the Home is still there').toBe(false);
+    expect(cancel).not.toHaveBeenCalled();
+    props.controller.handleKey('y', { ctrl: true }); // Ctrl+Y
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(await running).toBe(0);
+  });
 
   it('builds its own run host when none is injected, and a Home that never runs a workflow registers no workflow owner', async () => {
     const f = invocationFixture();

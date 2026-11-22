@@ -103,3 +103,50 @@ export function isInterruptKey(
 export function pressOtherKey(): InterruptState {
   return DISARMED;
 }
+
+/**
+ * Leaving the Home while a workflow run executes
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The rows below are the exit guard: what
+ * a request to end the Home does, and what each key means at the confirmation card it opens. Like the `Ctrl+C` table above they decide
+ * and perform nothing: the controller owns the card, the cancel and the exit.
+ */
+
+/** Whether the Home's run host has a leg that would be lost with the Home: none, one executing, or one already cancelling. */
+export type HostedLegState = 'none' | 'executing' | 'cancelling';
+
+/** What a request to end the Home does: leave now, or ask first. */
+export type ExitDecision = 'exit' | 'ask';
+
+/**
+ * Every way to end the Home (`/exit`, the second `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out)
+ * asks this one question. With no leg the Home leaves exactly as it always did; with a leg executing or cancelling it asks, because
+ * cancelling a run is irreversible (a cancelled run cannot be resumed).
+ */
+export function decideExit(leg: HostedLegState): ExitDecision {
+  return leg === 'none' ? 'exit' : 'ask';
+}
+
+/** What a key means at the exit-guard card. */
+export type ExitGuardAnswer =
+  /** `Ctrl+Y`: cancel the run and leave. */
+  | 'confirm'
+  /** `Esc`, `Ctrl+C` or `Ctrl+N`: close the card and stay. A confirmation treats both interrupt keys as cancel, never as confirm. */
+  | 'stay'
+  /** Every other key (a bare letter, `Enter`, `Ctrl+D`, a chord with `meta`): the card is still open and nothing is decided. */
+  | 'ignore';
+
+/**
+ * The card's keys. The chord is the one the Home's other cards use (a Ctrl letter, the letter being the whole input, `meta` unset),
+ * written out here because `chord-guard.ts` imports this module through the review model, so it cannot be imported back.
+ */
+export function pressExitGuardKey(
+  input: string,
+  key: { readonly ctrl?: boolean; readonly meta?: boolean; readonly escape?: boolean },
+): ExitGuardAnswer {
+  if (key.escape === true) return 'stay';
+  if (isInterruptKey(input, key)) return 'stay';
+  if (key.ctrl !== true || key.meta === true) return 'ignore';
+  if (input === 'n') return 'stay';
+  if (input === 'y') return 'confirm';
+  return 'ignore';
+}

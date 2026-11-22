@@ -4,6 +4,7 @@ import type {
   HomeRunRow,
   HomeSessionRow,
 } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { sanitizeInline } from './chat-projection.js';
 import { formatCostShort } from './format.js';
 
@@ -141,4 +142,56 @@ export function agentLabel(row: HomeAgentRow, nowMs: number): string {
   return [row.agentSlug, relativeTime(row.lastUsedAt, nowMs)]
     .filter((s) => s.trim().length > 0)
     .join(SEP);
+}
+
+/** Whether the run host has a leg that is preparing, executing or cancelling: the one meaning of "a run is active" for the Home. */
+export function hostedRunIsLive(snapshot: RunHostSnapshot | undefined): boolean {
+  return snapshot !== undefined && (snapshot.active !== undefined || snapshot.launching);
+}
+
+/**
+ * The `▶` row of the Home's strip ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3): the
+ * active run's id and its state, in one line, or `undefined` (no row at all) when no run is active. The state is a word, never a
+ * colour alone: `starting` until the engine has named the run, `running`, and `cancelling` once the stop was requested. The id is
+ * sanitized at this boundary. `last` is how an earlier leg ended; it is a later card's to show, not this row's.
+ */
+export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | undefined {
+  if (snapshot === undefined || !hostedRunIsLive(snapshot)) return undefined;
+  const active = snapshot.active;
+  if (active === undefined || active.runId === undefined) return `▶ run${SEP}starting`;
+  return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}`;
+}
+
+/** What the exit-guard card is showing: it asks first, then waits for the run to stop. */
+export type ExitGuardPhase = 'confirm' | 'stopping';
+
+/**
+ * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). Each
+ * line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y` stops the run and leaves and the
+ * other three keys stay; once the person confirmed, the card only says that the run is stopping and for how long the Home waits.
+ */
+export function exitGuardLines(
+  phase: ExitGuardPhase,
+  snapshot: RunHostSnapshot | undefined,
+  graceSeconds: number,
+): readonly string[] {
+  const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
+  const id = active?.runId === undefined ? undefined : sanitizeInline(active.runId);
+  if (phase === 'stopping')
+    return [
+      'Stopping the run…',
+      `The Home leaves as soon as it has stopped, within ${graceSeconds} s.`,
+    ];
+  if (!hostedRunIsLive(snapshot))
+    return ['The run has ended.', 'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay'];
+  if (active?.cancelling === true)
+    return [
+      `The run is stopping${id === undefined ? '' : `: ${id}`}.`,
+      `Ctrl+Y leave once it has stopped (up to ${graceSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
+    ];
+  return [
+    `A workflow run is executing${id === undefined ? '' : `: ${id}`}.`,
+    'Leaving stops it, and a stopped run cannot be resumed.',
+    'Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay',
+  ];
 }

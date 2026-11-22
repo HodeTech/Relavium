@@ -3,10 +3,15 @@ import { describe, expect, it } from 'vitest';
 import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
+  decideExit,
   isArmed,
   isInterruptKey,
+  pressExitGuardKey,
   pressInterrupt,
   pressOtherKey,
+  type ExitDecision,
+  type ExitGuardAnswer,
+  type HostedLegState,
   type InterruptAction,
   type InterruptContext,
   type InterruptState,
@@ -162,5 +167,106 @@ describe('which key is the interrupt', () => {
     expect(isInterruptKey('', { ctrl: true })).toBe(false);
     // An unrelated flag on the key does not change what it is (the old Home reducer had a test for a coincident `return`).
     expect(isInterruptKey('c', { ctrl: true, return: true } as { ctrl: boolean })).toBe(true);
+  });
+});
+
+/**
+ * The exit guard, row by row (ADR-0139 §6, ADR-0122 §7.4). The first table is what a request to end the Home does for each state of
+ * the run host; the second is what each key means at the card it opens. Both are enumerated in full, and the key table is also
+ * checked against a universe of keys, so a row that is removed fails (its key answers `ignore`) and a row that is added fails too.
+ */
+const EXIT_REQUEST: readonly {
+  readonly row: string;
+  readonly leg: HostedLegState;
+  readonly decision: ExitDecision;
+}[] = [
+  { row: 'no leg: the Home leaves as it always did', leg: 'none', decision: 'exit' },
+  { row: 'a leg executing: ask first', leg: 'executing', decision: 'ask' },
+  { row: 'a leg cancelling: ask first', leg: 'cancelling', decision: 'ask' },
+];
+
+describe('a request to end the Home (ADR-0139 §6)', () => {
+  it.each(EXIT_REQUEST)('$row', ({ leg, decision }) => {
+    expect(decideExit(leg)).toBe(decision);
+  });
+});
+
+type GuardKey = { readonly ctrl?: boolean; readonly meta?: boolean; readonly escape?: boolean };
+const EXIT_GUARD_KEYS: readonly {
+  readonly row: string;
+  readonly input: string;
+  readonly key: GuardKey;
+  readonly answer: ExitGuardAnswer;
+}[] = [
+  { row: 'Ctrl+Y cancels the run and leaves', input: 'y', key: { ctrl: true }, answer: 'confirm' },
+  { row: 'Esc stays', input: '', key: { escape: true }, answer: 'stay' },
+  {
+    row: 'Ctrl+C stays (a confirmation treats both interrupt keys as cancel)',
+    input: 'c',
+    key: { ctrl: true },
+    answer: 'stay',
+  },
+  { row: 'Ctrl+C in capitals stays', input: 'C', key: { ctrl: true }, answer: 'stay' },
+  { row: 'Ctrl+N stays', input: 'n', key: { ctrl: true }, answer: 'stay' },
+  { row: 'a bare y answers nothing', input: 'y', key: {}, answer: 'ignore' },
+  { row: 'a bare n answers nothing', input: 'n', key: {}, answer: 'ignore' },
+  { row: 'a bare c answers nothing', input: 'c', key: {}, answer: 'ignore' },
+  {
+    row: 'Ctrl+Alt+Y is another chord',
+    input: 'y',
+    key: { ctrl: true, meta: true },
+    answer: 'ignore',
+  },
+  {
+    row: 'Ctrl+Alt+N is another chord',
+    input: 'n',
+    key: { ctrl: true, meta: true },
+    answer: 'ignore',
+  },
+  { row: 'Ctrl+D is not an answer', input: 'd', key: { ctrl: true }, answer: 'ignore' },
+  {
+    row: 'a pasted run that contains y is not the key',
+    input: 'yy',
+    key: { ctrl: true },
+    answer: 'ignore',
+  },
+  { row: 'Enter answers nothing', input: '', key: {}, answer: 'ignore' },
+];
+
+describe('the exit-guard card keys (ADR-0139 §6)', () => {
+  it.each(EXIT_GUARD_KEYS)('$row', ({ input, key, answer }) => {
+    expect(pressExitGuardKey(input, key)).toBe(answer);
+  });
+
+  it('answers confirm to exactly one key, stay to exactly three, and ignore to every other key', () => {
+    const letters = 'abcdefghijklmnopqrstuvwxyz0123456789 \u0019\u0003\u000e';
+    const answers = new Map<string, ExitGuardAnswer>();
+    for (const input of ['', ...letters])
+      for (const ctrl of [false, true])
+        for (const meta of [false, true])
+          for (const escape of [false, true]) {
+            const answer = pressExitGuardKey(input, { ctrl, meta, escape });
+            if (answer !== 'ignore')
+              answers.set(
+                `${input}|${ctrl ? 'ctrl' : ''}|${meta ? 'meta' : ''}|${escape ? 'esc' : ''}`,
+                answer,
+              );
+          }
+    const confirm = [...answers].filter(([, a]) => a === 'confirm').map(([k]) => k);
+    const stay = [...answers].filter(([, a]) => a === 'stay').map(([k]) => k);
+    expect(confirm, 'only Ctrl+Y confirms').toEqual(['y|ctrl||']);
+    // Esc (any input, either meta), Ctrl+C and Ctrl+N: nothing else stays.
+    expect(
+      stay.filter((k) => !k.endsWith('|esc')),
+      'Ctrl+C and Ctrl+N stay',
+    ).toEqual(['c|ctrl||', 'n|ctrl||']);
+    expect(stay.every((k) => k.endsWith('|esc') || k === 'c|ctrl||' || k === 'n|ctrl||')).toBe(
+      true,
+    );
+  });
+
+  it('never confirms with Esc or Ctrl+C held at the same time', () => {
+    expect(pressExitGuardKey('y', { ctrl: true, escape: true })).toBe('stay');
+    expect(pressExitGuardKey('c', { ctrl: true, escape: true })).toBe('stay');
   });
 });

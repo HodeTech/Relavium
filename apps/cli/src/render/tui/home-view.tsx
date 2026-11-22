@@ -2,23 +2,28 @@ import { Box, Text, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { StatusColor } from './format.js';
 import {
   agentLabel,
+  exitGuardLines,
   gateExpired,
   gateLabel,
   homeFitsTerminal,
+  hostedRunLabel,
   runLabel,
   sessionLabel,
   tooSmallMessage,
   unreadableRunLabel,
+  type ExitGuardPhase,
 } from './home-projection.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
+import { HOSTED_RUN_EXIT_GRACE_MS } from './tui-constants.js';
 
 /**
  * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
@@ -60,6 +65,39 @@ interface HomeViewProps {
   readonly noticePage?: number;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` exits the Home, and the hint says so. */
   readonly interruptArmed?: boolean | undefined;
+  /** The run host's snapshot (ADR-0139 §3): the `▶` row shows the active run, and nothing when none is active. */
+  readonly hostedRun?: RunHostSnapshot | undefined;
+  /** The exit-guard card (ADR-0139 §6), open while the person is asked whether to leave with a run executing. It owns the bottom of
+   *  the view, so the prompt and the hint bar are not drawn, and it holds the notice back until it is closed. */
+  readonly exitGuard?: ExitGuardPhase | undefined;
+}
+
+/**
+ * The exit-guard card (ADR-0139 §6): a title line, what leaving does and the keys, each in words so it reads with colour off. It is
+ * the same card in the loaded Home, in the loading echo and in the below-minimum degrade.
+ */
+export function ExitGuardCard(
+  props: Readonly<{
+    phase: ExitGuardPhase;
+    hostedRun: RunHostSnapshot | undefined;
+    color: boolean;
+  }>,
+): ReactElement {
+  const lines = exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_GRACE_MS / 1000);
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, row) => (
+        <Text
+          key={line}
+          {...(row === 0 ? colorProps(props.color, 'yellow') : dimProps(props.color))}
+          {...(row === 0 ? { bold: true } : {})}
+          wrap="truncate-end"
+        >
+          {line}
+        </Text>
+      ))}
+    </Box>
+  );
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -126,6 +164,7 @@ function homeHint(state: {
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
   const interruptArmed = props.interruptArmed === true;
+  const exitGuard = props.exitGuard;
   const frame = useRef<DOMElement | null>(null);
   useLayoutEffect(() => {
     props.onFrame?.(frame.current);
@@ -139,9 +178,13 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
           {tooSmallMessage(cols, rows)}
         </Text>
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {interruptArmed ? 'Press Ctrl+C again to exit' : 'Ctrl+C twice to exit'}
-        </Text>
+        {exitGuard === undefined ? (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {interruptArmed ? 'Press Ctrl+C again to exit' : 'Ctrl+C twice to exit'}
+          </Text>
+        ) : (
+          <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
+        )}
       </Box>
     );
   }
@@ -155,8 +198,15 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     rows,
   });
   const promptHeight = homePromptRows(editor, cols);
+  // The `▶` row costs one row above the strip; the exit-guard card takes the place of the prompt block and holds the notice back.
+  const runRow = hostedRunLabel(props.hostedRun);
+  const runRows = runRow === undefined ? 0 : 1;
+  const guardRows =
+    exitGuard === undefined
+      ? undefined
+      : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_GRACE_MS / 1000).length;
   const noticeLayout = layoutHomeNotice({
-    notice,
+    notice: guardRows === undefined ? notice : undefined,
     editor,
     cols,
     rows,
@@ -165,6 +215,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     showBanner: props.showBanner,
     isEmpty: snapshot.isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
+    reservedRows: runRows,
     ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
   });
   // Reserve all headings/margins and the whole editor before allocating management rows.
@@ -172,9 +223,10 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     0,
     rows -
       (showBanner ? 4 : 1) -
-      promptHeight -
-      2 -
-      (props.keyless === true ? 1 : 0) -
+      (guardRows === undefined
+        ? promptHeight + 2 + (props.keyless === true ? 1 : 0)
+        : guardRows + 1) -
+      runRows -
       (errorText === undefined ? 0 : 2) -
       (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) -
       (snapshot.isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1),
@@ -253,6 +305,15 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
           relavium
         </Text>
+      )}
+
+      {runRow !== undefined && (
+        // The active run, in one line with its state as a word (ADR-0139 §3); nothing at all when no run is active.
+        <Box marginLeft={2}>
+          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+            {runRow}
+          </Text>
+        </Box>
       )}
 
       {snapshot.isEmpty ? (
@@ -344,7 +405,13 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      {paletteOpen !== true && (
+      {exitGuard !== undefined && (
+        <Box marginTop={1} flexDirection="column">
+          <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
+        </Box>
+      )}
+
+      {paletteOpen !== true && exitGuard === undefined && (
         <Box marginTop={1} flexDirection="column">
           {props.keyless === true && (
             <Text {...colorProps(color, 'yellow')} wrap="truncate-end">

@@ -18,3 +18,14 @@ export const FORCE_TEARDOWN_MS = 2000;
  *  enough to register, short enough not to linger over the next selection. It renders OUTSIDE the transcript, so it
  *  never re-wraps the lines the user just selected — the reason success was silent until now. */
 export const COPIED_TOAST_MS = 2000;
+
+/**
+ * How long the Home waits for a hosted run to settle after the person confirmed leaving it
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6): the engine's own grace window for a
+ * cooperative cancel. Past it the Home abandons the leg as the engine does, runs its teardown and exits, so no path leaves the Home
+ * waiting without a bound.
+ */
+export const HOSTED_RUN_EXIT_GRACE_MS = 10_000;
+
+/** How often the Home re-reads its run host while a leg is live (the strip's `▶` row, and the wait of a confirmed exit). */
+export const HOSTED_RUN_POLL_MS = 250;

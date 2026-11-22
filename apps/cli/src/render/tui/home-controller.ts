@@ -33,6 +33,7 @@ import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import type { RunHost, RunHostSnapshot } from '../../home/run-host.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
   applyEditorAction,
@@ -61,9 +62,12 @@ import type { TranscriptEntry } from './session-view-model.js';
 import {
   DISARMED,
   INTERRUPT_ARM_WINDOW_MS,
+  decideExit,
   isInterruptKey,
+  pressExitGuardKey,
   pressInterrupt,
   pressOtherKey,
+  type HostedLegState,
   type InterruptContext,
   type InterruptState,
 } from './interrupt-keymap.js';
@@ -99,7 +103,12 @@ import {
   type PaletteKey,
   type PaletteState,
 } from './palette-reducer.js';
-import { FORCE_TEARDOWN_MS } from './tui-constants.js';
+import {
+  FORCE_TEARDOWN_MS,
+  HOSTED_RUN_EXIT_GRACE_MS,
+  HOSTED_RUN_POLL_MS,
+} from './tui-constants.js';
+import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
 import { nearestCommandName } from './command-typo.js';
 
 /**
@@ -224,6 +233,12 @@ export interface HomeControllerState {
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
   readonly interruptArmed: boolean;
+  /** The run host's snapshot, as of the last read (ADR-0139 §3): the strip's `▶` row and the exit-guard card show it. `undefined`
+   *  with no host wired. It is re-read when a native action ends, while a leg is live, and when the Home is asked to end. */
+  readonly hostedRun: RunHostSnapshot | undefined;
+  /** The exit-guard card (ADR-0139 §6): `confirm` asks whether to leave with a run executing, `stopping` waits (bounded) for the
+   *  confirmed cancel to settle. `undefined` ⇒ closed. While it is open it owns every key and every paste. */
+  readonly exitGuard: ExitGuardPhase | undefined;
 }
 
 /**
@@ -310,6 +325,20 @@ export interface HomeControllerDeps {
    * Absent ⇒ `/run` says it is unavailable.
    */
   readonly launchRun?: () => Promise<string>;
+  /**
+   * The Home's workflow-run host, as far as leaving the Home needs it ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
+   * §3, §6): `snapshot` says whether a leg is executing or cancelling, `cancel` requests the cooperative stop, and `close` is the Home's
+   * teardown of the host. With a leg live, every way to end the Home asks first, and a confirmed exit cancels the leg and waits for it
+   * for at most {@link HomeControllerDeps.exitGraceMs}. Absent ⇒ no run can exist and the Home leaves at once, as it always did.
+   */
+  readonly hostedRuns?: Pick<RunHost, 'snapshot' | 'cancel' | 'close'>;
+  /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
+  readonly exitGraceMs?: number;
+  /**
+   * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
+   * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
+   */
+  readonly schedule?: (callback: () => void, delayMs: number) => () => void;
   readonly pickSession?: () => Promise<string | undefined>;
   readonly resumeChat?: (
     sessionId: string,
@@ -353,6 +382,25 @@ export interface HomeController {
   readonly teardownActive: () => Promise<void>;
 }
 
+/**
+ * What changed in a run host's snapshot, as one string: the controller publishes a new snapshot only when this differs, so the
+ * recurring read never repaints an unchanged Home. No leg and no earlier end read as the empty string, the same as no host.
+ */
+function hostedKey(snapshot: RunHostSnapshot | undefined): string {
+  if (snapshot === undefined) return '';
+  const active =
+    snapshot.active === undefined
+      ? ''
+      : `${snapshot.active.leg}:${snapshot.active.runId ?? ''}:${snapshot.active.cancelling}`;
+  const last =
+    snapshot.last === undefined
+      ? ''
+      : `${snapshot.last.leg}:${snapshot.last.runId}:${snapshot.last.terminal.disposition}`;
+  return !snapshot.launching && active === '' && last === ''
+    ? ''
+    : `${snapshot.launching}|${active}|${last}`;
+}
+
 export function createHomeController(deps: HomeControllerDeps): HomeController {
   const listeners = new Set<() => void>();
   let state: HomeControllerState = {
@@ -379,6 +427,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     effortPicker: undefined,
     permissionsSheet: undefined,
     interruptArmed: false,
+    hostedRun: undefined,
+    exitGuard: undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -503,6 +553,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
     exiting = true;
     stopInterruptTimer();
+    stopHostedTimers();
     deps.onExit();
   };
 
@@ -510,7 +561,111 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (exiting) return; // an exit/error already settled `driveHome` — drop this late failure
     exiting = true;
     stopInterruptTimer();
+    stopHostedTimers();
     deps.onError(err);
+  };
+
+  // ---- Leaving the Home while a hosted run executes (ADR-0139 §6) -------------------------------------------------------------
+  // `requestExit` is the ONE way the Home ends: `/exit`, the second `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the
+  // loading bail-out and a closed `relavium permissions` sheet all call it, and `exitHome` is reached only from here. With no leg
+  // executing or cancelling it leaves as it always did. With one, it opens the exit-guard card: `Ctrl+Y` cancels the run and waits for
+  // it to settle for at most the grace window, then abandons it, runs the host's teardown and leaves; `Esc`, `Ctrl+C` and `Ctrl+N`
+  // stay (ADR-0122 §7.4: a confirmation treats both interrupt keys as cancel). Cancelling a run cannot be undone, so nothing but an
+  // exact `Ctrl+Y` at the open card does it.
+  const schedule =
+    deps.schedule ??
+    ((callback: () => void, delayMs: number): (() => void) => {
+      const timer = setTimeout(callback, delayMs);
+      timer.unref();
+      return () => clearTimeout(timer);
+    });
+  const exitGraceMs = deps.exitGraceMs ?? HOSTED_RUN_EXIT_GRACE_MS;
+  let cancelHostedPoll: (() => void) | undefined;
+  let cancelExitGrace: (() => void) | undefined;
+  const stopHostedTimers = (): void => {
+    cancelHostedPoll?.();
+    cancelHostedPoll = undefined;
+    cancelExitGrace?.();
+    cancelExitGrace = undefined;
+  };
+  const hostedLeg = (snapshot: RunHostSnapshot): HostedLegState => {
+    if (snapshot.active !== undefined)
+      return snapshot.active.cancelling ? 'cancelling' : 'executing';
+    return hostedRunIsLive(snapshot) ? 'executing' : 'none';
+  };
+  /** Leave for good: the grace ran out (`abandoned`) or the run settled. An abandoned leg is torn down by the host's own close. */
+  const finishExit = (abandoned: boolean): void => {
+    stopHostedTimers();
+    if (abandoned) {
+      try {
+        void deps.hostedRuns?.close().catch(() => undefined);
+      } catch {
+        // The Home's own teardown joins the very same close; a host that cannot start it must not keep the Home open.
+      }
+    }
+    exitHome();
+  };
+  /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
+  const refreshHostedRun = (): void => {
+    const host = deps.hostedRuns;
+    if (exiting || host === undefined) return;
+    const snapshot = host.snapshot();
+    if (hostedKey(snapshot) !== hostedKey(state.hostedRun)) set({ hostedRun: snapshot });
+    if (hostedLeg(snapshot) !== 'none') watchHostedRun();
+    else if (state.exitGuard === 'stopping') finishExit(false);
+  };
+  const watchHostedRun = (): void => {
+    if (exiting || cancelHostedPoll !== undefined) return;
+    cancelHostedPoll = schedule(() => {
+      cancelHostedPoll = undefined;
+      // A timer callback has no input handler around it to route a listener's failure, so it is routed here.
+      try {
+        refreshHostedRun();
+      } catch (error) {
+        failHome(error);
+      }
+    }, HOSTED_RUN_POLL_MS);
+  };
+  const requestExit = (): void => {
+    if (exiting || state.exitGuard !== undefined) return;
+    const snapshot = deps.hostedRuns?.snapshot();
+    if (snapshot === undefined || decideExit(hostedLeg(snapshot)) === 'exit') {
+      exitHome();
+      return;
+    }
+    set({
+      exitGuard: 'confirm',
+      hostedRun: snapshot,
+      palette: undefined,
+      continueSessionId: undefined,
+    });
+    watchHostedRun(); // the card names the run's state, so it follows it until the card is closed
+  };
+  const confirmExit = (): void => {
+    set({ exitGuard: 'stopping' });
+    try {
+      deps.hostedRuns?.cancel();
+    } catch (cause) {
+      deps.workOwner?.failure(cause);
+      finishExit(true);
+      return;
+    }
+    cancelExitGrace = schedule(() => {
+      cancelExitGrace = undefined;
+      finishExit(true);
+    }, exitGraceMs);
+    refreshHostedRun(); // nothing live ⇒ the exit ends here, before the grace could matter
+  };
+  const routeExitGuardKey = (
+    phase: ExitGuardPhase,
+    input: string,
+    key: HomeKey & ChatKey & PaletteKey,
+  ): void => {
+    disarmInterrupt(); // any key at the card ends the armed interrupt state (ADR-0115 §1)
+    if (phase === 'stopping') return; // the wait is bounded and cannot be taken back: no key changes it
+    const answer = pressExitGuardKey(input, key);
+    if (answer === 'confirm') confirmExit();
+    else if (answer === 'stay') set({ exitGuard: undefined });
   };
 
   const endChat = (ended: HomeChatSession): void => {
@@ -754,15 +909,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     } catch (err) {
       if (work !== undefined && nativeInFlight === work) nativeInFlight = undefined;
       deps.workOwner?.failure(err);
-      if (!exiting)
+      if (!exiting) {
         set({
           nativeActionBusy: false,
           notice: `${label} could not be ${work === undefined ? 'opened' : 'completed'}.`,
         });
+        refreshHostedRun(); // an action that failed late may still have started a leg
+      }
       return;
     }
     if (nativeInFlight === work) nativeInFlight = undefined;
-    if (!exiting) set({ nativeActionBusy: false });
+    if (!exiting) {
+      set({ nativeActionBusy: false });
+      refreshHostedRun(); // the action may have started a leg: the strip shows it from here
+    }
   };
 
   const openNativeAction = (operation: () => Promise<void>, label: string): void => {
@@ -984,11 +1144,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     void build.then(
       (built) => {
         if (buildInFlight === build) buildInFlight = undefined;
-        if (exiting) {
-          void built.teardown().catch(() => undefined); // exited mid-build ⇒ reclaim the just-built session
+        if (exiting || state.exitGuard === 'stopping') {
+          void built.teardown().catch(() => undefined); // exited (or leaving, the run being stopped) mid-build ⇒ reclaim the just-built session
           return;
         }
-        set({ session: built, mode: 'chat', submitBusy: true });
+        set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
         activateSession(built, () => sendChatLine(built, trimmed, trimmed));
       },
       (err: unknown) => {
@@ -1400,7 +1560,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // with the note, so that the person can read it. Either way the command is over: a sheet opened later is an ordinary one.
       permissionsIsTheCommand = false;
       if (result.note === undefined) {
-        exitHome();
+        requestExit();
+        // The exit guard may have held the Home open (a leg is live): the sheet it was closed from must not stay open behind the card.
+        if (!exiting) set({ permissionsSheet: undefined });
         return true;
       }
     }
@@ -1469,7 +1631,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
   // wires a REAL impl: `/doctor` (availableIn ['home','chat']) runs the fast tier into the Home `notice` surface.
   const homeReplCtx: ReplCommandContext = {
-    exit: () => exitHome(),
+    exit: () => requestExit(),
     cancel: () => undefined,
     exportSession: () => undefined,
     help: () => undefined,
@@ -1953,7 +2115,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'end-session':
         showInterruptHint(false);
         if (active === undefined) {
-          exitHome();
+          requestExit();
         } else {
           abortActive(active);
           cancelActive(active);
@@ -1975,7 +2137,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         showInterruptHint(false);
         return false;
       case 'exit-now':
-        exitHome();
+        requestExit();
         return true;
     }
   };
@@ -2040,7 +2202,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
-      exitHome();
+      requestExit();
       return;
     }
     const action = reduceHomeKey(input, key);
@@ -2102,6 +2264,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
   // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
   const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+    // The exit-guard card (ADR-0139 §6) owns every key while it is open, `Ctrl+C` included: there it is a cancel, not the keymap's.
+    if (state.exitGuard !== undefined) {
+      routeExitGuardKey(state.exitGuard, input, key);
+      return;
+    }
     // `Ctrl+C` is the interrupt keymap's before anything else (ADR-0115 §1); any other key ends the armed state.
     if (isInterruptKey(input, key)) {
       if (handleInterrupt()) return;
@@ -2183,6 +2350,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
       disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
+      if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
@@ -2204,6 +2372,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself
+      stopHostedTimers(); // a signal ends the Home on its own bound: the exit guard's wait must not fire after it
       // During a `/clear` swap (ADR-0062 §7) BOTH are live at once — the OLD session (`state.session`, still
       // rendered) AND the fresh build (`buildInFlight`) — so reap BOTH; a signal mid-swap must orphan neither MCP
       // child. Outside a swap exactly one is set (a live chat ⇒ session only; a first-message `loading` build ⇒

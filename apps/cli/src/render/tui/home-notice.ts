@@ -24,6 +24,8 @@ export interface HomeNoticeOptions {
   readonly isEmpty: boolean;
   readonly hasSessions: boolean;
   readonly page?: number;
+  /** Rows the Home spends above the notice that this layout does not know about (the `▶` run row, ADR-0139 §3). Default 0. */
+  readonly reservedRows?: number;
 }
 export interface HomeNoticeLayout {
   readonly lines: readonly string[];
@@ -53,6 +55,7 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
       3 -
       (options.keyless ? 1 : 0) -
       (options.errorText === undefined ? 0 : 2) -
+      (options.reservedRows ?? 0) -
       management,
   );
   const all = wrapText(options.notice.split('\n').map(sanitizeInline).join('\n'), options.cols);
