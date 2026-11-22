@@ -844,5 +844,31 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       // states), which is why what passes through it must be summary columns only (the test above).
       expect(plan).toContain('USE TEMP B-TREE FOR ORDER BY');
     });
+
+    it('listRunSummaries filtered by workflow alone reads the workflow off idx_runs_workflow and sorts only the last ORDER BY term, first page and keyset page', () => {
+      // `idx_runs_workflow` is (workflow_id, created_at DESC), so the `id DESC` tiebreak costs a sort WITHIN a run of
+      // equal `created_at` (SQLite's "LAST TERM") and never over the whole page: the same bound the schema reference
+      // states for a status-only filter. The keyset cursor narrows the range on the index; it is not a residual filter.
+      const firstPage = planOfRead(() =>
+        reader.listRunSummaries({ limit: 20, workflowId: 'wf-a' }),
+      ).join('\n');
+      const keysetPage = planOfRead(() =>
+        reader.listRunSummaries({
+          limit: 20,
+          workflowId: 'wf-a',
+          before: { createdAt: 1_000, id: 'run-1' },
+        }),
+      ).join('\n');
+      expect(firstPage).toContain('SEARCH runs USING INDEX idx_runs_workflow (workflow_id=?)');
+      expect(keysetPage).toContain(
+        'SEARCH runs USING INDEX idx_runs_workflow (workflow_id=? AND created_at<?)',
+      );
+      for (const plan of [firstPage, keysetPage]) {
+        expect(plan).toContain('USE TEMP B-TREE FOR LAST TERM OF ORDER BY');
+        // The whole-page sort is the plan that says the index stopped serving the order.
+        expect(plan).not.toMatch(/USE TEMP B-TREE FOR ORDER BY/u);
+        expect(plan).not.toMatch(/SCAN runs/u);
+      }
+    });
   });
 });

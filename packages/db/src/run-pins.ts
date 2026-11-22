@@ -94,11 +94,16 @@ export interface RunPinStore {
 /**
  * What no pin's text may contain, because the Home lists it back to a terminal and a pin is found again by the text
  * it was listed with: control characters (C0, DEL, C1), format characters (`\p{Cf}`: the bidirectional overrides
- * U+202A to U+202E, the zero-width characters, the soft hyphen, the byte-order mark), the Unicode line and
- * paragraph separators, and a lone surrogate. A lone surrogate is stored as bytes that read back as replacement
- * characters, so a pin written with one could not be matched by the ref the list shows for it.
+ * U+202A to U+202E and U+2066 to U+2069, the zero-width space, the soft hyphen, the byte-order mark), the Unicode
+ * line and paragraph separators, and a lone surrogate. A lone surrogate is stored as bytes that read back as
+ * replacement characters, so a pin written with one could not be matched by the ref the list shows for it.
+ *
+ * Exactly two format characters are allowed: the zero-width non-joiner (U+200C) and the zero-width joiner
+ * (U+200D). They are part of the spelling of ordinary Persian, Indic and emoji-sequence directory names, so a
+ * project in such a directory must stay pinnable; neither reorders text or hides a character the way a bidi
+ * control does. Every other `\p{Cf}` stays refused.
  */
-const FORBIDDEN_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const FORBIDDEN_TEXT = /(?![‌‍])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 function validateKind(key: PinKey): void {
   if (!PIN_KINDS.some((kind) => kind === key.kind)) {
@@ -117,7 +122,7 @@ function validateKey(key: PinKey): void {
   ) {
     throw new RunPinError(
       'invalid_ref',
-      `a pin reference is 1 to ${MAX_PIN_REF_LENGTH} characters with no control, format or unpaired-surrogate characters`,
+      `a pin reference is 1 to ${MAX_PIN_REF_LENGTH} characters with no control, format (other than the zero-width joiners) or unpaired-surrogate characters`,
     );
   }
   if (typeof key.projectRoot !== 'string') {
@@ -135,7 +140,7 @@ function validateKey(key: PinKey): void {
   ) {
     throw new RunPinError(
       'invalid_project_root',
-      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control, format or unpaired-surrogate characters`,
+      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control, format (other than the zero-width joiners) or unpaired-surrogate characters`,
     );
   }
 }

@@ -208,6 +208,11 @@ describe('createRunPinStore', () => {
       ['a paragraph separator', `a${paragraphSeparator}b`],
       ['a right-to-left override (a format character)', `a${String.fromCharCode(0x202e)}b`],
       ['a zero-width space (a format character)', `a${String.fromCharCode(0x200b)}b`],
+      ['a left-to-right mark (a format character)', `a${String.fromCharCode(0x200e)}b`],
+      ['a word joiner (a format character)', `a${String.fromCharCode(0x2060)}b`],
+      ['a left-to-right embedding (a bidi control)', `a${String.fromCharCode(0x202a)}b`],
+      ['a left-to-right isolate (a bidi control)', `a${String.fromCharCode(0x2066)}b`],
+      ['a pop directional isolate (a bidi control)', `a${String.fromCharCode(0x2069)}b`],
       ['a byte-order mark (a format character)', `${String.fromCharCode(0xfeff)}a`],
       ['a soft hyphen (a format character)', `a${String.fromCharCode(0xad)}b`],
       ['a lone high surrogate', `a${String.fromCharCode(0xd800)}b`],
@@ -239,7 +244,9 @@ describe('createRunPinStore', () => {
 
     it.each([
       ['a right-to-left override', String.fromCharCode(0x202e)],
+      ['a right-to-left isolate', String.fromCharCode(0x2067)],
       ['a zero-width space', String.fromCharCode(0x200b)],
+      ['a word joiner', String.fromCharCode(0x2060)],
       ['an ESC', String.fromCharCode(0x1b)],
       ['a lone surrogate', String.fromCharCode(0xd800)],
     ])('refuses a workflow project root that holds %s', (_name, character) => {
@@ -261,6 +268,36 @@ describe('createRunPinStore', () => {
       expect(store.listPins().map((pin) => pin.ref)).toEqual(
         expect.arrayContaining([`run-${emoji}`, 'deploy']),
       );
+    });
+
+    it('accepts exactly the two zero-width joiners in a ref and a project root, lists them back unchanged, and unpins by the exact key', () => {
+      const zwnj = String.fromCharCode(0x200c);
+      const zwj = String.fromCharCode(0x200d);
+      // A Persian word spelled with a non-joiner, and an emoji sequence held together by joiners.
+      const persianRoot = `/work/${String.fromCharCode(0x645, 0x6cc)}${zwnj}${String.fromCharCode(0x62e, 0x648, 0x627, 0x647, 0x6cc)}`;
+      const familyRoot = `/work/${String.fromCodePoint(0x1f469)}${zwj}${String.fromCodePoint(0x1f4bb)}`;
+      const jointRef = `deploy${zwnj}one${zwj}two`;
+
+      expect(store.pinItem(workflowPin(persianRoot, jointRef))).toBe('pinned');
+      expect(store.pinItem(workflowPin(familyRoot, 'deploy'))).toBe('pinned');
+      expect(store.pinItem(runPin(`run${zwj}1`, T0 + 1))).toBe('pinned');
+      expect(store.pinItem(workflowPin(persianRoot, jointRef))).toBe('already-pinned');
+
+      const listed = store.listPins();
+      expect(listed).toEqual([
+        { kind: 'run', projectRoot: '', ref: `run${zwj}1`, pinnedAt: T0 + 1 },
+        { kind: 'workflow', projectRoot: persianRoot, ref: jointRef, pinnedAt: T0 },
+        { kind: 'workflow', projectRoot: familyRoot, ref: 'deploy', pinnedAt: T0 },
+      ]);
+      expect(store.listPins({ kind: 'workflow', projectRoot: persianRoot })).toHaveLength(1);
+
+      // Each listed key removes exactly its own row.
+      for (const pin of listed) {
+        expect(
+          store.unpinItem({ kind: pin.kind, projectRoot: pin.projectRoot, ref: pin.ref }),
+        ).toBe(true);
+      }
+      expect(store.listPins()).toEqual([]);
     });
 
     it('accepts a ref of exactly the maximum length and ordinary text', () => {
@@ -291,6 +328,42 @@ describe('createRunPinStore', () => {
       expect(code(() => store.pinItem(runPin('x', 1.5)))).toBe('invalid_time');
       expect(code(() => store.pinItem(runPin('x', Number.NaN)))).toBe('invalid_time');
       expect(store.listPins()).toEqual([]);
+    });
+
+    it('refuses a workflow project root over its length bound on the write path, and accepts one exactly at it', () => {
+      let refusal: unknown;
+      try {
+        store.pinItem(workflowPin('p'.repeat(MAX_PIN_PROJECT_ROOT_LENGTH + 1), 'deploy'));
+      } catch (error) {
+        refusal = error;
+      }
+      expect(isRunPinError(refusal)).toBe(true);
+      expect(refusal).toMatchObject({ code: 'invalid_project_root' });
+      expect(store.listPins()).toEqual([]);
+      // Exactly at the bound is a pin, not a refusal.
+      const atBound = 'p'.repeat(MAX_PIN_PROJECT_ROOT_LENGTH);
+      expect(store.pinItem(workflowPin(atBound, 'deploy'))).toBe('pinned');
+      expect(store.listPins()).toEqual([
+        { kind: 'workflow', projectRoot: atBound, ref: 'deploy', pinnedAt: T0 },
+      ]);
+    });
+
+    it('pins at epoch 0 (the time is a NON-negative integer) and lists it back as 0, and refuses a negative time', () => {
+      expect(store.pinItem(runPin('at-zero', 0))).toBe('pinned');
+      expect(store.listPins()).toEqual([
+        { kind: 'run', projectRoot: '', ref: 'at-zero', pinnedAt: 0 },
+      ]);
+      for (const at of [-1, Number.MIN_SAFE_INTEGER, -0.5]) {
+        let refusal: unknown;
+        try {
+          store.pinItem(runPin('negative', at));
+        } catch (error) {
+          refusal = error;
+        }
+        expect(isRunPinError(refusal)).toBe(true);
+        expect(refusal).toMatchObject({ code: 'invalid_time' });
+      }
+      expect(store.listPins().map((pin) => pin.ref)).toEqual(['at-zero']);
     });
   });
 
