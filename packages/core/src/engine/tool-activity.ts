@@ -8,16 +8,26 @@ import {
 /**
  * The in-process, content-free tool trace of one node attempt
  * ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §4): the engine feeds it the `agent:tool_call` / `agent:tool_result` events it already passes through, and
- * attaches what it returns to the node's durable terminal (`node:completed`, or the terminal `node:failed`).
- * The two bus events are streamed and never persisted; this tracker is the only thing that turns them into a
- * durable fact, and it keeps nothing but an id, an outcome and a duration — the call's arguments and the
+ * §4): the engine records a call when the turn announces that it STARTS and a result when the `agent:tool_result`
+ * event passes through, and attaches what it returns to the node's durable terminal (`node:completed`, or the
+ * terminal `node:failed`). The bus events are streamed and never persisted; this tracker is the only thing that turns
+ * them into a durable fact, and it keeps nothing but an id, an outcome and a duration — the call's arguments and the
  * result's text never enter it, so no later change can leak them through the field.
+ *
+ * **Start, not announcement.** A call is recorded when it starts, not when its `agent:tool_call` event is emitted
+ * (after the dispatch returned, and dropped once the node is no longer live), so a call still running when the node
+ * is cut is on the trace — unpaired.
  *
  * **Pairing.** The two events carry no call id, so a result pairs with the OLDEST still-unpaired call of the
  * SAME node and the SAME tool (first in, first out). Two parallel calls of one tool therefore pair in call
  * order, which is exact when they finish in order and a swap of two durations when they do not — the cost of an
  * id the events do not have, accepted in ADR-0140 §4. A result with no matching call is ignored.
+ *
+ * **Three outcomes.** An entry says `resultRecorded` (a result paired with the call) and `ok` (that result's
+ * success; `false` while unpaired): a refusal is `resultRecorded: true, ok: false` with no duration; a dispatch that
+ * ran and failed is the same with a duration; a call the node ended without a result for is
+ * `resultRecorded: false, ok: false`. The tracker does not tell a refusal from a failure — it records whether the
+ * result carried a measurement.
  *
  * **Duration.** The tracker has no clock. A call's duration is the one the TURN measured around the registry's
  * dispatch and put on the `agent:tool_result` event; the two events themselves are emitted back to back AFTER the
@@ -46,7 +56,9 @@ export interface ToolActivitySnapshot {
 
 interface TrackedCall {
   readonly toolId: string;
+  /** A result has paired with this call; becomes the entry's `resultRecorded`. */
   paired: boolean;
+  /** The paired result's success; `false` until (and unless) a result pairs. */
   ok: boolean;
   /** Present only for a paired call whose dispatch was measured. */
   durationMs: number | undefined;
@@ -71,7 +83,7 @@ export class ToolActivityTracker {
     this.#byNode.set(nodeId, { calls: [], total: 0 });
   }
 
-  /** A tool call was announced. Counted always; kept only while the node is under the entry bound. */
+  /** A tool call started. Counted always; kept only while the node is under the entry bound. */
   recordCall(nodeId: string, toolId: string): void {
     let activity = this.#byNode.get(nodeId);
     if (activity === undefined) {
@@ -111,22 +123,21 @@ export class ToolActivityTracker {
   }
 
   /**
-   * Take the node's trace and forget it. A paired call is `ok` = its result's success, with `durationMs` only when
-   * the dispatch was measured; a call still unpaired when the node ended is `ok: false` with no duration.
+   * Take the node's trace and forget it. Every entry says whether a result was recorded for its call
+   * (`resultRecorded`), its `ok` (that result's success, `false` while unpaired) and a `durationMs` only when the
+   * dispatch was measured — an unpaired call has none, because nothing was recorded to measure it by.
    */
   take(nodeId: string): ToolActivitySnapshot {
     const activity = this.#byNode.get(nodeId);
     this.#byNode.delete(nodeId);
     if (activity === undefined) return { toolActivity: [] };
     const toolActivity = activity.calls.map(
-      (call): ToolActivityEntry =>
-        call.paired
-          ? {
-              toolId: call.toolId,
-              ok: call.ok,
-              ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
-            }
-          : { toolId: call.toolId, ok: false },
+      (call): ToolActivityEntry => ({
+        toolId: call.toolId,
+        ok: call.ok,
+        resultRecorded: call.paired,
+        ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
+      }),
     );
     const truncated = activity.total - activity.calls.length;
     return truncated > 0 ? { toolActivity, toolActivityTruncated: truncated } : { toolActivity };

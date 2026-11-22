@@ -268,8 +268,9 @@ export const AgentToolResultEventSchema = z.object({
   outputSummary: z.string(),
   // How long the registry's dispatch of THIS call took, in whole milliseconds (ADR-0140 §4): the engine reads its
   // clock before and after `registry.dispatch` and the node's `toolActivity` records the difference. ADDITIVE and
-  // OPTIONAL, and the event is streamed, never persisted. Absent when the call never dispatched (an unknown tool, a
-  // grant or policy refusal), when the emitting host supplied no clock (a session turn today), or when a reading
+  // OPTIONAL, and the event is streamed, never persisted. Present on a result whose dispatch RAN, whether it
+  // succeeded or threw; absent when the call never dispatched (an unknown tool, a grant or policy refusal, a user
+  // denial, invalid arguments), when the emitting host supplied no clock (a session turn today), or when a reading
   // failed — and an absent value is recorded as NO duration, never as a guessed 0.
   durationMs: nonNegativeInt.optional(),
   attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
@@ -388,17 +389,29 @@ export const TOOL_ACTIVITY_UNKNOWN_TOOL_ID = 'unknown_tool';
 
 /**
  * One tool call of a node, kept **content-free** on its durable terminal (`node:completed` / `node:failed`):
- * the tool's id, whether it succeeded and how long it took — never its arguments, its result text or a summary
- * (a tool's result is not kept as durable content anywhere else either, ADR-0132). An unpaired call (the node
- * ended before its result was recorded) is `ok: false` with `durationMs` absent; a paired call's `ok` is its
- * result's `success`, and its `durationMs` is present only when the dispatch was measured (a failed result that was
- * measured is `ok: false` WITH a duration). The `toolId` is bounded to {@link TOOL_ACTIVITY_TOOL_ID_PATTERN}, so
- * text a model invented cannot be stored in it. The lenient-read rule of the header applies: no `.strict()`, so an
- * unknown key is stripped on read and never kept.
+ * the tool's id, whether a result was recorded for it, whether that result succeeded and how long the dispatch took
+ * — never its arguments, its result text or a summary (a tool's result is not kept as durable content anywhere else
+ * either, ADR-0132). Three outcomes, told apart by `resultRecorded` and `durationMs`:
+ *
+ * - **refused** — a result was recorded but the call never dispatched (an unknown tool, a grant or policy refusal, a
+ *   user denial, invalid arguments): `resultRecorded: true`, `ok: false`, `durationMs` absent;
+ * - **finished** — a result was recorded for a dispatch that ran, whether it succeeded or threw: `resultRecorded:
+ *   true`, `ok` = the result's `success`, `durationMs` present when the dispatch was measured (a failed dispatch that
+ *   ran is `ok: false` WITH a duration);
+ * - **unpaired** — the node ended with the call still without a result (it was in flight when the node was cut by its
+ *   deadline or abandoned, or a fatal failure ended the turn): `resultRecorded: false`, `ok: false`, `durationMs`
+ *   absent.
+ *
+ * `ok` is therefore the result's `success` and `false` for an unpaired call; only `resultRecorded` says which of the
+ * two `false`s it is. The `toolId` is bounded to {@link TOOL_ACTIVITY_TOOL_ID_PATTERN}, so text a model invented
+ * cannot be stored in it. The lenient-read rule of the header applies: no `.strict()`, so an unknown key is stripped
+ * on read and never kept. `resultRecorded` is REQUIRED: the field was added in the same increment that introduced
+ * `toolActivity`, before any release wrote an entry without it.
  */
 export const ToolActivityEntrySchema = z.object({
   toolId: z.string().max(128).regex(TOOL_ACTIVITY_TOOL_ID_PATTERN),
   ok: z.boolean(),
+  resultRecorded: z.boolean(),
   durationMs: nonNegativeInt.optional(),
 });
 export type ToolActivityEntry = z.infer<typeof ToolActivityEntrySchema>;

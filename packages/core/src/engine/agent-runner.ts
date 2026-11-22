@@ -599,6 +599,7 @@ async function prepareAgentDispatch(
             limits,
             ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
             ...(execution.elapsedMs === undefined ? {} : { elapsedMs: execution.elapsedMs }),
+            ...(execution.onToolStart === undefined ? {} : { onToolStart: execution.onToolStart }),
             ...(preEgress === undefined ? {} : { preEgress }),
             ...(money === undefined ? {} : { money }),
             ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),

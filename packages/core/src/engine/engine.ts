@@ -3134,6 +3134,14 @@ class RunExecution {
           whenReady: () => this.handle.whenConsumersReady(),
           // The engine's own elapsed clock, so a tool dispatch is measured on the clock its events are stamped by.
           elapsedMs: () => this.#elapsedMs(),
+          // The node's trace takes a call from the moment it STARTS, not from its `agent:tool_call` event (which comes only
+          // after the dispatch returns), so a call in flight when the node is cut by its deadline or abandoned after its
+          // grace window is on the terminal as an unpaired entry. The same fence as `emit`: a call announced by a
+          // dispatch that no longer owns the node is ignored, so a straggler cannot reopen a trace the terminal took.
+          onToolStart: (toolId) => {
+            if (this.#isLive(vertex.id, dispatchId))
+              this.#toolActivity.recordCall(vertex.id, toolId);
+          },
           signal: this.#abort.signal,
           attemptNumber,
           maxTokensEstimate: this.#maxTokensEstimate,
@@ -5119,15 +5127,17 @@ class RunExecution {
       case 'agent:file_patch_proposed':
         this.#bus.emit({ ...event, runId });
         return;
-      // The two tool events are also the source of the node terminal's `toolActivity` (ADR-0140 §4). They are
-      // recorded AFTER the emit, so the trace holds only what was delivered, and the emit's own order is untouched.
-      // The duration is the one the turn measured around the registry's dispatch and put on the result event: the
-      // two events are emitted back to back AFTER the dispatch returned, so the engine's clock at emit time sees
-      // nothing of it (the tracker has no clock for that reason).
       case 'agent:tool_call':
+        // Not recorded here: the node's `toolActivity` takes a call when it STARTS (`ctx.onToolStart`), because this
+        // event is emitted only after the dispatch returned and is dropped once the node is no longer live — a call
+        // still running at a deadline would leave no trace (ADR-0140 §4). Counting it here too would count it twice.
         this.#bus.emit({ ...event, runId });
-        this.#toolActivity.recordCall(event.nodeId, event.toolId);
         return;
+      // The result is what PAIRS with the call the start hook recorded (ADR-0140 §4). It is recorded AFTER the emit,
+      // so the trace holds only what was delivered, and the emit's own order is untouched. The duration is the one the
+      // turn measured around the registry's dispatch and put on the result event: the two events are emitted back to
+      // back AFTER the dispatch returned, so the engine's clock at emit time sees nothing of it (the tracker has no
+      // clock for that reason).
       case 'agent:tool_result':
         this.#bus.emit({ ...event, runId });
         this.#toolActivity.recordResult(

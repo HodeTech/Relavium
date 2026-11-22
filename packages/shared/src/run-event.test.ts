@@ -874,9 +874,10 @@ describe('cost:updated and sequenceNumber invariants', () => {
   describe('toolActivity on node:completed / node:failed (ADR-0140 §4)', () => {
     const terminals = ['node:completed', 'node:failed'] as const;
     const activity = [
-      { toolId: 'read_file', ok: true, durationMs: 12 },
-      { toolId: 'run_command', ok: false, durationMs: 340 },
-      { toolId: 'web_fetch', ok: false }, // an unpaired call: no result recorded, so no duration
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 12 }, // finished
+      { toolId: 'run_command', ok: false, resultRecorded: true, durationMs: 340 }, // ran and failed: measured
+      { toolId: 'write_file', ok: false, resultRecorded: true }, // refused: a result, but nothing ran to measure
+      { toolId: 'web_fetch', ok: false, resultRecorded: false }, // unpaired: no result recorded, so no duration
     ];
 
     it('parses an event WITHOUT the new fields, unchanged — the field is optional', () => {
@@ -898,7 +899,7 @@ describe('cost:updated and sequenceNumber invariants', () => {
       }
     });
 
-    it('is content-free: a key beyond { toolId, ok, durationMs } is STRIPPED, never kept (lenient read)', () => {
+    it('is content-free: a key beyond { toolId, ok, resultRecorded, durationMs } is STRIPPED, never kept (lenient read)', () => {
       for (const type of terminals) {
         const parsed = RunEventSchema.parse({
           ...valid[type],
@@ -906,16 +907,25 @@ describe('cost:updated and sequenceNumber invariants', () => {
             {
               toolId: 'run_command',
               ok: true,
+              resultRecorded: true,
               durationMs: 5,
               arguments: { command: 'cat /secret' },
               outputSummary: 'the result text',
             },
           ],
         });
-        // The entry survives with only its three declared keys; the extras are removed, and parsing does not fail.
+        // The entry survives with only its four declared keys; the extras are removed, and parsing does not fail.
         expect(parsed).toMatchObject({
-          toolActivity: [{ toolId: 'run_command', ok: true, durationMs: 5 }],
+          toolActivity: [{ toolId: 'run_command', ok: true, resultRecorded: true, durationMs: 5 }],
         });
+        if (parsed.type !== 'node:completed' && parsed.type !== 'node:failed')
+          throw new Error('expected a node terminal');
+        expect(Object.keys(parsed.toolActivity?.[0] ?? {}).sort()).toEqual([
+          'durationMs',
+          'ok',
+          'resultRecorded',
+          'toolId',
+        ]);
         expect(JSON.stringify(parsed)).not.toContain('cat /secret');
         expect(JSON.stringify(parsed)).not.toContain('the result text');
       }
@@ -923,7 +933,11 @@ describe('cost:updated and sequenceNumber invariants', () => {
 
     it('bounds the array at 50 entries: 50 parse, 51 are rejected', () => {
       const entries = (count: number) =>
-        Array.from({ length: count }, (_, index) => ({ toolId: `tool-${index}`, ok: true }));
+        Array.from({ length: count }, (_, index) => ({
+          toolId: `tool-${index}`,
+          ok: true,
+          resultRecorded: true,
+        }));
       for (const type of terminals) {
         expect(
           RunEventSchema.safeParse({ ...valid[type], toolActivity: entries(50) }).success,
@@ -934,24 +948,43 @@ describe('cost:updated and sequenceNumber invariants', () => {
       }
     });
 
-    it('pins each entry: a non-empty toolId, a boolean ok, a non-negative integer durationMs', () => {
+    it('pins each entry: a non-empty toolId, a boolean ok, a boolean resultRecorded, a non-negative integer durationMs', () => {
       const withEntry = (entry: unknown) =>
         RunEventSchema.safeParse({ ...valid['node:completed'], toolActivity: [entry] }).success;
-      expect(withEntry({ toolId: 'read_file', ok: true })).toBe(true);
-      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: 0 })).toBe(true);
-      expect(withEntry({ toolId: '', ok: true })).toBe(false);
-      expect(withEntry({ ok: true })).toBe(false);
-      expect(withEntry({ toolId: 'read_file' })).toBe(false);
-      expect(withEntry({ toolId: 'read_file', ok: 'yes' })).toBe(false);
-      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: -1 })).toBe(false);
-      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: 1.5 })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: true, resultRecorded: true })).toBe(true);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 0 }),
+      ).toBe(true);
+      expect(withEntry({ toolId: 'read_file', ok: false, resultRecorded: false })).toBe(true);
+      expect(withEntry({ toolId: '', ok: true, resultRecorded: true })).toBe(false);
+      expect(withEntry({ ok: true, resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: 'yes', resultRecorded: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: true, resultRecorded: 'yes' })).toBe(false);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: -1 }),
+      ).toBe(false);
+      expect(
+        withEntry({ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 1.5 }),
+      ).toBe(false);
+    });
+
+    it('REQUIRES resultRecorded: an entry without it is rejected, so a refusal is never mistaken for an unpaired call', () => {
+      for (const type of terminals) {
+        expect(
+          RunEventSchema.safeParse({
+            ...valid[type],
+            toolActivity: [{ toolId: 'read_file', ok: false }],
+          }).success,
+        ).toBe(false);
+      }
     });
 
     it('bounds the toolId to the registered-id charset and 128 characters: model-chosen text cannot be stored', () => {
       const withId = (toolId: unknown) =>
         RunEventSchema.safeParse({
           ...valid['node:completed'],
-          toolActivity: [{ toolId, ok: true }],
+          toolActivity: [{ toolId, ok: true, resultRecorded: true }],
         }).success;
       // What a registered tool id looks like: a built-in name, an MCP `mcp_{server}_{tool}`, a namespaced id.
       for (const id of ['read_file', 'mcp_github_create-issue', 'a'.repeat(128), 'ns.tool:v1']) {

@@ -17,11 +17,11 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('n', 'read_file', true, 30);
     tracker.recordCall('n', 'run_command');
     tracker.recordResult('n', 'run_command', false, 1);
-    // A failed RESULT is ok:false WITH a duration — distinct from an unpaired call below.
+    // A failed RESULT is ok:false WITH a duration, and resultRecorded — distinct from an unpaired call below.
     expect(tracker.take('n')).toEqual({
       toolActivity: [
-        { toolId: 'read_file', ok: true, durationMs: 30 },
-        { toolId: 'run_command', ok: false, durationMs: 1 },
+        { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 30 },
+        { toolId: 'run_command', ok: false, resultRecorded: true, durationMs: 1 },
       ],
     });
   });
@@ -37,8 +37,8 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('n', 'run_command', false);
     const entries = tracker.take('n').toolActivity;
     expect(entries).toEqual([
-      { toolId: 'read_file', ok: true },
-      { toolId: 'run_command', ok: false },
+      { toolId: 'read_file', ok: true, resultRecorded: true },
+      { toolId: 'run_command', ok: false, resultRecorded: true },
     ]);
     for (const entry of entries) expect(entry).not.toHaveProperty('durationMs');
   });
@@ -50,7 +50,7 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
       tracker.recordResult('n', 'read_file', true, bad);
     }
     for (const entry of tracker.take('n').toolActivity) {
-      expect(entry).toEqual({ toolId: 'read_file', ok: true });
+      expect(entry).toEqual({ toolId: 'read_file', ok: true, resultRecorded: true });
     }
   });
 
@@ -61,8 +61,8 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('n', 'read_file', true, 50); // pairs with the first call
     tracker.recordResult('n', 'read_file', false, 90); // pairs with the second
     expect(tracker.take('n').toolActivity).toEqual([
-      { toolId: 'read_file', ok: true, durationMs: 50 },
-      { toolId: 'read_file', ok: false, durationMs: 90 },
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 50 },
+      { toolId: 'read_file', ok: false, resultRecorded: true, durationMs: 90 },
     ]);
   });
 
@@ -74,8 +74,8 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     // Only the first call is paired so far: the second is still unpaired and must say so.
     const afterOne = tracker.take('n').toolActivity;
     expect(afterOne).toEqual([
-      { toolId: 'web_fetch', ok: true, durationMs: 20 },
-      { toolId: 'web_fetch', ok: false },
+      { toolId: 'web_fetch', ok: true, resultRecorded: true, durationMs: 20 },
+      { toolId: 'web_fetch', ok: false, resultRecorded: false },
     ]);
   });
 
@@ -85,8 +85,8 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordCall('n', 'run_command');
     tracker.recordResult('n', 'run_command', true, 8);
     expect(tracker.take('n').toolActivity).toEqual([
-      { toolId: 'read_file', ok: false },
-      { toolId: 'run_command', ok: true, durationMs: 8 },
+      { toolId: 'read_file', ok: false, resultRecorded: false },
+      { toolId: 'run_command', ok: true, resultRecorded: true, durationMs: 8 },
     ]);
   });
 
@@ -96,18 +96,34 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('b', 'read_file', true, 10); // node b never called it
     tracker.recordCall('b', 'read_file');
     tracker.recordResult('b', 'read_file', true, 5);
-    expect(tracker.take('a').toolActivity).toEqual([{ toolId: 'read_file', ok: false }]);
+    expect(tracker.take('a').toolActivity).toEqual([
+      { toolId: 'read_file', ok: false, resultRecorded: false },
+    ]);
     expect(tracker.take('b').toolActivity).toEqual([
-      { toolId: 'read_file', ok: true, durationMs: 5 },
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 5 },
     ]);
   });
 
-  it('an unpaired call is ok:false with NO durationMs key at all', () => {
+  it('an unpaired call is ok:false, resultRecorded:false and has NO durationMs key at all', () => {
     const tracker = new ToolActivityTracker();
     tracker.recordCall('n', 'run_command');
     const [entry] = tracker.take('n').toolActivity;
-    expect(entry).toEqual({ toolId: 'run_command', ok: false });
+    expect(entry).toEqual({ toolId: 'run_command', ok: false, resultRecorded: false });
     expect(entry).not.toHaveProperty('durationMs');
+  });
+
+  it('tells the three outcomes apart: a refusal, a measured failure and an unpaired call are each ok:false', () => {
+    const tracker = new ToolActivityTracker();
+    tracker.recordCall('n', 'write_file'); // refused: a result with nothing measured
+    tracker.recordResult('n', 'write_file', false);
+    tracker.recordCall('n', 'run_command'); // ran and failed: a result with a measurement
+    tracker.recordResult('n', 'run_command', false, 40);
+    tracker.recordCall('n', 'web_fetch'); // still running when the node ended: no result
+    expect(tracker.take('n').toolActivity).toEqual([
+      { toolId: 'write_file', ok: false, resultRecorded: true },
+      { toolId: 'run_command', ok: false, resultRecorded: true, durationMs: 40 },
+      { toolId: 'web_fetch', ok: false, resultRecorded: false },
+    ]);
   });
 
   it('ignores a result that has no matching call, and one that arrives after its call was paired', () => {
@@ -117,7 +133,7 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('n', 'read_file', true, 10);
     tracker.recordResult('n', 'read_file', false, 99); // the only call is already paired
     expect(tracker.take('n')).toEqual({
-      toolActivity: [{ toolId: 'read_file', ok: true, durationMs: 10 }],
+      toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 10 }],
     });
   });
 
@@ -152,8 +168,13 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     const snapshot = tracker.take('n');
     expect(snapshot.toolActivityTruncated).toBe(7);
     expect(snapshot.toolActivity).toHaveLength(TOOL_ACTIVITY_MAX_ENTRIES);
-    expect(snapshot.toolActivity[0]).toEqual({ toolId: 'bash', ok: true, durationMs: 1000 });
-    expect(snapshot.toolActivity[1]).toEqual({ toolId: 'bash', ok: false });
+    expect(snapshot.toolActivity[0]).toEqual({
+      toolId: 'bash',
+      ok: true,
+      resultRecorded: true,
+      durationMs: 1000,
+    });
+    expect(snapshot.toolActivity[1]).toEqual({ toolId: 'bash', ok: false, resultRecorded: false });
   });
 
   it('clamps a negative measurement to 0: a clock that stepped back never makes a negative duration', () => {
@@ -161,7 +182,7 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordCall('n', 'read_file');
     tracker.recordResult('n', 'read_file', true, -100);
     expect(tracker.take('n').toolActivity).toEqual([
-      { toolId: 'read_file', ok: true, durationMs: 0 },
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 0 },
     ]);
   });
 
@@ -170,7 +191,7 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordCall('n', 'read_file');
     tracker.recordResult('n', 'read_file', true, 10.75);
     expect(tracker.take('n').toolActivity).toEqual([
-      { toolId: 'read_file', ok: true, durationMs: 10 },
+      { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 10 },
     ]);
   });
 
@@ -194,7 +215,7 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordResult('n', 'attempt-one', true, 1);
     tracker.recordResult('n', 'attempt-two', true, 5);
     expect(tracker.take('n')).toEqual({
-      toolActivity: [{ toolId: 'attempt-two', ok: true, durationMs: 5 }],
+      toolActivity: [{ toolId: 'attempt-two', ok: true, resultRecorded: true, durationMs: 5 }],
     });
   });
 
@@ -204,15 +225,17 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
     tracker.recordCall('b', 'read_file');
     tracker.reset('a');
     expect(tracker.take('a').toolActivity).toEqual([]);
-    expect(tracker.take('b').toolActivity).toEqual([{ toolId: 'read_file', ok: false }]);
+    expect(tracker.take('b').toolActivity).toEqual([
+      { toolId: 'read_file', ok: false, resultRecorded: false },
+    ]);
   });
 
-  it('is content-free: the entries hold only toolId, ok and durationMs', () => {
+  it('is content-free: the entries hold only toolId, ok, resultRecorded and durationMs', () => {
     const tracker = new ToolActivityTracker();
     tracker.recordCall('n', 'run_command');
     tracker.recordResult('n', 'run_command', true, 3);
     for (const entry of tracker.take('n').toolActivity) {
-      expect(Object.keys(entry).sort()).toEqual(['durationMs', 'ok', 'toolId']);
+      expect(Object.keys(entry).sort()).toEqual(['durationMs', 'ok', 'resultRecorded', 'toolId']);
     }
   });
 
@@ -243,16 +266,19 @@ describe('ToolActivityTracker (ADR-0140 §4)', () => {
       const tracker = new ToolActivityTracker();
       tracker.recordCall('n', toolId);
       tracker.recordResult('n', toolId, false, 4);
-      // The call and its result both map, so they STILL pair: the entry is ok:false WITH a duration, not an unpaired call.
+      // The call and its result both map, so they STILL pair: the entry is ok:false WITH a result and a duration, not an
+      // unpaired call.
       expect(tracker.take('n').toolActivity).toEqual([
-        { toolId: 'unknown_tool', ok: false, durationMs: 4 },
+        { toolId: 'unknown_tool', ok: false, resultRecorded: true, durationMs: 4 },
       ]);
     });
 
     it('records an empty name as unknown_tool', () => {
       const tracker = new ToolActivityTracker();
       tracker.recordCall('n', '');
-      expect(tracker.take('n').toolActivity).toEqual([{ toolId: 'unknown_tool', ok: false }]);
+      expect(tracker.take('n').toolActivity).toEqual([
+        { toolId: 'unknown_tool', ok: false, resultRecorded: false },
+      ]);
     });
 
     it('never stores the over-long or odd text anywhere in the snapshot', () => {
