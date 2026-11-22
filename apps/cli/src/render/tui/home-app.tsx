@@ -731,6 +731,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           input.includes('\x03')
         )
           props.nativePrompt.input('\x1b', key);
+        // Any other key is not delivered (the card is not visible), but it is typing as far as the chord guard is concerned: while a
+        // card is open, every key the person types in the composer reaches the channel's typeahead and quiet layers, seen or not.
+        // A key typed with NO card open never gets here: it is a composer edit, not typeahead.
+        else props.nativePrompt.unseenInput();
         return;
       }
       props.nativePrompt.input(input, key);
@@ -765,6 +769,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (props.inputEnabled?.() === false) return;
     if (props.nativePrompt?.getSnapshot().active === true) {
       if (nativeAcknowledgement?.pasteVisible() === true) props.nativePrompt.paste(text);
+      else props.nativePrompt.unseenInput();
       return;
     }
     if (controller.getSnapshot().nativeActionBusy) return;

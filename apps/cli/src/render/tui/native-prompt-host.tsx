@@ -79,12 +79,15 @@ export function NativePromptHost({
         input.includes('\x03')
       )
         ui.input('\x1b', key);
+      else ui.unseenInput(); // not delivered (the card is not visible), but still typing for the chord guard
       return;
     }
     ui.input(input, key);
   });
   usePaste((text) => {
-    if (inputEnabled?.() !== false && acknowledgement.pasteVisible()) ui.paste(text);
+    if (inputEnabled?.() === false) return;
+    if (acknowledgement.pasteVisible()) ui.paste(text);
+    else ui.unseenInput();
   });
   const flushVisible = useVisibleRenderFlush(
     onRendererError,

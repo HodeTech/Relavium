@@ -7,7 +7,7 @@ import type { GateDecision } from '@relavium/shared';
 
 import { driveRun, type RunOutcome } from '../commands/drive.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { createConsentGate } from '../engine/mcp-consent-gate.js';
+import { createConsentGate, type ConsentPrompter } from '../engine/mcp-consent-gate.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { sweepHostMediaBestEffort } from '../engine/media-gc.js';
 import { terminalOutboxPath, type OpenedHistory } from '../history/open.js';
@@ -127,6 +127,13 @@ export interface RunHostOptions {
   readonly db: Db;
   /** The operator home override of the Home's own config load (tests); the run core reads its own. */
   readonly homeDir?: string | undefined;
+  /**
+   * The Home's MCP consent card ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4,
+   * [ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §7): asked, through the native prompt channel,
+   * whether a local program a hosted leg wants to start may run. It is the ONLY prompt a hosted leg can open, and a leg with none
+   * refuses an unapproved server with the digests, as a script does. `true` approves; anything else refuses and spawns nothing.
+   */
+  readonly consent?: ConsentPrompter | undefined;
   readonly notices?: RunNotices | undefined;
   /** The one reader's sink for a leg's events; the run view folds them. Absent, the events are dropped. */
   readonly renderer?:
@@ -267,8 +274,9 @@ function unexpectedTerminal(runId: string): HostedRunTerminal {
  *   is subscribed or consulted for it, because a stale `run:paused` can be the last event of a run another
  *   process owns.
  * - **Nothing reaches the terminal.** The leg's stderr and stdout go to {@link notices}.
- * - **Unattended, and no new approval.** The consent gate has no prompt and no allowed digest: a server asks the
- *   per-machine grant log or is refused. A masked secret is refused when blank.
+ * - **Unattended, and one prompt.** The consent gate has no allowed digest, and its only prompt is the Home's consent card
+ *   (`consent`): a server asks the per-machine grant log, then the card, or is refused. With no card wired it is refused.
+ *   A masked secret is refused when blank.
  *
  * The leg's own epilogue does the teardown in the order the ADR fixes (the stream is joined, the run departs, the
  * MCP clients and their work close, the owner retires); {@link close} cancels the leg and waits for it.
@@ -281,6 +289,7 @@ export class RunHost {
   readonly #db: Db;
   readonly #projectRoot: string;
   readonly #homeDir: string | undefined;
+  readonly #consent: ConsentPrompter | undefined;
   readonly #services: Services;
   readonly #renderer: RunHostOptions['renderer'];
   readonly #sweepMedia: typeof sweepHostMediaBestEffort;
@@ -298,6 +307,7 @@ export class RunHost {
     this.#db = options.db;
     this.#projectRoot = options.global.cwd;
     this.#homeDir = options.homeDir;
+    this.#consent = options.consent;
     this.notices = options.notices ?? new RunNotices();
     this.#renderer = options.renderer;
     this.#sweepMedia = options.sweepMedia ?? sweepHostMediaBestEffort;
@@ -608,14 +618,24 @@ export class RunHost {
     };
   }
 
-  /** The consent gate of a hosted leg: no prompt, and no digest a flag could have supplied. */
-  #consentGate(context: LegContext, homeDir: string): StdioConsentGate {
+  /**
+   * The consent gate of a hosted leg: no digest a flag could have supplied, and the Home's card as its only prompt.
+   *
+   * The leg's `io` reports non-TTY (nothing about a leg is interactive), so the gate's own terminal check would refuse every
+   * unapproved server. The card is not a terminal question: it is the Home's own native prompt, on the Home's own input owner. So
+   * the gate is told its prompter is a card (`nativeCard`), and only when this host really has one: with none the gate cannot ask,
+   * and a server nothing approved is refused with its digest. The card is the START card (ADR-0139 §4): a resumed leg reuses what
+   * the machine already approved and asks nothing new, so it gets no card whatever this host has.
+   */
+  #consentGate(context: LegContext, homeDir: string, leg: LegKind): StdioConsentGate {
+    const card = leg === 'start' ? this.#consent : undefined;
     return createConsentGate({
       io: context.io,
       global: this.#global,
       homeDir,
       allowedDigests: [],
       signal: context.lifetime.signal,
+      ...(card === undefined ? {} : { prompt: card, nativeCard: true }),
     });
   }
 
@@ -632,7 +652,7 @@ export class RunHost {
       },
       {
         secretInputs: (def) => refuseBlankSecrets(request.secrets, declaredSecretNames(def)),
-        consentGate: (homeDir) => this.#consentGate(context, homeDir),
+        consentGate: (homeDir) => this.#consentGate(context, homeDir, 'start'),
       },
       lifetime,
       resources,
@@ -668,7 +688,7 @@ export class RunHost {
       {
         openDb: () => ({ db: this.#db, close: () => undefined }),
         secretInputs: ({ maskedSlots }) => refuseBlankSecrets(request.secrets, maskedSlots),
-        consentGate: (homeDir) => this.#consentGate(context, homeDir),
+        consentGate: (homeDir) => this.#consentGate(context, homeDir, 'resume'),
       },
       lifetime,
       resources,

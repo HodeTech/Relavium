@@ -106,6 +106,15 @@ export interface ConsentGateDeps {
   readonly allowedDigests?: readonly string[];
   /** Injected in tests; production wires the clack prompt. Absent ⇒ this process cannot ask. */
   readonly prompt?: ConsentPrompter | undefined;
+  /**
+   * `prompt` is a NATIVE CARD on its host's own input owner (the Home's chord card,
+   * [ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4), not a question put to this
+   * invocation's terminal. Such a card needs neither this leg's stdin nor its stdout, so the four terminal signals
+   * (`canAsk`) do not decide whether it can ask: a hosted leg's `io` reports non-TTY on purpose, because nothing else about it is
+   * interactive. This is the ONE way a hosted leg opens a prompt, and it is honoured only together with a prompter: with no card
+   * wired nothing can ask, whatever this says, and the gate refuses with the digests as it does for a script.
+   */
+  readonly nativeCard?: boolean | undefined;
   /** Injected so a test's grant carries a fixed timestamp. */
   readonly now?: (() => string) | undefined;
   /**
@@ -342,17 +351,19 @@ async function resolveOrRefuse(
   }
 }
 
-/** All four signals (§6) — and a prompter actually wired, since a caller with none cannot ask either. */
+/**
+ * All four signals (§6) — and a prompter actually wired, since a caller with none cannot ask either. A native card is its own
+ * signal (see {@link ConsentGateDeps.nativeCard}): the Home that mounts it is a terminal with a person at it by construction.
+ */
 function canAsk(deps: ConsentGateDeps): boolean {
-  return (
-    deps.prompt !== undefined &&
-    isInteractiveTerminal({
-      stdoutIsTty: deps.io.stdoutIsTty,
-      stdinIsTty: deps.io.stdinIsTty,
-      json: deps.global.json,
-      env: deps.io.env,
-    })
-  );
+  if (deps.prompt === undefined) return false;
+  if (deps.nativeCard === true) return true;
+  return isInteractiveTerminal({
+    stdoutIsTty: deps.io.stdoutIsTty,
+    stdinIsTty: deps.io.stdinIsTty,
+    json: deps.global.json,
+    env: deps.io.env,
+  });
 }
 
 /** Compose what the prompt shows — sanitized and bounded at the point of composition (§7). */

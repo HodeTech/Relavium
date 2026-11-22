@@ -278,6 +278,64 @@ describe('non-interactive: refuse with the digest, never prompt (ADR-0084 §6)',
   });
 });
 
+describe('a native card answers where the terminal signals do not (ADR-0139 §4)', () => {
+  // A hosted leg's `io` reports non-TTY on purpose, so the four-way precondition is false for it. The Home's card is its own host's
+  // input owner: it asks, and it is the only prompt a hosted leg can open.
+  it('asks through the card with no TTY at all, and never without a prompter', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false, stdinIsTty: false, env: { CI: 'true' } });
+    const deps = { io: cliIo, global: globalOptions(), homeDir: home };
+    const subjects: string[] = [];
+    await assertStdioConsent([ref()], process.cwd(), {
+      ...deps,
+      nativeCard: true,
+      prompt: (subject: ConsentSubject) => {
+        subjects.push(subject.serverId);
+        return Promise.resolve(true);
+      },
+    });
+    expect(subjects).toEqual(['fs']);
+
+    // The flag alone is not a way to ask: with no card wired the gate refuses with the digest, exactly as for a script.
+    const refused: unknown = await assertStdioConsent(
+      [ref({ id: 'other', args: ['--other'] })],
+      process.cwd(),
+      {
+        ...deps,
+        nativeCard: true,
+      },
+    ).catch((caught: unknown) => caught);
+    expect(isCliError(refused) && refused.message).toContain('--allow-mcp-stdio');
+  });
+
+  it('a card that refuses stops the run and writes no grant', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false, stdinIsTty: false });
+    const error: unknown = await assertStdioConsent([ref()], process.cwd(), {
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      nativeCard: true,
+      prompt: () => Promise.resolve(false),
+    }).catch((caught: unknown) => caught);
+    expect(isCliError(error) && error.message).toContain('was not approved');
+    expect(() => readFileSync(mcpConsentPath(home), 'utf8')).toThrow();
+  });
+
+  it('without the flag the terminal signals still decide, so no other host gains a way to ask', async () => {
+    const { io: cliIo } = io({ stdoutIsTty: false });
+    let asked = 0;
+    await assertStdioConsent([ref()], process.cwd(), {
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      prompt: () => {
+        asked += 1;
+        return Promise.resolve(true);
+      },
+    }).catch(() => undefined);
+    expect(asked).toBe(0);
+  });
+});
+
 describe('what the prompt is given (ADR-0084 §7)', () => {
   it('shows the resolved executable, each argument separately, and the env with authored values', async () => {
     const { io: cliIo } = io();

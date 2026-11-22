@@ -302,6 +302,14 @@ export interface HomeControllerDeps {
   readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
+  /**
+   * Launch a workflow from the Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): the
+   * picker, the form and the confirmation, all on the native prompt channel, then the host's start. It resolves with the notice the
+   * Home shows; it holds the native action for as long as the flow is open, so no key reaches the composer meanwhile. A Home command
+   * only: a live chat never reaches it (the typed `/run` is routed here only with no session, and the chat palette does not list it).
+   * Absent ⇒ `/run` says it is unavailable.
+   */
+  readonly launchRun?: () => Promise<string>;
   readonly pickSession?: () => Promise<string | undefined>;
   readonly resumeChat?: (
     sessionId: string,
@@ -788,6 +796,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Project initialization');
   };
 
+  const openRunLaunch = (): void => {
+    const launch = deps.launchRun;
+    if (launch === undefined) {
+      set({ notice: 'Running a workflow is unavailable in this session.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await launch();
+      if (!exiting) set({ notice });
+    }, 'Run workflow');
+  };
+
   const openResume = (selectedId?: string): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
@@ -878,6 +898,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else if (deps.permissions === undefined)
         set({ notice: 'Remembered commands are not available here.' });
       else openPermissionsSheet(undefined);
+      return true;
+    }
+    // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
+    // slash it is and starts nothing. (The chat palette does not list it either.)
+    if (state.session === undefined && /^\/run(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/run')
+        set({ notice: '/run accepts no arguments. Use its picker to choose a workflow.' });
+      else openRunLaunch();
       return true;
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
@@ -1528,6 +1557,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProjectInit();
         } else if (step.command.name === 'resume') {
           openResume();
+        } else if (step.command.name === 'run' && active === undefined) {
+          openRunLaunch();
         } else if (step.command.name === 'permissions' && active === undefined) {
           // home: bare `/permissions` opens the sheet over the Home with the project's list only (ADR-0137 §3).
           if (deps.permissions === undefined)

@@ -1573,6 +1573,8 @@ describe('the cost of a jump is counted: it grows with the logarithm of the chan
         expect(b.chars / a.chars, `direction ${direction}, characters`).toBeLessThan(2);
       }
     },
+    // It projects 20 000 changes per case: heavier than the five-second default when the suite shares a loaded machine.
+    30_000,
   );
 
   describe('a context line is measured only up to the rows the budget has left', () => {

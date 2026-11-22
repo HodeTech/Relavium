@@ -246,7 +246,25 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'init',
       'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
       'resume',
+      'run', // the launch of a hosted workflow run (ADR-0139 §7, MVP-8 step 3)
     ]);
+  });
+
+  it('/run is a Home command only: it is in the Home palette and in no chat palette (ADR-0139 §7)', () => {
+    const run = HOME_PALETTE_COMMANDS.find((command) => command.name === 'run');
+    expect(run?.availableIn).toEqual(['home']);
+    for (const [name, set] of [
+      ['PALETTE', PALETTE_COMMANDS],
+      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
+    ] as const) {
+      expect(
+        set.map((command) => command.name),
+        `${name} must not offer /run`,
+      ).not.toContain('run');
+    }
+    // Nor is it a REPL command a chat could dispatch: a typed `/run` in a chat is an unknown slash.
+    expect(REPL_COMMANDS_BY_NAME.has('run')).toBe(false);
   });
 
   it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {

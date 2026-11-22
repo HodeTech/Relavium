@@ -140,6 +140,8 @@ import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
+import { createNativeConsentPrompter } from './consent-card.js';
+import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
@@ -665,8 +667,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         credentialSurface: 'home',
       });
     // The workflow-run host, over the SAME open connection the Home reads and writes: a hosted leg never opens or
-    // closes a second one (ADR-0139 §2). Nothing is registered, built or read until a run is started.
-    runHost ??= new RunHost({
+    // closes a second one (ADR-0139 §2). Nothing is registered, built or read until a run is started. Its MCP consent
+    // prompt is the Home's native card on the one prompt flow (ADR-0139 §4): the only prompt a hosted leg can open, and
+    // it answers only while the launch flow holds that flow open (with none open it refuses, which is the safe answer).
+    const hostedRuns: RunHost = (runHost ??= new RunHost({
       invocation: deps.invocation,
       io: deps.io,
       global: deps.global,
@@ -674,7 +678,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       homeDir: deps.homeDir,
       providers,
       mcpSecretResolver,
-    });
+      consent: createNativeConsentPrompter(promptFlow),
+    }));
     let keyless = !sampleProviderSetup(providers).some(
       ({ availability }) => availability.status === 'usable',
     );
@@ -1828,8 +1833,27 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           keychain,
         });
       };
+      // `/run`: the picker, the form and the confirmation on the native prompt flow, then the host's single-flight start
+      // (ADR-0139 §2, §7). The catalog finds the project directory afresh, so a `/init` in this Home is seen at once.
+      const runLaunch = createRunLaunch({
+        flow: promptFlow,
+        host: hostedRuns,
+        catalog: createProjectCatalog({
+          cwd: deps.global.cwd,
+          projectConfigDir: () => {
+            try {
+              return findProjectConfigDir(deps.global.cwd, homeDir);
+            } catch {
+              return undefined; // a home that cannot be resolved safely: there is no project to offer
+            }
+          },
+          homeDir,
+        }),
+        assertAdmitting: assertHomeAdmitting,
+      });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+        launchRun: () => runLaunch.open(),
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
         // `relavium permissions` read. Nothing is read until the sheet is opened.
         permissions: createPermissionsPort(

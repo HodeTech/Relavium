@@ -364,11 +364,12 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
   and would need its own ADR + opt-on/opt-out tests. **Decided: keep the global never-disable stance**;
   revisit a per-host **opt-IN** only when a real private-CA self-hosted consumer lands (the BYOK
   custom-baseURL opt-in-local path already covers the realistic local-endpoint case). *(security-review.md)*
-- [ ] **Run-submission idempotency / request-dedup (open — evaluate carefully).** Distinct from the content-addressed
+- [x] **Run-submission idempotency / request-dedup (open — evaluate carefully).** Distinct from the content-addressed
   media cache and any managed-mode metering `request_id`: should an identical run-create request be
   de-duplicated so a double-submit does not start two runs? **Open:** a Phase-1 engine run-create hook vs a
   surface concern. Low-stakes; recorded so it is not lost. **Scheduled → MVP-8 step 3** (the Home can start a
   workflow there, making double-submit real; the launch is single-flight in the Home controller and pinned by a test, [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)). *(WorkflowEngine run-create; 1.N)*
+  **Closed 2026-11-23 (MVP-8 step 3, increment 5a):** the launch machine is the latch and `RunHost.start` is single-flight; `apps/cli/src/home/run-launch.test.ts`, "two Enters in one tick start exactly one run (one engine built)".
 - [ ] **i18n CI key-parity + data/code separation (Phase 2+ surface).** When the desktop / CLI / VS Code
   surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
   logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the

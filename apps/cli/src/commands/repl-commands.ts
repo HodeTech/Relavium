@@ -430,6 +430,20 @@ const HOME_RESUME_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/**
+ * Run a workflow from the bare Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): a picker
+ * over the project's workflows, the launch form and a confirmation that defaults to No. It is a Home command only: a live chat has no
+ * `/run`, so a line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
+ */
+const HOME_RUN_COMMAND = freezeReplCommand({
+  name: 'run',
+  label: 'Run workflow',
+  description: 'Pick a workflow, fill in its inputs and run it after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...CHAT_PALETTE_COMMANDS,
   HOME_PROVIDERS_COMMAND,
@@ -445,6 +459,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   HOME_INIT_COMMAND,
   HOME_PERMISSIONS_COMMAND,
   HOME_RESUME_COMMAND,
+  HOME_RUN_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

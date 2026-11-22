@@ -73,6 +73,14 @@ export interface NativePromptUi {
   readonly shown: (snapshot: NativePromptSnapshot) => void;
   readonly input: (input: string, key: Key) => boolean;
   readonly paste: (text: string) => boolean;
+  /**
+   * A key or a paste reached the host while the open prompt could not take it: its frame is not painted and measured yet, or the
+   * terminal is too small to hold it. The key answers nothing and is not delivered (a secret is never typed into a card nobody can
+   * see), but it IS typing, and a chord card's quiet-gap and typeahead layers must see it: otherwise a person typing into the Home's
+   * composer as a card appears is invisible to the guard that exists for exactly that. A no-op when no flow is open: a key typed
+   * before any card opened belongs to the composer, is an edit and not typeahead, and the dwell from the painted frame covers it.
+   */
+  readonly unseenInput: () => void;
   readonly dispose: () => void;
 }
 export interface NativePromptFlow {
@@ -334,7 +342,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       dismiss(input, key);
       return true;
     }
-    if (snapshot.kind === 'busy' || !settle) return true;
+    if (snapshot.kind === 'busy' || !settle) {
+      // A key typed while the flow is open but no prompt is (a card is about to open) is typing: the next card's guard sees it.
+      chord.foreign(stamp);
+      return true;
+    }
     const submitted = key.return || boundary >= 0;
     if (snapshot.kind === 'chord') {
       // Only a lone Ctrl+Y or Ctrl+N answers. Anything else is a key the card has no use for, which is typing as far as the guard
@@ -422,6 +434,10 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       chord.foreign(chord.stamp());
       append(text);
       return true;
+    },
+    unseenInput: () => {
+      if (!snapshot.active) return;
+      chord.foreign(chord.stamp());
     },
     dispose: () => {
       if (disposed) return;
