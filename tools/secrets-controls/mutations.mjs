@@ -756,7 +756,7 @@ export const mutations = [
   ),
   control(
     'run-core-admission-before-services',
-    'apps/cli/src/commands/run.ts',
+    'apps/cli/src/run-core/prepare-run.ts',
     `  const admitted = resolveAndValidateWorkflowInputs(
     def,
     resolveInputs(def, rawInputs, secretInputs),
@@ -909,7 +909,7 @@ export const mutations = [
   ),
   control(
     'snapshot-run-warning',
-    'apps/cli/src/commands/run.ts',
+    'apps/cli/src/run-core/prepare-run.ts',
     '  warnSnapshotLiterals(def, deps.io);\n',
     '',
     ['apps/cli/src/commands/run.test.ts'],

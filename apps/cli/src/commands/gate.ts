@@ -1,126 +1,47 @@
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
-import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { defaultSubscribeSignals } from '../process/signals.js';
-import { warnTeardown } from '../process/close-quietly.js';
-import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
 import { WorkflowLifetime } from './workflow-lifetime.js';
 import type { RendererCreationOwner } from './workflow-terminal.js';
-import { EgressWorkScope } from '../engine/egress-work.js';
-import { randomUUID } from 'node:crypto';
-import { statSync } from 'node:fs';
+import { resumeRun, secretPipeHint, type ResumeRunPorts } from '../run-core/resume-run.js';
+import { RunResources } from '../run-core/run-resources.js';
+import { Readable } from 'node:stream';
 
-import {
-  EngineStateError,
-  budgetAllowancePricesMatch,
-  isTransientEngineStateError,
-  type CheckpointState,
-  type RunHandle,
-  type WorkflowDefinition,
-  type WorkflowEngine,
-} from '@relavium/core';
-import {
-  createEffectJournalPort,
-  createEffectResumePort,
-  createEffectJournalStore,
-  createRunHistoryStore,
-  createRunLeasePort,
-  loadRunSnapshot,
-  type Db,
-} from '@relavium/db';
-import {
-  MaskedSecretSchema,
-  WorkflowSnapshotSchema,
-  type GateDecision,
-  type MediaBilledModality,
-  type RunStatus,
-} from '@relavium/shared';
+import type { WorkflowEngine } from '@relavium/core';
+import type { Db } from '@relavium/db';
+import type { GateDecision } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
-import { terminalOutboxPath } from '../history/open.js';
-import {
-  buildEngine as defaultBuildEngine,
-  type BuildEngineOptions,
-} from '../engine/build-engine.js';
-import { createHistoryCheckpointer } from '../engine/checkpointer.js';
-import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
+import type { BuildEngineOptions } from '../engine/build-engine.js';
 import { sweepCommittedEffects } from '../engine/effect-retention.js';
-import { createCliHost } from '../engine/host.js';
 import {
   sweepHostMediaBestEffort as defaultSweepMedia,
   sweepMediaAtTerminal,
 } from '../engine/media-gc.js';
-import { buildMediaEngineWiring } from '../engine/media-wiring.js';
-import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
-import { assertDecisionFitsGateType, decisionFromFlags, type GateFlags } from '../gate/decision.js';
-import {
-  assertBudgetDecision,
-  budgetDecisionFromFlags,
-  resumeCommandBase,
-  selectBudgetGate,
-  type BudgetDecisionFlags,
-} from '../gate/budget.js';
-import {
-  connectWorkflowMcp,
-  closePreparedMcp,
-  workflowDeclaresMcp,
-  surfaceMcpSkipped,
-  type StdioConsentGate,
-  type WorkflowMcpRuntime,
-} from '../engine/mcp-servers.js';
+import type { ProviderResolver } from '../engine/providers.js';
+import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
+import { budgetDecisionFromFlags, type BudgetDecisionFlags } from '../gate/budget.js';
+import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { createConsentGate } from '../engine/mcp-consent-gate.js';
 import { createBoundConsentPrompter } from '../mcp/consent-prompt.js';
-import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
-import { Readable } from 'node:stream';
 import { parseSecretLines } from '../secrets/parse-secret-lines.js';
 import { CliError } from '../process/errors.js';
-import { storageBoundaryError } from '../process/owned-storage.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
 import { sanitizeInline } from '../render/sanitize.js';
-import {
-  assertWorkflowCatalogValid,
-  driveRun,
-  isTerminalOutcome,
-  outcomeToExitCode,
-} from './drive.js';
+import { driveRun, isTerminalOutcome, outcomeToExitCode } from './drive.js';
 
-/** How many held node ids the ADR-0074 §3 hold notice names before it elides — the same bound-the-diagnostic
- *  reasoning as `logs.ts`'s `MAX_REPORTED_SKIPS`: the COUNT is the signal, the first few ids are the lead. */
-const MAX_REPORTED_HELD_NODES = 8;
-
-/**
- * The ADR-0074 §3 hold notice — a resumed media job submitted by an older Relavium has no recorded cost
- * basis, so the cap holds new egress until it settles. Without the sentence a resume is an unexplained stall,
- * which is precisely what §3's observability clause forbids.
- *
- * SANITIZED and BOUNDED, like every other place a node id reaches this terminal. A node id is authored rather
- * than model-controlled, but `renderer.ts` runs `sanitizeInline` over one for the same reason — a workflow
- * YAML can arrive from anywhere — and an unbounded id list is not a diagnostic: the COUNT is the signal and
- * the first few ids are the lead (`logs.ts`'s `MAX_REPORTED_SKIPS`).
- *
- * Exported for its test. The engine sink that feeds it was DEAD until the wiring was fixed, so this line had
- * never rendered in production and nothing pinned it.
- */
-export function legacyMediaJobHoldNotice(nodeIds: readonly string[]): string {
-  const one = nodeIds.length === 1;
-  const subject = one ? 'a media job' : `${nodeIds.length} media jobs`;
-  const shown = nodeIds.slice(0, MAX_REPORTED_HELD_NODES).map((id) => sanitizeInline(id));
-  const ids = nodeIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
-  return (
-    `note: holding new model calls until ${subject} submitted by an older version of Relavium ` +
-    `settle${one ? 's' : ''} (node${one ? '' : 's'} ${ids}) — their cost was not ` +
-    `recorded, so the budget cap cannot be applied until then\n`
-  );
-}
+// The selection, the save-to root and the hold notice are the shared resume core's; they are re-exported
+// here because this module has always been where they are imported from.
+export { legacyMediaJobHoldNotice, resolveSaveToRoot, selectGate } from '../run-core/resume-run.js';
 
 export interface ResumeGateArgs {
   readonly runId: string;
@@ -182,52 +103,6 @@ export interface GateCommandDeps {
   };
 }
 
-const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
-
-/**
- * The `save_to` scope root for a resumed run: the ORIGINAL run's persisted `runs.project_root` when it still
- * exists on THIS machine AS A DIRECTORY — so a run started in dir A and resumed from B writes its deliverables
- * under A — else the resumer's cwd. The directory check (`statSync` with `throwIfNoEntry: false`, then
- * `isDirectory`) keeps a cross-machine / CI resume, a deleted-or-moved original dir, OR a path now occupied by a
- * file (a non-dir would only fail the downstream `mkdir`/write with an opaque ENOTDIR) from being used as the jail
- * root; each falls back gracefully, as does a `null` (pre-column run). Known benign window: the dir is checked
- * here but `realpath`'d again at write time (media-write.ts), so a symlink-target swap in between changes only the
- * destination — the realpath+commonpath jail still holds, never escaping the root.
- */
-export function resolveSaveToRoot(projectRoot: string | null, resumerCwd: string): string {
-  if (
-    projectRoot !== null &&
-    statSync(projectRoot, { throwIfNoEntry: false })?.isDirectory() === true
-  ) {
-    return projectRoot;
-  }
-  return resumerCwd;
-}
-
-/**
- * Resume the run from its checkpoint, mapping a typed engine refusal (e.g. `workflow_mismatch` on a corrupt
- * store) to a clean exit-2 invocation fault rather than an unhandled crash — surfaced with the engine's reason.
- */
-async function resumeOrFail(
-  engine: WorkflowEngine,
-  params: Parameters<WorkflowEngine['resumeFromCheckpoint']>[0],
-): Promise<RunHandle> {
-  try {
-    return await engine.resumeFromCheckpoint(params);
-  } catch (err) {
-    if (err instanceof EngineStateError) {
-      // A TRANSIENT refusal gets its own code, and therefore its own exit code (ADR-0079 §7). Another
-      // process is running this gate right now; the caller should retry shortly, not conclude the command
-      // was malformed. Every other engine-state refusal is a permanent invocation fault.
-      const code = isTransientEngineStateError(err) ? 'run_owned_elsewhere' : 'invalid_invocation';
-      throw new CliError(code, `cannot resume run ${params.runId}: ${err.message}`, {
-        cause: err,
-      });
-    }
-    throw err;
-  }
-}
-
 /**
  * The `relavium gate` core (**2.G**) — resolve a pending human gate from the terminal, the surface-agnostic
  * resume path for a `human_gate:paused` run (an interactive run that paused, or a CI run that exited `3`). It
@@ -258,25 +133,6 @@ export async function budgetCommand(
   return resumeGateCommand(args, deps, 'budget', budgetDecisionFromFlags(args));
 }
 
-/** Build only a copyable invocation; input-provided decisions require a different transport. */
-function formatResumeInvocation(
-  commandBase: string | undefined,
-  kind: 'human' | 'budget',
-  decision: GateDecision,
-): string | undefined {
-  if (commandBase === undefined || decision.decision === 'input_provided') return undefined;
-  let flag: string;
-  if (kind === 'budget') {
-    flag =
-      decision.decision === 'rejected'
-        ? '--abort'
-        : `--approve-amount ${decision.approvedAmountMicrocents}`;
-  } else {
-    flag = decision.decision === 'rejected' ? '--reject' : '--approve';
-  }
-  return `${commandBase} ${flag}`;
-}
-
 async function resumeGateCommand(
   args: ResumeGateArgs,
   deps: GateCommandDeps,
@@ -294,22 +150,12 @@ async function resumeGateOwned(
   decision: GateDecision,
   lifetime: WorkflowLifetime,
 ): Promise<ExitCode> {
-  const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
   lifetime.checkpoint();
   const { config, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
-  let closeHistory: (() => void) | undefined;
-
-  let mcpRuntime: WorkflowMcpRuntime | undefined;
-  let mcpAcknowledged = true;
-  const reportMcpCloseFailure = (_serverId: string, cause: unknown): void => {
-    mcpAcknowledged = false;
-    lifetime.cleanupFailed(cause);
-    warnTeardown(deps.io, 'MCP');
-  };
-  const mcpWork = new EgressWorkScope();
+  const resources = new RunResources(lifetime, deps.io);
   const interruptedBeforeResume = (): ExitCode => {
     deps.io.writeErr(
       'resume interrupted before a decision was recorded; the gate remains pending\n',
@@ -317,154 +163,35 @@ async function resumeGateOwned(
     return EXIT_CODES.workflowFailed;
   };
   try {
-    lifetime.checkpoint();
-    const opened = acquireNativeResource(
-      (captureClose) =>
-        deps.openDb === undefined
-          ? openLocalDb(homeDir, undefined, captureClose, {
-              io: deps.io,
-              invocation: lifetime.invocation,
-            })
-          : deps.openDb(homeDir, captureClose, {
-              io: deps.io,
-              invocation: lifetime.invocation,
-            }),
-      {
-        assertAdmitting: () => lifetime.checkpoint(),
-        captureClose: (close) => {
-          closeHistory = close;
-        },
-        cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
-        isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
-      },
-    );
-    const snapshot = loadRunSnapshot(opened.db, args.runId);
-    if (snapshot === undefined) {
-      throw new CliError('invalid_invocation', `no run found with id ${args.runId}`);
-    }
-
-    const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
-
-    // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
-    // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
-    // `projectRoot` is intentionally OMITTED here: the engine never re-emits `run:started` on resume, so the only
-    // consumer of `deps.projectRoot` (the run:started insert) is unreachable — the original run already persisted
-    // `runs.project_root` at its start, and this resume READS it back via `snapshot.projectRoot` above.
-    const store = createRunHistoryStore(opened.db, {
-      uuid: () => randomUUID(),
-      now: () => Date.now(),
-      workflow: {
-        slug: workflow.workflow.id,
-        name: workflow.workflow.name ?? workflow.workflow.id,
-        definitionJson: snapshot.workflowDefinitionSnapshot,
-      },
-    });
-    const checkpointer = createHistoryCheckpointer(store);
-    const checkpoint = await checkpointer.load(args.runId);
-    lifetime.checkpoint();
-    if (checkpoint === undefined) {
-      // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
-      throw new CliError('invalid_invocation', `run ${args.runId} has no resumable state`);
-    }
-
-    // The reconstructed `checkpoint.runStatus` is the authoritative run state (folded fresh from the event log
-    // right here), so it drives the terminal/idempotency decision — not the `runs.status` column, which a
-    // racing process could have advanced between the snapshot read and now (and which the engine would then
-    // surface as a closed-handle resume → a misleading exit 1).
-    const selection =
-      kind === 'budget'
-        ? selectBudgetGate(checkpoint, args.gate)
-        : selectGate(checkpoint, checkpoint.runStatus, args.gate);
-    if (selection.kind === 'invalid') {
-      throw new CliError('invalid_invocation', selection.message);
-    }
-    if (selection.kind === 'idempotent') {
-      // A doubled decision (run finished / gate already resolved) — a clean no-op, NOT a double-advance.
-      if (deps.global.json) deps.io.writeErr(`${selection.message}\n`);
-      else deps.io.writeOut(`${selection.message}\n`);
-      return EXIT_CODES.success;
-    }
-
-    if (kind === 'budget') {
-      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-      assertBudgetDecision(gate?.allowance, decision);
-    } else {
-      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-      assertDecisionFitsGateType(workflow, gate?.nodeId, decision);
-    }
-    // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
-    // A match grants nothing; the later full preparation reads a fresh price snapshot again.
-    if (kind === 'budget' && decision.decision === 'approved') {
-      const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-      if (
-        gate?.allowance?.kind === 'frozen' &&
-        !budgetAllowancePricesMatch(gate.allowance.quote, readBudgetPricingOverlay(opened.db))
-      )
-        throw new CliError(
-          'invalid_invocation',
-          'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
-        );
-    }
-    const commandBase = resumeCommandBase(kind, args.runId, selection.gateId);
-    const resumeInvocation = formatResumeInvocation(commandBase, kind, decision);
-    const inputs = await resolveSecretInputs(
-      parseInputs(snapshot.inputJson, args.runId),
-      args,
-      deps,
-      resumeInvocation,
-      lifetime,
-    );
-    lifetime.checkpoint();
     // Consuming stdin removes prompt authority for this invocation, even with stale TTY metadata.
     const mayPrompt = args.secretStdin !== true;
     const promptIo = mayPrompt ? deps.io : { ...deps.io, stdinIsTty: false };
-    const keys =
-      kind === 'budget' && decision.decision === 'rejected'
-        ? undefined
-        : deps.resolveKeys?.(opened.db);
-    lifetime.checkpoint();
-    const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
-    // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
-    // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
-    // stays. `save_to`'s scope root is the ORIGINAL run's project root when it still exists here (see
-    // resolveSaveToRoot), else the resumer's cwd — so a same-machine resume writes under the original dir, while
-    // a resume on a different machine / after that dir was deleted falls back gracefully instead of failing.
-    const saveToRoot = resolveSaveToRoot(snapshot.projectRoot, deps.global.cwd);
-    const wiring = buildMediaEngineWiring(
-      opened.db,
-      homeDir,
-      saveToRoot,
-      config,
-      lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
-    );
-    // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
-    // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
-    // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
-    assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
-    // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
-    if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
-      mcpRuntime = await connectWorkflowMcp(workflow, {
-        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-        cwd: saveToRoot,
-        preserveFrozenGrants: true,
-        connectSignal: lifetime.signal,
-        assertAdmitting: () => lifetime.checkpoint(),
-        onFailure: (cause) => {
-          if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
-        },
-        onCloseError: reportMcpCloseFailure,
-        budget: lifetime.invocation.registry.budget,
-        work: mcpWork,
-        registrations: config.mcpServers,
-        resolveSecret:
-          deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-        artifact: `frozen run ${args.runId}`,
-        consentGate:
+    // The shared resume core (`resumeRun`) reloads the snapshot, reconstructs the checkpoint, selects and
+    // checks the decision, re-supplies the secrets, reconnects MCP, builds the engine and resumes. The
+    // prompts and the database are ports: the shell reads secrets from bounded stdin, asks for stdio
+    // consent with the clack prompt and opens `~/.relavium/history.db`, exactly as before the core was shared.
+    const resumed = await resumeRun(
+      { runId: args.runId, gate: args.gate, secretStdin: args.secretStdin, kind, decision },
+      deps,
+      { config, homeDir },
+      {
+        openDb: (captureClose) =>
+          deps.openDb === undefined
+            ? openLocalDb(homeDir, undefined, captureClose, {
+                io: deps.io,
+                invocation: lifetime.invocation,
+              })
+            : deps.openDb(homeDir, captureClose, {
+                io: deps.io,
+                invocation: lifetime.invocation,
+              }),
+        secretInputs: readGateSecrets(args, deps, lifetime),
+        consentGate: (consentHome) =>
           deps.consentGate ??
           createConsentGate({
             io: promptIo,
             global: deps.global,
-            homeDir,
+            homeDir: consentHome,
             allowedDigests: args.allowMcpStdio ?? [],
             signal: lifetime.signal,
             prompt: mayPrompt
@@ -474,113 +201,17 @@ async function resumeGateOwned(
                 }
               : undefined,
           }),
-        ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
-      });
-      lifetime.checkpoint();
-      if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
-    }
-
-    lifetime.checkpoint();
-    // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed
-    // workflow's post-gate continuation enforces `budget.max_cost_microcents` on a user-priced model exactly like
-    // the original `run` did (pre-egress + realized). Without it a gated run would silently uncap that model on the
-    // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
-    const resolvePrice = readUserPricingOverlay(opened.db);
-    lifetime.checkpoint();
-    const engine = await (deps.buildEngine ?? defaultBuildEngine)({
-      ...(mcpRuntime === undefined
-        ? {}
-        : {
-            mcp: {
-              toolDefs: mcpRuntime.client.toolDefs,
-              capability: mcpRuntime.client.capability,
-            },
-          }),
-      // The durable effect journal (ADR-0080). A gate resume runs the FAR side of a human gate, which is
-      // precisely where a tool-using agent node does its work — leaving it unwired refused every effectful
-      // tool on exactly the path the gate exists to enable.
-      effectJournal: (correlation) =>
-        createEffectJournalPort(
-          createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
-          correlation,
-          { providerAttempt: 1, toolCallId: 'gate' },
-        ),
-      // …and its READ half. THIS is the gate's home surface: a gate resume is the canonical "the process
-      // died mid-node and came back" case, which is exactly what effect-journal.md §4 exists to refuse.
-      effectResume: createEffectResumePort(
-        createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
-      ),
-      providers,
-      // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
-      // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).
-      // stderr, never stdout (`--json`).
-      onEffortWithheld: onceEffortNotice(
-        lifetime.notification((note: string) => deps.io.writeErr(`warning: ${note}\n`)),
-      ),
-      // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
-      // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
-      onUnpriced: lifetime.notification(
-        (model: string, capMicrocents: number, modalities?: readonly MediaBilledModality[]) =>
-          deps.io.writeErr(
-            `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
-          ),
-      ),
-      // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
-      // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,
-      // or a resume looks like an unexplained stall. stderr, never stdout (`--json` stays a pure event stream).
-      // stderr, never stdout, so `--json` stays a pure event stream. The SENTENCE is
-      // {@link legacyMediaJobHoldNotice} so it can be pinned directly — this sink reached the terminal for the
-      // first time only when the engine wiring was fixed, and nothing had ever rendered it.
-      onLegacyMediaJobHold: lifetime.notification((nodeIds: readonly string[]) => {
-        deps.io.writeErr(legacyMediaJobHoldNotice(nodeIds));
-      }),
-      // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
-      // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
-      // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a
-      // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
-      // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
-      toolEnv: {
-        operatorHomeDir: homeDir,
-        workspaceDir: saveToRoot,
-        fsScopeTier: config.fsScope ?? 'sandboxed',
-        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
       },
-      host: createCliHost(store, {
-        operatorHomeDir: homeDir,
-        checkpointer,
-        media: wiring.media,
-        // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
-        // terminal a different process may already have failed to write (ADR-0078 §4).
-        terminalOutboxPath: terminalOutboxPath(homeDir),
-        // Same durable lease as the `run` path — a gate resume is exactly where two processes contend.
-        runLeases: createRunLeasePort(store),
-      }),
-      resolveMediaSurface: wiring.resolveMediaSurface,
-      ...(wiring.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: wiring.maxTokensEstimate }),
-      ...(wiring.mediaCostEstimate === undefined
-        ? {}
-        : { mediaCostEstimate: wiring.mediaCostEstimate }),
-      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-    });
-    lifetime.adoptEngine(engine, args.runId);
-    // Same reconcile as the `run` path (ADR-0078 §4/§5, ADR-0079 §7) — a gate resume is equally "the next
-    // `relavium` start", and it is the one a user reaches for after seeing the `durabilityUncertain` exit code
-    // on a gated run. The run this command resumes is parked at its gate, so `reconcile()` leaves it alone.
-    lifetime.checkpoint();
-    await engine.reconcile().catch(() => undefined);
-    lifetime.checkpoint();
-    const handle = await resumeOrFail(engine, {
-      runId: args.runId,
-      eventConsumption: 'iterated',
-      workflow,
-      inputs,
-      gateId: selection.gateId,
-      decision,
-    });
-
-    lifetime.adoptHandle(handle);
+      lifetime,
+      resources,
+    );
+    if (resumed.kind === 'settled') {
+      // A doubled decision (run finished / gate already resolved) — a clean no-op, NOT a double-advance.
+      if (deps.global.json) deps.io.writeErr(`${resumed.message}\n`);
+      else deps.io.writeOut(`${resumed.message}\n`);
+      return EXIT_CODES.success;
+    }
+    const { engine, handle, db, mediaCasRoot } = resumed;
 
     const outcome = await driveRun({
       lifetime,
@@ -641,13 +272,13 @@ async function resumeGateOwned(
     // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
     // survive precisely because its run is over.
     if (isTerminalOutcome(outcome) && lifetime.invocation.registry.budget.remainingMs() !== 0) {
-      sweepCommittedEffects(deps.io, opened.db, args.runId, lifetime.effectNoticeOwner);
+      sweepCommittedEffects(deps.io, db, args.runId, lifetime.effectNoticeOwner);
     }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,
       isTerminal: isTerminalOutcome(outcome),
-      db: opened.db,
-      casRoot: wiring.media.casRoot,
+      db,
+      casRoot: mediaCasRoot,
       currentRunId: args.runId,
       graceMs: config.mediaGcGraceMs,
       budget: lifetime.invocation.registry.budget,
@@ -666,154 +297,10 @@ async function resumeGateOwned(
     lifetime.failure(err);
     throw err;
   } finally {
-    try {
-      if (mcpRuntime !== undefined) {
-        await closePreparedMcp(
-          mcpRuntime.client,
-          reportMcpCloseFailure,
-          lifetime.invocation.registry.budget,
-        );
-      }
-    } catch (cause) {
-      mcpAcknowledged = false;
-      lifetime.cleanupFailed(cause);
-      warnTeardown(deps.io, 'MCP');
-    }
-    mcpWork.seal();
-    try {
-      await mcpWork.done;
-    } catch (cause) {
-      mcpAcknowledged = false;
-      lifetime.cleanupFailed(cause);
-    }
-    if (!mcpAcknowledged) await new Promise<never>(() => {});
-    try {
-      closeHistory?.();
-    } catch (cause) {
-      lifetime.cleanupFailed(storageBoundaryError(cause));
-      warnTeardown(deps.io, 'history database');
-    }
+    // An unacknowledged MCP release keeps the process alive for its exit authority: the database stays open.
+    if (!(await resources.releaseMcp())) await new Promise<never>(() => {});
+    resources.closeHistoryDb();
   }
-}
-
-/** The chosen gate, or a typed disposition: an idempotent no-op (exit 0) or an invalid invocation (exit 2). */
-type GateSelection =
-  | { readonly kind: 'resume'; readonly gateId: string }
-  | { readonly kind: 'idempotent'; readonly message: string }
-  | { readonly kind: 'invalid'; readonly message: string };
-
-/**
- * Choose which gate to resume — or report an idempotent no-op / invalid invocation. Budget gates
- * (`isBudgetGate`) are excluded: they are the `relavium budget resume` surface (ADR-0028), not a human gate.
- * Auto-fills when exactly one human gate is pending; requires `--gate` to disambiguate more than one.
- */
-export function selectGate(
-  checkpoint: CheckpointState,
-  status: RunStatus,
-  requested: string | undefined,
-): GateSelection {
-  if (TERMINAL_STATUSES.has(status)) {
-    return { kind: 'idempotent', message: `run ${status}; nothing to resume` };
-  }
-  const pending = checkpoint.pendingGates.filter((gate) => !gate.isBudgetGate);
-  const resolved = new Set(checkpoint.resolvedGateIds);
-
-  if (requested !== undefined) {
-    if (pending.some((gate) => gate.gateId === requested)) {
-      return { kind: 'resume', gateId: requested };
-    }
-    if (resolved.has(requested)) {
-      return {
-        kind: 'idempotent',
-        message: `gate ${sanitizeInline(requested)} already resolved`,
-      };
-    }
-    return {
-      kind: 'invalid',
-      message: `no pending gate ${requested} on run${pendingList(pending)}`,
-    };
-  }
-  if (pending.length === 0) {
-    return resolved.size > 0
-      ? { kind: 'idempotent', message: 'the run has no pending human gate (already resolved)' }
-      : { kind: 'invalid', message: 'the run is not paused at a human gate' };
-  }
-  const [only, ...rest] = pending;
-  if (rest.length === 0 && only !== undefined) {
-    return { kind: 'resume', gateId: only.gateId }; // exactly one human gate pending → auto-fill
-  }
-  return {
-    kind: 'invalid',
-    message: `more than one gate is pending — pass --gate <gateId>:${pendingList(pending)}`,
-  };
-}
-
-function pendingList(pending: readonly { readonly gateId: string }[]): string {
-  return pending.length === 0 ? '' : ` (pending: ${pending.map((gate) => gate.gateId).join(', ')})`;
-}
-
-/** Validate frozen JSON against the historical contract; new author-only rules never rewrite a parked run. */
-function parseSnapshot(snapshotJson: string, runId: string): WorkflowDefinition {
-  try {
-    return WorkflowSnapshotSchema.parse(JSON.parse(snapshotJson));
-  } catch (err) {
-    throw new CliError(
-      'invalid_invocation',
-      `the stored workflow snapshot for run ${runId} could not be parsed`,
-      { cause: err },
-    );
-  }
-}
-
-/** A non-null, non-array object — the shape a run's restored inputs must have (a guard, so no `as` cast). */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Restore the run's inputs from the frozen `input_json`. A corrupt / non-object value is an exit-2 fault
- * (matching {@link parseSnapshot}) — never a silent `{}`, which would resume with every `{{ inputs.x }}`
- * evaluating to `undefined` and fail confusingly at a downstream node instead of cleanly up front.
- */
-function parseInputs(inputJson: string, runId: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(inputJson);
-  } catch (err) {
-    throw new CliError(
-      'invalid_invocation',
-      `the stored inputs for run ${runId} could not be parsed`,
-      { cause: err },
-    );
-  }
-  if (!isPlainObject(parsed)) {
-    throw new CliError(
-      'invalid_invocation',
-      `the stored inputs for run ${runId} are not a JSON object`,
-    );
-  }
-  return parsed; // narrowed by isPlainObject — no cast
-}
-
-/**
- * How many names a refusal lists before the rest become a count — the convention this file already uses for
- * held nodes. A malformed paste on the SECRET channel would otherwise produce a stderr line as long as the
- * payload, echoing whatever the user pasted.
- */
-const MAX_REPORTED_SECRET_NAMES = 8;
-
-function nameList(names: readonly string[]): string {
-  return names.length <= MAX_REPORTED_SECRET_NAMES
-    ? names.join(', ')
-    : `${names.slice(0, MAX_REPORTED_SECRET_NAMES).join(', ')}, and ${String(names.length - MAX_REPORTED_SECRET_NAMES)} more`;
-}
-
-function secretPipeHint(resumeInvocation: string | undefined): string {
-  return resumeInvocation === undefined
-    ? 'Re-run the same decision with the recorded run and gate IDs and --secret-stdin, supplying name=value lines on stdin.'
-    : "Pipe the run's secret inputs as name=value lines on stdin — e.g. " +
-        `\`printf 'api_key=%s\\n' "$VALUE" | ${resumeInvocation} --secret-stdin\` ` +
-        '(a credential is never passed as an argument).';
 }
 
 /** The two refusals `readSecretFromStdin` prints, written for THIS command rather than `provider set-key`. */
@@ -826,86 +313,32 @@ const SECRET_STDIN_CONTEXT = (
 });
 
 /**
- * Re-supply the run's `secret` inputs, or refuse the resume
- * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
- * §6).
- *
- * The durable record holds a `secret` input as `{ secret: true, ref }` and nothing else — there is no
- * credential in it to restore. Passing the placeholder through would let a post-gate `{{ inputs.<secret> }}`
- * evaluate to a marker object; the engine refuses that outright (`secret_input_missing`), and this refuses it
- * earlier with a message that names the remedy.
- *
- * **`name=value` lines on stdin, behind an explicit `--secret-stdin`.** The flag is what keeps the command
- * from blocking on a pipe nobody attached, and the VALUES never appear in argv, where a credential leaks to
- * `ps`, shell history and CI logs. The name in the line is not itself a secret, and carrying it there rather
- * than in a repeated flag removes the order dependency that would silently swap two credentials.
- *
- * Every masked slot must be supplied and nothing else may be. Unexpected source names are refused without
- * reflecting their untrusted bytes, and an empty value is refused explicitly rather than by omission — the
- * engine would accept `''` as "re-supplied", and a blank line in a piped heredoc is the likeliest way to
- * produce one by accident.
+ * The shell's secret port for a resume: `name=value` lines from the bounded stdin reader (or the injected
+ * fixture reader), parsed by the shared secret-line parser. The core refuses a missing, unexpected or empty
+ * slot ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §6); this only supplies what was piped.
  */
-async function resolveSecretInputs(
-  inputs: Record<string, unknown>,
+function readGateSecrets(
   args: ResumeGateArgs,
   deps: GateCommandDeps,
-  resumeInvocation: string | undefined,
   lifetime: WorkflowLifetime,
-): Promise<Record<string, unknown>> {
-  const masked = Object.keys(inputs).filter(
-    (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
-  );
-  if (masked.length === 0) {
-    if (args.secretStdin === true) {
-      throw new CliError(
-        'invalid_invocation',
-        `run ${args.runId} has no \`secret\` inputs to re-supply — drop --secret-stdin.`,
-      );
-    }
-    return inputs;
-  }
-  if (args.secretStdin !== true) {
-    throw new CliError(
-      'invalid_invocation',
-      `run ${args.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to resume — ` +
-        `they are never persisted. ${secretPipeHint(resumeInvocation)}`,
-    );
-  }
-  const read =
-    deps.readSecretInput ??
-    ((): Promise<string> => {
-      if (!(deps.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
-      return readSecretFromStdin(
-        SECRET_STDIN_CONTEXT(args.runId, resumeInvocation),
-        deps.io.stdin,
-        {
-          signal: lifetime.signal,
-          onFailure: (cause) => lifetime.failure(cause),
-        },
-      );
-    });
-  const raw = await read();
-  lifetime.checkpoint();
-  const supplied = parseSecretLines(raw, `run ${args.runId}`);
-  const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
-  if (missing.length > 0) {
-    throw new CliError(
-      'invalid_invocation',
-      `stdin did not supply the \`secret\` input(s) [${nameList(missing)}] this run needs.`,
-    );
-  }
-  const unexpected = Object.keys(supplied).filter((name) => !masked.includes(name));
-  if (unexpected.length > 0) {
-    throw new CliError(
-      'invalid_invocation',
-      `stdin supplied a name that run ${args.runId} has no \`secret\` slot for.`,
-    );
-  }
-  // A fresh null-prototype map, filled from the restored inputs and then the re-supplied secrets — never a
-  // spread of a `JSON.parse` result into a `{}`, which would put an input named `__proto__` through the
-  // prototype setter (ADR-0083 §7, the same hazard the engine's own accumulators avoid).
-  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
-  for (const key of Object.keys(inputs)) merged[key] = inputs[key];
-  for (const key of Object.keys(supplied)) merged[key] = supplied[key];
-  return merged;
+): ResumeRunPorts['secretInputs'] {
+  return async ({ resumeInvocation }) => {
+    const read =
+      deps.readSecretInput ??
+      ((): Promise<string> => {
+        if (!(deps.io.stdin instanceof Readable)) throw new CliError('cli_internal', '');
+        return readSecretFromStdin(
+          SECRET_STDIN_CONTEXT(args.runId, resumeInvocation),
+          deps.io.stdin,
+          {
+            signal: lifetime.signal,
+            onFailure: (cause) => lifetime.failure(cause),
+          },
+        );
+      });
+    const raw = await read();
+    lifetime.checkpoint();
+    return parseSecretLines(raw, `run ${args.runId}`);
+  };
 }

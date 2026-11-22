@@ -12,9 +12,10 @@ import { subscribeWithSignalCustody } from '../process/signal-custody.js';
 import { WorkflowTerminal } from './workflow-terminal.js';
 import { ownNotification } from '../process/owned-notification.js';
 import type { EffectNoticeOwner } from '../engine/effect-retention.js';
+import type { RunLifetime } from '../run-core/run-lifetime.js';
 
 /** Single command owner: registration/signals precede its first owned asynchronous preparation. */
-export class WorkflowLifetime {
+export class WorkflowLifetime implements RunLifetime {
   readonly invocation: CliInvocation;
   readonly terminal: WorkflowTerminal;
   readonly effectNoticeOwner: EffectNoticeOwner;
