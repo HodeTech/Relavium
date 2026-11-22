@@ -20,7 +20,15 @@ import {
   type SessionStatus,
 } from '@relavium/shared';
 import { desc, sql } from 'drizzle-orm';
-import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  check,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 /**
  * The Phase-1 local table set, modeling the canonical DDL in
@@ -306,6 +314,13 @@ export const runs = sqliteTable(
     // perf follow-up). The `WHERE deleted_at IS NULL` partial matches every read's soft-delete predicate.
     index('idx_runs_created')
       .on(desc(t.createdAt), desc(t.id))
+      .where(sql`${t.deletedAt} is null`),
+    // Backs the project-scoped keyset page of the Home's History tab (ADR-0140 §2, migration 0022): the cursor
+    // `(created_at, id)` order within one `project_root` is served off this partial index with no filesort. A
+    // project-and-status filter rides the same index with a residual filter; a second index is added only if its
+    // plan test (apps/cli/src/harness/perf-budget.e2e.test.ts) fails.
+    index('idx_runs_project_created')
+      .on(t.projectRoot, desc(t.createdAt), desc(t.id))
       .where(sql`${t.deletedAt} is null`),
   ],
 );
@@ -951,6 +966,37 @@ export const runEffects = sqliteTable(
   ],
 );
 
+// --- 17. run_pins (NO FK; the operator's pinned runs and workflows for the Home, ADR-0140 §5) ---
+
+/** The two things a pin can name — the CHECK on `run_pins.kind` and the store's `PinKind` share this list. */
+export const PIN_KINDS = ['run', 'workflow'] as const;
+export type PinKind = (typeof PIN_KINDS)[number];
+
+/**
+ * A pinned run or workflow ([ADR-0140](../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §5, migration `0022`). Pins are global to the home database like the runs they name, and a pin never changes
+ * a run.
+ *
+ * **No foreign key, deliberately.** A `workflow` pin names a catalog slug that lives on disk, in a project, not a
+ * `workflows` row; and a `run` pin must survive (and be displayed as gone) after its run is purged rather than
+ * vanish with a cascade. `project_root` is `''` for a run pin (the run id is globally unique) and the project
+ * directory for a workflow pin (the same slug in another project is a different pin). The primary key is the
+ * identity, so pinning twice is a no-op, not a second row.
+ */
+export const runPins = sqliteTable(
+  'run_pins',
+  {
+    kind: text('kind').$type<PinKind>().notNull(),
+    projectRoot: text('project_root').notNull().default(''),
+    ref: text('ref').notNull(),
+    pinnedAt: epochMs('pinned_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.kind, t.projectRoot, t.ref] }),
+    check('run_pins_kind_check', sql`${t.kind} in (${inList(PIN_KINDS)})`),
+  ],
+);
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -987,3 +1033,5 @@ export type RunLeaseRow = typeof runLeases.$inferSelect;
 export type NewRunLeaseRow = typeof runLeases.$inferInsert;
 export type RunEffectRow = typeof runEffects.$inferSelect;
 export type NewRunEffectRow = typeof runEffects.$inferInsert;
+export type RunPinRow = typeof runPins.$inferSelect;
+export type NewRunPinRow = typeof runPins.$inferInsert;

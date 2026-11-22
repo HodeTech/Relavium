@@ -145,6 +145,80 @@ export interface StepRecord {
   readonly costMicrocents: number;
 }
 
+/**
+ * A run row projected for a PAGE of a list (the Home's History browser, ADR-0140 §2): everything a list row
+ * shows and nothing a row of a list must not carry. It excludes `workflow_definition_snapshot`, `input_json`,
+ * `output_json` and `error_json` — the four columns that can be large or secret-derived — and the query that
+ * produces it never selects them (a plan-level test asserts it). `projectRoot` is present when the run recorded
+ * one, because a list that can widen to every project has to say whose run a row is.
+ */
+export interface RunSummaryRecord extends RunRecord {
+  /** `runs.project_root` — the directory the run was started in; absent for a run that never recorded one. */
+  readonly projectRoot?: string;
+}
+
+/**
+ * One run in full: the {@link RunSummaryRecord} plus the three JSON documents the run row holds. The JSON is
+ * returned AS STORED (text), exactly like {@link RunResumeSnapshot.inputJson}: the engine masked secrets at the
+ * write boundary (ADR-0050), this read is pass-through, and a consumer parses it and renders it only through
+ * the bounded, scrubbed renderer. The frozen workflow snapshot is deliberately not here — it is read by
+ * {@link loadRunSnapshot}, which the resume path already owns.
+ */
+export interface RunDetailRecord extends RunSummaryRecord {
+  /** `runs.input_json` — the run's inputs as recorded at `run:started` (never null: the column defaults to `{}`). */
+  readonly inputJson: string;
+  /** `runs.output_json` — the final outputs; absent until a run completes (or fails with partial outputs). */
+  readonly outputJson?: string;
+  /** `runs.error_json` — the failure; absent unless the run failed. */
+  readonly errorJson?: string;
+}
+
+/**
+ * One node ATTEMPT as a row of the run-detail node table (ADR-0140 §2) — {@link StepRecord} plus the token
+ * counts the table shows. No `input_json`, `output_json` or `error_json`: those belong to
+ * {@link StepDetailRecord}, one attempt at a time.
+ */
+export interface StepSummaryRecord extends StepRecord {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+/**
+ * One node attempt with its output and error — the node-detail page. `outputJson` and `errorJson` are returned
+ * AS STORED, under the same contract as {@link RunDetailRecord}. `cachedTokens` is carried because the column
+ * exists, and is always `0` today: nothing writes `step_executions.cached_tokens` (database-schema.md).
+ */
+export interface StepDetailRecord extends StepSummaryRecord {
+  readonly cachedTokens: number;
+  /** `step_executions.output_json`; absent until the attempt completes. */
+  readonly outputJson?: string;
+  /** `step_executions.error_json`; absent unless the attempt failed. */
+  readonly errorJson?: string;
+}
+
+/** The ownership facts {@link RunHistoryReader.loadRunLeases} returns for one run; liveness is the CALLER's to judge. */
+export interface RunLeaseSummary {
+  readonly ownerId: string;
+  readonly generation: number;
+  /** Epoch ms. The reader holds no clock, so it states the expiry and does not state a verdict. */
+  readonly expiresAt: number;
+}
+
+/** One page of a run's event log read by {@link RunHistoryReader.loadRunEventsAfter}. */
+export interface RunEventTail {
+  /** The readable events after the cursor, in `seq` order — at most the requested `limit`. */
+  readonly events: RunEvent[];
+  /**
+   * The highest `seq` this call scanned, INCLUDING rows it skipped. A caller advances its cursor to this value,
+   * never to the last event's `sequenceNumber`: a log whose tail is a row of a newer type has a high-water mark
+   * above its last readable event, and a cursor parked on the event would re-read that row forever. Equals the
+   * `afterSeq` that was passed when nothing was scanned, so a cursor never moves backwards.
+   */
+  readonly scannedThroughSeq: number;
+  /** Rows a NEWER binary wrote, counted exactly as {@link RunHistoryReader.loadRunEventLog} counts them. */
+  readonly skipped: readonly SkippedRunEvent[];
+}
+
 /** The latest run for one workflow (joined by slug) — the `relavium list` last-run-status overlay. */
 export interface WorkflowRunSummary {
   readonly slug: string;
@@ -238,6 +312,51 @@ export function isUnreadableRunEventLogError(value: unknown): value is Unreadabl
   return value instanceof Error && 'code' in value && value.code === 'unreadable_run_event_log';
 }
 
+/** Why a bounded read refused its arguments — narrow on this, never on the message. */
+export type RunHistoryReadErrorCode =
+  /** A `limit` that is not a finite positive integer. */
+  | 'invalid_limit'
+  /** A keyset cursor (`before`, `afterSeq`) that is not a safe integer position. */
+  | 'invalid_cursor'
+  /** More run ids than {@link MAX_RUN_LEASE_IDS} in one `IN` lookup. */
+  | 'too_many_run_ids';
+
+/**
+ * A bounded read refused its ARGUMENTS (ADR-0140 §4): the paging reads are called from the render path, where a
+ * silent `LIMIT 0` empty page would read as data loss and an unbounded one as a hang. Content-free: the message
+ * names the rule, never the value that broke it.
+ */
+export class RunHistoryReadError extends RelaviumError {
+  readonly code: RunHistoryReadErrorCode;
+  constructor(code: RunHistoryReadErrorCode, message: string) {
+    super(message);
+    this.name = 'RunHistoryReadError';
+    this.code = code;
+  }
+}
+
+/** Narrow an unknown thrown value to {@link RunHistoryReadError} by its own discriminants (bundling-safe). */
+export function isRunHistoryReadError(value: unknown): value is RunHistoryReadError {
+  return value instanceof Error && value.name === 'RunHistoryReadError' && 'code' in value;
+}
+
+/** The most rows one {@link RunHistoryReader.listRunSummaries} page returns; a larger `limit` is clamped to it. */
+export const MAX_RUN_SUMMARY_PAGE = 200;
+/** The most events one {@link RunHistoryReader.loadRunEventsAfter} call returns; a larger `limit` is clamped to it. */
+export const MAX_RUN_TAIL_EVENTS = 1000;
+/** The most run ids one {@link RunHistoryReader.loadRunLeases} call accepts; more is refused, not truncated. */
+export const MAX_RUN_LEASE_IDS = 200;
+/** Rows the tail read pulls from SQLite per statement while it looks for `limit` readable events. */
+const RUN_TAIL_BATCH_ROWS = 256;
+
+/** A finite positive integer, clamped to `max`; anything else is refused (never read as "unbounded"). */
+function boundedLimit(limit: number, max: number): number {
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new RunHistoryReadError('invalid_limit', 'limit must be a finite positive integer');
+  }
+  return Math.min(limit, max);
+}
+
 /**
  * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
@@ -323,6 +442,55 @@ export interface RunHistoryReader {
    *  the workflow UUID). Soft-deleted workflows are excluded; bounded by the id set — an indexed primary-key
    *  `id IN (...)` lookup, never a scan. An empty input returns an empty map without touching the db. */
   loadWorkflowSlugs: (ids: readonly string[]) => Map<string, string>;
+  /**
+   * One keyset page of runs, newest first by `(created_at DESC, id DESC)`, soft-deleted excluded — the Home's
+   * History browser (ADR-0140 §2, §4). `before` is the cursor: the page holds the rows strictly AFTER
+   * `(createdAt, id)` in that order, so two runs sharing a `created_at` are neither repeated nor skipped across
+   * a page boundary. `limit` must be a finite positive integer and is clamped to {@link MAX_RUN_SUMMARY_PAGE};
+   * anything else is a {@link RunHistoryReadError}. The statement selects summary columns only — never the
+   * frozen snapshot or a JSON document — and `projectRoot` / `workflowId` / `status` are filters on the same
+   * ordering. Unfiltered and project-scoped pages are index-served with no filesort
+   * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts).
+   * The existing {@link listRuns} and its callers are unchanged.
+   */
+  listRunSummaries: (opts: {
+    readonly limit: number;
+    readonly before?: { readonly createdAt: number; readonly id: string };
+    readonly status?: RunStatus;
+    readonly projectRoot?: string;
+    readonly workflowId?: string;
+  }) => RunSummaryRecord[];
+  /** One run with its input, output and error JSON as stored (soft-deleted excluded), or `undefined`. */
+  loadRunDetail: (runId: string) => RunDetailRecord | undefined;
+  /**
+   * A run's node attempts in execution order, one row per attempt, without an input, output or error column —
+   * the node table. Keyed by `runId` alone (the caller validates the run first), like {@link loadStepExecutions}.
+   */
+  listStepSummaries: (runId: string) => StepSummaryRecord[];
+  /** One node attempt's output, error and token columns, looked up by `idx_step_exec_run_node`; or `undefined`. */
+  loadStepDetail: (
+    runId: string,
+    nodeId: string,
+    attemptNumber: number,
+  ) => StepDetailRecord | undefined;
+  /**
+   * The events AFTER `afterSeq` (`run_id = ? AND seq > ?`, in `seq` order) — the poll tail of ADR-0140 §2 and
+   * `logs --follow`. Reads through the same row reader as {@link loadRunEventLog}: a row a NEWER binary wrote is
+   * skipped and counted, a damaged row throws {@link CorruptRunEventError}. It keeps scanning until it holds
+   * `limit` events or the log ends, so it never returns an empty page while readable rows remain. The caller
+   * advances its cursor to `scannedThroughSeq`, never to the last event. `limit` is validated and clamped to
+   * {@link MAX_RUN_TAIL_EVENTS}; `afterSeq` must be a safe integer (`-1` reads from the start). Keyed by `runId`
+   * alone, like {@link loadRunEvents}.
+   */
+  loadRunEventsAfter: (runId: string, afterSeq: number, limit: number) => RunEventTail;
+  /**
+   * The lease rows that exist for the given runs, by primary key — a run with no lease is absent from the map.
+   * At most {@link MAX_RUN_LEASE_IDS} ids; more is a {@link RunHistoryReadError}, not a truncation. The reader
+   * states each lease's expiry and leaves the liveness verdict to the caller's clock.
+   */
+  loadRunLeases: (runIds: readonly string[]) => ReadonlyMap<string, RunLeaseSummary>;
+  /** {@link loadLatestRunPerWorkflow} restricted to runs whose `project_root` is `projectRoot`. */
+  loadLatestRunPerWorkflowInProject: (projectRoot: string) => WorkflowRunSummary[];
 }
 
 /**
@@ -433,6 +601,18 @@ const STREAMING_EVENT_TYPES = new Set([
  * `SUM(run_costs) == runs.total_cost_microcents` exactly true.
  */
 const RUN_LEVEL_COST_NODE_ID = '';
+
+/**
+ * The compile-time exhaustiveness proof for {@link RunHistoryStore}'s `applyDerived` switch: a `RunEvent` type
+ * with no `case` leaves `value` typed as that member, which is not assignable to `never`, so the file stops
+ * compiling. At runtime it is unreachable (`persistEvent` parses the event against the closed union first), so
+ * reaching it is a defect in this file, and it fails loudly rather than dropping an event.
+ */
+function assertNever(value: never): never {
+  const seen: unknown = value;
+  const type = typeof seen === 'object' && seen !== null && 'type' in seen ? seen.type : undefined;
+  throw new Error(`unhandled run event type: ${typeof type === 'string' ? type : 'unknown'}`);
+}
 
 /**
  * The one place a stored `run_events` row becomes a {@link RunEvent} — the read boundary ADR-0074 §5 asks for.
@@ -595,7 +775,7 @@ function projectionMismatch(
   return undefined;
 }
 
-function fromRunRow(row: RunRow): RunRecord {
+function fromRunRow(row: RunSummaryRow): RunRecord {
   return {
     id: row.id,
     workflowId: row.workflowId,
@@ -609,6 +789,36 @@ function fromRunRow(row: RunRow): RunRecord {
     totalCostMicrocents: row.totalCostMicrocents,
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
+  };
+}
+
+/**
+ * The columns of a run LIST row — the one place the summary projection is spelled out. Naming each column (never
+ * `select()`) is what keeps the frozen snapshot and the three JSON documents out of every list statement, and a
+ * unit test asserts the emitted SQL names none of them.
+ */
+const runSummaryColumns = {
+  id: runs.id,
+  workflowId: runs.workflowId,
+  projectRoot: runs.projectRoot,
+  status: runs.status,
+  executionMode: runs.executionMode,
+  triggerType: runs.triggerType,
+  startedAt: runs.startedAt,
+  completedAt: runs.completedAt,
+  totalInputTokens: runs.totalInputTokens,
+  totalOutputTokens: runs.totalOutputTokens,
+  totalCostMicrocents: runs.totalCostMicrocents,
+  createdAt: runs.createdAt,
+  updatedAt: runs.updatedAt,
+} as const;
+
+type RunSummaryRow = Pick<RunRow, keyof typeof runSummaryColumns>;
+
+function fromRunSummaryRow(row: RunSummaryRow): RunSummaryRecord {
+  return {
+    ...fromRunRow(row),
+    ...(row.projectRoot === null ? {} : { projectRoot: row.projectRoot }),
   };
 }
 
@@ -945,23 +1155,53 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
-      default:
-        // node:skipped / media_job:submitted / run:timeout / budget:estimate_committed (+ any future durable
-        // event): captured in run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node
-        // has no nodeType on its event, so it gets no step_executions row — the run_events log records the skip.)
-        //
-        // `budget:estimate_committed` is named explicitly because it is the one MONEY event routed here, and
-        // that routing IS ADR-0074's central negative guarantee: a conservative commitment is an ESTIMATE, so it
-        // must never reach `runs.total_cost_microcents` or `run_costs`. Folding it into either would present an
-        // upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`. Falling
-        // through here is what keeps that true — asserted, not assumed, in this package's tests.
-        //
-        // Its realized twin `cost:attempt_settled` (ADR-0076) does the OPPOSITE and has its own arm above. Note
-        // what that means for anyone adding the next durable type: this `default` is not an exhaustiveness
-        // guard. `RunEvent` has no `assertNever` anywhere in the repo, so a new money event added without an
-        // arm lands here silently — a `run_events` row, no derived write, no compile error, no failing test.
-        // Decide deliberately which side of this line a new type belongs on.
+      // **Exhaustive by construction (ADR-0140 §4).** Every `RunEvent` type is named below, so a new durable type
+      // added to the union without a decision here fails to COMPILE (the `assertNever` at the end). The previous
+      // bare `default` swallowed a new money event silently: a `run_events` row, no derived write, no compile
+      // error, no failing test. Each no-op arm says why it writes nothing; add the next type to the side of the
+      // line it belongs on, deliberately.
+      case 'agent:token':
+      case 'agent:reasoning':
+      case 'agent:tool_call':
+      case 'agent:tool_result':
+        // The streamed firehose goes through the bus, never `persistEvent`; a stored one is log-only.
         return;
+      case 'agent:approval_requested':
+      case 'agent:file_patch_proposed':
+        // A display-only prompt or proposal for a human; it changes no run, step or money row.
+        return;
+      case 'cost:updated':
+        // A streamed running total, never durable; the money of record is `node:completed` and
+        // `cost:attempt_settled` above, so folding this too would count it twice.
+        return;
+      case 'node:skipped':
+        // A skipped node has no `nodeType` on its event, so it gets no `step_executions` row; `run_events` records
+        // the skip and a reader derives it from there (ADR-0140 §2).
+        return;
+      case 'media_job:submitted':
+        // The job record a resume re-attaches to; no money is realized until the node's own terminal folds it.
+        return;
+      case 'run:timeout':
+        // An advisory carrying elapsed and limit; the run's terminal event is what changes `runs`.
+        return;
+      case 'budget:warning':
+        // An advisory threshold crossing; the pause itself arrives as `budget:paused` above.
+        return;
+      case 'budget:estimate_committed':
+        // The one MONEY event routed to a no-op, and that routing IS ADR-0074's central negative guarantee: a
+        // conservative commitment is an ESTIMATE, so it must never reach `runs.total_cost_microcents` or
+        // `run_costs`. Folding it into either would present an upper bound as an invoice and break ADR-0070's
+        // `SUM(run_costs) == runs.total_cost_microcents`. Asserted, not assumed, in this package's tests. Its
+        // realized twin `cost:attempt_settled` (ADR-0076) does the OPPOSITE and has its own arm above.
+        return;
+      case 'cost:coverage_started':
+      case 'cost:usage_pending':
+      case 'cost:usage_disposition':
+        // ADR-0104 coverage accounting (is a figure complete?), folded by the coverage reader from `run_events`;
+        // none of them realizes money, so none may write a total.
+        return;
+      default:
+        return assertNever(event);
     }
   };
 
@@ -1412,6 +1652,236 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .all();
       return new Map(rows.map((r) => [r.id, r.slug]));
     },
+
+    listRunSummaries: (opts) => {
+      const limit = boundedLimit(opts.limit, MAX_RUN_SUMMARY_PAGE);
+      const before = opts.before;
+      if (
+        before !== undefined &&
+        (!Number.isSafeInteger(before.createdAt) ||
+          typeof before.id !== 'string' ||
+          before.id.length === 0)
+      ) {
+        throw new RunHistoryReadError(
+          'invalid_cursor',
+          'before must be a (createdAt, id) position',
+        );
+      }
+      return db
+        .select(runSummaryColumns)
+        .from(runs)
+        .where(
+          and(
+            isNull(runs.deletedAt),
+            opts.status === undefined ? undefined : eq(runs.status, opts.status),
+            opts.projectRoot === undefined ? undefined : eq(runs.projectRoot, opts.projectRoot),
+            opts.workflowId === undefined ? undefined : eq(runs.workflowId, opts.workflowId),
+            // The keyset predicate: strictly AFTER the cursor in `(created_at DESC, id DESC)` order, which is
+            // strictly BEFORE it numerically. The row-value form keeps the second term (`id`) as a tiebreak
+            // WITHIN one `created_at`, so rows that share a millisecond straddle a page boundary exactly once.
+            before === undefined
+              ? undefined
+              : sql`(${runs.createdAt}, ${runs.id}) < (${before.createdAt}, ${before.id})`,
+          ),
+        )
+        .orderBy(desc(runs.createdAt), desc(runs.id))
+        .limit(limit)
+        .all()
+        .map(fromRunSummaryRow);
+    },
+
+    loadRunDetail: (runId) => {
+      const row = db
+        .select({
+          ...runSummaryColumns,
+          inputJson: runs.inputJson,
+          outputJson: runs.outputJson,
+          errorJson: runs.errorJson,
+        })
+        .from(runs)
+        .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
+        .get();
+      return row === undefined
+        ? undefined
+        : {
+            ...fromRunSummaryRow(row),
+            inputJson: row.inputJson,
+            ...(row.outputJson === null ? {} : { outputJson: row.outputJson }),
+            ...(row.errorJson === null ? {} : { errorJson: row.errorJson }),
+          };
+    },
+
+    listStepSummaries: (runId) =>
+      db
+        .select({
+          nodeId: stepExecutions.nodeId,
+          nodeType: stepExecutions.nodeType,
+          status: stepExecutions.status,
+          attemptNumber: stepExecutions.attemptNumber,
+          startedAt: stepExecutions.startedAt,
+          completedAt: stepExecutions.completedAt,
+          durationMs: stepExecutions.durationMs,
+          costMicrocents: stepExecutions.costMicrocents,
+          inputTokens: stepExecutions.inputTokens,
+          outputTokens: stepExecutions.outputTokens,
+        })
+        .from(stepExecutions)
+        .where(eq(stepExecutions.runId, runId))
+        // The same execution order as `loadStepExecutions`: `created_at`, then insertion order.
+        .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+        .all()
+        .map(fromStepSummaryRow),
+
+    loadStepDetail: (runId, nodeId, attemptNumber) => {
+      const row = db
+        .select({
+          nodeId: stepExecutions.nodeId,
+          nodeType: stepExecutions.nodeType,
+          status: stepExecutions.status,
+          attemptNumber: stepExecutions.attemptNumber,
+          startedAt: stepExecutions.startedAt,
+          completedAt: stepExecutions.completedAt,
+          durationMs: stepExecutions.durationMs,
+          costMicrocents: stepExecutions.costMicrocents,
+          inputTokens: stepExecutions.inputTokens,
+          outputTokens: stepExecutions.outputTokens,
+          cachedTokens: stepExecutions.cachedTokens,
+          outputJson: stepExecutions.outputJson,
+          errorJson: stepExecutions.errorJson,
+        })
+        .from(stepExecutions)
+        // `stepMatch` is the same (run, node, attempt) predicate the writer's arms update by, which is what
+        // `idx_step_exec_run_node` is keyed on.
+        .where(stepMatch(runId, nodeId, attemptNumber))
+        .get();
+      return row === undefined
+        ? undefined
+        : {
+            ...fromStepSummaryRow(row),
+            cachedTokens: row.cachedTokens,
+            ...(row.outputJson === null ? {} : { outputJson: row.outputJson }),
+            ...(row.errorJson === null ? {} : { errorJson: row.errorJson }),
+          };
+    },
+
+    loadRunEventsAfter: (runId, afterSeq, limit) => {
+      const wanted = boundedLimit(limit, MAX_RUN_TAIL_EVENTS);
+      if (!Number.isSafeInteger(afterSeq)) {
+        throw new RunHistoryReadError('invalid_cursor', 'afterSeq must be a safe integer');
+      }
+      const events: RunEvent[] = [];
+      const skipped: SkippedRunEvent[] = [];
+      let scannedThroughSeq = afterSeq;
+      for (;;) {
+        const rows = db
+          .select({
+            seq: runEvents.seq,
+            eventType: runEvents.eventType,
+            payloadJson: runEvents.payloadJson,
+          })
+          .from(runEvents)
+          .where(and(eq(runEvents.runId, runId), gt(runEvents.seq, scannedThroughSeq)))
+          .orderBy(asc(runEvents.seq))
+          .limit(RUN_TAIL_BATCH_ROWS)
+          .all();
+        for (const row of rows) {
+          // The shared row reader: an unknown `type` is a newer binary's row (skipped, never an error), a damaged
+          // row throws `CorruptRunEventError` — the same two outcomes `loadRunEventLog` has.
+          const event = readStoredEventRow(runId, row);
+          // The cursor moves over a skipped row too. Moving it only over readable events would park a caller on
+          // the last event of a log whose tail a newer binary wrote, and it would re-read that tail forever.
+          scannedThroughSeq = row.seq;
+          if (event === undefined) skipped.push({ sequenceNumber: row.seq, type: row.eventType });
+          else events.push(event);
+          if (events.length >= wanted) return { events, scannedThroughSeq, skipped };
+        }
+        if (rows.length < RUN_TAIL_BATCH_ROWS) return { events, scannedThroughSeq, skipped };
+      }
+    },
+
+    loadRunLeases: (runIds) => {
+      if (runIds.length > MAX_RUN_LEASE_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_LEASE_IDS} run ids per lease lookup`,
+        );
+      }
+      if (runIds.length === 0) return new Map(); // no query for an empty set
+      const rows = db
+        .select({
+          runId: runLeases.runId,
+          ownerId: runLeases.ownerId,
+          generation: runLeases.generation,
+          expiresAt: runLeases.expiresAt,
+        })
+        .from(runLeases)
+        .where(inArray(runLeases.runId, [...runIds]))
+        .all();
+      return new Map(
+        rows.map((row): [string, RunLeaseSummary] => [
+          row.runId,
+          { ownerId: row.ownerId, generation: row.generation, expiresAt: row.expiresAt },
+        ]),
+      );
+    },
+
+    loadLatestRunPerWorkflowInProject: (projectRoot) => {
+      // The project-scoped twin of `loadLatestRunPerWorkflow`, kept as its own statement so that overlay's text
+      // stays untouched: the same ranking (newest `created_at`, `id` as the tiebreak) over this project's runs.
+      const ranked = db.$with('ranked').as(
+        db
+          .select({
+            ...getTableColumns(runs),
+            slug: workflows.slug,
+            rn: sql<number>`row_number() over (partition by ${runs.workflowId} order by ${runs.createdAt} desc, ${runs.id} desc)`.as(
+              'rn',
+            ),
+          })
+          .from(runs)
+          .innerJoin(workflows, eq(runs.workflowId, workflows.id))
+          .where(
+            and(
+              eq(runs.projectRoot, projectRoot),
+              isNull(runs.deletedAt),
+              isNull(workflows.deletedAt),
+            ),
+          ),
+      );
+      return db
+        .with(ranked)
+        .select()
+        .from(ranked)
+        .where(eq(ranked.rn, 1))
+        .all()
+        .map((row): WorkflowRunSummary => ({ slug: row.slug, lastRun: fromRunRow(row) }));
+    },
+  };
+}
+
+/** The shared step-attempt projection of the summary and detail reads (timestamps to ISO, nulls absent). */
+function fromStepSummaryRow(r: {
+  readonly nodeId: string;
+  readonly nodeType: string;
+  readonly status: StepExecutionRow['status'];
+  readonly attemptNumber: number;
+  readonly startedAt: number | null;
+  readonly completedAt: number | null;
+  readonly durationMs: number | null;
+  readonly costMicrocents: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}): StepSummaryRecord {
+  return {
+    nodeId: r.nodeId,
+    nodeType: r.nodeType,
+    status: r.status,
+    attemptNumber: r.attemptNumber,
+    ...(r.startedAt === null ? {} : { startedAt: epochMsToIso(r.startedAt) }),
+    ...(r.completedAt === null ? {} : { completedAt: epochMsToIso(r.completedAt) }),
+    ...(r.durationMs === null ? {} : { durationMs: r.durationMs }),
+    costMicrocents: r.costMicrocents,
+    inputTokens: r.inputTokens,
+    outputTokens: r.outputTokens,
   };
 }
 

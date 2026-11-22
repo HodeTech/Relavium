@@ -105,6 +105,12 @@ export {
   isCorruptRunEventError,
   UnreadableRunEventLogError,
   isUnreadableRunEventLogError,
+  RunHistoryReadError,
+  isRunHistoryReadError,
+  MAX_RUN_SUMMARY_PAGE,
+  MAX_RUN_TAIL_EVENTS,
+  MAX_RUN_LEASE_IDS,
+  type RunHistoryReadErrorCode,
   type RunEventLog,
   type SkippedRunEvent,
   type RunHistoryStore,
@@ -113,10 +119,32 @@ export {
   type RunHistoryWorkflow,
   type InterruptedRunInfo,
   type RunRecord,
+  type RunSummaryRecord,
+  type RunDetailRecord,
   type StepRecord,
+  type StepSummaryRecord,
+  type StepDetailRecord,
+  type RunLeaseSummary,
+  type RunEventTail,
   type WorkflowRunSummary,
   type RunResumeSnapshot,
 } from './run-history-store.js';
+
+// The Home's pins (ADR-0140 §5, migration 0022) — a global, capped list of pinned runs and workflows.
+export {
+  createRunPinStore,
+  RunPinError,
+  isRunPinError,
+  MAX_RUN_PINS,
+  MAX_PIN_REF_LENGTH,
+  MAX_PIN_PROJECT_ROOT_LENGTH,
+  type RunPinStore,
+  type RunPinErrorCode,
+  type PinKind,
+  type PinKey,
+  type PinRecord,
+  type PinResult,
+} from './run-pins.js';
 
 // The durable effect journal (ADR-0080) — its own store, following ADR-0079's lease precedent rather than
 // growing `RunStore`, because a journal row is not a run event and has no `runId` on the session path.

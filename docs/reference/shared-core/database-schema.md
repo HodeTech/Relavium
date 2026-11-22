@@ -102,7 +102,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 20 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment.
+The 21 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment. `run_pins` ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §5) is a fourth: a workflow pin names a catalog slug that lives on disk, and a run pin must outlive its run's purge to be shown as gone.
 
 ```mermaid
 erDiagram
@@ -227,6 +227,12 @@ erDiagram
         text handle FK
         text scope_kind
         text scope_id
+    }
+    run_pins {
+        text kind PK "run | workflow"
+        text project_root PK "'' for a run pin"
+        text ref PK "run id, or workflow slug"
+        int pinned_at
     }
     model_metadata {
         text model_id PK "the CATALOG_SNAPSHOT key, NOT a UUID"
@@ -567,6 +573,9 @@ CREATE INDEX idx_runs_cost          ON runs (workflow_id, created_at, total_cost
 -- Backs the workflow-agnostic recency lists (listRuns/listActiveRuns + the 2.5.B Home strip): ORDER BY
 -- (created_at DESC, id DESC) over the non-deleted set is served off this partial index instead of a filesort.
 CREATE INDEX idx_runs_created       ON runs (created_at DESC, id DESC) WHERE deleted_at IS NULL;
+-- Migration 0022 (ADR-0140 §4). Backs the Home's project-scoped History page: one project's runs in the keyset
+-- order (created_at DESC, id DESC), index-served with no filesort. A project-and-status filter rides it too.
+CREATE INDEX idx_runs_project_created ON runs (project_root, created_at DESC, id DESC) WHERE deleted_at IS NULL;
 ```
 
 #### `step_executions`
@@ -759,6 +768,55 @@ never swept by age**. That asymmetry is the contract, not a gap: an unresolved r
 needs, and it outlives its run deliberately, which is the same reason the table carries no foreign key to
 `runs`. (This paragraph previously said no sweep touches the table at all, which contradicted both the
 shipped `effect-retention.ts` and §9 of the effect-journal reference.)
+
+#### `run_pins`
+
+The operator's pinned runs and workflows ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §5, migration `0022`). Global to the home database like the runs they name; a pin names something and never changes it. **No foreign key**, deliberately (see the entity-relationships note above).
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `kind` | TEXT | NOT NULL — `CHECK (kind IN ('run','workflow'))` |
+| `project_root` | TEXT | NOT NULL DEFAULT `''` — the project directory of a workflow pin; `''` for a run pin (a run id is globally unique) |
+| `ref` | TEXT | NOT NULL — the run id of a run pin, or the workflow's slug within its project |
+| `pinned_at` | INTEGER | NOT NULL — epoch ms, as the caller stated it |
+
+`PRIMARY KEY (kind, project_root, ref)`: the key is the identity, so pinning twice is a no-op. `createRunPinStore(db)` (`packages/db/src/run-pins.ts`) is the only writer and holds these rules:
+
+- `pinItem({ kind, projectRoot, ref, at })` returns `'pinned'`, `'already-pinned'` or `'full'`. The existence check, the 50-row cap over the whole table and the insert are **one `BEGIN IMMEDIATE` transaction** under the busy retry, so two processes cannot together pass the cap. `'already-pinned'` wins over `'full'`.
+- `unpinItem({ kind, projectRoot, ref })` returns whether a row was removed. `listPins({ kind?, projectRoot? })` returns newest first, a tie broken by the key.
+- `ref` is 1 to 512 characters with no control character (C0, DEL, C1, U+2028, U+2029); a run pin carries `projectRoot: ''` and a workflow pin must carry its project root (at most 4,096 characters, the same character rule). Anything else is a `RunPinError` whose message never echoes the value.
+
+#### Summary, detail and tail reads — ADR-0140
+
+The additive reads of `RunHistoryReader` that the Home's management browsers use ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4 owns the reasons; the contracts are here). `listRuns`, `loadRun`, `loadStepExecutions`, `loadLatestRunPerWorkflow` and every other existing read are unchanged, so `list`, `status` and the other shell surfaces read what they always read. Every plan below is pinned in `apps/cli/src/harness/perf-budget.e2e.test.ts`, which plans the statement the reader actually prepares.
+
+| Read | Contract | Index |
+|------|----------|-------|
+| `listRunSummaries({ limit, before?, status?, projectRoot?, workflowId? })` | `RunSummaryRecord[]`, newest first by `(created_at DESC, id DESC)`, soft-deleted excluded. `before: { createdAt, id }` (epoch ms) is a keyset cursor: the rows strictly after it in that order, so runs sharing a millisecond are neither repeated nor skipped across a page. `limit` must be a finite positive integer and is clamped to 200 (`MAX_RUN_SUMMARY_PAGE`); anything else is a `RunHistoryReadError`. The SELECT names summary columns only: never `workflow_definition_snapshot`, `input_json`, `output_json` or `error_json`. The record is `RunRecord` plus `projectRoot` when the run recorded one. | `idx_runs_created`; with `projectRoot`, `idx_runs_project_created` (a status filter inside a project is a residual filter on it). A status-only or workflow-only filter uses `idx_runs_status` / `idx_runs_workflow` and sorts only the last ORDER BY term, as `listRuns({ status })` already does. |
+| `loadRunDetail(runId)` | `RunDetailRecord \| undefined`: the summary plus `inputJson`, and `outputJson` / `errorJson` when present, **as stored text** (the engine masked secrets at the write boundary, ADR-0050; a consumer parses and renders through the bounded, scrubbed renderer). No frozen snapshot: `loadRunSnapshot` owns that. Soft-deleted excluded. | `runs` primary key |
+| `listStepSummaries(runId)` | `StepSummaryRecord[]`, one row per **attempt** in execution order (`created_at`, then insertion order), with the token counts and no `input_json`, `output_json` or `error_json`. Keyed by `runId` alone, like `loadStepExecutions`. | `idx_step_exec_run` |
+| `loadStepDetail(runId, nodeId, attemptNumber)` | `StepDetailRecord \| undefined`: one attempt's `outputJson` / `errorJson` (as stored) and its token columns. | `idx_step_exec_run_node` |
+| `loadRunEventsAfter(runId, afterSeq, limit)` | `{ events, scannedThroughSeq, skipped }`: the events with `seq > afterSeq` in `seq` order, through the same row reader as `loadRunEventLog` (a row of a newer, unknown type is skipped and listed in `skipped`; a damaged row throws `CorruptRunEventError`). It loops over 256-row batches until it holds `limit` events or the log ends, so it never returns an empty page while readable rows remain. `scannedThroughSeq` is the highest `seq` scanned **including skipped rows**, and equals `afterSeq` when nothing was scanned; a caller advances its cursor to it, never to the last event. `limit` is validated like the page limit and clamped to 1,000; `afterSeq` is a safe integer (`-1` reads from the start). Keyed by `runId` alone. | `idx_run_events_run_seq` (`run_id = ? AND seq > ?`) |
+| `loadRunLeases(runIds)` | `ReadonlyMap<runId, { ownerId, generation, expiresAt }>` for the runs that have a lease; a run with none is absent. At most 200 ids (`MAX_RUN_LEASE_IDS`), more is a `RunHistoryReadError`, never a truncation; an empty input issues no query. The reader holds no clock, so it states the expiry and leaves the liveness verdict to the caller. | `run_leases` primary key |
+| `loadLatestRunPerWorkflowInProject(projectRoot)` | The shape of `loadLatestRunPerWorkflow`, restricted to runs whose `project_root` is `projectRoot`. | `idx_runs_project_created`, then a window sort over that project's runs |
+
+`RunHistoryReadError` carries a `code` (`invalid_limit`, `invalid_cursor`, `too_many_run_ids`) and a content-free message. A damaged event row still fails a single-run read loudly and is isolated per run in listings; there is no store-level skip-and-report ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5, [ADR-0075](../../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md)).
+
+#### Columns that are never written
+
+These columns exist in the DDL and **nothing writes them**; a row always holds the column's default. They stay so the schema keeps its Postgres shape ([ADR-0005](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)) and are not populated retroactively. A reader must not treat their value as data ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4 substitutes a read-derivation for each).
+
+| Column | Always | Where the fact lives instead |
+|--------|--------|------------------------------|
+| `step_executions.agent_id`, `agent_snapshot`, `model_id` | `NULL` | the model(s) actually used: the `cost:attempt_settled` events of the run; the authored agent and model: the run's frozen workflow snapshot |
+| `step_executions.input_json` | `'{}'` | nowhere, on purpose: a node's input is the rendered template, can be secret-derived ([ADR-0113](../../decisions/0113-secret-derived-context-keeps-provenance-at-public-sinks.md)), and is not recorded |
+| `step_executions.cached_tokens` | `0` | nowhere: neither `node:completed.tokensUsed` nor `cost:attempt_settled` carries a cached-token count |
+| `run_costs.model_id` | `NULL` | the event's raw provider string cannot become a catalog id here; the `cost:attempt_settled` event carries the model |
+| `runs.workflow_path` | `NULL` | the run's frozen snapshot and `project_root` |
+| `runs.trigger_type` | `'manual'` | nowhere; no other trigger exists before Phase 2 |
+| `runs.trigger_metadata` | `'{}'` | nowhere |
+
+The fold that writes the derived `runs` / `step_executions` / `run_costs` rows (`applyDerived`) is **exhaustive over `RunEvent`**: every event type is an explicit case, the ones that write nothing say why, and the switch ends in `assertNever`, so a new durable event type cannot be dropped silently ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4).
 
 ### Agent-session tables
 
@@ -1433,6 +1491,8 @@ Byte/format verification and exact host shapes live in the
 | Resume a paused run from its last checkpoint | Human-gate resume | `idx_step_exec_run`, `idx_run_events_run_seq` |
 | Cost analytics grouped by workflow/model | Cost tracking screen | `idx_runs_cost`, `idx_step_exec_cost` |
 | List workflows with their last-run status | Workflows list screen | `idx_workflows_active` + a `ROW_NUMBER()` subquery (SQLite has no `DISTINCT ON`) |
+| Page the run history, newest first, optionally one project's | Home History browser | `idx_runs_created`, `idx_runs_project_created` |
+| Tail a run's events after a cursor | Home Active tab, `logs --follow` | `idx_run_events_run_seq` |
 
 > Postgres `DISTINCT ON (workflow_id)` for "latest run per workflow" is **not** supported in SQLite. Use `ROW_NUMBER() OVER (PARTITION BY workflow_id ORDER BY created_at DESC)` instead — it works identically in both engines, easing the Phase-2 port.
 
@@ -1461,7 +1521,7 @@ operational SQLite provenance, even if the native error is storage-shaped.
 `history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md), re-affirmed by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
 
 - **Connection PRAGMAs** ([`client.ts`](../../../packages/db/src/client.ts)): `journal_mode = WAL` (readers never block the single writer, and vice-versa), `busy_timeout = 5000` (SQLite's built-in busy handler waits up to 5 s for a contended lock before returning `SQLITE_BUSY`), `synchronous = NORMAL` (the recommended durability/throughput trade-off under WAL), and `foreign_keys = ON`.
-- **Write transactions use `BEGIN IMMEDIATE`**, never drizzle's `DEFERRED` default. A DEFERRED transaction that reads before it writes takes a read lock first and must *upgrade* to a write lock on the first write — if another connection committed in between, that upgrade fails immediately with `SQLITE_BUSY` (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` does **not** cover. `BEGIN IMMEDIATE` takes the write lock up front, so the upgrade race cannot occur. Applied to every multi-statement writer: `persistEvent` (run history), the model-catalog `replaceProviderModels` (bulk live-upsert) and `upsert` (per-model pricing), the provider `upsert` read-then-write, and the media-reference GC writes (`addReference`, `removeRunReferences`, `reclaimExpired`). It applies only to the OUTERMOST `BEGIN` — a store method called inside another transaction is demoted to a `SAVEPOINT` and the IMMEDIATE behavior is ignored, so a future batch-in-one-transaction caller must itself open `BEGIN IMMEDIATE`.
+- **Write transactions use `BEGIN IMMEDIATE`**, never drizzle's `DEFERRED` default. A DEFERRED transaction that reads before it writes takes a read lock first and must *upgrade* to a write lock on the first write — if another connection committed in between, that upgrade fails immediately with `SQLITE_BUSY` (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` does **not** cover. `BEGIN IMMEDIATE` takes the write lock up front, so the upgrade race cannot occur. Applied to every multi-statement writer: `persistEvent` (run history), the model-catalog `replaceProviderModels` (bulk live-upsert) and `upsert` (per-model pricing), the provider `upsert` read-then-write, the pin store's `pinItem` (the 50-row cap is checked inside it), and the media-reference GC writes (`addReference`, `removeRunReferences`, `reclaimExpired`). It applies only to the OUTERMOST `BEGIN` — a store method called inside another transaction is demoted to a `SAVEPOINT` and the IMMEDIATE behavior is ignored, so a future batch-in-one-transaction caller must itself open `BEGIN IMMEDIATE`.
 - **The bounded retry** (`packages/db/src/retry.ts`, `withBusyRetry` / `withBusyRetryAsync`) wraps those write transactions and retries only `SQLITE_BUSY` / `SQLITE_LOCKED` / `SQLITE_BUSY_SNAPSHOT` / `SQLITE_BUSY_RECOVERY` up to a bounded attempt budget (default 5) with a **deterministic** linear backoff — **no jitter**, never `Math.random`, per the no-jitter/deterministic-replay convention of [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md). `better-sqlite3` reports the **extended** result code, so the stale-DEFERRED upgrade failure arrives as the distinct string `SQLITE_BUSY_SNAPSHOT`, not as a `SQLITE_BUSY` prefix — matched exactly, so an unrelated future `SQLITE_BUSY_*` code is not swept into the set. It is **fail-loud**: on an exhausted budget (or any non-lock fault) it rethrows the original error and never silently drops a write, preserving [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first `persistEvent` posture. A retried transaction rolls back with no partial write and re-runs the whole (idempotent) body. Because each attempt's `BEGIN IMMEDIATE` can itself wait up to `busy_timeout` (5 s) for the lock, the compounded worst case under sustained contention is ~25 s (5 attempts × 5 s + the sub-300 ms backoffs) of blocking before the fail-loud rethrow — a deliberate durability-over-latency trade on a path that only stalls under pathological multi-writer contention.
 - **Two retry twins, one policy.** `withBusyRetry` is synchronous, because the driver is. `withBusyRetryAsync` is the twin for the one call site whose caller is genuinely async today — `persistEvent` (run history) — where the backoff **yields the event loop** rather than parking the thread on `Atomics.wait`. Both share the retryable-code set, the attempt budget, the linear schedule and the fail-loud exhaustion; only the sleep differs. Read the scope precisely: this removes the **sub-300 ms** term of the ~25 s worst case above, not the dominant one — for `SQLITE_BUSY`/`SQLITE_LOCKED`, the codes that actually fire, each attempt still blocks inside the synchronous driver for up to `busy_timeout` (~5.2 s measured). `SQLITE_BUSY_SNAPSHOT` returns *immediately*, so for that code the backoff is the whole cost; it cannot reach a synchronous call site today because every one of them is `IMMEDIATE`, single-statement, or read-only. The remaining store methods stay synchronous deliberately: converting them would change five port interfaces and ripple through every CLI consumer without making a single write non-blocking. The async twin's `await` between attempts is an **observable yield**, so a sibling writer may commit during the backoff — the outcome the backoff exists to allow — which makes the "`fn` must be one self-contained, re-runnable transaction" requirement load-bearing rather than incidental.
 - **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and need no explicit transaction — `BEGIN IMMEDIATE` would buy nothing, since a lone INSERT/UPDATE takes the write lock directly and cannot hit a read→write upgrade race. They still use `withBusyRetry` where failure is user-visible data loss. **ADR-0104 exception:** session creation/update/message append now perform entry classification and final revision acknowledgement as well, so these formerly single-statement operations use the [session usage outer transaction](#session-usage-coverage-foundations--adr-0104).
