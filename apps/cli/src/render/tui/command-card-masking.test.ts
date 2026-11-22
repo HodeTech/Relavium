@@ -304,3 +304,38 @@ describe('everything the event preview masks of a command is masked in the card 
     expect(compared, 'the corpus exercised the property').toBeGreaterThan(150);
   });
 });
+
+describe('a frozen command preview is built once per kind of document, and no kind answers for another', () => {
+  /** What the engine's registry delivers: the preview and every field frozen, which is what lets a document be kept for it. */
+  const frozen = (argv: readonly string[]): ToolPreview => {
+    const preview = commandPreview(argv);
+    for (const field of preview.fields) Object.freeze(field);
+    Object.freeze(preview.fields);
+    return Object.freeze(preview);
+  };
+
+  it('keeps the strict, the command and the ordinary document apart, each built once', () => {
+    const preview = frozen(['tool', 'sk-abcdefghijklmnop1234567890', `password=${SECRET}`]);
+    const strict = createReviewDocument(preview, { requireAllMasks: true });
+    const command = createReviewDocument(preview, { command: true });
+    const plain = createReviewDocument(preview);
+    // Three kinds, three documents: the card asks for the strict one of the preview the store built the command one of.
+    expect(new Set([strict, command, plain]).size).toBe(3);
+    // Each is built once for the frozen preview, whatever the order it is asked in.
+    expect(createReviewDocument(preview, { requireAllMasks: true })).toBe(strict);
+    expect(createReviewDocument(preview, { command: true })).toBe(command);
+    expect(createReviewDocument(preview)).toBe(plain);
+    // The card's document is the one that makes every mask a requirement: were it the command's, Allow would count unseen.
+    expect(strict.required.length).toBe(strict.masks.length);
+    expect(strict.required.length).toBeGreaterThan(0);
+    expect(command.required).toHaveLength(0);
+    expect(plain.required).toHaveLength(0);
+  });
+
+  it('builds a preview that can still change again each time', () => {
+    const preview = commandPreview(['tool', `password=${SECRET}`]);
+    expect(createReviewDocument(preview, { requireAllMasks: true })).not.toBe(
+      createReviewDocument(preview, { requireAllMasks: true }),
+    );
+  });
+});

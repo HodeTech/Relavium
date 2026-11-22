@@ -1222,6 +1222,26 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     expect(answered).toBe(false);
   });
+  // The card's words for a review that cannot be drawn follow what is true of the call: a command too large is told so, any other
+  // call (here one with more fields than a review holds) is only unavailable, and the card is where `[v]` opens the full view.
+  it('says an ordinary call too large for the review is unavailable, not a command waiting, and offers the full view on the card', async () => {
+    const f = fixture(host, true, false);
+    await f.ready();
+    const tooMany: ToolPreview = {
+      kind: 'operation',
+      target: 'safe.txt',
+      fields: Array.from({ length: 65 }, (_, at) => ({ name: `f${String(at)}`, value: 'v' })),
+    };
+    void f.store.requestApproval(request, true, undefined, {
+      callId: 'too-many',
+      preview: tooMany,
+    });
+    await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
+    const frame = (f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ');
+    expect(frame).toContain('narrow change, or [v] full view / [p] code points.');
+    expect(frame).not.toContain('A command is waiting');
+    expect(f.errors).toEqual([]);
+  });
   // an unreadable review used to leave only Esc, and the label said Esc "cancels" while it stops the turn.
   // Ctrl+N denies the call and lets the turn go on; the hint no longer offers keys that cannot repair the identity.
   it('lets Ctrl+N deny an unreadable identity and says what Esc really does, without a [v]/[p] hint that cannot help', async () => {

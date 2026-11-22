@@ -136,7 +136,7 @@ export function permissionsListCommand(deps: PermissionsDeps): ExitCode {
   return EXIT_CODES.success;
 }
 
-/** `relavium permissions revoke <number>|--all`. A number that names nothing is an invalid invocation (exit 2), not a silent no-op. */
+/** `relavium permissions revoke <number>|--all`: every remembered command, or the one the list numbers (see {@link revokeOne} for a number that names nothing). */
 export function permissionsRevokeCommand(
   args: PermissionsRevokeArgs,
   deps: PermissionsDeps,
@@ -164,7 +164,7 @@ function revokeAll(deps: PermissionsDeps): ExitCode {
   return EXIT_CODES.success;
 }
 
-/** `revoke <number>`: one remembered command of this project, by the number `list` printed. */
+/** `revoke <number>`: one remembered command of this project, by the number `list` printed. A number that names nothing is an invalid invocation (exit 2), not a silent no-op. */
 function revokeOne(args: PermissionsRevokeArgs, deps: PermissionsDeps): ExitCode {
   const { store, homeDir } = openStore(deps);
   if (args.index === undefined) {

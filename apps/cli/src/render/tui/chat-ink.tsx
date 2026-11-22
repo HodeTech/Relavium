@@ -395,7 +395,7 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
 }
 
 /** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
-function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
+export function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
   if (interruptArmed) return 'Press Ctrl+C again to end the session';
   return emptyDraft
     ? '/ for commands · /exit or Ctrl+C twice to end'

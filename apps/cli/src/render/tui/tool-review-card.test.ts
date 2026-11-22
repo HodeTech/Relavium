@@ -649,3 +649,51 @@ describe('the command card chrome (ADR-0118 §1)', () => {
       expect(row.length).toBeLessThanOrEqual(78);
   });
 });
+
+describe('a command whose rows are not all on screen says what that costs (the review of the cleanup)', () => {
+  const DASH = String.fromCharCode(0x2014);
+  const WARN = String.fromCharCode(0x26a0);
+  const document = createReviewDocument({
+    kind: 'operation',
+    target: 'git',
+    fields: [{ name: '', value: 'status' }],
+  });
+  const rowsWarning = (offers: CommandCardFacts['offers'], linesNotShown = 3): string | undefined =>
+    cardWarnings({
+      document,
+      shortenedTarget: false,
+      targetHiddenBytes: 0,
+      inspected: true,
+      changesNotShown: 0,
+      linesNotShown,
+      columns: 400,
+      commandFacts: {
+        standing: 'not-pre-approved',
+        runsCode: false,
+        protectedPath: false,
+        cwd: '/work/project',
+        offers,
+      },
+    }).find((row) => row.includes('not shown'));
+
+  it('names the two grants that are offered only while every row is on screen, whichever of them the card offers', () => {
+    const note = '; This session and Remember are offered only while every row is on screen.';
+    for (const offers of [
+      { session: true, remember: false },
+      { session: false, remember: true },
+      { session: true, remember: true },
+    ])
+      expect(rowsWarning(offers), JSON.stringify(offers)).toBe(
+        `${WARN} 3 rows of this command are not shown ${DASH} press [v]${note}`,
+      );
+  });
+
+  it('names nothing when the card offers neither grant, and counts the rows in the singular for one', () => {
+    expect(rowsWarning({ session: false, remember: false })).toBe(
+      `${WARN} 3 rows of this command are not shown ${DASH} press [v].`,
+    );
+    expect(rowsWarning({ session: false, remember: false }, 1)).toBe(
+      `${WARN} 1 row of this command is not shown ${DASH} press [v].`,
+    );
+  });
+});

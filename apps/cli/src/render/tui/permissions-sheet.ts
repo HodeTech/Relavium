@@ -308,7 +308,7 @@ function foldArmedKey(
   return kept;
 }
 
-/** `d` (or `Delete`) with no question up: it arms only a settled sheet, with a row selected, when nothing has been typed. */
+/** `d`, `Delete` or `Backspace` (see {@link isWithdrawKey}) with no question up: it arms only a settled sheet, with a row selected, when nothing has been typed. */
 function foldWithdrawKey(
   state: PermissionsSheetState,
   entries: readonly SheetEntry[],
@@ -416,6 +416,7 @@ function rowRight(chip: string, tail: string): string {
   return tail === '' ? chip : `${chip}${CHIP_GAP}${tail}`;
 }
 
+/** How a row is drawn: armed (its question is up), selected, or as any other row. */
 function rowKind(selected: boolean, armed: boolean): SheetLineKind {
   if (armed) return 'armed';
   return selected ? 'selected' : 'row';
@@ -631,7 +632,7 @@ export function permissionsSheetLines(
 }
 
 /** The legend's items: the armed question's, or the idle list's, or the empty list's. */
-function legendItems(state: PermissionsSheetState): typeof SHEET_LEGEND_IDLE_ITEMS {
+function legendItems(state: PermissionsSheetState): readonly LegendItem[] {
   if (state.armed) return SHEET_LEGEND_ARMED_ITEMS;
   return sheetEntries(state.snapshot).length > 0
     ? SHEET_LEGEND_IDLE_ITEMS

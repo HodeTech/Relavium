@@ -346,7 +346,7 @@ function reviewExitHint(review: ToolReviewState): string {
 const RULE_LABEL = ' Approval needed ';
 
 /** What the card says in place of itself when it cannot be drawn: the identity, a command too large to show, or the screen. */
-function reviewUnavailableText(why: {
+export function reviewUnavailableText(why: {
   readonly identityInvalid: boolean;
   readonly commandTooLarge: boolean;
   readonly onCard: boolean;
@@ -362,7 +362,7 @@ function reviewUnavailableText(why: {
 }
 
 /** The card's title rows: a delivered saved result's, an unlabelled call's, or the verb and the target's rows. */
-function cardTitleRows(input: {
+export function cardTitleRows(input: {
   readonly savedResult: boolean;
   readonly verb: string;
   readonly toolId: string;

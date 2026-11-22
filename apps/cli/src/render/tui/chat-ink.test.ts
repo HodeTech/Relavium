@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { finalizeInkExit, emitIntro } from './chat-ink.js';
+import { finalizeInkExit, emitIntro, idleHint } from './chat-ink.js';
 
 /**
  * `finalizeInkExit` unit tests (2.6.F Step 4a, refined at Step 4b-3, ADR-0068 §c) — the teardown-then-outcome
@@ -94,5 +94,20 @@ describe('emitIntro — the renderer decides where the intro survives', () => {
       expect(p.notices).toEqual([]);
       expect(p.outs).toEqual([]);
     }
+  });
+});
+
+/** The idle prompt's hint bar says what the keys do now: end the session, open the palette, send, or clear (2.5.C S6). */
+describe('idleHint — what the idle prompt tells the person to press', () => {
+  it('asks for the second Ctrl+C while the first is armed, whatever the draft holds', () => {
+    expect(idleHint(true, true)).toBe('Press Ctrl+C again to end the session');
+    expect(idleHint(true, false)).toBe('Press Ctrl+C again to end the session');
+  });
+
+  it('offers the palette and the two ways out at an empty prompt, and the submit hint once composing', () => {
+    expect(idleHint(false, true)).toBe('/ for commands \u00b7 /exit or Ctrl+C twice to end');
+    expect(idleHint(false, false)).toBe(
+      'Enter to send \u00b7 Ctrl+J newline \u00b7 Ctrl+C clears the draft',
+    );
   });
 });
