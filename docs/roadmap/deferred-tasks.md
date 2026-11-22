@@ -2091,7 +2091,7 @@ Four review rounds and an opus security sitting covered the step; the findings a
 
 ## MVP-8 step 2 review (2026-11-22) — the lows left open on purpose
 
-Two review rounds covered the step; the findings are recorded in the phase record with the step's closing record. The entries below are the lows that were not fixed, each with its trigger.
+Three review rounds and an opus security sitting covered the step; the findings are recorded in the phase record's step-2 implementation record. The entries below are the lows that were not fixed, each with its trigger.
 
 - [ ] **A guarded write is checked against the last ASKED sequence during the re-take window.** After a stale-card re-take, a store fault on one write followed by a second guarded write whose expected value equals a head another writer has already produced could land. It needs a writer without a fence or an async store; the fence check normally refuses it. *Trigger:* any unfenced writer, or the first non-synchronous store. *(low · packages/core/src/engine/engine.ts:5468, `headGuard` in `#emitDurable`)*
 - [ ] **A write that commits but returns an error moves the durable head away from the park head.** A lost acknowledgement makes the next conflict report a head other than `#reclaimedHead`, so the run is classified as ownership loss (exit 6, no terminal) instead of a store fault (exit 5). Unreachable on synchronous `better-sqlite3`. *Trigger:* the first async or cloud store. *(low · packages/core/src/engine/engine.ts:5493, `movedSincePark`)*
