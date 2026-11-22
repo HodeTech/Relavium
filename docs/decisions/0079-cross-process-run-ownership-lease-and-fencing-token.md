@@ -304,3 +304,32 @@ claims must respect that acknowledged retirement boundary.
 ### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
 
 Both recorded triggers are now answered. The long-lived-host trigger is not met: each hosted leg builds a fresh engine with a fresh owner ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §2). The observer trigger is met by the Home's Active tab, which watches other processes' runs through a read-only poll of the durable log ([ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §2); the observer handle itself stays a named follow-up. The §4 rule (hand the claim back at every re-pause, re-take it before writing) applies to the Home's legs too.
+
+## Stale gate card amendment — 2026-11-22
+
+> **Amended 2026-11-22 (the stale gate card, MVP-8 step 2).** This refines §4 and §5; it reverses neither.
+> A gate park deletes the lease row (§4), so another process can resume the run, move its log on and hand
+> the lease back in turn. The parked process's re-take then succeeds under a fresh fence that the store
+> accepts, and only the compare-and-append of [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md)
+> §2 can tell that the log moved. Before this amendment its refusal read as a store fault, so a stale gate
+> card's answer, or Ctrl-C at it, failed a healthy run with a terminal at a sequence the other process had
+> already used. The rule is now:
+>
+> - **A re-take is unproven until a write under it is acknowledged.** In that window, a refused write whose
+>   durable head differs from the head the process left at its park is **ownership loss** (§5), not a store
+>   fault: no terminal, no terminal-outbox entry, the re-taken lease released by its exact fence, and the
+>   fenced outcome (`uncertain` with no terminal, CLI exit `6`). A refusal whose durable head still equals
+>   that head is the process's own failed ask failing closed, and keeps its ordinary store-fault handling.
+> - **A terminal is guarded against that same head during the window** (the head guard). Outside the window
+>   the run terminal stays exempt from the append guard; inside it, the guard is what refuses a terminal the
+>   fresh fence cannot. This is what covers Ctrl-C at a stale card, whose first write is the terminal.
+> - **The head record is cleared only by the first acknowledged write** under the re-taken claim. A failed
+>   write does not clear it, so a store fault on that first write still leaves the run's terminal guarded.
+> - **The hand-back rule of §4's 2026-08-17 amendment is unchanged**: the claim is still handed back at every
+>   re-pause and re-taken before writing again; the re-take is only trusted once a write under it lands.
+>
+> Implementation: [`packages/core/src/engine/engine.ts`](../../packages/core/src/engine/engine.ts) (the
+> re-take, the durable writer's head guard and its refusal classification). Register entry and tests:
+> [deferred-tasks-parked.md](../roadmap/deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06)
+> ("Answering a stale gate card after another process decided the gate fails a healthy run"). The register
+> entry stays open until its D64 review round and separate security sitting are recorded.
