@@ -1,6 +1,13 @@
 import type { Key } from 'ink';
 import { sanitizeInline } from '../sanitize.js';
 import {
+  createChordGuard,
+  reduceChordKey,
+  type ChordAnswer,
+  type ChordStamp,
+} from './chord-guard.js';
+import type { ApprovalGuard } from './tool-review-model.js';
+import {
   createNativePicker,
   type NativePickerController,
   type NativePickerOptions,
@@ -8,6 +15,17 @@ import {
 } from './native-picker.js';
 
 export const NATIVE_PROMPT_CANCEL = Symbol('native prompt cancelled');
+/**
+ * What a prompt opened with `escape: 'back'` settles with when `Esc` steps back one step
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §5). It is not an answer: the caller
+ * goes to the previous step (or leaves, when there is none), and any secret typed so far has already been cleared.
+ */
+export const NATIVE_PROMPT_BACK = Symbol('native prompt stepped back');
+/**
+ * What `Esc` does at a prompt. `cancel` (the default, and what every existing caller gets) ends the whole flow. `back` settles
+ * the prompt with {@link NATIVE_PROMPT_BACK} and leaves the flow open; `Ctrl+C` still leaves the flow entirely in both modes.
+ */
+export type NativePromptEscape = 'cancel' | 'back';
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
 export class NativePromptVisibilityRefusedError extends Error {
   constructor() {
@@ -22,7 +40,7 @@ export interface NativePromptOption {
 }
 export interface NativePromptSnapshot {
   readonly active: boolean;
-  readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy' | 'picker';
+  readonly kind: 'idle' | 'select' | 'text' | 'password' | 'busy' | 'picker' | 'chord';
   readonly picker?: Pick<
     NativePickerSnapshot,
     'allDirectories' | 'page' | 'cursor' | 'loading' | 'hasNext' | 'hasPrevious' | 'retryable'
@@ -33,6 +51,10 @@ export interface NativePromptSnapshot {
   readonly selected: number;
   readonly display: string;
   readonly error: string;
+  /** What `Esc` does at the open prompt; `cancel` whenever none is open. */
+  readonly escape: NativePromptEscape;
+  /** A chord card's body, one row per entry (each sanitized and drawn behind the host's gutter); empty for every other prompt. */
+  readonly details: readonly string[];
 }
 export interface NativePromptUi {
   readonly subscribe: (listener: () => void) => () => void;
@@ -44,6 +66,11 @@ export interface NativePromptUi {
   readonly bindVisibility: (
     check: ((snapshot: NativePromptSnapshot) => boolean) | undefined,
   ) => void;
+  /**
+   * Installed by the live terminal host's acknowledgement: this exact snapshot has just been measured and flushed as a NEW frame
+   * (its first, or the first after a resize or a lost screen). A chord card's dwell counts from here, never from its publication.
+   */
+  readonly shown: (snapshot: NativePromptSnapshot) => void;
   readonly input: (input: string, key: Key) => boolean;
   readonly paste: (text: string) => boolean;
   readonly dispose: () => void;
@@ -61,17 +88,46 @@ export interface NativePromptFlow {
     message: string;
     options: readonly NativePromptOption[];
     initialValue?: string;
+    escape?: NativePromptEscape;
   }) => Promise<string | symbol>;
-  readonly confirm: (message: string, initialValue?: boolean) => Promise<boolean | symbol>;
+  readonly confirm: (
+    message: string,
+    initialValue?: boolean,
+    escape?: NativePromptEscape,
+  ) => Promise<boolean | symbol>;
   readonly text: (options: {
     message: string;
     validate?: (value: string) => string | undefined;
+    escape?: NativePromptEscape;
   }) => Promise<string | symbol>;
   readonly password: (options: {
     message: string;
     validate?: (value: string) => string | undefined;
+    escape?: NativePromptEscape;
   }) => Promise<string | symbol>;
 }
+/**
+ * The chord card, on its own port so a flow that only asks the ordinary prompts does not have to carry it. The channel's `flow`
+ * has both.
+ */
+export interface NativeChordPort {
+  /**
+   * A card answered by a Ctrl chord alone: `Ctrl+Y` is `allow`, `Ctrl+N` is `deny`, and nothing else answers. A bare letter, a
+   * pasted block, `Esc` and `Ctrl+C` decide nothing: the last two settle it with {@link NATIVE_PROMPT_BACK} or
+   * {@link NATIVE_PROMPT_CANCEL}, which the caller maps (a consent card refuses on both). `allow` passes the approval guards
+   * ({@link createChordGuard}) and needs the card's frame to be on screen; `deny` is never delayed.
+   */
+  readonly chord: (options: {
+    message: string;
+    /** The body, one row per entry. The caller bounds it; a card that does not fit the terminal is never answered. */
+    details?: readonly string[];
+    allow: string;
+    deny: string;
+    escape?: NativePromptEscape;
+  }) => Promise<ChordAnswer | symbol>;
+}
+/** One shared empty body, so a snapshot that has none keeps the same reference (the acknowledgement compares it). */
+const NO_DETAILS: readonly string[] = Object.freeze([]);
 const initial: NativePromptSnapshot = {
   active: false,
   kind: 'idle',
@@ -81,13 +137,27 @@ const initial: NativePromptSnapshot = {
   selected: 0,
   display: '',
   error: '',
+  escape: 'cancel',
+  details: NO_DETAILS,
 };
 
+/** The numbers and the clock behind a chord card; tests inject both, production passes neither. */
+export interface NativePromptChannelOptions {
+  /** A MONOTONIC millisecond clock (default `performance.now`). */
+  readonly now?: () => number;
+  /** The approval guard's numbers (default the product's own); `0` switches a layer off. */
+  readonly guard?: ApprovalGuard;
+}
+
 /** Only the flow port can receive an answer; the UI port never exposes the private editor. */
-export function createNativePromptChannel(): {
+export function createNativePromptChannel(options?: NativePromptChannelOptions): {
   readonly ui: NativePromptUi;
-  readonly flow: NativePromptFlow;
+  readonly flow: NativePromptFlow & NativeChordPort;
 } {
+  const chord = createChordGuard({
+    now: options?.now ?? (() => performance.now()),
+    guard: options?.guard,
+  });
   let snapshot = initial;
   let secret = '';
   let invalid = false;
@@ -122,7 +192,16 @@ export function createNativePromptChannel(): {
     const callback = settle;
     settle = undefined;
     clear();
-    publish({ ...snapshot, kind: 'busy', message: '', options: [], display: '', error: '' });
+    publish({
+      ...snapshot,
+      kind: 'busy',
+      message: '',
+      options: [],
+      display: '',
+      error: '',
+      escape: 'cancel',
+      details: NO_DETAILS,
+    });
     callback?.(answer);
   };
   const cancel = (): void => {
@@ -131,20 +210,44 @@ export function createNativePromptChannel(): {
     if (settle) finish(NATIVE_PROMPT_CANCEL);
     else {
       clear();
-      publish({ ...snapshot, kind: 'busy', display: '', error: '' });
+      publish({
+        ...snapshot,
+        kind: 'busy',
+        display: '',
+        error: '',
+        escape: 'cancel',
+        details: NO_DETAILS,
+      });
     }
   };
+  /**
+   * `Esc` or `Ctrl+C` reached the prompt. A prompt opened with `escape: 'back'` steps back on a LONE `Esc` (finishing clears any
+   * secret typed so far); everything else that cancels (`Ctrl+C`, a raw ETX, a meta chord, an `Esc` coalesced with other bytes)
+   * leaves the flow, as it always did. The hosts forward a refused `Ctrl+C` as `'\x1b'` with its real key, so the key is what
+   * tells the two apart, never the text.
+   */
+  const dismiss = (input: string, key: Key): void => {
+    const lone =
+      key.escape === true &&
+      key.ctrl !== true &&
+      key.meta !== true &&
+      (input === '' || input === '\x1b');
+    if (snapshot.escape === 'back' && settle !== undefined && lone) finish(NATIVE_PROMPT_BACK);
+    else cancel();
+  };
   const prompt = (
-    kind: 'select' | 'text' | 'password',
+    kind: 'select' | 'text' | 'password' | 'chord',
     message: string,
     options: readonly NativePromptOption[] = [],
     initialValue?: string,
     check?: (value: string) => string | undefined,
+    extras?: { readonly escape?: NativePromptEscape; readonly details?: readonly string[] },
   ): Promise<string | symbol> => {
     if (!snapshot.active || abort?.signal.aborted || disposed)
       return Promise.resolve(NATIVE_PROMPT_CANCEL);
     if (settle) throw new Error('A native prompt is already active.');
     clear();
+    chord.begin();
     validate = check;
     const selected = Math.max(
       0,
@@ -162,6 +265,8 @@ export function createNativePromptChannel(): {
       selected,
       display: '',
       error: '',
+      escape: extras?.escape ?? 'cancel',
+      details: extras?.details === undefined ? NO_DETAILS : extras.details.map(sanitizeInline),
     });
     return new Promise((resolve) => {
       settle = resolve;
@@ -176,11 +281,13 @@ export function createNativePromptChannel(): {
     // Rejected bytes must not be silently omitted from a later submission.
     // Keep the rejection visible until the user explicitly edits or cancels.
     if (invalid) return;
+    // What `Esc` does here is what the person is told it does.
+    const escapeWord = snapshot.escape === 'back' ? 'go back' : 'cancel';
     if (secret.length + text.length > NATIVE_PROMPT_INPUT_LIMIT) {
       invalid = true;
       publish({
         ...snapshot,
-        error: 'Input is too long. Press Backspace to edit or Esc to cancel.',
+        error: `Input is too long. Press Backspace to edit or Esc to ${escapeWord}.`,
       });
       return;
     }
@@ -193,8 +300,7 @@ export function createNativePromptChannel(): {
       invalid = true;
       publish({
         ...snapshot,
-        error:
-          'Input contains unsupported control characters. Press Backspace to edit or Esc to cancel.',
+        error: `Input contains unsupported control characters. Press Backspace to edit or Esc to ${escapeWord}.`,
       });
       return;
     }
@@ -207,6 +313,83 @@ export function createNativePromptChannel(): {
           : sanitizeInline(secret),
       error: '',
     });
+  };
+  /** Route one key the prompt's host delivered; `stamp` is the guard's evidence from just before it. */
+  const route = (input: string, key: Key, stamp: ChordStamp): boolean => {
+    let boundary = -1;
+    for (const marker of ['\r', '\n', '\x1b', '\x03']) {
+      const index = input.indexOf(marker);
+      if (index >= 0 && (boundary < 0 || index < boundary)) boundary = index;
+    }
+    if (boundary >= 0) {
+      const before = input.slice(0, boundary);
+      const marker = input[boundary];
+      if (before) append(before);
+      if (marker === '\x1b' || marker === '\x03') {
+        dismiss(input, key);
+        return true;
+      }
+    }
+    if (key.escape || key.meta || (key.ctrl && input.toLowerCase() === 'c')) {
+      dismiss(input, key);
+      return true;
+    }
+    if (snapshot.kind === 'busy' || !settle) return true;
+    const submitted = key.return || boundary >= 0;
+    if (snapshot.kind === 'chord') {
+      // Only a lone Ctrl+Y or Ctrl+N answers. Anything else is a key the card has no use for, which is typing as far as the guard
+      // is concerned: a chord soon after it is refused.
+      const answer = boundary >= 0 ? undefined : reduceChordKey(input, key);
+      if (answer === undefined) chord.foreign(stamp);
+      else {
+        const decided = chord.decide(stamp, answer, visibility?.(snapshot) === true);
+        if (decided !== undefined) finish(decided);
+      }
+      return true;
+    }
+    chord.foreign(stamp);
+    if (snapshot.kind === 'picker') {
+      picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
+    } else if (snapshot.kind === 'select') {
+      if (key.upArrow || key.downArrow) {
+        const count = snapshot.options.length;
+        if (count)
+          publish({
+            ...snapshot,
+            selected: (snapshot.selected + (key.upArrow ? count - 1 : 1)) % count,
+          });
+      } else if (submitted) {
+        const option = snapshot.options[snapshot.selected];
+        if (option) finish(option.value);
+      }
+    } else if (submitted) {
+      if (invalid) return true;
+      let error: string | undefined;
+      try {
+        error = validate?.(secret);
+      } catch {
+        error = 'Input could not be validated.';
+      }
+      if (error)
+        publish({
+          ...snapshot,
+          error:
+            snapshot.kind === 'password' ? 'A valid value is required.' : sanitizeInline(error),
+        });
+      else finish(secret);
+    } else if (key.backspace || key.delete) {
+      secret = Array.from(secret).slice(0, -1).join('');
+      invalid = false;
+      publish({
+        ...snapshot,
+        display:
+          snapshot.kind === 'password'
+            ? '•'.repeat(Math.min(secret.length, 32))
+            : sanitizeInline(secret),
+        error: '',
+      });
+    } else if (!key.ctrl && !key.meta) append(input);
+    return true;
   };
   const ui: NativePromptUi = {
     subscribe: (listener) => {
@@ -221,73 +404,22 @@ export function createNativePromptChannel(): {
     bindVisibility: (check) => {
       visibility = check;
     },
+    shown: (frame) => {
+      if (frame === snapshot && snapshot.kind === 'chord' && settle !== undefined) chord.shown();
+    },
     input: (input, key) => {
       if (!snapshot.active) return false;
-      let boundary = -1;
-      for (const marker of ['\r', '\n', '\x1b', '\x03']) {
-        const index = input.indexOf(marker);
-        if (index >= 0 && (boundary < 0 || index < boundary)) boundary = index;
-      }
-      if (boundary >= 0) {
-        const before = input.slice(0, boundary);
-        const marker = input[boundary];
-        if (before) append(before);
-        if (marker === '\x1b' || marker === '\x03') {
-          cancel();
-          return true;
-        }
-      }
-      if (key.escape || key.meta || (key.ctrl && input.toLowerCase() === 'c')) {
-        cancel();
-        return true;
-      }
-      if (snapshot.kind === 'busy' || !settle) return true;
-      const submitted = key.return || boundary >= 0;
-      if (snapshot.kind === 'picker') {
-        picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
-      } else if (snapshot.kind === 'select') {
-        if (key.upArrow || key.downArrow) {
-          const count = snapshot.options.length;
-          if (count)
-            publish({
-              ...snapshot,
-              selected: (snapshot.selected + (key.upArrow ? count - 1 : 1)) % count,
-            });
-        } else if (submitted) {
-          const option = snapshot.options[snapshot.selected];
-          if (option) finish(option.value);
-        }
-      } else if (submitted) {
-        if (invalid) return true;
-        let error: string | undefined;
-        try {
-          error = validate?.(secret);
-        } catch {
-          error = 'Input could not be validated.';
-        }
-        if (error)
-          publish({
-            ...snapshot,
-            error:
-              snapshot.kind === 'password' ? 'A valid value is required.' : sanitizeInline(error),
-          });
-        else finish(secret);
-      } else if (key.backspace || key.delete) {
-        secret = Array.from(secret).slice(0, -1).join('');
-        invalid = false;
-        publish({
-          ...snapshot,
-          display:
-            snapshot.kind === 'password'
-              ? '•'.repeat(Math.min(secret.length, 32))
-              : sanitizeInline(secret),
-          error: '',
-        });
-      } else if (!key.ctrl && !key.meta) append(input);
-      return true;
+      // Every key is stamped, so the guard judges each one against what happened BEFORE it (the chat store's `lastKeyAt`). A
+      // prompt this key settles starts the lockout that holds a repeating key off the card that follows it.
+      const stamp = chord.stamp();
+      const open = settle !== undefined;
+      const handled = route(input, key, stamp);
+      if (open && settle === undefined) chord.resolved(stamp);
+      return handled;
     },
     paste: (text) => {
       if (!snapshot.active) return false;
+      chord.foreign(chord.stamp());
       append(text);
       return true;
     },
@@ -300,7 +432,7 @@ export function createNativePromptChannel(): {
       listeners.clear();
     },
   };
-  const flow: NativePromptFlow = {
+  const flow: NativePromptFlow & NativeChordPort = {
     begin: () => {
       if (disposed || snapshot.active) throw new Error('Native prompt is unavailable.');
       abort = new AbortController();
@@ -336,6 +468,8 @@ export function createNativePromptChannel(): {
           options: [],
           display: '',
           error: '',
+          escape: 'cancel',
+          details: NO_DETAILS,
         });
     },
     pick: (options) => {
@@ -381,8 +515,11 @@ export function createNativePromptChannel(): {
         picker.start();
       });
     },
-    select: (options) => prompt('select', options.message, options.options, options.initialValue),
-    confirm: async (message, initialValue = true) => {
+    select: (options) =>
+      prompt('select', options.message, options.options, options.initialValue, undefined, {
+        escape: options.escape ?? 'cancel',
+      }),
+    confirm: async (message, initialValue = true, escape = 'cancel') => {
       const value = await prompt(
         'select',
         message,
@@ -391,11 +528,33 @@ export function createNativePromptChannel(): {
           { value: 'no', label: 'No' },
         ],
         initialValue ? 'yes' : 'no',
+        undefined,
+        { escape },
       );
-      return value === NATIVE_PROMPT_CANCEL ? value : value === 'yes';
+      return typeof value === 'symbol' ? value : value === 'yes';
     },
-    text: (options) => prompt('text', options.message, [], undefined, options.validate),
-    password: (options) => prompt('password', options.message, [], undefined, options.validate),
+    text: (options) =>
+      prompt('text', options.message, [], undefined, options.validate, {
+        escape: options.escape ?? 'cancel',
+      }),
+    password: (options) =>
+      prompt('password', options.message, [], undefined, options.validate, {
+        escape: options.escape ?? 'cancel',
+      }),
+    chord: async (options) => {
+      const value = await prompt(
+        'chord',
+        options.message,
+        [
+          { value: 'allow', label: options.allow },
+          { value: 'deny', label: options.deny },
+        ],
+        undefined,
+        undefined,
+        { escape: options.escape ?? 'cancel', details: options.details ?? NO_DETAILS },
+      );
+      return typeof value === 'symbol' ? value : value === 'allow' ? 'allow' : 'deny';
+    },
   };
   return { ui, flow };
 }

@@ -943,6 +943,8 @@ const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
   selected: 0,
   display: '',
   error: '',
+  escape: 'cancel',
+  details: [],
 };
 const emptyPromptSubscribe = (): (() => void) => () => {};
 
@@ -963,7 +965,12 @@ function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const lines = [
     prompt.note,
     prompt.message,
-    ...prompt.options.map((option) => `  ${option.label}${option.hint ? ` — ${option.hint}` : ''}`),
+    // A chord card's body sits behind a two-column gutter, and its key rows carry a nine-column `[Ctrl+Y] ` tag.
+    ...prompt.details.map((line) => `│ ${line}`),
+    ...prompt.options.map(
+      (option) =>
+        `${prompt.kind === 'chord' ? '  [Ctrl+Y] ' : '  '}${option.label}${option.hint ? ` — ${option.hint}` : ''}`,
+    ),
     prompt.display,
     prompt.error,
   ].filter(Boolean);

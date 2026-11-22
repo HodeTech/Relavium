@@ -53,7 +53,9 @@ export function createNativePromptAcknowledgement(
     a.note === b.note &&
     a.options === b.options &&
     a.selected === b.selected &&
-    a.error === b.error;
+    a.error === b.error &&
+    a.escape === b.escape &&
+    a.details === b.details;
   const samePickerPrompt = (a: NativePromptSnapshot, b: NativePromptSnapshot): boolean =>
     a.active &&
     b.active &&
@@ -142,8 +144,18 @@ export function createNativePromptAcknowledgement(
         return false;
       return sharedFrame.commit(snapshot, node, flush, () => {
         if (disposed || currentEpoch !== epoch) return;
+        const prior = observed;
         observed = { snapshot, size, epoch: currentEpoch, node };
         pickerEditor = snapshot.kind === 'picker' ? observed : undefined;
+        // Every render commits again; only a frame that was not already acknowledged is a NEW one the person has had no time to
+        // read (a card's dwell restarts for it, and only for it).
+        if (
+          prior?.snapshot !== snapshot ||
+          prior.epoch !== currentEpoch ||
+          prior.node !== node ||
+          !sameSize(prior.size, size)
+        )
+          ui.shown(snapshot);
         notify();
       });
     },
