@@ -182,8 +182,8 @@ flowchart TD
 | 0136 | [A turn asks to continue at a checkpoint instead of dying at a ceiling](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md) | Accepted | 2026-11-19 |
 | 0137 | [`/permissions` is a sheet, and `Esc` steps back one level out of the full view](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) | Accepted | 2026-11-20 |
 | 0138 | [A file write the chat applied is remembered for the project, and it outdates the grants made before it](0138-a-file-write-is-remembered-for-the-project-and-outdates-older-grants.md) | Accepted | 2026-11-21 |
-| 0139 | [A workflow run is hosted inside the Home, one executing leg at a time, under the Home's own owners](0139-a-workflow-run-is-hosted-inside-the-home.md) | Proposed | 2026-11-22 |
-| 0140 | [The Home's management browsers read the durable run record, drill from a run to a node, and a few additive fields complete that record](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) | Proposed | 2026-11-22 |
+| 0139 | [A workflow run is hosted inside the Home, one executing leg at a time, under the Home's own owners](0139-a-workflow-run-is-hosted-inside-the-home.md) | Accepted | 2026-11-22 |
+| 0140 | [The Home's management browsers read the durable run record, drill from a run to a node, and a few additive fields complete that record](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) | Accepted | 2026-11-22 |
 
 ## Creating a new ADR
 

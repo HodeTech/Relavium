@@ -307,3 +307,7 @@ The keymap is `apps/cli/src/render/tui/interrupt-keymap.ts`, a pure reducer over
 - **§1, beneath the table**: a Home draft is lost on the second press (the decision stands; the reasoning "nothing to lose" did not hold, and the reference now says so). A chat from a draft takes three presses.
 - **Alternatives, "Leave the Home on a single press"**: the same correction.
 - **§4**: the first-SIGINT test it called unpinned exists; the Home's SIGINT exit is `130` and a chat's is `4`.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+§1 gains the run rows of [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §5: a running leg takes two presses (the first arms, the second cancels), and a run view with no leg executing closes on one press and arms nothing. The `Ctrl+D` row narrows: while a leg executes, `Ctrl+D` on an empty prompt opens a confirmation card instead of exiting. §4's 'out of scope' sentence for a run hosted in the Home is answered by ADR-0139 §5.

@@ -5358,8 +5358,8 @@ flowchart LR
 | 4 | [ADR-0067][] | Node supported-floor `>=22` (supersedes ADR-0021) | **Accepted** | 2.6.F |
 | 5 | [ADR-0068][] | Full-screen TUI renderer + component test harness | **Accepted** | 2.6.F |
 | 5b | [ADR-0069][] | `string-width` for the CLI renderer | **Accepted** | 2.6.F |
-| 6 | [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) | Management browsers + run drill-down + durable run detail (amends ADR-0036 additively) | **Proposed** (2026-11-22, for the maintainer's acceptance) | 2.6.G / 2.6.H (MVP-8) |
-| 6b | [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) | A workflow run is hosted inside the Home (the run-hosting ADR of ADR-0122 §10; amends ADR-0115) | **Proposed** (2026-11-22, for the maintainer's acceptance) | 2.6.G / 2.6.K (MVP-8) |
+| 6 | [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) | Management browsers + run drill-down + durable run detail (amends ADR-0036 additively) | **Accepted** (2026-11-22, by the maintainer, after the review below) | 2.6.G / 2.6.H (MVP-8) |
+| 6b | [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) | A workflow run is hosted inside the Home (the run-hosting ADR of ADR-0122 §10; amends ADR-0115) | **Accepted** (2026-11-22, by the maintainer, after the review below) | 2.6.G / 2.6.K (MVP-8) |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
 | 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted**; MVP-3 slice independently implemented/reviewed on `development`, 2026-11-12 ([checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)). Later toolbelt slices retain their milestones. | 2.6.M |
@@ -6180,7 +6180,7 @@ MVP-8 (the Home as hub) is the largest remaining piece of the CLI MVP. Before an
 
 - [x] The register: the content-level identity guard and the persister atomicity entries struck with their evidence; the gate-resolve entry re-scoped (a test, not an index); the run-submission idempotency entry rescheduled to step 3 ([deferred-tasks.md](../deferred-tasks.md)).
 - [x] [`current.md`](../current.md): the MVP sentence's "cancels … gated runs" reading, the MVP-8 scope and the corrected carry-in sentence about approval cards.
-- [x] ADR row 6 is [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md); the run-hosting ADR, which the table did not track, is row 6b, [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md). Both **Proposed** for the maintainer.
+- [x] ADR row 6 is [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md); the run-hosting ADR, which the table did not track, is row 6b, [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md). Both are **Accepted** by the maintainer on 2026-11-22, after the review recorded below.
 - [ ] To do with each step: the code-comment drift the reports found (`home-controller.ts` says only `/exit` applies in the Home, its test says the set is `[exit, doctor]`; the `home-store.ts` gate-deadline comment), the dated notes on the amended ADRs (written when the two ADRs are accepted), and the reference sections each ADR lists under *Landing obligations*.
 
 #### Maintainer rulings of 2026-11-22

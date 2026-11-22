@@ -1267,3 +1267,7 @@ records exact scopes, tests and published-source validation. Earlier pending
 checkpoints are historical. Actual native/work/terminal/database acknowledgements
 remain distinct from cancellation, initiation, refusal and deadline expiry; this
 note adds no shutdown authority or whole-wave acceptance.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+The Home is a host surface and must depart a paused leg before its shared database closes. A leg's teardown order is: cancel, join, depart, close its MCP clients and work, retire its owner, then close the database ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §6). A human-gate or budget-gate pause departs with the same result type as the shell.

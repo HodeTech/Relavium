@@ -588,3 +588,7 @@ See [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md) and t
 [canonical usage contract](../reference/shared-core/llm-provider-seam.md#6-usage).
 
 > Note 2026-11-19 ([ADR-0136](0136-a-turn-asks-to-continue-at-a-checkpoint-instead-of-dying-at-a-ceiling.md)): with a continue checkpoint a turn on a surface with a person can run more than `maxToolTurns + 1` provider calls. §1's `calls = maxToolTurns + 1` stays a conservative upper bound **per pause**; the pre-egress check stays armed for every call, and "continue" grants rounds, never money.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+A budget gate can be answered in the Home. The card shows the frozen allowance from its structured field and approves exactly that amount; a quote that has moved is refused before the gate is claimed, and the gate stays pending ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §4). For sessions nothing changes: a session's budget pause stays with 2.6.K.

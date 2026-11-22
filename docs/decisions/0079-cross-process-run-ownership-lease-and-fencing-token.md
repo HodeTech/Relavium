@@ -300,3 +300,7 @@ This additive note does not rewrite the original decision or claim that PR #90 h
 Under ADR-0103, the exact fence remains held until registered actors, writers and receipts are
 quiescent. Publication alone does not authorize early release; inline decisions and successor
 claims must respect that acknowledged retirement boundary.
+
+### Amendment note — 2026-11-22 (ADR-0139 and ADR-0140, MVP-8)
+
+Both recorded triggers are now answered. The long-lived-host trigger is not met: each hosted leg builds a fresh engine with a fresh owner ([ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) §2). The observer trigger is met by the Home's Active tab, which watches other processes' runs through a read-only poll of the durable log ([ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §2); the observer handle itself stays a named follow-up. The §4 rule (hand the claim back at every re-pause, re-take it before writing) applies to the Home's legs too.
