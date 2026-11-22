@@ -103,7 +103,7 @@ export interface RunPinStore {
  * project in such a directory must stay pinnable; neither reorders text or hides a character the way a bidi
  * control does. Every other `\p{Cf}` stays refused.
  */
-const FORBIDDEN_TEXT = /(?![‌‍])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
+const FORBIDDEN_TEXT = /(?![\u200c\u200d])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 function validateKind(key: PinKey): void {
   if (!PIN_KINDS.some((kind) => kind === key.kind)) {

@@ -217,7 +217,13 @@ describe('migration 0022 — run_pins and the project-scoped runs index (ADR-014
     expect(
       reader.listRunSummaries({ limit: 10, projectRoot: '/legacy' }).map((row) => row.id),
     ).toEqual(['run-d', 'run-a']);
-    expect(reader.loadRunDetail('run-e')).toMatchObject({ id: 'run-e', inputJson: '{}' });
+    expect(reader.loadRunDetail('run-e')).toMatchObject({
+      id: 'run-e',
+      outputJson: null,
+      outputByteLength: null,
+      errorJson: null,
+      errorByteLength: null,
+    });
     // The pin store works on the migrated database, and a pin never touches a run.
     const pins = createRunPinStore(opened.db);
     expect(pins.pinItem({ kind: 'run', projectRoot: '', ref: 'run-d', at: 7000 })).toBe('pinned');

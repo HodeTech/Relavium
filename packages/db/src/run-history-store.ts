@@ -13,7 +13,19 @@ import {
   type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
-import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  sql,
+  type AnyColumn,
+  type SQL,
+} from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
@@ -158,19 +170,27 @@ export interface RunSummaryRecord extends RunRecord {
 }
 
 /**
- * One run in full: the {@link RunSummaryRecord} plus the three JSON documents the run row holds. The JSON is
- * returned AS STORED (text), exactly like {@link RunResumeSnapshot.inputJson}: the engine masked secrets at the
- * write boundary (ADR-0050), this read is pass-through, and a consumer parses it and renders it only through
- * the bounded, scrubbed renderer. The frozen workflow snapshot is deliberately not here — it is read by
- * {@link loadRunSnapshot}, which the resume path already owns.
+ * One run in full: the {@link RunSummaryRecord} plus the run's two result documents. The JSON is returned AS
+ * STORED (text), exactly like {@link RunResumeSnapshot.inputJson}: the engine masked secrets at the write
+ * boundary (ADR-0050), this read is pass-through, and a consumer parses it and renders it only through the
+ * bounded, scrubbed renderer. **Each document is size-gated in SQL**: the statement returns the text only when
+ * the stored document is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes (UTF-8), so a larger one never
+ * enters JavaScript; the record then carries `null` for the text and the document's byte length, and the caller
+ * refuses it with its own fixed text. For each document, `*Json` and `*ByteLength` are both `null` when the run
+ * has none; both are set when the text is returned; and a `null` text with a number is the over-bound case.
+ * Neither `input_json` (the run's inputs are secret-adjacent, ADR-0113, and no surface shows them) nor the
+ * frozen workflow snapshot is read here; the snapshot is read by {@link loadRunSnapshot}, which the resume path
+ * already owns.
  */
 export interface RunDetailRecord extends RunSummaryRecord {
-  /** `runs.input_json` — the run's inputs as recorded at `run:started` (never null: the column defaults to `{}`). */
-  readonly inputJson: string;
-  /** `runs.output_json` — the final outputs; absent until a run completes (or fails with partial outputs). */
-  readonly outputJson?: string;
-  /** `runs.error_json` — the failure; absent unless the run failed. */
-  readonly errorJson?: string;
+  /** `runs.output_json` as stored; `null` when the run has none yet, or when it exceeds the bound (see `outputByteLength`). */
+  readonly outputJson: string | null;
+  /** The UTF-8 byte length of `runs.output_json`; `null` when the column is NULL. */
+  readonly outputByteLength: number | null;
+  /** `runs.error_json` as stored; `null` when the run did not fail, or when it exceeds the bound (see `errorByteLength`). */
+  readonly errorJson: string | null;
+  /** The UTF-8 byte length of `runs.error_json`; `null` when the column is NULL. */
+  readonly errorByteLength: number | null;
 }
 
 /**
@@ -185,15 +205,22 @@ export interface StepSummaryRecord extends StepRecord {
 
 /**
  * One node attempt with its output and error — the node-detail page. `outputJson` and `errorJson` are returned
- * AS STORED, under the same contract as {@link RunDetailRecord}. `cachedTokens` is carried because the column
- * exists, and is always `0` today: nothing writes `step_executions.cached_tokens` (database-schema.md).
+ * AS STORED and **size-gated in SQL**, under the same contract as {@link RunDetailRecord}: the text only when the
+ * stored document is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes, otherwise `null` with the byte length
+ * in `outputByteLength` / `errorByteLength` (both `null` when the column is NULL). `cachedTokens` is carried
+ * because the column exists, and is always `0` today: nothing writes `step_executions.cached_tokens`
+ * (database-schema.md).
  */
 export interface StepDetailRecord extends StepSummaryRecord {
   readonly cachedTokens: number;
-  /** `step_executions.output_json`; absent until the attempt completes. */
-  readonly outputJson?: string;
-  /** `step_executions.error_json`; absent unless the attempt failed. */
-  readonly errorJson?: string;
+  /** `step_executions.output_json`; `null` until the attempt completes, or when it exceeds the bound. */
+  readonly outputJson: string | null;
+  /** The UTF-8 byte length of `step_executions.output_json`; `null` when the column is NULL. */
+  readonly outputByteLength: number | null;
+  /** `step_executions.error_json`; `null` unless the attempt failed, or when it exceeds the bound. */
+  readonly errorJson: string | null;
+  /** The UTF-8 byte length of `step_executions.error_json`; `null` when the column is NULL. */
+  readonly errorByteLength: number | null;
 }
 
 /** The ownership facts {@link RunHistoryReader.loadRunLeases} returns for one run; liveness is the CALLER's to judge. */
@@ -346,6 +373,11 @@ export const MAX_RUN_SUMMARY_PAGE = 200;
 export const MAX_RUN_TAIL_EVENTS = 1000;
 /** The most run ids one {@link RunHistoryReader.loadRunLeases} call accepts; more is refused, not truncated. */
 export const MAX_RUN_LEASE_IDS = 200;
+/**
+ * The largest stored result document (`output_json` or `error_json`) the detail reads hand back as text: 1 MiB of
+ * UTF-8. The bound is applied inside the SELECT, so a larger document never reaches JavaScript.
+ */
+export const MAX_RUN_DETAIL_DOCUMENT_BYTES = 1_048_576;
 /** Rows the tail read pulls from SQLite per statement while it looks for `limit` readable events. */
 const RUN_TAIL_BATCH_ROWS = 256;
 
@@ -479,14 +511,20 @@ export interface RunHistoryReader {
     readonly projectRoot?: string;
     readonly workflowId?: string;
   }) => RunSummaryRecord[];
-  /** One run with its input, output and error JSON as stored (soft-deleted excluded), or `undefined`. */
+  /**
+   * One run with its output and error JSON as stored, each size-gated in SQL at {@link MAX_RUN_DETAIL_DOCUMENT_BYTES}
+   * (soft-deleted excluded), or `undefined`. It never reads `input_json` or the frozen snapshot.
+   */
   loadRunDetail: (runId: string) => RunDetailRecord | undefined;
   /**
    * A run's node attempts in execution order, one row per attempt, without an input, output or error column —
    * the node table. Keyed by `runId` alone (the caller validates the run first), like {@link loadStepExecutions}.
    */
   listStepSummaries: (runId: string) => StepSummaryRecord[];
-  /** One node attempt's output, error and token columns, looked up by `idx_step_exec_run_node`; or `undefined`. */
+  /**
+   * One node attempt's output, error (each size-gated in SQL like {@link loadRunDetail}) and token columns, looked
+   * up by `idx_step_exec_run_node`; or `undefined`.
+   */
   loadStepDetail: (
     runId: string,
     nodeId: string,
@@ -810,6 +848,27 @@ function fromRunRow(row: RunSummaryRow): RunRecord {
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
   };
+}
+
+/**
+ * The UTF-8 byte length of a stored text document, computed by SQLite. `CAST(... AS BLOB)` is what makes it BYTES:
+ * `length()` of TEXT counts characters and stops at the first NUL, which would let a multi-byte document past a
+ * byte bound. `NULL` for a NULL column. The value is read inside SQLite; the document does not reach JavaScript.
+ */
+function documentByteLength(column: AnyColumn): SQL<number | null> {
+  return sql<number | null>`length(CAST(${column} AS BLOB))`;
+}
+
+/**
+ * A stored text document, returned only when it is at most {@link MAX_RUN_DETAIL_DOCUMENT_BYTES} bytes: the size
+ * gate of the detail reads, written as one SQL expression so a larger document is never selected into JavaScript
+ * (an over-bound document yields `NULL`, as does a NULL column; {@link documentByteLength} tells them apart). The
+ * byte-length expression is spelled out here again, not composed, so the statement reads the same for both.
+ */
+function gatedDocument(column: AnyColumn): SQL<string | null> {
+  return sql<
+    string | null
+  >`CASE WHEN length(CAST(${column} AS BLOB)) <= ${sql.raw(String(MAX_RUN_DETAIL_DOCUMENT_BYTES))} THEN ${column} END`;
 }
 
 /**
@@ -1714,9 +1773,12 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       const row = db
         .select({
           ...runSummaryColumns,
-          inputJson: runs.inputJson,
-          outputJson: runs.outputJson,
-          errorJson: runs.errorJson,
+          // The two documents are gated IN the statement (`gatedDocument`): the text leaves SQLite only when it
+          // is within the bound. `input_json` is not selected at all.
+          outputJson: gatedDocument(runs.outputJson),
+          outputByteLength: documentByteLength(runs.outputJson),
+          errorJson: gatedDocument(runs.errorJson),
+          errorByteLength: documentByteLength(runs.errorJson),
         })
         .from(runs)
         .where(and(eq(runs.id, runId), isNull(runs.deletedAt)))
@@ -1725,9 +1787,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         ? undefined
         : {
             ...fromRunSummaryRow(row),
-            inputJson: row.inputJson,
-            ...(row.outputJson === null ? {} : { outputJson: row.outputJson }),
-            ...(row.errorJson === null ? {} : { errorJson: row.errorJson }),
+            outputJson: row.outputJson,
+            outputByteLength: row.outputByteLength,
+            errorJson: row.errorJson,
+            errorByteLength: row.errorByteLength,
           };
     },
 
@@ -1766,8 +1829,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
           inputTokens: stepExecutions.inputTokens,
           outputTokens: stepExecutions.outputTokens,
           cachedTokens: stepExecutions.cachedTokens,
-          outputJson: stepExecutions.outputJson,
-          errorJson: stepExecutions.errorJson,
+          outputJson: gatedDocument(stepExecutions.outputJson),
+          outputByteLength: documentByteLength(stepExecutions.outputJson),
+          errorJson: gatedDocument(stepExecutions.errorJson),
+          errorByteLength: documentByteLength(stepExecutions.errorJson),
         })
         .from(stepExecutions)
         // `stepMatch` is the same (run, node, attempt) predicate the writer's arms update by, which is what
@@ -1779,8 +1844,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         : {
             ...fromStepSummaryRow(row),
             cachedTokens: row.cachedTokens,
-            ...(row.outputJson === null ? {} : { outputJson: row.outputJson }),
-            ...(row.errorJson === null ? {} : { errorJson: row.errorJson }),
+            outputJson: row.outputJson,
+            outputByteLength: row.outputByteLength,
+            errorJson: row.errorJson,
+            errorByteLength: row.errorByteLength,
           };
     },
 

@@ -6,6 +6,7 @@ import {
   createRunHistoryReader,
   isCorruptRunEventError,
   isRunHistoryReadError,
+  MAX_RUN_DETAIL_DOCUMENT_BYTES,
   MAX_RUN_LEASE_IDS,
   MAX_RUN_SUMMARY_PAGE,
   MAX_RUN_TAIL_EVENTS,
@@ -122,6 +123,26 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
     return list
       .split(',')
       .map((column) => (column.trim().split('.').at(-1) ?? '').replaceAll('"', ''));
+  }
+
+  /**
+   * What a detail statement still names of `column` once the size-gated expressions are removed: the gate
+   * (`CASE WHEN length(CAST(c AS BLOB)) <= bound THEN c END`) and the byte length (`length(CAST(c AS BLOB))`).
+   * Anything left is a read of the document that is not behind the gate, so a test expects the column to be gone.
+   * The table qualifier is dropped first (drizzle writes a column qualified in one place and bare in another).
+   */
+  function ungatedReadsOf(sql: string, table: string, column: string): string[] {
+    const ref = `"${column}"`;
+    const bare = sql.replaceAll(`"${table}".`, '');
+    const gate = `CASE WHEN length(CAST(${ref} AS BLOB)) <= ${MAX_RUN_DETAIL_DOCUMENT_BYTES} THEN ${ref} END`;
+    const length = `length(CAST(${ref} AS BLOB))`;
+    return bare.replaceAll(gate, '').replaceAll(length, '').match(new RegExp(ref, 'gu')) ?? [];
+  }
+
+  /** A JSON text of exactly `bytes` UTF-8 bytes (`{"v":"aaa..."}`), so a bound test sits on the byte. */
+  function documentOfBytes(bytes: number): string {
+    const frame = '{"v":""}'.length;
+    return `{"v":"${'a'.repeat(bytes - frame)}"}`;
   }
 
   /** Every distinct `runs` column a statement names (`"runs"."x"`), sorted — what it reads, not only what it returns. */
@@ -370,7 +391,7 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
   });
 
   describe('loadRunDetail', () => {
-    it('returns the run with its input, output and error JSON exactly as stored', () => {
+    it('returns the run with its output and error JSON exactly as stored, and their byte lengths', () => {
       seedRun('r-1', T0, {
         projectRoot: '/work/p1',
         status: 'failed',
@@ -383,9 +404,10 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
         id: 'r-1',
         status: 'failed',
         projectRoot: '/work/p1',
-        inputJson: '{"topic":"x"}',
         outputJson: '{"partial":true}',
+        outputByteLength: 16,
         errorJson: '{"code":"internal"}',
+        errorByteLength: 19,
       });
       expect(detail).not.toHaveProperty('workflowDefinitionSnapshot');
       const statements = statementsOf(() => reader.loadRunDetail('r-1'));
@@ -393,12 +415,24 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       expect(statements[0]).not.toContain('workflow_definition_snapshot');
     });
 
-    it('omits an output and an error the run does not have, and defaults the input to {}', () => {
+    it('has no inputJson: the run inputs are not read, selected or returned', () => {
+      seedRun('r-in', T0, { inputJson: '{"secret":"sk-live"}', outputJson: '{"o":1}' });
+      const detail = reader.loadRunDetail('r-in');
+      expect(detail).not.toHaveProperty('inputJson');
+      expect(JSON.stringify(detail)).not.toContain('sk-live');
+      const [statement] = statementsOf(() => reader.loadRunDetail('r-in'));
+      expect(statement).not.toContain('input_json');
+    });
+
+    it('says null for an output and an error the run does not have', () => {
       seedRun('r-2', T0);
       const detail = reader.loadRunDetail('r-2');
-      expect(detail?.inputJson).toBe('{}');
-      expect(detail).not.toHaveProperty('outputJson');
-      expect(detail).not.toHaveProperty('errorJson');
+      expect(detail).toMatchObject({
+        outputJson: null,
+        outputByteLength: null,
+        errorJson: null,
+        errorByteLength: null,
+      });
       expect(detail).not.toHaveProperty('projectRoot');
     });
 
@@ -406,6 +440,81 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       seedRun('r-3', T0, { deletedAt: T0 + 1 });
       expect(reader.loadRunDetail('r-3')).toBeUndefined();
       expect(reader.loadRunDetail('missing')).toBeUndefined();
+    });
+
+    describe('the size gate (1 MiB, applied in SQL)', () => {
+      const atBound = documentOfBytes(MAX_RUN_DETAIL_DOCUMENT_BYTES);
+      const overBound = documentOfBytes(MAX_RUN_DETAIL_DOCUMENT_BYTES + 1);
+
+      it('states the bound as exactly 1 MiB', () => {
+        expect(MAX_RUN_DETAIL_DOCUMENT_BYTES).toBe(1_048_576);
+        expect(Buffer.byteLength(atBound, 'utf8')).toBe(1_048_576);
+        expect(Buffer.byteLength(overBound, 'utf8')).toBe(1_048_577);
+      });
+
+      it('returns an output of exactly 1 MiB as text and one byte more as null with its length', () => {
+        seedRun('at', T0, { outputJson: atBound });
+        seedRun('over', T0 + 1, { outputJson: overBound });
+        expect(reader.loadRunDetail('at')).toMatchObject({
+          outputJson: atBound,
+          outputByteLength: 1_048_576,
+        });
+        expect(reader.loadRunDetail('over')).toMatchObject({
+          outputJson: null,
+          outputByteLength: 1_048_577,
+        });
+      });
+
+      it('gates error_json the same way, independently of the output', () => {
+        seedRun('e-at', T0, { errorJson: atBound, outputJson: overBound });
+        seedRun('e-over', T0 + 1, { errorJson: overBound, outputJson: '{"o":1}' });
+        expect(reader.loadRunDetail('e-at')).toMatchObject({
+          errorJson: atBound,
+          errorByteLength: 1_048_576,
+          outputJson: null,
+          outputByteLength: 1_048_577,
+        });
+        expect(reader.loadRunDetail('e-over')).toMatchObject({
+          errorJson: null,
+          errorByteLength: 1_048_577,
+          outputJson: '{"o":1}',
+          outputByteLength: 7,
+        });
+      });
+
+      it('counts bytes, not characters: a multi-byte document under 1 MiB of characters is refused', () => {
+        // 400,000 characters of 3 bytes each: 1,200,000 bytes (over the bound), 400,000 characters (under it).
+        const wide = `"${'€'.repeat(400_000)}"`;
+        seedRun('wide', T0, { outputJson: wide });
+        expect(reader.loadRunDetail('wide')).toMatchObject({
+          outputJson: null,
+          outputByteLength: 1_200_002,
+        });
+        // The same count of characters in one-byte text is well inside the bound and comes back whole.
+        const narrow = `"${'e'.repeat(400_000)}"`;
+        seedRun('narrow', T0 + 1, { outputJson: narrow });
+        expect(reader.loadRunDetail('narrow')).toMatchObject({
+          outputJson: narrow,
+          outputByteLength: 400_002,
+        });
+      });
+
+      it('never selects a document outside the gate: no raw output_json, error_json or input_json column', () => {
+        seedRun('s', T0, { outputJson: '{"o":1}', errorJson: '{"e":1}' });
+        const [statement] = statementsOf(() => reader.loadRunDetail('s'));
+        expect(statement).toBeDefined();
+        const sqlText = statement ?? '';
+        // Both documents are present in the statement behind the gate, and nothing mentions them outside it.
+        for (const column of ['output_json', 'error_json']) {
+          expect(sqlText).toContain(
+            `CASE WHEN length(CAST("${column}" AS BLOB)) <= 1048576 THEN "${column}" END`,
+          );
+        }
+        expect(ungatedReadsOf(sqlText, 'runs', 'output_json')).toEqual([]);
+        expect(ungatedReadsOf(sqlText, 'runs', 'error_json')).toEqual([]);
+        expect(sqlText).not.toContain('input_json');
+        expect(sqlText).not.toContain('workflow_definition_snapshot');
+      });
     });
   });
 
@@ -514,22 +623,93 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
         attemptNumber: 1,
         status: 'failed',
         errorJson: '{"code":"first"}',
+        errorByteLength: 16,
+        outputJson: null,
+        outputByteLength: null,
         cachedTokens: 0,
       });
       const second = reader.loadStepDetail('r', 'n1', 2);
       expect(second).toMatchObject({
         attemptNumber: 2,
         outputJson: '{"answer":"second"}',
+        outputByteLength: 19,
         inputTokens: 7,
         outputTokens: 9,
         costMicrocents: 55,
+        errorJson: null,
+        errorByteLength: null,
       });
-      expect(second).not.toHaveProperty('errorJson');
       // The recorded input is the rendered template, which can be secret-derived and which no surface shows.
       expect(second).not.toHaveProperty('inputJson');
       expect(reader.loadStepDetail('r', 'n1', 3)).toBeUndefined();
       expect(reader.loadStepDetail('r', 'ghost', 1)).toBeUndefined();
       expect(reader.loadStepDetail('other', 'n1', 1)).toBeUndefined();
+    });
+
+    describe('the size gate (1 MiB, applied in SQL)', () => {
+      const atBound = documentOfBytes(MAX_RUN_DETAIL_DOCUMENT_BYTES);
+      const overBound = documentOfBytes(MAX_RUN_DETAIL_DOCUMENT_BYTES + 1);
+
+      it('returns an output of exactly 1 MiB as text and one byte more as null with its length', () => {
+        seedRun('r', T0);
+        seedStep('r', 'at', 1, T0 + 1, { outputJson: atBound });
+        seedStep('r', 'over', 1, T0 + 2, { outputJson: overBound });
+        expect(reader.loadStepDetail('r', 'at', 1)).toMatchObject({
+          outputJson: atBound,
+          outputByteLength: 1_048_576,
+        });
+        expect(reader.loadStepDetail('r', 'over', 1)).toMatchObject({
+          outputJson: null,
+          outputByteLength: 1_048_577,
+        });
+      });
+
+      it('gates error_json the same way, independently of the output', () => {
+        seedRun('r', T0);
+        seedStep('r', 'at', 1, T0 + 1, { status: 'failed', errorJson: atBound });
+        seedStep('r', 'over', 1, T0 + 2, {
+          status: 'failed',
+          errorJson: overBound,
+          outputJson: '{"o":1}',
+        });
+        expect(reader.loadStepDetail('r', 'at', 1)).toMatchObject({
+          errorJson: atBound,
+          errorByteLength: 1_048_576,
+        });
+        expect(reader.loadStepDetail('r', 'over', 1)).toMatchObject({
+          errorJson: null,
+          errorByteLength: 1_048_577,
+          outputJson: '{"o":1}',
+          outputByteLength: 7,
+        });
+      });
+
+      it('counts bytes, not characters', () => {
+        seedRun('r', T0);
+        const wide = `"${'€'.repeat(400_000)}"`;
+        seedStep('r', 'wide', 1, T0 + 1, { outputJson: wide });
+        expect(reader.loadStepDetail('r', 'wide', 1)).toMatchObject({
+          outputJson: null,
+          outputByteLength: 1_200_002,
+        });
+      });
+
+      it('never selects a document outside the gate: no raw output_json, error_json or input_json column', () => {
+        seedRun('r', T0);
+        seedStep('r', 'n', 1, T0 + 1, { outputJson: '{"o":1}', errorJson: '{"e":1}' });
+        const [statement] = statementsOf(() => reader.loadStepDetail('r', 'n', 1));
+        expect(statement).toBeDefined();
+        const sqlText = statement ?? '';
+        for (const column of ['output_json', 'error_json']) {
+          expect(sqlText).toContain(
+            `CASE WHEN length(CAST("${column}" AS BLOB)) <= 1048576 THEN "${column}" END`,
+          );
+        }
+        expect(ungatedReadsOf(sqlText, 'step_executions', 'output_json')).toEqual([]);
+        expect(ungatedReadsOf(sqlText, 'step_executions', 'error_json')).toEqual([]);
+        expect(sqlText).not.toContain('input_json');
+        expect(sqlText).not.toContain('agent_snapshot');
+      });
     });
   });
 
@@ -828,6 +1008,13 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       const plan = planOfRead(() => reader.loadRunDetail('run-1')).join('\n');
       expect(plan).toMatch(/SEARCH runs USING INDEX sqlite_autoindex_runs_1 \(id=\?\)/u);
       expect(plan).not.toMatch(/SCAN runs/u);
+      expect(plan).not.toContain('TEMP B-TREE');
+    });
+
+    it('loadStepDetail is an index lookup on idx_step_exec_run_node even with the size gate in its select list', () => {
+      const plan = planOfRead(() => reader.loadStepDetail('run-1', 'n', 1)).join('\n');
+      expect(plan).toMatch(/SEARCH step_executions USING INDEX idx_step_exec_run_node/u);
+      expect(plan).not.toMatch(/SCAN step_executions/u);
       expect(plan).not.toContain('TEMP B-TREE');
     });
 
