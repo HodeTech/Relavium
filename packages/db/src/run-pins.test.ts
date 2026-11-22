@@ -102,6 +102,15 @@ describe('createRunPinStore', () => {
         .run(kind, projectRoot, ref, T0);
     };
 
+    it('removes a crafted row whose ref is longer than a store would ever write, so it cannot hold a slot for good', () => {
+      // A foreign writer's row past the write-path bound: it is listed, it counts toward the cap, and it must go.
+      const long = 'r'.repeat(600);
+      craftRow('run', '', long);
+      expect(store.listPins().map((pin) => pin.ref)).toEqual([long]);
+      expect(store.unpinItem({ kind: 'run', projectRoot: '', ref: long })).toBe(true);
+      expect(store.listPins()).toEqual([]);
+    });
+
     it('removes a crafted row whose ref holds an escape character, by the ref the list shows for it', () => {
       const escaped = `run-${String.fromCharCode(0x1b)}[31mred`;
       craftRow('run', '', escaped);
@@ -134,7 +143,7 @@ describe('createRunPinStore', () => {
       expect(store.listPins()).toHaveLength(1);
     });
 
-    it('refuses only a key over its fixed bound, an unknown kind or a non-text part, with a typed error', () => {
+    it('refuses an unknown kind or a non-text part, and never judges the length of a key, with a typed error', () => {
       const code = (fn: () => unknown): unknown => {
         try {
           fn();
@@ -143,6 +152,8 @@ describe('createRunPinStore', () => {
         }
         return undefined;
       };
+      // The bound is not checked on unpin: an over-length key matches no row written by the store, and the exact
+      // match of a crafted row is what removes it. So an over-length key is not a refusal, it is simply not found.
       expect(
         code(() =>
           store.unpinItem({
@@ -151,7 +162,7 @@ describe('createRunPinStore', () => {
             ref: 'r'.repeat(MAX_PIN_REF_LENGTH + 1),
           }),
         ),
-      ).toBe('invalid_ref');
+      ).toBe(undefined);
       expect(
         code(() =>
           store.unpinItem({
@@ -160,7 +171,7 @@ describe('createRunPinStore', () => {
             ref: 'deploy',
           }),
         ),
-      ).toBe('invalid_project_root');
+      ).toBe(undefined);
       expect(
         code(() =>
           Reflect.apply(store.unpinItem, undefined, [{ kind: 'bogus', projectRoot: '', ref: 'x' }]),

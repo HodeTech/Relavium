@@ -150,19 +150,19 @@ function validateKey(key: PinKey): void {
  * stored, so a row an older writer (or a crafted row) left with an escape character in its ref is still removable
  * by the ref {@link RunPinStore.listPins} returns for it. The bounds keep an absurd key out of the statement.
  */
+/**
+ * The lookup key of an unpin: only its kind and its types are checked, never its content or length. The key is a
+ * bound parameter that matches the exact stored row, so a row a foreign writer stored with an over-length or odd ref
+ * stays removable by the ref `listPins` shows for it (a length refusal here would hold one of the capped slots for
+ * good).
+ */
 function validateLookupKey(key: PinKey): void {
   validateKind(key);
-  if (typeof key.ref !== 'string' || key.ref.length > MAX_PIN_REF_LENGTH) {
-    throw new RunPinError(
-      'invalid_ref',
-      `a pin reference is at most ${MAX_PIN_REF_LENGTH} characters`,
-    );
+  if (typeof key.ref !== 'string') {
+    throw new RunPinError('invalid_ref', 'a pin reference is text');
   }
-  if (typeof key.projectRoot !== 'string' || key.projectRoot.length > MAX_PIN_PROJECT_ROOT_LENGTH) {
-    throw new RunPinError(
-      'invalid_project_root',
-      `a pin project root is at most ${MAX_PIN_PROJECT_ROOT_LENGTH} characters`,
-    );
+  if (typeof key.projectRoot !== 'string') {
+    throw new RunPinError('invalid_project_root', 'a pin project root is text');
   }
 }
 

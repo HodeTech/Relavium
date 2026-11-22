@@ -1479,3 +1479,15 @@ describe('readStoredError and clipCodePoints', () => {
     expect(clipCodePoints('a\u{1F600}b', 2)).toEqual({ text: 'a\u{1F600}', truncated: true });
   });
 });
+
+describe('scrubbedBounded scrubs a bounded window of an unbounded value (ADR-0122 §7.5)', () => {
+  it('masks a key-shaped secret inside the window of a very long value, and returns promptly', () => {
+    const secret = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const long = `${secret} ${'x'.repeat(300_000)}`;
+    const started = Date.now();
+    const shown = scrubbedBounded(long, 128);
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(shown).not.toContain(secret);
+    expect(shown.length).toBeLessThanOrEqual(129);
+  });
+});

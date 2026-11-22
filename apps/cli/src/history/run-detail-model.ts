@@ -634,13 +634,18 @@ export function boundedIdentifier(
  * for one row: scrubbed WHOLE and filtered to one line ({@link sanitizeUntrustedInline}), and only then cut to
  * `max` code points (default {@link MAX_IDENTIFIER_CHARS}), with `…` marking a cut. The order is the point: a cut
  * made first can leave the first characters of a secret that the scrubber no longer recognizes, and a mask made
- * first can never be clipped away from its context. The input is bounded by the caller's own size gate
- * ({@link MAX_STORED_ERROR_BYTES} for a stored error), so scrubbing it whole costs a bound.
+ * first can never be clipped away from its context. The input is first cut to {@link SCRUB_INPUT_CHARS} code units:
+ * that bounds the scrub's work for any caller, and a secret that straddles that far cut starts beyond every window
+ * the view shows (the largest is 4096 code points), so no displayed prefix can be cut by it.
  */
 export function scrubbedBounded(text: string, max: number = MAX_IDENTIFIER_CHARS): string {
-  const clipped = clipCodePoints(sanitizeUntrustedInline(text), max);
+  const head = text.length > SCRUB_INPUT_CHARS ? text.slice(0, SCRUB_INPUT_CHARS) : text;
+  const clipped = clipCodePoints(sanitizeUntrustedInline(head), max);
   return clipped.truncated ? `${clipped.text}…` : clipped.text;
 }
+
+/** The most code units {@link scrubbedBounded} scrubs: far above any window a view shows, and a fixed bound on the work. */
+export const SCRUB_INPUT_CHARS = 65_536;
 
 /** The largest stored `error_json` a page reads: 1 MiB, the output preview's bound ({@link MAX_STORED_OUTPUT_BYTES}'s twin). */
 export const MAX_STORED_ERROR_BYTES = 1_048_576;
