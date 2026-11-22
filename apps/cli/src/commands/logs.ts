@@ -201,9 +201,10 @@ function followOwnerVerdict(
 
 /**
  * Whether `run` started within one lease TTL of `nowMs`, on either side, as the engine's reconcile measures it
- * (ADR-0079): a start slightly in the future (skew between processes) counts as recent, but one more than a TTL
- * ahead means a clock moved, and the run falls back to the lease rule. A run that has not started is counted from
- * its creation; a time that does not parse is never recent.
+ * (ADR-0079): strictly less than a TTL before now, and strictly less than a TTL ahead of it. A start slightly in the
+ * future (skew between processes) counts as recent, but one a full TTL or more ahead means a clock moved, and the run
+ * falls back to the lease rule; a start exactly a TTL before now is judged too. A run that has not started is counted
+ * from its creation; a time that does not parse is never recent.
  */
 function startedWithinLeaseTtl(run: RunRecord, nowMs: number): boolean {
   const age = nowMs - Date.parse(run.startedAt ?? run.createdAt);

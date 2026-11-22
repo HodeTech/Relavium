@@ -1334,7 +1334,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(old.err()).toBe(noOwnerNote('f1'));
     });
 
-    it('judges a run with no lease whose start lies more than one TTL in the future: a clock moved back', async () => {
+    it('judges a run with no lease whose start lies one TTL or more ahead of now (here exactly one TTL): a clock moved back', async () => {
       await seedRun(db, {
         slug: 'demo',
         runId: 'f1',

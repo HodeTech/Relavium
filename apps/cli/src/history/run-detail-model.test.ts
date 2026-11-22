@@ -205,6 +205,23 @@ describe('node cost: the source rules', () => {
     expect(rowOf(model.rows, 'twice').cost).toMatchObject({ microcents: 4_000_000 });
   });
 
+  it('reads the boundary cost over every STORED row of an attempt, even one the collapse drops: the earlier row`s figure survives a later row`s zero', () => {
+    // A re-dispatch under one attempt number: the earlier row holds the node-wide boundary figure, the later row (the
+    // one the attempt keeps) holds the column's default `0`. The figure is read over the stored rows, not the kept one.
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 4_000_000 }),
+      steps: [
+        stepRow('a', { attemptNumber: 1, costMicrocents: 4_000_000 }),
+        stepRow('a', { attemptNumber: 1, costMicrocents: 0 }),
+      ],
+      events: [coverageStarted(0), started(1, 'a', 1), started(2, 'a', 1), completed(3, 'a')],
+    });
+    const cost = rowOf(model.rows, 'a').cost;
+    expect(cost).toMatchObject({ source: 'boundary', microcents: 4_000_000, approximate: true });
+    expect(cost.text).toBe('~$0.0400');
+    expect(model.unattributedMicrocents).toBe(0);
+  });
+
   it('gives settled rows precedence over a non-zero boundary cost: the settled sum, exact, never the boundary figure', () => {
     // The realistic shape: the node settled model calls AND its step row carries a (different) boundary cost.
     const model = buildRunDetailModel({
@@ -448,6 +465,49 @@ describe('node tokens: the settled rows, else a completed step row, else not rec
       events: [coverageStarted(0), started(1, 'a'), failed(2, 'a')],
     });
     expect(unbilled.header.tokensText).toBe(NOT_RECORDED);
+  });
+
+  it('says `in progress` for the header of a run that has not finished, and `not recorded` for one that has, when nothing is settled and the totals are zero', () => {
+    const zero = { totalInputTokens: 0, totalOutputTokens: 0 };
+    const headerOf = (status: RunDetailRecord['status']): string =>
+      buildRunDetailModel({
+        run: openRunRecord({ ...zero, status }),
+        steps: [],
+        events: [coverageStarted(0), started(1, 'a')],
+      }).header.tokensText;
+    // A paused run and a running run have no settled row yet and nothing written on the run row.
+    expect(headerOf('paused')).toBe('in progress');
+    expect(headerOf('running')).toBe('in progress');
+    expect(headerOf('pending')).toBe('in progress');
+    // A finished run with the same two zeros was never given a figure: that is "not recorded".
+    expect(headerOf('completed')).toBe('not recorded');
+    expect(headerOf('failed')).toBe('not recorded');
+    expect(headerOf('cancelled')).toBe('not recorded');
+    // The sentences are the row sentences, not copies of them.
+    expect(IN_PROGRESS).toBe('in progress');
+    expect(NOT_RECORDED).toBe('not recorded');
+  });
+
+  it('keeps the figures of a run that has not finished whenever any exist: run totals, or a settled row', () => {
+    const unfinished = { status: 'running' } as const;
+    const totals = buildRunDetailModel({
+      run: openRunRecord({ ...unfinished, totalInputTokens: 7, totalOutputTokens: 3 }),
+      steps: [],
+      events: [coverageStarted(0), started(1, 'a')],
+    });
+    expect(totals.header.tokens).toEqual({ input: 7, output: 3 });
+    expect(totals.header.tokensText).toBe('↑7 ↓3');
+    const settledRow = buildRunDetailModel({
+      run: openRunRecord({ status: 'paused', totalInputTokens: 0, totalOutputTokens: 0 }),
+      steps: [],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 1, { inputTokens: 4, outputTokens: 2 }),
+      ],
+    });
+    expect(settledRow.header.tokens).toEqual({ input: 4, output: 2 });
+    expect(settledRow.header.tokensText).toBe('↑4 ↓2');
   });
 
   it('keeps a recorded header figure: non-zero run totals (even one of the two), or any settled row', () => {
@@ -861,6 +921,35 @@ describe('unattributed cost', () => {
     });
     expect(model.unattributedMicrocents).toBe(5_000_000);
     expect(model.unattributedRow).toEqual({ label: 'unattributed', text: '$0.0500' });
+  });
+
+  it('qualifies the row by the run`s coverage as the header does: the plain figure when it is complete, `known; usage unverified` when it is not', () => {
+    const complete = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 10_000_000 }),
+      steps,
+      events,
+    });
+    expect(complete.unattributedRow?.text).toBe('$0.0500');
+    expect(complete.header.costText).toBe('$0.1000');
+    // The same log without its `cost:coverage_started` is an unverified history: no figure is shown bare.
+    const unverified = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 10_000_000 }),
+      steps,
+      events: events.slice(1),
+    });
+    expect(unverified.unattributedMicrocents).toBe(5_000_000);
+    expect(unverified.unattributedRow?.text).toBe('$0.0500 known; usage unverified');
+    expect(unverified.header.costText).toBe('$0.1000 known; usage unverified');
+  });
+
+  it('says how many calls had no price, as the header does, since the residual of the run total is as known as the total', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 10_000_000 }),
+      steps,
+      events: [...events, settled(8, 'c', 0, { priced: false })],
+    });
+    expect(model.unattributedRow?.text).toBe('$0.0500 known; price unknown for 1 call');
+    expect(model.header.costText).toBe('$0.1000 known; price unknown for 1 call');
   });
 
   it('clamps at zero and shows no row when the nodes already account for more than the run total', () => {

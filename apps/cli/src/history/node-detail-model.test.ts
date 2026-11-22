@@ -1201,6 +1201,25 @@ describe('buildNodeDetailModel', () => {
     });
   });
 
+  it('reads the node`s boundary cost over every STORED row of an attempt, even one the collapse drops: the earlier row`s figure survives a later row`s zero', () => {
+    // A re-dispatch under one attempt number: the earlier row holds the node-wide boundary figure, the later row (the
+    // one the attempt keeps) holds the column's default `0`. The figure is read over the stored rows, not the kept one.
+    const row = (costMicrocents: number): StepSummaryRecord =>
+      stepSummary({ attemptNumber: 1, costMicrocents });
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1 }),
+      attempts: [row(4_000_000), row(0)],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 1), completed(3, 'x', 1)],
+    });
+    expect(model.attempts).toHaveLength(1);
+    expect(model.cost).toMatchObject({
+      source: 'boundary',
+      microcents: 4_000_000,
+      approximate: true,
+      text: '~$0.0400',
+    });
+  });
+
   it('builds the page from capped input: only the first 20 distinct models are scrubbed, however many rows the log holds', () => {
     // 100 node boundaries come first, so the first 100 timeline rows are the node:started rows, which carry no stored
     // text: every model name the page scrubs is one the models list asked for.

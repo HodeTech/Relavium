@@ -16,7 +16,6 @@ import {
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   formatCostShort,
-  formatCostUsd,
   formatDuration,
   formatReportedCost,
   formatTokens,
@@ -42,8 +41,10 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  * second attempt both show every attempt's tokens beside a cost that covers every attempt; (2) failing that, the
  * step row's tokens, for a COMPLETED node only (the step row of a failed attempt carries no tokens, so its `0` is
  * "never written", not a count); (3) failing both, the row's absence sentence. The run header's total is the same sum
- * over the whole log when the log holds any `cost:attempt_settled` row, and the run row's own totals otherwise (and
- * `not recorded` when those are both `0` too).
+ * over the whole log when the log holds any `cost:attempt_settled` row, and the run row's own totals otherwise. When
+ * those are both `0` too, the header says why there is no figure by the run's own state, as a row does: `in progress`
+ * for a run that has not finished (pending, running or paused: nothing has settled yet) and `not recorded` for one
+ * that has (completed, failed or cancelled: the totals were never written).
  *
  * **An absent figure says why it is absent** ({@link absenceText}). A skipped row says `did not run` for its tokens,
  * cost and tool trace; a row left `stopped` (its last attempt has no terminal event and the run has finished) says
@@ -757,7 +758,10 @@ export interface RunDetailHeader {
    * rows that give the cost beside it), else the run row's own totals.
    */
   readonly tokens: { readonly input: number; readonly output: number };
-  /** {@link tokens} as text, or `not recorded` when there is no settled row and the run row's totals are both `0`. */
+  /**
+   * {@link tokens} as text; when there is no settled row and the run row's totals are both `0`, the absence sentence
+   * of the run's state instead: `in progress` for a run that has not finished, `not recorded` for one that has.
+   */
   readonly tokensText: string;
   readonly totalCostMicrocents: number;
   /** The run total, qualified by the coverage the log establishes — never a bare number. */
@@ -883,9 +887,11 @@ export function spanMs(
  * The run header's tokens: the sum over the whole log's `cost:attempt_settled` rows when it holds any, so the figure
  * covers the same attempts the run's cost does (the run row keeps no tokens for a node that failed after a billed
  * call); the run row's own totals when the log holds none (an older log, or one that was not read). With no settled
- * row AND both totals `0` (an empty run, or a failed run with no billed attempt) the figure is `not recorded`, never
- * a bare `↑0 ↓0`: the column defaults to `0`, so that zero is "never written", not a count. A settled row, however
- * small, is a recorded figure, as are non-zero totals.
+ * row AND both totals `0` the figure is never a bare `↑0 ↓0`: the column defaults to `0`, so that zero is "never
+ * written", not a count. It says why there is none by the run's state ({@link isFinishedRun}), as a node row does:
+ * `in progress` for a run that has not finished (pending, running or paused: nothing has settled yet, and the run
+ * row's totals are still the default `0`), and `not recorded` for one that has (an empty run, or a failed run with no
+ * billed attempt). A settled row, however small, is a recorded figure, as are non-zero totals.
  */
 function runTokens(
   run: RunDetailRecord,
@@ -900,7 +906,8 @@ function runTokens(
   }
   const totals = { input: run.totalInputTokens, output: run.totalOutputTokens };
   const unrecorded = totals.input === 0 && totals.output === 0;
-  return { ...totals, text: unrecorded ? NOT_RECORDED : formatTokens(totals) };
+  if (!unrecorded) return { ...totals, text: formatTokens(totals) };
+  return { ...totals, text: isFinishedRun(run.status) ? NOT_RECORDED : IN_PROGRESS };
 }
 
 /** Build the run detail page's model. See the module note for the cost and attempt rules. */
@@ -986,7 +993,8 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
       ? {
           unattributedRow: {
             label: 'unattributed' as const,
-            text: formatCostUsd(unattributedMicrocents),
+            // The header's own formatter and facts: the residual of a run total carries the run total's qualification.
+            text: formatCostShort(unattributedMicrocents, facts.run, facts.unpricedCalls),
           },
         }
       : {}),

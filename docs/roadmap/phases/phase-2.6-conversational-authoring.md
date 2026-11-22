@@ -6237,7 +6237,7 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 - The plan's "wire-conformance, budget-replay and usage-coverage controls change together" is verified as not needed: no file under `tools/` names `toolActivity`, and the engine's anchors still match. The full gate is the final confirmation.
 - The timeline's "Scheduled (derived)" row is not shown: no such event exists, so the timeline lists only the node's durable lifecycle events.
 - Sessions (`AgentSession`) do not supply the elapsed clock, so a session's tool results carry no duration. The trace is a workflow-node record in step 1.
-- A run whose owner is an older binary with no lease is judged owner-less by `--follow` and stalled by the Active tab after its TTL. Both are stated in the reference.
+- A run whose owner is an older binary with no lease is judged owner-less by `--follow` and stalled by the Active tab after its TTL. The follow's rule is in the reference (`commands.md`); the Active tab's stalled rule is in [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) (its round-three note) and in the Active model's code.
 - The output preview is a floor. Step 3 must replace it with the final summary's masking core, which step 1 exports (`namesCredential`, `maskedAsMember`), and that replacement is the step-3 obligation below.
 
 **Open obligations carried into step 3 and step 4** (each is a plan item, not a finding left behind):
@@ -6250,7 +6250,7 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 - The output preview's masking is the final summary's core, once step 3 calls it.
 - A fatal tool failure in a workflow node is shown as `no result recorded`, which is accepted and stated: the failure ended the node.
 
-**The security sitting (opus, separate, D64).** Run on the cumulative change `d598cffa..e93bb9c0`, read-only with throwaway probes that were deleted. Verdict: no blocker, no high, no medium. Two lows, both fixed in `cd80e962`: an unpin refused its own listed key when the row was over-length (a foreign row could hold a pin slot for good); and the scrub of a long value relied on a caller gate that no caller had (now a fixed input cut). The sitting also checked the persistence (`run_pins`, `toolActivity`: no secret-shaped byte, no model-chosen string), the display surfaces, the size gates, the cuts at the window boundaries, the pin key and atomicity, the foreign-row refusal, the notices and the content-free claim. Two notes are for step 3, below.
+**The security sitting (opus, separate, D64).** Run on the cumulative change `d598cffa..e93bb9c0`, read-only with throwaway probes that were deleted. Verdict: no blocker, no high, no medium. Two lows, both fixed in `cd80e962`: an unpin refused its own listed key when the row was over-length (a foreign row could hold a pin slot for good); and the scrub of a long value relied on a caller gate that no caller had (now a fixed refusal above the bound, so no cut happens before the scrub). The sitting also checked the persistence (`run_pins`, `toolActivity`: no secret-shaped byte, no model-chosen string), the display surfaces, the size gates, the cuts at the window boundaries, the pin key and atomicity, the foreign-row refusal, the notices and the content-free claim. Two notes are for step 3, below.
 
 **Obligations added by the sitting, for step 3** (the Home's pin wiring):
 
