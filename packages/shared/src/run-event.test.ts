@@ -869,6 +869,101 @@ describe('cost:updated and sequenceNumber invariants', () => {
     }
   });
 
+  describe('toolActivity on node:completed / node:failed (ADR-0140 §4)', () => {
+    const terminals = ['node:completed', 'node:failed'] as const;
+    const activity = [
+      { toolId: 'read_file', ok: true, durationMs: 12 },
+      { toolId: 'run_command', ok: false, durationMs: 340 },
+      { toolId: 'web_fetch', ok: false }, // an unpaired call: no result recorded, so no duration
+    ];
+
+    it('parses an event WITHOUT the new fields, unchanged — the field is optional', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse(valid[type]);
+        expect('toolActivity' in parsed).toBe(false);
+        expect('toolActivityTruncated' in parsed).toBe(false);
+      }
+    });
+
+    it('parses an event WITH both fields and keeps them as written', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse({
+          ...valid[type],
+          toolActivity: activity,
+          toolActivityTruncated: 3,
+        });
+        expect(parsed).toMatchObject({ toolActivity: activity, toolActivityTruncated: 3 });
+      }
+    });
+
+    it('is content-free: a key beyond { toolId, ok, durationMs } is STRIPPED, never kept (lenient read)', () => {
+      for (const type of terminals) {
+        const parsed = RunEventSchema.parse({
+          ...valid[type],
+          toolActivity: [
+            {
+              toolId: 'run_command',
+              ok: true,
+              durationMs: 5,
+              arguments: { command: 'cat /secret' },
+              outputSummary: 'the result text',
+            },
+          ],
+        });
+        // The entry survives with only its three declared keys; the extras are removed, and parsing does not fail.
+        expect(parsed).toMatchObject({
+          toolActivity: [{ toolId: 'run_command', ok: true, durationMs: 5 }],
+        });
+        expect(JSON.stringify(parsed)).not.toContain('cat /secret');
+        expect(JSON.stringify(parsed)).not.toContain('the result text');
+      }
+    });
+
+    it('bounds the array at 50 entries: 50 parse, 51 are rejected', () => {
+      const entries = (count: number) =>
+        Array.from({ length: count }, (_, index) => ({ toolId: `tool-${index}`, ok: true }));
+      for (const type of terminals) {
+        expect(
+          RunEventSchema.safeParse({ ...valid[type], toolActivity: entries(50) }).success,
+        ).toBe(true);
+        expect(
+          RunEventSchema.safeParse({ ...valid[type], toolActivity: entries(51) }).success,
+        ).toBe(false);
+      }
+    });
+
+    it('pins each entry: a non-empty toolId, a boolean ok, a non-negative integer durationMs', () => {
+      const withEntry = (entry: unknown) =>
+        RunEventSchema.safeParse({ ...valid['node:completed'], toolActivity: [entry] }).success;
+      expect(withEntry({ toolId: 'read_file', ok: true })).toBe(true);
+      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: 0 })).toBe(true);
+      expect(withEntry({ toolId: '', ok: true })).toBe(false);
+      expect(withEntry({ ok: true })).toBe(false);
+      expect(withEntry({ toolId: 'read_file' })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: 'yes' })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: -1 })).toBe(false);
+      expect(withEntry({ toolId: 'read_file', ok: true, durationMs: 1.5 })).toBe(false);
+    });
+
+    it('pins toolActivityTruncated to a non-negative integer', () => {
+      for (const type of terminals) {
+        const base = { ...valid[type], toolActivity: activity };
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: 0 }).success).toBe(true);
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: -1 }).success).toBe(
+          false,
+        );
+        expect(RunEventSchema.safeParse({ ...base, toolActivityTruncated: 1.5 }).success).toBe(
+          false,
+        );
+      }
+    });
+
+    it('is not carried by node:retrying (the attempt that retries is not a terminal)', () => {
+      const parsed = RunEventSchema.parse({ ...valid['node:retrying'], toolActivity: activity });
+      expect('toolActivity' in parsed).toBe(false);
+    });
+  });
+
   it('accepts sequenceNumber 0 but rejects negative / fractional', () => {
     const cancelled = { type: 'run:cancelled', ...env };
     expect(RunEventSchema.safeParse({ ...cancelled, sequenceNumber: 0 }).success).toBe(true);

@@ -361,6 +361,27 @@ export const CostUpdatedEventSchema = z.object({
 });
 export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
 
+/**
+ * The most `toolActivity` entries one node terminal keeps; a call beyond it is only COUNTED, in
+ * `toolActivityTruncated` ([ADR-0140](../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4).
+ */
+export const TOOL_ACTIVITY_MAX_ENTRIES = 50;
+
+/**
+ * One tool call of a node, kept **content-free** on its durable terminal (`node:completed` / `node:failed`):
+ * the tool's id, whether it succeeded and how long it took — never its arguments, its result text or a summary
+ * (a tool's result is not kept as durable content anywhere else either, ADR-0132). An unpaired call (the node
+ * ended before its result was recorded) is `ok: false` with `durationMs` absent; a failed result is `ok: false`
+ * with `durationMs` present. The lenient-read rule of the header applies: no `.strict()`, so an unknown key is
+ * stripped on read and never kept.
+ */
+export const ToolActivityEntrySchema = z.object({
+  toolId: nonEmptyString, // the same id schema `agent:tool_call` carries
+  ok: z.boolean(),
+  durationMs: nonNegativeInt.optional(),
+});
+export type ToolActivityEntry = z.infer<typeof ToolActivityEntrySchema>;
+
 export const NodeCompletedEventSchema = z.object({
   type: z.literal('node:completed'),
   ...runBase,
@@ -368,6 +389,13 @@ export const NodeCompletedEventSchema = z.object({
   output: z.unknown(),
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
+  // The content-free tool trace of the attempt that produced this terminal (ADR-0140 §4): at most
+  // `TOOL_ACTIVITY_MAX_ENTRIES` entries plus the count of calls beyond them. ADDITIVE and OPTIONAL — absent for a
+  // node that made no tool call and on any log written before this field existed. An older binary's schema is
+  // not strict, so it ignores both fields on read (ADR-0075: only an unknown `type` or an unreadable known body
+  // matters to a replay, and neither applies to an extra optional key).
+  toolActivity: z.array(ToolActivityEntrySchema).max(TOOL_ACTIVITY_MAX_ENTRIES).optional(),
+  toolActivityTruncated: nonNegativeInt.optional(),
   // The run-wide cost running total AT this node boundary (integer micro-cents) — the SAME counter
   // cost:updated carries, snapshotted onto the durable node:completed so checkpoint/resume (1.R) restores a
   // run's cumulative cost across a process boundary (cost:updated itself is streamed, not persisted). Optional
@@ -401,6 +429,10 @@ export const NodeFailedEventSchema = z.object({
   // never persisted — it was the only carrier). Optional for backward-compat with logs persisted before this
   // field existed; the engine always populates it. Mirrors node:completed.cumulativeCostMicrocents.
   cumulativeCostMicrocents: nonNegativeInt.optional(),
+  // The content-free tool trace of the attempt that ended in this terminal failure — the same optional,
+  // additive, older-binary-ignores-it pair as node:completed (ADR-0140 §4). `node:retrying` never carries it.
+  toolActivity: z.array(ToolActivityEntrySchema).max(TOOL_ACTIVITY_MAX_ENTRIES).optional(),
+  toolActivityTruncated: nonNegativeInt.optional(),
 });
 
 /**

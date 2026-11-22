@@ -100,6 +100,7 @@ import { HostWorkRegistry, type HostWorkScope } from './host-work-registry.js';
 import { EffectReceiptHealth } from './effect-receipt-health.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
+import { ToolActivityTracker, type ToolActivitySnapshot } from './tool-activity.js';
 import {
   BudgetGovernor,
   CommitmentDurabilityError,
@@ -621,6 +622,13 @@ class RunExecution {
   readonly #nodeDeadlineDisarm = new Map<string, () => void>();
   /** The attempt number a vertex is currently on, so an ABANDONED node logs its real attempt, not 1. */
   readonly #lastAttemptByVertex = new Map<string, number>();
+  /**
+   * The content-free tool trace of each node's current attempt (ADR-0140 §4), fed from the in-node
+   * `agent:tool_call` / `agent:tool_result` events `#nodeEmit` already delivers and attached to the node's
+   * durable terminal. In-process only: the bus events are never persisted, and nothing here changes their
+   * order, their sequence numbers or the checkpoint fold.
+   */
+  readonly #toolActivity = new ToolActivityTracker();
   /** Monotonic per-run dispatch id — see {@link #activeDispatchByVertex}. */
   #nextDispatchId = 0;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
@@ -2416,6 +2424,8 @@ class RunExecution {
         this.#nodeDispatches += 1;
         // An approved redispatch opens attempt 1 before its start append can yield to grace.
         this.#lastAttemptByVertex.set(vertex.id, 1);
+        // A fresh attempt starts a fresh tool trace (ADR-0140 §4).
+        this.#toolActivity.reset(vertex.id);
         try {
           await this.#emitDurable({
             type: 'node:started',
@@ -2997,6 +3007,8 @@ class RunExecution {
       // The retry loop's own dispatch, counted by the same rule as a fresh one (ADR-0086 §4): one
       // `node:started`, one dispatch. The headroom was checked above, before anything was promised.
       this.#nodeDispatches += 1;
+      // The failed attempt's trace belonged to its `node:retrying`, which carries none; this one starts clean.
+      this.#toolActivity.reset(vertex.id);
       await this.#emitDurable({
         type: 'node:started',
         runId: this.runId,
@@ -3423,7 +3435,18 @@ class RunExecution {
       ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
       // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.
       ...(attemptNumber > 1 ? { attemptNumber } : {}),
+      // The content-free tool trace of this attempt (ADR-0140 §4) — absent for a node that made no tool call.
+      ...this.#takeToolActivity(vertex.id),
     });
+  }
+
+  /**
+   * The node's `toolActivity` fields for its terminal event, taking (and so clearing) the attempt's trace.
+   * A node that made no tool call yields nothing, so the field stays absent rather than `[]` on every node.
+   */
+  #takeToolActivity(nodeId: string): Partial<ToolActivitySnapshot> {
+    const snapshot = this.#toolActivity.take(nodeId);
+    return snapshot.toolActivity.length > 0 ? snapshot : {};
   }
 
   /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
@@ -3471,6 +3494,8 @@ class RunExecution {
       // a billed-but-failed PAID media job folded its realized cost into the running total via cost:updated
       // (transient) — persisting it here keeps that fail-cost durable. Mirrors node:completed.
       cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+      // The content-free tool trace of the attempt that ended in this terminal failure (ADR-0140 §4).
+      ...this.#takeToolActivity(vertex.id),
     });
   }
 
@@ -5087,10 +5112,23 @@ class RunExecution {
     switch (event.type) {
       case 'agent:token':
       case 'agent:reasoning':
-      case 'agent:tool_call':
-      case 'agent:tool_result':
       case 'agent:file_patch_proposed':
         this.#bus.emit({ ...event, runId });
+        return;
+      // The two tool events are also the source of the node terminal's `toolActivity` (ADR-0140 §4). They are
+      // recorded AFTER the emit, so the trace holds only what was delivered, and the emit's own order is untouched.
+      case 'agent:tool_call':
+        this.#bus.emit({ ...event, runId });
+        this.#toolActivity.recordCall(event.nodeId, event.toolId, this.#elapsedMs());
+        return;
+      case 'agent:tool_result':
+        this.#bus.emit({ ...event, runId });
+        this.#toolActivity.recordResult(
+          event.nodeId,
+          event.toolId,
+          event.success,
+          this.#elapsedMs(),
+        );
         return;
       case 'cost:updated':
         if (event.priced === false) this.#cumulativeUnpricedCalls++;
