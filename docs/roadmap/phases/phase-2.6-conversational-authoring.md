@@ -6250,3 +6250,12 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 - The output preview's masking is the final summary's core, once step 3 calls it.
 - A fatal tool failure in a workflow node is shown as `no result recorded`, which is accepted and stated: the failure ended the node.
 
+**The security sitting (opus, separate, D64).** Run on the cumulative change `d598cffa..e93bb9c0`, read-only with throwaway probes that were deleted. Verdict: no blocker, no high, no medium. Two lows, both fixed in `cd80e962`: an unpin refused its own listed key when the row was over-length (a foreign row could hold a pin slot for good); and the scrub of a long value relied on a caller gate that no caller had (now a fixed input cut). The sitting also checked the persistence (`run_pins`, `toolActivity`: no secret-shaped byte, no model-chosen string), the display surfaces, the size gates, the cuts at the window boundaries, the pin key and atomicity, the foreign-row refusal, the notices and the content-free claim. Two notes are for step 3, below.
+
+**Obligations added by the sitting, for step 3** (the Home's pin wiring):
+
+- A pinned workflow ref is looked up in the catalog and is never joined into a path. A crafted ref such as `../../other/.relavium/workflows/x` is accepted by the store, so the lookup, not the store, keeps it inert.
+- Pinned refs and project roots are displayed through the sanitize floor, because `listPins` returns stored text as stored (an escape or a bidi character in a crafted ref reaches the terminal unless the view cleans it).
+
+**Round four is owed before the step closes.** The bar requires one new complete cumulative round with no blocker, high or medium finding; round three had mediums, all fixed. Round four is run on the cumulative change, then the full local gate.
+
