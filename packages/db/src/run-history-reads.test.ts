@@ -525,6 +525,8 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       attempt: number,
       createdAt: number,
       extra: {
+        /** Only for a second row of one (run, node, attempt), whose derived id would collide with the first. */
+        readonly id?: string;
         readonly status?: 'running' | 'completed' | 'failed';
         readonly outputJson?: string;
         readonly errorJson?: string;
@@ -536,7 +538,7 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       client.db
         .insert(stepExecutions)
         .values({
-          id: `${runId}-${nodeId}-${attempt}`,
+          id: extra.id ?? `${runId}-${nodeId}-${attempt}`,
           runId,
           nodeId,
           nodeType: 'agent',
@@ -644,6 +646,19 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       expect(reader.loadStepDetail('r', 'n1', 3)).toBeUndefined();
       expect(reader.loadStepDetail('r', 'ghost', 1)).toBeUndefined();
       expect(reader.loadStepDetail('other', 'n1', 1)).toBeUndefined();
+    });
+
+    it('returns the latest-inserted row when a re-dispatched node left two rows for one (run, node, attempt)', () => {
+      seedRun('r', T0);
+      // Both rows share one created_at, so only the insertion order (rowid) can tell the later one apart.
+      seedStep('r', 'n1', 1, T0 + 10, { id: 'dup-first', outputJson: '{"v":"first"}' });
+      seedStep('r', 'n1', 1, T0 + 10, { id: 'dup-second', outputJson: '{"v":"second"}' });
+
+      expect(reader.loadStepDetail('r', 'n1', 1)).toMatchObject({
+        nodeId: 'n1',
+        attemptNumber: 1,
+        outputJson: '{"v":"second"}',
+      });
     });
 
     describe('the size gate (1 MiB, applied in SQL)', () => {

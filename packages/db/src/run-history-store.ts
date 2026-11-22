@@ -1838,6 +1838,9 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         // `stepMatch` is the same (run, node, attempt) predicate the writer's arms update by, which is what
         // `idx_step_exec_run_node` is keyed on.
         .where(stepMatch(runId, nodeId, attemptNumber))
+        // A re-dispatched node can leave two rows for one (run, node, attempt): the page shows the latest one,
+        // so the order is pinned to the newest insert rather than whatever the index returns first.
+        .orderBy(sql`rowid DESC`)
         .get();
       return row === undefined
         ? undefined
