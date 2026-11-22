@@ -1,7 +1,7 @@
 # Current state
 
 > Status: Living
-> Last updated: 2026-11-21
+> Last updated: 2026-11-22
 
 - **Related**: [README.md](README.md), [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -79,6 +79,8 @@ owns MVP-2's.
 SonarCloud fix), its final-head evidence (all 29 CI jobs green on `9e77ff04`; the pull request's Sonar gate OK) and what is still owed: rows 1–16 of the Windows interrupt-evidence runbook on real terminals, the Sonar
 analysis and the merge commit's CI run on `main`, and the registered lows. MVP-8 starts with its run-hosting ADR ([ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md) §10), written and accepted first. The dated blocks below
 keep the wording they had when written.
+
+**Cleanup before MVP-8 (2026-11-22, on `development`):** `main`'s merge-commit CI run finished 29 of 29 green and its Sonar gate is OK (886 open smells, 149 false positives marked). The 38 smells PR #101's own lines introduced became named helpers with no change of behaviour (`c27a350c`), reviewed four times (one a security sitting) and pinned by permanent tests; see the [Sonar cleanup before MVP-8](phases/phase-2.6-conversational-authoring.md#sonar-cleanup-before-mvp-8-2026-11-22). MVP-8 is still next and still starts with its run-hosting ADR.
 
 **PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 started on `development` on 2026-11-19 (see its entry under [Next work](#next-work--the-cli-mvp)).** The
 [PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records what it carried, the final-head evidence (29 of 29 jobs green on `2ce6a252`;
