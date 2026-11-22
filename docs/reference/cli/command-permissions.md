@@ -444,5 +444,5 @@ draws it in the danger colour, with the confirming `[Enter]` in the attention co
   colour off: the `›` marker, the bracketed keys, the `✓`/`✗` of an answer, the headings and the markers carry the meaning; bold is the
   only style left.
 
-The Home's tab bar and its pane that composes this sheet with the domain allowlists, MCP servers and egress endpoints are MVP-8's;
+The Home's tab that composes this sheet is MVP-8's; its domain allowlist, MCP and egress sections arrive with MVP-7 and MVP-9, which own their add and remove;
 add and remove belong to those sections, not to command grants.
