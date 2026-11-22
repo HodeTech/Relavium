@@ -139,6 +139,7 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
+import { RunHost } from './run-host.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
@@ -182,6 +183,12 @@ export interface HomeDeps {
     noticeContext?: LocalDbNoticeContext,
   ) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
+  /**
+   * The Home's workflow-run host ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §2, §6).
+   * Injectable for tests; absent, it is built over the Home's own `history.db` connection. It is closed BEFORE the shared
+   * database, so a leg's MCP clients, departure and owner finish while the connection is still open.
+   */
+  readonly run?: RunHost;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
   /** The onboarding clack slice (2.5.G S8) — omit for the real prompts; a test injects a scripted one. Only ever
@@ -342,6 +349,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   let rendererActive = true;
   let flushVisible: NoticeFlush | undefined;
   let controller: HomeController | undefined;
+  let runHost: RunHost | undefined = deps.run;
   // A store update alone is not visibility proof (it may be hidden, scrolled away or replaced).
   // Keep one content-free terminal fallback until its actual delivery is acknowledged.
   let effectAttentionPending = false;
@@ -656,6 +664,17 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         standardEnvPolicy: keyPolicy,
         credentialSurface: 'home',
       });
+    // The workflow-run host, over the SAME open connection the Home reads and writes: a hosted leg never opens or
+    // closes a second one (ADR-0139 §2). Nothing is registered, built or read until a run is started.
+    runHost ??= new RunHost({
+      invocation: deps.invocation,
+      io: deps.io,
+      global: deps.global,
+      db: opened.db,
+      homeDir: deps.homeDir,
+      providers,
+      mcpSecretResolver,
+    });
     let keyless = !sampleProviderSetup(providers).some(
       ({ availability }) => availability.status === 'usable',
     );
@@ -2083,6 +2102,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ownedMount?.close() ?? Promise.resolve(),
         ownedJob?.close() ?? Promise.resolve(),
         ownership.hosts.close(),
+        // A hosted leg is cancelled and joined here, while the shared connection it writes to is still open: the
+        // surface closes that connection only after every one of these has settled (ADR-0139 §6).
+        runHost?.close() ?? Promise.resolve(),
       ];
       await Promise.all(closing);
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
@@ -2112,6 +2134,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       disposeJobControl?.();
       restoreTerminalControls();
       await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
+      // A hosted leg (only an injected host can have one here: a Home with no invocation registers no owner) is
+      // joined BEFORE the shared db closes, as in the owned path.
+      await runHost?.close().catch(() => undefined);
       if (unmounted && pasteDisabled && mouseDisabled) await flushEffectAttention();
       closeDb(); // always close the shared db
     }

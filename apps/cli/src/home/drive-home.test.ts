@@ -61,6 +61,7 @@ import {
   type OnboardingTerminalLifecycle,
 } from './drive-home.js';
 import { shouldOpenHome } from './should-open-home.js';
+import { RunHost } from './run-host.js';
 
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
@@ -608,6 +609,90 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     await expect(driveHome(deps)).rejects.toThrow('ink mount failed');
     expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { path: 'owned (the product boundary)', owned: true },
+    { path: 'unowned (an embedding)', owned: false },
+  ])(
+    'closes the hosted-run host and waits for it BEFORE the shared database closes — $path',
+    async ({ owned }) => {
+      const f = invocationFixture();
+      const order: string[] = [];
+      let releaseRun: () => void = () => undefined;
+      const held = new Promise<void>((resolve) => {
+        releaseRun = resolve;
+      });
+      const run = new RunHost({
+        invocation: f.invocation,
+        io,
+        global,
+        db: client.db,
+        // A temporary operator home, as every other Home in this file is given: this host starts no leg, but it
+        // must never be able to reach the real one.
+        homeDir: testHomeDir,
+      });
+      const closeRun = vi.spyOn(run, 'close').mockImplementation(async () => {
+        order.push('run:close:start');
+        await held;
+        order.push('run:close:end');
+      });
+      closeSpy.mockImplementation(() => {
+        order.push('db:close');
+      });
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps(
+        (props) => {
+          captured = props;
+        },
+        { run, ...(owned ? { invocation: f.invocation } : {}) },
+      );
+      const running = driveHome(deps);
+      await vi.waitFor(() => expect(captured).toBeDefined());
+      const props = captured;
+      if (props === undefined) throw new Error('Home not mounted');
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+      await vi.waitFor(() => expect(order).toContain('run:close:start'));
+      await flush();
+      await flush();
+      expect(order, 'HOME_RUN_HOST_JOIN_BEFORE_SHARED_DATABASE').toEqual(['run:close:start']);
+      releaseRun();
+      expect(await running).toBe(0);
+      expect(order).toEqual(['run:close:start', 'run:close:end', 'db:close']);
+      expect(closeRun).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('builds its own run host when none is injected, and a Home that never runs a workflow registers no workflow owner', async () => {
+    const f = invocationFixture();
+    const kinds: string[] = [];
+    const register = f.registry.register.bind(f.registry);
+    vi.spyOn(f.registry, 'register').mockImplementation((owner) => {
+      kinds.push(owner.kind);
+      return register(owner);
+    });
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps(
+      (props) => {
+        captured = props;
+      },
+      { invocation: f.invocation },
+    );
+    expect(deps.run, 'the default is built by the Home, not injected').toBeUndefined();
+    const running = driveHome(deps);
+    await vi.waitFor(() => expect(captured).toBeDefined());
+    const props = captured;
+    if (props === undefined) throw new Error('Home not mounted');
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await running).toBe(0);
+    expect(kinds, 'the Home registered owners, and none of them is a hosted leg').not.toContain(
+      'workflow',
+    );
+    expect(kinds.length).toBeGreaterThan(0);
+    expect(f.registry.activeOwners).toBe(0);
+    expect(closeSpy).toHaveBeenCalledOnce();
   });
 
   it('observes an owned renderer failure before held host cleanup and closes the shared DB only after actual join', async () => {
