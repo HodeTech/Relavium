@@ -166,3 +166,12 @@ Both re-host their shell cores ([ADR-0122](0122-the-home-is-the-interactive-prod
 ### Amendment note — 2026-11-22 (MVP-8 step 1, the round-2 review)
 
 §4's entry shape is `{ toolId, ok, durationMs }` plus `resultRecorded`, a required boolean that tells the three outcomes apart: a refusal (`resultRecorded` true, `ok` false, no duration), a failed dispatch that ran and was measured (`ok` false with a duration), and an unpaired call (`resultRecorded` false, the node ended with the call in flight). Every call is recorded when it starts, so a call cut by a deadline is shown, not dropped. §7's `--follow` also ends when the run has no live owner, which is the third stop; the reference states its rule and its notes exactly.
+
+### Amendment note — 2026-11-22 (MVP-8 step 1, the round-3 review)
+
+- **Implementation status.** The decisions of §§2, 4, 5 and 7 that belong to step 1 are in the code: migration 0022 and its reads, the pins, `toolActivity` with its outcomes, and `logs --failed` and `--follow` (the commits from `8a6caae4` to the round-3 fixes). The browsers, the run host and the forms are not yet built; §§3, 6 and 9 remain plans.
+- **The field's name.** The node terminal's count of calls beyond the kept entries is `toolActivityTruncated`, not `truncated` as §4 and the earlier notes wrote.
+- **Where the plans are pinned.** Three read plans are pinned in `packages/db/src/run-history-reads.test.ts` ("query plans"): `loadRunDetail`, `loadLatestRunPerWorkflowInProject`, and `listRunSummaries` filtered by workflow alone. The rest stay in the perf-budget test. §4's "every new plan" sentence is read this way.
+- **The stalled rule.** The Active tab calls a run stalled only when it is older than one lease TTL and its lease is missing or expired for more than one TTL, as the 2026-11-06 amendment of ADR-0079 requires; a run younger than one TTL is never stalled. §2 is read with this condition.
+- **The follow's no-owner verdict** uses the same grace: a lease counts as gone only one full TTL after its expiry, and a lease that is absent counts only for a run older than one TTL.
+
