@@ -163,3 +163,6 @@ Both re-host their shell cores ([ADR-0122](0122-the-home-is-the-interactive-prod
 
 §4 says every new plan is added to the perf-budget test. Two of them are not: the plans of `loadRunDetail` and of `loadLatestRunPerWorkflowInProject` are pinned in the db package's own test file (`packages/db/src/run-history-reads.test.ts`, "query plans"), which is where the schema reference now says each plan is pinned. The other plans stay in the perf-budget test. The review also found that the project-scoped latest-run read selected every run column; it now selects the summary columns only, as §4 requires.
 
+### Amendment note — 2026-11-22 (MVP-8 step 1, the round-2 review)
+
+§4's entry shape is `{ toolId, ok, durationMs }` plus `resultRecorded`, a required boolean that tells the three outcomes apart: a refusal (`resultRecorded` true, `ok` false, no duration), a failed dispatch that ran and was measured (`ok` false with a duration), and an unpaired call (`resultRecorded` false, the node ended with the call in flight). Every call is recorded when it starts, so a call cut by a deadline is shown, not dropped. §7's `--follow` also ends when the run has no live owner, which is the third stop; the reference states its rule and its notes exactly.
