@@ -42,6 +42,7 @@ import {
   surfaceMcpSkipped,
   workflowDeclaresMcp,
   type StdioConsentGate,
+  type WorkflowMcpRuntime,
 } from '../engine/mcp-servers.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
 import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -246,7 +247,7 @@ export async function resumeRun(
   const opened = acquireNativeResource((captureClose) => ports.openDb(captureClose), {
     assertAdmitting: () => lifetime.checkpoint(),
     captureClose: (close) => {
-      resources.closeHistory = close;
+      resources.captureHistoryClose(close);
     },
     cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
     isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
@@ -348,32 +349,33 @@ export async function resumeRun(
   // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
   // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
   assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
+  let mcpRuntime: WorkflowMcpRuntime | undefined;
   // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
   if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
-    resources.mcpRuntime = await connectWorkflowMcp(workflow, {
-      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-      cwd: saveToRoot,
-      preserveFrozenGrants: true,
-      connectSignal: lifetime.signal,
-      assertAdmitting: () => lifetime.checkpoint(),
-      onFailure: (cause) => {
-        if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
-      },
-      onCloseError: resources.reportMcpCloseFailure,
-      budget: lifetime.invocation.registry.budget,
-      work: resources.mcpWork,
-      registrations: config.mcpServers,
-      resolveSecret:
-        deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-      artifact: `frozen run ${runId}`,
-      consentGate: ports.consentGate(homeDir),
-      ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
-    });
+    mcpRuntime = await resources.connectMcp(() =>
+      connectWorkflowMcp(workflow, {
+        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+        cwd: saveToRoot,
+        preserveFrozenGrants: true,
+        connectSignal: lifetime.signal,
+        assertAdmitting: () => lifetime.checkpoint(),
+        onFailure: (cause) => {
+          if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+        },
+        onCloseError: resources.reportMcpCloseFailure,
+        budget: lifetime.invocation.registry.budget,
+        work: resources.mcpWork,
+        registrations: config.mcpServers,
+        resolveSecret:
+          deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+        artifact: `frozen run ${runId}`,
+        consentGate: ports.consentGate(homeDir),
+        ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
+      }),
+    );
     lifetime.checkpoint();
-    if (resources.mcpRuntime !== undefined)
-      surfaceMcpSkipped(deps.io, resources.mcpRuntime.client.skipped);
+    if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
   }
-  const mcpRuntime = resources.mcpRuntime;
 
   lifetime.checkpoint();
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed

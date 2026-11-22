@@ -209,28 +209,29 @@ export async function prepareRun(
   // them fail-loud (a connect/discovery failure is an exit-2 CliError, cause stripped), and rewrite the
   // workflow so each inline agent's grant includes ONLY its own servers' discovered tools. `undefined` ⇒ no
   // inline agent declared a server. The spawned children are torn down by the host's release.
-  resources.mcpRuntime = await connectWorkflowMcp(def, {
-    ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-    cwd: deps.global.cwd,
-    connectSignal: lifetime.signal,
-    assertAdmitting: () => lifetime.checkpoint(),
-    onFailure: (cause) => {
-      if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
-    },
-    onCloseError: resources.reportMcpCloseFailure,
-    budget: lifetime.invocation.registry.budget,
-    work: resources.mcpWork,
-    resolveSecret:
-      deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-    registrations: config.mcpServers,
-    // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
-    artifact: source.path,
-    // **Consent before any spawn** (ADR-0084 §1). Injectable so a fixture drives it without a terminal;
-    // the host's port owns the default, so an un-wired test path is a decision rather than an accident.
-    consentGate: ports.consentGate(homeDir),
-    ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
-  });
-  const mcpRuntime = resources.mcpRuntime;
+  const mcpRuntime = await resources.connectMcp(() =>
+    connectWorkflowMcp(def, {
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      cwd: deps.global.cwd,
+      connectSignal: lifetime.signal,
+      assertAdmitting: () => lifetime.checkpoint(),
+      onFailure: (cause) => {
+        if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+      },
+      onCloseError: resources.reportMcpCloseFailure,
+      budget: lifetime.invocation.registry.budget,
+      work: resources.mcpWork,
+      resolveSecret:
+        deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
+      registrations: config.mcpServers,
+      // The file that declared them, for the prompt — the imported-artifact case naming its own file (§7).
+      artifact: source.path,
+      // **Consent before any spawn** (ADR-0084 §1). Injectable so a fixture drives it without a terminal;
+      // the host's port owns the default, so an un-wired test path is a decision rather than an accident.
+      consentGate: ports.consentGate(homeDir),
+      ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
+    }),
+  );
   lifetime.checkpoint();
   if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
   const runWorkflow = mcpRuntime?.workflow ?? def;
@@ -262,7 +263,7 @@ export async function prepareRun(
         {
           assertAdmitting: () => lifetime.checkpoint(),
           captureClose: (close) => {
-            resources.closeHistory = close;
+            resources.captureHistoryClose(close);
           },
           cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
           isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),

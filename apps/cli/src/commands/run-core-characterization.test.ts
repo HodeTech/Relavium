@@ -49,6 +49,7 @@ import { createCliInvocation, type CliInvocation } from '../process/invocation.j
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createProviderResolver } from '../engine/providers.js';
+import { invocationFixture } from '../process/invocation.test-support.js';
 import { createPlainRenderer } from '../render/renderer.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { budgetCommand, gateCommand, type GateCommandDeps } from './gate.js';
@@ -351,6 +352,86 @@ function gateDeps(io: CliIo, invocation: CliInvocation, json: boolean): GateComm
 /** A stdin that yields the given text exactly once, shaped like the real piped stream. */
 function pipedStdin(text: string): (io: CliIo) => CliIo {
   return (io) => ({ ...io, stdin: Readable.from([text]) });
+}
+
+/** The digest `--allow-mcp-stdio` takes for the one inline stdio server these workflows declare (`local`). */
+async function localDigest(cwd: string): Promise<string> {
+  return fingerprint(
+    await resolveStdioSpawn(
+      { serverId: 'local', command: process.execPath, provenance: { kind: 'inline' } },
+      cwd,
+    ),
+  );
+}
+
+/** Replace what differs between machines and runs inside a consent refusal: the root, node and the digest. */
+const scrubConsent = (text: string): string =>
+  text
+    .split(`/private${root}`)
+    .join('<root>')
+    .split(root)
+    .join('<root>')
+    .split(process.execPath)
+    .join('<node>')
+    .replace(/v1:[0-9a-f]{64}/g, '<digest>');
+
+/**
+ * What a command that never settles leaves behind. A release the host cannot acknowledge keeps the process
+ * alive for its exit authority, so the observation is taken at the hang and again once the finite-exit bound
+ * has elapsed on a controlled clock: the command still has not settled, the database was never closed and the
+ * authority published its code.
+ */
+interface Hung {
+  readonly settled: boolean;
+  readonly out: readonly string[];
+  readonly err: readonly string[];
+  /** How many times the history database was closed; a hang never reaches it. */
+  readonly closes: number;
+  readonly activeOwners: number;
+  /** The exit the finite-exit authority published once its bound elapsed, and every code it asked to exit with. */
+  readonly boundExit: number;
+  readonly exitCalls: readonly number[];
+  readonly settledAfterBound: boolean;
+  readonly closesAfterBound: number;
+  readonly activeOwnersAfterBound: number;
+}
+
+const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function observeHang(
+  invoke: (io: CliIo, invocation: CliInvocation) => Promise<number>,
+  normalize: (text: string) => string,
+): Promise<Hung> {
+  historyCloses = 0;
+  const capture = captureIo();
+  const control = invocationFixture();
+  let settled = false;
+  const mark = (): void => {
+    settled = true;
+  };
+  void invoke(capture.io, control.invocation).then(mark, mark);
+  // The release tail is asynchronous: wait for the teardown warning that shows the close was refused,
+  // then give anything the shell might still do after it (the database close) every chance to run.
+  for (let n = 0; n < 500 && !capture.err().includes('MCP teardown failed'); n += 1) await tick();
+  for (let n = 0; n < 20; n += 1) await tick();
+  const atHang = {
+    settled,
+    out: normalize(capture.out()).split('\n'),
+    err: normalize(capture.err()).split('\n'),
+    closes: historyCloses,
+    activeOwners: control.registry.activeOwners,
+  };
+  control.advance(3000);
+  const boundExit = await control.invocation.finiteExit.exited;
+  for (let n = 0; n < 20; n += 1) await tick();
+  return {
+    ...atHang,
+    boundExit,
+    exitCalls: control.exit.mock.calls.map((call) => Number(call[0])),
+    settledAfterBound: settled,
+    closesAfterBound: historyCloses,
+    activeOwnersAfterBound: control.registry.activeOwners,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1181,10 +1262,154 @@ const EXPECTED: Readonly<Record<string, Observed>> = {
     activeOwners: 0,
     closes: 0,
   },
+  // -------------------------------------------------------------------------------------------------
+  // Round-1 additions (MVP-8 step 2): a stop during a resume, a release that never settles, and
+  // `--allow-mcp-stdio` on a resume. Recorded from the committed code (after the extraction), then verified
+  // to fail under a deliberate mutation of the path each covers.
+  // -------------------------------------------------------------------------------------------------
+  'budget.allow-mcp-stdio.allowed': {
+    result: 0,
+    out: [
+      '  - agent ...',
+      '  ok agent',
+      '  - out ...',
+      '  ok out',
+      'done: run completed',
+      '  outputs:',
+      '    out: ANSWER',
+      '',
+    ],
+    err: [''],
+    observedExit: 0,
+    activeOwners: 0,
+    closes: 1,
+    order: ['spawn'],
+  },
+  'budget.allow-mcp-stdio.refused': {
+    result: {
+      code: 'invalid_invocation',
+      exitCode: 2,
+      message:
+        'this run would start 1 local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each \u2014 the digest is a hash of the declaration, not a secret.',
+    },
+    out: [''],
+    err: ['  local: <node>  <digest>', ''],
+    observedExit: 2,
+    activeOwners: 0,
+    closes: 1,
+    order: [],
+  },
+  'gate.allow-mcp-stdio.allowed': {
+    result: 0,
+    out: [
+      '  - double ...',
+      '  ok double',
+      '  - out ...',
+      '  ok out',
+      'done: run completed',
+      '  outputs:',
+      '    out: {"d":6}',
+      '',
+    ],
+    err: [''],
+    observedExit: 0,
+    activeOwners: 0,
+    closes: 1,
+    prompts: [],
+    promptBindings: [],
+    order: ['spawn'],
+  },
+  'gate.allow-mcp-stdio.refused': {
+    result: {
+      code: 'invalid_invocation',
+      exitCode: 2,
+      message:
+        'this run would start 1 local program(s) not approved on this machine (listed above). Approve them interactively, or pass --allow-mcp-stdio <digest> for each \u2014 the digest is a hash of the declaration, not a secret.',
+    },
+    out: [''],
+    err: ['  local: <node>  <digest>', ''],
+    observedExit: 2,
+    activeOwners: 0,
+    closes: 1,
+    prompts: [],
+    promptBindings: [],
+    order: [],
+  },
+  'gate.stop.engine': {
+    result: 1,
+    out: [''],
+    err: ['resume interrupted before a decision was recorded; the gate remains pending', ''],
+    observedExit: 1,
+    activeOwners: 0,
+    closes: 1,
+    order: ['keys', 'mcp', 'engine', 'sigint', 'mcp-close', 'history-close'],
+  },
+  'gate.stop.keys': {
+    result: 1,
+    out: [''],
+    err: ['resume interrupted before a decision was recorded; the gate remains pending', ''],
+    observedExit: 1,
+    activeOwners: 0,
+    closes: 1,
+    order: ['keys', 'sigint', 'history-close'],
+  },
+};
+
+/** The same, for a command that hangs on an unacknowledged MCP release. */
+const EXPECTED_HANG: Readonly<Record<string, Hung>> = {
+  'gate.mcp-release-hang': {
+    settled: false,
+    out: [
+      '  - double ...',
+      '  ok double',
+      '  - out ...',
+      '  ok out',
+      'done: run completed',
+      '  outputs:',
+      '    out: {"d":6}',
+      '',
+    ],
+    err: ['warning: MCP teardown failed', ''],
+    closes: 0,
+    activeOwners: 1,
+    boundExit: 9,
+    exitCalls: [9],
+    settledAfterBound: false,
+    closesAfterBound: 0,
+    activeOwnersAfterBound: 1,
+  },
+  'run.mcp-release-hang': {
+    settled: false,
+    out: [
+      '> run <uuid-1> started',
+      '  - start ...',
+      '  ok start',
+      '  - double ...',
+      '  ok double',
+      '  - out ...',
+      '  ok out',
+      'done: run completed',
+      '  outputs:',
+      '    out: {"d":6}',
+      '',
+    ],
+    err: ['warning: MCP teardown failed', ''],
+    closes: 0,
+    activeOwners: 1,
+    boundExit: 9,
+    exitCalls: [9],
+    settledAfterBound: false,
+    closesAfterBound: 0,
+    activeOwnersAfterBound: 1,
+  },
 };
 
 function expectObserved(name: string, observed: Observed): void {
   expect(observed, name).toEqual(EXPECTED[name]);
+}
+
+function expectHung(name: string, hung: Hung): void {
+  expect(hung, name).toEqual(EXPECTED_HANG[name]);
 }
 
 describe('run core characterization — relavium run', () => {
@@ -1617,10 +1842,10 @@ describe('run core characterization — relavium budget resume', () => {
   }
 
   /** Run a one-agent workflow to its budget gate (cap 1 microcent, pause for approval). */
-  async function seed(): Promise<{ runId: string; gateId: string; amount: number }> {
+  async function seed(agentExtra = ''): Promise<{ runId: string; gateId: string; amount: number }> {
     persistPrice(PRICE);
     const workflow = parseWorkflow(
-      `schema_version: '1.0'\nworkflow:\n  id: budget-command\n  budget: {max_cost_microcents: 1, on_exceed: pause_for_approval, strict_cost_cap: true}\n  agents:\n    - {id: worker, model: ${MODEL}, provider: openai, system_prompt: go}\n  nodes:\n    - {id: agent, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}\n    - {id: out, type: output}\n  edges:\n    - {from: agent, to: out}\n`,
+      `schema_version: '1.0'\nworkflow:\n  id: budget-command\n  budget: {max_cost_microcents: 1, on_exceed: pause_for_approval, strict_cost_cap: true}\n  agents:\n    - {id: worker, model: ${MODEL}, provider: openai, system_prompt: go${agentExtra}}\n  nodes:\n    - {id: agent, type: agent, agent_ref: worker, prompt_template: hello, max_tokens: 64}\n    - {id: out, type: output}\n  edges:\n    - {from: agent, to: out}\n`,
     );
     const store = createRunHistoryStore(client.db, {
       uuid: randomUUID,
@@ -1739,6 +1964,47 @@ describe('run core characterization — relavium budget resume', () => {
     expect(generated).toBe(0);
     expect(keyReads).toBe(0);
     expect(factories, 'a refusal builds no key resolver').toBe(0);
+  });
+
+  describe('--allow-mcp-stdio on a budget resume, with no terminal to ask', () => {
+    const declaresServer = `, mcp_servers: [{id: local, transport: stdio, command: ${JSON.stringify(process.execPath)}}]`;
+
+    it('the matching digest lets the approved resume spawn the server and finish, with no prompt', async () => {
+      const paused = await seed(declaresServer);
+      const allowed = await localDigest(root);
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const h = createHarness();
+      const observed = await h.observe((io, invocation) =>
+        budgetCommand(
+          { runId: paused.runId, approveAmount: String(paused.amount), allowMcpStdio: [allowed] },
+          { ...budgetDeps(io, invocation, false), startMcpClient },
+        ),
+      );
+      expect(startMcpClient).toHaveBeenCalledOnce();
+      expect(generated, 'the approved agent ran once').toBe(1);
+      expectObserved('budget.allow-mcp-stdio.allowed', {
+        ...scrubObserved(observed, scrubConsent),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
+
+    it('the same resume without the flag is refused, spawns nothing and dispatches nothing', async () => {
+      const paused = await seed(declaresServer);
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const h = createHarness();
+      const observed = await h.observe((io, invocation) =>
+        budgetCommand(
+          { runId: paused.runId, approveAmount: String(paused.amount) },
+          { ...budgetDeps(io, invocation, false), startMcpClient },
+        ),
+      );
+      expect(startMcpClient).not.toHaveBeenCalled();
+      expect(generated, 'a refused resume dispatches no agent').toBe(0);
+      expectObserved('budget.allow-mcp-stdio.refused', {
+        ...scrubObserved(observed, scrubConsent),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
   });
 });
 
@@ -1954,6 +2220,77 @@ describe('run core characterization — the MCP consent prompt', () => {
     );
     expectObserved('consent.gate.secret-stdin', withPrompts(resumed, h.normalize));
   });
+
+  describe('--allow-mcp-stdio on a gate resume, with no terminal to ask', () => {
+    /** Park a run whose one stdio server was authorized for the start, so only the resume is under test. */
+    async function parked(
+      h: Harness,
+      startMcpClient: NonNullable<RunCommandDeps['startMcpClient']>,
+    ) {
+      const path = writeWorkflow('mcp-gated.relavium.yaml', MCP_GATED);
+      const allowed = await localDigest(root);
+      await h.observe((io, invocation) =>
+        runCommand(
+          { workflow: path, input: ['n=3'], allowMcpStdio: [allowed] },
+          {
+            io,
+            invocation,
+            ...durableRun(false),
+            startMcpClient,
+            selectRenderer: plainRenderer,
+            selectGatePrompter: () => undefined,
+          },
+        ),
+      );
+      return { runId: lastRunId(), allowed };
+    }
+
+    it('the matching digest lets the resume spawn the server and finish, with no prompt', async () => {
+      const h = createHarness();
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const { runId, allowed } = await parked(h, startMcpClient);
+      startMcpClient.mockClear();
+      const observed = await h.observe((io, invocation) =>
+        gateCommand(
+          { runId, approve: true, allowMcpStdio: [allowed] },
+          {
+            ...gateDeps(io, invocation, false),
+            startMcpClient,
+            selectRenderer: plainRenderer,
+            selectGatePrompter: () => undefined,
+          },
+        ),
+      );
+      expect(startMcpClient).toHaveBeenCalledOnce();
+      expectObserved('gate.allow-mcp-stdio.allowed', {
+        ...withPrompts(observed, h.normalize),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
+
+    it('the same resume without the flag is refused and spawns nothing', async () => {
+      const h = createHarness();
+      const startMcpClient = vi.fn(() => realStartMcpClient([]));
+      const { runId } = await parked(h, startMcpClient);
+      startMcpClient.mockClear();
+      const observed = await h.observe((io, invocation) =>
+        gateCommand(
+          { runId, approve: true },
+          {
+            ...gateDeps(io, invocation, false),
+            startMcpClient,
+            selectRenderer: plainRenderer,
+            selectGatePrompter: () => undefined,
+          },
+        ),
+      );
+      expect(startMcpClient).not.toHaveBeenCalled();
+      expectObserved('gate.allow-mcp-stdio.refused', {
+        ...withPrompts(observed, h.normalize),
+        order: startMcpClient.mock.calls.map(() => 'spawn'),
+      });
+    });
+  });
 });
 
 describe('run core characterization — a start and a resume that need no prompt', () => {
@@ -2134,6 +2471,133 @@ describe('run core characterization — the sequence of a start and of a resume'
     );
     expect(JSON.stringify(observed)).not.toContain(SECRET_VALUE);
     expectObserved('gate.order', { ...observed, order });
+  });
+
+  /** Park a run with one declared MCP server at its approval gate, ready for a resume. */
+  async function pauseWithMcp(h: Harness): Promise<string> {
+    const path = writeWorkflow('stop-gate.relavium.yaml', withMcp(GATED));
+    await h.observe((io, invocation) =>
+      runCommand(
+        { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+        {
+          io,
+          invocation,
+          ...durableRun(false),
+          consentGate: PASS_CONSENT,
+          startMcpClient: recordingMcp([]),
+        },
+      ),
+    );
+    return lastRunId();
+  }
+
+  it.each([
+    {
+      stage: 'keys',
+      title: 'a SIGINT while a gate resume resolves its keys stops it before any MCP server starts',
+    },
+    {
+      stage: 'engine',
+      title:
+        'a SIGINT while a gate resume builds its engine stops it, and the MCP servers and the history are released',
+    },
+  ] as const)('$title', async ({ stage }) => {
+    const h = createHarness();
+    const runId = await pauseWithMcp(h);
+    const order: string[] = [];
+    let interrupt: (signo: number) => void = () => {
+      throw new Error('the resume never subscribed to signals');
+    };
+    const sigint = (): void => {
+      order.push('sigint');
+      interrupt(2);
+    };
+    const observed = await h.observe((io, invocation) =>
+      gateCommand(
+        { runId, approve: true },
+        {
+          ...gateDeps(io, invocation, false),
+          subscribeSignals: (onSignal) => {
+            interrupt = onSignal;
+            return () => undefined;
+          },
+          openDb: () => ({
+            db: client.db,
+            close: () => {
+              order.push('history-close');
+              countClose();
+            },
+          }),
+          resolveKeys: () => {
+            order.push('keys');
+            if (stage === 'keys') sigint();
+            return { providers: createProviderResolver({}), mcpSecretResolver: () => 'unused' };
+          },
+          consentGate: PASS_CONSENT,
+          startMcpClient: recordingMcp(order),
+          buildEngine: async (options) => {
+            order.push('engine');
+            const engine = await buildEngine(options);
+            if (stage === 'engine') sigint();
+            return engine;
+          },
+        },
+      ),
+    );
+    expectObserved(`gate.stop.${stage}`, { ...observed, order });
+  });
+
+  /** One server `fs` whose connection refuses to close, so the manager reports a close failure. */
+  function refusingCloseMcp(): NonNullable<RunCommandDeps['startMcpClient']> {
+    const connection: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'unused' }], isError: false }),
+      close: () => Promise.reject(new Error('synthetic close refusal')),
+    };
+    return () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(connection) }]);
+  }
+
+  it('relavium run with an MCP release that is never acknowledged never settles and keeps the history open', async () => {
+    const path = writeWorkflow('hang-run.relavium.yaml', withMcp(HAPPY));
+    const h = createHarness();
+    expectHung(
+      'run.mcp-release-hang',
+      await observeHang(
+        (io, invocation) =>
+          runCommand(
+            { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+            {
+              io,
+              invocation,
+              ...durableRun(false),
+              consentGate: PASS_CONSENT,
+              startMcpClient: refusingCloseMcp(),
+            },
+          ),
+        h.normalize,
+      ),
+    );
+  });
+
+  it('relavium gate with an MCP release that is never acknowledged never settles and keeps the history open', async () => {
+    const h = createHarness();
+    const runId = await pauseWithMcp(h);
+    expectHung(
+      'gate.mcp-release-hang',
+      await observeHang(
+        (io, invocation) =>
+          gateCommand(
+            { runId, approve: true },
+            {
+              ...gateDeps(io, invocation, false),
+              consentGate: PASS_CONSENT,
+              startMcpClient: refusingCloseMcp(),
+            },
+          ),
+        h.normalize,
+      ),
+    );
   });
 });
 
