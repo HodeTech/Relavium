@@ -450,7 +450,7 @@ async function observeHang(
 
 // ---------------------------------------------------------------------------------------------------
 // Expected values. The original cases were recorded from the pre-extraction code; the cases added later
-// (commit 0c3d100b onward) were recorded from the committed post-extraction code and reproduce at the
+// (commit c64164fc onward) were recorded from the committed post-extraction code and reproduce at the
 // pre-extraction commit 022e182d (checked 2026-11-22; see the step-2 entry in the phase record). Edited only
 // to add a new case, never to follow a behaviour change.
 // ---------------------------------------------------------------------------------------------------
