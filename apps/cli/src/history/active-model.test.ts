@@ -8,7 +8,11 @@ import {
   type ActiveRow,
   type ClassifyActiveInput,
 } from './active-model.js';
-import { MAX_IDENTIFIER_CHARS, MAX_PROJECT_ROOT_CHARS } from './run-detail-model.js';
+import {
+  MAX_IDENTIFIER_CHARS,
+  MAX_PROJECT_ROOT_CHARS,
+  SCRUB_INPUT_CHARS,
+} from './run-detail-model.js';
 
 const HERE = '/work/project';
 const NOW = Date.parse('2026-11-22T12:00:00.000Z');
@@ -414,14 +418,28 @@ describe('free-form values read back from the history file', () => {
       classify([
         run('r', {
           status: 'paused',
+          workflowId: 'w'.repeat(SCRUB_INPUT_CHARS),
+          projectRoot: `/${'p'.repeat(SCRUB_INPUT_CHARS - 1)}`,
+        }),
+      ]),
+    );
+    // Values of exactly the scrub bound are scrubbed whole and then cut to the window each field shows.
+    expect(huge.class).toBe('other-paused-elsewhere');
+    expect(huge.label).toBe(`${'w'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    expect(huge.projectRoot).toBe(`/${'p'.repeat(MAX_PROJECT_ROOT_CHARS - 1)}…`);
+    // A value above the bound is not scrubbed and not shown in part, and the class decision is the same.
+    const oversized = only(
+      classify([
+        run('r', {
+          status: 'paused',
           workflowId: 'w'.repeat(200_000),
           projectRoot: `/${'p'.repeat(200_000)}`,
         }),
       ]),
     );
-    expect(huge.class).toBe('other-paused-elsewhere');
-    expect(huge.label).toBe(`${'w'.repeat(MAX_IDENTIFIER_CHARS)}…`);
-    expect(huge.projectRoot).toBe(`/${'p'.repeat(MAX_PROJECT_ROOT_CHARS - 1)}…`);
+    expect(oversized.class).toBe('other-paused-elsewhere');
+    expect(oversized.label).toBe('text too large to show (200000 bytes)');
+    expect(oversized.projectRoot).toBe('text too large to show (200001 bytes)');
     const masked = only(
       classify([run('r', { status: 'paused', projectRoot: `/work/${secret}` })], {
         workflowLabels: new Map([['wf-id', `flow ${secret}`]]),

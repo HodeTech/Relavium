@@ -175,3 +175,6 @@ Both re-host their shell cores ([ADR-0122](0122-the-home-is-the-interactive-prod
 - **The stalled rule.** The Active tab calls a run stalled only when it is older than one lease TTL and its lease is missing or expired for more than one TTL, as the 2026-11-06 amendment of ADR-0079 requires; a run younger than one TTL is never stalled. §2 is read with this condition.
 - **The follow's no-owner verdict** uses the same grace: a lease counts as gone only one full TTL after its expiry, and a lease that is absent counts only for a run older than one TTL.
 
+### Correction note — 2026-11-22 (MVP-8 step 1, the round-4 review)
+
+The round-3 note says three read plans are pinned in `run-history-reads.test.ts`. There are four: `loadRunDetail`, `loadLatestRunPerWorkflowInProject`, `listRunSummaries` filtered by workflow alone, and `loadStepDetail`. The reference lists all four. The unpin rule in §5 is the exact-match rule of the step's implementation: unpin checks the kind and the text types of a key and never its length, so a crafted over-length row is removable.

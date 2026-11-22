@@ -35,15 +35,21 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
+/** What a timestamp more than one minute ahead of the clock says: it is not an age, and `now` would be a lie. */
+export const IN_THE_FUTURE = 'in the future';
+
 /**
- * A coarse relative age of an ISO timestamp: `now` (under a minute, and a small future skew), `5m ago`, `3h ago`,
- * `2d ago`. Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down. An unparseable
- * timestamp yields `''`: the row renders nothing rather than `NaN`.
+ * A coarse relative age of an ISO timestamp: `now` (under a minute, and a skew of up to one minute into the future),
+ * `5m ago`, `3h ago`, `2d ago`. Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down. A
+ * timestamp MORE than one minute ahead of the clock says `in the future` (a clock that moved, or a damaged row), never
+ * `now`; exactly one minute ahead is still skew. An unparseable timestamp yields `''`: the row renders nothing rather
+ * than `NaN`.
  */
 export function ageText(iso: string, nowMs: number): string {
   const thenMs = Date.parse(iso);
   if (Number.isNaN(thenMs)) return '';
   const delta = nowMs - thenMs;
+  if (delta < -MINUTE_MS) return IN_THE_FUTURE;
   if (delta < MINUTE_MS) return 'now';
   if (delta < HOUR_MS) return `${Math.floor(delta / MINUTE_MS)}m ago`;
   if (delta < DAY_MS) return `${Math.floor(delta / HOUR_MS)}h ago`;

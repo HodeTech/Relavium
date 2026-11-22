@@ -14,6 +14,7 @@ import {
   buildNodeTokens,
   buildToolActivityForAttempt,
   clipCodePoints,
+  collapseAttemptRows,
   completedStepTokens,
   foldUsageFacts,
   indexNodeEvents,
@@ -360,37 +361,69 @@ export interface NodeDetailModel {
   readonly toolActivity: ToolActivityView;
 }
 
+/**
+ * One timeline row before its text is built: the cheap part (its place, its time, its label) and, when the row has
+ * one, a `detail` that is built ONLY when the row is shown. A stored text a row's detail carries is scrubbed there, so
+ * the page scrubs the rows it shows (at most {@link MAX_TIMELINE_ROWS}) and never the rest of a long log.
+ */
+interface TimelineDraft {
+  readonly sequenceNumber: number;
+  readonly timestamp: string;
+  readonly label: string;
+  readonly detail?: () => string;
+}
+
 /** The durable lifecycle events a node's timeline shows; streamed events (tokens, tool calls) are not durable. */
-function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefined {
+function timelineDraft(event: RunEvent, nodeId: string): TimelineDraft | undefined {
   if (!('nodeId' in event) || event.nodeId !== nodeId) return undefined;
   const base = { sequenceNumber: event.sequenceNumber, timestamp: event.timestamp };
   switch (event.type) {
-    case 'node:started':
-      return { ...base, label: 'Started', detail: `attempt ${event.attemptNumber ?? 1}` };
-    case 'node:retrying':
+    case 'node:started': {
+      const attempt = event.attemptNumber ?? 1;
+      return { ...base, label: 'Started', detail: () => `attempt ${attempt}` };
+    }
+    case 'node:retrying': {
+      const { attemptNumber, error, delayMs } = event;
       return {
         ...base,
         label: 'Retrying',
-        detail: `attempt ${event.attemptNumber} failed (${scrubbedBounded(event.error.code)}); next in ${formatDuration(event.delayMs)}`,
+        detail: () =>
+          `attempt ${attemptNumber} failed (${scrubbedBounded(error.code)}); next in ${formatDuration(delayMs)}`,
       };
-    case 'node:completed':
-      return { ...base, label: 'Completed', detail: formatDuration(event.durationMs) };
-    case 'node:failed':
-      return { ...base, label: 'Failed', detail: scrubbedBounded(event.error.code) };
-    case 'node:skipped':
-      return { ...base, label: 'Skipped', detail: scrubbedBounded(event.reason) };
-    case 'cost:attempt_settled':
+    }
+    case 'node:completed': {
+      const { durationMs } = event;
+      return { ...base, label: 'Completed', detail: () => formatDuration(durationMs) };
+    }
+    case 'node:failed': {
+      const { error } = event;
+      return { ...base, label: 'Failed', detail: () => scrubbedBounded(error.code) };
+    }
+    case 'node:skipped': {
+      const { reason } = event;
+      return { ...base, label: 'Skipped', detail: () => scrubbedBounded(reason) };
+    }
+    case 'cost:attempt_settled': {
+      const { model, priced, costMicrocents } = event;
       return {
         ...base,
         label: 'Model call settled',
-        detail: `${scrubbedBounded(event.model)} · ${event.priced ? formatCostUsd(event.costMicrocents) : 'price unknown'}`,
+        detail: () =>
+          `${scrubbedBounded(model)} · ${priced ? formatCostUsd(costMicrocents) : 'price unknown'}`,
       };
-    case 'human_gate:paused':
-      return { ...base, label: 'Gate opened', detail: scrubbedBounded(event.gateType) };
-    case 'human_gate:resumed':
-      return { ...base, label: 'Gate decided', detail: scrubbedBounded(event.decision) };
-    case 'media_job:submitted':
-      return { ...base, label: 'Media job submitted', detail: scrubbedBounded(event.modality) };
+    }
+    case 'human_gate:paused': {
+      const { gateType } = event;
+      return { ...base, label: 'Gate opened', detail: () => scrubbedBounded(gateType) };
+    }
+    case 'human_gate:resumed': {
+      const { decision } = event;
+      return { ...base, label: 'Gate decided', detail: () => scrubbedBounded(decision) };
+    }
+    case 'media_job:submitted': {
+      const { modality } = event;
+      return { ...base, label: 'Media job submitted', detail: () => scrubbedBounded(modality) };
+    }
     case 'budget:paused':
       return { ...base, label: 'Budget paused' };
     case 'budget:authorization':
@@ -398,6 +431,12 @@ function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefin
     default:
       return undefined;
   }
+}
+
+/** A timeline row with its text built: the only place a draft's `detail` runs. */
+function timelineRow(draft: TimelineDraft): TimelineRowView {
+  const { detail, ...rest } = draft;
+  return detail === undefined ? rest : { ...rest, detail: detail() };
 }
 
 /**
@@ -416,7 +455,11 @@ function storedOutputPreview(detail: StepDetailRecord): OutputPreview | undefine
 export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
   const { detail, events } = input;
   const nodeId = detail.nodeId;
-  const attemptRows = input.attempts.length === 0 ? [detail] : input.attempts;
+  const storedRows = input.attempts.length === 0 ? [detail] : input.attempts;
+  // One row per attempt number before any per-attempt or fallback use: a re-dispatched node (a budget-approved
+  // redispatch, a resume of a node left running) can hold two rows under one number, and the attempts list would
+  // show that attempt twice while the tokens fallback added its tokens to themselves.
+  const attemptRows = collapseAttemptRows(storedRows);
   const logs = indexNodeEvents(events);
   const log = logs.get(nodeId);
   const facts = foldUsageFacts(events);
@@ -425,7 +468,8 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
 
   const status = resolveNodeStatus({ step: detail, log, runFinished });
   const settled = allSettled(log);
-  const boundaryMicrocents = attemptRows.reduce((max, row) => Math.max(max, row.costMicrocents), 0);
+  // The node-wide boundary cost is a maximum, not a per-attempt figure: it is read over every stored row.
+  const boundaryMicrocents = storedRows.reduce((max, row) => Math.max(max, row.costMicrocents), 0);
 
   // The partition of the module note applied per attempt: a group belongs to the attempt whose number it was
   // dispatched under. Two groups with one number (a re-dispatch after a resume) share that attempt's row.
@@ -456,15 +500,21 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
       };
     });
 
-  const models: string[] = [];
+  // The cap comes BEFORE the scrub: only the first MAX_MODELS_LISTED distinct stored names are scrubbed, so a log of
+  // thousands of settled rows with thousands of names costs a bound, not its size. Two stored names that scrub to one
+  // line are listed once.
+  const storedModels = new Set<string>();
   for (const row of settled) {
-    const model = scrubbedBounded(row.model);
-    if (!models.includes(model) && models.length < MAX_MODELS_LISTED) models.push(model);
+    if (storedModels.size === MAX_MODELS_LISTED) break;
+    storedModels.add(row.model);
   }
+  const models = [...new Set([...storedModels].map((model) => scrubbedBounded(model)))];
 
+  // The node's own rows first, in sequence order; the cap comes BEFORE the text is built, so only the rows the page
+  // shows are scrubbed, and the rest are counted.
   const timelineAll = [...events]
     .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
-    .flatMap((event) => timelineRow(event, nodeId) ?? []);
+    .flatMap((event) => timelineDraft(event, nodeId) ?? []);
   const error = readStoredError(detail.errorJson, detail.errorByteLength);
   const outputPreview = storedOutputPreview(detail);
   const lastKnown = lastAttemptRow(attemptRows) ?? detail;
@@ -501,7 +551,7 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
     },
     ...(error === undefined ? {} : { error }),
     ...(outputPreview === undefined ? {} : { outputPreview }),
-    timeline: timelineAll.slice(0, MAX_TIMELINE_ROWS),
+    timeline: timelineAll.slice(0, MAX_TIMELINE_ROWS).map(timelineRow),
     timelineOmitted: Math.max(0, timelineAll.length - MAX_TIMELINE_ROWS),
     toolActivity: buildToolActivityForAttempt(
       log?.lastTerminal,

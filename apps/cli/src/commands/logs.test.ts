@@ -1258,7 +1258,7 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(err()).toBe('');
     });
 
-    it('ends when the lease it was following lapses a full TTL ago, and not when it merely expires', async () => {
+    it('ends when the lease it was following lapsed MORE than a full TTL ago, and not when it merely expires', async () => {
       await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
       setLease('f1', T0 + 2_000);
       const clock = fakeClock(T0);
@@ -1267,40 +1267,42 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
         () => clock.advance(1_500), // T0+1500: due, the lease (to T0+2000) is live
         () => clock.advance(1_500), // T0+3000: due, the lease has expired, but a beat may only be late: still followed
         () => clock.advance(RUN_LEASE_TTL_MS - 2_000), // T0+TTL+1000, a second short of a full TTL past the expiry
-        () => clock.advance(1_000), // T0+TTL+2000: a full TTL past the expiry, with no renewal: gone
+        () => clock.advance(1_001), // T0+TTL+2001: more than a full TTL past the expiry, with no renewal: gone
       ]);
       await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
       expect(waits).toHaveLength(4);
       expect(err()).toBe(noOwnerNote('f1'));
     });
 
-    it('treats a lease as gone exactly one TTL after its expiry, and live a millisecond before', async () => {
+    it('treats a lease as gone a millisecond past one TTL after its expiry, and live at exactly one TTL (strictly more than one TTL, as `stalled` is)', async () => {
       await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
-      const at = captureIo();
-      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS);
-      const clockAt = fakeClock(T0);
+      // At the check (T0 + interval) the lease expired one TTL and a millisecond ago: more than one TTL, gone.
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS - 1);
+      const after = captureIo();
+      const clockAfter = fakeClock(T0);
+      const afterScript = scriptedSleep([() => clockAfter.advance(FOLLOW_LIVENESS_INTERVAL_MS)]);
       await logsFollowCommand(
         { runId: 'f1' },
-        deps(at.io, false, {
-          sleep: scriptedSleep([() => clockAt.advance(FOLLOW_LIVENESS_INTERVAL_MS)]).sleep,
-          now: clockAt.now,
-        }),
+        deps(after.io, false, { sleep: afterScript.sleep, now: clockAfter.now }),
       );
-      expect(at.err()).toBe(noOwnerNote('f1'));
+      expect(afterScript.waits).toHaveLength(1);
+      expect(after.err()).toBe(noOwnerNote('f1'));
 
-      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS + 1);
-      const before = captureIo();
-      const clockBefore = fakeClock(T0);
-      const { sleep, waits } = scriptedSleep([
-        () => clockBefore.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+      // The same check one millisecond earlier: the lease expired exactly one TTL ago, which is not more than one
+      // TTL, so it is still live: the follow goes on, and ends on the terminal event the script appends.
+      setLease('f1', T0 + FOLLOW_LIVENESS_INTERVAL_MS - RUN_LEASE_TTL_MS);
+      const at = captureIo();
+      const clockAt = fakeClock(T0);
+      const atScript = scriptedSleep([
+        () => clockAt.advance(FOLLOW_LIVENESS_INTERVAL_MS),
         () => appender('f1', 3)(COMPLETED),
       ]);
       await logsFollowCommand(
         { runId: 'f1' },
-        deps(before.io, false, { sleep, now: clockBefore.now }),
+        deps(at.io, false, { sleep: atScript.sleep, now: clockAt.now }),
       );
-      expect(waits).toHaveLength(2);
-      expect(before.err()).toBe('');
+      expect(atScript.waits).toHaveLength(2);
+      expect(at.err()).toBe('');
     });
 
     it('does not judge a run with no lease until it is older than one TTL: a run that has only just begun may not have taken it', async () => {

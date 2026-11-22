@@ -110,3 +110,7 @@ Additive to the run-event contract: an optional, content-free `toolActivity` arr
 ### Amendment note — 2026-11-22 (MVP-8 step 1, the round-2 review)
 
 The node terminals' `toolActivity` entry carries `resultRecorded` (a required boolean distinguishing a refusal, a measured failure and an unpaired call), and a call is recorded when it starts. The bus event `agent:tool_result` carries an optional measured `durationMs`. Neither changes the event sequence or the checkpoint fold. See [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4 and the reference.
+
+### Correction note — 2026-11-22 (MVP-8 step 1, the round-4 review)
+
+The node terminals' count of calls beyond the kept entries is named `toolActivityTruncated` (as in the reference and in the shared schema). The 2026-11-22 note above says `truncated` and is corrected here; see [ADR-0140](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §4.

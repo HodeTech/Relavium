@@ -23,6 +23,7 @@ import {
   scrubbedBounded,
   shortRunId,
   MAX_STORED_ERROR_BYTES,
+  SCRUB_INPUT_CHARS,
   type NodeRow,
 } from './run-detail-model.js';
 
@@ -497,6 +498,50 @@ describe('node tokens: the settled rows, else a completed step row, else not rec
       output: 5,
       text: '↑11 ↓5',
     });
+  });
+
+  it('counts ONE row`s tokens when a re-dispatched node has two rows under one attempt number, keeping the later row', () => {
+    // A budget-approved redispatch or a resume of a node left running: two completed rows, one attempt number, two
+    // node:started events. The step-row fallback must not add the attempt's tokens to themselves (↑14 ↓6).
+    const events = [coverageStarted(0), started(1, 'a', 1), started(2, 'a', 1), completed(3, 'a')];
+    const duplicated = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+      ],
+      events,
+    });
+    expect(rowOf(duplicated.rows, 'a').tokens).toEqual({
+      source: 'step',
+      input: 7,
+      output: 3,
+      text: '↑7 ↓3',
+    });
+    // The later of two differing rows is the one kept.
+    const differing = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+        stepRow('a', { attemptNumber: 1, inputTokens: 9, outputTokens: 4 }),
+      ],
+      events,
+    });
+    expect(rowOf(differing.rows, 'a').tokens).toMatchObject({
+      source: 'step',
+      input: 9,
+      output: 4,
+    });
+    // With no node:started in the log the attempt count is the step-row count: one attempt, not two rows.
+    const unlogged = buildRunDetailModel({
+      run: runRecord(),
+      steps: [
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+        stepRow('a', { attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+      ],
+      events: [],
+    });
+    expect(rowOf(unlogged.rows, 'a').attemptCount).toBe(1);
   });
 });
 
@@ -1260,9 +1305,10 @@ describe('the header', () => {
 
   it('bounds and scrubs the labels read back from the history file: a node id, a node type, a workflow, a tool id', () => {
     const secret = `sk-ant-api03-${'L'.repeat(40)}`;
+    // Values of exactly the scrub bound are scrubbed whole and then cut to the window a row shows.
     const huge = buildRunDetailModel({
-      run: runRecord({ workflowId: 'w'.repeat(200_000) }),
-      steps: [stepRow('n'.repeat(200_000), { nodeType: 't'.repeat(200_000) })],
+      run: runRecord({ workflowId: 'w'.repeat(SCRUB_INPUT_CHARS) }),
+      steps: [stepRow('n'.repeat(SCRUB_INPUT_CHARS), { nodeType: 't'.repeat(SCRUB_INPUT_CHARS) })],
       events: [],
     });
     const clipped = (letter: string): string => `${letter.repeat(MAX_IDENTIFIER_CHARS)}…`;
@@ -1270,7 +1316,17 @@ describe('the header', () => {
     expect(huge.rows[0]?.nodeType).toBe(clipped('t'));
     expect(huge.header.workflow).toBe(clipped('w'));
     // The raw id is the lookup identity, and is never cut.
-    expect(huge.rows[0]?.nodeId).toHaveLength(200_000);
+    expect(huge.rows[0]?.nodeId).toHaveLength(SCRUB_INPUT_CHARS);
+    // Above the bound a value is neither scrubbed nor shown in part: a fixed sentence says only its size.
+    const oversized = buildRunDetailModel({
+      run: runRecord({ workflowId: 'w'.repeat(200_000) }),
+      steps: [stepRow('n'.repeat(200_000), { nodeType: 't'.repeat(200_000) })],
+      events: [],
+    });
+    expect(oversized.rows[0]?.label).toBe('text too large to show (200000 bytes)');
+    expect(oversized.rows[0]?.nodeType).toBe('text too large to show (200000 bytes)');
+    expect(oversized.header.workflow).toBe('text too large to show (200000 bytes)');
+    expect(oversized.rows[0]?.nodeId).toHaveLength(200_000);
 
     const masked = buildRunDetailModel({
       run: runRecord({ workflowId: `flow ${secret}` }),
@@ -1294,13 +1350,15 @@ describe('the header', () => {
     const trace = buildToolActivity({
       ...completedEvent(),
       toolActivity: [
-        { toolId: 't'.repeat(200_000), ok: true, resultRecorded: true },
+        { toolId: 't'.repeat(SCRUB_INPUT_CHARS), ok: true, resultRecorded: true },
         { toolId: `tool ${secret}`, ok: true, resultRecorded: true },
+        { toolId: 't'.repeat(200_000), ok: true, resultRecorded: true },
       ],
     });
     const ids = trace.recorded ? trace.entries.map((entry) => entry.toolId) : [];
     expect(ids[0]).toBe(clipped('t'));
     expect(ids[1]).not.toContain('sk-ant-api03');
+    expect(ids[2]).toBe('text too large to show (200000 bytes)');
   });
 
   it('shows a failed run`s stored error sanitized, scrubbed of secrets and bounded', () => {
@@ -1363,12 +1421,18 @@ describe('readStoredError and clipCodePoints', () => {
     ).toBe(`${'\u{1F600}'.repeat(MAX_IDENTIFIER_CHARS)}…`);
   });
 
-  it('keeps a pathological code or node id to a bound: the document gate refuses what a page cannot use, and boundedIdentifier cuts before its filter', () => {
-    // Under the document gate the code is scrubbed whole (cheap at this size) and only its cut is shown.
+  it('keeps a pathological code, message or node id to a bound: the scrubbed text is refused above it, and boundedIdentifier cuts before its filter', () => {
+    // Under the document gate (1 MiB) a code or a message above the scrub bound is not scrubbed and not shown in
+    // part: a fixed sentence says only its size. A node id is not scrubbed, so it is cut to its window instead.
     const view = readStoredError(
-      JSON.stringify({ code: 'c'.repeat(500_000), nodeId: 'n'.repeat(400_000) }),
+      JSON.stringify({
+        code: 'c'.repeat(500_000),
+        message: 'm'.repeat(300_000),
+        nodeId: 'n'.repeat(200_000),
+      }),
     );
-    expect(Array.from(view?.code ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
+    expect(view?.code).toBe('text too large to show (500000 bytes)');
+    expect(view?.message).toBe('text too large to show (300000 bytes)');
     expect(Array.from(view?.nodeId ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
     // The bound is on what a non-scrubbing filter is handed, not only on what is shown.
     const handed: number[] = [];
@@ -1376,7 +1440,8 @@ describe('readStoredError and clipCodePoints', () => {
       handed.push(text.length);
       return text;
     });
-    expect(handed).toEqual([65_536]);
+    expect(handed).toEqual([SCRUB_INPUT_CHARS]);
+    expect(SCRUB_INPUT_CHARS).toBe(65_536);
   });
 
   it('refuses a stored error above 1 MiB with a fixed sentence, and does not parse it', () => {
@@ -1480,14 +1545,47 @@ describe('readStoredError and clipCodePoints', () => {
   });
 });
 
-describe('scrubbedBounded scrubs a bounded window of an unbounded value (ADR-0122 §7.5)', () => {
-  it('masks a key-shaped secret inside the window of a very long value, and returns promptly', () => {
-    const secret = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-    const long = `${secret} ${'x'.repeat(300_000)}`;
+describe('scrubbedBounded scrubs a value whole, or does not show it (ADR-0122 §7.5)', () => {
+  const secret = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const tooLarge = (bytes: number): string => `text too large to show (${bytes} bytes)`;
+
+  it('scrubs a value of exactly the bound WHOLE, to its very last character, and returns promptly', () => {
+    // The secret ends the value and the whole value is the window, so only a scrub of ALL of it can mask it.
+    const value = `${'x'.repeat(SCRUB_INPUT_CHARS - secret.length - 1)} ${secret}`;
+    expect(value).toHaveLength(SCRUB_INPUT_CHARS);
     const started = Date.now();
-    const shown = scrubbedBounded(long, 128);
+    const shown = scrubbedBounded(value, SCRUB_INPUT_CHARS);
     expect(Date.now() - started).toBeLessThan(2000);
     expect(shown).not.toContain(secret);
-    expect(shown.length).toBeLessThanOrEqual(129);
+    expect(shown).not.toContain('sk-ant');
+    expect(shown.startsWith('xxxx')).toBe(true);
+    expect(shown).not.toMatch(/^text too large/u);
+    // The same value in the default window is scrubbed whole too and then cut.
+    expect(scrubbedBounded(value)).toBe(`${'x'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+  });
+
+  it('refuses a value one code unit over the bound with a fixed sentence that says only its size in bytes', () => {
+    expect(scrubbedBounded('x'.repeat(SCRUB_INPUT_CHARS + 1))).toBe(
+      tooLarge(SCRUB_INPUT_CHARS + 1),
+    );
+    // The number is the UTF-8 byte length, not the count of code units or code points.
+    expect(scrubbedBounded('\u00e9'.repeat(SCRUB_INPUT_CHARS + 1))).toBe(
+      tooLarge(2 * (SCRUB_INPUT_CHARS + 1)),
+    );
+    // A window larger than the default does not change what is refused.
+    expect(scrubbedBounded('x'.repeat(SCRUB_INPUT_CHARS + 1), 4096)).toBe(
+      tooLarge(SCRUB_INPUT_CHARS + 1),
+    );
+  });
+
+  it('never shows any part of an over-bound value: a secret at its start, or straddling the old cut, leaves nothing', () => {
+    const atStart = scrubbedBounded(`${secret} ${'x'.repeat(300_000)}`, 128);
+    expect(atStart).toBe(tooLarge(secret.length + 1 + 300_000));
+    // A secret that straddles the bound: a cut made before the scrub leaves its recognizable prefix in the window.
+    const straddling = `${'x'.repeat(SCRUB_INPUT_CHARS - 12)} ${secret}`;
+    const shown = scrubbedBounded(straddling, SCRUB_INPUT_CHARS);
+    expect(shown).toBe(tooLarge(straddling.length));
+    expect(shown).not.toContain('sk-ant');
+    expect(shown).not.toContain('xxxx');
   });
 });

@@ -22,6 +22,7 @@ import {
   NOT_RECORDED,
   NOT_RECORDED_FOR_ATTEMPT,
   NOT_RECORDED_OLDER_LOG,
+  SCRUB_INPUT_CHARS,
 } from './run-detail-model.js';
 
 // The real scrubber, counted: the walk's cost is the number of strings it hands the scrubber, so a test can say
@@ -31,6 +32,14 @@ vi.mock('@relavium/llm/scrub-secrets', async (importOriginal) => {
   return { ...actual, scrubSecrets: vi.fn(actual.scrubSecrets) };
 });
 const scrubCalls = (): number => vi.mocked(scrubModule.scrubSecrets).mock.calls.length;
+/** The `model-N` names of every string handed to the scrubber since the mock was last cleared. */
+const scrubbedModelNames = (): Set<string> => {
+  const names = new Set<string>();
+  for (const [text] of vi.mocked(scrubModule.scrubSecrets).mock.calls) {
+    for (const match of text.matchAll(/model-\d+/gu)) names.add(match[0]);
+  }
+  return names;
+};
 
 const RUN_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const T = '2026-11-22T10:00:00.000Z';
@@ -445,6 +454,23 @@ describe('buildOutputPreview: the scrubber reads the text whole, and only then i
     const preview = buildOutputPreview(JSON.stringify({ note: text }));
     expect(preview.text).not.toContain('S3cr3t');
     expect(preview.masked).toBe(true);
+  });
+
+  it('cuts a top-level string leaf only ABOVE 32,768 code units: exactly that many is kept whole, one more is cut and says so', () => {
+    // BELs are stripped from the shown text, so what the page shows is what follows them: the leaf's own cut, not the
+    // 4,000-character window, decides whether its last characters survive.
+    const cut = 32_768;
+    const exactText = `${'\u0007'.repeat(cut - 7)}visible`;
+    expect(exactText).toHaveLength(cut);
+    const exact = buildOutputPreview(JSON.stringify(exactText));
+    expect(exact.text).toBe('visible');
+    expect(exact.truncated).toBe(false);
+
+    const overText = `${'\u0007'.repeat(cut - 6)}visible`;
+    expect(overText).toHaveLength(cut + 1);
+    const over = buildOutputPreview(JSON.stringify(overText));
+    expect(over.text).toBe('visibl');
+    expect(over.truncated).toBe(true);
   });
 });
 
@@ -1099,9 +1125,9 @@ describe('buildNodeDetailModel', () => {
     expect(model.toolActivity).toEqual({ recorded: false, text: DID_NOT_FINISH });
   });
 
-  it('bounds and scrubs the model of a timeline row and of the models list: a 200000-character name is clipped, a secret masked', () => {
+  it('bounds and scrubs the model of a timeline row and of the models list: a name at the scrub bound is clipped, a secret masked, one above it refused', () => {
     const secret = `sk-ant-api03-${'M'.repeat(40)}`;
-    const huge = 'm'.repeat(200_000);
+    const huge = 'm'.repeat(SCRUB_INPUT_CHARS);
     const model = buildNodeDetailModel({
       detail: stepDetail(),
       attempts: [],
@@ -1125,19 +1151,116 @@ describe('buildNodeDetailModel', () => {
       events: [started(1, 'x'), settled(2, 'x', 1, { model: 'claude\u001b[31m\nmodel' })],
     });
     expect(plain.timeline[1]?.detail?.split(' · ')[0]).toBe('claude model');
+    // Above the scrub bound the name is neither scrubbed nor shown in part, in the row and in the list alike.
+    const refused = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [started(1, 'x'), settled(2, 'x', 1, { model: 'm'.repeat(200_000) })],
+    });
+    expect(refused.timeline[1]?.detail?.split(' · ')[0]).toBe(
+      'text too large to show (200000 bytes)',
+    );
+    expect(refused.modelsUsed).toEqual(['text too large to show (200000 bytes)']);
+  });
+
+  it('lists ONE attempt for two step rows under one attempt number, keeps the later row, and counts one row`s tokens', () => {
+    // A re-dispatched node (a budget-approved redispatch, a resume of a node left running): two rows, one number, two
+    // node:started groups. The attempts list must not show attempt 1 twice, and the step-row fallback must not add the
+    // attempt's tokens to themselves.
+    const row = (overrides: Partial<StepSummaryRecord> = {}): StepSummaryRecord =>
+      stepSummary({ attemptNumber: 1, inputTokens: 7, outputTokens: 3, ...overrides });
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1, inputTokens: 7, outputTokens: 3 }),
+      attempts: [row(), row()],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 1)],
+    });
+    expect(model.attempts.map((attempt) => attempt.attempt)).toEqual([1]);
+    expect(model.attempts[0]?.tokens).toEqual({
+      source: 'step',
+      input: 7,
+      output: 3,
+      text: '↑7 ↓3',
+    });
+    // The node's own figure is one row's, not their sum (↑14 ↓6).
+    expect(model.tokens).toEqual({ source: 'step', input: 7, output: 3, text: '↑7 ↓3' });
+
+    // The LATER row is the one kept: the first dispatch was left running, the second completed.
+    const later = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 1 }),
+      attempts: [
+        row({ status: 'running', inputTokens: 0, outputTokens: 0 }),
+        row({ status: 'completed', inputTokens: 9, outputTokens: 4 }),
+      ],
+      events: [coverageStarted(0), started(1, 'x', 1), started(2, 'x', 1)],
+    });
+    expect(later.attempts).toHaveLength(1);
+    expect(later.attempts[0]).toMatchObject({
+      attempt: 1,
+      status: 'completed',
+      tokens: { source: 'step', input: 9, output: 4 },
+    });
+  });
+
+  it('builds the page from capped input: only the first 20 distinct models are scrubbed, however many rows the log holds', () => {
+    // 100 node boundaries come first, so the first 100 timeline rows are the node:started rows, which carry no stored
+    // text: every model name the page scrubs is one the models list asked for.
+    const events: RunEvent[] = [coverageStarted(0)];
+    for (let index = 1; index <= MAX_TIMELINE_ROWS; index++) events.push(started(index, 'x', 1));
+    for (let index = 0; index < 500; index++) {
+      events.push(settled(MAX_TIMELINE_ROWS + 1 + index, 'x', 1, { model: `model-${index}` }));
+    }
+    vi.mocked(scrubModule.scrubSecrets).mockClear();
+    const model = buildNodeDetailModel({ detail: stepDetail(), attempts: [], events });
+    expect(model.modelsUsed).toEqual(Array.from({ length: 20 }, (_, index) => `model-${index}`));
+    expect(scrubbedModelNames()).toEqual(
+      new Set(Array.from({ length: 20 }, (_, index) => `model-${index}`)),
+    );
+    // The timeline is cut to its bound and counts the rest.
+    expect(model.timeline).toHaveLength(MAX_TIMELINE_ROWS);
+    expect(model.timelineOmitted).toBe(500);
+  });
+
+  it('builds the timeline from capped input: only the rows it shows are scrubbed, and the rest are counted', () => {
+    // 500 settled rows with 500 names: the timeline shows the node:started row and the first 99 settled rows, and the
+    // models list the first 20 names, which are among them. Nothing else is handed to the scrubber.
+    const events: RunEvent[] = [started(1, 'x', 1)];
+    for (let index = 0; index < 500; index++) {
+      events.push(settled(2 + index, 'x', 1, { model: `model-${index}` }));
+    }
+    vi.mocked(scrubModule.scrubSecrets).mockClear();
+    const model = buildNodeDetailModel({ detail: stepDetail(), attempts: [], events });
+    expect(model.timeline).toHaveLength(MAX_TIMELINE_ROWS);
+    expect(model.timelineOmitted).toBe(501 - MAX_TIMELINE_ROWS);
+    expect(model.timeline[1]?.detail).toBe('model-0 · $0.0000');
+    expect(model.timeline.at(-1)?.detail).toBe(`model-${MAX_TIMELINE_ROWS - 2} · $0.0000`);
+    expect(scrubbedModelNames()).toEqual(
+      new Set(Array.from({ length: MAX_TIMELINE_ROWS - 1 }, (_, index) => `model-${index}`)),
+    );
   });
 
   it('bounds and scrubs the node id and type the page is labelled with', () => {
     const secret = `sk-ant-api03-${'N'.repeat(40)}`;
     const huge = buildNodeDetailModel({
-      detail: stepDetail({ nodeId: 'n'.repeat(200_000), nodeType: 't'.repeat(200_000) }),
+      detail: stepDetail({
+        nodeId: 'n'.repeat(SCRUB_INPUT_CHARS),
+        nodeType: 't'.repeat(SCRUB_INPUT_CHARS),
+      }),
       attempts: [],
       events: [],
     });
     expect(huge.label).toBe(`${'n'.repeat(MAX_IDENTIFIER_CHARS)}…`);
     expect(huge.nodeType).toBe(`${'t'.repeat(MAX_IDENTIFIER_CHARS)}…`);
     // The raw id survives only as the lookup identity.
-    expect(huge.nodeId).toHaveLength(200_000);
+    expect(huge.nodeId).toHaveLength(SCRUB_INPUT_CHARS);
+    // Above the scrub bound a label is neither scrubbed nor shown in part.
+    const oversized = buildNodeDetailModel({
+      detail: stepDetail({ nodeId: 'n'.repeat(200_000), nodeType: 't'.repeat(200_000) }),
+      attempts: [],
+      events: [],
+    });
+    expect(oversized.label).toBe('text too large to show (200000 bytes)');
+    expect(oversized.nodeType).toBe('text too large to show (200000 bytes)');
+    expect(oversized.nodeId).toHaveLength(200_000);
     const masked = buildNodeDetailModel({
       detail: stepDetail({ nodeId: `node ${secret}`, nodeType: `type ${secret}` }),
       attempts: [],

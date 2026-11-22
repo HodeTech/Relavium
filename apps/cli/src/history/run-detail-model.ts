@@ -150,8 +150,15 @@ export function absenceText(status: NodeRowStatus, runFinished: boolean): Absenc
 
 /** The most code points of a stored error message a page shows. */
 export const MAX_ERROR_MESSAGE_CHARS = 300;
-/** An identifier is cut to this many code points BEFORE its (non-scrubbing) filter runs, so a pathological row costs a bound. */
-const MAX_ERROR_SCRUB_CHARS = 65_536;
+/**
+ * The ONE bound on the length of a stored text a page handles whole, in two places. {@link scrubbedBounded} (text that
+ * could carry a secret) takes a value of at most this many code units and scrubs ALL of it; a longer value is not cut
+ * and not scrubbed, it is not shown at all (a fixed sentence says only its size). {@link boundedIdentifier} (text this
+ * codebase or the workflow authored, which is never scrubbed) cuts to this many code points before its non-scrubbing
+ * filter runs, so a pathological row costs a bound. It is far above any window a view shows (the largest is 4096
+ * code points), and it is the fixed bound on the scrub's work.
+ */
+export const SCRUB_INPUT_CHARS = 65_536;
 /** The most code points of one stored identifier (an error code, a node id, a model name) a page shows. */
 export const MAX_IDENTIFIER_CHARS = 128;
 /**
@@ -623,7 +630,7 @@ export function boundedIdentifier(
   filter: (text: string) => string = sanitizeInline,
 ): string {
   const clipped = clipCodePoints(
-    filter(clipCodePoints(text, MAX_ERROR_SCRUB_CHARS).text),
+    filter(clipCodePoints(text, SCRUB_INPUT_CHARS).text),
     MAX_IDENTIFIER_CHARS,
   );
   return clipped.truncated ? `${clipped.text}…` : clipped.text;
@@ -634,18 +641,20 @@ export function boundedIdentifier(
  * for one row: scrubbed WHOLE and filtered to one line ({@link sanitizeUntrustedInline}), and only then cut to
  * `max` code points (default {@link MAX_IDENTIFIER_CHARS}), with `…` marking a cut. The order is the point: a cut
  * made first can leave the first characters of a secret that the scrubber no longer recognizes, and a mask made
- * first can never be clipped away from its context. The input is first cut to {@link SCRUB_INPUT_CHARS} code units:
- * that bounds the scrub's work for any caller, and a secret that straddles that far cut starts beyond every window
- * the view shows (the largest is 4096 code points), so no displayed prefix can be cut by it.
+ * first can never be clipped away from its context.
+ *
+ * The scrub's work is bounded by refusing, never by cutting: a value of more than {@link SCRUB_INPUT_CHARS} code units
+ * is neither scrubbed nor shown in part (any cut made before the scrub can leave the recognizable prefix of a secret
+ * in the window); the whole of it is replaced by a fixed sentence that says only its size in UTF-8 bytes. A value of
+ * exactly the bound is scrubbed whole.
  */
 export function scrubbedBounded(text: string, max: number = MAX_IDENTIFIER_CHARS): string {
-  const head = text.length > SCRUB_INPUT_CHARS ? text.slice(0, SCRUB_INPUT_CHARS) : text;
-  const clipped = clipCodePoints(sanitizeUntrustedInline(head), max);
+  if (text.length > SCRUB_INPUT_CHARS) {
+    return `text too large to show (${Buffer.byteLength(text, 'utf8')} bytes)`;
+  }
+  const clipped = clipCodePoints(sanitizeUntrustedInline(text), max);
   return clipped.truncated ? `${clipped.text}…` : clipped.text;
 }
-
-/** The most code units {@link scrubbedBounded} scrubs: far above any window a view shows, and a fixed bound on the work. */
-export const SCRUB_INPUT_CHARS = 65_536;
 
 /** The largest stored `error_json` a page reads: 1 MiB, the output preview's bound ({@link MAX_STORED_OUTPUT_BYTES}'s twin). */
 export const MAX_STORED_ERROR_BYTES = 1_048_576;
@@ -772,6 +781,20 @@ const SKIP_REASON_TEXT: Readonly<Record<NodeSkippedReason, string>> = {
   upstream_unreachable: 'upstream unreachable',
 };
 
+/**
+ * One step row per `attemptNumber`, in the order each number first appeared, keeping the LAST row of a number. A node
+ * that is dispatched again under the number it already ran under (a budget-approved redispatch, a resume of a node left
+ * running) can have two rows with one number; the later row is the dispatch that settled last, so it is the one that
+ * says where the attempt stands. Without this, the attempts list would show one attempt twice, and the step-row
+ * fallback ({@link completedStepTokens}) would add one attempt's tokens to themselves. Apply it before any per-attempt
+ * or fallback use of a node's rows.
+ */
+export function collapseAttemptRows(rows: readonly StepSummaryRecord[]): StepSummaryRecord[] {
+  const byAttempt = new Map<number, StepSummaryRecord>();
+  for (const row of rows) byAttempt.set(row.attemptNumber, row);
+  return [...byAttempt.values()];
+}
+
 /** The attempt row with the highest `attemptNumber`; on a tie, the later one in execution order. */
 export function lastAttemptRow(rows: readonly StepSummaryRecord[]): StepSummaryRecord | undefined {
   let last: StepSummaryRecord | undefined;
@@ -890,14 +913,18 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
 
   const rows = executionOrder({ stepsByNode, logs, authored: input.workflowNodeOrder }).map(
     (nodeId): NodeRow => {
-      const nodeSteps = stepsByNode.get(nodeId) ?? [];
+      const storedSteps = stepsByNode.get(nodeId) ?? [];
+      // One row per attempt number before any per-attempt or fallback use: a re-dispatched node can hold two rows
+      // under one number, and the tokens fallback would add one attempt's tokens to themselves.
+      const nodeSteps = collapseAttemptRows(storedSteps);
       const log = logs.get(nodeId);
       const last = lastAttemptRow(nodeSteps);
       const status = resolveNodeStatus({ step: last, log, runFinished });
       const nodeType = last?.nodeType ?? input.nodeTypes?.get(nodeId);
       // Every non-zero boundary figure on a node's rows is the node-wide cost at that boundary (the writer stores
-      // `nodeSettledCost`, not a per-attempt delta), so the rows are never summed: the largest one is the node's.
-      const boundaryMicrocents = nodeSteps.reduce(
+      // `nodeSettledCost`, not a per-attempt delta), so the rows are never summed: the largest one is the node's. It
+      // is read over every stored row, a collapsed duplicate included: a maximum is not a per-attempt figure.
+      const boundaryMicrocents = storedSteps.reduce(
         (max, step) => Math.max(max, step.costMicrocents),
         0,
       );

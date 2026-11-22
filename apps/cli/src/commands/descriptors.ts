@@ -1234,7 +1234,7 @@ export const COMMAND_DESCRIPTORS: readonly CommandDescriptor[] = freezeData([
         negated: false,
         required: false,
         description:
-          'keep printing new events as they are recorded, until the run ends or waits at a gate',
+          'keep printing new events as they are recorded, until the run ends, waits at a gate, or has no process left to write to it',
         conflicts: [],
         model: false,
       },

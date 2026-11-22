@@ -98,7 +98,7 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
  * **A dead owner ends it too.** A run whose process was killed (or whose media park outlived its owner) never
  * gets a terminal event, so a poll that found nothing also asks, at most once per
  * {@link FOLLOW_LIVENESS_INTERVAL_MS} of the injected clock, whether the run still has an owner: the run row gone,
- * or a lease that expired a full TTL ago, or no lease row on a run older than a TTL, ends the follow with one
+ * or a lease that expired more than a TTL ago, or no lease row on a run that is not younger than a TTL, ends the follow with one
  * stderr note and exit `0` (see {@link followOwnerVerdict}), but only after one more read of the log: the owner
  * commits its closing event and releases its lease in that order, and the lease check can land between the two.
  * If that read returns anything, the verdict is not acted on: the events are printed and the follow goes on, to
@@ -181,9 +181,11 @@ type OwnerVerdict = 'run-gone' | 'no-owner';
  *
  * The no-owner rule is ADR-0079's (the 2026-11-06 amendment) and ADR-0140 §2's `stalled` rule: the owner renews its
  * lease every `RUN_LEASE_HEARTBEAT_MS` and tolerates missed beats, and a wall clock that jumps (a sleeping laptop)
- * can pass `expiresAt` before the next beat lands, so a lease counts as gone only a full `RUN_LEASE_TTL_MS` after it
- * expired; and a run with no lease row counts only once it is older than that, because a younger run may not have
- * taken its lease yet, or was started by a version that takes none.
+ * can pass `expiresAt` before the next beat lands, so a lease counts as gone only MORE than one `RUN_LEASE_TTL_MS` after
+ * it expired (`now > expiresAt + TTL`, the strict rule `isStalled` applies: a lease that expired exactly one TTL ago is
+ * still live); and a run with no lease row counts only once it is no longer younger than that
+ * ({@link startedWithinLeaseTtl}, the same young rule `isStalled` applies), because a younger run may not have taken
+ * its lease yet, or was started by a version that takes none.
  */
 function followOwnerVerdict(
   reader: RunHistoryReader,
@@ -194,7 +196,7 @@ function followOwnerVerdict(
   if (run === undefined) return 'run-gone';
   const lease = reader.loadRunLeases([runId]).get(runId);
   if (lease === undefined) return startedWithinLeaseTtl(run, nowMs) ? undefined : 'no-owner';
-  return nowMs >= lease.expiresAt + RUN_LEASE_TTL_MS ? 'no-owner' : undefined;
+  return nowMs > lease.expiresAt + RUN_LEASE_TTL_MS ? 'no-owner' : undefined;
 }
 
 /**

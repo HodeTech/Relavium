@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HISTORY_STATUS_CYCLE,
+  IN_THE_FUTURE,
   RUN_STATUS_GLYPH,
   ageText,
   buildHistoryRows,
@@ -11,7 +12,11 @@ import {
   nextCursor,
   nextStatusFilter,
 } from './history-model.js';
-import { MAX_IDENTIFIER_CHARS, MAX_PROJECT_ROOT_CHARS } from './run-detail-model.js';
+import {
+  MAX_IDENTIFIER_CHARS,
+  MAX_PROJECT_ROOT_CHARS,
+  SCRUB_INPUT_CHARS,
+} from './run-detail-model.js';
 
 const NOW = Date.parse('2026-11-22T12:00:00.000Z');
 const MINUTE = 60_000;
@@ -45,11 +50,20 @@ const rowsOf = (runs: readonly RunSummaryRecord[], pinned: readonly string[] = [
   buildHistoryRows({ runs, nowMs: NOW, pinnedRunIds: new Set(pinned) });
 
 describe('ageText', () => {
-  it('says `now` under a minute, including a clock that is a little ahead', () => {
+  it('says `now` under a minute, including a clock that is up to one minute ahead', () => {
     expect(ageText(isoAgo(0), NOW)).toBe('now');
     expect(ageText(isoAgo(59_999), NOW)).toBe('now');
     expect(ageText(isoAgo(-30_000), NOW)).toBe('now');
-    expect(ageText(isoAgo(-10 * DAY), NOW)).toBe('now');
+    // Exactly one minute ahead is still skew: the boundary is strict, `in the future` starts one millisecond past it.
+    expect(ageText(isoAgo(-MINUTE), NOW)).toBe('now');
+  });
+
+  it('says `in the future` for a timestamp more than one minute ahead, never `now`', () => {
+    expect(ageText(isoAgo(-MINUTE - 1), NOW)).toBe('in the future');
+    expect(ageText(isoAgo(-HOUR), NOW)).toBe('in the future');
+    expect(ageText(isoAgo(-10 * DAY), NOW)).toBe('in the future');
+    // The words are the exported constant, so a view and a test cannot drift from them.
+    expect(IN_THE_FUTURE).toBe('in the future');
   });
 
   it('starts each unit exactly at its boundary and rounds down', () => {
@@ -119,13 +133,27 @@ describe('buildHistoryRows', () => {
 
   it('bounds and scrubs the label and the project root read back from the history file', () => {
     const secret = `sk-ant-api03-${'P'.repeat(40)}`;
+    // Values of exactly the scrub bound are scrubbed whole and then cut to the window each field shows.
     const [huge] = buildHistoryRows({
-      runs: [run('a', { workflowId: 'w'.repeat(200_000), projectRoot: `/${'p'.repeat(200_000)}` })],
+      runs: [
+        run('a', {
+          workflowId: 'w'.repeat(SCRUB_INPUT_CHARS),
+          projectRoot: `/${'p'.repeat(SCRUB_INPUT_CHARS - 1)}`,
+        }),
+      ],
       nowMs: NOW,
       pinnedRunIds: new Set(),
     });
     expect(huge?.label).toBe(`${'w'.repeat(MAX_IDENTIFIER_CHARS)}…`);
     expect(huge?.projectRoot).toBe(`/${'p'.repeat(MAX_PROJECT_ROOT_CHARS - 1)}…`);
+    // A value above the bound is not scrubbed and not shown in part: a fixed sentence says only its size.
+    const [oversized] = buildHistoryRows({
+      runs: [run('o', { workflowId: 'w'.repeat(200_000), projectRoot: `/${'p'.repeat(200_000)}` })],
+      nowMs: NOW,
+      pinnedRunIds: new Set(),
+    });
+    expect(oversized?.label).toBe('text too large to show (200000 bytes)');
+    expect(oversized?.projectRoot).toBe('text too large to show (200001 bytes)');
     const [masked] = buildHistoryRows({
       runs: [run('b', { projectRoot: `/work/${secret}` })],
       nowMs: NOW,
