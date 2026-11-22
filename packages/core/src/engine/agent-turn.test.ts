@@ -27,6 +27,7 @@ import {
   ToolPolicyError,
   ToolUnavailableError,
   UnknownToolError,
+  type ToolErrorCode,
 } from '../tools/errors.js';
 import type {
   ToolCallPart,
@@ -51,6 +52,7 @@ import {
   foldRetryable,
 } from './agent-turn.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { ToolActivityTracker } from './tool-activity.js';
 import { unwiredEffectJournal } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
@@ -1354,8 +1356,11 @@ describe('runAgentTurn — tool loop', () => {
 
     it('refuses an identical repeat of a call the user declined, without dispatching it again', async () => {
       let dispatched = 0;
+      // What the start hook and the registry saw, in the order they happened (ADR-0140 §4).
+      const trace: string[] = [];
       const registry = stubRegistry(() => {
         dispatched += 1;
+        trace.push('dispatch');
         throw new ToolDeniedByUserError('echo', 'user_rejected', 'denied', { denialClass: 'user' });
       });
       const sameCall = (id: string): StreamChunk[] => [
@@ -1385,12 +1390,22 @@ describe('runAgentTurn — tool loop', () => {
       const params = baseParams(provider, {
         registry,
         limits: { ...chatLimits, maxToolCorrections: 5 },
+        onToolStart: (toolId) => trace.push(`start:${toolId}`),
       });
       expect((await runAgentTurn(params)).text).toBe('done');
       expect(dispatched).toBe(2); // c1 and c3 only
       const texts = failedSummaries(params);
       expect(texts[1]).toContain('already declined an identical call');
       expect(texts[0]).toContain('The user declined this tool call');
+      // The start hook fires BEFORE the repeat check: the refused repeat (c2) is announced under its attributed id although
+      // the registry is never entered for it, so the node's trace shows the call the user was not asked about again.
+      expect(trace).toEqual([
+        'start:echo',
+        'dispatch', // c1
+        'start:echo', // c2: announced, then refused with no dispatch
+        'start:echo',
+        'dispatch', // c3
+      ]);
     });
 
     it('lets a model that keeps calling denied tools end the turn on the correction budget', async () => {
@@ -4110,6 +4125,66 @@ describe('runAgentTurn — the tool events behind toolActivity (ADR-0140 §4)', 
       },
     );
 
+    describe('a clock that read once and failed once measures nothing: half a span is no span', () => {
+      /** A clock that answers each read with the next scripted value: the call reads it once before and once after. */
+      const scripted = (readings: number[]): (() => number) => {
+        let next = 0;
+        return () => readings[next++] ?? Number.NaN;
+      };
+
+      it.each([
+        ['finite at the start, NaN at the end', [5_000, Number.NaN]],
+        ['NaN at the start, finite at the end', [Number.NaN, 5_250]],
+        ['finite at the start, infinite at the end', [5_000, Number.POSITIVE_INFINITY]],
+      ])(
+        '%s: the result, and the tracker entry built from it, carry no duration',
+        async (_label, readings) => {
+          const started: string[] = [];
+          const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+          const params = baseParams(provider, {
+            registry: echoRegistryWith(() => undefined),
+            elapsedMs: scripted(readings),
+            onToolStart: (toolId) => started.push(toolId),
+          });
+          await runAgentTurn(params);
+          const [event] = toolEvents(params).results;
+          expect(event).toMatchObject({ toolId: 'echo', success: true });
+          // Not `durationMs: NaN`: a span with one missing end is not 0 and not a number at all.
+          expect(event).not.toHaveProperty('durationMs');
+          // What the node's durable trace would keep, fed by the same hook and the same event.
+          const tracker = new ToolActivityTracker();
+          for (const toolId of started) tracker.recordCall('n1', toolId);
+          for (const result of toolEvents(params).results)
+            tracker.recordResult('n1', result.toolId, result.success, result.durationMs);
+          expect(tracker.take('n1').toolActivity).toEqual([
+            { toolId: 'echo', ok: true, resultRecorded: true },
+          ]);
+        },
+      );
+
+      it.each([
+        ['finite at the start, NaN at the end', [40, Number.NaN]],
+        ['NaN at the start, finite at the end', [Number.NaN, 80]],
+      ])(
+        'a dispatch that RAN and threw is held to the same rule (%s): the failed result has no duration',
+        async (_label, readings) => {
+          const registry = echoRegistryWith(() => {
+            throw new Error('boom');
+          });
+          const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+          const params = baseParams(provider, {
+            registry,
+            elapsedMs: scripted(readings),
+            limits: RECOVERING,
+          });
+          await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'recovered' });
+          const [event] = toolEvents(params).results;
+          expect(event).toMatchObject({ toolId: 'echo', success: false });
+          expect(event).not.toHaveProperty('durationMs');
+        },
+      );
+    });
+
     it('clamps a clock that stepped back to 0 and truncates a fractional span to whole milliseconds', async () => {
       const back = scriptedProvider('anthropic', [callOf('echo'), recovered]);
       let clock = 1_000;
@@ -4367,6 +4442,76 @@ describe('runAgentTurn — the tool events behind toolActivity (ADR-0140 §4)', 
       });
       await expect(runAgentTurn(fatal)).rejects.toMatchObject({ code: 'tool_denied' });
       expect(toolEvents(fatal).calls[0]).toMatchObject({ toolId: 'echo' });
+    });
+
+    describe('the id a failed dispatch is attributed to is the error’s own only when the registry knows it', () => {
+      /** A refusal that names `toolId` and carries `code`, whatever the model's call was named. */
+      class NamedRefusal extends ToolDispatchError {
+        readonly code: ToolErrorCode;
+        readonly runErrorCode = 'tool_failed';
+        readonly retryable = false;
+        constructor(code: ToolErrorCode, toolId: string | undefined) {
+          super('refused', toolId, undefined, true);
+          this.code = code;
+        }
+      }
+      const KNOWN = ['echo', 'other_registered'];
+      /** A registry that knows exactly {@link KNOWN} and refuses every dispatch with `error()`. */
+      const refusingWith = (error: () => Error): ToolRegistry => ({
+        ...stubRegistry(() => {
+          throw error();
+        }),
+        has: (id) => KNOWN.includes(id),
+      });
+
+      it.each([
+        [
+          'an id the registry does not know is never echoed, though the model called a registered tool',
+          () => new NamedRefusal('execution_failed', SECRET_SHAPED),
+          'unknown_tool',
+        ],
+        [
+          'an id the registry knows is kept, even when it is not the id the model called',
+          () => new NamedRefusal('execution_failed', 'other_registered'),
+          'other_registered',
+        ],
+        [
+          'an error that names no tool falls back to the registered name the model called',
+          () => new NamedRefusal('execution_failed', undefined),
+          'echo',
+        ],
+        [
+          'an unknown_tool failure is never attributed to a tool, even one the registry knows',
+          () => new NamedRefusal('unknown_tool', 'echo'),
+          'unknown_tool',
+        ],
+      ])('%s', async (_label, error, expectedId) => {
+        const provider = scriptedProvider('anthropic', [callOf('echo'), recovered]);
+        const params = baseParams(provider, {
+          registry: refusingWith(error),
+          limits: RECOVERING,
+          sessionToolCallId: () => 'session-tool:42:0',
+        });
+        const turn = await runAgentTurn(params);
+        const { calls, results } = toolEvents(params);
+        expect(calls).toHaveLength(1);
+        expect(results).toHaveLength(1);
+        // The two events and the session history record the SAME id, so the node's trace pairs them.
+        expect(calls[0]).toMatchObject({ toolId: expectedId });
+        expect(results[0]).toMatchObject({ toolId: expectedId, success: false });
+        expect(turn.toolHistory[0]?.call.name).toBe(expectedId);
+        expect(JSON.stringify([calls, results, turn.toolHistory])).not.toContain(SECRET_SHAPED);
+      });
+
+      it('a throw that is not a dispatch error names no tool, though the model called a registered one', async () => {
+        const provider = scriptedProvider('anthropic', [callOf('echo')]);
+        const params = baseParams(provider, {
+          registry: refusingWith(() => new Error('host fault')),
+        });
+        await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'internal' });
+        // The call event precedes the fatal classification, and says `unknown_tool` — never the call's own name.
+        expect(toolEvents(params).calls[0]).toMatchObject({ toolId: 'unknown_tool' });
+      });
     });
 
     it('a successful call keeps the registry’s own id on both events', async () => {
