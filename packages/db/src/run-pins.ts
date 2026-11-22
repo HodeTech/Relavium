@@ -79,9 +79,9 @@ export interface RunPinStore {
    * Remove a pin; `true` when a row was removed, `false` when there was none. It matches the EXACT stored key and
    * does not judge its content: a row written outside this store (an older writer, a crafted row) must stay
    * removable by the ref {@link listPins} shows for it, and a content rule here would turn a bad row into a pin
-   * nothing can remove. Only the shape is checked: a known kind, text for the ref and the project root, and the
-   * fixed length bounds.
-   * @throws {RunPinError} for an unknown kind, a non-text ref or project root, or a key over its length bound.
+   * nothing can remove. Only the kind and the text types are checked: a known kind, and text for the ref and the
+   * project root; the length is not judged either.
+   * @throws {RunPinError} for an unknown kind, or a non-text ref or project root.
    */
   readonly unpinItem: (key: PinKey) => boolean;
   /** The pins as stored, newest first (ties in a stable key order), optionally narrowed by kind and project. */
@@ -146,15 +146,10 @@ function validateKey(key: PinKey): void {
 }
 
 /**
- * The unpin path's rule set: the shape and the fixed bounds, never the content. The key is matched exactly as
- * stored, so a row an older writer (or a crafted row) left with an escape character in its ref is still removable
- * by the ref {@link RunPinStore.listPins} returns for it. The bounds keep an absurd key out of the statement.
- */
-/**
- * The lookup key of an unpin: only its kind and its types are checked, never its content or length. The key is a
- * bound parameter that matches the exact stored row, so a row a foreign writer stored with an over-length or odd ref
- * stays removable by the ref `listPins` shows for it (a length refusal here would hold one of the capped slots for
- * good).
+ * The unpin path's rule set: only the kind and the text types of the key are checked; its length and its content
+ * are never judged. The key is a bound parameter that matches the exact stored row, so a row an older writer (or a
+ * crafted row) left with an over-length ref or an escape character in it is still removable by the ref
+ * {@link RunPinStore.listPins} returns for it (a refusal here would hold one of the capped slots for good).
  */
 function validateLookupKey(key: PinKey): void {
   validateKind(key);
