@@ -149,7 +149,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
 | `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
 | `relavium export <id> [--out <path>] [--force]` | Export a workflow/agent to a portable, canonical YAML copy. Serialization drops comments and preserves authored values, including sensitive literals; review before sharing. Configured provider keys use keychain references; author MCP `env` credentials as `{{secrets.*}}`. |
-| `relavium logs <runId>` | Print the persisted event/log stream for a past run. |
+| `relavium logs <runId> [--failed] [--follow]` | Print the persisted event/log stream for a past run; `--failed` keeps only its failures and closing event, `--follow` keeps printing new events until the run ends or waits at a gate ([flags](#logs---failed-and---follow)). |
 | `relavium status [<runId>]` | Show active runs and their per-node status, or one run by id, active or finished. |
 | `relavium gate <runId>` | Resolve a pending human gate (approve / reject / provide input). |
 | `relavium gate list [<runId>]` | List pending human gates (all active runs, or one run) — the multi-gate subcommand for resolving one of several concurrently-pending gates. |
@@ -314,6 +314,21 @@ For this detector probe only, a recognised bare template reference without a pat
 ### `relavium logs <runId>`
 
 Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode, with a completed run's outputs beneath its `run:completed` row, bounded and sanitized as [`run`](#relavium-run) prints them (MVP-A1). Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
+
+#### `logs --failed` and `--follow`
+
+Two additive flags ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §7, recorded here as [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks): every invocation without them is byte-identical to the one above, the usage and the exit codes are unchanged, and neither flag conflicts with the other.
+
+- **`--failed`** prints only the events that carry a failure (`node:failed`, `node:retrying`, `run:failed`) and the run's closing event (`run:completed`, `run:failed` or `run:cancelled`, whichever the log holds). The human header counts what it shows against the log (`run <id> — failed (3 of 8 events)`), and a `run:completed` row carries no outputs block here: it is a view of failures, one row per event.
+- **`--follow`** prints the log exactly as a plain `logs` prints it, then reads the events recorded after it, one batch at a time, and prints each as it arrives. It waits a fixed 500 ms between polls that found nothing. It ends with exit **`0`** when the run is terminal (`run:completed`, `run:failed` or `run:cancelled`) **or** parked at a gate: a `run:paused` that names a gate, with no answer since (a `human_gate:resumed`, or a decided `budget:authorization`). A park on a media job alone names no gate to answer, so the follow goes on. It exits `0` whatever the run's own outcome, since a log reader reports no run's result, and a run already over, or already parked, ends it right after the log. A run that is still going keeps the loop open until a signal: the command's signal exit is the process's own, as for every command, and nothing is printed or recorded for it. At a gate pause one line names the run and the commands that answer it, the same ones `relavium status` prints under a pending gate (for several pending gates, the first one's, and a count of the rest).
+- **`--follow --failed`** prints only the failure events as they arrive, and ends on the same rule.
+- Rows a newer binary wrote are reported as above, on stderr, once for each batch that skipped any (the poll's cursor moves over a skipped row, so none is read or reported twice). A damaged row fails the command (exit `1`) at the moment it is read.
+
+| | TTY | Not a TTY (pipe, file, CI) | `--json` |
+|---|---|---|---|
+| **`--failed`** | The header and one terse row per selected event; no color, cursor control or redraw | The same bytes | One raw `RunEvent` per selected event, one NDJSON line each (the closing line is the terminal `RunEvent` itself, not a text line). Nothing else on stdout; the skipped-row note is on stderr |
+| **`--follow`** | The plain log, then one row per new event as it is recorded (a completed run's outputs under its `run:completed` row, as a plain `logs` prints them); the gate line, when it ends there, on stdout | The same bytes. Rows are not rewritten, so a pipe or a file sees each as it is recorded | The plain NDJSON, then one raw `RunEvent` per new event, one write per line; stdout is a pure NDJSON stream. The gate line goes to **stderr** |
+| **`--follow --failed`** | The failure rows as they arrive, and the gate line when it ends there | The same bytes | The failure `RunEvent`s as they arrive, one NDJSON line each; the gate line on stderr |
 
 Replay retains the stored content; current declared-secret context protection does not scrub or
 certify older outputs. Apply the [historical output/error guidance](../shared-core/database-schema.md#historical-output-and-error-data)

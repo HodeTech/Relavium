@@ -175,6 +175,12 @@ const cases: readonly Case[] = [
   { id: 'list', argv: ['list', '--agents'], positionals: [], options: { agents: true } },
   { id: 'list', argv: ['list', '--runs'], positionals: [], options: { runs: true } },
   { id: 'logs', argv: ['logs', 'r1'], positionals: ['r1'], options: {} },
+  {
+    id: 'logs',
+    argv: ['logs', 'r1', '--follow', '--failed'],
+    positionals: ['r1'],
+    options: { follow: true, failed: true },
+  },
   { id: 'status', argv: ['status'], positionals: [], options: {} },
   { id: 'status', argv: ['status', 'r1'], positionals: ['r1'], options: {} },
   { id: 'models', argv: ['models'], positionals: [], options: {} },

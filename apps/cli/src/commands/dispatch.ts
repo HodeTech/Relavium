@@ -62,7 +62,7 @@ import { budgetDecisionFromFlags } from '../gate/budget.js';
 import { gateListCommand } from './gate-list.js';
 import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
-import { logsCommand } from './logs.js';
+import { logsCommand, logsFollowCommand } from './logs.js';
 import { modelsCommand, type ModelsCommandArgs } from './models.js';
 import { modelsPricingCommand, type ModelsPricingCommandArgs } from './models-pricing.js';
 import {
@@ -560,8 +560,15 @@ const executeList: CommandExecutor = (input, ctx) =>
     ),
   );
 
-const executeLogs: CommandExecutor = (input, ctx) =>
-  Promise.resolve(logsCommand({ runId: reqPositional(input, 0, 'runId') }, ctx));
+const executeLogs: CommandExecutor = (input, ctx) => {
+  const args = {
+    runId: reqPositional(input, 0, 'runId'),
+    failed: boolFlag(input.options['failed']),
+  };
+  return boolFlag(input.options['follow'])
+    ? logsFollowCommand(args, ctx)
+    : Promise.resolve(logsCommand(args, ctx));
+};
 
 const executeStatus: CommandExecutor = (input, ctx) => {
   const runId = optPositional(input, 0);
