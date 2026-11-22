@@ -266,6 +266,12 @@ export const AgentToolResultEventSchema = z.object({
   toolId: nonEmptyString,
   success: z.boolean(),
   outputSummary: z.string(),
+  // How long the registry's dispatch of THIS call took, in whole milliseconds (ADR-0140 §4): the engine reads its
+  // clock before and after `registry.dispatch` and the node's `toolActivity` records the difference. ADDITIVE and
+  // OPTIONAL, and the event is streamed, never persisted. Absent when the call never dispatched (an unknown tool, a
+  // grant or policy refusal), when the emitting host supplied no clock (a session turn today), or when a reading
+  // failed — and an absent value is recorded as NO duration, never as a guessed 0.
+  durationMs: nonNegativeInt.optional(),
   attemptNumber: positiveInt.optional(), // 1-based within-chain attempt — matches cost:updated
 });
 
@@ -368,15 +374,30 @@ export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
 export const TOOL_ACTIVITY_MAX_ENTRIES = 50;
 
 /**
+ * The only characters, and the only length, a `toolActivity` entry's `toolId` may have: a registered tool id, which is
+ * a built-in name or an MCP `mcp_{server}_{tool}` id already held to the LLM tool-name charset (`[A-Za-z0-9_-]`, at
+ * most 128). `.` and `:` are allowed beyond that charset as headroom for a namespaced id; nothing registered needs
+ * them today. Text the model chose for a tool that is NOT registered never reaches the field: the source maps it to
+ * {@link TOOL_ACTIVITY_UNKNOWN_TOOL_ID}, and the tracker maps anything outside this pattern the same way, so the
+ * schema never rejects a node event the engine wrote.
+ */
+export const TOOL_ACTIVITY_TOOL_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+/** The fixed id recorded for a call whose name is not a registered tool (a hallucinated or hostile name). */
+export const TOOL_ACTIVITY_UNKNOWN_TOOL_ID = 'unknown_tool';
+
+/**
  * One tool call of a node, kept **content-free** on its durable terminal (`node:completed` / `node:failed`):
  * the tool's id, whether it succeeded and how long it took — never its arguments, its result text or a summary
  * (a tool's result is not kept as durable content anywhere else either, ADR-0132). An unpaired call (the node
- * ended before its result was recorded) is `ok: false` with `durationMs` absent; a failed result is `ok: false`
- * with `durationMs` present. The lenient-read rule of the header applies: no `.strict()`, so an unknown key is
- * stripped on read and never kept.
+ * ended before its result was recorded) is `ok: false` with `durationMs` absent; a paired call's `ok` is its
+ * result's `success`, and its `durationMs` is present only when the dispatch was measured (a failed result that was
+ * measured is `ok: false` WITH a duration). The `toolId` is bounded to {@link TOOL_ACTIVITY_TOOL_ID_PATTERN}, so
+ * text a model invented cannot be stored in it. The lenient-read rule of the header applies: no `.strict()`, so an
+ * unknown key is stripped on read and never kept.
  */
 export const ToolActivityEntrySchema = z.object({
-  toolId: nonEmptyString, // the same id schema `agent:tool_call` carries
+  toolId: z.string().max(128).regex(TOOL_ACTIVITY_TOOL_ID_PATTERN),
   ok: z.boolean(),
   durationMs: nonNegativeInt.optional(),
 });
@@ -390,10 +411,11 @@ export const NodeCompletedEventSchema = z.object({
   tokensUsed: TokensUsedSchema,
   durationMs: nonNegativeInt,
   // The content-free tool trace of the attempt that produced this terminal (ADR-0140 §4): at most
-  // `TOOL_ACTIVITY_MAX_ENTRIES` entries plus the count of calls beyond them. ADDITIVE and OPTIONAL — absent for a
-  // node that made no tool call and on any log written before this field existed. An older binary's schema is
-  // not strict, so it ignores both fields on read (ADR-0075: only an unknown `type` or an unreadable known body
-  // matters to a replay, and neither applies to an extra optional key).
+  // `TOOL_ACTIVITY_MAX_ENTRIES` entries plus the count of calls beyond them. ADDITIVE and OPTIONAL — the engine
+  // ALWAYS writes `toolActivity` (an empty array for a node that made no tool call), so ABSENCE means only "a log
+  // written before this field existed", and `toolActivityTruncated` is written only when it is above 0. An older
+  // binary's schema is not strict, so it ignores both fields on read (ADR-0075: only an unknown `type` or an
+  // unreadable known body matters to a replay, and neither applies to an extra optional key).
   toolActivity: z.array(ToolActivityEntrySchema).max(TOOL_ACTIVITY_MAX_ENTRIES).optional(),
   toolActivityTruncated: nonNegativeInt.optional(),
   // The run-wide cost running total AT this node boundary (integer micro-cents) — the SAME counter
@@ -430,7 +452,8 @@ export const NodeFailedEventSchema = z.object({
   // field existed; the engine always populates it. Mirrors node:completed.cumulativeCostMicrocents.
   cumulativeCostMicrocents: nonNegativeInt.optional(),
   // The content-free tool trace of the attempt that ended in this terminal failure — the same optional,
-  // additive, older-binary-ignores-it pair as node:completed (ADR-0140 §4). `node:retrying` never carries it.
+  // additive, older-binary-ignores-it pair as node:completed (ADR-0140 §4), written under the same rule: always
+  // present on a new log (`[]` for no calls), absent only on an older one. `node:retrying` never carries it.
   toolActivity: z.array(ToolActivityEntrySchema).max(TOOL_ACTIVITY_MAX_ENTRIES).optional(),
   toolActivityTruncated: nonNegativeInt.optional(),
 });

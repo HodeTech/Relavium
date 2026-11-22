@@ -3132,6 +3132,8 @@ class RunExecution {
           // of growing the buffer. `#step` still awaits it once per node — that call bounds the run loop
           // itself; this one bounds a single node's stream, which is the unbounded case.
           whenReady: () => this.handle.whenConsumersReady(),
+          // The engine's own elapsed clock, so a tool dispatch is measured on the clock its events are stamped by.
+          elapsedMs: () => this.#elapsedMs(),
           signal: this.#abort.signal,
           attemptNumber,
           maxTokensEstimate: this.#maxTokensEstimate,
@@ -3435,18 +3437,20 @@ class RunExecution {
       ...(outcome.kind === 'branch' ? { selected: [...outcome.selected] } : {}),
       // Which attempt produced the output, when a node-retry recovered (1.S) — absent ⇒ attempt 1.
       ...(attemptNumber > 1 ? { attemptNumber } : {}),
-      // The content-free tool trace of this attempt (ADR-0140 §4) — absent for a node that made no tool call.
+      // The content-free tool trace of this attempt (ADR-0140 §4) — ALWAYS written, `[]` for a node that made no tool
+      // call, so absence on a log means only "written before this field existed".
       ...this.#takeToolActivity(vertex.id),
     });
   }
 
   /**
    * The node's `toolActivity` fields for its terminal event, taking (and so clearing) the attempt's trace.
-   * A node that made no tool call yields nothing, so the field stays absent rather than `[]` on every node.
+   * ALWAYS yields `toolActivity` (an empty array when the node made no tool call) and `toolActivityTruncated` only
+   * when it is above 0, so that ABSENCE of the field means only "a log from before it existed" and `[]` means "no
+   * tool calls" — a reader never has to guess which.
    */
-  #takeToolActivity(nodeId: string): Partial<ToolActivitySnapshot> {
-    const snapshot = this.#toolActivity.take(nodeId);
-    return snapshot.toolActivity.length > 0 ? snapshot : {};
+  #takeToolActivity(nodeId: string): ToolActivitySnapshot {
+    return this.#toolActivity.take(nodeId);
   }
 
   /** Host diagnostics cannot strand scheduler reevaluation when ID/clock/timer publication faults. */
@@ -5117,9 +5121,12 @@ class RunExecution {
         return;
       // The two tool events are also the source of the node terminal's `toolActivity` (ADR-0140 §4). They are
       // recorded AFTER the emit, so the trace holds only what was delivered, and the emit's own order is untouched.
+      // The duration is the one the turn measured around the registry's dispatch and put on the result event: the
+      // two events are emitted back to back AFTER the dispatch returned, so the engine's clock at emit time sees
+      // nothing of it (the tracker has no clock for that reason).
       case 'agent:tool_call':
         this.#bus.emit({ ...event, runId });
-        this.#toolActivity.recordCall(event.nodeId, event.toolId, this.#elapsedMs());
+        this.#toolActivity.recordCall(event.nodeId, event.toolId);
         return;
       case 'agent:tool_result':
         this.#bus.emit({ ...event, runId });
@@ -5127,7 +5134,7 @@ class RunExecution {
           event.nodeId,
           event.toolId,
           event.success,
-          this.#elapsedMs(),
+          event.durationMs,
         );
         return;
       case 'cost:updated':

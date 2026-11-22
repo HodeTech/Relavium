@@ -305,6 +305,75 @@ workflow:
     expect(completed?.type === 'node:completed' && completed.output).toBe('answer');
   });
 
+  it('records the MEASURED tool duration on the node terminal: the engine clock reaches the turn through the runner (ADR-0140 §4)', async () => {
+    // A host whose clock moves only when the tool "runs": the registry advances it by 250 ms inside `dispatch`. The
+    // two tool events are emitted after the dispatch returned, so only a clock read BEFORE and AFTER the dispatch —
+    // the engine's own, handed down through the node context and the runner — can see the 250.
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    let offset = 0;
+    const host = {
+      ...createInMemoryHost(),
+      clock: { now: () => new Date(base + offset).toISOString() },
+    };
+    const timedRegistry: ToolRegistry = {
+      ...echoRegistry,
+      dispatch: (call, ctx) => {
+        offset += 250;
+        return echoRegistry.dispatch(call, ctx);
+      },
+    };
+    const wf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-tool-duration
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+    );
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(
+        () =>
+          scriptedProvider([
+            [
+              { type: 'tool_call_start', id: 'c1', name: 'echo' },
+              { type: 'tool_call_end', id: 'c1' },
+              {
+                type: 'stop',
+                stopReason: 'tool_use',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
+            ],
+            [
+              { type: 'text_delta', text: 'answer' },
+              {
+                type: 'stop',
+                stopReason: 'stop',
+                usage: { kind: 'complete', usage: { inputTokens: 1, outputTokens: 1 } },
+              },
+            ],
+          ]),
+        timedRegistry,
+        [echoToolDef],
+      ),
+    });
+
+    const events = await drain(engine.start({ workflow: wf }));
+    const completed = events.find((e) => e.type === 'node:completed');
+    if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
+    expect(completed.toolActivity).toEqual([{ toolId: 'echo', ok: true, durationMs: 250 }]);
+  });
+
   it('runs two agent nodes concurrently against the shared executor, gap-free, with no cross-node bleed', async () => {
     const wf = parseWorkflow(
       `schema_version: '1.0'

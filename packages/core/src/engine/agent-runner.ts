@@ -598,6 +598,7 @@ async function prepareAgentDispatch(
             dispatchContext: makeAgentDispatchContext(execution, node.id, grantedToolIds, deps),
             limits,
             ...(execution.whenReady === undefined ? {} : { whenReady: execution.whenReady }),
+            ...(execution.elapsedMs === undefined ? {} : { elapsedMs: execution.elapsedMs }),
             ...(preEgress === undefined ? {} : { preEgress }),
             ...(money === undefined ? {} : { money }),
             ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),

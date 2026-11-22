@@ -1,4 +1,4 @@
-import { TOOL_ACTIVITY_MAX_ENTRIES } from '@relavium/shared';
+import { RunEventSchema, TOOL_ACTIVITY_MAX_ENTRIES } from '@relavium/shared';
 import type { RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -58,13 +58,19 @@ const call = (ctx: NodeExecContext, toolId: string): void =>
     toolInput: { path: 'SECRET-ARGUMENT' },
   });
 
-const result = (ctx: NodeExecContext, toolId: string, success: boolean): void =>
+const result = (
+  ctx: NodeExecContext,
+  toolId: string,
+  success: boolean,
+  durationMs?: number,
+): void =>
   ctx.emit({
     type: 'agent:tool_result',
     nodeId: ctx.vertex.id,
     toolId,
     success,
     outputSummary: 'SECRET-RESULT-TEXT',
+    ...(durationMs === undefined ? {} : { durationMs }),
   });
 
 const done: NodeOutcome = {
@@ -83,11 +89,11 @@ const terminal = (events: readonly RunEvent[], type: 'node:completed' | 'node:fa
   events.find((event) => event.type === type && event.nodeId === 'work');
 
 describe('node terminals carry the content-free toolActivity (ADR-0140 §4)', () => {
-  it('a node with one tool call and one result completes carrying one paired, timed entry', async () => {
+  it('a node with one tool call and one result completes carrying one paired entry with the MEASURED duration', async () => {
     const { engine } = engineWith({
       work: (ctx) => {
         call(ctx, 'read_file');
-        result(ctx, 'read_file', true);
+        result(ctx, 'read_file', true, 37);
         return done;
       },
     });
@@ -95,27 +101,91 @@ describe('node terminals carry the content-free toolActivity (ADR-0140 §4)', ()
       await drain(engine.start({ workflow: workflow(PLAIN) })),
       'node:completed',
     );
-    expect(completed).toMatchObject({
-      type: 'node:completed',
-      toolActivity: [{ toolId: 'read_file', ok: true }],
-    });
     if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
-    const [entry] = completed.toolActivity ?? [];
-    // The in-memory clock advances 1 ms per read, so the gap is a real non-negative whole number.
-    expect(Number.isInteger(entry?.durationMs)).toBe(true);
-    expect(entry?.durationMs ?? -1).toBeGreaterThanOrEqual(0);
+    // The duration is the one the result CARRIED (the turn measured it around the dispatch), not a difference of the
+    // engine's clock between the two emits — which are back to back and would read about 0 (here, 1 tick).
+    expect(completed.toolActivity).toEqual([{ toolId: 'read_file', ok: true, durationMs: 37 }]);
     expect(completed).not.toHaveProperty('toolActivityTruncated');
   });
 
-  it('a node that made no tool call carries no toolActivity key at all', async () => {
+  it('a result that carries NO measured duration leaves the entry without one — ok still follows success', async () => {
+    const { engine } = engineWith({
+      work: (ctx) => {
+        call(ctx, 'read_file');
+        result(ctx, 'read_file', true);
+        call(ctx, 'run_command');
+        result(ctx, 'run_command', false);
+        return done;
+      },
+    });
+    const completed = terminal(
+      await drain(engine.start({ workflow: workflow(PLAIN) })),
+      'node:completed',
+    );
+    if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
+    expect(completed.toolActivity).toEqual([
+      { toolId: 'read_file', ok: true },
+      { toolId: 'run_command', ok: false },
+    ]);
+  });
+
+  it('a node that made no tool call carries toolActivity: [] — present and empty — and no truncated count', async () => {
     const { engine } = engineWith({});
     const events = await drain(engine.start({ workflow: workflow(PLAIN) }));
-    for (const event of events) {
-      if (event.type === 'node:completed') {
-        expect(event).not.toHaveProperty('toolActivity');
-        expect(event).not.toHaveProperty('toolActivityTruncated');
-      }
+    const completed = events.filter((event) => event.type === 'node:completed');
+    expect(completed.length).toBeGreaterThan(0); // every kind of node: input, transform and output alike
+    for (const event of completed) {
+      expect(event).toHaveProperty('toolActivity', []);
+      expect(event).not.toHaveProperty('toolActivityTruncated');
     }
+  });
+
+  it('a node that fails without a tool call carries toolActivity: [] too, so absence only ever means an older log', async () => {
+    const { engine } = engineWith({
+      work: () => ({
+        kind: 'failed',
+        error: { code: 'validation', message: 'fatal', retryable: false },
+      }),
+    });
+    const failed = terminal(
+      await drain(engine.start({ workflow: workflow(PLAIN) })),
+      'node:failed',
+    );
+    if (failed?.type !== 'node:failed') throw new Error('expected node:failed');
+    expect(failed).toHaveProperty('toolActivity', []);
+    expect(failed).not.toHaveProperty('toolActivityTruncated');
+  });
+
+  it('hands every executor the ENGINE’s elapsed clock, so a measurement and the bus timestamps share one clock', async () => {
+    // A host whose clock moves only when the test says so: the span between two reads of `ctx.elapsedMs` is then
+    // exactly what the test advanced, and a clock the engine did not supply could not produce it.
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    let offset = 0;
+    const host = {
+      ...createInMemoryHost(),
+      clock: { now: () => new Date(base + offset).toISOString() },
+    };
+    const { engine } = engineWith(
+      {
+        work: (ctx) => {
+          const startedAt = ctx.elapsedMs?.();
+          offset += 250;
+          const finishedAt = ctx.elapsedMs?.();
+          if (startedAt === undefined || finishedAt === undefined)
+            throw new Error('the engine supplied no elapsed clock');
+          call(ctx, 'read_file');
+          result(ctx, 'read_file', true, finishedAt - startedAt);
+          return done;
+        },
+      },
+      host,
+    );
+    const completed = terminal(
+      await drain(engine.start({ workflow: workflow(PLAIN) })),
+      'node:completed',
+    );
+    if (completed?.type !== 'node:completed') throw new Error('expected node:completed');
+    expect(completed.toolActivity).toEqual([{ toolId: 'read_file', ok: true, durationMs: 250 }]);
   });
 
   it('stores nothing but ids, outcomes and durations: the call arguments and the result text never reach the terminal', async () => {
@@ -171,7 +241,7 @@ describe('node terminals carry the content-free toolActivity (ADR-0140 §4)', ()
     const { engine } = engineWith({
       work: (ctx) => {
         call(ctx, 'run_command');
-        result(ctx, 'run_command', false);
+        result(ctx, 'run_command', false, 12);
         call(ctx, 'web_fetch'); // the node fails before this call's result is recorded
         return {
           kind: 'failed',
@@ -184,10 +254,40 @@ describe('node terminals carry the content-free toolActivity (ADR-0140 §4)', ()
       'node:failed',
     );
     if (failed?.type !== 'node:failed') throw new Error('expected node:failed');
-    expect(failed.toolActivity).toHaveLength(2);
-    expect(failed.toolActivity?.[0]).toMatchObject({ toolId: 'run_command', ok: false });
-    expect(Number.isInteger(failed.toolActivity?.[0]?.durationMs)).toBe(true);
-    expect(failed.toolActivity?.[1]).toEqual({ toolId: 'web_fetch', ok: false });
+    expect(failed.toolActivity).toEqual([
+      { toolId: 'run_command', ok: false, durationMs: 12 },
+      { toolId: 'web_fetch', ok: false },
+    ]);
+  });
+
+  it('a call whose id is not a bounded tool id is stored as unknown_tool, and the persisted terminal still validates', async () => {
+    const store = new InMemoryRunStore();
+    const hostile = `leak-${'z'.repeat(300)}`;
+    const { engine } = engineWith(
+      {
+        work: (ctx) => {
+          call(ctx, hostile);
+          result(ctx, hostile, true, 5);
+          call(ctx, 'read_file');
+          result(ctx, 'read_file', true, 6);
+          return done;
+        },
+      },
+      createInMemoryHost({ store }),
+    );
+    const events = await drain(engine.start({ workflow: workflow(PLAIN) }));
+    const runId = events[0]?.type === 'run:started' ? events[0].runId : '';
+    const persisted = store.eventsFor(runId).filter((event) => event.type === 'node:completed');
+    const work = persisted.find((event) => event.nodeId === 'work');
+    expect(work).toMatchObject({
+      toolActivity: [
+        { toolId: 'unknown_tool', ok: true, durationMs: 5 },
+        { toolId: 'read_file', ok: true, durationMs: 6 },
+      ],
+    });
+    expect(JSON.stringify(persisted)).not.toContain('leak-');
+    // The schema bound and the stored value agree: a node event the engine wrote never fails to parse.
+    for (const event of persisted) expect(RunEventSchema.safeParse(event).success).toBe(true);
   });
 
   it('keeps the first 50 calls of a runaway node and counts the rest, and the bounded event still validates', async () => {

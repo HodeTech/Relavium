@@ -205,6 +205,14 @@ export interface NodeExecContext {
    * absent means "never throttle", which is the pre-`CR-30` behaviour.
    */
   readonly whenReady?: () => Promise<void>;
+  /**
+   * The run's elapsed-milliseconds clock — the engine's own, the one its event timestamps and node durations come
+   * from. An executor that dispatches tools reads it around each dispatch and reports the span on
+   * `agent:tool_result.durationMs` (the agent runner forwards it to the turn core), which is where the node's durable
+   * `toolActivity` takes a call's duration from (ADR-0140 §4). Optional: a test double need not supply it, and
+   * absent means "no duration is recorded", never a guess.
+   */
+  readonly elapsedMs?: () => number;
   /** Aborts when the run is cancelled, fails elsewhere, or times out — thread it into provider/tool calls. */
   readonly signal: AbortSignalLike;
   /** 1-based attempt number for this dispatch (always 1 in 1.N; node-level retry is 1.S). */
