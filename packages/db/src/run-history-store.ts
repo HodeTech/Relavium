@@ -314,7 +314,7 @@ export function isUnreadableRunEventLogError(value: unknown): value is Unreadabl
 
 /** Why a bounded read refused its arguments — narrow on this, never on the message. */
 export type RunHistoryReadErrorCode =
-  /** A `limit` that is not a finite positive integer. */
+  /** A `limit` that is not a finite positive integer, or is above the read's own maximum where it refuses one. */
   | 'invalid_limit'
   /** A keyset cursor (`before`, `afterSeq`) that is not a safe integer position. */
   | 'invalid_cursor'
@@ -340,7 +340,7 @@ export function isRunHistoryReadError(value: unknown): value is RunHistoryReadEr
   return value instanceof Error && value.name === 'RunHistoryReadError' && 'code' in value;
 }
 
-/** The most rows one {@link RunHistoryReader.listRunSummaries} page returns; a larger `limit` is clamped to it. */
+/** The most rows one {@link RunHistoryReader.listRunSummaries} page returns; a larger `limit` is refused, not clamped. */
 export const MAX_RUN_SUMMARY_PAGE = 200;
 /** The most events one {@link RunHistoryReader.loadRunEventsAfter} call returns; a larger `limit` is clamped to it. */
 export const MAX_RUN_TAIL_EVENTS = 1000;
@@ -349,12 +349,30 @@ export const MAX_RUN_LEASE_IDS = 200;
 /** Rows the tail read pulls from SQLite per statement while it looks for `limit` readable events. */
 const RUN_TAIL_BATCH_ROWS = 256;
 
-/** A finite positive integer, clamped to `max`; anything else is refused (never read as "unbounded"). */
-function boundedLimit(limit: number, max: number): number {
+/** A finite positive integer; anything else is refused (never read as "unbounded" or as an empty page). */
+function positiveIntegerLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 1) {
     throw new RunHistoryReadError('invalid_limit', 'limit must be a finite positive integer');
   }
-  return Math.min(limit, max);
+  return limit;
+}
+
+/** A finite positive integer, clamped to `max`; anything else is refused (never read as "unbounded"). */
+function boundedLimit(limit: number, max: number): number {
+  return Math.min(positiveIntegerLimit(limit), max);
+}
+
+/**
+ * A finite positive integer no larger than `max`. A caller asking for more than a page holds is refused rather
+ * than silently handed a shorter one: a clamp reads as "the list ended" when it did not, the same reason
+ * {@link RunHistoryReader.loadRunLeases} refuses an over-cap id list instead of truncating it.
+ */
+function refusedAboveLimit(limit: number, max: number): number {
+  const wanted = positiveIntegerLimit(limit);
+  if (wanted > max) {
+    throw new RunHistoryReadError('invalid_limit', `limit is at most ${max}`);
+  }
+  return wanted;
 }
 
 /**
@@ -446,8 +464,9 @@ export interface RunHistoryReader {
    * One keyset page of runs, newest first by `(created_at DESC, id DESC)`, soft-deleted excluded — the Home's
    * History browser (ADR-0140 §2, §4). `before` is the cursor: the page holds the rows strictly AFTER
    * `(createdAt, id)` in that order, so two runs sharing a `created_at` are neither repeated nor skipped across
-   * a page boundary. `limit` must be a finite positive integer and is clamped to {@link MAX_RUN_SUMMARY_PAGE};
-   * anything else is a {@link RunHistoryReadError}. The statement selects summary columns only — never the
+   * a page boundary. `limit` must be a finite positive integer no larger than {@link MAX_RUN_SUMMARY_PAGE};
+   * anything else, a larger limit included, is a {@link RunHistoryReadError} (`invalid_limit`), never a silent
+   * clamp that would read as the end of the list. The statement selects summary columns only — never the
    * frozen snapshot or a JSON document — and `projectRoot` / `workflowId` / `status` are filters on the same
    * ordering. Unfiltered and project-scoped pages are index-served with no filesort
    * (`idx_runs_created`, `idx_runs_project_created`; plans pinned in apps/cli/src/harness/perf-budget.e2e.test.ts).
@@ -775,6 +794,7 @@ function projectionMismatch(
   return undefined;
 }
 
+/** Takes the summary columns and nothing else, so a list read that never selected a blob can use it. */
 function fromRunRow(row: RunSummaryRow): RunRecord {
   return {
     id: row.id,
@@ -1654,7 +1674,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
     },
 
     listRunSummaries: (opts) => {
-      const limit = boundedLimit(opts.limit, MAX_RUN_SUMMARY_PAGE);
+      const limit = refusedAboveLimit(opts.limit, MAX_RUN_SUMMARY_PAGE);
       const before = opts.before;
       if (
         before !== undefined &&
@@ -1828,10 +1848,13 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
     loadLatestRunPerWorkflowInProject: (projectRoot) => {
       // The project-scoped twin of `loadLatestRunPerWorkflow`, kept as its own statement so that overlay's text
       // stays untouched: the same ranking (newest `created_at`, `id` as the tiebreak) over this project's runs.
+      // The window CTE selects the SUMMARY columns only (ADR-0140 §4: a list read never selects a blob). A
+      // `getTableColumns(runs)` here would push every run's frozen snapshot and JSON documents through the
+      // row-number sort, only to drop them from the result.
       const ranked = db.$with('ranked').as(
         db
           .select({
-            ...getTableColumns(runs),
+            ...runSummaryColumns,
             slug: workflows.slug,
             rn: sql<number>`row_number() over (partition by ${runs.workflowId} order by ${runs.createdAt} desc, ${runs.id} desc)`.as(
               'rn',

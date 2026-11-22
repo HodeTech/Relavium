@@ -24,6 +24,22 @@ import { isoToEpochMs } from './time.js';
 
 const T0 = Date.parse('2026-06-23T10:00:00.000Z');
 type SummaryFilter = Omit<Parameters<RunHistoryReader['listRunSummaries']>[0], 'limit' | 'before'>;
+/** The columns of a run LIST row (`runSummaryColumns`): the only `runs` columns a list read may select. */
+const SUMMARY_COLUMNS = [
+  'id',
+  'workflow_id',
+  'project_root',
+  'status',
+  'execution_mode',
+  'trigger_type',
+  'started_at',
+  'completed_at',
+  'total_input_tokens',
+  'total_output_tokens',
+  'total_cost_microcents',
+  'created_at',
+  'updated_at',
+];
 const BLOB_COLUMNS = [
   'workflow_definition_snapshot',
   'input_json',
@@ -108,6 +124,16 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       .map((column) => (column.trim().split('.').at(-1) ?? '').replaceAll('"', ''));
   }
 
+  /** Every distinct `runs` column a statement names (`"runs"."x"`), sorted — what it reads, not only what it returns. */
+  function runsColumnsNamedBy(sql: string): string[] {
+    const named = new Set<string>();
+    for (const match of sql.matchAll(/"runs"\."([a-z_]+)"/gu)) {
+      const column = match[1];
+      if (column !== undefined) named.add(column);
+    }
+    return [...named].sort((a, b) => a.localeCompare(b));
+  }
+
   /** Walk the whole list page by page, exactly as a browser does, and return every id in the order read. */
   function walk(pageSize: number, filter: SummaryFilter = {}): string[] {
     const ids: string[] = [];
@@ -163,6 +189,42 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
 
       for (const pageSize of [1, 2, 3, 5, 7]) {
         expect(walk(pageSize), `page size ${pageSize}`).toEqual(everything);
+      }
+    });
+
+    it('pages a tie across a page boundary under the status filter and under the workflow filter', () => {
+      // Eight runs on ONE millisecond, alternating status and workflow, with one newer and one older run inside
+      // the filters, so a boundary falls INSIDE the tie at page sizes 1, 2 and 3 for each filtered set. The
+      // expectations are written out, not read back from the reader.
+      for (let index = 0; index < 8; index++) {
+        seedRun(`tie-${index}`, T0 + 1000, {
+          status: index % 2 === 0 ? 'failed' : 'completed',
+          workflowId: index % 3 === 0 ? 'wf-b' : 'wf-a',
+        });
+      }
+      seedRun('new-failed-b', T0 + 2000, { status: 'failed', workflowId: 'wf-b' });
+      seedRun('old-failed-a', T0 + 500, { status: 'failed', workflowId: 'wf-a' });
+      seedRun('new-completed-a', T0 + 3000, { status: 'completed', workflowId: 'wf-a' });
+
+      const expectations: readonly [string, SummaryFilter, string[]][] = [
+        [
+          'status failed',
+          { status: 'failed' },
+          ['new-failed-b', 'tie-6', 'tie-4', 'tie-2', 'tie-0', 'old-failed-a'],
+        ],
+        ['workflow wf-b', { workflowId: 'wf-b' }, ['new-failed-b', 'tie-6', 'tie-3', 'tie-0']],
+        [
+          'status failed in workflow wf-b',
+          { status: 'failed', workflowId: 'wf-b' },
+          ['new-failed-b', 'tie-6', 'tie-0'],
+        ],
+      ];
+      for (const [name, filter, expected] of expectations) {
+        const whole = reader.listRunSummaries({ ...filter, limit: 100 }).map((row) => row.id);
+        expect(whole, name).toEqual(expected);
+        for (const pageSize of [1, 2, 3]) {
+          expect(walk(pageSize, filter), `${name}, page size ${pageSize}`).toEqual(expected);
+        }
       }
     });
 
@@ -228,7 +290,7 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       }
     });
 
-    it('clamps a limit above the page maximum', () => {
+    it('serves exactly the page maximum and refuses a limit above it, never clamping it', () => {
       client.db.transaction((tx) => {
         for (let index = 0; index < MAX_RUN_SUMMARY_PAGE + 5; index++) {
           tx.insert(runs)
@@ -242,11 +304,24 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
             .run();
         }
       });
-      expect(reader.listRunSummaries({ limit: 10_000 })).toHaveLength(MAX_RUN_SUMMARY_PAGE);
+      expect(MAX_RUN_SUMMARY_PAGE).toBe(200);
       expect(reader.listRunSummaries({ limit: MAX_RUN_SUMMARY_PAGE })).toHaveLength(
         MAX_RUN_SUMMARY_PAGE,
       );
       expect(reader.listRunSummaries({ limit: 7 })).toHaveLength(7);
+      // One past the maximum is a refusal, exactly like `loadRunLeases` past its id cap: a clamped page would
+      // read as "the list ended" when 5 more rows exist.
+      for (const limit of [MAX_RUN_SUMMARY_PAGE + 1, 10_000, Number.MAX_SAFE_INTEGER]) {
+        let refusal: unknown;
+        try {
+          reader.listRunSummaries({ limit });
+        } catch (error) {
+          refusal = error;
+        }
+        expect(isRunHistoryReadError(refusal), `limit ${String(limit)}`).toBe(true);
+        expect(refusal).toMatchObject({ code: 'invalid_limit' });
+        if (refusal instanceof Error) expect(refusal.message).not.toContain(String(limit));
+      }
     });
 
     it('rejects a malformed cursor with a typed error', () => {
@@ -283,23 +358,7 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       });
       expect(statements).toHaveLength(2);
       for (const sql of statements) {
-        expect(selectedColumns(sql).sort()).toEqual(
-          [
-            'id',
-            'workflow_id',
-            'project_root',
-            'status',
-            'execution_mode',
-            'trigger_type',
-            'started_at',
-            'completed_at',
-            'total_input_tokens',
-            'total_output_tokens',
-            'total_cost_microcents',
-            'created_at',
-            'updated_at',
-          ].sort(),
-        );
+        expect(selectedColumns(sql).sort()).toEqual([...SUMMARY_COLUMNS].sort());
         for (const column of BLOB_COLUMNS) expect(sql).not.toContain(column);
       }
       // And the record a caller holds has none of them either.
@@ -710,6 +769,80 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
           ['beta', 'b-p2'],
         ]),
       );
+    });
+
+    it('ranks only the summary columns: no snapshot or JSON document passes through the window sort', () => {
+      seedRun('big', T0, {
+        projectRoot: '/p1',
+        status: 'failed',
+        inputJson: '{"secret":"x"}',
+        outputJson: '{"o":1}',
+        errorJson: '{"e":1}',
+      });
+      const statements = statementsOf(() => reader.loadLatestRunPerWorkflowInProject('/p1'));
+      expect(statements).toHaveLength(1);
+      const sqlText = statements[0] ?? '';
+      expect(sqlText).toContain('row_number()'); // the window statement, not some other one
+      for (const column of BLOB_COLUMNS) expect(sqlText).not.toContain(column);
+      // Every `runs` column the statement names, in the window CTE or anywhere else: the thirteen summary
+      // columns of the list reads, plus `deleted_at` for the soft-delete filter.
+      expect(runsColumnsNamedBy(sqlText)).toEqual(
+        [...SUMMARY_COLUMNS, 'deleted_at'].sort((a, b) => a.localeCompare(b)),
+      );
+
+      const [row] = reader.loadLatestRunPerWorkflowInProject('/p1');
+      expect(row).toMatchObject({
+        slug: 'alpha',
+        lastRun: { id: 'big', status: 'failed', createdAt: new Date(T0).toISOString() },
+      });
+      for (const key of ['workflowDefinitionSnapshot', 'inputJson', 'outputJson', 'errorJson']) {
+        expect(row?.lastRun).not.toHaveProperty(key);
+      }
+    });
+  });
+  /**
+   * The plans of the two reads whose statements the CLI harness does not plan (the rest are pinned in
+   * apps/cli/src/harness/perf-budget.e2e.test.ts). Each plans the statement the reader REALLY prepared — its
+   * `?` placeholders bound to NULL, which EXPLAIN ignores — not a mirror of it that could drift and keep passing.
+   */
+  describe('query plans', () => {
+    function planOfRead(read: () => unknown): string[] {
+      const statements = statementsOf(read);
+      expect(statements).toHaveLength(1);
+      const sqlText = statements[0] ?? '';
+      const placeholders = sqlText.match(/\?/gu)?.length ?? 0;
+      return client.sqlite
+        .prepare(`EXPLAIN QUERY PLAN ${sqlText}`)
+        .all(...Array.from({ length: placeholders }, () => null))
+        .map((row) =>
+          typeof row === 'object' &&
+          row !== null &&
+          'detail' in row &&
+          typeof row.detail === 'string'
+            ? row.detail
+            : '',
+        );
+    }
+
+    it('loadRunDetail is a primary-key lookup: no scan, no temp b-tree', () => {
+      const plan = planOfRead(() => reader.loadRunDetail('run-1')).join('\n');
+      expect(plan).toMatch(/SEARCH runs USING INDEX sqlite_autoindex_runs_1 \(id=\?\)/u);
+      expect(plan).not.toMatch(/SCAN runs/u);
+      expect(plan).not.toContain('TEMP B-TREE');
+    });
+
+    it('loadLatestRunPerWorkflowInProject reads the project off idx_runs_project_created, and its window sort is the one expected', () => {
+      const plan = planOfRead(() => reader.loadLatestRunPerWorkflowInProject('/work/p1')).join(
+        '\n',
+      );
+      // The project filter is an index range, never a scan of every run...
+      expect(plan).toMatch(
+        /SEARCH runs USING (COVERING )?INDEX idx_runs_project_created \(project_root=\?\)/u,
+      );
+      expect(plan).not.toMatch(/SCAN runs(?! USING)/u);
+      // ...and the per-workflow ranking is a window sort over THAT project's runs (the cost the schema reference
+      // states), which is why what passes through it must be summary columns only (the test above).
+      expect(plan).toContain('USE TEMP B-TREE FOR ORDER BY');
     });
   });
 });

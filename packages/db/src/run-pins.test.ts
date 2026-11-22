@@ -2,12 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
   createRunPinStore,
   isRunPinError,
+  MAX_PIN_PROJECT_ROOT_LENGTH,
   MAX_PIN_REF_LENGTH,
   MAX_RUN_PINS,
   type RunPinStore,
@@ -93,6 +94,90 @@ describe('createRunPinStore', () => {
     expect(store.listPins()).toHaveLength(1);
   });
 
+  describe('unpinItem matches the exact stored key and does not judge its content', () => {
+    /** A row written OUTSIDE the store, the way an older writer or a crafted row would leave it. */
+    const craftRow = (kind: 'run' | 'workflow', projectRoot: string, ref: string): void => {
+      client.sqlite
+        .prepare('INSERT INTO run_pins (kind, project_root, ref, pinned_at) VALUES (?, ?, ?, ?)')
+        .run(kind, projectRoot, ref, T0);
+    };
+
+    it('removes a crafted row whose ref holds an escape character, by the ref the list shows for it', () => {
+      const escaped = `run-${String.fromCharCode(0x1b)}[31mred`;
+      craftRow('run', '', escaped);
+      craftRow(
+        'workflow',
+        `/work/${String.fromCharCode(0x202e)}p1`,
+        `deploy-${String.fromCharCode(0x7)}`,
+      );
+      // The list returns what is stored, character for character...
+      const listed = store.listPins();
+      expect(listed.map((pin) => pin.ref).sort()).toEqual(
+        [`deploy-${String.fromCharCode(0x7)}`, escaped].sort(),
+      );
+      // ...and each listed key removes exactly its own row. Nothing in `unpinItem` judges the characters.
+      for (const pin of listed) {
+        expect(
+          store.unpinItem({ kind: pin.kind, projectRoot: pin.projectRoot, ref: pin.ref }),
+        ).toBe(true);
+      }
+      expect(store.listPins()).toEqual([]);
+    });
+
+    it('answers false, never an error, for a key with a control character that matches no row', () => {
+      store.pinItem(runPin('run-1'));
+      expect(store.unpinItem({ kind: 'run', projectRoot: '', ref: 'run-1\n' })).toBe(false);
+      expect(store.unpinItem({ kind: 'run', projectRoot: '', ref: '' })).toBe(false);
+      expect(store.unpinItem({ kind: 'run', projectRoot: '/not-for-a-run', ref: 'run-1' })).toBe(
+        false,
+      );
+      expect(store.listPins()).toHaveLength(1);
+    });
+
+    it('refuses only a key over its fixed bound, an unknown kind or a non-text part, with a typed error', () => {
+      const code = (fn: () => unknown): unknown => {
+        try {
+          fn();
+        } catch (error) {
+          return isRunPinError(error) ? error.code : error;
+        }
+        return undefined;
+      };
+      expect(
+        code(() =>
+          store.unpinItem({
+            kind: 'run',
+            projectRoot: '',
+            ref: 'r'.repeat(MAX_PIN_REF_LENGTH + 1),
+          }),
+        ),
+      ).toBe('invalid_ref');
+      expect(
+        code(() =>
+          store.unpinItem({
+            kind: 'workflow',
+            projectRoot: 'p'.repeat(MAX_PIN_PROJECT_ROOT_LENGTH + 1),
+            ref: 'deploy',
+          }),
+        ),
+      ).toBe('invalid_project_root');
+      expect(
+        code(() =>
+          Reflect.apply(store.unpinItem, undefined, [{ kind: 'bogus', projectRoot: '', ref: 'x' }]),
+        ),
+      ).toBe('invalid_kind');
+      expect(
+        code(() =>
+          Reflect.apply(store.unpinItem, undefined, [{ kind: 'run', projectRoot: '', ref: 5 }]),
+        ),
+      ).toBe('invalid_ref');
+      // Exactly at the bound is a lookup, not a refusal.
+      expect(
+        store.unpinItem({ kind: 'run', projectRoot: '', ref: 'r'.repeat(MAX_PIN_REF_LENGTH) }),
+      ).toBe(false);
+    });
+  });
+
   it('lists newest first, breaks a tie by key, and narrows by kind and project', () => {
     store.pinItem(runPin('run-b', T0 + 10));
     store.pinItem(runPin('run-a', T0 + 10));
@@ -121,15 +206,21 @@ describe('createRunPinStore', () => {
       ['a C1 control', `a${String.fromCharCode(0x85)}`],
       ['a line separator', `a${lineSeparator}b`],
       ['a paragraph separator', `a${paragraphSeparator}b`],
+      ['a right-to-left override (a format character)', `a${String.fromCharCode(0x202e)}b`],
+      ['a zero-width space (a format character)', `a${String.fromCharCode(0x200b)}b`],
+      ['a byte-order mark (a format character)', `${String.fromCharCode(0xfeff)}a`],
+      ['a soft hyphen (a format character)', `a${String.fromCharCode(0xad)}b`],
+      ['a lone high surrogate', `a${String.fromCharCode(0xd800)}b`],
+      ['a lone low surrogate', `a${String.fromCharCode(0xdc00)}b`],
+      ['a high surrogate at the end', `ab${String.fromCharCode(0xd83d)}`],
     ];
 
     it.each(badRefs)(
-      'refuses a ref that is %s, with a typed error that does not echo it',
+      'refuses a ref that is %s on the write path, with a typed error that does not echo it',
       (_name, ref) => {
         for (const attempt of [
           () => store.pinItem(runPin(ref)),
           () => store.pinItem(workflowPin('/p1', ref)),
-          () => store.unpinItem({ kind: 'run', projectRoot: '', ref }),
         ]) {
           let refusal: unknown;
           try {
@@ -145,6 +236,32 @@ describe('createRunPinStore', () => {
         expect(store.listPins()).toEqual([]);
       },
     );
+
+    it.each([
+      ['a right-to-left override', String.fromCharCode(0x202e)],
+      ['a zero-width space', String.fromCharCode(0x200b)],
+      ['an ESC', String.fromCharCode(0x1b)],
+      ['a lone surrogate', String.fromCharCode(0xd800)],
+    ])('refuses a workflow project root that holds %s', (_name, character) => {
+      let refusal: unknown;
+      try {
+        store.pinItem(workflowPin(`/work/p${character}1`, 'deploy'));
+      } catch (error) {
+        refusal = error;
+      }
+      expect(isRunPinError(refusal)).toBe(true);
+      expect(refusal).toMatchObject({ code: 'invalid_project_root' });
+      expect(store.listPins()).toEqual([]);
+    });
+
+    it('does not refuse an astral character, which is a surrogate PAIR and not a lone surrogate', () => {
+      const emoji = String.fromCodePoint(0x1f680);
+      expect(store.pinItem(runPin(`run-${emoji}`))).toBe('pinned');
+      expect(store.pinItem(workflowPin(`/work/${emoji}`, 'deploy'))).toBe('pinned');
+      expect(store.listPins().map((pin) => pin.ref)).toEqual(
+        expect.arrayContaining([`run-${emoji}`, 'deploy']),
+      );
+    });
 
     it('accepts a ref of exactly the maximum length and ordinary text', () => {
       expect(store.pinItem(runPin('r'.repeat(MAX_PIN_REF_LENGTH)))).toBe('pinned');
@@ -218,5 +335,75 @@ describe('the pin cap across two connections to one database file', () => {
     expect(b.pinItem({ kind: 'run', projectRoot: '', ref: 'b-last', at: T0 })).toBe('full');
     expect(a.listPins()).toHaveLength(MAX_RUN_PINS);
     expect(b.listPins()).toHaveLength(MAX_RUN_PINS);
+  });
+
+  it('waits for the write lock: while another connection holds BEGIN IMMEDIATE a pin does not go in, and it does once that commits', () => {
+    // A tiny busy timeout so the refusal is quick; the store's own busy retry still runs its few attempts.
+    second.sqlite.pragma('busy_timeout = 5');
+    const b = createRunPinStore(second.db);
+    first.sqlite.exec('BEGIN IMMEDIATE');
+    let refusal: unknown;
+    try {
+      try {
+        b.pinItem({ kind: 'run', projectRoot: '', ref: 'blocked', at: T0 });
+      } catch (error) {
+        refusal = error;
+      }
+      // The driver's busy fault surfaces unchanged once the retry budget is spent: it is not swallowed into
+      // a 'pinned' or a 'full' that never happened.
+      expect(refusal).toMatchObject({ code: 'SQLITE_BUSY' });
+      expect(b.listPins()).toEqual([]);
+    } finally {
+      if (first.sqlite.inTransaction) first.sqlite.exec('COMMIT');
+    }
+    expect(b.pinItem({ kind: 'run', projectRoot: '', ref: 'blocked', at: T0 })).toBe('pinned');
+    expect(b.listPins().map((pin) => pin.ref)).toEqual(['blocked']);
+  });
+
+  it('takes the write lock BEFORE it counts: a rival cannot write between the count and the insert', () => {
+    const a = createRunPinStore(first.db);
+    const b = createRunPinStore(second.db);
+    for (let index = 0; index < MAX_RUN_PINS - 1; index++)
+      a.pinItem({ kind: 'run', projectRoot: '', ref: `seed-${index}`, at: T0 });
+    // The rival must fail at once if it cannot write, never wait on B.
+    first.sqlite.pragma('busy_timeout = 0');
+
+    // At the moment B prepares its INSERT it has already read "49 rows". Inside B's transaction a rival
+    // connection tries to take the 50th slot. Under `BEGIN IMMEDIATE` B holds the write lock by then, so the
+    // rival is refused; under a deferred BEGIN B holds only a read snapshot and the rival's write would commit,
+    // leaving B to insert past a count it no longer holds.
+    const prepare = second.sqlite.prepare.bind(second.sqlite);
+    let rival: 'not tried' | 'wrote' | 'refused' = 'not tried';
+    let rivalCode: unknown;
+    const spy = vi.spyOn(second.sqlite, 'prepare').mockImplementation((source: string) => {
+      if (rival === 'not tried' && /^insert into "run_pins"/iu.test(source)) {
+        try {
+          first.sqlite
+            .prepare(
+              "INSERT INTO run_pins (kind, project_root, ref, pinned_at) VALUES ('run', '', 'rival', ?)",
+            )
+            .run(T0);
+          rival = 'wrote';
+        } catch (error) {
+          rival = 'refused';
+          rivalCode =
+            typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+        }
+      }
+      return prepare(source);
+    });
+    let outcome: string;
+    try {
+      outcome = b.pinItem({ kind: 'run', projectRoot: '', ref: 'mine', at: T0 });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(rival).toBe('refused');
+    expect(rivalCode).toBe('SQLITE_BUSY');
+    expect(outcome).toBe('pinned');
+    const refs = b.listPins().map((pin) => pin.ref);
+    expect(refs).toHaveLength(MAX_RUN_PINS);
+    expect(refs).toContain('mine');
+    expect(refs).not.toContain('rival');
   });
 });

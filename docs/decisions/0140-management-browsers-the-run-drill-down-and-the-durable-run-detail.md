@@ -158,3 +158,8 @@ Both re-host their shell cores ([ADR-0122](0122-the-home-is-the-interactive-prod
 - **Code:** MVP-8 step 1 (the reads, the migration, `toolActivity` and the view-models), step 3 (the `run-view` kind of the slot), step 4 (the `tab-host` kind) and step 5 (the `sheet` kind, the forms and `/help`) ([the plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-8-pre-flight-review-and-plan-2026-11-22)).
 - **References:** [database-schema.md](../reference/shared-core/database-schema.md) (the `run_pins` table, the index, the unwritten columns), [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (`toolActivity`), [home.md](../reference/cli/home.md) (the tab host, the strip rows and refresh, the keys), [commands.md](../reference/cli/commands.md) (`logs` flags with the ADR-0110 rows, `/agent`), [accessibility.md](../reference/cli/accessibility.md), [chat-session.md](../reference/cli/chat-session.md) (`/agent`), [command-permissions.md](../reference/cli/command-permissions.md) (the tab).
 - **Notes** on the ADRs named under *Amends* are written on acceptance, dated 2026-11-22, each pointing here.
+
+### Amendment note — 2026-11-22 (MVP-8 step 1 review)
+
+§4 says every new plan is added to the perf-budget test. Two of them are not: the plans of `loadRunDetail` and of `loadLatestRunPerWorkflowInProject` are pinned in the db package's own test file (`packages/db/src/run-history-reads.test.ts`, "query plans"), which is where the schema reference now says each plan is pinned. The other plans stay in the perf-budget test. The review also found that the project-scoped latest-run read selected every run column; it now selects the summary columns only, as §4 requires.
+

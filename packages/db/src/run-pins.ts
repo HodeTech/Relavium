@@ -75,22 +75,40 @@ export interface RunPinStore {
    * @throws {RunPinError} for an invalid kind, ref, project root or time.
    */
   readonly pinItem: (input: PinKey & { readonly at: number }) => PinResult;
-  /** Remove a pin; `true` when a row was removed, `false` when there was none. */
+  /**
+   * Remove a pin; `true` when a row was removed, `false` when there was none. It matches the EXACT stored key and
+   * does not judge its content: a row written outside this store (an older writer, a crafted row) must stay
+   * removable by the ref {@link listPins} shows for it, and a content rule here would turn a bad row into a pin
+   * nothing can remove. Only the shape is checked: a known kind, text for the ref and the project root, and the
+   * fixed length bounds.
+   * @throws {RunPinError} for an unknown kind, a non-text ref or project root, or a key over its length bound.
+   */
   readonly unpinItem: (key: PinKey) => boolean;
-  /** The pins, newest first (ties in a stable key order), optionally narrowed by kind and project. */
+  /** The pins as stored, newest first (ties in a stable key order), optionally narrowed by kind and project. */
   readonly listPins: (filter?: {
     readonly kind?: PinKind;
     readonly projectRoot?: string;
   }) => PinRecord[];
 }
 
-/** Control characters (C0, DEL, C1) and the Unicode line and paragraph separators — none belongs in a pin's text. */
-const FORBIDDEN_TEXT = /[\p{Cc}\p{Zl}\p{Zp}]/u;
+/**
+ * What no pin's text may contain, because the Home lists it back to a terminal and a pin is found again by the text
+ * it was listed with: control characters (C0, DEL, C1), format characters (`\p{Cf}`: the bidirectional overrides
+ * U+202A to U+202E, the zero-width characters, the soft hyphen, the byte-order mark), the Unicode line and
+ * paragraph separators, and a lone surrogate. A lone surrogate is stored as bytes that read back as replacement
+ * characters, so a pin written with one could not be matched by the ref the list shows for it.
+ */
+const FORBIDDEN_TEXT = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
-function validateKey(key: PinKey): void {
+function validateKind(key: PinKey): void {
   if (!PIN_KINDS.some((kind) => kind === key.kind)) {
     throw new RunPinError('invalid_kind', 'a pin is a run or a workflow');
   }
+}
+
+/** The write path's whole rule set: the kind, the bounds AND the character classes of {@link FORBIDDEN_TEXT}. */
+function validateKey(key: PinKey): void {
+  validateKind(key);
   if (
     typeof key.ref !== 'string' ||
     key.ref.length === 0 ||
@@ -99,7 +117,7 @@ function validateKey(key: PinKey): void {
   ) {
     throw new RunPinError(
       'invalid_ref',
-      `a pin reference is 1 to ${MAX_PIN_REF_LENGTH} characters with no control characters`,
+      `a pin reference is 1 to ${MAX_PIN_REF_LENGTH} characters with no control, format or unpaired-surrogate characters`,
     );
   }
   if (typeof key.projectRoot !== 'string') {
@@ -117,7 +135,28 @@ function validateKey(key: PinKey): void {
   ) {
     throw new RunPinError(
       'invalid_project_root',
-      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control characters`,
+      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control, format or unpaired-surrogate characters`,
+    );
+  }
+}
+
+/**
+ * The unpin path's rule set: the shape and the fixed bounds, never the content. The key is matched exactly as
+ * stored, so a row an older writer (or a crafted row) left with an escape character in its ref is still removable
+ * by the ref {@link RunPinStore.listPins} returns for it. The bounds keep an absurd key out of the statement.
+ */
+function validateLookupKey(key: PinKey): void {
+  validateKind(key);
+  if (typeof key.ref !== 'string' || key.ref.length > MAX_PIN_REF_LENGTH) {
+    throw new RunPinError(
+      'invalid_ref',
+      `a pin reference is at most ${MAX_PIN_REF_LENGTH} characters`,
+    );
+  }
+  if (typeof key.projectRoot !== 'string' || key.projectRoot.length > MAX_PIN_PROJECT_ROOT_LENGTH) {
+    throw new RunPinError(
+      'invalid_project_root',
+      `a pin project root is at most ${MAX_PIN_PROJECT_ROOT_LENGTH} characters`,
     );
   }
 }
@@ -168,7 +207,7 @@ export function createRunPinStore(db: Db): RunPinStore {
     },
 
     unpinItem: (key) => {
-      validateKey(key);
+      validateLookupKey(key);
       return withBusyRetry(
         () =>
           db
