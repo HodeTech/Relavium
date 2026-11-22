@@ -184,8 +184,9 @@ function scrubLeaves(
  * `member` (already masked leaf by leaf), or {@link MEMBER_MASK} in its place when its name labels a credential
  * ({@link namesCredential}); `onMask` is told. Only a value JSON prints as itself is read this way: an object or
  * array is read member by member by the walk itself, and `JSON.stringify` drops `undefined`, a function or a symbol.
+ * Exported so the node page's output preview applies the same member rule as this summary (MVP-8 step 1).
  */
-function maskedAsMember(key: string, member: unknown, onMask: () => void): unknown {
+export function maskedAsMember(key: string, member: unknown, onMask: () => void): unknown {
   if (typeof member === 'object' && member !== null) return member;
   if (member === undefined || typeof member === 'function' || typeof member === 'symbol') {
     return member;
@@ -205,7 +206,7 @@ function maskedAsMember(key: string, member: unknown, onMask: () => void): unkno
  * itself a secret shape, not a label: its token has nothing after it in the name, so in the serialized view the
  * token runs on over the closing quote into the stand-in. It is shown masked and masks only itself, not its value.
  */
-function namesCredential(key: string): boolean {
+export function namesCredential(key: string): boolean {
   const own = scrubSecrets(key);
   if (own !== key && own.endsWith(MEMBER_MASK)) return false;
   const tail = `:${JSON.stringify(NAME_PROBE)}}`;

@@ -849,6 +849,121 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       expect(out()).not.toContain('no live owner');
     });
 
+    /** The row another process commits in the instant between the follower's tail read and its lease check. */
+    function insertEvent(body: Record<string, unknown>, seq: number): void {
+      const event = RunEventSchema.parse({
+        ...body,
+        runId: 'f1',
+        timestamp: '2026-10-11T00:00:00.000Z',
+        sequenceNumber: seq,
+      });
+      db.insert(runEvents)
+        .values({
+          id: `raced-${seq}`,
+          runId: 'f1',
+          seq,
+          eventType: event.type,
+          payloadJson: JSON.stringify(event),
+          ts: 0,
+        })
+        .run();
+    }
+
+    /**
+     * A clock whose second reading, the one a due liveness check takes right after the first empty tail read, is
+     * where `race` runs: whatever the owner does between that read and the lease check lands there. From that
+     * reading on a full interval has passed since the start, so the check is due.
+     */
+    function racingClock(race: () => void): () => number {
+      let reads = 0;
+      return () => {
+        reads += 1;
+        if (reads === 1) return T0;
+        if (reads === 2) race();
+        return T0 + FOLLOW_LIVENESS_INTERVAL_MS;
+      };
+    }
+
+    const releaseLease = (): void => {
+      client.sqlite.prepare('DELETE FROM run_leases WHERE run_id = ?').run('f1');
+    };
+
+    it('prints the closing event the owner committed between the tail read and the lease check, and ends 0 with no note', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 3_600_000); // live until the owner lets it go
+      const { io, out, err } = captureIo();
+      // No wait is scripted: the poll guard fails the test if the follow sleeps instead of ending.
+      const { sleep, waits } = scriptedSleep([]);
+      const now = racingClock(() => {
+        insertEvent(COMPLETED, 3);
+        releaseLease();
+      });
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(waits).toEqual([]);
+      expect(out()).toContain('[3] run:completed — completed');
+      // The run closed: the note, which would say the run was left unsettled, is not written.
+      expect(err()).toBe('');
+    });
+
+    it('under --json prints that closing event as the last NDJSON line, with nothing on stderr', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 3_600_000);
+      const { io, out, err } = captureIo();
+      const now = racingClock(() => {
+        insertEvent(COMPLETED, 3);
+        releaseLease();
+      });
+      await expect(
+        logsFollowCommand({ runId: 'f1' }, deps(io, true, { sleep: scriptedSleep([]).sleep, now })),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(parseNdjson<{ type: string }>(out()).map((event) => event.type)).toEqual([
+        'run:started',
+        'node:started',
+        'node:completed',
+        'run:completed',
+      ]);
+      expect(err()).toBe('');
+    });
+
+    it('reads once more before it says the run row is gone, too', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      const { io, out, err } = captureIo();
+      const now = racingClock(() => {
+        insertEvent(COMPLETED, 3);
+        // Foreign keys off, so the row goes and the event it closed with stays to be read.
+        client.sqlite.pragma('foreign_keys = OFF');
+        client.sqlite.prepare('DELETE FROM runs WHERE id = ?').run('f1');
+      });
+      await expect(
+        logsFollowCommand(
+          { runId: 'f1' },
+          deps(io, false, { sleep: scriptedSleep([]).sleep, now }),
+        ),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(out()).toContain('[3] run:completed — completed');
+      expect(err()).toBe('');
+    });
+
+    it('prints a late event that does not close the run, then ends on the no-owner note', async () => {
+      await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
+      setLease('f1', T0 + 3_600_000);
+      const { io, out, err } = captureIo();
+      const now = racingClock(() => {
+        insertEvent({ type: 'node:started', nodeId: 'n2', nodeType: 'transform' }, 3);
+        releaseLease();
+      });
+      await expect(
+        logsFollowCommand(
+          { runId: 'f1' },
+          deps(io, false, { sleep: scriptedSleep([]).sleep, now }),
+        ),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(out()).toContain('[3] node:started n2');
+      expect(err()).toMatch(NO_OWNER);
+    });
+
     it('under --json the note is on stderr only, and stdout stays a pure NDJSON stream', async () => {
       await seedRun(db, { slug: 'demo', runId: 'f1', state: 'running' });
       const clock = fakeClock(T0);

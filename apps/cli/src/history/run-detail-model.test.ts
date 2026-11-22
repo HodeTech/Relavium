@@ -1,19 +1,24 @@
 import type { RunDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent, ToolActivityEntry } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
+  MAX_ERROR_MESSAGE_CHARS,
   MAX_IDENTIFIER_CHARS,
   NOT_RECORDED,
+  NOT_RECORDED_FOR_ATTEMPT,
   NOT_RECORDED_OLDER_LOG,
   NO_RESULT_RECORDED,
   boundedIdentifier,
   buildRunDetailModel,
   buildToolActivity,
+  buildToolActivityForAttempt,
   clipCodePoints,
   indexNodeEvents,
   readStoredError,
+  scrubbedBounded,
   shortRunId,
+  MAX_STORED_ERROR_BYTES,
   type NodeRow,
 } from './run-detail-model.js';
 
@@ -41,6 +46,8 @@ const settled = (
     readonly model?: string;
     readonly attemptNumber?: number;
     readonly priced?: boolean;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
   } = {},
 ): RunEvent => ({
   type: 'cost:attempt_settled',
@@ -48,8 +55,8 @@ const settled = (
   nodeId,
   model: options.model ?? 'model-a',
   attemptNumber: options.attemptNumber ?? 1,
-  inputTokens: 1,
-  outputTokens: 1,
+  inputTokens: options.inputTokens ?? 1,
+  outputTokens: options.outputTokens ?? 1,
   costMicrocents,
   cumulativeCostMicrocents: costMicrocents,
   priced: options.priced ?? true,
@@ -57,7 +64,11 @@ const settled = (
 const completed = (
   sequenceNumber: number,
   nodeId: string,
-  extra: { toolActivity?: ToolActivityEntry[]; toolActivityTruncated?: number } = {},
+  extra: {
+    toolActivity?: ToolActivityEntry[];
+    toolActivityTruncated?: number;
+    attemptNumber?: number;
+  } = {},
 ): RunEvent => ({
   type: 'node:completed',
   ...base(sequenceNumber),
@@ -292,6 +303,123 @@ describe('node cost: the source rules', () => {
       events: [coverageStarted(0), pending(1), pending(2)],
     });
     expect(model.header.costText).toBe('$0.0500 known; usage unverified');
+  });
+});
+
+describe('node tokens: the settled rows, else a completed step row, else not recorded', () => {
+  it('shows a node that FAILED after a billed call the tokens of that call, not 0 in and 0 out beside a cost', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'failed', totalCostMicrocents: 3_000_000 }),
+      // `failStepRow` writes no tokens, so the step row of a failed attempt reads 0 / 0.
+      steps: [stepRow('a', { status: 'failed', inputTokens: 0, outputTokens: 0 })],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 3_000_000, { inputTokens: 120, outputTokens: 45 }),
+        failed(3, 'a'),
+      ],
+    });
+    const row = rowOf(model.rows, 'a');
+    expect(row.tokens).toEqual({ source: 'attempts', input: 120, output: 45, text: '↑120 ↓45' });
+    expect(row.cost).toMatchObject({ source: 'attempts', microcents: 3_000_000 });
+  });
+
+  it('sums every attempt of a node that completed on its second attempt, as its cost is summed', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ totalCostMicrocents: 3_000_000 }),
+      // Only the second attempt's step row carries tokens (the first failed).
+      steps: [
+        stepRow('a', { status: 'failed', attemptNumber: 1, inputTokens: 0, outputTokens: 0 }),
+        stepRow('a', { attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      ],
+      events: [
+        coverageStarted(0),
+        started(1, 'a', 1),
+        settled(2, 'a', 1_000_000, { inputTokens: 100, outputTokens: 20 }),
+        retrying(3, 'a', 1),
+        started(4, 'a', 2),
+        settled(5, 'a', 2_000_000, { inputTokens: 30, outputTokens: 6 }),
+        completed(6, 'a', { attemptNumber: 2 }),
+      ],
+    });
+    const row = rowOf(model.rows, 'a');
+    expect(row.tokens).toEqual({ source: 'attempts', input: 130, output: 26, text: '↑130 ↓26' });
+    expect(row.cost).toMatchObject({ microcents: 3_000_000 });
+  });
+
+  it('falls back to the step row for a completed node with no settled rows', () => {
+    const model = buildRunDetailModel({
+      run: runRecord(),
+      steps: [stepRow('a', { inputTokens: 7, outputTokens: 3 })],
+      events: [coverageStarted(0), started(1, 'a'), completed(2, 'a')],
+    });
+    expect(rowOf(model.rows, 'a').tokens).toEqual({
+      source: 'step',
+      input: 7,
+      output: 3,
+      text: '↑7 ↓3',
+    });
+  });
+
+  it('says `not recorded`, never ↑0 ↓0, for a node with neither: a failed or running node with no settled row', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'failed' }),
+      steps: [
+        stepRow('a', { status: 'failed', inputTokens: 0, outputTokens: 0 }),
+        stepRow('b', { status: 'running', inputTokens: 0, outputTokens: 0 }),
+      ],
+      events: [coverageStarted(0), started(1, 'a'), failed(2, 'a'), started(3, 'b')],
+    });
+    expect(rowOf(model.rows, 'a').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    expect(rowOf(model.rows, 'b').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    // A completed node whose step rows were not read has no step figure to show either.
+    const unread = buildRunDetailModel({
+      run: runRecord(),
+      steps: [],
+      events: [coverageStarted(0), started(1, 'c'), completed(2, 'c')],
+    });
+    expect(rowOf(unread.rows, 'c').tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+  });
+
+  it('gives settled rows precedence over a completed step row, as it does for the cost', () => {
+    const model = buildRunDetailModel({
+      run: runRecord(),
+      steps: [stepRow('a', { inputTokens: 999, outputTokens: 999 })],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 1, { inputTokens: 4, outputTokens: 2 }),
+        completed(3, 'a'),
+      ],
+    });
+    expect(rowOf(model.rows, 'a').tokens).toMatchObject({
+      source: 'attempts',
+      input: 4,
+      output: 2,
+    });
+  });
+
+  it('sums the whole log for the header when it holds settled rows, else takes the run row`s totals', () => {
+    const withRows = buildRunDetailModel({
+      run: runRecord({ totalInputTokens: 10, totalOutputTokens: 5 }),
+      steps: [],
+      events: [
+        coverageStarted(0),
+        started(1, 'a'),
+        settled(2, 'a', 1, { inputTokens: 100, outputTokens: 20 }),
+        started(3, 'b'),
+        settled(4, 'b', 1, { inputTokens: 30, outputTokens: 6 }),
+      ],
+    });
+    expect(withRows.header.tokens).toEqual({ input: 130, output: 26 });
+    expect(withRows.header.tokensText).toBe('↑130 ↓26');
+    const withoutRows = buildRunDetailModel({
+      run: runRecord({ totalInputTokens: 10, totalOutputTokens: 5 }),
+      steps: [],
+      events: [coverageStarted(0), started(1, 'a')],
+    });
+    expect(withoutRows.header.tokens).toEqual({ input: 10, output: 5 });
+    expect(withoutRows.header.tokensText).toBe('↑10 ↓5');
   });
 });
 
@@ -679,7 +807,9 @@ describe('tool activity', () => {
         started(3, 'b'),
         failed(4, 'b', { toolActivity: [] }),
         started(5, 'c'),
-        completed(6, 'c', { toolActivity: [{ toolId: 'read_file', ok: true, durationMs: 3 }] }),
+        completed(6, 'c', {
+          toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 3 }],
+        }),
       ],
     });
     for (const nodeId of ['a', 'b']) {
@@ -692,40 +822,130 @@ describe('tool activity', () => {
     }
     expect(rowOf(model.rows, 'c').toolActivity).toEqual({
       recorded: true,
-      entries: [{ toolId: 'read_file', ok: true, durationMs: 3, outcome: 'ok' }],
+      entries: [
+        {
+          toolId: 'read_file',
+          ok: true,
+          resultRecorded: true,
+          durationMs: 3,
+          outcome: 'ok',
+          text: 'ok in 3ms',
+        },
+      ],
       truncated: 0,
       text: '1 tool call',
     });
   });
 
-  it('shows an unpaired entry (ok false, no duration) as `no result recorded`, a failed result as failed', () => {
+  it('tells the four outcomes apart by resultRecorded: a refusal is a recorded result, never `no result recorded`', () => {
     const view = buildToolActivity({
       ...completedEvent(),
       toolActivity: [
-        { toolId: 'read_file', ok: true, durationMs: 12 },
-        { toolId: 'run_command', ok: false, durationMs: 40 },
-        { toolId: 'search', ok: false },
+        { toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 12 },
+        { toolId: 'run_command', ok: false, resultRecorded: true, durationMs: 340 },
+        { toolId: 'write_file', ok: false, resultRecorded: true },
+        { toolId: 'search', ok: false, resultRecorded: false },
       ],
       toolActivityTruncated: 3,
     });
     expect(view).toEqual({
       recorded: true,
       truncated: 3,
-      text: '6 tool calls',
+      text: '7 tool calls',
       entries: [
-        { toolId: 'read_file', ok: true, durationMs: 12, outcome: 'ok' },
-        { toolId: 'run_command', ok: false, durationMs: 40, outcome: 'failed' },
-        { toolId: 'search', ok: false, outcome: NO_RESULT_RECORDED },
+        {
+          toolId: 'read_file',
+          ok: true,
+          resultRecorded: true,
+          durationMs: 12,
+          outcome: 'ok',
+          text: 'ok in 12ms',
+        },
+        {
+          toolId: 'run_command',
+          ok: false,
+          resultRecorded: true,
+          durationMs: 340,
+          outcome: 'failed',
+          text: 'failed after 340ms',
+        },
+        {
+          toolId: 'write_file',
+          ok: false,
+          resultRecorded: true,
+          outcome: 'refused',
+          text: 'refused',
+        },
+        {
+          toolId: 'search',
+          ok: false,
+          resultRecorded: false,
+          outcome: 'unpaired',
+          text: NO_RESULT_RECORDED,
+        },
       ],
     });
+    expect(NO_RESULT_RECORDED).toBe('no result recorded (the node ended first)');
+  });
+
+  it('shows a success with no measured duration as plain `ok`, and never says a recorded result is missing', () => {
+    const view = buildToolActivity({
+      ...completedEvent(),
+      toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true }],
+    });
+    expect(view.recorded && view.entries).toEqual([
+      { toolId: 'read_file', ok: true, resultRecorded: true, outcome: 'ok', text: 'ok' },
+    ]);
+    // The text of a recorded entry never carries the unpaired sentence, whatever its ok and duration.
+    const recorded = buildToolActivity({
+      ...completedEvent(),
+      toolActivity: [
+        { toolId: 'a', ok: false, resultRecorded: true },
+        { toolId: 'b', ok: false, resultRecorded: true, durationMs: 0 },
+      ],
+    });
+    expect(recorded.recorded && recorded.entries.map((entry) => entry.text)).toEqual([
+      'refused',
+      'failed after 0ms',
+    ]);
   });
 
   it('sanitizes a tool id', () => {
     const view = buildToolActivity({
       ...completedEvent(),
-      toolActivity: [{ toolId: 'bad\u001b[31m\ntool', ok: true, durationMs: 1 }],
+      toolActivity: [
+        { toolId: 'bad\u001b[31m\ntool', ok: true, resultRecorded: true, durationMs: 1 },
+      ],
     });
     expect(view.recorded && view.entries[0]?.toolId).toBe('bad tool');
+  });
+
+  it('shows a terminal`s trace only for the attempt it closed, and says so for another', () => {
+    const terminal = {
+      ...completedEvent(),
+      attemptNumber: 2,
+      toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true }],
+    };
+    expect(buildToolActivityForAttempt(terminal, 1)).toEqual({
+      recorded: false,
+      text: NOT_RECORDED_FOR_ATTEMPT,
+    });
+    expect(NOT_RECORDED_FOR_ATTEMPT).toBe('not recorded for this attempt');
+    expect(buildToolActivityForAttempt(terminal, 2)).toMatchObject({ recorded: true });
+    // An absent attemptNumber is attempt 1; no terminal at all is the plain `not recorded`.
+    expect(buildToolActivityForAttempt({ ...terminal, attemptNumber: undefined }, 1)).toMatchObject(
+      {
+        recorded: true,
+      },
+    );
+    expect(buildToolActivityForAttempt({ ...terminal, attemptNumber: undefined }, 2)).toEqual({
+      recorded: false,
+      text: NOT_RECORDED_FOR_ATTEMPT,
+    });
+    expect(buildToolActivityForAttempt(undefined, 2)).toEqual({
+      recorded: false,
+      text: NOT_RECORDED,
+    });
   });
 
   it('reads the node`s terminal with the HIGHEST sequence number, whatever order the events arrive in', () => {
@@ -733,8 +953,12 @@ describe('tool activity', () => {
       run: runRecord({ status: 'failed' }),
       steps: [stepRow('a', { status: 'failed' })],
       events: [
-        failed(9, 'a', { toolActivity: [{ toolId: 'late', ok: false, durationMs: 1 }] }),
-        completed(4, 'a', { toolActivity: [{ toolId: 'early', ok: true, durationMs: 1 }] }),
+        failed(9, 'a', {
+          toolActivity: [{ toolId: 'late', ok: false, resultRecorded: true, durationMs: 1 }],
+        }),
+        completed(4, 'a', {
+          toolActivity: [{ toolId: 'early', ok: true, resultRecorded: true, durationMs: 1 }],
+        }),
         started(1, 'a'),
       ],
     });
@@ -859,19 +1083,60 @@ describe('readStoredError and clipCodePoints', () => {
     ).toBe(`${'\u{1F600}'.repeat(MAX_IDENTIFIER_CHARS)}…`);
   });
 
-  it('cuts a pathological code or node id to a bound before any filter reads it', () => {
+  it('keeps a pathological code or node id to a bound: the document gate refuses what a page cannot use, and boundedIdentifier cuts before its filter', () => {
+    // Under the document gate the code is scrubbed whole (cheap at this size) and only its cut is shown.
     const view = readStoredError(
-      JSON.stringify({ code: 'c'.repeat(5_000_000), nodeId: 'n'.repeat(5_000_000) }),
+      JSON.stringify({ code: 'c'.repeat(500_000), nodeId: 'n'.repeat(400_000) }),
     );
     expect(Array.from(view?.code ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
     expect(Array.from(view?.nodeId ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
-    // The bound is on what the filter is handed, not only on what is shown.
+    // The bound is on what a non-scrubbing filter is handed, not only on what is shown.
     const handed: number[] = [];
     boundedIdentifier('x'.repeat(5_000_000), (text) => {
       handed.push(text.length);
       return text;
     });
     expect(handed).toEqual([65_536]);
+  });
+
+  it('refuses a stored error above 1 MiB with a fixed sentence, and does not parse it', () => {
+    expect(MAX_STORED_ERROR_BYTES).toBe(1_048_576);
+    const oversized = JSON.stringify({ code: 'c', message: 'm'.repeat(MAX_STORED_ERROR_BYTES) });
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      expect(readStoredError(oversized)).toEqual({
+        message: `error record too large to show (${Buffer.byteLength(oversized)} bytes)`,
+      });
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+    // The line sits at exactly 1 MiB: that many bytes is read, one byte more is refused.
+    const pad = (n: number): string => JSON.stringify({ code: 'c', message: 'm'.repeat(n) });
+    const fill = MAX_STORED_ERROR_BYTES - Buffer.byteLength(pad(0));
+    expect(Buffer.byteLength(pad(fill))).toBe(MAX_STORED_ERROR_BYTES);
+    expect(readStoredError(pad(fill))?.code).toBe('c');
+    expect(readStoredError(pad(fill + 1))?.message).toMatch(/^error record too large to show/u);
+  });
+
+  it('scrubs a message and a code WHOLE before it cuts them, so a cut never leaves a secret prefix', () => {
+    // A URL's userinfo password, placed so that the cut would fall inside it: cut first, the scrubber would see
+    // `postgres://app:S3cr3` with no host after it and leave the prefix of the password in view.
+    const url = 'postgres://app:S3cr3tPassw0rdValue@db.internal';
+    const message = `${'m'.repeat(MAX_ERROR_MESSAGE_CHARS - 26)}${url}`;
+    const code = `${'c'.repeat(MAX_IDENTIFIER_CHARS - 26)}${url}`;
+    const view = readStoredError(JSON.stringify({ code, message }));
+    for (const shown of [view?.message, view?.code]) {
+      expect(shown).not.toContain('S3cr3');
+      expect(shown).not.toContain('Passw0rd');
+    }
+    // Both are still cut to their bounds, with the marker.
+    expect(Array.from(view?.message ?? '').length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_CHARS + 1);
+    expect(Array.from(view?.code ?? '').length).toBeLessThanOrEqual(MAX_IDENTIFIER_CHARS + 1);
+    // The helper they share says the same of any text.
+    expect(scrubbedBounded(`${'x'.repeat(MAX_IDENTIFIER_CHARS - 26)}${url}`)).not.toContain(
+      'S3cr3',
+    );
   });
 
   it('masks a secret in the stored code, as it does in the message', () => {

@@ -94,7 +94,9 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
  * gets a terminal event, so a poll that found nothing also asks, at most once per
  * {@link FOLLOW_LIVENESS_INTERVAL_MS} of the injected clock, whether the run still has an owner: the run row gone,
  * or no lease row, or a lease that has expired, ends the follow with one stderr note and exit `0` (see
- * {@link followEndsForWantOfOwner}). A run with a live lease keeps being followed. Framework-free.
+ * {@link followOwnerVerdict}), but only after one more read of the log: the owner commits its closing event and
+ * releases its lease in that order, and the lease check can land between the two. A run with a live lease keeps
+ * being followed. Framework-free.
  */
 export async function logsFollowCommand(
   args: LogsCommandArgs,
@@ -112,12 +114,8 @@ export async function logsFollowCommand(
     let lastLivenessCheckMs = now();
     let cursor = history.scannedThroughSeq;
     let state = history.events.reduce(observeFollow, QUIET_RUN);
-    for (;;) {
-      const end = followEnd(state);
-      if (end === 'gate') writeGateNotice(deps, reader, run.id);
-      if (end !== undefined) return EXIT_CODES.success;
-      // A stopped owner refuses here, before another read, whatever the wait below did.
-      deps.commandLifetime?.work.assertAdmitting();
+    /** One read after the cursor, printed through the same filter and writer; the events it returned. */
+    const readAndPrintTail = (): readonly RunEvent[] => {
       const tail = reader.loadRunEventsAfter(args.runId, cursor, MAX_RUN_TAIL_EVENTS);
       // The cursor moves over the rows this read skipped too (`scannedThroughSeq`, never the last event's
       // number): parked on the last readable event, a log whose tail a newer binary wrote would be re-read, and
@@ -128,50 +126,73 @@ export async function logsFollowCommand(
         state = observeFollow(state, event);
         if (!failedOnly || inFailureView(event)) writeFollowed(deps, run.id, event, failedOnly);
       }
-      if (tail.events.length === 0) {
-        // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
-        // not on every poll, whether anyone is still going to write to it.
-        const checkedAtMs = now();
-        if (checkedAtMs - lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
-          lastLivenessCheckMs = checkedAtMs;
-          if (followEndsForWantOfOwner(deps, reader, run.id, checkedAtMs))
-            return EXIT_CODES.success;
+      return tail.events;
+    };
+    for (;;) {
+      const end = followEnd(state);
+      if (end === 'gate') writeGateNotice(deps, reader, run.id);
+      if (end !== undefined) return EXIT_CODES.success;
+      // A stopped owner refuses here, before another read, whatever the wait below did.
+      deps.commandLifetime?.work.assertAdmitting();
+      const events = readAndPrintTail();
+      if (events.length > 0) continue;
+      // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
+      // not on every poll, whether anyone is still going to write to it.
+      const checkedAtMs = now();
+      if (checkedAtMs - lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
+        lastLivenessCheckMs = checkedAtMs;
+        const verdict = followOwnerVerdict(reader, run.id, checkedAtMs);
+        if (verdict !== undefined) {
+          // The owner may have committed its closing event and released its lease between the read above and the
+          // lease check, so a verdict alone must not end the follow before that event is shown: read once more,
+          // and print what it returns, first. If that read closed the run (or parked it at a gate) the top of the
+          // loop ends on it as it always does, and the note, which would say the run was left unsettled, is not
+          // written; otherwise nothing more will come, and the note says why.
+          readAndPrintTail();
+          if (followEnd(state) !== undefined) continue;
+          writeOwnerNote(deps, run.id, verdict);
+          return EXIT_CODES.success;
         }
-        await (deps.sleep ?? hostSleep)(FOLLOW_POLL_INTERVAL_MS, deps.commandLifetime?.work.signal);
       }
+      await (deps.sleep ?? hostSleep)(FOLLOW_POLL_INTERVAL_MS, deps.commandLifetime?.work.signal);
     }
   } finally {
     if (deps.commandLifetime === undefined) close();
   }
 }
 
+/** Why a followed run can no longer grow: its row is gone, or it holds no live lease. */
+type OwnerVerdict = 'run-gone' | 'no-owner';
+
 /**
- * Whether a followed run can no longer grow, and the one stderr note that says why (never stdout, so `--json`'s
- * stream stays pure). Two cases end it: the run row is gone, or the run holds no live lease — no lease row, or one
- * whose `expiresAt` is at or before `nowMs`. A run parked on a media job alone keeps its lease while the engine
- * polls the job, so it keeps being followed; a run parked at a gate released its lease, but the loop has already
- * ended on that gate before this runs.
+ * Whether a followed run can no longer grow. Two cases: the run row is gone, or the run holds no live lease — no
+ * lease row, or one whose `expiresAt` is at or before `nowMs`. A run parked on a media job alone keeps its lease
+ * while the engine polls the job, so it keeps being followed; a run parked at a gate released its lease, but the
+ * loop has already ended on that gate before this runs. `undefined` means the follow carries on.
  */
-function followEndsForWantOfOwner(
-  deps: LogsCommandDeps,
+function followOwnerVerdict(
   reader: RunHistoryReader,
   runId: string,
   nowMs: number,
-): boolean {
+): OwnerVerdict | undefined {
+  if (reader.loadRun(runId) === undefined) return 'run-gone';
+  const lease = reader.loadRunLeases([runId]).get(runId);
+  return lease !== undefined && lease.expiresAt > nowMs ? undefined : 'no-owner';
+}
+
+/** The one stderr note that says why a follow ended on a verdict (never stdout, so `--json`'s stream stays pure). */
+function writeOwnerNote(deps: LogsCommandDeps, runId: string, verdict: OwnerVerdict): void {
   const id = sanitizeInline(runId);
-  if (reader.loadRun(runId) === undefined) {
+  if (verdict === 'run-gone') {
     deps.io.writeErr(
       `note: run ${id} is no longer in the history, so there is nothing more to follow.\n`,
     );
-    return true;
+    return;
   }
-  const lease = reader.loadRunLeases([runId]).get(runId);
-  if (lease !== undefined && lease.expiresAt > nowMs) return false;
   deps.io.writeErr(
     `note: run ${id} has no live owner, so its log will not grow. ` +
       `\`relavium status ${id}\` shows where it stands; the next \`relavium run\` or Home start settles it.\n`,
   );
-  return true;
 }
 
 /** Open the history reader the way every `logs` mode does: resolved home, command-lifetime custody of the close. */

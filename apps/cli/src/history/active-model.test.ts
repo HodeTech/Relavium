@@ -230,15 +230,61 @@ describe('stalled', () => {
     expect(stalledOf(at(NOW - TTL - 1)).stalled).toBe(true);
     expect(stalledOf(at(NOW - TTL)).stalled).toBe(false);
     expect(stalledOf(at(NOW - TTL + 1)).stalled).toBe(false);
-    expect(isStalled({ ownerId: 'o', generation: 1, expiresAt: NOW - TTL - 1 }, NOW, TTL)).toBe(
-      true,
-    );
-    expect(isStalled({ ownerId: 'o', generation: 1, expiresAt: NOW - TTL }, NOW, TTL)).toBe(false);
+    const old = new Date(NOW - 10 * TTL).toISOString();
+    const stalledAt = (expiresAt: number) =>
+      isStalled({
+        lease: { ownerId: 'o', generation: 1, expiresAt },
+        createdAt: old,
+        nowMs: NOW,
+        leaseTtlMs: TTL,
+      });
+    expect(stalledAt(NOW - TTL - 1)).toBe(true);
+    expect(stalledAt(NOW - TTL)).toBe(false);
   });
 
   it('is not a live lease, a recently expired one, or an unexpired one', () => {
     expect(stalledOf(at(NOW + 1)).stalled).toBe(false);
     expect(stalledOf(at(NOW - 1)).stalled).toBe(false);
+  });
+
+  describe('a run younger than one lease TTL is not treated as crashed (ADR-0079, 2026-11-06)', () => {
+    const createdAgo = (ageMs: number) => ({ createdAt: new Date(NOW - ageMs).toISOString() });
+    const none = new Map<string, RunLeaseSummary>();
+
+    it('a fresh run with no lease is not stalled: its owner may not have taken the lease yet', () => {
+      const row = stalledOf(none, createdAgo(1_000));
+      expect(row.stalled).toBe(false);
+      expect(row.stalledReason).toBeUndefined();
+    });
+
+    it('an old run with no lease is stalled', () => {
+      expect(stalledOf(none, createdAgo(10 * TTL)).stalled).toBe(true);
+    });
+
+    it('an old run with an expired lease is stalled, and a fresh one with the same lease is not', () => {
+      const expired = at(NOW - TTL - 1);
+      expect(stalledOf(expired, createdAgo(10 * TTL)).stalled).toBe(true);
+      expect(stalledOf(expired, createdAgo(TTL - 1)).stalled).toBe(false);
+    });
+
+    it('an old run with a live lease is not stalled', () => {
+      expect(stalledOf(at(NOW + 1), createdAgo(10 * TTL)).stalled).toBe(false);
+    });
+
+    it('the age boundary is exactly one TTL: younger is left alone, one TTL old is not', () => {
+      expect(stalledOf(none, createdAgo(TTL - 1)).stalled).toBe(false);
+      expect(stalledOf(none, createdAgo(TTL)).stalled).toBe(true);
+      expect(stalledOf(none, createdAgo(TTL + 1)).stalled).toBe(true);
+    });
+
+    it('a start lying a TTL or more in the future (a clock that moved back) is not young, as in reconcile', () => {
+      expect(stalledOf(none, createdAgo(-(TTL - 1))).stalled).toBe(false);
+      expect(stalledOf(none, createdAgo(-TTL)).stalled).toBe(true);
+    });
+
+    it('a creation time that cannot be read is not young', () => {
+      expect(stalledOf(none, { createdAt: 'not a time' }).stalled).toBe(true);
+    });
   });
 
   it('applies only to a running run another process owns', () => {

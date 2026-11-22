@@ -9,6 +9,7 @@ import {
   type NodeSkippedReason,
   type RunEvent,
   type RunStatus,
+  type ToolActivityEntry,
   type UsageCoverage,
 } from '@relavium/shared';
 
@@ -16,6 +17,7 @@ import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   formatCostShort,
   formatCostUsd,
+  formatDuration,
   formatReportedCost,
   formatTokens,
 } from '../render/tui/format.js';
@@ -33,6 +35,14 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  * cost from `step_executions.cost_microcents`, marked approximate (`~`) because under a fan-out it is a delta of
  * the run-wide counter; (3) failing both, `not recorded`. The column defaults to `0`, so a `0` there is
  * indistinguishable from "never written" and is treated as absent, never shown as a price.
+ *
+ * **Tokens follow the cost, never a bare zero either.** A node's tokens are read in this order and the row says
+ * which it used: (1) the sum of the `inputTokens` and `outputTokens` of the node's `cost:attempt_settled` rows,
+ * the very attempts that give its cost, so a node that failed after a billed call and a node that succeeded on its
+ * second attempt both show every attempt's tokens beside a cost that covers every attempt; (2) failing that, the
+ * step row's tokens, for a COMPLETED node only (the step row of a failed attempt carries no tokens, so its `0` is
+ * "never written", not a count); (3) failing both, `not recorded`. The run header's total is the same sum over the
+ * whole log when the log holds any `cost:attempt_settled` row, and the run row's own totals otherwise.
  *
  * **Attempt grouping (the load-bearing rule).** `cost:attempt_settled.attemptNumber` counts WITHIN a fallback
  * chain and resets to 1 on every node retry, so it does NOT join `node:started.attemptNumber`, which is the
@@ -52,8 +62,14 @@ export const NOT_RECORDED = 'not recorded';
  */
 export const NOT_RECORDED_OLDER_LOG = 'not recorded (older log)';
 
-/** What a tool-trace entry says when its call has no recorded result. */
-export const NO_RESULT_RECORDED = 'no result recorded';
+/**
+ * What a tool-trace entry says when its call has no recorded result (`resultRecorded: false`): the node ended with
+ * the call still unpaired. Only that entry says it: a refusal is a recorded result.
+ */
+export const NO_RESULT_RECORDED = 'no result recorded (the node ended first)';
+
+/** What a node page's tool trace says for an attempt other than the one its terminal event closed. */
+export const NOT_RECORDED_FOR_ATTEMPT = 'not recorded for this attempt';
 
 /** A node's status as the table shows it. `stopped` is a step row left `running` under a finished run. */
 export type NodeRowStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'stopped';
@@ -81,7 +97,7 @@ export function isFinishedRun(status: RunStatus): boolean {
 
 /** The most code points of a stored error message a page shows. */
 export const MAX_ERROR_MESSAGE_CHARS = 300;
-/** A stored error is cut to this many code points BEFORE the scrubber runs, so a pathological row costs a bound. */
+/** An identifier is cut to this many code points BEFORE its (non-scrubbing) filter runs, so a pathological row costs a bound. */
 const MAX_ERROR_SCRUB_CHARS = 65_536;
 /** The most code points of one stored identifier (an error code, a node id, a model name) a page shows. */
 export const MAX_IDENTIFIER_CHARS = 128;
@@ -316,6 +332,82 @@ export function buildNodeCost(input: {
   return { source: 'none', approximate: false, unpricedCalls: 0, text: NOT_RECORDED };
 }
 
+/** A node's (or an attempt's) tokens, with the source they were read from. There is no cached count: the column is never written. */
+export type NodeTokens =
+  | {
+      /** The sum of `cost:attempt_settled` rows — the same attempts that give the cost. */
+      readonly source: 'attempts';
+      readonly input: number;
+      readonly output: number;
+      readonly text: string;
+    }
+  | {
+      /** The step row's own figures, read for a COMPLETED node only. */
+      readonly source: 'step';
+      readonly input: number;
+      readonly output: number;
+      readonly text: string;
+    }
+  | {
+      /** Neither exists. The text is {@link NOT_RECORDED}, never `↑0 ↓0`. */
+      readonly source: 'none';
+      readonly text: typeof NOT_RECORDED;
+    };
+
+/** The `inputTokens` and `outputTokens` of `rows`, summed. */
+function sumSettledTokens(rows: readonly CostAttemptSettledEvent[]): {
+  readonly input: number;
+  readonly output: number;
+} {
+  let input = 0;
+  let output = 0;
+  for (const row of rows) {
+    input += row.inputTokens;
+    output += row.outputTokens;
+  }
+  return { input, output };
+}
+
+/**
+ * The figures of a node's step rows, summed, when the node COMPLETED and at least one row was read; absent
+ * otherwise. A failed attempt's step row carries no tokens (the writer records none), so for any other node its
+ * `0` would be a missing figure shown as a count.
+ */
+export function completedStepTokens(
+  rows: readonly StepSummaryRecord[],
+  status: NodeRowStatus,
+): { readonly input: number; readonly output: number } | undefined {
+  if (status !== 'completed' || rows.length === 0) return undefined;
+  let input = 0;
+  let output = 0;
+  for (const row of rows) {
+    input += row.inputTokens;
+    output += row.outputTokens;
+  }
+  return { input, output };
+}
+
+/**
+ * A node's (or an attempt's) tokens, by the rule of the module note: the sum of its `cost:attempt_settled` rows
+ * when it has any (the same rows {@link buildNodeCost} sums), else the step row's figures when
+ * `completedStep` is given (the caller gives it for a completed node only, see {@link completedStepTokens}), else
+ * `not recorded`.
+ */
+export function buildNodeTokens(input: {
+  readonly settled: readonly CostAttemptSettledEvent[];
+  readonly completedStep: { readonly input: number; readonly output: number } | undefined;
+}): NodeTokens {
+  const { settled, completedStep } = input;
+  if (settled.length > 0) {
+    const sum = sumSettledTokens(settled);
+    return { source: 'attempts', ...sum, text: formatTokens(sum) };
+  }
+  if (completedStep !== undefined) {
+    return { source: 'step', ...completedStep, text: formatTokens(completedStep) };
+  }
+  return { source: 'none', text: NOT_RECORDED };
+}
+
 // ---------------------------------------------------------------------------------------------------------
 // Tool activity and stored errors.
 // ---------------------------------------------------------------------------------------------------------
@@ -325,20 +417,33 @@ export interface ToolActivityRowView {
   /** Sanitized. */
   readonly toolId: string;
   readonly ok: boolean;
+  /** A result paired with the call. `false` only for a call the node ended before it was answered. */
+  readonly resultRecorded: boolean;
+  /** Measured by the engine; present only when it was (a refusal and an unpaired call have none). */
   readonly durationMs?: number;
-  readonly outcome: 'ok' | 'failed' | typeof NO_RESULT_RECORDED;
+  /**
+   * The three outcomes of the sse-event-schema trace table, and the success: `refused` is a recorded result with no
+   * duration (the tool never ran); `failed` is a recorded failure that ran; `unpaired` is no result at all.
+   */
+  readonly outcome: 'ok' | 'failed' | 'refused' | 'unpaired';
+  /** What the row says, one line: `ok`, `ok in 12ms`, `refused`, `failed after 340ms`, or {@link NO_RESULT_RECORDED}. */
+  readonly text: string;
 }
 
 /**
- * A node's tool trace. `recorded: false` is one of two statements, and the text says which: the node has no
+ * A node's tool trace. `recorded: false` is one of three statements, and the text says which: the node has no
  * terminal event (yet, or the log was cut) — `not recorded`; or its terminal carries no `toolActivity` field,
- * which only a log written before the field existed lacks — `not recorded (older log)`. `recorded: true` with no
- * entries is a node that made no tool call (`no tool calls`), a different statement from both.
+ * which only a log written before the field existed lacks — `not recorded (older log)`; or the terminal closed a
+ * different attempt than the one the page shows — `not recorded for this attempt`. `recorded: true` with no
+ * entries is a node that made no tool call (`no tool calls`), a different statement from all three.
  */
 export type ToolActivityView =
   | {
       readonly recorded: false;
-      readonly text: typeof NOT_RECORDED | typeof NOT_RECORDED_OLDER_LOG;
+      readonly text:
+        | typeof NOT_RECORDED
+        | typeof NOT_RECORDED_OLDER_LOG
+        | typeof NOT_RECORDED_FOR_ATTEMPT;
     }
   | {
       readonly recorded: true;
@@ -348,6 +453,40 @@ export type ToolActivityView =
       readonly text: string;
     };
 
+/**
+ * One stored entry as a row. `resultRecorded` alone says whether the call was answered: a refusal is `ok: false`
+ * with no duration exactly as an unpaired call is, and must never be described as one.
+ */
+function toolActivityRow(entry: ToolActivityEntry): ToolActivityRowView {
+  const toolId = sanitizeInline(entry.toolId);
+  const duration = entry.durationMs === undefined ? {} : { durationMs: entry.durationMs };
+  if (!entry.resultRecorded) {
+    return {
+      toolId,
+      ok: false,
+      resultRecorded: false,
+      outcome: 'unpaired',
+      text: NO_RESULT_RECORDED,
+    };
+  }
+  if (entry.ok) {
+    const text =
+      entry.durationMs === undefined ? 'ok' : `ok in ${formatDuration(entry.durationMs)}`;
+    return { toolId, ok: true, resultRecorded: true, ...duration, outcome: 'ok', text };
+  }
+  if (entry.durationMs === undefined) {
+    return { toolId, ok: false, resultRecorded: true, outcome: 'refused', text: 'refused' };
+  }
+  return {
+    toolId,
+    ok: false,
+    resultRecorded: true,
+    ...duration,
+    outcome: 'failed',
+    text: `failed after ${formatDuration(entry.durationMs)}`,
+  };
+}
+
 /** The tool trace of a node's last terminal event. */
 export function buildToolActivity(
   terminal: NodeCompletedEvent | NodeFailedEvent | undefined,
@@ -355,19 +494,7 @@ export function buildToolActivity(
   if (terminal === undefined) return { recorded: false, text: NOT_RECORDED };
   const stored = terminal.toolActivity;
   if (stored === undefined) return { recorded: false, text: NOT_RECORDED_OLDER_LOG };
-  const entries = stored.map((entry): ToolActivityRowView => {
-    const toolId = sanitizeInline(entry.toolId);
-    // An unpaired call (the node ended before its result) is `ok: false` with no duration; a failed RESULT has one.
-    if (!entry.ok && entry.durationMs === undefined) {
-      return { toolId, ok: false, outcome: NO_RESULT_RECORDED };
-    }
-    return {
-      toolId,
-      ok: entry.ok,
-      ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-      outcome: entry.ok ? 'ok' : 'failed',
-    };
-  });
+  const entries = stored.map(toolActivityRow);
   const truncated = terminal.toolActivityTruncated ?? 0;
   const total = entries.length + truncated;
   return {
@@ -376,6 +503,21 @@ export function buildToolActivity(
     truncated,
     text: total === 0 ? 'no tool calls' : `${total} tool ${total === 1 ? 'call' : 'calls'}`,
   };
+}
+
+/**
+ * The tool trace of the node's terminal event, for the attempt a page shows. A terminal records the one attempt
+ * that produced it (`attemptNumber`, absent meaning 1), so another attempt's page must not borrow it: its trace is
+ * `not recorded for this attempt`.
+ */
+export function buildToolActivityForAttempt(
+  terminal: NodeCompletedEvent | NodeFailedEvent | undefined,
+  attemptNumber: number,
+): ToolActivityView {
+  if (terminal !== undefined && (terminal.attemptNumber ?? 1) !== attemptNumber) {
+    return { recorded: false, text: NOT_RECORDED_FOR_ATTEMPT };
+  }
+  return buildToolActivity(terminal);
 }
 
 /** A stored error, sanitized and bounded. */
@@ -406,9 +548,10 @@ export function clipCodePoints(
 
 /**
  * One stored identifier for a row: cut to a bound before the filter reads it, filtered to one line (by default
- * the one-line floor; pass the scrubbing variant for text that could carry a secret), then cut to
- * {@link MAX_IDENTIFIER_CHARS} code points, with `…` marking a cut. The filter runs BEFORE the final cut, so a
- * secret is masked before any of it can be clipped away from the context that identifies it.
+ * the one-line floor), then cut to {@link MAX_IDENTIFIER_CHARS} code points, with `…` marking a cut. It is for text
+ * this codebase or the workflow authored (a node id, a model name). A SCRUBBING filter does not belong here: the
+ * first cut can split a secret, and its remaining prefix is no longer a shape the scrubber recognizes. Text that
+ * could carry a secret goes through {@link scrubbedBounded}, which scrubs it whole first.
  */
 export function boundedIdentifier(
   text: string,
@@ -422,14 +565,35 @@ export function boundedIdentifier(
 }
 
 /**
- * Read a stored `error_json` (`{ code, message, nodeId? }`) for display. The text is data from the history file:
- * the message passes the secret scrubber and the one-line floor, then is cut to
- * {@link MAX_ERROR_MESSAGE_CHARS}; the code passes the same scrubber and floor and is cut to
- * {@link MAX_IDENTIFIER_CHARS}, and the node id passes the floor and the same cut. Each is cut to a bound before
- * the scrubber reads it. An unreadable document yields a fixed sentence, never a throw.
+ * Text read back from the history file that could carry a secret (an error's message or code, an event's reason),
+ * for one row: scrubbed WHOLE and filtered to one line ({@link sanitizeUntrustedInline}), and only then cut to
+ * `max` code points (default {@link MAX_IDENTIFIER_CHARS}), with `…` marking a cut. The order is the point: a cut
+ * made first can leave the first characters of a secret that the scrubber no longer recognizes, and a mask made
+ * first can never be clipped away from its context. The input is bounded by the caller's own size gate
+ * ({@link MAX_STORED_ERROR_BYTES} for a stored error), so scrubbing it whole costs a bound.
+ */
+export function scrubbedBounded(text: string, max: number = MAX_IDENTIFIER_CHARS): string {
+  const clipped = clipCodePoints(sanitizeUntrustedInline(text), max);
+  return clipped.truncated ? `${clipped.text}…` : clipped.text;
+}
+
+/** The largest stored `error_json` a page reads: 1 MiB, the output preview's bound ({@link MAX_STORED_OUTPUT_BYTES}'s twin). */
+export const MAX_STORED_ERROR_BYTES = 1_048_576;
+
+/**
+ * Read a stored `error_json` (`{ code, message, nodeId? }`) for display. The text is data from the history file.
+ * A document above {@link MAX_STORED_ERROR_BYTES} is refused with a fixed sentence before it is parsed, so what is
+ * scrubbed below is bounded. The message and the code are then each scrubbed whole, passed through the one-line
+ * floor, and only then cut ({@link scrubbedBounded}) to {@link MAX_ERROR_MESSAGE_CHARS} and
+ * {@link MAX_IDENTIFIER_CHARS}; the node id passes the floor and the same cut. An unreadable document yields a
+ * fixed sentence, never a throw.
  */
 export function readStoredError(json: string | undefined): StoredErrorView | undefined {
   if (json === undefined) return undefined;
+  const size = Buffer.byteLength(json, 'utf8');
+  if (size > MAX_STORED_ERROR_BYTES) {
+    return { message: `error record too large to show (${size} bytes)` };
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
@@ -440,17 +604,11 @@ export function readStoredError(json: string | undefined): StoredErrorView | und
   const code = parsed['code'];
   const message = parsed['message'];
   const nodeId = parsed['nodeId'];
-  let shownMessage: string | undefined;
-  if (typeof message === 'string') {
-    const clipped = clipCodePoints(
-      sanitizeUntrustedInline(clipCodePoints(message, MAX_ERROR_SCRUB_CHARS).text),
-      MAX_ERROR_MESSAGE_CHARS,
-    );
-    shownMessage = clipped.truncated ? `${clipped.text}…` : clipped.text;
-  }
   return {
-    ...(typeof code === 'string' ? { code: boundedIdentifier(code, sanitizeUntrustedInline) } : {}),
-    ...(shownMessage === undefined ? {} : { message: shownMessage }),
+    ...(typeof code === 'string' ? { code: scrubbedBounded(code) } : {}),
+    ...(typeof message === 'string'
+      ? { message: scrubbedBounded(message, MAX_ERROR_MESSAGE_CHARS) }
+      : {}),
     ...(typeof nodeId === 'string' ? { nodeId: boundedIdentifier(nodeId) } : {}),
   };
 }
@@ -487,8 +645,8 @@ export interface NodeRow {
   readonly attemptCount: number;
   /** The last attempt's duration. */
   readonly durationMs?: number;
-  /** The node's tokens summed across its attempt rows, matching the cost, which is summed across attempts. */
-  readonly tokens: { readonly input: number; readonly output: number };
+  /** The node's tokens, by the rule of the module note: its settled rows, else a completed step row, else `not recorded`. */
+  readonly tokens: NodeTokens;
   readonly cost: NodeCost;
   /** Why the node was skipped, as words; present for a `skipped` row with a recorded reason. */
   readonly skippedReason?: string;
@@ -502,6 +660,10 @@ export interface RunDetailHeader {
   readonly workflow: string;
   readonly startedAt?: string;
   readonly durationMs?: number;
+  /**
+   * The run's tokens. The sum of the `cost:attempt_settled` rows of the whole log when the log holds any (the same
+   * rows that give the cost beside it), else the run row's own totals.
+   */
   readonly tokens: { readonly input: number; readonly output: number };
   readonly tokensText: string;
   readonly totalCostMicrocents: number;
@@ -610,6 +772,22 @@ export function spanMs(
   return Math.max(0, end - start);
 }
 
+/**
+ * The run header's tokens: the sum over the whole log's `cost:attempt_settled` rows when it holds any, so the figure
+ * covers the same attempts the run's cost does (the run row keeps no tokens for a node that failed after a billed
+ * call); the run row's own totals when the log holds none (an older log, or one that was not read).
+ */
+function runTokens(
+  run: RunDetailRecord,
+  events: readonly RunEvent[],
+): { readonly input: number; readonly output: number } {
+  const settledRows = events.filter(
+    (event): event is CostAttemptSettledEvent => event.type === 'cost:attempt_settled',
+  );
+  if (settledRows.length > 0) return sumSettledTokens(settledRows);
+  return { input: run.totalInputTokens, output: run.totalOutputTokens };
+}
+
 /** Build the run detail page's model. See the module note for the cost and attempt rules. */
 export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const { run, steps, events } = input;
@@ -641,10 +819,10 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
         attemptCount:
           log !== undefined && log.groups.length > 0 ? log.groups.length : nodeSteps.length,
         ...(last?.durationMs === undefined ? {} : { durationMs: last.durationMs }),
-        tokens: {
-          input: nodeSteps.reduce((sum, step) => sum + step.inputTokens, 0),
-          output: nodeSteps.reduce((sum, step) => sum + step.outputTokens, 0),
-        },
+        tokens: buildNodeTokens({
+          settled: allSettled(log),
+          completedStep: completedStepTokens(nodeSteps, status),
+        }),
         cost: buildNodeCost({
           settled: allSettled(log),
           boundaryMicrocents,
@@ -664,6 +842,7 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const firstFailed = rows.find((row) => row.status === 'failed');
   const durationMs = spanMs(run.startedAt, run.completedAt);
   const error = readStoredError(run.errorJson);
+  const tokens = runTokens(run, events);
 
   return {
     header: {
@@ -673,8 +852,8 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
       workflow: sanitizeInline(input.workflowSlug ?? run.workflowId),
       ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }),
       ...(durationMs === undefined ? {} : { durationMs }),
-      tokens: { input: run.totalInputTokens, output: run.totalOutputTokens },
-      tokensText: formatTokens({ input: run.totalInputTokens, output: run.totalOutputTokens }),
+      tokens,
+      tokensText: formatTokens(tokens),
       totalCostMicrocents: run.totalCostMicrocents,
       costText: formatCostShort(run.totalCostMicrocents, facts.run, facts.unpricedCalls),
       ...(error === undefined ? {} : { error }),

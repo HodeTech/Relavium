@@ -2,6 +2,7 @@ import type { StepDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
+import { maskedAsMember } from '../render/run-outputs.js';
 import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 import { formatCostUsd, formatDuration } from '../render/tui/format.js';
 import {
@@ -9,15 +10,19 @@ import {
   allSettled,
   boundedIdentifier,
   buildNodeCost,
-  buildToolActivity,
+  buildNodeTokens,
+  buildToolActivityForAttempt,
   clipCodePoints,
+  completedStepTokens,
   foldUsageFacts,
   indexNodeEvents,
   lastAttemptRow,
   readStoredError,
   resolveNodeStatus,
+  scrubbedBounded,
   type NodeCost,
   type NodeRowStatus,
+  type NodeTokens,
   type StoredErrorView,
   type ToolActivityView,
 } from './run-detail-model.js';
@@ -36,15 +41,23 @@ import {
  * {@link MAX_STORED_OUTPUT_BYTES} is refused with a fixed sentence before it is parsed. Below that, the document
  * is rendered as indented JSON by a walk that STOPS once it holds more than the bound can show, so the work is
  * proportional to the preview and not to the document. What the walk does emit is masked: every string leaf and
- * every key (cut to {@link MAX_KEY_SCRUB_CHARS} first) goes through the shared secret scrubber on its own, so one
- * field's text never joins its neighbour's; the emitted text is scrubbed once more as a whole, and terminal
- * controls are stripped. That is a FLOOR, not the final summary's whole renderer (which also masks a member whose
- * NAME labels a credential and is not exported): the engine already masked secrets at the write boundary
- * (ADR-0050), and MVP-8 step 3 should replace this floor with that renderer's exported core when it builds the
- * screen.
+ * every key goes through the shared secret scrubber on its own, WHOLE and only then cut (a leaf to
+ * {@link MAX_LEAF_SCRUB_CHARS}, a key to {@link MAX_KEY_SCRUB_CHARS}), because a cut made first can leave a prefix
+ * of a secret that the scrubber no longer recognizes; the document's own size gate is what bounds the scrub. One
+ * field's text never joins its neighbour's. Every object member is also read by the final summary's own rule
+ * (`maskedAsMember`): a member whose NAME labels a credential has its value masked whole before the value is
+ * walked. The emitted text is scrubbed once more as a whole, and terminal controls are stripped. That is the
+ * final summary's masking, not its whole renderer; the engine already masked secrets at the write boundary
+ * (ADR-0050).
  *
- * **Tokens carry no cached count.** `step_executions.cached_tokens` is never written (it is always `0`), so a
- * page that drew it would state "0 cached" as a fact. The column stays in the db type and is not read here.
+ * **Tokens follow the cost, and carry no cached count.** A node's tokens are the sum of the `inputTokens` and
+ * `outputTokens` of its `cost:attempt_settled` rows (the same rows that give its cost), else the step row's tokens
+ * for a completed node, else `not recorded` (see `buildNodeTokens`); an attempt row follows the same rule over the
+ * rows of its own attempt. `step_executions.cached_tokens` is never written (it is always `0`), so a page that
+ * drew it would state "0 cached" as a fact. The column stays in the db type and is not read here.
+ *
+ * **The tool trace belongs to one attempt.** A node's terminal event records the attempt that produced it, so the
+ * page shows it only for that attempt; any other attempt's trace is `not recorded for this attempt`.
  */
 
 /** Lines of a node's output a page shows (the final summary's bound). */
@@ -60,9 +73,9 @@ export const MAX_TIMELINE_ROWS = 100;
  * for text a 40-line page cannot show. Four times the engine's bound leaves room for a bound raised later.
  */
 export const MAX_STORED_OUTPUT_BYTES = 1_048_576;
-/** A string leaf is cut to this many code points before the scrubber reads it, so one value costs a bound. */
+/** A string leaf is cut to this many code units AFTER the scrubber has read it whole. */
 const MAX_LEAF_SCRUB_CHARS = 32_768;
-/** An object key is cut to this many code points before the scrubber reads it; a cut key ends in `…`. */
+/** An object key is cut to this many code points AFTER the scrubber has read it whole; a cut key ends in `…`. */
 export const MAX_KEY_SCRUB_CHARS = 256;
 /** The model names a node's rows may carry, so a runaway log cannot grow the page without bound. */
 const MAX_MODELS_LISTED = 20;
@@ -113,21 +126,31 @@ export interface OutputPreview extends BoundedText {
   readonly masked: boolean;
 }
 
-/** A string leaf, cut to {@link MAX_LEAF_SCRUB_CHARS} and scrubbed on its own. `onMask` fires when it changed. */
-function scrubLeaf(value: string, onMask: () => void): string {
-  const clipped =
-    value.length > MAX_LEAF_SCRUB_CHARS ? value.slice(0, MAX_LEAF_SCRUB_CHARS) : value;
-  const out = scrubSecrets(clipped);
-  if (out !== clipped) onMask();
-  return out;
+/** A scrubbed string leaf, and whether it was cut to {@link MAX_LEAF_SCRUB_CHARS}. */
+interface ScrubbedLeaf {
+  readonly text: string;
+  readonly cut: boolean;
 }
 
-/** An object key, cut to {@link MAX_KEY_SCRUB_CHARS} code points, scrubbed on its own, and ended with `…` if it was cut. */
+/**
+ * A string leaf, scrubbed on its own WHOLE and only then cut to {@link MAX_LEAF_SCRUB_CHARS}. A cut made first can
+ * split a secret (a URL's userinfo, say), and the prefix left in the shown text is no longer a shape the scrubber
+ * recognizes. `onMask` fires when the scrubber changed it.
+ */
+function scrubLeaf(value: string, onMask: () => void): ScrubbedLeaf {
+  const out = scrubSecrets(value);
+  if (out !== value) onMask();
+  return out.length > MAX_LEAF_SCRUB_CHARS
+    ? { text: out.slice(0, MAX_LEAF_SCRUB_CHARS), cut: true }
+    : { text: out, cut: false };
+}
+
+/** An object key, scrubbed on its own WHOLE, then cut to {@link MAX_KEY_SCRUB_CHARS} code points and ended with `…` if it was cut. */
 function scrubKey(key: string, onMask: () => void): string {
-  const clipped = clipCodePoints(key, MAX_KEY_SCRUB_CHARS);
-  const out = scrubSecrets(clipped.text);
-  if (out !== clipped.text) onMask();
-  return clipped.truncated ? `${out}…` : out;
+  const out = scrubSecrets(key);
+  if (out !== key) onMask();
+  const clipped = clipCodePoints(out, MAX_KEY_SCRUB_CHARS);
+  return clipped.truncated ? `${clipped.text}…` : clipped.text;
 }
 
 /**
@@ -177,7 +200,7 @@ function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: (
     return;
   }
   if (typeof value === 'string') {
-    sink.push(JSON.stringify(scrubLeaf(value, onMask)));
+    sink.push(JSON.stringify(scrubLeaf(value, onMask).text));
     return;
   }
   if (typeof value !== 'object' || value === null) {
@@ -216,7 +239,8 @@ function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: (
       return;
     }
     sink.push(`${index === 0 ? '' : ','}${inner}${JSON.stringify(scrubKey(key, onMask))}: `);
-    writePretty(item, depth + 1, sink, onMask);
+    // The final summary's own rule: a member whose NAME labels a credential has its value masked whole.
+    writePretty(maskedAsMember(key, item, onMask), depth + 1, sink, onMask);
   }
   sink.push(`${closing}}`);
 }
@@ -241,8 +265,9 @@ export function buildOutputPreview(outputJson: string): OutputPreview {
   try {
     const value: unknown = JSON.parse(outputJson);
     if (typeof value === 'string') {
-      shown = scrubLeaf(value, onMask);
-      dropped = value.length > MAX_LEAF_SCRUB_CHARS;
+      const leaf = scrubLeaf(value, onMask);
+      shown = leaf.text;
+      dropped = leaf.cut;
     } else {
       const sink = new PreviewSink();
       writePretty(value, 0, sink, onMask);
@@ -266,7 +291,8 @@ export interface AttemptRowView {
   readonly status: NodeRowStatus;
   readonly glyph: string;
   readonly durationMs?: number;
-  readonly tokens: { readonly input: number; readonly output: number };
+  /** The attempt's own tokens: its settled calls, else its step row when it completed, else `not recorded`. */
+  readonly tokens: NodeTokens;
   /** The attempt's own settled model calls; `not recorded` when the log holds none for it. */
   readonly cost: NodeCost;
 }
@@ -303,8 +329,12 @@ export interface NodeDetailModel {
   readonly attemptNumber: number;
   readonly durationMs?: number;
   readonly durationText?: string;
-  /** The inspected attempt's tokens. There is no cached count: the column is never written (see the module note). */
-  readonly tokens: { readonly input: number; readonly output: number };
+  /**
+   * The whole node's tokens, beside the whole node's cost: every attempt's settled calls, else the step rows when the
+   * node completed, else `not recorded`. One attempt's own figure is on its {@link AttemptRowView}. There is no
+   * cached count: the column is never written (see the module note).
+   */
+  readonly tokens: NodeTokens;
   /** The whole node: every attempt's settled calls, else the boundary cost, else `not recorded`. */
   readonly cost: NodeCost;
   readonly attempts: readonly AttemptRowView[];
@@ -317,6 +347,7 @@ export interface NodeDetailModel {
   readonly timeline: readonly TimelineRowView[];
   /** Timeline rows beyond {@link MAX_TIMELINE_ROWS}. */
   readonly timelineOmitted: number;
+  /** The inspected attempt's trace: its terminal's, or `not recorded for this attempt` when the terminal closed another. */
   readonly toolActivity: ToolActivityView;
 }
 
@@ -331,14 +362,14 @@ function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefin
       return {
         ...base,
         label: 'Retrying',
-        detail: `attempt ${event.attemptNumber} failed (${sanitizeInline(event.error.code)}); next in ${formatDuration(event.delayMs)}`,
+        detail: `attempt ${event.attemptNumber} failed (${scrubbedBounded(event.error.code)}); next in ${formatDuration(event.delayMs)}`,
       };
     case 'node:completed':
       return { ...base, label: 'Completed', detail: formatDuration(event.durationMs) };
     case 'node:failed':
-      return { ...base, label: 'Failed', detail: sanitizeInline(event.error.code) };
+      return { ...base, label: 'Failed', detail: scrubbedBounded(event.error.code) };
     case 'node:skipped':
-      return { ...base, label: 'Skipped', detail: sanitizeInline(event.reason) };
+      return { ...base, label: 'Skipped', detail: scrubbedBounded(event.reason) };
     case 'cost:attempt_settled':
       return {
         ...base,
@@ -346,11 +377,11 @@ function timelineRow(event: RunEvent, nodeId: string): TimelineRowView | undefin
         detail: `${sanitizeInline(event.model)} · ${event.priced ? formatCostUsd(event.costMicrocents) : 'price unknown'}`,
       };
     case 'human_gate:paused':
-      return { ...base, label: 'Gate opened', detail: sanitizeInline(event.gateType) };
+      return { ...base, label: 'Gate opened', detail: scrubbedBounded(event.gateType) };
     case 'human_gate:resumed':
-      return { ...base, label: 'Gate decided', detail: sanitizeInline(event.decision) };
+      return { ...base, label: 'Gate decided', detail: scrubbedBounded(event.decision) };
     case 'media_job:submitted':
-      return { ...base, label: 'Media job submitted', detail: sanitizeInline(event.modality) };
+      return { ...base, label: 'Media job submitted', detail: scrubbedBounded(event.modality) };
     case 'budget:paused':
       return { ...base, label: 'Budget paused' };
     case 'budget:authorization':
@@ -381,20 +412,20 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
     .sort((a, b) => a.attemptNumber - b.attemptNumber)
     .map((row): AttemptRowView => {
       const attemptStatus = resolveNodeStatus({ step: row, log, runFinished });
+      const attemptSettled =
+        log?.groups
+          .filter((group) => group.attemptNumber === row.attemptNumber)
+          .flatMap((group) => group.settled) ?? [];
       return {
         attempt: row.attemptNumber,
         status: attemptStatus,
         glyph: NODE_ROW_GLYPH[attemptStatus],
         ...(row.durationMs === undefined ? {} : { durationMs: row.durationMs }),
-        tokens: { input: row.inputTokens, output: row.outputTokens },
-        cost: buildNodeCost({
-          settled:
-            log?.groups
-              .filter((group) => group.attemptNumber === row.attemptNumber)
-              .flatMap((group) => group.settled) ?? [],
-          boundaryMicrocents: 0,
-          coverage,
+        tokens: buildNodeTokens({
+          settled: attemptSettled,
+          completedStep: completedStepTokens([row], attemptStatus),
         }),
+        cost: buildNodeCost({ settled: attemptSettled, boundaryMicrocents: 0, coverage }),
       };
     });
 
@@ -420,7 +451,13 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
     ...(detail.durationMs === undefined
       ? {}
       : { durationMs: detail.durationMs, durationText: formatDuration(detail.durationMs) }),
-    tokens: { input: detail.inputTokens, output: detail.outputTokens },
+    tokens: buildNodeTokens({
+      settled,
+      completedStep: completedStepTokens(
+        attemptRows,
+        resolveNodeStatus({ step: lastKnown, log, runFinished }),
+      ),
+    }),
     cost: buildNodeCost({ settled, boundaryMicrocents, coverage }),
     attempts,
     modelsUsed: models,
@@ -438,6 +475,6 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
       : { outputPreview: buildOutputPreview(detail.outputJson) }),
     timeline: timelineAll.slice(0, MAX_TIMELINE_ROWS),
     timelineOmitted: Math.max(0, timelineAll.length - MAX_TIMELINE_ROWS),
-    toolActivity: buildToolActivity(log?.lastTerminal),
+    toolActivity: buildToolActivityForAttempt(log?.lastTerminal, detail.attemptNumber),
   };
 }

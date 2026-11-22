@@ -1,8 +1,9 @@
 import type { StepDetailRecord, StepSummaryRecord } from '@relavium/db';
-import type { RunEvent } from '@relavium/shared';
+import type { RunEvent, ToolActivityEntry } from '@relavium/shared';
 import * as scrubModule from '@relavium/llm/scrub-secrets';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { formatRunOutputs } from '../render/run-outputs.js';
 import {
   MAX_KEY_SCRUB_CHARS,
   MAX_STORED_OUTPUT_BYTES,
@@ -13,7 +14,12 @@ import {
   buildNodeDetailModel,
   buildOutputPreview,
 } from './node-detail-model.js';
-import { MAX_IDENTIFIER_CHARS, NOT_RECORDED, NOT_RECORDED_OLDER_LOG } from './run-detail-model.js';
+import {
+  MAX_IDENTIFIER_CHARS,
+  NOT_RECORDED,
+  NOT_RECORDED_FOR_ATTEMPT,
+  NOT_RECORDED_OLDER_LOG,
+} from './run-detail-model.js';
 
 // The real scrubber, counted: the walk's cost is the number of strings it hands the scrubber, so a test can say
 // "the walk stopped" by how many it saw.
@@ -47,6 +53,8 @@ const settled = (
     readonly model?: string;
     readonly attemptNumber?: number;
     readonly priced?: boolean;
+    readonly inputTokens?: number;
+    readonly outputTokens?: number;
   } = {},
 ): RunEvent => ({
   type: 'cost:attempt_settled',
@@ -54,26 +62,27 @@ const settled = (
   nodeId,
   model: options.model ?? 'model-a',
   attemptNumber: options.attemptNumber ?? 1,
-  inputTokens: 1,
-  outputTokens: 1,
+  inputTokens: options.inputTokens ?? 1,
+  outputTokens: options.outputTokens ?? 1,
   costMicrocents,
   cumulativeCostMicrocents: costMicrocents,
   priced: options.priced ?? true,
 });
-const completed = (sequenceNumber: number, nodeId: string): RunEvent => ({
+const completed = (sequenceNumber: number, nodeId: string, attemptNumber?: number): RunEvent => ({
   type: 'node:completed',
   ...base(sequenceNumber),
   nodeId,
   output: 'ok',
   tokensUsed: { input: 1, output: 1 },
   durationMs: 1500,
-  toolActivity: [{ toolId: 'read_file', ok: true, durationMs: 4 }],
+  ...(attemptNumber === undefined ? {} : { attemptNumber }),
+  toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 4 }],
 });
 /** A node terminal in the shape of a log written before `toolActivity` existed, or with the given trace. */
 const completedWithTrace = (
   sequenceNumber: number,
   nodeId: string,
-  toolActivity?: { toolId: string; ok: boolean; durationMs?: number }[],
+  toolActivity?: ToolActivityEntry[],
 ): RunEvent => ({
   type: 'node:completed',
   ...base(sequenceNumber),
@@ -91,6 +100,18 @@ const retrying = (sequenceNumber: number, nodeId: string, attemptNumber: number)
   error: { code: 'tool_failed', message: 'boom', retryable: true },
   delayMs: 2000,
 });
+
+/**
+ * An event as a damaged or foreign `history.db` row could hand it to the model: the shape of `event` with the fields
+ * of `patch` laid over it, whatever type they are. Typed as the intersection, so no cast is needed.
+ */
+function forged<T extends RunEvent, P extends object>(event: T, patch: P): T & P {
+  return Object.assign({}, event, patch);
+}
+
+// A URL whose userinfo password is the secret. A cut that falls inside it, made BEFORE the scrubber reads the text,
+// leaves a password prefix with no `@host` after it, which the scrubber no longer recognizes.
+const USERINFO_URL = 'postgres://app:S3cr3tPassw0rdValue@db.internal';
 
 function stepSummary(overrides: Partial<StepSummaryRecord> = {}): StepSummaryRecord {
   return {
@@ -118,7 +139,7 @@ const retriedNode: RunEvent[] = [
   retrying(4, 'x', 1),
   started(5, 'x', 2),
   settled(6, 'x', 4_000_000, { attemptNumber: 1, model: 'primary' }),
-  completed(7, 'x'),
+  completed(7, 'x', 2),
 ];
 
 describe('boundText', () => {
@@ -334,14 +355,18 @@ describe('buildOutputPreview: the cost is a bound, not the stored document', () 
     expect(preview.text).toBe('{\n  "__proto__": {\n    "polluted": 1\n  },\n  "b": 2\n}');
   });
 
-  it('cuts a long object key before the scrubber reads it, and marks the cut', () => {
+  it('scrubs a long object key WHOLE and only then cuts it, and marks the cut', () => {
     const key = 'k'.repeat(MAX_KEY_SCRUB_CHARS + 500);
     const preview = buildOutputPreview(JSON.stringify({ [key]: 1 }));
     expect(preview.text).toBe(`{\n  "${'k'.repeat(MAX_KEY_SCRUB_CHARS)}…": 1\n}`);
-    // The scrubber was handed the cut key, never the whole one.
-    expect(vi.mocked(scrubModule.scrubSecrets).mock.calls[0]?.[0]).toHaveLength(
-      MAX_KEY_SCRUB_CHARS,
-    );
+    // The scrubber was handed the whole key every time it read the bare key, never a cut one.
+    const bareKeyLengths = vi
+      .mocked(scrubModule.scrubSecrets)
+      .mock.calls.map(([text]) => text)
+      .filter((text) => /^k+$/u.test(text))
+      .map((text) => text.length);
+    expect(bareKeyLengths.length).toBeGreaterThan(0);
+    expect(new Set(bareKeyLengths)).toEqual(new Set([key.length]));
     // A key exactly at the bound is kept whole.
     const exact = 'e'.repeat(MAX_KEY_SCRUB_CHARS);
     expect(buildOutputPreview(JSON.stringify({ [exact]: 1 })).text).toBe(`{\n  "${exact}": 1\n}`);
@@ -362,15 +387,97 @@ describe('buildOutputPreview: the cost is a bound, not the stored document', () 
     expect(preview.text).toContain('"note": "held ');
   });
 
-  it('says truncated when the walk stopped early, even if the whole-text pass then left the shown text under the bound', () => {
-    // The first leaf alone fills the character bound, so the walk stops and never writes `b`. The whole-text scrub
-    // then masks that value (it follows an API-key header name), leaving a short text that no bound would cut.
-    const preview = buildOutputPreview(JSON.stringify({ 'x-api-key': 'a'.repeat(4_500), b: 1 }));
+  it('says truncated when the walk stopped early, even if the whole-text pass then left the shown text under the bound', async () => {
+    // The first leaf alone fills the character bound, so the walk stops and never writes `b`. The whole-text pass
+    // is made to mask everything it is handed (only the pretty-printed whole carries a line break before a key),
+    // leaving a short text that no bound would cut: the cut is still said.
+    const real = await vi.importActual<typeof scrubModule>('@relavium/llm/scrub-secrets');
+    vi.mocked(scrubModule.scrubSecrets).mockImplementation((text) =>
+      text.includes('\n  "first"') ? '[REDACTED]' : real.scrubSecrets(text),
+    );
+    try {
+      const preview = buildOutputPreview(JSON.stringify({ first: 'a'.repeat(4_500), b: 1 }));
+      expect(preview.masked).toBe(true);
+      expect(preview.text).toBe('[REDACTED]');
+      expect(preview.chars).toBeLessThan(OUTPUT_PREVIEW_MAX_CHARS);
+      expect(preview.truncated).toBe(true);
+    } finally {
+      vi.mocked(scrubModule.scrubSecrets).mockImplementation(real.scrubSecrets);
+    }
+  });
+});
+
+describe('buildOutputPreview: the scrubber reads the text whole, and only then is it cut', () => {
+  it('masks a URL password in an object key that a 256-cut would have split', () => {
+    const key = `${'f'.repeat(MAX_KEY_SCRUB_CHARS - 30)}${USERINFO_URL}`;
+    const preview = buildOutputPreview(JSON.stringify({ [key]: 1 }));
+    expect(preview.text).not.toContain('S3cr3t');
     expect(preview.masked).toBe(true);
-    expect(preview.text).toContain('[REDACTED]');
-    expect(preview.text).not.toContain('"b"');
-    expect(preview.chars).toBeLessThan(OUTPUT_PREVIEW_MAX_CHARS);
+    // Still cut at the key bound, with the marker.
+    expect(preview.text).toContain('…": 1');
+  });
+
+  it('masks a URL password in a top-level string that a 32768-cut would have split, behind controls the page strips', () => {
+    // BELs are stripped from the shown text, so the cut point is far past the 4,000 characters a page shows;
+    // only the scrub-then-cut order keeps the password prefix (which the strip pulls into view) out of it.
+    const cut = 32_768;
+    const text = `${'\u0007'.repeat(cut - 30)}${USERINFO_URL}`;
+    const preview = buildOutputPreview(JSON.stringify(text));
+    expect(preview.text).not.toContain('S3cr3t');
+    expect(preview.text).toContain('postgres://');
+    expect(preview.masked).toBe(true);
     expect(preview.truncated).toBe(true);
+  });
+
+  it('masks a URL password in a nested string leaf that a 32768-cut would have split', () => {
+    const text = `${'\u0007'.repeat(32_768 - 30)}${USERINFO_URL}`;
+    const preview = buildOutputPreview(JSON.stringify({ note: text }));
+    expect(preview.text).not.toContain('S3cr3t');
+    expect(preview.masked).toBe(true);
+  });
+});
+
+describe('buildOutputPreview: a member whose NAME labels a credential has its value masked (the final summary`s rule)', () => {
+  it('masks the value of `?token=` and `x-api-key`, keeps a non-credential key`s value, and says it masked', () => {
+    const preview = buildOutputPreview(
+      JSON.stringify({
+        '?token=': 'opaqueSECRETvalue',
+        'x-api-key': 'opaqueOTHERvalue',
+        title: 'plain text',
+      }),
+    );
+    expect(preview.text).not.toContain('opaqueSECRETvalue');
+    expect(preview.text).not.toContain('opaqueOTHERvalue');
+    expect(preview.text).toContain('"title": "plain text"');
+    expect(preview.masked).toBe(true);
+  });
+
+  it('masks it for a member below the top level, and for a non-string value', () => {
+    const preview = buildOutputPreview(
+      JSON.stringify({
+        outer: { '?token=': 'opaqueSECRETvalue', 'x-api-key': 12345, keep: 12345 },
+      }),
+    );
+    expect(preview.text).not.toContain('opaqueSECRETvalue');
+    expect(preview.text).toContain('"x-api-key": "[REDACTED]"');
+    expect(preview.text).toContain('"keep": 12345');
+  });
+
+  it('agrees with the final summary on the same document: both mask the value, both keep a plain key', () => {
+    const document = { '?token=': 'opaqueSECRETvalue', title: 'plain text' };
+    const shown = formatRunOutputs({ result: document }, '').join('\n');
+    expect(shown).not.toContain('opaqueSECRETvalue');
+    expect(shown).toContain('plain text');
+    const preview = buildOutputPreview(JSON.stringify(document));
+    expect(preview.text).not.toContain('opaqueSECRETvalue');
+    expect(preview.text).toContain('plain text');
+  });
+
+  it('does not take a secret-shaped key for a label: the key is masked and the value stays', () => {
+    const secret = `sk-ant-api03-${'D'.repeat(40)}`;
+    const preview = buildOutputPreview(JSON.stringify({ [secret]: 'plain value' }));
+    expect(preview.text).not.toContain('sk-ant-api03');
+    expect(preview.text).toContain('plain value');
   });
 });
 
@@ -470,7 +577,7 @@ describe('buildNodeDetailModel', () => {
     expect(model.outputPreview).toBeUndefined();
   });
 
-  it('carries the inspected attempt`s status, duration and tokens, and no cached count (the column is never written)', () => {
+  it('carries the inspected attempt`s status and duration, the node`s tokens, and no cached count (the column is never written)', () => {
     const model = buildNodeDetailModel({
       detail: stepDetail({ cachedTokens: 7, inputTokens: 11, outputTokens: 22 }),
       attempts: [],
@@ -483,9 +590,55 @@ describe('buildNodeDetailModel', () => {
       durationMs: 1500,
       durationText: '1.5s',
     });
-    // `toEqual` on the whole object: a `cached` key, even `0`, would state "0 cached" as a fact.
-    expect(model.tokens).toEqual({ input: 11, output: 22 });
+    // No settled row, and the node completed: the step row's figures. `toEqual` on the whole object: a `cached`
+    // key, even `0`, would state "0 cached" as a fact.
+    expect(model.tokens).toEqual({ source: 'step', input: 11, output: 22, text: '↑11 ↓22' });
     expect('cached' in model.tokens).toBe(false);
+  });
+
+  it('shows the tokens of every settled call of the node beside its cost: a failed node with one billed attempt', () => {
+    const model = buildNodeDetailModel({
+      // `failStepRow` writes no tokens, so the failed attempt's step row reads 0 / 0.
+      detail: stepDetail({ status: 'failed', attemptNumber: 1, inputTokens: 0, outputTokens: 0 }),
+      attempts: [],
+      events: [
+        coverageStarted(0),
+        started(1, 'x'),
+        settled(2, 'x', 3_000_000, { inputTokens: 120, outputTokens: 45 }),
+      ],
+    });
+    expect(model.tokens).toEqual({ source: 'attempts', input: 120, output: 45, text: '↑120 ↓45' });
+    expect(model.cost).toMatchObject({ source: 'attempts', microcents: 3_000_000 });
+    expect(model.attempts[0]?.tokens).toEqual(model.tokens);
+  });
+
+  it('sums every attempt for the node, keeps each attempt`s own figure, and says `not recorded` for an attempt with none', () => {
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      attempts: [
+        stepSummary({ attemptNumber: 1, status: 'failed', inputTokens: 0, outputTokens: 0 }),
+        stepSummary({ attemptNumber: 2, inputTokens: 30, outputTokens: 6 }),
+      ],
+      events: [
+        coverageStarted(0),
+        started(1, 'x', 1),
+        settled(2, 'x', 1_000_000, { inputTokens: 100, outputTokens: 20 }),
+        retrying(3, 'x', 1),
+        started(4, 'x', 2),
+        settled(5, 'x', 2_000_000, { inputTokens: 30, outputTokens: 6 }),
+        completed(6, 'x', 2),
+      ],
+    });
+    expect(model.tokens).toEqual({ source: 'attempts', input: 130, output: 26, text: '↑130 ↓26' });
+    expect(model.attempts.map((attempt) => attempt.tokens.text)).toEqual(['↑100 ↓20', '↑30 ↓6']);
+    // An attempt that failed with no settled call has nothing to show: not ↑0 ↓0.
+    const bare = buildNodeDetailModel({
+      detail: stepDetail({ status: 'failed', attemptNumber: 1, inputTokens: 0, outputTokens: 0 }),
+      attempts: [],
+      events: [coverageStarted(0), started(1, 'x')],
+    });
+    expect(bare.tokens).toEqual({ source: 'none', text: NOT_RECORDED });
+    expect(bare.attempts[0]?.tokens).toEqual({ source: 'none', text: NOT_RECORDED });
   });
 
   it('shows an attempt row left running under a finished run as stopped, and as running otherwise', () => {
@@ -496,11 +649,20 @@ describe('buildNodeDetailModel', () => {
     expect(buildNodeDetailModel({ detail, attempts: [], events: [] }).status).toBe('running');
   });
 
-  it('shows the tool activity of the node`s last terminal event', () => {
+  it('shows the tool activity of the terminal that closed the inspected attempt', () => {
     const model = buildNodeDetailModel({ detail: stepDetail(), attempts: [], events: retriedNode });
     expect(model.toolActivity).toMatchObject({
       recorded: true,
-      entries: [{ toolId: 'read_file', ok: true, durationMs: 4, outcome: 'ok' }],
+      entries: [
+        {
+          toolId: 'read_file',
+          ok: true,
+          resultRecorded: true,
+          durationMs: 4,
+          outcome: 'ok',
+          text: 'ok in 4ms',
+        },
+      ],
     });
     // No terminal event yet: nothing is claimed about the cause.
     expect(
@@ -509,20 +671,39 @@ describe('buildNodeDetailModel', () => {
     ).toEqual({ recorded: false, text: NOT_RECORDED });
     // A terminal with no `toolActivity` field is a log written before the field existed; an empty array is a
     // node that made no tool call.
+    const attemptOne = stepDetail({ attemptNumber: 1 });
     expect(
       buildNodeDetailModel({
-        detail: stepDetail(),
+        detail: attemptOne,
         attempts: [],
         events: [started(1, 'x'), completedWithTrace(2, 'x')],
       }).toolActivity,
     ).toEqual({ recorded: false, text: NOT_RECORDED_OLDER_LOG });
     expect(
       buildNodeDetailModel({
-        detail: stepDetail(),
+        detail: attemptOne,
         attempts: [],
         events: [started(1, 'x'), completedWithTrace(2, 'x', [])],
       }).toolActivity,
     ).toEqual({ recorded: true, entries: [], truncated: 0, text: 'no tool calls' });
+  });
+
+  it('keeps a trace to the attempt its terminal closed: attempt 1 of a node that completed on attempt 2 has none', () => {
+    const attempts = [
+      stepSummary({ attemptNumber: 1, status: 'failed' }),
+      stepSummary({ attemptNumber: 2 }),
+    ];
+    const forAttempt = (attemptNumber: number) =>
+      buildNodeDetailModel({
+        detail: stepDetail({ attemptNumber }),
+        attempts,
+        events: retriedNode,
+      }).toolActivity;
+    expect(forAttempt(1)).toEqual({ recorded: false, text: NOT_RECORDED_FOR_ATTEMPT });
+    expect(forAttempt(2)).toMatchObject({
+      recorded: true,
+      entries: [{ toolId: 'read_file', outcome: 'ok' }],
+    });
   });
 
   it('builds the timeline from this node`s durable events only, in sequence order, with no invented Scheduled row', () => {
@@ -550,6 +731,105 @@ describe('buildNodeDetailModel', () => {
     ]);
     expect(model.timeline.some((row) => /schedul/i.test(row.label))).toBe(false);
     expect(model.timelineOmitted).toBe(0);
+  });
+
+  it('scrubs the stored text a timeline row shows (an error code, a reason, a decision, a gate type, a modality) whole, then cuts it', () => {
+    const secret = `sk-ant-api03-${'T'.repeat(40)}`;
+    const text = `bad\u001b[31m ${secret}`;
+    const events: RunEvent[] = [
+      started(1, 'x'),
+      forged(
+        {
+          type: 'node:retrying',
+          ...base(2),
+          nodeId: 'x',
+          attemptNumber: 1,
+          error: { code: 'internal', message: 'boom', retryable: true },
+          delayMs: 10,
+        },
+        { error: { code: text, message: 'boom', retryable: true } },
+      ),
+      forged(
+        {
+          type: 'node:failed',
+          ...base(3),
+          nodeId: 'x',
+          error: { code: 'internal', message: 'boom', retryable: false },
+        },
+        { error: { code: text, message: 'boom', retryable: false } },
+      ),
+      forged(
+        { type: 'node:skipped', ...base(4), nodeId: 'x', reason: 'branch_not_taken' },
+        { reason: text },
+      ),
+      forged(
+        {
+          type: 'human_gate:paused',
+          ...base(5),
+          nodeId: 'x',
+          gateId: 'g',
+          gateType: 'approval',
+          message: 'm',
+        },
+        { gateType: text },
+      ),
+      forged(
+        {
+          type: 'human_gate:resumed',
+          ...base(6),
+          nodeId: 'x',
+          decision: 'approved',
+          decidedBy: 'cli',
+        },
+        { decision: text },
+      ),
+      forged(
+        {
+          type: 'media_job:submitted',
+          ...base(7),
+          nodeId: 'x',
+          jobId: 'j',
+          provider: 'openai',
+          model: 'image-model',
+          modality: 'image',
+          startedAt: T,
+          deadlineAt: T,
+        },
+        { modality: text },
+      ),
+    ];
+    const model = buildNodeDetailModel({ detail: stepDetail(), attempts: [], events });
+    const details = model.timeline.map((row) => row.detail ?? '');
+    expect(details).toHaveLength(7);
+    for (const detail of details.slice(1)) {
+      expect(detail).not.toContain('sk-ant-api03');
+      expect(detail).not.toContain('\u001b');
+      expect(detail).toContain('bad');
+    }
+    // A plain stored value is unchanged, and a long one is cut to 128 code points after the mask, with the marker.
+    const failedWith = (code: string): string | undefined =>
+      buildNodeDetailModel({
+        detail: stepDetail(),
+        attempts: [],
+        events: [
+          started(1, 'x'),
+          forged(
+            {
+              type: 'node:failed',
+              ...base(2),
+              nodeId: 'x',
+              error: { code: 'internal', message: 'boom', retryable: false },
+            },
+            { error: { code, message: 'boom', retryable: false } },
+          ),
+        ],
+      }).timeline[1]?.detail;
+    expect(failedWith('tool_failed')).toBe('tool_failed');
+    expect(failedWith('c'.repeat(300))).toBe(`${'c'.repeat(MAX_IDENTIFIER_CHARS)}…`);
+    // A URL password that a cut at 128 would have split is masked before the cut.
+    expect(failedWith(`${'c'.repeat(MAX_IDENTIFIER_CHARS - 30)}${USERINFO_URL}`)).not.toContain(
+      'S3cr3t',
+    );
   });
 
   it('bounds the timeline and counts what it left out', () => {

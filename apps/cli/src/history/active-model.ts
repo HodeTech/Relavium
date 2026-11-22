@@ -64,7 +64,10 @@ export interface ActiveRow {
   readonly enter: ActiveEnter;
   /** Why a read-only row is read-only; absent for an actionable row. */
   readonly reason?: string;
-  /** A `running` run, not hosted here, whose lease is missing or expired by more than one TTL. */
+  /**
+   * A `running` run, not hosted here, that is older than one TTL and whose lease is missing or expired by more than
+   * one TTL. A younger run is never stalled (see {@link isStalled}).
+   */
   readonly stalled: boolean;
   readonly stalledReason?: typeof STALLED_REASON;
   readonly createdAt: string;
@@ -82,7 +85,7 @@ export interface ClassifyActiveInput {
   /** Run ids whose terminal event is held in the outbox. */
   readonly outboxHeldRunIds: ReadonlySet<string>;
   readonly nowMs: number;
-  /** The lease TTL; a lease expired for more than this is stalled. */
+  /** The lease TTL; a run older than this whose lease is missing or expired for more than this is stalled. */
   readonly leaseTtlMs: number;
   /** Run id to the pending gate count of its `run:paused` (see the module note). Absent entries are unknown. */
   readonly pendingGateCounts?: ReadonlyMap<string, number>;
@@ -163,14 +166,32 @@ function newestFirst(a: ActiveRow, b: ActiveRow): number {
 }
 
 /**
- * Whether a lease is expired by MORE than one TTL at `nowMs`: `expiresAt + ttl < nowMs`. A lease that expired
- * exactly one TTL ago is not yet stalled — the boundary is strict — and a missing lease always is.
+ * Whether a run is YOUNGER than one lease TTL at `nowMs`, by the rule `reconcile()` applies (ADR-0079, the
+ * 2026-11-06 amendment): its owner persists `run:started` before it can take the lease, so a run with no lease
+ * yet may have started a moment ago. Young means `-ttl < age < ttl`: a run that is exactly one TTL old is not
+ * young, and neither is one whose start lies a full TTL or more in the future (a clock that moved back), which
+ * `reconcile()` settles too. A creation time that cannot be read is not young, as `reconcile()` treats a run with
+ * no recorded start.
  */
-export function isStalled(
-  lease: RunLeaseSummary | undefined,
-  nowMs: number,
-  leaseTtlMs: number,
-): boolean {
+function isYoungerThanLeaseTtl(createdAt: string, nowMs: number, leaseTtlMs: number): boolean {
+  const age = nowMs - Date.parse(createdAt);
+  return age > -leaseTtlMs && age < leaseTtlMs;
+}
+
+/**
+ * Whether a running run another process owns is stalled: it is NOT younger than one lease TTL, AND it holds no
+ * live lease — no lease row, or one expired by MORE than one TTL at `nowMs` (`nowMs - expiresAt > ttl`). A lease
+ * that expired exactly one TTL ago is not yet stalled — the boundary is strict — and a missing lease is, once the
+ * run is past one TTL. A fresh run is never stalled, whatever its lease says: its owner may not have taken it yet.
+ */
+export function isStalled(input: {
+  readonly lease: RunLeaseSummary | undefined;
+  readonly createdAt: string;
+  readonly nowMs: number;
+  readonly leaseTtlMs: number;
+}): boolean {
+  const { lease, createdAt, nowMs, leaseTtlMs } = input;
+  if (isYoungerThanLeaseTtl(createdAt, nowMs, leaseTtlMs)) return false;
   return lease === undefined || nowMs - lease.expiresAt > leaseTtlMs;
 }
 
@@ -183,7 +204,12 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
     const stalled =
       verdict.class === 'other-running' &&
       run.status === 'running' &&
-      isStalled(input.leases.get(run.id), input.nowMs, input.leaseTtlMs);
+      isStalled({
+        lease: input.leases.get(run.id),
+        createdAt: run.createdAt,
+        nowMs: input.nowMs,
+        leaseTtlMs: input.leaseTtlMs,
+      });
     rows.push({
       runId: run.id,
       shortId: shortRunId(run.id),
