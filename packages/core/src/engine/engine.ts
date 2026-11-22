@@ -743,9 +743,13 @@ class RunExecution {
    * terminal. The CR-11 hand-back rule is unchanged: the claim is still handed back at every re-pause and
    * re-taken before writing; the re-take is only trusted once a write under it lands.
    *
-   * Compared against THIS head rather than against "last asked", so a conflict caused by this process's own
-   * failed ask (the log did not move; the guard is failing closed as ADR-0078 intends) keeps its ordinary
-   * store-fault handling instead of being misread as a takeover.
+   * What is recorded is the value of `#lastAskedSequenceNumber` at the moment of the re-take, in `#reclaim`: the
+   * last sequence ASKED before the park, not the last one acknowledged (the two are equal only if every earlier
+   * write settled before the park). It is then compared against the durable head a conflict reports, rather
+   * than against the LIVE `#lastAskedSequenceNumber`, which a failed guarded ask of this process's own has
+   * already moved on. So a conflict caused by that failed ask (the log did not move; the guard is failing
+   * closed as ADR-0078 intends) keeps its ordinary store-fault handling instead of being misread as a
+   * takeover.
    */
   #reclaimedHead: number | undefined;
   /**
@@ -5456,8 +5460,9 @@ class RunExecution {
         //
         // **Except under an unproven re-take** ({@link #reclaimedHead}): a terminal is then guarded against
         // the head this process left at its park. After a park another process may have moved the log and
-        // released, and the fresh fence cannot see that; this head check is what does. Not "last asked":
-        // a failed ask of this process's own must not keep its terminal from landing.
+        // released, and the fresh fence cannot see that; this head check is what does. Not the live
+        // `#lastAskedSequenceNumber` (a failed ask of this process's own has moved it on, and must not keep
+        // its terminal from landing) but the value `#reclaim` captured, which was the last sequence asked.
         reclaimedHead = this.#reclaimedHead;
         writeFence = this.#fence;
         const headGuard = guarded ? expectedLastSequenceNumber : reclaimedHead;

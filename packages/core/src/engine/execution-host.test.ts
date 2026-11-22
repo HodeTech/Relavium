@@ -556,10 +556,11 @@ describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2
     await expect(store.persistEvent({ ...failed(1), runId: 'r2' })).resolves.toBeUndefined();
   });
 
-  it('mirrors UNIQUE(run_id, seq) — a duplicate sequence is refused, unguarded or not, per run', async () => {
+  it('mirrors UNIQUE(run_id, seq) — an unguarded duplicate sequence is refused, per run', async () => {
     // The stale gate card (deferred-tasks-parked.md): an UNGUARDED terminal at a sequence another writer had
     // used. SQLite's unique index refused it; this reference landed it, so a core test could not see the
-    // defect. The refusal is untyped like SQLite's — never a stale belief and never a lost claim.
+    // defect. The refusal is untyped like SQLite's — never a stale belief and never a lost claim. Only the
+    // unguarded duplicate is exercised here: a guarded one is the not-ahead guard's, not this index's.
     const store = new InMemoryRunStore();
     await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
     await store.persistEvent(skipped(3), { expectedLastSequenceNumber: 0 });
