@@ -34,6 +34,7 @@ import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import type { RunHost, RunHostSnapshot } from '../../home/run-host.js';
+import type { RunNotices } from '../../home/run-notices.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
   applyEditorAction,
@@ -67,6 +68,8 @@ import {
   pressExitGuardKey,
   pressInterrupt,
   pressOtherKey,
+  pressRunViewInterrupt,
+  pressRunViewKey,
   type HostedLegState,
   type InterruptContext,
   type InterruptState,
@@ -109,6 +112,8 @@ import {
   HOSTED_RUN_POLL_MS,
 } from './tui-constants.js';
 import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
+import type { RunStore } from './run-store.js';
+import { runScreenLeg } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
 
 /**
@@ -239,6 +244,31 @@ export interface HomeControllerState {
   /** The exit-guard card (ADR-0139 §6): `confirm` asks whether to leave with a run executing, `stopping` waits (bounded) for the
    *  confirmed cancel to settle. `undefined` ⇒ closed. While it is open it owns every key and every paste. */
   readonly exitGuard: ExitGuardPhase | undefined;
+  /**
+   * The one screen in front of the landing, or `undefined` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §1). One slot, one open function ({@link HomeController.openScreen}), one key route, one interrupt context, one paste gate and one
+   * reset ({@link HomeController.closeScreen}): the six overlays above are not moved into it, and are never open while it is.
+   */
+  readonly screen: HomeScreen | undefined;
+}
+
+/**
+ * What a screen of the slot is told when it opens. `run-view` is the only kind so far (MVP-8 step 3); the tab host (step 4) and the
+ * landing's `/help` sheet (step 5) add their own, each with its own props, and the opener and the readers switch on `kind`.
+ */
+export interface RunViewProps {
+  /** The run the view shows: the run host's snapshot is read for exactly this run, never for whichever one executes. */
+  readonly runId: string;
+  /** The leg's live output (the `RunApp` projection's store); absent when nothing feeds this Home. */
+  readonly store?: RunStore | undefined;
+}
+
+/** The slot's contents: the run view of one run, with the notice ring as it was last read (re-read while a leg is live). */
+export interface HomeScreen {
+  readonly kind: 'run-view';
+  readonly runId: string;
+  readonly store: RunStore | undefined;
+  readonly notices: readonly string[];
 }
 
 /**
@@ -331,7 +361,12 @@ export interface HomeControllerDeps {
    * teardown of the host. With a leg live, every way to end the Home asks first, and a confirmed exit cancels the leg and waits for it
    * for at most {@link HomeControllerDeps.exitGraceMs}. Absent ⇒ no run can exist and the Home leaves at once, as it always did.
    */
-  readonly hostedRuns?: Pick<RunHost, 'snapshot' | 'cancel' | 'close'>;
+  readonly hostedRuns?: Pick<RunHost, 'snapshot' | 'cancel' | 'close'> & {
+    /** The host's notice ring ([ADR-0139] §3): the run view shows its newest rows. Absent ⇒ the view has none. */
+    readonly notices?: Pick<RunNotices, 'snapshot'> | undefined;
+  };
+  /** The live output of a hosted run, for the run view to mount (`RunApp`); absent ⇒ the view says it has none. */
+  readonly runStore?: ((runId: string) => RunStore | undefined) | undefined;
   /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
   readonly exitGraceMs?: number;
   /**
@@ -378,9 +413,20 @@ export interface HomeController {
    * open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
    */
   readonly openPermissionsAsCommand: () => void;
+  /**
+   * Put a screen in front of the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §1).
+   * It replaces whatever the slot held, and returns whether it opened: it refuses while the Home is not the landing (a chat or its
+   * build), an overlay is open, the exit-guard card is up or the Home is ending. The screen then owns every key, and no paste reaches
+   * the prompt behind it.
+   */
+  readonly openScreen: (kind: 'run-view', props: RunViewProps) => boolean;
+  /** Close the screen, if one is open, and drop the interrupt state it armed: the one reset of the slot. */
+  readonly closeScreen: () => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
+
+const NO_NOTICES: readonly string[] = Object.freeze([]);
 
 /**
  * What changed in a run host's snapshot, as one string: the controller publishes a new snapshot only when this differs, so the
@@ -429,6 +475,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     interruptArmed: false,
     hostedRun: undefined,
     exitGuard: undefined,
+    screen: undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -605,12 +652,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     exitHome();
   };
+  /** The run host's notice ring as it is now (oldest first); empty with no host or no ring. */
+  const readNotices = (): readonly string[] => deps.hostedRuns?.notices?.snapshot() ?? NO_NOTICES;
+  /** `screen` with the notice ring as it is now: the same object when nothing changed, so an idle read never repaints. */
+  const withFreshNotices = (screen: HomeScreen): HomeScreen => {
+    const notices = readNotices();
+    return notices.length === screen.notices.length &&
+      notices.every((line, index) => line === screen.notices[index])
+      ? screen
+      : { ...screen, notices };
+  };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
   const refreshHostedRun = (): void => {
     const host = deps.hostedRuns;
     if (exiting || host === undefined) return;
     const snapshot = host.snapshot();
-    if (hostedKey(snapshot) !== hostedKey(state.hostedRun)) set({ hostedRun: snapshot });
+    const hostedChanged = hostedKey(snapshot) !== hostedKey(state.hostedRun);
+    const screen = state.screen === undefined ? undefined : withFreshNotices(state.screen);
+    const screenChanged = screen !== state.screen;
+    if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen });
+    else if (hostedChanged) set({ hostedRun: snapshot });
+    else if (screenChanged) set({ screen });
     if (hostedLeg(snapshot) !== 'none') watchHostedRun();
     else if (state.exitGuard === 'stopping') finishExit(false);
   };
@@ -656,6 +718,64 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, exitGraceMs);
     refreshHostedRun(); // nothing live ⇒ the exit ends here, before the grace could matter
   };
+  // ---- The screen slot (ADR-0140 §1) and the run view's ladder (ADR-0139 §5) -------------------------------------------------
+  // One slot holds the screen in front of the landing. It is opened in one place and closed in one place, and each takes the
+  // interrupt state with it: a window a screen armed must not carry over to whatever replaces it or to the landing behind it.
+  const overlayOpen = (): boolean =>
+    state.palette !== undefined ||
+    state.modelPicker !== undefined ||
+    state.permissionsSheet !== undefined ||
+    state.search !== undefined ||
+    state.mention !== undefined ||
+    state.effortPicker !== undefined;
+  const openScreen = (kind: 'run-view', props: RunViewProps): boolean => {
+    if (exiting || state.exitGuard !== undefined || state.mode !== 'home' || overlayOpen())
+      return false;
+    disarmInterrupt();
+    // The strip and the view read ONE snapshot: the view's state and the strip's `▶` row must never disagree for a frame.
+    const snapshot = deps.hostedRuns?.snapshot();
+    const hosted =
+      snapshot !== undefined && hostedKey(snapshot) !== hostedKey(state.hostedRun)
+        ? { hostedRun: snapshot }
+        : {};
+    set({
+      screen: { kind, runId: props.runId, store: props.store, notices: readNotices() },
+      continueSessionId: undefined,
+      ...hosted,
+    });
+    // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
+    if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
+    return true;
+  };
+  const closeScreen = (): void => {
+    if (state.screen === undefined) return;
+    disarmInterrupt();
+    set({ screen: undefined });
+  };
+  /** The run view's second `Ctrl+C`: ask the host for the cooperative cancel and publish that the leg is now cancelling. */
+  const cancelHostedRun = (): void => {
+    try {
+      deps.hostedRuns?.cancel();
+    } catch (cause) {
+      deps.workOwner?.failure(cause);
+    }
+    refreshHostedRun();
+  };
+  /** Put the run view of the leg that is executing in front (a leg the person just started, or came back to); `false` when none is. */
+  const openRunView = (): boolean => {
+    const runId = deps.hostedRuns?.snapshot().active?.runId;
+    if (runId === undefined) return false;
+    return openScreen('run-view', { runId, store: deps.runStore?.(runId) });
+  };
+  /** A key at a screen. `Esc` is the run view's only key, and it only closes the view: the leg is not asked for anything. */
+  const routeScreenKey = (screen: HomeScreen, key: HomeKey & ChatKey & PaletteKey): void => {
+    switch (screen.kind) {
+      case 'run-view':
+        if (pressRunViewKey(key) === 'leave') closeScreen();
+        return;
+    }
+  };
+
   const routeExitGuardKey = (
     phase: ExitGuardPhase,
     input: string,
@@ -964,7 +1084,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     openNativeAction(async () => {
       const notice = await launch();
-      if (!exiting) set({ notice });
+      if (exiting) return;
+      set({ notice });
+      openRunView(); // a run that started is shown at once; `Esc` leaves it running and `Enter` on the empty prompt comes back
     }, 'Run workflow');
   };
 
@@ -1115,6 +1237,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const trimmed = state.input.text.trim();
     if (trimmed.length === 0) {
       set({ input: emptyEditor() });
+      if (openRunView()) return; // the strip's `▶` row: `Enter` brings back the view of the run that is executing
       if (state.keyless) openProviderSetup();
       return;
     }
@@ -2105,8 +2228,35 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
     return busy ? { kind: 'work' } : { kind: 'prompt', hasText: state.input.text.length > 0 };
   };
+  // The run view's ladder (ADR-0139 §5). It asks the host about THE VIEW'S run now, not the poll's last read: a press that arrives a
+  // moment after the leg ended must not cancel anything. The first press only arms; nothing is cancelled until the second.
+  const handleScreenInterrupt = (screen: HomeScreen): void => {
+    const leg = runScreenLeg(screen.runId, deps.hostedRuns?.snapshot() ?? state.hostedRun);
+    const decision = pressRunViewInterrupt(interrupt, leg, interruptNow());
+    interrupt = decision.state;
+    switch (decision.action) {
+      case 'arm-run-cancel':
+        showInterruptHint(true);
+        return;
+      case 'cancel-run':
+        showInterruptHint(false);
+        cancelHostedRun();
+        return;
+      case 'wait-for-stop':
+        showInterruptHint(false); // a hint only: it arms nothing, and the view already says it is waiting
+        return;
+      case 'close-screen':
+        showInterruptHint(false);
+        closeScreen();
+        return;
+    }
+  };
   // Returns whether the key was consumed; `false` leaves an open overlay to close itself on `Ctrl+C`, arming nothing.
   const handleInterrupt = (): boolean => {
+    if (state.screen !== undefined) {
+      handleScreenInterrupt(state.screen);
+      return true;
+    }
     const active = state.mode === 'chat' ? state.session : undefined;
     if (active !== undefined && tearingDown === active) return true; // a key arriving mid-teardown drives nothing
     const decision = pressInterrupt(interrupt, interruptContext(active), interruptNow());
@@ -2275,6 +2425,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     } else {
       disarmInterrupt();
     }
+    // The screen in front (ADR-0140 §1) owns every key that is left: no overlay is open while it is, and the prompt is not offered.
+    if (state.screen !== undefined) {
+      routeScreenKey(state.screen, key);
+      return;
+    }
     // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
     if (state.palette !== undefined) {
       handlePaletteKey(input, key);
@@ -2340,6 +2495,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     setTerminalSize(columns, rows) {
       terminal = { columns, rows };
     },
+    openScreen,
+    closeScreen,
     openPermissionsAsCommand() {
       if (exiting) return;
       permissionsIsTheCommand = true;
@@ -2351,6 +2508,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (exiting || state.nativeActionBusy) return;
       disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
       if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
+      if (state.screen !== undefined) return; // a screen answers to keys only: a paste reaches neither it nor the prompt behind it
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)

@@ -34,6 +34,7 @@ import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-proje
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
+import { RunScreenView } from './run-screen-view.js';
 import { homeFitsTerminal, hostedRunLabel } from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
 import { layoutColumns } from './layout-columns.js';
@@ -680,6 +681,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       current.mode !== 'home' ||
       current.notice === undefined ||
       current.exitGuard !== undefined ||
+      current.screen !== undefined ||
       current.palette !== undefined ||
       current.modelPicker !== undefined ||
       current.permissionsSheet !== undefined ||
@@ -905,7 +907,20 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           size={size}
         />
       )}
-      {!prompt.active && (
+      {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
+      {!prompt.active && state.screen !== undefined && (
+        <RunScreenView
+          runId={state.screen.runId}
+          store={state.screen.store}
+          hostedRun={state.hostedRun}
+          notices={state.screen.notices}
+          interruptArmed={state.interruptArmed}
+          columns={size.cols}
+          rows={size.rows}
+          color={color}
+        />
+      )}
+      {!prompt.active && state.screen === undefined && (
         <HomeView
           onFrame={(node) => {
             homeFrame.commit(state, node, () => app.waitUntilRenderFlush());

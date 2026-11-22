@@ -138,6 +138,7 @@ import {
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
+import { createRunViewFeed } from '../render/tui/run-view-feed.js';
 import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
 import { createNativeConsentPrompter } from './consent-card.js';
@@ -670,6 +671,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // closes a second one (ADR-0139 §2). Nothing is registered, built or read until a run is started. Its MCP consent
     // prompt is the Home's native card on the one prompt flow (ADR-0139 §4): the only prompt a hosted leg can open, and
     // it answers only while the launch flow holds that flow open (with none open it refuses, which is the safe answer).
+    // The live output of a hosted leg: the leg's one event reader folds into a run store, and the run view mounts `RunApp` over it.
+    const runFeed = createRunViewFeed({ color: () => deps.global.color });
     const hostedRuns: RunHost = (runHost ??= new RunHost({
       invocation: deps.invocation,
       io: deps.io,
@@ -679,6 +682,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       providers,
       mcpSecretResolver,
       consent: createNativeConsentPrompter(promptFlow),
+      renderer: runFeed.renderer,
     }));
     let keyless = !sampleProviderSetup(providers).some(
       ({ availability }) => availability.status === 'usable',
@@ -1857,6 +1861,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
         // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
         hostedRuns,
+        runStore: runFeed.storeFor,
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
         // `relavium permissions` read. Nothing is read until the sheet is opened.
         permissions: createPermissionsPort(

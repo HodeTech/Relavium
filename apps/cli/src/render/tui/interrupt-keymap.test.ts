@@ -9,12 +9,16 @@ import {
   pressExitGuardKey,
   pressInterrupt,
   pressOtherKey,
+  pressRunViewInterrupt,
+  pressRunViewKey,
   type ExitDecision,
   type ExitGuardAnswer,
   type HostedLegState,
   type InterruptAction,
   type InterruptContext,
   type InterruptState,
+  type RunViewAnswer,
+  type RunViewInterruptAction,
 } from './interrupt-keymap.js';
 
 /**
@@ -268,5 +272,156 @@ describe('the exit-guard card keys (ADR-0139 §6)', () => {
   it('never confirms with Esc or Ctrl+C held at the same time', () => {
     expect(pressExitGuardKey('y', { ctrl: true, escape: true })).toBe('stay');
     expect(pressExitGuardKey('c', { ctrl: true, escape: true })).toBe('stay');
+  });
+});
+
+/**
+ * The run view's ladder, row by row (ADR-0139 §5). Cancelling a run cannot be undone, so it takes two presses, and the second is decided
+ * by the state of the view's run AT that press. The first table is the first press in each state of the leg, the second is the second
+ * press (armed) in each, and the third is the key universe of the view: `Esc` is the one key besides `Ctrl+C`.
+ */
+const RUN_VIEW_FIRST: readonly {
+  readonly row: string;
+  readonly leg: HostedLegState;
+  readonly action: RunViewInterruptAction;
+  readonly arms: boolean;
+}[] = [
+  {
+    row: 'a leg executing: arm, cancel nothing',
+    leg: 'executing',
+    action: 'arm-run-cancel',
+    arms: true,
+  },
+  {
+    row: 'a leg cancelling: a hint only, arms nothing',
+    leg: 'cancelling',
+    action: 'wait-for-stop',
+    arms: false,
+  },
+  {
+    row: 'no leg executing (a card, a parked run, a replaced run): close the view, arm nothing',
+    leg: 'none',
+    action: 'close-screen',
+    arms: false,
+  },
+];
+
+describe('the run view: the first Ctrl+C (ADR-0139 §5)', () => {
+  it.each(RUN_VIEW_FIRST)('$row', ({ leg, action, arms }) => {
+    const result = pressRunViewInterrupt(DISARMED, leg, 1000);
+    expect(result.action).toBe(action);
+    expect(result.state.armedAt, 'armed exactly when the table says so').toBe(
+      arms ? 1000 : undefined,
+    );
+  });
+
+  it('only a leg that is executing arms: it is the one row that does, so a stray press elsewhere cannot cancel', () => {
+    expect(RUN_VIEW_FIRST.filter((row) => row.arms).map((row) => row.leg)).toEqual(['executing']);
+  });
+});
+
+const RUN_VIEW_SECOND: readonly {
+  readonly row: string;
+  readonly leg: HostedLegState;
+  readonly after: number;
+  readonly action: RunViewInterruptAction;
+}[] = [
+  {
+    row: 'executing, inside the window: cancel the run',
+    leg: 'executing',
+    after: 500,
+    action: 'cancel-run',
+  },
+  {
+    row: 'executing, at exactly the end of the window: still the second press',
+    leg: 'executing',
+    after: INTERRUPT_ARM_WINDOW_MS,
+    action: 'cancel-run',
+  },
+  {
+    row: 'executing, one millisecond late: a fresh first press',
+    leg: 'executing',
+    after: INTERRUPT_ARM_WINDOW_MS + 1,
+    action: 'arm-run-cancel',
+  },
+  {
+    row: 'the leg began cancelling in between: a hint, never a second cancel',
+    leg: 'cancelling',
+    after: 500,
+    action: 'wait-for-stop',
+  },
+  {
+    row: 'the leg ended in between: close the view, cancel nothing',
+    leg: 'none',
+    after: 500,
+    action: 'close-screen',
+  },
+];
+
+describe('the run view: the second Ctrl+C', () => {
+  const armed: InterruptState = { armedAt: 1000 };
+
+  it.each(RUN_VIEW_SECOND)('$row', ({ leg, after, action }) => {
+    expect(pressRunViewInterrupt(armed, leg, 1000 + after).action).toBe(action);
+  });
+
+  it('cancelling leaves nothing armed, so a third press cannot cancel either', () => {
+    const second = pressRunViewInterrupt(armed, 'executing', 1500);
+    expect(second.state).toEqual(DISARMED);
+    expect(pressRunViewInterrupt(second.state, 'cancelling', 1600).action).toBe('wait-for-stop');
+    expect(pressRunViewInterrupt(second.state, 'executing', 1600).action).toBe('arm-run-cancel');
+  });
+
+  it('any other key ends the armed state, so Ctrl+C, a key, Ctrl+C is two first presses', () => {
+    const first = pressRunViewInterrupt(DISARMED, 'executing', 1000);
+    const afterKey = pressOtherKey();
+    expect(isArmed(first.state, 1100)).toBe(true);
+    expect(pressRunViewInterrupt(afterKey, 'executing', 1200).action).toBe('arm-run-cancel');
+  });
+});
+
+/** What the view is given of a key: the escape flag decides, and every other flag is a different chord that the view ignores. */
+type ViewKey = { readonly escape?: boolean; readonly ctrl?: boolean; readonly meta?: boolean };
+const RUN_VIEW_KEYS: readonly {
+  readonly row: string;
+  readonly key: ViewKey;
+  readonly answer: RunViewAnswer;
+}[] = [
+  { row: 'Esc leaves the view', key: { escape: true }, answer: 'leave' },
+  {
+    row: 'Esc with meta (Alt+Esc) leaves it too',
+    key: { escape: true, meta: true },
+    answer: 'leave',
+  },
+  { row: 'a bare letter (c, q, y, n) does nothing', key: {}, answer: 'ignore' },
+  { row: "Ctrl+C is the keymap's, not a view key", key: { ctrl: true }, answer: 'ignore' },
+  {
+    row: 'Ctrl+Y, Ctrl+N and Ctrl+D do nothing (no card of the view is open)',
+    key: { ctrl: true },
+    answer: 'ignore',
+  },
+  { row: 'Ctrl+Alt (meta) does nothing', key: { ctrl: true, meta: true }, answer: 'ignore' },
+  { row: 'an explicit escape: false is not Esc', key: { escape: false }, answer: 'ignore' },
+];
+
+describe('the run view keys (ADR-0139 §5)', () => {
+  it.each(RUN_VIEW_KEYS)('$row', ({ key, answer }) => {
+    expect(pressRunViewKey(key)).toBe(answer);
+  });
+
+  it('answers leave to Esc and to nothing else, over every combination of the flags', () => {
+    const answers = new Map<string, RunViewAnswer>();
+    for (const ctrl of [false, true])
+      for (const meta of [false, true])
+        for (const escape of [false, true]) {
+          const key: ViewKey = { ctrl, meta, escape };
+          answers.set(
+            `${ctrl ? 'ctrl' : ''}|${meta ? 'meta' : ''}|${escape ? 'esc' : ''}`,
+            pressRunViewKey(key),
+          );
+        }
+    expect(answers.size).toBe(8);
+    for (const [flags, answer] of answers)
+      expect(answer, flags).toBe(flags.endsWith('|esc') ? 'leave' : 'ignore');
   });
 });
