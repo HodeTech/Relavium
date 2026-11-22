@@ -405,6 +405,8 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
 // Real time, not ticks: how long the hang is given to reach its teardown warning, and how often it is polled.
 const HANG_OBSERVATION_DEADLINE_MS = 10_000;
 const HANG_POLL_MS = 5;
+// The hang tests wait inside their own bodies, so their timeout must exceed the deadline above (Vitest's default is 5 s).
+const HANG_TEST_TIMEOUT_MS = 20_000;
 
 async function observeHang(
   invoke: (io: CliIo, invocation: CliInvocation) => Promise<number>,
@@ -2657,47 +2659,55 @@ describe('run core characterization — the sequence of a start and of a resume'
     return () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(connection) }]);
   }
 
-  it('relavium run with an MCP release that is never acknowledged never settles and keeps the history open', async () => {
-    const path = writeWorkflow('hang-run.relavium.yaml', withMcp(HAPPY));
-    const h = createHarness();
-    expectHung(
-      'run.mcp-release-hang',
-      await observeHang(
-        (io, invocation) =>
-          runCommand(
-            { workflow: path, input: ['n=3'], allowMcpStdio: [] },
-            {
-              io,
-              invocation,
-              ...durableRun(false),
-              consentGate: PASS_CONSENT,
-              startMcpClient: refusingCloseMcp(),
-            },
-          ),
-        h.normalize,
-      ),
-    );
-  });
+  it(
+    'relavium run with an MCP release that is never acknowledged never settles and keeps the history open',
+    async () => {
+      const path = writeWorkflow('hang-run.relavium.yaml', withMcp(HAPPY));
+      const h = createHarness();
+      expectHung(
+        'run.mcp-release-hang',
+        await observeHang(
+          (io, invocation) =>
+            runCommand(
+              { workflow: path, input: ['n=3'], allowMcpStdio: [] },
+              {
+                io,
+                invocation,
+                ...durableRun(false),
+                consentGate: PASS_CONSENT,
+                startMcpClient: refusingCloseMcp(),
+              },
+            ),
+          h.normalize,
+        ),
+      );
+    },
+    HANG_TEST_TIMEOUT_MS,
+  );
 
-  it('relavium gate with an MCP release that is never acknowledged never settles and keeps the history open', async () => {
-    const h = createHarness();
-    const runId = await pauseWithMcp(h);
-    expectHung(
-      'gate.mcp-release-hang',
-      await observeHang(
-        (io, invocation) =>
-          gateCommand(
-            { runId, approve: true },
-            {
-              ...gateDeps(io, invocation, false),
-              consentGate: PASS_CONSENT,
-              startMcpClient: refusingCloseMcp(),
-            },
-          ),
-        h.normalize,
-      ),
-    );
-  });
+  it(
+    'relavium gate with an MCP release that is never acknowledged never settles and keeps the history open',
+    async () => {
+      const h = createHarness();
+      const runId = await pauseWithMcp(h);
+      expectHung(
+        'gate.mcp-release-hang',
+        await observeHang(
+          (io, invocation) =>
+            gateCommand(
+              { runId, approve: true },
+              {
+                ...gateDeps(io, invocation, false),
+                consentGate: PASS_CONSENT,
+                startMcpClient: refusingCloseMcp(),
+              },
+            ),
+          h.normalize,
+        ),
+      );
+    },
+    HANG_TEST_TIMEOUT_MS,
+  );
 });
 
 /** Apply a text scrub to every string an observation holds. */
