@@ -82,6 +82,8 @@ keep the wording they had when written.
 
 **Cleanup before MVP-8 (2026-11-22, on `development`):** `main`'s merge-commit CI run finished 29 of 29 green and its Sonar gate is OK (886 open smells, 149 false positives marked). The 38 smells PR #101's own lines introduced became named helpers with no change of behaviour (`c27a350c`), reviewed four times (one a security sitting) and pinned by permanent tests; see the [Sonar cleanup before MVP-8](phases/phase-2.6-conversational-authoring.md#sonar-cleanup-before-mvp-8-2026-11-22). MVP-8 is still next and still starts with its run-hosting ADR.
 
+**MVP-8 pre-flight (2026-11-22, on `development`):** every document MVP-8 rests on was reviewed against the code (five read-only reports) and the findings are recorded in the phase record's [MVP-8 pre-flight review and plan](phases/phase-2.6-conversational-authoring.md#mvp-8-pre-flight-review-and-plan-2026-11-22): stale entries struck, the scope reconciled, five steps planned. Two ADRs were written for the maintainer's acceptance: [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) (a workflow run is hosted inside the Home) and [ADR-0140](../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) (the management browsers, the run drill-down and the durable run detail). The maintainer ruled on 2026-11-22: a hosted run lives in the background; `Ctrl+C` on a running leg takes two presses; a run parked at a gate has no cancel in MVP-8; pins, the durable tool trace, the `/import` form and the `models pricing` form are in scope.
+
 **PR #100 merged (2026-11-18, `1e71f652`): the native adapter's Inc 1, CI once per commit and the narrowed coverage run are on `main`; MVP-4 started on `development` on 2026-11-19 (see its entry under [Next work](#next-work--the-cli-mvp)).** The
 [PR #100 merge checkpoint](phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) records what it carried, the final-head evidence (29 of 29 jobs green on `2ce6a252`;
 the docs-only final head `639134b2` was merged before its own run finished; that run, `44424575691`, did complete and passed, as did the merge commit's, `44424607930`) and what is still owed: a separate security sitting on the `capture_parent` change and the delta since round 4, the maintainer's reading of ADR-0135,
@@ -305,7 +307,7 @@ built-in editing/search grant is accepted by Step 3 after this acceptance.
 behaviour). A new user installs it, onboards with any of the four providers, chats with an agent that reads,
 searches, edits and runs commands under approval with diffs, authors a workflow conversationally or by export,
 runs it and sees its outputs, browses and inspects past runs and sessions from the Home, manages providers and MCP
-servers there, reaches the web under the chat egress authority, cancels and resumes chats and gated runs, and reads
+servers there, reaches the web under the chat egress authority, cancels chats, resumes chats and gated runs *(read so on 2026-11-22: a run parked at a gate has no cancel, because a `rejected` decision continues the run; [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §8)*, and reads
 docs that describe what ships. English only (the `en`+`tr` bar binds Phase 2.6, not the MVP). There is no npm
 pre-release before v0.2.0 (D70).
 
@@ -468,9 +470,9 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    (**Discoverability of the UVP**); 2.6.D `{{ctx.*}}` and `agent run --input`; starter workflows (MVP-A19).
 7. **MVP-7 — Web.** G30 (rows 13a–13c, pulled forward; 13c is re-scoped when it starts because Step 12b is
    paused); 2.6.M · **`web_search` activation**; web fetch through `http_request` under the chat authority.
-8. **MVP-8 — The Home as hub.** Phase 2.6 ADR row 6; 2.6.H's history data layer as far as G needs it; 2.6.K's
-   shared resume core; 2.6.G's `/agents`, the actionable strip's content (within MVP-3's row budget),
-   `/workflows` (defined, history, run detail) and the bound-agent view; Home `/help`; `logs --follow/--failed`.
+8. **MVP-8 — The Home as hub.** *(Pre-flight 2026-11-22; [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) and [ADR-0140](../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) Proposed for the maintainer's acceptance; five steps in the [plan](phases/phase-2.6-conversational-authoring.md#mvp-8-pre-flight-review-and-plan-2026-11-22).)* Phase 2.6 ADR row 6; 2.6.H's history data layer as far as G needs it (one additive migration, pins, the durable tool trace); 2.6.K's
+   shared resume core; 2.6.G's `/agents` and its detail, the actionable strip's content (within MVP-3's row budget) with an idle refresh,
+   `/workflows` (defined, active, history, run detail, node detail) and the bound-agent view (`/agent`); Home `/help`; `logs --follow/--failed`; the `/import` and `models pricing` forms.
    - **Runs right after MVP-4 (D75, 2026-11-08).** Under [ADR-0122](../decisions/0122-the-home-is-the-interactive-product.md)
      it also brings running a workflow and answering gates and budget gates inside the Home. Its run-hosting ADR
      (ADR-0122 §10) is written and accepted before it starts.
@@ -478,9 +480,7 @@ Wave 3 split as `row <n>` in the [increment table](phases/phase-2.5.5-hardening-
    - **Carried in from [ADR-0137](../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) (2026-11-20).** The command-grant **sheet and the Home's `/permissions` entry exist after MVP-4
      steps 5 and 7**; this milestone adds the **tab**, which *composes* that sheet (withdraw-only for command grants: a grant can only be
      made on a command card) with the sections for domain allowlists, MCP servers and egress endpoints, which own add and remove. It does
-     not build a second permissions screen. A run hosted in the Home shows approval cards: the `Esc` ladder of that ADR §4 applies
-     unchanged (back out of the full view, stop on the card), and the Home's card routing must treat the back result as `[b]`, never
-     as an abort. The older overlays (`/models`, `/effort`, the palette, the session picker) move onto the shared frame and legend
+     not build a second permissions screen. *(Corrected 2026-11-22: a workflow run is unattended and shows no per-tool approval card, [ADR-0118](../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the cards a hosted run shows are the human gate, the budget gate, the MCP consent and masked secret fields, none of which has a full view, and `Esc` on them leaves the card and decides nothing, [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4. The tab ships the two sections that exist, remembered commands and the repository allowlist (read-only); the network, MCP and egress sections arrive with MVP-7 and MVP-9, whose stores they need, [ADR-0140](../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3.)* The older overlays (`/models`, `/effort`, the palette, the session picker) move onto the shared frame and legend
      builder in the common-language increment, not here; if that has not landed, the tab uses the frame as it is.
 9. **MVP-9 — MCP and provider management.** Phase 2.6 ADR row 7; MCP servers attached to the default agent under
    ADR-0084 consent (MVP-A21); 2.6.I · **`/providers`**, `/mcp`, **`relavium mcp list/add/remove/test`** and MCP

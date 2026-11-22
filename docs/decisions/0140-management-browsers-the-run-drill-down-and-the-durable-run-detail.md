@@ -1,0 +1,151 @@
+# ADR-0140: The Home's management browsers read the durable run record, drill from a run to a node, and a few additive fields complete that record
+
+- **Status**: Proposed — 2026-11-22, written for the maintainer's acceptance (MVP-8 pre-flight). Nothing in this ADR is implemented. The D64 rigor tier and a separate security sitting apply to the steps that build it (a new terminal sink for stored, partly secret-derived content; a new persisted field; writes from forms).
+- **Date**: 2026-11-22
+- **Decides**: Phase 2.6's ADR row 6 ("management browsers + run drill-down contract, shared with 2.6.H"), the part of the 2.6.H data layer that 2.6.G needs, the shape of the Home's tab host, actionable strip, `/agents`, `/permissions` tab and `/help`, `logs --follow` and `--failed`, and the forms for `/import` and `models pricing`. It carries the maintainer's scope ruling of 2026-11-22: pins, the durable tool trace, the `/import` form and the `models pricing` form are **in** MVP-8.
+- **Amends** (dated notes in place, written with this ADR): [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (additively: one optional bounded field on two durable node events), [ADR-0054](0054-cli-bare-invocation-interactive-home.md) and [ADR-0122](0122-the-home-is-the-interactive-product.md) §4 (the strip's rows and refresh), [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) (what the `/permissions` tab composes now) and [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) (the observer trigger is met by a read-only poll tail, not by the observer handle).
+- **Related**: [ADR-0139](0139-a-workflow-run-is-hosted-inside-the-home.md) (the run these browsers start and open), [ADR-0049](0049-cli-machine-output-contract.md), [ADR-0050](0050-cli-history-db-at-rest-posture.md), [ADR-0070](0070-durable-per-model-session-cost-attribution.md), [ADR-0074](0074-durable-conservative-budget-commitments.md), [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md), [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md), [ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md), [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md), [ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md), [ADR-0129](0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md), [database-schema.md](../reference/shared-core/database-schema.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md), [home.md](../reference/cli/home.md), [accessibility.md](../reference/cli/accessibility.md)
+
+## Context
+
+[ADR-0122](0122-the-home-is-the-interactive-product.md) makes the Home the place a person reads their runs, agents and permissions, not only starts a chat. Phase 2.6's 2.6.G specifies the browsers (a tabbed `/workflows`, `/agents`, a `/permissions` tab, an actionable strip) and 2.6.H the stored record they read. The plan text is a year of drift old in places; the code was read on 2026-11-22 against it, and the facts that decide this ADR are:
+
+1. **Several 2.6.H items are done or cannot be done as written.** The final totals on `run:failed` and `run:cancelled` ship (`cumulativeCostMicrocents`); the content-level identity guard ships (ADR-0083 §5); the chat persister's turn is one transaction. `run_costs.model_id` is a foreign key to the model catalog (a catalog id), but an event carries a raw provider string, so it cannot be filled "from the events"; the agent columns reference a table nothing writes. A store-level "skip a corrupt row and report" contradicts [ADR-0074](0074-durable-conservative-budget-commitments.md) §5 and [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md): a damaged row fails the read loudly, and the CLI isolates the damage per run.
+2. **Per-node attribution and exact per-node cost are already in the log.** Since [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) a durable `cost:attempt_settled` event carries the node, the model, the within-chain attempt, the tokens and the exact cost of every attempt. A node's model and exact cost can be **read** from it. The authored agent and model are in the frozen workflow snapshot. A skipped node has a `node:skipped` event and a node type in the snapshot. None of it needs a column to be written.
+3. **A node's tool activity is not stored anywhere.** The tool events are streamed and dropped; the node detail the plan wants ("tool activity") needs one bounded durable field.
+4. **The reads are synchronous SQLite on the render thread.** The listing plans are already indexed (`idx_runs_created`, `idx_step_exec_run`, the `(run_id, seq)` tail), but there is no keyset page for runs, no tail read, no lease read, no project filter (and `project_root` has no index), and the Home's strip does an N+1 on open. A browser that pages a long history must not block the paint.
+5. **There is no tab concept in the Home, and the Home controller has grown by one field and about six reset sites per overlay** (the controller is 2,207 lines; the decomposition that was meant to precede 2.6.G is paused). The permissions sheet cannot be composed under a tab as it stands (it hard-codes its chrome).
+6. **Documents disagree** (the plan's `Ctrl+T` collides with the chat's reasoning toggle; "click" and `[Run]` buttons contradict the keyboard-first, mouse-off landing; "Home + chat" collides with ADR-0122 §10; the strip is "never live" while 2.6.G wants an idle refresh).
+
+## Decision
+
+### 1. One tab host, one screen slot
+
+The Home gets **one new slot for the screens this ADR and ADR-0139 add** (the run view, the tab host and, later, any further screen): a discriminated `screen` field of the controller, with one open function, one key route, one interrupt context, one paste gate and **one reset on every state replacement** (`closeScreen`). The six existing overlays (palette, models, effort, permissions sheet in a chat, mention, search) are not moved: ADR-0137 §5 leaves them to the common-language increment, and the maintainer's D65 accepts the undecomposed controller. A new screen is never a seventh overlay field.
+
+The **tab host** is the screen of the three management surfaces:
+
+```text
+ Workflows │ Agents │ Permissions                       ← top tabs (Tab / Shift+Tab)
+ Defined · Active · History                             ← sub-tabs of the current tab (← / →)
+ Workflows › History › deploy · 3h ago › build          ← breadcrumb of the drill-down
+ … rows (↑ ↓ PgUp PgDn Home End) …
+ ↵ open · p pin · f filter · a all projects · Esc back
+```
+
+- **It replaces the strip and the prompt** while it is open (the body of the Home is its viewport) and is entered only from the landing (a chat in front keeps its own commands; see §8). Closing it returns to the landing, which re-reads once.
+- **Keys.** `Tab` and `Shift+Tab` change the top tab; `←` and `→` change the sub-tab at a list; `↑ ↓ PgUp PgDn Home End` move; `Enter` opens or drills; `Esc` and `Backspace` go back **one level**, and `Esc` at a tab's list closes the screen; `Ctrl+C` closes the screen from any depth and never arms (a non-approval screen, [ADR-0122](0122-the-home-is-the-interactive-product.md) §7.4, [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) §1). A bare letter is an action only where no text field is open and opens a form or toggles a reversible mark (`r` run, `x` export, `p` pin, `f` filter, `a` all projects, `n` first failed node, `c` chat with this agent); an action that has an effect goes through a card with its own chord. A paste is dropped. No key is bound to `Ctrl+T` (the chat's reasoning toggle), `Ctrl+O` or `Ctrl+G` (the card chords), and nothing requires a mouse (the landing keeps mouse capture off; a click is never the only way).
+- **The tab remembers its position** for the life of the Home process (the last sub-tab, drill level and focused row identity), not on disk.
+- **Entry points:** the palette and typed forms `/workflows`, `/agents`, `/permissions` open the tab host at that tab; the strip rows (§6) open it at the right level; a bare `relavium permissions` on a terminal opens the Home with the Permissions tab (the sheet's old exit behaviour is kept: closing it ends that invocation with `0`). The slash set stays alias-free and takes no argument (ADR-0122 §3); the sub-tab is chosen with the keys, not an argument.
+- **Geometry and parity** ([ADR-0122](0122-the-home-is-the-interactive-product.md) §7, applied to every screen below). Rows are drawn from the shared frame (`sheet-frame` and the legend builder): one `SheetLine` model rendered the same in the full-screen and the inline renderer; the tab bar, breadcrumb and legend are always on screen, the body takes the rest and pages (a `▲ N more` marker counts the rows it covers); at 80×24 the body holds eight rows and a narrower terminal truncates a label before it drops a column; below 80×24 the screen shows the one-line "enlarge" message and accepts only `Esc` and `Ctrl+C`; every state has a glyph **and** a word (colour is never alone); every untrusted string passes the sanitize floor; the exit key is last in the legend and never truncated. The new strings use the provisional language [ADR-0137](0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §5 adopted (two legend layers, `Ctrl+X` with a plus, the three approval vocabularies, USD with four digits for money); if the maintainer rules otherwise on D2, D3, D6 or D8, the strings change in one place.
+
+### 2. `/workflows`
+
+- **Defined.** The project's catalog (`discoverCatalog`: valid and invalid files, the invalid ones flagged with their sanitized reason), with node count (an additive field of the catalog entry), tags, and the **last run's status and age scoped to this project** (`loadLatestRunPerWorkflow` takes a project root). `Enter` opens a **workflow detail** page (description, declared inputs with type, required and secret marks, node count, the three latest runs). `r` starts the launch form of ADR-0139 (inputs, then a confirmation card, then the run view). `x` exports the YAML through the `export` core behind a card that shows the destination and defaults to *No* (it refuses an existing file). Only the Home's own project is listed; the global directories keep only the existing notice.
+- **Active.** Rows for the leg this Home hosts (`Enter` reopens its view), every other process's run that is `pending`, `running` or `paused` (read-only; there is no cross-process cancel and the screen says so), runs parked at a human or budget gate (`Enter` opens the gate or budget card of ADR-0139, answered by `resumeRun`), and runs whose terminal is held in the outbox (overlaid as `status` does). Freshness is a **poll while the screen is visible**: every 1.5 seconds, paused while a card is open or the terminal is below 80×24, coalesced, one generation token so a late read cannot replace a newer one, and skipped when `PRAGMA data_version` shows no other connection has committed. The granularity is the node boundary and the screen says so (streamed tokens are never persisted, [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md)). A `running` run whose lease row is missing or expired for more than one TTL is labelled **stalled · settled by the next start**; the poll never reconciles (reconcile writes; it stays at Home open, ADR-0139 §6 and [home.md](../reference/cli/home.md#the-management-strip)).
+- **History.** Finished runs, most recent first, **this project's by default** with `a` to widen to every project (as `/resume` does for sessions), `f` to cycle the status filter. The list is a **keyset page** (twenty rows, cursor `(created_at, id)`, at most three pages cached, older ones evicted); the cost column is coverage-qualified through the one formatter and fetched lazily for the rows on screen, kept per run once it is terminal (a terminal run never changes). A pinned section sits above the list (§5). A run whose rows cannot be read is shown as an **unreadable run** row with its id, never hidden (the per-run isolation of `readPerRunOrDegrade`). `Enter` drills to the run.
+- **Run detail.** A header (status glyph and word, workflow, short id, start, duration, token totals, qualified cost, the error summary of a failed run with its root-cause node) and the **node table**: per node the last attempt's status, the attempt count, duration, tokens and exact cost (the sum of its `cost:attempt_settled` events, marked `~` for a media node, whose cost is the approximate boundary delta). `n` jumps to the first node whose **last** attempt failed (a retried-then-successful node does not match). A step row left `running` under a finished run (a decided gate, a node killed by a failure, a parked media node) is shown as `stopped`, as `status` does. A skipped node is read from its `node:skipped` event with its reason and its type from the frozen snapshot. A run from another project can be opened here and is never actionable (ADR-0139 §7).
+- **Node detail.** Status and attempts, duration, tokens, cost per attempt, the **model(s) actually used** (from `cost:attempt_settled`), the **authored agent and model** (from the frozen snapshot), the error (sanitized, bounded), the output (bounded view with scroll, through the same bounded and scrubbed renderer the final summary uses: forty lines, 4,000 characters per value, 12,000 per run), the event timeline (`Scheduled`, `Started`, `Completed` collapsed into one row), and the **tool activity** of §4. A node's **input is not shown as recorded**: it is the rendered template, can be secret-tainted ([ADR-0113](0113-secret-derived-context-keeps-provenance-at-public-sinks.md)) and is not persisted; the page shows the authored template, sanitized, and says so.
+- **Nothing here can delete, retry or edit a run.** (Retry from a node is Phase 3; the node detail is laid out so that a later action slots in. History retention is Wave 4b.)
+
+### 3. `/agents`, the bound-agent view, `/permissions`, `/help`
+
+- **`/agents` Defined** is the project's agent catalog; `Enter` opens an **agent detail** (system prompt head, model, provider, tool grant, temperature, reasoning effort, all read-only and sanitized); `c` starts a chat bound to that agent (the Home's chat today always binds the built-in agent). Binding a repository-defined agent is the same path as `relavium chat --agent <ref>`: its tool grant is exactly what its definition declares, and every tool call still goes through the chat's per-tool approval ([ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md)); the Home adds no authority. **`/agents` Sessions** is the recent and in-progress sessions of this project, the data and the resume path of the `/resume` picker (`Enter` resumes in place with the transcript repainted); the parent-and-child tree of 2.6.G waits for child sessions to exist (2.6.N) and is recorded there.
+- **The bound-agent view.** A chat command `/agent` (read-only, a docked sheet) shows the agent bound to the **current** session with the fields of the agent detail plus the resolved provider and model. It belongs to the chat commands (both hosts, because a standalone `--agent` session needs it), not to the Home tree.
+- **The `/permissions` tab composes the ADR-0137 sheet** and does not build a second permissions screen. The sheet is split into a body (the list lines, cursor and the arm-and-confirm fold) and its chrome; the tab host frames the body with its own tab bar and legend and delegates the keys to the sheet's fold, keeping its `Esc` ladder (an armed question drops first, then the screen closes). Today the tab has two sections: **remembered commands** (withdraw only, as ADR-0137 decided: a grant can only be made on a command card) and the repository's `[chat].allowed_commands` (read-only: it pre-approves nothing and only labels a card, ADR-0118). The **domain, MCP and egress sections do not exist yet because their stores do not**: the network-grant store lands with MVP-7's web tools and MCP registration with MVP-9's config-write ADR. Each of those milestones adds its section to the tab; this ADR does not draw an empty tab for them. The in-chat `/permissions` stays the docked sheet.
+- **`/help`** is a docked sheet on the shared frame, available on the landing and in the Home chat: the commands of the registry for the current surface with their descriptions, and the keys of each screen taken from the same constants the reducers and the legends use (a test presses every key it names), with every use of the word "mode" qualified (the chat mode, the renderer, the startup default). A typed `/word` on the landing **never starts a chat**: a word the Home owns runs, a chat-only word answers with a notice naming where it works. The richer cheat sheet of 2.6.E stays in Wave 6.
+
+### 4. The data contract: additive, read-derived where it can be, one optional field where it cannot
+
+- **No new event type and no new column write for attribution.** The `agent_id`, `model_id` and `input_json` columns of `step_executions` and `run_costs.model_id` stay unwritten and are recorded as such; per-node model and cost are **read** from `cost:attempt_settled`, the authored agent and model from the frozen snapshot, a skipped node from its event. `nodeCostMicrocents` is **not added**: the exact per-node cost already exists as that fold, and an unqualified dollar figure per node is not allowed anyway ([ADR-0104](0104-unknown-provider-usage-is-durable-cost-uncertainty.md)).
+- **One optional bounded field, `toolActivity`,** on the durable `node:completed` and `node:failed` events: an array of at most 50 entries `{ toolId, ok, durationMs?, summary? }` plus a `truncated` count, where `summary` is the tool result's own summary clipped to 120 characters and passed through the core's secret scrubber, **never the arguments and never result bytes**. An engine aggregator over the node's tool call and tool result events fills it. It is optional (an event written before it stays valid and the node detail says "not recorded"), the two schemas are not strict, so an older binary ignores it, and **no new event type is introduced** (an older binary treats a log with an unknown type as unreadable, [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md)). The schema, [sse-event-schema.md](../reference/contracts/sse-event-schema.md), the wire-conformance, budget-replay and usage-coverage controls and their mutation checks change together.
+- **`applyDerived` gets its exhaustiveness guard** over the `RunEvent` union (the bare `default` that silently drops a new money event is replaced), so the field above, and any later one, cannot land unhandled.
+- **Migration `0022`, additive and older-writer-safe:** a `run_pins` table (kind `run` or `workflow`, reference id, pinned-at; a primary key on the pair; at most fifty rows, enforced by the store) and the index `idx_runs_project_created` on `(project_root, created_at DESC)`. Hand-written if the generator would rebuild a table, with `schema.ts` and the `meta` snapshot kept in step, a seeded-then-migrated test in the pattern of the `0016` to `0021` upgrade tests, and an older-writer insert case.
+- **New reads, all additive and bounded:** a keyset page of runs (`before`, `limit`, `status`, `projectRoot`, `workflowId`), `loadRunEventsAfter(runId, afterSeq, limit)` (the `(run_id, seq)` index; it reuses the row reader so a newer unknown type is skipped as `logs` does), `loadRunLeases(runIds)` (a primary-key lookup), a step-detail read and the widened `StepRecord` and `RunRecord` projections (output, error, tokens, the failed step's duration computed from its timestamps), the project-scoped latest-run overlay, and the pins store. Every new plan is added to the perf-budget test, and a list read never selects a blob.
+- **What stays as it is.** A damaged event row still fails a single-run read loudly (`logs <id>`, `gate list <id>`) and is isolated per run in listings; there is no store-level skip-and-report. There is no retention or delete (Wave 4b). The store-level gate uniqueness constraint is **not added**: the lease first, then the compare-and-append guard and the fence already close the window, and MVP-8 step 2 proves it with a two-process test.
+
+### 5. Pins
+
+`p` pins or unpins the run or workflow in front of it (the detail page or a row). Pinned runs appear in a section above the History list; pinned workflows sort first in Defined. Pins are global to the home database like the runs they name, survive restarts, and are capped (a fifty-first is refused with a notice). A pin never changes a run.
+
+### 6. The strip becomes actionable, and it refreshes
+
+[ADR-0122](0122-the-home-is-the-interactive-product.md) §4 made the strip actionable by direction; the rows follow. At an empty prompt `Down` focuses the first actionable row across the sections in their displayed order; `Up` and `Down` move; `Esc` or any other key leaves the focus (a key that is typing starts typing). `Enter`:
+
+| Row | Opens |
+|---|---|
+| A pending human gate | the run view on the gate card, **without starting an engine** until the person answers (ADR-0139) |
+| A budget-paused run (now lifted into Attention; the strip has to read the pending budget gates) | the run view on the budget card |
+| A failed or recent run | the run detail in History |
+| The leg this Home hosts | the run view |
+| A session | the resume, as today |
+| An agent | the agent detail, if it is in the catalog |
+| An unreadable run | nothing; it stays a display row |
+
+The focused row is tracked by identity (run id, session id), so a refresh never moves it, and an Enter on a row whose record vanished does nothing but a notice. **The strip re-reads on an idle tick** (every five seconds, only while the landing is in front, no card is open, the terminal is at least 80×24 and `PRAGMA data_version` moved), as well as on open and on return from a chat or a screen. The row budget stays the one of ADR-0122 and MVP-3: the prompt, the keyless row, errors and notices have priority, optional rows trim first, the focused row and the active input never leave the screen, and the measured-frame acknowledgement covers the tab bar's rows too (an Enter on a row is inert until the frame holding it has been painted and measured). The attention ordering note of the reference (a recency proxy) stays.
+
+### 7. `logs --follow` and `--failed`
+
+Both are additive flags (new optional options; every existing invocation is byte-identical), recorded in the [ADR-0110](0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) compatibility table with their TTY, non-TTY and `--json` behaviour. `--failed` prints only the events that carry a failure (`node:failed`, `node:retrying`, `run:failed`) and the closing run line. `--follow` prints the existing log, then polls `loadRunEventsAfter` and prints each new durable event until the run is terminal **or parked at a gate** (it then says so and names the answer), at node-boundary granularity; it ends with exit `0` when it reaches the end of the log whatever the run's own outcome (a log reader reports no run's result) and keeps the existing signal exits otherwise. Under `--json` it is a pure NDJSON stream of run events, one line each, flushed per line.
+
+### 8. Where these commands live, and what they do not do
+
+- The browsers, `/help` and the forms are **Home-tree commands**: they are not offered in the standalone chat host's palette ([ADR-0122](0122-the-home-is-the-interactive-product.md) §10, which MVP-2 recorded with its measured cost). The chat's existing `/workflows` text notice stays. In the in-Home chat only `/agent` is added (a chat command).
+- A screen opens only from the landing, never over a live chat or a card, so a card and a screen never compete for the keyboard; a hosted leg that parks while a chat is in front is announced by a transcript notice.
+- No browser starts an effect on its own: running, exporting, answering, pinning, importing and pricing are each an explicit key and, where they write or spend, a card.
+
+### 9. The forms for `import` and `models pricing`
+
+Both re-host their shell cores ([ADR-0122](0122-the-home-is-the-interactive-product.md) §2) on the native prompt channel and are landing palette commands.
+
+- **`/import`:** a path field (bounded, expanded, a path prompt and not a file browser), then the core's validation shown on a card (kind, slug, the target file, a collision, any snapshot-literal warning), a default of *No*, and the write only on an explicit Yes; it refuses to overwrite and surfaces the same refusals as `relavium import`. It is a filesystem write and carries the D64 tier.
+- **`models pricing`:** the existing model picker chooses the model, two numeric fields take the input and output price with their unit stated, a card shows exactly what will be recorded and that the overlay belongs to the operator, and the write goes through the same core as the shell command. It is a money-floor write; its validation (range, finiteness, units) is the core's and is pinned.
+- Both keep the shell commands unchanged for scripts.
+
+### 10. What this ADR closes of the 2.6.H, 2.6.K and 2.6.G lists
+
+| Item | Disposition |
+|---|---|
+| Final totals on `run:failed` and `run:cancelled` | Already done (`cumulativeCostMicrocents`); struck |
+| Step attribution columns, `run_costs.model_id`, `node:skipped` step row, `nodeCostMicrocents` | **Substituted** by the read-derivation of §4; the columns stay unwritten and say so in the schema reference |
+| Bounded durable tool trace | **In** (`toolActivity`, §4) |
+| `applyDerived` exhaustiveness guard | **In** (§4) |
+| Resilient parse of a corrupt row | **Closed as reframed**: loud in a single read, isolated per run in listings (ADR-0074, ADR-0075) |
+| Batch `loadRunEvents` for `gate list` and `status` | **In**, as the shared page and tail reads are introduced; the streaming firehose half is moot (it is not persisted) |
+| Store-level gate uniqueness | **Closed with evidence**: the lease and the guard close it; a two-process test (step 2) |
+| Run-resume reads in one transaction | Mostly done (`visitRunEventsForReplay`); the remaining caller-level reads move into the resume core |
+| Chat persister atomicity; content-level identity guard | Already done; struck |
+| Run-submission idempotency | **In**, as the single-flight launch (ADR-0139 §2) |
+| Shared resume core; decision-against-gate-type check; secret re-provide; gate timeout re-arm | Core extracted in step 2 (ADR-0139 §1); the other three are already done |
+| `run:paused` gate versus media park | The run view's text distinguishes them; the exit code stays `3` |
+| Session budget pause and resume | Not MVP-8 (a session concern); stays registered |
+| `list --runs`, `status <runId>`, reconcile at open | Already done |
+| `logs --follow` and `--failed` | **In** (§7) |
+| Liveness of other processes' runs | The poll tail and the lease read of §2; no reconcile on poll |
+| Pins | **In** (§5) |
+| The detached-run notification | Replaced by ADR-0139 §3 (the strip row, the transcript notice) |
+| The bound-agent read-only view | **In** (§3) |
+
+## Consequences
+
+### Positive
+
+- The record is complete enough for a first-class drill-down with **one** optional field and one small additive migration, because attribution and exact cost were already durable.
+- Every read is indexed, bounded and generation-guarded; a long history pages instead of loading, and nothing scans the table on the render path.
+- One tab host and one screen slot mean the next management surface (MVP-9's providers and MCP, MVP-7's network grants) adds a tab, not another overlay field.
+- The permissions tab reuses the reviewed sheet; no second permissions screen exists.
+- `logs --follow` gives scripts the same live view the Active tab gives people, without a second mechanism.
+
+### Negative
+
+- **A new terminal sink for stored, partly secret-derived content** (node output, errors, tool summaries). Mitigation: only the bounded, scrubbed renderer the final summary already uses; sanitize floor; a separate security sitting.
+- **`toolActivity` persists new content.** Mitigation: no arguments and no result bytes, 120-character scrubbed summaries, fifty entries, optional, a mutation check that a secret-shaped summary is masked.
+- **A poll is not a push.** The Active tab is 1.5 seconds stale at worst and node-granular. Mitigation: said on screen; the observer handle of ADR-0079 stays a named follow-up.
+- **The controller grows by one screen slot** on a file that is already large. Mitigation: one slot, one reset, one route; the decomposition stays paused and its trigger is recorded.
+- **The permissions tab has two sections today.** Mitigation: stated; MVP-7 and MVP-9 add theirs when the stores exist.
+
+### Landing obligations
+
+- **Code:** MVP-8 steps 1, 4 and 5 ([the plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-8-pre-flight-review-and-plan-2026-11-22)).
+- **References:** [database-schema.md](../reference/shared-core/database-schema.md) (the `run_pins` table, the index, the unwritten columns), [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (`toolActivity`), [home.md](../reference/cli/home.md) (the tab host, the strip rows and refresh, the keys), [commands.md](../reference/cli/commands.md) (`logs` flags with the ADR-0110 rows, `/agent`), [accessibility.md](../reference/cli/accessibility.md), [chat-session.md](../reference/cli/chat-session.md) (`/agent`), [command-permissions.md](../reference/cli/command-permissions.md) (the tab).
+- **Notes in place** on the ADRs named under *Amends*, each pointing here.

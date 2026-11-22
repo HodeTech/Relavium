@@ -367,8 +367,8 @@ Entries that matter most whatever file they sit in: every entry rated **High**, 
 - [ ] **Run-submission idempotency / request-dedup (open — evaluate carefully).** Distinct from the content-addressed
   media cache and any managed-mode metering `request_id`: should an identical run-create request be
   de-duplicated so a double-submit does not start two runs? **Open:** a Phase-1 engine run-create hook vs a
-  surface concern. Low-stakes; recorded so it is not lost. **Scheduled → 2.6.H** (the Home can start a
-  workflow there, making double-submit real). *(WorkflowEngine run-create; 1.N)*
+  surface concern. Low-stakes; recorded so it is not lost. **Scheduled → MVP-8 step 3** (the Home can start a
+  workflow there, making double-submit real; the launch is single-flight in the Home controller and pinned by a test, [ADR-0139](../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)). *(WorkflowEngine run-create; 1.N)*
 - [ ] **i18n CI key-parity + data/code separation (Phase 2+ surface).** When the desktop / CLI / VS Code
   surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
   logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the
@@ -1022,12 +1022,12 @@ so directly: these "should remain visible rather than disappear behind the green
 > the deliberately-deferred forward work — each is a **Phase-2** concern that needs real persistence and/or
 > a store-level guarantee the in-memory reference cannot provide, recorded so it isn't lost.
 
-- [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
+- [x] **Content-level workflow-identity guard on resume** *(done: `resumeFromCheckpoint` verifies the frozen `runs.workflow_definition_snapshot` against the resumed graph with `verifyFrozenWorkflowContent`, [ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5; found stale and struck on 2026-11-22, MVP-8 pre-flight)* — `resumeFromCheckpoint` compares the surrogate
   `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
   edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
   ([database-schema.md](../reference/shared-core/database-schema.md)) — a Phase-2 persistence concern wired with
   the real `RunStore`, not the event-derived in-memory state. **Scheduled → 2.6.H.** *(low · packages/core/src/engine/engine.ts; Phase-2)*
-- [ ] **Cross-process concurrent gate-resolve (TOCTOU)** — idempotent re-delivery holds within a process
+- [ ] **Cross-process concurrent gate-resolve (TOCTOU)** *(re-scoped 2026-11-22, MVP-8 pre-flight: the lease first, then the compare-and-append guard and the fence already close the window in the store; MVP-8 step 2 proves it with a two-process test instead of adding an expression index, and closes this entry with the test's name)* — idempotent re-delivery holds within a process
   (`#resolvedGates`) and across processes once the prior process's `human_gate:resumed` is persisted (the
   checkpoint reconstructs `resolvedGateIds`). The residual window — two processes loading the *same* still-pending
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
@@ -1207,14 +1207,14 @@ model/provider/cost. If it's deliberately left out, that should be a stated deci
   state, so a torn read self-heals on the next fold. If tightened, wrap the caller-level reconstruction in one
   read transaction (as `loadFull` now does). **Scheduled → 2.6.H.** *(low · packages/db run-history-store consumers + the resume
   caller; surfaced during 2.5.I S1 review)*
-- [ ] **The CLI chat persister writes a turn non-atomically — messages then session totals in separate
+- [x] **The CLI chat persister writes a turn non-atomically — messages then session totals in separate
   auto-committed statements.** `apps/cli/src/chat/persister.ts` appends the user + assistant messages and then
   `updateSession`s the running totals as separate writes, so the DB legitimately passes through a state where a
   turn's messages are present but its totals are stale. `sessionStore.loadFull`'s read transaction (2.5.I S1)
   guarantees *snapshot* consistency (both reads see one DB snapshot) but not *turn* atomicity — a snapshot can
   observe messages ahead of their totals. To make "totals always match the returned messages" hold, wrap each
   turn's message-appends + `updateSession` in one host-side `db.transaction` (BEGIN IMMEDIATE). Bounded, host-side.
-  **Scheduled → 2.6.H.** *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)*
+  **Scheduled → 2.6.H.** *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)* **Done:** `store.writeTurn` is one `BEGIN IMMEDIATE` transaction for the messages and the session totals (`packages/db/src/session-store.ts:667`, called from `persister.ts`); struck 2026-11-22, MVP-8 pre-flight.
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only
