@@ -6217,3 +6217,36 @@ After step 5: the reference documents, the accessibility paragraph, the runbook 
 #### What stays open on purpose
 
 Several concurrent legs, a detached child process, a warm engine across answers and cross-process cancel (each its own ADR; ADR-0139 §8); cancelling a parked run (ruling 3); the child-session tree (2.6.N); the permissions tab's network, MCP and egress sections (MVP-7, MVP-9); the full cheat sheet of 2.6.E (Wave 6); themes (2.6.L); session budget pause (a session concern); the Windows evidence rows 1 to 16 and the new rows, collected by hand at MVP-10 with the owed ones.
+
+### MVP-8 step 1 implementation record (2026-11-22)
+
+**What step 1 delivers** (the durable record and its reads; [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §§2, 4, 5, 7):
+
+- **Migration `0022`** (`packages/db`): the `run_pins` table (kind, project root, ref, pinned-at; the composite key; a CHECK on kind) and the partial index `idx_runs_project_created` on `runs(project_root, created_at DESC, id DESC) WHERE deleted_at IS NULL`. Additive and hand-checked: one CREATE TABLE, one CREATE INDEX, no rebuild.
+- **Reads** (`packages/db`): `listRunSummaries` (a keyset page, refused above 200), `loadRunDetail`, `listStepSummaries`, `loadStepDetail`, `loadRunEventsAfter` (a tail whose cursor advances over rows a newer binary wrote; capped at 1000), `loadRunLeases` (primary key, capped at 200 ids), `loadLatestRunPerWorkflowInProject` (summary columns only). Documents are size-gated in SQL: above one MiB the record carries the byte length and no text, and `inputJson` is no longer read.
+- **Pins** (`createRunPinStore`): a 50-row cap checked inside `BEGIN IMMEDIATE`; the write refuses control, bidi and format characters and lone surrogates, allowing only the zero-width joiners U+200C and U+200D; unpin matches the exact stored key.
+- **`toolActivity`** (`packages/shared`, `packages/core`): an optional, content-free field on `node:completed` and `node:failed`, always written (an empty array when a node made no tool call), with a required `resultRecorded` flag that separates a refusal, a failed dispatch that ran and was measured, and an unpaired call. Every call is recorded when it starts, through a hook, so a call cut by a deadline is shown. The duration is the engine clock around the registry dispatch; no duration is guessed. A tool id the registry does not know is recorded as `unknown_tool`, and the stored id is bounded to 128 characters of a fixed set.
+- **`logs --failed` and `logs --follow`** (`apps/cli`): the failure view, and the live tail with its stop rules, one NDJSON line per event under `--json`, and notes on stderr. `--follow` ends at a terminal state, at a gate park, or when the run has no live owner (judged one full lease TTL after expiry, and only for a run older than one TTL).
+- **Pure view models** (`apps/cli/src/history`): the run detail, the node detail (with a bounded, masked output preview), the Active tab's classes and the History rows. They are not drawn yet; their first consumer is step 3 and step 4.
+
+**Review and proof.** Three full rounds of independent review, each over the whole step, with the findings verified against the code, fixed, and every new guard proven by a deliberate mutation that the tests kill. Round 1 found a duration that measured nothing and a model-chosen tool id stored verbatim (both high, both fixed), and an unbounded output preview and a project overlay that read every column (fixed). Round 2 found the failed-versus-unpaired confusion, a call lost at a deadline, the token rule and the follow's last event (fixed). Round 3 found medium findings in the user-facing wording (an unpaired call worded as if the node ended first; skipped and unfinished rows shown as not recorded) and in test coverage (mutants that survived), and lows (all fixed). No round found a blocker. Because round 3 found mediums, the bar of the increment rules (one new complete round with no blocker, high or medium finding) is **not yet met**: a clean round four on the cumulative change is owed after the security sitting, and it is run before this step is closed. Test suites at the end of the step: `packages/shared` 1,642, `packages/core` 5,746, `packages/db` 1,240, `apps/cli` 10,731 (13 skipped); typecheck and lint are clean in each. A separate security sitting (opus) runs on the cumulative change; its result is recorded below.
+
+**Deliberate deviations from the plan text** (recorded so they are not silent):
+
+- The plan's "batched `gate list` and `status` reads" are **not** in step 1. Their per-run isolation is what the reads must keep, and `gate list` is re-hosted in step 3; they move there.
+- The plan's "wire-conformance, budget-replay and usage-coverage controls change together" is verified as not needed: no file under `tools/` names `toolActivity`, and the engine's anchors still match. The full gate is the final confirmation.
+- The timeline's "Scheduled (derived)" row is not shown: no such event exists, so the timeline lists only the node's durable lifecycle events.
+- Sessions (`AgentSession`) do not supply the elapsed clock, so a session's tool results carry no duration. The trace is a workflow-node record in step 1.
+- A run whose owner is an older binary with no lease is judged owner-less by `--follow` and stalled by the Active tab after its TTL. Both are stated in the reference.
+- The output preview is a floor. Step 3 must replace it with the final summary's masking core, which step 1 exports (`namesCredential`, `maskedAsMember`), and that replacement is the step-3 obligation below.
+
+**Open obligations carried into step 3 and step 4** (each is a plan item, not a finding left behind):
+
+- Step 3 fills the Active tab's pending-gate map for this project's paused runs (`classifyActiveRuns` takes it; until it is filled no paused row is actionable, and a missing run reads as `gate state not read`).
+- The Home's pinned-run set comes from `listPins({ kind: 'run' })` only, so a workflow pin whose slug equals a run id cannot mark that run pinned.
+- A project root is canonicalised (realpath) before it is pinned or compared; the store does not canonicalise, so two spellings of one directory are two pins until the caller does.
+- The Active source set can exceed 200 run ids; the caller chunks `loadRunLeases`, which refuses more.
+- Every caller of `listRunSummaries` stays at or under 200.
+- The output preview's masking is the final summary's core, once step 3 calls it.
+- A fatal tool failure in a workflow node is shown as `no result recorded`, which is accepted and stated: the failure ended the node.
+
