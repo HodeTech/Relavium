@@ -103,12 +103,37 @@ function occupied(path: string): boolean {
   }
 }
 
+/**
+ * What the Home says for a write the file system refused, by the errno the write failed with. The sentences are fixed: a raw errno's
+ * message quotes the path it failed on, and the card must neither echo that path nor leave a person's home on a cause they cannot act
+ * on. `relavium export` keeps its own behaviour (it lets these propagate); only the card turns them into a refusal.
+ */
+const WRITE_FAULT_REASONS: ReadonlyMap<string, string> = new Map([
+  ['EACCES', 'The file could not be written: permission denied.'],
+  ['EPERM', 'The file could not be written: permission denied.'],
+  ['EROFS', 'The file could not be written: the file system is read-only.'],
+  ['ENOSPC', 'The file could not be written: no space is left on the device.'],
+  ['EDQUOT', 'The file could not be written: no space is left on the device.'],
+  ['EMFILE', 'The file could not be written: too many files are open.'],
+  ['ENFILE', 'The file could not be written: too many files are open.'],
+  ['EIO', 'The file could not be written: the write failed (I/O error).'],
+]);
+
+/** The fixed sentence for a write that failed with one of the file system's own refusals; none for any other fault (a bug ends the Home). */
+function writeFaultReasonOf(cause: unknown): string | undefined {
+  if (typeof cause !== 'object' || cause === null || !('code' in cause)) return undefined;
+  const code: unknown = cause.code;
+  return typeof code === 'string' ? WRITE_FAULT_REASONS.get(code) : undefined;
+}
+
 function commitOf(plan: ExportPlan): () => ExportAttempt {
   return () => {
     try {
       commitExport(plan);
     } catch (cause) {
-      const reason = reasonOf(cause);
+      // A fault the person can act on is a refusal, not the end of the Home: an unwritable directory is the destination's, not ours.
+      const reason = reasonOf(cause) ?? writeFaultReasonOf(cause);
+      // Anything else is a defect, and an unclassified fault ends the Home (ADR-0139).
       if (reason === undefined) throw cause;
       return { ok: false, reason };
     }

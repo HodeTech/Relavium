@@ -712,7 +712,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const live = getSizeRef.current();
     // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
     // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
-    if (key.return && current.stripFocus !== undefined && !homeFrame.visible(current)) return true;
+    // (Only on the landing: a screen in the slot has no strip on screen to measure, and its own Enter must reach it.)
+    if (
+      key.return &&
+      current.screen === undefined &&
+      current.stripFocus !== undefined &&
+      !homeFrame.visible(current)
+    )
+      return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
       // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
       if (
@@ -927,10 +934,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
         }}
       >
-        <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-          {'> '}
-          {sanitizeInline(state.pendingMessage)}
-        </Text>
+        {state.pendingMessage !== '' && (
+          // A chat that starts with no typed message (an agent's `c`, ADR-0140 §3) has nothing to echo: no bare `>` is drawn for it.
+          <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+            {'> '}
+            {sanitizeInline(state.pendingMessage)}
+          </Text>
+        )}
         {!homeFitsTerminal(size.cols, size.rows) && (
           // The landing says so below 80×24 and so does its echo: a card drawn in the degrade, and a `Ctrl+Y` that answers nothing
           // there, are explained by the one line that says what to do about it.
