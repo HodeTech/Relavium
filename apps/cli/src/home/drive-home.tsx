@@ -139,8 +139,11 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createRunViewFeed } from '../render/tui/run-view-feed.js';
+import { readParkedRuns } from '../render/tui/home-attention.js';
+import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
+import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
@@ -648,9 +651,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
 
   let result: ExitCode;
   try {
+    const runReader = createRunHistoryReader(opened.db);
     const homeStore = createHomeStore({
       sessions: opened.store,
-      runs: createRunHistoryReader(opened.db),
+      runs: runReader,
     });
 
     // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the
@@ -1862,6 +1866,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
         hostedRuns,
         runStore: runFeed.storeFor,
+        // The gate and budget cards of this project's parked runs (ADR-0139 §3, §4, §7): the Attention rows read the log, the card reads one
+        // run's gates when it opens, and an answer is the run host's `resume` with the native flow around it, so a masked slot and the
+        // MCP consent card of a resumed leg open on the same prompt channel. A run recorded for another directory is never read or answered.
+        gateCards: {
+          list: () => readParkedRuns(runReader, deps.global.cwd),
+          read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
+          resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
+        },
         // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
         // `relavium permissions` read. Nothing is read until the sheet is opened.
         permissions: createPermissionsPort(

@@ -13,6 +13,10 @@
  *   and counts only while this exact frame is painted and measured (`painted`); a rejection is never delayed. The dwell restarts for
  *   every new frame: a different gate under the cursor, a re-read of the gates, an answer that moved the cursor.
  * - **A cursor over the open gates.** With more than one, `↑`/`↓` move it and an answer applies to the gate under it only.
+ * - **A budget gate is the same card with other words.** `Ctrl+Y` approves exactly the frozen allowance the log recorded (its structured
+ *   field, never a figure read from text) and `Ctrl+N` aborts; an allowance that cannot be approved (unpriced, unrepresentable, legacy)
+ *   accepts the abort only, so `Ctrl+Y` there answers nothing. The answer goes through the same guard, and the host re-checks the price
+ *   before it claims the gate, leaving a moved price pending and abortable.
  * - **One answer in flight.** While an answer is out the card takes no other. A gate that is answered leaves the card at once, whatever
  *   the host says, so no key can answer it twice; what the host says (the leg started, the run's durable state, a refusal) is shown
  *   as the outcome. An overdue gate is the same: its deadline passing changes the words, never the keys.
@@ -23,15 +27,21 @@
 
 import type { GateDecision } from '@relavium/shared';
 
+import { budgetApprovalDecision, budgetPromptDetails } from '../../gate/budget.js';
 import { approvalDecision, rejectionDecision } from '../../gate/decision.js';
 import { humanGateResumeHints } from '../../gate/pending.js';
-import type { RunGate } from '../../home/run-gates.js';
+import {
+  isBudgetGate,
+  type RunBudgetGate,
+  type RunCardGate,
+  type RunGate,
+} from '../../home/run-gates.js';
 import type { HostedLaunch, HostedResumeRequest, RunHost } from '../../home/run-host.js';
 import { CliError } from '../../process/errors.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
 import { createChordGuard, reduceChordKey, type ChordStamp } from './chord-guard.js';
-import type { StatusColor } from './format.js';
+import { formatCostUsd, type StatusColor } from './format.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
@@ -58,8 +68,8 @@ export type RunCardPhase =
 /** One state of the card, as the view and the tests read it. Replaced, never mutated: its identity is the frame's. */
 export interface RunCardSnapshot {
   readonly runId: string;
-  /** The gates still open, in the order the log raised them. */
-  readonly gates: readonly RunGate[];
+  /** The gates still open, in the order the log raised them (a run's human gates, then its budget gates). */
+  readonly gates: readonly RunCardGate[];
   /** Which of them the next chord answers. */
   readonly cursor: number;
   readonly phase: RunCardPhase;
@@ -82,7 +92,7 @@ export type RunCardKeyOutcome =
 
 export interface RunCardDeps {
   readonly runId: string;
-  readonly gates: readonly RunGate[];
+  readonly gates: readonly RunCardGate[];
   /** Answer one gate: the run host's `resume`, with the native flow around it (see {@link createGateResumer}). */
   readonly resume: (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch>;
   /** The monotonic clock the guard runs on (default `performance.now`). */
@@ -108,7 +118,7 @@ export interface RunCard {
   /** The host measured and flushed this exact snapshot as a new frame: the dwell counts from here. */
   readonly shown: (snapshot: RunCardSnapshot) => void;
   /** The run's gates, read again: the cursor stays on its gate when that is still open. */
-  readonly update: (gates: readonly RunGate[]) => void;
+  readonly update: (gates: readonly RunCardGate[]) => void;
   readonly dispose: () => void;
 }
 
@@ -117,16 +127,23 @@ function plain(message: string): string {
   return sanitizeUntrustedInline(message);
 }
 
-/** The decision a chord means for a gate, or `undefined` when the gate does not accept it. */
-function decisionFor(chord: 'allow' | 'deny', gate: RunGate): GateDecision | undefined {
+/**
+ * The decision a chord means for a gate, or `undefined` when the gate does not accept it. A budget approval is built from the gate's own
+ * structured allowance and from nothing else: with no priced amount there is nothing to approve, whatever `accepts` says.
+ */
+function decisionFor(chord: 'allow' | 'deny', gate: RunCardGate): GateDecision | undefined {
   const kind = chord === 'allow' ? 'approved' : 'rejected';
   if (!gate.accepts.includes(kind)) return undefined;
-  return kind === 'approved' ? approvalDecision() : rejectionDecision();
+  if (kind === 'rejected') return rejectionDecision();
+  if (!isBudgetGate(gate)) return approvalDecision();
+  return gate.allowance.kind === 'amount'
+    ? budgetApprovalDecision(gate.allowance.microcents)
+    : undefined;
 }
 
 /** Where the cursor lands in `gates` after a re-read: on `gateId` when it is still there, else clamped. */
 function cursorAfter(
-  gates: readonly RunGate[],
+  gates: readonly RunCardGate[],
   gateId: string | undefined,
   previous: number,
 ): number {
@@ -134,21 +151,27 @@ function cursorAfter(
   return kept >= 0 ? kept : Math.max(0, Math.min(previous, gates.length - 1));
 }
 
+/** Two reads of one gate: the same id, node, deadline and what the card shows of it. */
+function sameGate(a: RunCardGate, b: RunCardGate): boolean {
+  if (a.gateId !== b.gateId || a.nodeId !== b.nodeId || a.expiresAt !== b.expiresAt) return false;
+  if (isBudgetGate(a) || isBudgetGate(b))
+    return (
+      isBudgetGate(a) &&
+      isBudgetGate(b) &&
+      JSON.stringify(a.allowance) === JSON.stringify(b.allowance)
+    );
+  return (
+    a.gateType === b.gateType && a.message === b.message && a.timeoutAction === b.timeoutAction
+  );
+}
+
 /** Two reads of the same gates: a periodic re-read that found nothing new must not mint a new frame (and restart the dwell). */
-function sameGates(a: readonly RunGate[], b: readonly RunGate[]): boolean {
+function sameGates(a: readonly RunCardGate[], b: readonly RunCardGate[]): boolean {
   return (
     a.length === b.length &&
     a.every((gate, index) => {
       const other = b[index];
-      return (
-        other !== undefined &&
-        gate.gateId === other.gateId &&
-        gate.nodeId === other.nodeId &&
-        gate.gateType === other.gateType &&
-        gate.message === other.message &&
-        gate.expiresAt === other.expiresAt &&
-        gate.timeoutAction === other.timeoutAction
-      );
+      return other !== undefined && sameGate(gate, other);
     })
   );
 }
@@ -181,10 +204,10 @@ export function createRunCard(deps: RunCardDeps): RunCard {
     snapshot = Object.freeze({ runId: deps.runId, ...next });
     for (const listener of listeners) listener();
   };
-  const focused = (): RunGate | undefined => snapshot.gates[snapshot.cursor];
+  const focused = (): RunCardGate | undefined => snapshot.gates[snapshot.cursor];
 
   /** The host refused: nothing was answered, so the gate is open again where it was, with the host's words. */
-  const reopen = (before: RunCardSnapshot, gate: RunGate, message: string): void => {
+  const reopen = (before: RunCardSnapshot, gate: RunCardGate, message: string): void => {
     // A re-read that landed meanwhile saw the gate still pending (the answer had not been recorded): keep what it read.
     const gates = snapshot.gates.some((entry) => entry.gateId === gate.gateId)
       ? snapshot.gates
@@ -200,7 +223,10 @@ export function createRunCard(deps: RunCardDeps): RunCard {
   };
 
   /** The host took the answer: the leg started, or there was nothing to answer and the host says what the log holds. */
-  const accepted = (launch: Exclude<HostedLaunch, { kind: 'refused' }>, gate: RunGate): void => {
+  const accepted = (
+    launch: Exclude<HostedLaunch, { kind: 'refused' }>,
+    gate: RunCardGate,
+  ): void => {
     const gates = snapshot.gates.filter((entry) => entry.gateId !== gate.gateId);
     guard.begin(); // whatever is under the cursor now is a new frame: its dwell starts when it is shown
     const base = { gates, cursor: cursorAfter(gates, undefined, 0), refused: false };
@@ -220,7 +246,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
     });
   };
 
-  const send = (gate: RunGate, decision: GateDecision): void => {
+  const send = (gate: RunCardGate, decision: GateDecision): void => {
     // The gate leaves the card the moment it is answered: from here no key can answer it a second time, whatever the host replies.
     const before = snapshot;
     publish({
@@ -232,7 +258,12 @@ export function createRunCard(deps: RunCardDeps): RunCard {
     });
     let reply: Promise<HostedLaunch>;
     try {
-      reply = deps.resume({ runId: gate.runId, gate: gate.gateId, kind: 'human', decision });
+      reply = deps.resume({
+        runId: gate.runId,
+        gate: gate.gateId,
+        kind: isBudgetGate(gate) ? 'budget' : 'human',
+        decision,
+      });
     } catch {
       reply = Promise.resolve(SEND_FAILED);
     }
@@ -428,6 +459,8 @@ export type RunCardRole =
   | 'title'
   | 'author'
   | 'fact'
+  /** The frozen allowance of a budget gate: the one figure the card is about. */
+  | 'amount'
   | 'warn'
   | 'note'
   | 'list'
@@ -483,20 +516,20 @@ function messageRows(message: string, width: number): readonly string[] {
 }
 
 /** The instant the deadline passes, or `undefined` for a gate with none (or one that does not parse). */
-function deadline(gate: RunGate): number | undefined {
+function deadline(gate: RunCardGate): number | undefined {
   if (gate.expiresAt === undefined) return undefined;
   const at = Date.parse(gate.expiresAt);
   return Number.isFinite(at) ? at : undefined;
 }
 
-export function isGateOverdue(gate: RunGate, nowMs: number): boolean {
+export function isGateOverdue(gate: RunCardGate, nowMs: number): boolean {
   const at = deadline(gate);
   return at !== undefined && nowMs >= at;
 }
 
 function stateOf(
   snapshot: RunCardSnapshot,
-  gate: RunGate | undefined,
+  gate: RunCardGate | undefined,
   nowMs: number,
 ): RunCardState {
   switch (snapshot.phase) {
@@ -521,7 +554,7 @@ function policyWords(gate: RunGate): string {
 }
 
 /** The keys the open card offers, in the legend's grammar. Only what the gate accepts, and only host text. */
-function keysFor(snapshot: RunCardSnapshot, gate: RunGate | undefined): string {
+function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined): string {
   switch (snapshot.phase) {
     case 'answering':
       return 'Answering… · Esc leaves the view';
@@ -532,20 +565,133 @@ function keysFor(snapshot: RunCardSnapshot, gate: RunGate | undefined): string {
     case 'open': {
       const parts: string[] = [];
       if (snapshot.gates.length > 1) parts.push('↑/↓ choose a gate');
+      // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
+      const budget = gate !== undefined && isBudgetGate(gate);
       if (gate?.accepts.includes('approved') === true) parts.push('Ctrl+Y approves');
-      if (gate?.accepts.includes('rejected') === true) parts.push('Ctrl+N rejects');
+      if (gate?.accepts.includes('rejected') === true)
+        parts.push(budget ? 'Ctrl+N aborts' : 'Ctrl+N rejects');
       parts.push('Esc leaves it pending');
       return parts.join(' · ');
     }
   }
 }
 
-function gateFacts(gate: RunGate, width: number, overdue: boolean): readonly RunCardRow[] {
+function gateKind(gate: RunCardGate): string {
+  return isBudgetGate(gate) ? 'budget' : sanitizeInline(gate.gateType);
+}
+
+/** What an overdue gate adds: when it passed, what the engine does at the deadline (a human gate's policy), and that the answer counts. */
+function overdueRows(gate: RunCardGate, width: number): readonly RunCardRow[] {
+  const rows: RunCardRow[] = [
+    {
+      role: 'warn',
+      text: clipLine(`Overdue since ${sanitizeInline(gate.expiresAt ?? '')}.`, width),
+    },
+  ];
+  if (!isBudgetGate(gate)) rows.push({ role: 'warn', text: clipLine(policyWords(gate), width) });
+  rows.push({
+    role: 'fact',
+    text: clipLine(
+      'Your answer is still taken; if another process settled it first, this says so.',
+      width,
+    ),
+  });
+  return rows;
+}
+
+/** What a human gate's keys do: a rejection continues the run, and an `input` gate takes a typed value this card does not. */
+function humanGateNotes(gate: RunGate, width: number): readonly RunCardRow[] {
+  if (gate.accepts.includes('approved'))
+    return [
+      {
+        role: 'fact',
+        text: clipLine(
+          'Rejecting does not stop the run: the workflow routes on a rejection.',
+          width,
+        ),
+      },
+    ];
+  // An input gate takes a typed value, which this card does not: say where the answer goes instead of offering a key for it.
+  const hint = humanGateResumeHints(gate.runId, gate.gateId, gate.gateType)[0];
+  return [
+    {
+      role: 'fact',
+      text: clipLine(
+        `This gate takes a typed value, which this card cannot take.${hint === undefined ? '' : ` ${hint}`}`,
+        width,
+      ),
+    },
+  ];
+}
+
+/** How many excluded-candidate notices a budget card shows; the rest are counted. */
+export const RUN_CARD_EXCLUDED_ROWS = 3;
+
+/** The words for an allowance that cannot be approved. */
+function abortOnlyWords(
+  allowance: Exclude<RunBudgetGate['allowance'], { kind: 'amount' }>,
+): string {
+  if (allowance.kind === 'legacy')
+    return 'This legacy budget gate has no frozen allowance, so it can only be aborted here.';
+  return allowance.reason === 'unpriced'
+    ? 'This execution has no priced allowance, so it can only be aborted.'
+    : 'This execution allowance cannot be represented safely, so it can only be aborted.';
+}
+
+/**
+ * What a budget gate shows ([ADR-0097](../../../../../docs/decisions/0097-a-budget-approval-is-an-allowance-not-an-exemption.md),
+ * ADR-0139 §4): the frozen allowance from the gate's structured field and nothing else (no figure is read from a message, a node name or
+ * an excluded notice), what approving it funds, the excluded candidates behind the gutter, and what aborting does. An allowance that
+ * cannot be approved says so instead of showing an amount.
+ */
+function budgetRows(gate: RunBudgetGate, width: number): readonly RunCardRow[] {
+  const allowance = gate.allowance;
+  const rows: RunCardRow[] = [];
+  if (allowance.kind === 'amount') {
+    rows.push(
+      {
+        role: 'amount',
+        text: clipLine(
+          `Frozen allowance: ${formatCostUsd(allowance.microcents)} (${String(allowance.microcents)} microcents)`,
+          width,
+        ),
+      },
+      {
+        role: 'fact',
+        text: clipLine('Approval funds this agent execution only, for exactly this amount.', width),
+      },
+    );
+  } else {
+    rows.push({ role: 'warn', text: clipLine(abortOnlyWords(allowance), width) });
+  }
+  const excluded = budgetPromptDetails(allowance);
+  for (const line of excluded.slice(0, RUN_CARD_EXCLUDED_ROWS))
+    rows.push({
+      role: 'author',
+      text: clipLine(`${RUN_CARD_GUTTER}${authorLine(line)}`, width),
+    });
+  if (excluded.length > RUN_CARD_EXCLUDED_ROWS)
+    rows.push({
+      role: 'fact',
+      text: clipLine(
+        `${RUN_CARD_GUTTER}… ${String(excluded.length - RUN_CARD_EXCLUDED_ROWS)} more excluded`,
+        width,
+      ),
+    });
+  rows.push({
+    role: 'fact',
+    text: clipLine('Aborting dispatches no agent and fails the run (budget_exceeded).', width),
+  });
+  return rows;
+}
+
+/** The facts under the author's message: where the gate sits, its deadline, and what an answer does. */
+function gateFacts(gate: RunCardGate, width: number, overdue: boolean): readonly RunCardRow[] {
   const rows: RunCardRow[] = [
     {
       role: 'fact',
       text: clipLine(
-        `node ${sanitizeInline(gate.nodeId)} · ${sanitizeInline(gate.gateType)} gate` +
+        `node ${sanitizeInline(gate.nodeId)} · ${gateKind(gate)} gate` +
           (gate.expiresAt === undefined || overdue
             ? ''
             : ` · expires ${sanitizeInline(gate.expiresAt)}`),
@@ -553,38 +699,8 @@ function gateFacts(gate: RunGate, width: number, overdue: boolean): readonly Run
       ),
     },
   ];
-  if (overdue) {
-    rows.push(
-      {
-        role: 'warn',
-        text: clipLine(`Overdue since ${sanitizeInline(gate.expiresAt ?? '')}.`, width),
-      },
-      { role: 'warn', text: clipLine(policyWords(gate), width) },
-      {
-        role: 'fact',
-        text: clipLine(
-          'Your answer is still taken; if another process settled it first, this says so.',
-          width,
-        ),
-      },
-    );
-  }
-  if (gate.accepts.includes('approved')) {
-    rows.push({
-      role: 'fact',
-      text: clipLine('Rejecting does not stop the run: the workflow routes on a rejection.', width),
-    });
-  } else {
-    // An input gate takes a typed value, which this card does not: say where the answer goes instead of offering a key for it.
-    const hint = humanGateResumeHints(gate.runId, gate.gateId, gate.gateType)[0];
-    rows.push({
-      role: 'fact',
-      text: clipLine(
-        `This gate takes a typed value, which this card cannot take.${hint === undefined ? '' : ` ${hint}`}`,
-        width,
-      ),
-    });
-  }
+  if (overdue) rows.push(...overdueRows(gate, width));
+  rows.push(...(isBudgetGate(gate) ? budgetRows(gate, width) : humanGateNotes(gate, width)));
   return rows;
 }
 
@@ -602,7 +718,7 @@ function listRows(snapshot: RunCardSnapshot, width: number): readonly RunCardRow
     return {
       role: here ? 'cursor' : 'list',
       text: clipLine(
-        `${here ? '▸' : ' '} ${sanitizeInline(gate.gateId)} · ${sanitizeInline(gate.gateType)} · node ${sanitizeInline(gate.nodeId)}`,
+        `${here ? '▸' : ' '} ${sanitizeInline(gate.gateId)} · ${gateKind(gate)} · node ${sanitizeInline(gate.nodeId)}`,
         width,
       ),
     };
@@ -652,8 +768,10 @@ export function projectRunCard(
   ];
   if (snapshot.phase === 'open' && gate !== undefined) {
     const gutter = RUN_CARD_GUTTER;
-    for (const line of messageRows(gate.message, Math.max(1, width - gutter.length)))
-      rows.push({ role: 'author', text: `${gutter}${line}` });
+    // A budget gate has no author text: what it shows is the host's own words and the structured allowance.
+    if (!isBudgetGate(gate))
+      for (const line of messageRows(gate.message, Math.max(1, width - gutter.length)))
+        rows.push({ role: 'author', text: `${gutter}${line}` });
     rows.push(...gateFacts(gate, width, overdue));
     rows.push(...listRows(snapshot, width));
   }

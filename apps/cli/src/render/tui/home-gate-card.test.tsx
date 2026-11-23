@@ -1,0 +1,491 @@
+/**
+ * The gate and budget cards of the Home, from the Attention rows and from the run view
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §4), through a mounted `RootApp` and real
+ * stdin bytes: a paused run of this project is a row of the landing, `↓` and `Enter` open its card, `Ctrl+Y` answers the gate once and only
+ * when the card has been painted, and `Esc` and `Ctrl+C` close the card and decide nothing.
+ *
+ * `run-card-keys.test.ts` owns the card's guard, `home-budget-card.test.ts` the budget card's words and `home-attention.test.ts` the rows'
+ * read; this file owns the wiring above them. The run host and the reads are scripted: no engine is built and no operator home is read.
+ */
+import { cleanup, render } from 'ink-testing-library';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { HomeSnapshot } from '../../home/home-store.js';
+import type { RunGates } from '../../home/run-gates.js';
+import type { HostedLaunch, HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
+import { flush, settleFrames } from './harness-util.js';
+import { RootApp } from './home-app.js';
+import type { ParkedRunRow } from './home-attention.js';
+import { createHomeController, type HomeGateCardsPort } from './home-controller.js';
+import type { ApprovalGuard } from './tool-review-model.js';
+
+afterEach(cleanup);
+
+const RUN = 'run-0001';
+const CTRL_C = '\x03';
+const CTRL_Y = '\x19';
+const DOWN = '\x1b[B';
+const ENTER = '\r';
+const ESC = '\x1b';
+/** Every guard layer off: the tests of the guard are `run-card-keys.test.ts`'s, and what is left here is the painted frame. */
+const OFF: ApprovalGuard = { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 };
+
+/**
+ * Poll until `predicate` holds, in real time, and FAIL when it does not: a lone `Esc` byte is held back by ink for its escape-sequence
+ * window, so a bounded count of macrotask yields is not enough for it, and a wait that gave up quietly would let a stale frame be asserted.
+ */
+async function eventually(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('the condition was not reached in time');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+const EMPTY: HomeSnapshot = {
+  attention: { gates: [], failedRuns: [] },
+  recentSessions: [],
+  recentRuns: [],
+  recentAgents: [],
+  unreadableRunIds: [],
+  isEmpty: true,
+};
+const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+const PAUSED_END: HostedLegEnd = {
+  leg: 'start',
+  runId: RUN,
+  terminal: {
+    disposition: 'paused',
+    safety: undefined,
+    headline: `Run ${RUN} is paused at a gate.`,
+    remedy: undefined,
+  },
+  handedOff: true,
+  retirement: 'retired',
+  fault: undefined,
+};
+const PARKED_HOST: RunHostSnapshot = { launching: false, active: undefined, last: PAUSED_END };
+
+const ROW: ParkedRunRow = { runId: RUN, kind: 'approval', gates: 1 };
+const APPROVAL_RUN: RunGates = {
+  runId: RUN,
+  workflowId: 'wf',
+  gates: [
+    {
+      runId: RUN,
+      gateId: 'g1',
+      nodeId: 'review-step',
+      gateType: 'approval',
+      message: 'Ship the release?',
+      accepts: ['approved', 'rejected'],
+    },
+  ],
+  budgetGates: [],
+  degraded: false,
+};
+const BUDGET_RUN: RunGates = {
+  runId: RUN,
+  workflowId: 'wf',
+  gates: [],
+  budgetGates: [
+    { gateId: 'b1', nodeId: 'writer', allowance: { kind: 'amount', microcents: 4_200_000 } },
+  ],
+  degraded: false,
+};
+
+const STARTED: HostedLaunch = {
+  kind: 'started',
+  leg: 'resume',
+  runId: RUN,
+  ended: new Promise(() => undefined),
+};
+
+interface Options {
+  readonly rows?: readonly ParkedRunRow[];
+  /** What the log says when the card opens: `undefined` is a run that is not parked here. */
+  readonly run?: RunGates | undefined;
+  readonly guard?: ApprovalGuard;
+  readonly host?: RunHostSnapshot;
+  readonly size?: { cols: number; rows: number };
+  readonly snapshot?: HomeSnapshot;
+  readonly reply?: HostedLaunch;
+}
+
+function mount(options: Options = {}) {
+  const resume = vi.fn(() => Promise.resolve(options.reply ?? STARTED));
+  const rows = options.rows ?? [ROW];
+  const run = 'run' in options ? options.run : APPROVAL_RUN;
+  const list = vi.fn((): readonly ParkedRunRow[] => rows);
+  const gateCards: HomeGateCardsPort = {
+    list,
+    read: (runId) => (runId === RUN ? run : undefined),
+    resume,
+    guard: options.guard ?? OFF,
+  };
+  const controller = createHomeController({
+    doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
+    startChat: () => new Promise(() => {}),
+    homeStore: { read: () => options.snapshot ?? EMPTY },
+    hostedRuns: {
+      snapshot: () => options.host ?? IDLE,
+      cancel: () => false,
+      close: () => Promise.resolve(),
+    },
+    gateCards,
+    schedule: () => () => {},
+    onExit: vi.fn(),
+    onError: vi.fn(),
+  });
+  const size = options.size ?? { cols: 100, rows: 30 };
+  const harness = render(
+    <RootApp
+      controller={controller}
+      nowMs={() => 0}
+      color={false}
+      getSize={() => size}
+      subscribeResize={() => () => {}}
+    />,
+  );
+  const frame = (): string => harness.lastFrame() ?? '';
+  return { controller, harness, resume, list, frame };
+}
+
+type Mounted = ReturnType<typeof mount>;
+
+/** Open the card of the first parked row with the keys a person presses: `↓` onto the row, then `Enter`. */
+async function openCard(m: Mounted): Promise<void> {
+  await settleFrames();
+  m.harness.stdin.write(DOWN);
+  await eventually(() => m.controller.getSnapshot().parkedFocus !== undefined);
+  // `Enter` on a row counts only once the frame that shows the focus is on screen.
+  await eventually(() => m.frame().includes('Enter opens'));
+  await settleFrames();
+  m.harness.stdin.write(ENTER);
+  await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
+  await eventually(() => m.frame().includes('waiting for you'));
+}
+
+/** Press `Ctrl+Y` until the card takes it: a key before the card's frame was measured and flushed is refused, and the next one is not. */
+async function answerOnceThePaintLanded(m: Mounted): Promise<void> {
+  for (let attempt = 0; attempt < 200 && m.resume.mock.calls.length === 0; attempt += 1) {
+    m.harness.stdin.write(CTRL_Y);
+    await flush();
+  }
+}
+
+describe('the Attention rows', () => {
+  it('a paused run of this project is one row: its id, its gate kind and the key that selects it, under the heading', async () => {
+    const m = mount();
+    await settleFrames();
+    const frame = m.frame();
+    expect(frame).toContain('Attention required');
+    expect(frame).toContain('‖ run-0001  ·  approval gate  ·  ↓ selects');
+    expect(frame).toContain('↓ Open a parked run');
+    expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
+  });
+
+  it('there is no row, no heading and no hint for it when nothing is paused', async () => {
+    const m = mount({ rows: [] });
+    await settleFrames();
+    const frame = m.frame();
+    expect(frame).not.toContain('‖');
+    expect(frame).not.toContain('Attention required');
+    expect(frame).not.toContain('Open a parked run');
+    expect(frame).toContain('Welcome to Relavium.');
+  });
+
+  it('`↓` at the empty prompt moves onto the row, which then names Enter, and `Esc` returns to the prompt', async () => {
+    const m = mount();
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('> ‖ run-0001  ·  approval gate  ·  Enter opens'));
+    expect(m.frame()).toContain('Enter open the gate');
+    expect(m.controller.getSnapshot().parkedFocus).toBe(RUN);
+    m.harness.stdin.write(ESC);
+    await eventually(() => m.controller.getSnapshot().parkedFocus === undefined);
+    await eventually(() => m.frame().includes('↓ selects'));
+    expect(m.frame()).not.toContain('Enter opens');
+  });
+
+  it('the strip`s own gate row of the same run is not repeated beside it', async () => {
+    const m = mount({
+      snapshot: {
+        ...EMPTY,
+        isEmpty: false,
+        attention: {
+          gates: [
+            {
+              runId: RUN,
+              workflowSlug: 'deploy',
+              gateId: 'g1',
+              gateType: 'approval',
+              nodeId: 'review-step',
+              message: 'Ship the release?',
+              expiresAt: undefined,
+            },
+          ],
+          failedRuns: [],
+        },
+      },
+    });
+    await settleFrames();
+    const lines = m
+      .frame()
+      .split('\n')
+      .filter((line) => line.includes('⚠') || line.includes('‖'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('‖ run-0001');
+    expect(m.frame()).not.toContain('Ship the release?');
+  });
+});
+
+describe('opening the card', () => {
+  it('`Enter` on the focused row opens the card in front of the landing: the message behind the gutter, the gate and the keys', async () => {
+    const m = mount();
+    await openCard(m);
+    const frame = m.frame();
+    expect(frame).toContain('‖ waiting for you  ·  run run-0001');
+    expect(frame).toContain('│ Ship the release?');
+    expect(frame).toContain('node review-step · approval gate');
+    expect(frame).toContain('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    expect(frame).not.toContain('Attention required');
+    expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card', back: 'landing' });
+  });
+
+  it('a run that is no longer parked here opens nothing and says so', async () => {
+    const m = mount({ run: undefined });
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('Enter opens'));
+    await settleFrames();
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().notice !== undefined);
+    expect(m.controller.getSnapshot().screen).toBeUndefined();
+    expect(m.controller.getSnapshot().notice).toContain(
+      'is not parked in this directory any more.',
+    );
+  });
+
+  it('a parked run with no gate to decide opens no card and points at `relavium status`', async () => {
+    const m = mount({
+      rows: [{ runId: RUN, kind: 'none', gates: 0 }],
+      run: { runId: RUN, workflowId: 'wf', gates: [], budgetGates: [], degraded: false },
+    });
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('Enter says why'));
+    await settleFrames();
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().notice !== undefined);
+    expect(m.controller.getSnapshot().screen).toBeUndefined();
+    expect(m.controller.getSnapshot().notice).toContain('no gate to decide here');
+    expect(m.controller.getSnapshot().notice).toContain('relavium status run-0001');
+  });
+
+  it('a run that ended parked offers its card from the run view: the key line says so, `Enter` opens it, `Esc` returns to the view', async () => {
+    const m = mount({ host: PARKED_HOST });
+    await settleFrames();
+    expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
+    await eventually(() => m.frame().includes('Enter opens the gate'));
+    expect(m.frame()).toContain('Enter opens the gate · Esc / Ctrl+C close');
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
+    await eventually(() => m.frame().includes('waiting for you'));
+    expect(m.controller.getSnapshot().screen).toMatchObject({ back: 'run-view' });
+    m.harness.stdin.write(ESC);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'run-view');
+    await eventually(() => m.frame().includes('paused'));
+    expect(m.resume).not.toHaveBeenCalled();
+  });
+
+  it('a run view of a run that did not end parked offers no gate: `Enter` does nothing there', async () => {
+    const m = mount({
+      host: {
+        launching: false,
+        active: undefined,
+        last: { ...PAUSED_END, terminal: { ...PAUSED_END.terminal, disposition: 'completed' } },
+      },
+    });
+    await settleFrames();
+    m.controller.openScreen('run-view', { runId: RUN });
+    await eventually(() => m.frame().includes('completed'));
+    expect(m.frame()).not.toContain('Enter opens the gate');
+    m.harness.stdin.write(ENTER);
+    await settleFrames();
+    expect(m.controller.getSnapshot().screen?.kind).toBe('run-view');
+  });
+});
+
+describe('Ctrl+Y answers the gate once', () => {
+  it('through the run host`s resume, as a human gate answer, and the card then says the run continues; a second key answers nothing', async () => {
+    const m = mount();
+    await openCard(m);
+    await answerOnceThePaintLanded(m);
+    expect(m.resume).toHaveBeenCalledOnce();
+    expect(m.resume).toHaveBeenCalledWith({
+      runId: RUN,
+      gate: 'g1',
+      kind: 'human',
+      decision: { decision: 'approved', decidedBy: 'cli' },
+    });
+    await eventually(() => m.frame().includes('Answered. The run continues in the background.'));
+    for (let press = 0; press < 5; press += 1) {
+      m.harness.stdin.write(CTRL_Y);
+      await flush();
+    }
+    expect(
+      m.resume,
+      'a gate that was answered leaves the card: no key answers it again',
+    ).toHaveBeenCalledOnce();
+  });
+
+  it('a budget card answers as a budget resume with exactly the frozen allowance', async () => {
+    const m = mount({ rows: [{ runId: RUN, kind: 'budget', gates: 1 }], run: BUDGET_RUN });
+    await openCard(m);
+    expect(m.frame()).toContain('Frozen allowance: $0.0420 (4200000 microcents)');
+    await answerOnceThePaintLanded(m);
+    expect(m.resume).toHaveBeenCalledOnce();
+    expect(m.resume).toHaveBeenCalledWith({
+      runId: RUN,
+      gate: 'b1',
+      kind: 'budget',
+      decision: { decision: 'approved', decidedBy: 'cli', approvedAmountMicrocents: 4_200_000 },
+    });
+  });
+
+  it('an unpriced budget card offers Abort only: Ctrl+Y answers nothing, however long it is pressed', async () => {
+    const m = mount({
+      rows: [{ runId: RUN, kind: 'budget', gates: 1 }],
+      run: {
+        ...BUDGET_RUN,
+        budgetGates: [
+          {
+            gateId: 'b1',
+            nodeId: 'writer',
+            allowance: { kind: 'reject_only', reason: 'unpriced' },
+          },
+        ],
+      },
+    });
+    await openCard(m);
+    expect(m.frame()).toContain('no priced allowance');
+    expect(m.frame()).toContain('Ctrl+N aborts · Esc leaves it pending');
+    expect(m.frame()).not.toContain('Ctrl+Y');
+    for (let press = 0; press < 20; press += 1) {
+      m.harness.stdin.write(CTRL_Y);
+      await flush();
+    }
+    expect(m.resume).not.toHaveBeenCalled();
+  });
+});
+
+describe('a card that has not been painted refuses an answer', () => {
+  it('a Ctrl+Y in the same breath as the Enter that opened the card is refused: the frame was not on screen yet', async () => {
+    const m = mount();
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('Enter opens'));
+    await settleFrames();
+    m.harness.stdin.write(ENTER);
+    m.harness.stdin.write(CTRL_Y);
+    await eventually(() => m.frame().includes('waiting for you'));
+    expect(m.resume, 'refused: nothing was answered').not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card' });
+    // The gate is still open and answers once its frame has been painted.
+    await answerOnceThePaintLanded(m);
+    expect(m.resume).toHaveBeenCalledOnce();
+  });
+
+  it('with no frame evidence bound at all, the card never takes an approval (controller only: nothing paints)', async () => {
+    const resume = vi.fn(() => Promise.resolve(STARTED));
+    const controller = createHomeController({
+      doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
+      startChat: () => new Promise(() => {}),
+      homeStore: { read: () => EMPTY },
+      gateCards: { list: () => [ROW], read: () => APPROVAL_RUN, resume, guard: OFF },
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    controller.handleKey('', { downArrow: true });
+    controller.handleKey('', { return: true });
+    expect(controller.getSnapshot().screen?.kind).toBe('gate-card');
+    controller.handleKey('y', { ctrl: true });
+    await flush();
+    expect(resume).not.toHaveBeenCalled();
+    // Evidence that the exact frame is on screen is what makes the chord count.
+    controller.bindGateCardFrame(() => true);
+    const screen = controller.getSnapshot().screen;
+    if (screen?.kind === 'gate-card') screen.card.shown(screen.card.getSnapshot());
+    controller.handleKey('y', { ctrl: true });
+    await flush();
+    expect(resume).toHaveBeenCalledOnce();
+  });
+
+  it('below 80×24 no chord is delivered to the card, and the card is the enlarge line and the keys', async () => {
+    const m = mount({ size: { cols: 60, rows: 20 } });
+    await settleFrames();
+    // The landing is not drawn below the minimum, so the card is opened through the controller (the keys that reach it are the point).
+    m.controller.handleKey('', { downArrow: true });
+    m.controller.handleKey('', { return: true });
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
+    await eventually(() => m.frame().includes('Terminal too small (60×20)'));
+    for (let press = 0; press < 10; press += 1) {
+      m.harness.stdin.write(CTRL_Y);
+      await flush();
+    }
+    expect(m.resume).not.toHaveBeenCalled();
+    expect(m.frame()).not.toContain('Ship the release?');
+  });
+});
+
+describe('Esc and Ctrl+C close the card and decide nothing', () => {
+  it('Esc closes the card and the run stays parked: nothing is answered, and its row is back', async () => {
+    const m = mount();
+    await openCard(m);
+    await settleFrames(8);
+    m.harness.stdin.write(ESC);
+    // Either outcome ends the wait, so a card that ANSWERED on Esc fails the assertions below instead of timing out.
+    await eventually(
+      () => m.controller.getSnapshot().screen === undefined || m.resume.mock.calls.length > 0,
+    );
+    expect(m.resume, 'Esc decides nothing').not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().screen).toBeUndefined();
+    await eventually(() => m.frame().includes('Attention required'));
+    expect(m.frame()).toContain('‖ run-0001');
+    expect(m.controller.getSnapshot().parkedRuns).toEqual([ROW]);
+  });
+
+  it('Ctrl+C on the card closes it too: nothing is answered and the interrupt keymap is not armed', async () => {
+    const m = mount();
+    await openCard(m);
+    await settleFrames(8);
+    m.harness.stdin.write(CTRL_C);
+    await eventually(() => m.controller.getSnapshot().screen === undefined);
+    expect(m.resume).not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().interruptArmed).toBe(false);
+    expect(m.frame()).not.toContain('Press Ctrl+C again to exit');
+  });
+
+  it('a card closed while an answer is in flight does not take the answer back, and the closed card answers nothing more', async () => {
+    const m = mount({ reply: STARTED });
+    await openCard(m);
+    await answerOnceThePaintLanded(m);
+    m.harness.stdin.write(ESC);
+    await eventually(() => m.controller.getSnapshot().screen === undefined);
+    expect(m.resume).toHaveBeenCalledOnce();
+    m.harness.stdin.write(CTRL_Y);
+    await flush();
+    expect(m.resume).toHaveBeenCalledOnce();
+  });
+
+  it('a paste into the card answers nothing, even a pasted letter that is a chord`s', async () => {
+    const m = mount();
+    await openCard(m);
+    await settleFrames(8);
+    m.controller.handlePaste('y');
+    m.controller.handlePaste('\x19');
+    await flush();
+    expect(m.resume).not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().screen?.kind).toBe('gate-card');
+  });
+});

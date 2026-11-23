@@ -33,7 +33,13 @@ import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
-import type { RunHost, RunHostSnapshot } from '../../home/run-host.js';
+import type {
+  HostedLaunch,
+  HostedResumeRequest,
+  RunHost,
+  RunHostSnapshot,
+} from '../../home/run-host.js';
+import { cardGatesOf, type RunGates } from '../../home/run-gates.js';
 import type { RunNotices } from '../../home/run-notices.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
@@ -113,8 +119,12 @@ import {
 } from './tui-constants.js';
 import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
 import type { RunStore } from './run-store.js';
-import { runScreenLeg } from './run-screen.js';
+import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
+import type { ParkedRunRow } from './home-attention.js';
+import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
+import type { ApprovalGuard } from './tool-review-model.js';
+import { sanitizeInline } from '../sanitize.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -250,6 +260,16 @@ export interface HomeControllerState {
    * reset ({@link HomeController.closeScreen}): the six overlays above are not moved into it, and are never open while it is.
    */
   readonly screen: HomeScreen | undefined;
+  /**
+   * This project's parked runs, one row each ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §7): what
+   * the landing's Attention rows show. Re-read when the landing is shown again and when the run host's state changes; empty with no
+   * {@link HomeControllerDeps.gateCards}.
+   */
+  readonly parkedRuns: readonly ParkedRunRow[];
+  /** The parked run the person has moved onto with `↓` at the empty prompt (`Enter` opens its card), or `undefined` for none. */
+  readonly parkedFocus: string | undefined;
+  /** The Home can open a gate card (a port is wired): the run view of a parked run then offers `Enter`. */
+  readonly gateCards: boolean;
 }
 
 /**
@@ -263,12 +283,46 @@ export interface RunViewProps {
   readonly store?: RunStore | undefined;
 }
 
-/** The slot's contents: the run view of one run, with the notice ring as it was last read (re-read while a leg is live). */
-export interface HomeScreen {
+/** The run view of one run, with the notice ring as it was last read (re-read while a leg is live). */
+export interface RunViewScreen {
   readonly kind: 'run-view';
   readonly runId: string;
   readonly store: RunStore | undefined;
   readonly notices: readonly string[];
+}
+
+/**
+ * The gate or budget card of a parked run, in front of the landing or of the run view it was opened from
+ * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4). `Esc` and `Ctrl+C` close it and decide nothing; the
+ * view paints it from `card`'s own snapshots.
+ */
+export interface GateCardScreen {
+  readonly kind: 'gate-card';
+  readonly runId: string;
+  readonly card: RunCard;
+  /** Where closing the card returns to. */
+  readonly back: 'landing' | 'run-view';
+  /** A card has no live output and no notice ring: both read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
+/** The slot's contents. */
+export type HomeScreen = RunViewScreen | GateCardScreen;
+
+/**
+ * What the Home needs to show and answer the gates of the runs parked in its project: the reads, the answer and the numbers the
+ * card's chord guard runs on. `driveHome` wires the real ones (`readParkedRuns`, `readRunGates`, `createGateResumer` over the run host).
+ */
+export interface HomeGateCardsPort {
+  /** The project's parked runs, one row each. May throw; the Home then keeps the rows it has. */
+  readonly list: () => readonly ParkedRunRow[];
+  /** One run's open gates from its log now, or `undefined` when it is not parked in this project. */
+  readonly read: (runId: string) => RunGates | undefined;
+  /** Answer one gate: the run host's `resume` with the native flow around it (`createGateResumer`). */
+  readonly resume: (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch>;
+  /** The guard's numbers (default the product's own); `0` switches a layer off. A test uses it. */
+  readonly guard?: ApprovalGuard | undefined;
 }
 
 /**
@@ -367,6 +421,8 @@ export interface HomeControllerDeps {
   };
   /** The live output of a hosted run, for the run view to mount (`RunApp`); absent ⇒ the view says it has none. */
   readonly runStore?: ((runId: string) => RunStore | undefined) | undefined;
+  /** The gate and budget cards of this project's parked runs; absent ⇒ no Attention rows and no card. */
+  readonly gateCards?: HomeGateCardsPort | undefined;
   /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
   readonly exitGraceMs?: number;
   /**
@@ -422,11 +478,47 @@ export interface HomeController {
   readonly openScreen: (kind: 'run-view', props: RunViewProps) => boolean;
   /** Close the screen, if one is open, and drop the interrupt state it armed: the one reset of the slot. */
   readonly closeScreen: () => void;
+  /**
+   * The host's evidence that a gate card's exact snapshot is on screen, measured and flushed at 80×24 (`createGateCardFrame`). A card
+   * takes an affirmative chord only while this says so; with none bound, or `undefined`, it never does. `RootApp` binds it on mount.
+   */
+  readonly bindGateCardFrame: (
+    visible: ((snapshot: RunCardSnapshot) => boolean) | undefined,
+  ) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
 
 const NO_NOTICES: readonly string[] = Object.freeze([]);
+const NO_PARKED: readonly ParkedRunRow[] = Object.freeze([]);
+
+/** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
+function readParkedRows(
+  port: HomeGateCardsPort | undefined,
+  previous: readonly ParkedRunRow[],
+): readonly ParkedRunRow[] {
+  if (port === undefined) return previous;
+  try {
+    return port.list();
+  } catch {
+    return previous;
+  }
+}
+
+function sameParkedRows(a: readonly ParkedRunRow[], b: readonly ParkedRunRow[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((row, index) => {
+      const other = b[index];
+      return (
+        other !== undefined &&
+        row.runId === other.runId &&
+        row.kind === other.kind &&
+        row.gates === other.gates
+      );
+    })
+  );
+}
 
 /**
  * What changed in a run host's snapshot, as one string: the controller publishes a new snapshot only when this differs, so the
@@ -476,6 +568,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     hostedRun: undefined,
     exitGuard: undefined,
     screen: undefined,
+    parkedRuns: readParkedRows(deps.gateCards, NO_PARKED),
+    parkedFocus: undefined,
+    gateCards: deps.gateCards !== undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -656,11 +751,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const readNotices = (): readonly string[] => deps.hostedRuns?.notices?.snapshot() ?? NO_NOTICES;
   /** `screen` with the notice ring as it is now: the same object when nothing changed, so an idle read never repaints. */
   const withFreshNotices = (screen: HomeScreen): HomeScreen => {
+    if (screen.kind !== 'run-view') return screen; // a card has no notice ring
     const notices = readNotices();
     return notices.length === screen.notices.length &&
       notices.every((line, index) => line === screen.notices[index])
       ? screen
       : { ...screen, notices };
+  };
+  /**
+   * The parked runs as the log says now, as a patch for `set`: empty when nothing changed (so an unchanged strip is never repainted), and
+   * dropping the focus from a run that is no longer parked. Read when the landing is shown again and when the run host's state changes.
+   */
+  const parkedPatch = (): Partial<HomeControllerState> => {
+    if (deps.gateCards === undefined) return {};
+    const read = readParkedRows(deps.gateCards, state.parkedRuns);
+    const parkedRuns = sameParkedRows(read, state.parkedRuns) ? state.parkedRuns : read;
+    const parkedFocus = parkedRuns.some((row) => row.runId === state.parkedFocus)
+      ? state.parkedFocus
+      : undefined;
+    return parkedRuns === state.parkedRuns && parkedFocus === state.parkedFocus
+      ? {}
+      : { parkedRuns, parkedFocus };
   };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
   const refreshHostedRun = (): void => {
@@ -670,8 +781,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const hostedChanged = hostedKey(snapshot) !== hostedKey(state.hostedRun);
     const screen = state.screen === undefined ? undefined : withFreshNotices(state.screen);
     const screenChanged = screen !== state.screen;
-    if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen });
-    else if (hostedChanged) set({ hostedRun: snapshot });
+    // A leg that started, paused or ended changes which runs are parked: the Attention rows follow it.
+    const parked = hostedChanged ? parkedPatch() : {};
+    if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen, ...parked });
+    else if (hostedChanged) set({ hostedRun: snapshot, ...parked });
     else if (screenChanged) set({ screen });
     if (hostedLeg(snapshot) !== 'none') watchHostedRun();
     else if (state.exitGuard === 'stopping') finishExit(false);
@@ -728,29 +841,39 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     state.search !== undefined ||
     state.mention !== undefined ||
     state.effortPicker !== undefined;
-  const openScreen = (kind: 'run-view', props: RunViewProps): boolean => {
-    if (exiting || state.exitGuard !== undefined || state.mode !== 'home' || overlayOpen())
-      return false;
+  /** Whether the slot may take a screen now: the Home is the landing, with no overlay, no exit-guard card and no ending. */
+  const slotAdmits = (): boolean =>
+    !exiting && state.exitGuard === undefined && state.mode === 'home' && !overlayOpen();
+  /** The ONE place a screen enters the slot: the interrupt state is dropped, and the strip and the screen read one host snapshot. */
+  const putScreen = (screen: HomeScreen): void => {
     disarmInterrupt();
-    // The strip and the view read ONE snapshot: the view's state and the strip's `▶` row must never disagree for a frame.
     const snapshot = deps.hostedRuns?.snapshot();
     const hosted =
       snapshot !== undefined && hostedKey(snapshot) !== hostedKey(state.hostedRun)
         ? { hostedRun: snapshot }
         : {};
-    set({
-      screen: { kind, runId: props.runId, store: props.store, notices: readNotices() },
-      continueSessionId: undefined,
-      ...hosted,
-    });
+    set({ screen, continueSessionId: undefined, ...hosted });
     // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
     if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
+  };
+  const runViewScreen = (runId: string, store: RunStore | undefined): RunViewScreen => ({
+    kind: 'run-view',
+    runId,
+    store,
+    notices: readNotices(),
+  });
+  const openScreen = (kind: 'run-view', props: RunViewProps): boolean => {
+    if (!slotAdmits()) return false;
+    putScreen({ ...runViewScreen(props.runId, props.store), kind });
     return true;
   };
   const closeScreen = (): void => {
-    if (state.screen === undefined) return;
+    const screen = state.screen;
+    if (screen === undefined) return;
+    if (screen.kind === 'gate-card') screen.card.dispose();
     disarmInterrupt();
-    set({ screen: undefined });
+    // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
+    set({ screen: undefined, ...parkedPatch() });
   };
   /** The run view's second `Ctrl+C`: ask the host for the cooperative cancel and publish that the leg is now cancelling. */
   const cancelHostedRun = (): void => {
@@ -767,11 +890,99 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (runId === undefined) return false;
     return openScreen('run-view', { runId, store: deps.runStore?.(runId) });
   };
-  /** A key at a screen. `Esc` is the run view's only key, and it only closes the view: the leg is not asked for anything. */
-  const routeScreenKey = (screen: HomeScreen, key: HomeKey & ChatKey & PaletteKey): void => {
+
+  // ---- The gate and budget cards (ADR-0139 §4) -------------------------------------------------------------------------------
+  // A card is a screen of the slot, opened from an Attention row (`Enter` on the row `↓` moved onto) or from the run view of a run that
+  // ended parked (`Enter`). It reads the run's gates from its log at that moment and holds them; it never re-reads them, because a
+  // re-read after an answer would find the gate still pending (the next leg has not claimed it yet) and offer it a second time. An answer
+  // that arrives after another process decided the gate is answered by the host with what the log holds, and the card says so.
+  let gateCardVisible: ((snapshot: RunCardSnapshot) => boolean) | undefined;
+  /** One refresh after an answer went out: the strip shows the leg it started, and the rows follow the run's state. */
+  const afterAnswer = (): void => {
+    if (exiting) return;
+    try {
+      refreshHostedRun();
+    } catch (error) {
+      failHome(error);
+    }
+  };
+  const answerGate = (request: Omit<HostedResumeRequest, 'secrets'>): Promise<HostedLaunch> => {
+    const port = deps.gateCards;
+    if (port === undefined) return Promise.reject(new Error('no gate cards are wired'));
+    const reply = port.resume(request);
+    afterAnswer(); // the host latched its launch synchronously: the strip shows `starting` from here
+    return reply.finally(afterAnswer);
+  };
+  const notParked = (runId: string, why: string): void => {
+    set({ notice: `Run ${sanitizeInline(runId)} ${why}`, ...parkedPatch() });
+  };
+  const openGateCard = (runId: string, back: GateCardScreen['back']): boolean => {
+    const port = deps.gateCards;
+    if (port === undefined || !slotAdmits()) return false;
+    let run: RunGates | undefined;
+    try {
+      run = port.read(runId);
+    } catch {
+      notParked(runId, 'could not be read. `relavium status` shows what it waits for.');
+      return false;
+    }
+    if (run === undefined) {
+      notParked(runId, 'is not parked in this directory any more.');
+      return false;
+    }
+    const gates = cardGatesOf(run);
+    if (gates.length === 0) {
+      notParked(
+        runId,
+        `is parked with no gate to decide here. \`relavium status ${sanitizeInline(runId)}\` shows what it waits for.`,
+      );
+      return false;
+    }
+    const card = createRunCard({
+      runId: run.runId,
+      gates,
+      resume: answerGate,
+      ...(deps.now === undefined ? {} : { now: deps.now }),
+      ...(port.guard === undefined ? {} : { guard: port.guard }),
+      painted: (snapshot) => gateCardVisible?.(snapshot) === true,
+    });
+    putScreen({ kind: 'gate-card', runId: run.runId, card, back });
+    return true;
+  };
+  /** `Esc` and `Ctrl+C` on a card: it closes and decides nothing; the run view it came from, if any, is back in front. */
+  const closeGateCard = (screen: GateCardScreen): void => {
+    screen.card.dispose();
+    disarmInterrupt();
+    if (screen.back === 'run-view') {
+      set({ screen: runViewScreen(screen.runId, deps.runStore?.(screen.runId)), ...parkedPatch() });
+      return;
+    }
+    set({ screen: undefined, ...parkedPatch() });
+  };
+  /** Whether the run view of `runId` shows a run that ended parked, and a card can open for it. */
+  const viewOffersGate = (runId: string): boolean => {
+    if (deps.gateCards === undefined) return false;
+    const snapshot = deps.hostedRuns?.snapshot() ?? state.hostedRun;
+    return (
+      runScreenPhase(runId, snapshot) === 'settled' &&
+      snapshot?.last?.terminal.disposition === 'paused'
+    );
+  };
+  /** A key at a screen. `Esc` closes a run view and a card, and decides nothing; a card takes only its chords and `↑`/`↓`. */
+  const routeScreenKey = (
+    screen: HomeScreen,
+    input: string,
+    key: HomeKey & ChatKey & PaletteKey,
+  ): void => {
     switch (screen.kind) {
       case 'run-view':
         if (pressRunViewKey(key) === 'leave') closeScreen();
+        else if (key.return === true && viewOffersGate(screen.runId))
+          openGateCard(screen.runId, 'run-view');
+        return;
+      case 'gate-card':
+        if (key.escape === true) closeGateCard(screen);
+        else screen.card.input(input, key);
         return;
     }
   };
@@ -808,6 +1019,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           notice: undefined, // symmetric with errorText — no stale /doctor report leaks into the returned Home
           pendingMessage: '',
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
+          ...parkedPatch(), // and a run it left parked, or one answered meanwhile, in the refreshed Attention rows
           keyless: deps.providerSetup?.readKeyless?.() ?? state.keyless,
           mode: 'home',
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
@@ -2231,6 +2443,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // The run view's ladder (ADR-0139 §5). It asks the host about THE VIEW'S run now, not the poll's last read: a press that arrives a
   // moment after the leg ended must not cancel anything. The first press only arms; nothing is cancelled until the second.
   const handleScreenInterrupt = (screen: HomeScreen): void => {
+    if (screen.kind === 'gate-card') {
+      // `Ctrl+C` on a card is a close like `Esc`: it never answers, and it arms nothing (a card is not a run to cancel).
+      showInterruptHint(false);
+      closeGateCard(screen);
+      return;
+    }
     const leg = runScreenLeg(screen.runId, deps.hostedRuns?.snapshot() ?? state.hostedRun);
     const decision = pressRunViewInterrupt(interrupt, leg, interruptNow());
     interrupt = decision.state;
@@ -2349,6 +2567,42 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     applyChatAction(active, reduceChatKey(input, key, state.input.text, running));
   };
 
+  /**
+   * A key while a parked run is focused on the landing (`↓` at the empty prompt put it there). `↑`/`↓` move along the rows (`↓` past the last
+   * reaches the sessions, `↑` before the first returns to the prompt), `Enter` opens the focused run's card and `Esc` returns to the prompt.
+   * Returns whether the key was handled; any other key ends the focus and is then typed as usual.
+   */
+  const routeParkedFocusKey = (focus: string, key: HomeKey & ChatKey): boolean => {
+    const rows = state.parkedRuns;
+    const index = rows.findIndex((row) => row.runId === focus);
+    if (index < 0) {
+      set({ parkedFocus: undefined });
+      return false;
+    }
+    if (key.escape === true) {
+      set({ parkedFocus: undefined });
+      return true;
+    }
+    if (key.return === true) {
+      openGateCard(focus, 'landing');
+      return true;
+    }
+    if (key.upArrow === true) {
+      set({ parkedFocus: index === 0 ? undefined : rows[index - 1]?.runId });
+      return true;
+    }
+    if (key.downArrow === true) {
+      const next = rows[index + 1];
+      const firstSession = state.snapshot.recentSessions[0];
+      if (next !== undefined) set({ parkedFocus: next.runId });
+      else if (firstSession !== undefined)
+        set({ parkedFocus: undefined, continueSessionId: firstSession.sessionId });
+      return true;
+    }
+    set({ parkedFocus: undefined });
+    return false;
+  };
+
   const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
@@ -2359,6 +2613,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
     const sessions = state.snapshot.recentSessions;
     const focused = state.continueSessionId;
+    if (state.parkedFocus !== undefined && routeParkedFocusKey(state.parkedFocus, key)) return;
     if (focused !== undefined) {
       const index = sessions.findIndex((session) => session.sessionId === focused);
       if (key.escape === true) {
@@ -2379,6 +2634,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       set({ continueSessionId: undefined });
+    } else if (
+      key.downArrow === true &&
+      state.input.text.length === 0 &&
+      state.parkedRuns.length > 0
+    ) {
+      // The Attention rows come first: `↓` moves onto the newest parked run, and `↓` past the last one reaches the sessions.
+      set({ parkedFocus: state.parkedRuns[0]?.runId });
+      return;
     } else if (key.downArrow === true && state.input.text.length === 0 && sessions.length > 0) {
       set({ continueSessionId: sessions[0]?.sessionId });
       return;
@@ -2427,7 +2690,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     // The screen in front (ADR-0140 §1) owns every key that is left: no overlay is open while it is, and the prompt is not offered.
     if (state.screen !== undefined) {
-      routeScreenKey(state.screen, key);
+      routeScreenKey(state.screen, input, key);
       return;
     }
     // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
@@ -2497,6 +2760,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     openScreen,
     closeScreen,
+    bindGateCardFrame(visible) {
+      gateCardVisible = visible;
+    },
     openPermissionsAsCommand() {
       if (exiting) return;
       permissionsIsTheCommand = true;
@@ -2508,7 +2774,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (exiting || state.nativeActionBusy) return;
       disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
       if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
-      if (state.screen !== undefined) return; // a screen answers to keys only: a paste reaches neither it nor the prompt behind it
+      if (state.screen !== undefined) {
+        // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
+        // soon after it is refused.
+        if (state.screen.kind === 'gate-card') state.screen.card.paste(text);
+        return;
+      }
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
       // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
@@ -2526,6 +2797,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         input: insertAtCursor(state.input, pasted),
         notice: undefined,
         continueSessionId: undefined,
+        parkedFocus: undefined,
       });
     },
     async teardownActive() {

@@ -51,6 +51,8 @@ function rowProps(
     case 'fact':
     case 'keys':
       return dimProps(color);
+    case 'amount':
+      return { bold: true };
     case 'author':
     case 'list':
       return {};

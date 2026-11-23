@@ -2,6 +2,7 @@ import { decisionsForGateType } from '@relavium/core';
 import type { RunHistoryReader } from '@relavium/db';
 import type { GateDecision, HumanGatePausedEvent, RunEvent } from '@relavium/shared';
 
+import type { BudgetPromptContext } from '../gate/budget.js';
 import { pendingGateDisplays, type PendingBudgetGate } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
@@ -44,6 +45,48 @@ export interface RunGate {
   readonly timeoutAction?: RunGateTimeoutAction;
   /** The decision kinds this gate's type accepts (`decisionsForGateType`): nothing else is ever offered. */
   readonly accepts: readonly GateDecision['decision'][];
+}
+
+/**
+ * One open budget gate of a parked run, as the Home's card holds it ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4).
+ * The allowance is the log's own structured projection (`budgetPromptContext` of the frozen quote), never parsed from text, and the
+ * decisions it accepts follow from it: only a priced, representable allowance can be approved, and then only for exactly that amount.
+ */
+export interface RunBudgetGate {
+  readonly runId: string;
+  readonly gateId: string;
+  readonly nodeId: string;
+  /** What the log froze: an exact amount, a quote that can only be rejected, or a legacy gate with none. */
+  readonly allowance: BudgetPromptContext;
+  readonly expiresAt?: string;
+  /** `approved` is offered only for an `amount` allowance; every other allowance accepts a rejection (an abort) only. */
+  readonly accepts: readonly GateDecision['decision'][];
+}
+
+/** Any gate the Home's card can hold: a human gate or a budget gate. */
+export type RunCardGate = RunGate | RunBudgetGate;
+
+export function isBudgetGate(gate: RunCardGate): gate is RunBudgetGate {
+  return 'allowance' in gate;
+}
+
+/** The budget gates of `run` as the card holds them, in the order the log raised them. */
+export function budgetCardGates(run: RunGates): readonly RunBudgetGate[] {
+  return run.budgetGates.map(
+    (gate): RunBudgetGate => ({
+      runId: run.runId,
+      gateId: gate.gateId,
+      nodeId: gate.nodeId,
+      allowance: gate.allowance,
+      ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
+      accepts: gate.allowance.kind === 'amount' ? ['approved', 'rejected'] : ['rejected'],
+    }),
+  );
+}
+
+/** Every gate the card holds for `run`: its human gates, then its budget gates. */
+export function cardGatesOf(run: RunGates): readonly RunCardGate[] {
+  return [...run.gates, ...budgetCardGates(run)];
 }
 
 /** One parked run of this project and what it is waiting on. */

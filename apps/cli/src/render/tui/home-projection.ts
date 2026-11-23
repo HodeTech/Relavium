@@ -3,6 +3,7 @@ import type {
   HomeGateRow,
   HomeRunRow,
   HomeSessionRow,
+  HomeSnapshot,
 } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { sanitizeInline } from './chat-projection.js';
@@ -30,6 +31,14 @@ export function homeFitsTerminal(cols: number, rows: number): boolean {
     cols >= HOME_MIN_COLS &&
     rows >= HOME_MIN_ROWS
   );
+}
+
+/** Whether the Home has nothing to show: no session, run or attention row, and no parked run of this project either. */
+export function homeIsEmpty(
+  snapshot: HomeSnapshot,
+  parkedRuns: readonly unknown[] | undefined,
+): boolean {
+  return snapshot.isEmpty && (parkedRuns === undefined || parkedRuns.length === 0);
 }
 
 /** The single-line degrade shown (and held until a resize) when the terminal is below the Home minimum. */

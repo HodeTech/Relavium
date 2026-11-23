@@ -13,6 +13,7 @@ import {
   gateExpired,
   gateLabel,
   homeFitsTerminal,
+  homeIsEmpty,
   hostedRunLabel,
   runLabel,
   sessionLabel,
@@ -20,6 +21,7 @@ import {
   unreadableRunLabel,
   type ExitGuardPhase,
 } from './home-projection.js';
+import { parkedRunLabel, type ParkedRunRow } from './home-attention.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
@@ -70,7 +72,17 @@ interface HomeViewProps {
   /** The exit-guard card (ADR-0139 §6), open while the person is asked whether to leave with a run executing. It owns the bottom of
    *  the view, so the prompt and the hint bar are not drawn, and it holds the notice back until it is closed. */
   readonly exitGuard?: ExitGuardPhase | undefined;
+  /**
+   * The runs of THIS project that are parked ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, §7): one
+   * Attention row each, with the key that opens its card. A run that has a row here is not repeated by the strip's own gate rows or
+   * its *Continue* runs. Absent or empty ⇒ no such row.
+   */
+  readonly parkedRuns?: readonly ParkedRunRow[] | undefined;
+  /** The parked run `↓` moved onto (`Enter` opens its card), or `undefined`. */
+  readonly parkedFocus?: string | undefined;
 }
+
+const NO_PARKED: readonly ParkedRunRow[] = [];
 
 /**
  * The exit-guard card (ADR-0139 §6): a title line, what leaving does and the keys, each in words so it reads with colour off. It is
@@ -151,11 +163,17 @@ function homeHint(state: {
   readonly resuming: boolean;
   readonly emptyDraft: boolean;
   readonly hasRecentSessions: boolean;
+  readonly hasParkedRuns: boolean;
+  readonly parkedFocused: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
+  if (state.parkedFocused)
+    return '↑/↓ select · Enter open the gate · Esc return to prompt · Ctrl+C twice to exit';
   if (state.resuming)
     return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
   if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+  if (state.hasParkedRuns)
+    return '/ commands · ↓ Open a parked run · type a message to chat · Ctrl+C twice to exit';
   return state.hasRecentSessions
     ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
     : '/ for commands · type a message to start a chat · Ctrl+C twice to exit';
@@ -165,6 +183,10 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const { snapshot, editor, errorText, notice, nowMs, cols, rows, color, paletteOpen } = props;
   const interruptArmed = props.interruptArmed === true;
   const exitGuard = props.exitGuard;
+  const parked = props.parkedRuns ?? NO_PARKED;
+  const parkedIds = new Set(parked.map((row) => row.runId));
+  // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
+  const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
   useLayoutEffect(() => {
     props.onFrame?.(frame.current);
@@ -194,7 +216,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   // Reserve terminal space for the keyless action and prompt; trim management rows first.
   const showBanner = shouldShowBanner({
     configShowBanner: props.showBanner,
-    isEmpty: snapshot.isEmpty,
+    isEmpty,
     rows,
   });
   const promptHeight = homePromptRows(editor, cols);
@@ -213,7 +235,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     keyless: props.keyless === true,
     errorText,
     showBanner: props.showBanner,
-    isEmpty: snapshot.isEmpty,
+    isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
     reservedRows: runRows,
     ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
@@ -229,7 +251,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       runRows -
       (errorText === undefined ? 0 : 2) -
       (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) -
-      (snapshot.isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1),
+      (isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1),
   );
   let attentionRemaining = Math.max(
     0,
@@ -240,8 +262,19 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     attentionRemaining -= selected.length;
     return selected;
   };
+  // The parked runs of this project come first: they are the rows the person can act on from here. The window follows the focus, so the
+  // focused row is always one of the rows drawn.
+  const parkedFocusIndex = parked.findIndex((row) => row.runId === props.parkedFocus);
+  const parkedCapacity = Math.max(0, attentionRemaining);
+  const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
+  const parkedRows: StripRow[] = takeAttention(parked.slice(parkedStart)).map((row) => ({
+    key: `parked:${row.runId}`,
+    line: `${row.runId === props.parkedFocus ? '> ' : '  '}${parkedRunLabel(row, row.runId === props.parkedFocus)}`,
+  }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
-  const gateRows = takeAttention(snapshot.attention.gates).map((g) => ({
+  const gateRows = takeAttention(
+    snapshot.attention.gates.filter((g) => !parkedIds.has(g.runId)),
+  ).map((g) => ({
     key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
@@ -250,7 +283,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     key: r.runId,
     line: `✗ ${runLabel(r, nowMs)}`,
   }));
-  const attentionCount = unreadable.length + gateRows.length + failed.length;
+  const attentionCount = parkedRows.length + unreadable.length + gateRows.length + failed.length;
   if (attentionCount > 0) remaining -= attentionCount + 2;
   let continueHeading = false;
   const takeSection = <T,>(items: readonly T[], cost = 1): readonly T[] => {
@@ -275,7 +308,9 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       selected: s.sessionId === props.continueSessionId,
     }),
   );
-  const runs: StripRow[] = takeSection(snapshot.recentRuns).map((r) => ({
+  const runs: StripRow[] = takeSection(
+    snapshot.recentRuns.filter((r) => !parkedIds.has(r.runId)),
+  ).map((r) => ({
     key: r.runId,
     line: runLabel(r, nowMs),
   }));
@@ -316,7 +351,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       )}
 
-      {snapshot.isEmpty ? (
+      {isEmpty ? (
         noticeLayout === undefined ? (
           <Box flexDirection="column" marginLeft={2} marginTop={1}>
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
@@ -332,12 +367,20 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         ) : null
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {(gateRows.length > 0 || failed.length > 0 || unreadable.length > 0) && (
+          {(parkedRows.length > 0 ||
+            gateRows.length > 0 ||
+            failed.length > 0 ||
+            unreadable.length > 0) && (
             <Box flexDirection="column" marginBottom={1}>
               <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
                 Attention required
               </Text>
               <Box flexDirection="column" marginLeft={2}>
+                {parkedRows.map((row) => (
+                  <Text key={row.key} {...colorProps(color, 'yellow')} wrap="truncate-end">
+                    {row.line}
+                  </Text>
+                ))}
                 {/* #W15-15: a run whose event log cannot be read used to render as an ordinary run with
                     nothing pending. Its gate detail is MISSING, not absent, and the Home is where a user
                     comes to find out which run is broken. */}
@@ -428,6 +471,8 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               resuming: props.continueSessionId !== undefined,
               emptyDraft: editor.text.length === 0,
               hasRecentSessions: snapshot.recentSessions.length > 0,
+              hasParkedRuns: parked.length > 0,
+              parkedFocused: props.parkedFocus !== undefined,
             })}
           </Text>
         </Box>

@@ -32,10 +32,13 @@ import type { EditorState } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { HomeController } from './home-controller.js';
+import type { GateCardScreen, HomeController } from './home-controller.js';
+import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
 import { RunScreenView } from './run-screen-view.js';
-import { homeFitsTerminal, hostedRunLabel } from './home-projection.js';
+import { RunCardView } from './run-card-view.js';
+import { createGateCardFrame } from './gate-card-frame.js';
+import { homeFitsTerminal, homeIsEmpty, hostedRunLabel } from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
@@ -405,6 +408,35 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }),
   );
   useEffect(() => () => homeFrame.dispose(), [homeFrame]);
+  // The gate and budget card's own measured-frame evidence: the card takes an affirmative chord only while its exact snapshot is on
+  // screen, and its dwell counts from the first frame that was (ADR-0139 §4). The controller asks it through `bindGateCardFrame`.
+  const [cardFrame] = useState(() =>
+    createGateCardFrame({
+      current: () => {
+        const screen = controller.getSnapshot().screen;
+        return screen?.kind === 'gate-card' ? screen.card.getSnapshot() : undefined;
+      },
+      getSize: () => getSizeRef.current(),
+      hasCustody: () =>
+        propsRef.current.inputEnabled?.() !== false &&
+        propsRef.current.suspendPort?.isSuspended() !== true &&
+        propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+        stdout.writable !== false &&
+        !stdout.destroyed &&
+        !stdout.writableEnded,
+      shown: (snapshot) => {
+        const screen = controller.getSnapshot().screen;
+        if (screen?.kind === 'gate-card') screen.card.shown(snapshot);
+      },
+    }),
+  );
+  useEffect(() => {
+    controller.bindGateCardFrame(cardFrame.visible);
+    return () => {
+      controller.bindGateCardFrame(undefined);
+      cardFrame.dispose();
+    };
+  }, [controller, cardFrame]);
   const [noticeWindow, setNoticeWindow] = useState({
     revision: state.noticeRevision,
     cols: size.cols,
@@ -469,10 +501,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       subscribeResize(() => {
         nativeAcknowledgement?.invalidate();
         homeFrame.invalidate();
+        cardFrame.invalidate();
         controller.getSnapshot().session?.store.invalidateToolReview();
         setSize(getSize());
       }),
-    [subscribeResize, getSize, nativeAcknowledgement],
+    [subscribeResize, getSize, nativeAcknowledgement, cardFrame],
   );
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
@@ -663,7 +696,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
     const live = getSizeRef.current();
-    if (key.return && current.continueSessionId !== undefined && !homeFrame.visible(current))
+    // `Enter` on a row `↓` just moved onto (a session to resume, a parked run to open) counts only once that very frame is on screen: a
+    // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
+    if (
+      key.return &&
+      (current.continueSessionId !== undefined || current.parkedFocus !== undefined) &&
+      !homeFrame.visible(current)
+    )
       return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
       // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
@@ -675,6 +714,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             (current.exitGuard !== undefined && (input === 'y' || input === 'n'))))
       )
         controller.handleKey(input, key);
+      // Any other key is not delivered, but a card that is open counts it as typing: a chord soon after it is refused.
+      else if (current.screen?.kind === 'gate-card') current.screen.card.unseenInput();
       return true;
     }
     if (
@@ -701,7 +742,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       keyless: current.keyless,
       errorText: current.errorText,
       showBanner: props.showBanner,
-      isEmpty: current.snapshot.isEmpty,
+      isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
       hasSessions: current.snapshot.recentSessions.length > 0,
       reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
       page: same ? previous.page : 0,
@@ -728,6 +769,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     ) {
       controller.getSnapshot().session?.store.invalidateToolReview();
       homeFrame.invalidate();
+      cardFrame.invalidate();
       props.onSuspend?.();
       return;
     }
@@ -908,15 +950,27 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         />
       )}
       {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
-      {!prompt.active && state.screen !== undefined && (
+      {!prompt.active && state.screen?.kind === 'run-view' && (
         <RunScreenView
           runId={state.screen.runId}
           store={state.screen.store}
           hostedRun={state.hostedRun}
           notices={state.screen.notices}
           interruptArmed={state.interruptArmed}
+          openGate={state.gateCards}
           columns={size.cols}
           rows={size.rows}
+          color={color}
+        />
+      )}
+      {!prompt.active && state.screen?.kind === 'gate-card' && (
+        <GateCardScreenView
+          screen={state.screen}
+          frame={cardFrame}
+          flush={() => app.waitUntilRenderFlush()}
+          columns={size.cols}
+          rows={size.rows}
+          nowMs={props.nowMs()}
           color={color}
         />
       )}
@@ -941,6 +995,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           showBanner={props.showBanner}
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
+          parkedRuns={state.parkedRuns}
+          parkedFocus={state.parkedFocus}
           noticePage={noticePage}
           interruptArmed={state.interruptArmed}
           hostedRun={state.hostedRun}
@@ -964,6 +1020,37 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         />
       )}
     </Box>
+  );
+}
+
+/**
+ * The gate or budget card of the slot, painted from the card's own snapshots. The view is pure; this is its one effect: every commit of
+ * the card's box goes to the card's measured-frame evidence, which tells the card when a NEW frame was measured and flushed.
+ */
+function GateCardScreenView(
+  props: Readonly<{
+    screen: GateCardScreen;
+    frame: GateCardFrame;
+    flush: () => Promise<void>;
+    columns: number;
+    rows: number;
+    nowMs: number;
+    color: boolean;
+  }>,
+): ReactElement {
+  const { card } = props.screen;
+  const snapshot = useSyncExternalStore(card.subscribe, card.getSnapshot);
+  return (
+    <RunCardView
+      snapshot={snapshot}
+      columns={props.columns}
+      rows={props.rows}
+      nowMs={props.nowMs}
+      color={props.color}
+      onFrame={(node) => {
+        props.frame.commit(snapshot, node, props.flush);
+      }}
+    />
   );
 }
 

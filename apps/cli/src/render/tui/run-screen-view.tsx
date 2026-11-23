@@ -29,6 +29,8 @@ export interface RunScreenViewProps {
   readonly notices: readonly string[];
   /** The interrupt keymap is armed: the key line says a second `Ctrl+C` cancels the run. */
   readonly interruptArmed: boolean;
+  /** A gate card can be opened: a run that ended parked offers `Enter` for it. */
+  readonly openGate?: boolean | undefined;
   readonly columns: number;
   readonly rows: number;
   readonly color: boolean;
@@ -42,6 +44,7 @@ export function RunScreenView(props: Readonly<RunScreenViewProps>): ReactElement
     armed: props.interruptArmed,
     columns: props.columns,
     rows: props.rows,
+    openGate: props.openGate,
   });
   const { color } = props;
   const card = model.card;

@@ -131,6 +131,11 @@ export interface RunScreenInput {
   readonly armed: boolean;
   readonly columns: number;
   readonly rows: number;
+  /**
+   * A gate card can be opened from here: a run that ended parked offers `Enter` for it (ADR-0139 §4). Absent or `false` ⇒ the key line is
+   * the closing one, as before.
+   */
+  readonly openGate?: boolean | undefined;
 }
 
 /** The disposition card of a leg that has ended: its rows, already wrapped and cut to the width. */
@@ -211,7 +216,7 @@ function cardOf(end: HostedLegEnd, width: number): RunScreenCard {
   };
 }
 
-function keysFor(phase: RunScreenPhase, armed: boolean): string {
+function keysFor(phase: RunScreenPhase, armed: boolean, openGate: boolean): string {
   const leave: LegendItem = { keys: 'Esc', verb: 'leaves it running' };
   switch (phase) {
     case 'launching':
@@ -227,7 +232,10 @@ function keysFor(phase: RunScreenPhase, armed: boolean): string {
       ].join(LEGEND_SEPARATOR);
     case 'settled':
     case 'replaced':
-      return legend([{ keys: 'Esc / Ctrl+C', verb: 'close' }]);
+      return legend([
+        ...(openGate && phase === 'settled' ? [{ keys: 'Enter', verb: 'opens the gate' }] : []),
+        { keys: 'Esc / Ctrl+C', verb: 'close' },
+      ]);
   }
 }
 
@@ -285,7 +293,11 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
     notices: shown,
     earlierNotices: earlier,
     card,
-    keys: keysFor(phase, input.armed && leg === 'executing'),
+    keys: keysFor(
+      phase,
+      input.armed && leg === 'executing',
+      input.openGate === true && end?.terminal.disposition === 'paused',
+    ),
     liveRows: fits ? Math.max(RUN_SCREEN_MIN_LIVE_ROWS, input.rows - 1 - fixed) : 0,
   };
 }
