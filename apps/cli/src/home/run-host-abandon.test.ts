@@ -308,6 +308,36 @@ describe('RunHost.close is bounded', () => {
     await launch.ended;
   });
 
+  it('arms the finite exit before it seals the renderer, so a seal that throws cannot leave the process unbounded', async () => {
+    // Only the abandon's own call throws: the leg's later epilogue seals again and must not meet a second fault.
+    const seal = vi.fn().mockImplementationOnce(() => {
+      throw new Error('the renderer cannot be sealed');
+    });
+    const r = rig({ renderer: { onEvent: () => undefined, seal } });
+    const launch = await started(r.host.start({ workflow: r.path, rawInputs: { n: '3' } }));
+    await vi.waitFor(() => expect(r.host.snapshot().active?.runId).toBe('run-stubborn'), {
+      timeout: WAIT_MS,
+    });
+
+    const closing = r.host.close().then(
+      () => undefined,
+      () => undefined, // the throw is the renderer's; what is asserted is what was armed before it
+    );
+    await turn();
+    r.clock.advance(HOSTED_LEG_SETTLE_BOUND_MS);
+    await closing;
+    expect(seal, 'the abandon reached the seal').toHaveBeenCalled();
+    expect(r.host.abandoned).toBe(true);
+    expect(
+      r.f.registry.termination,
+      'the finite exit was armed although the seal threw after it',
+    ).toBeDefined();
+    expect(r.f.registry.activeOwners, 'the abandoned leg`s owner stays registered').toBe(1);
+
+    r.stubborn.release();
+    await launch.ended;
+  });
+
   it('a second close is the first close', async () => {
     const r = rig({ cancelEndsIt: true });
     await started(r.host.start({ workflow: r.path, rawInputs: { n: '3' } }));

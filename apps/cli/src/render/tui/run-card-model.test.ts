@@ -8,9 +8,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { approvalDecision } from '../../gate/decision.js';
 import type { RunGate } from '../../home/run-gates.js';
 import type { HostedLaunch, HostedResumeRequest } from '../../home/run-host.js';
 import {
+  createGateResumer,
   createRunCard,
   projectRunCard,
   RUN_CARD_GUTTER,
@@ -381,5 +383,40 @@ describe('what the card shows of a gate', () => {
     for (const glyph of ['›', '✓', '✎', '‖', '─', '\u001b']) expect(body).not.toContain(glyph);
     // No row of the card (host words included) is wider than the terminal.
     for (const row of projection.rows) expect(Array.from(row.text).length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('the resume opens a flow around the answer and closes it without changing the answer', () => {
+  const request: Omit<HostedResumeRequest, 'secrets'> = {
+    runId: RUN,
+    kind: 'human',
+    decision: approvalDecision(),
+  };
+  const flowWith = (end: () => Promise<void>) => ({
+    begin: vi.fn(() => new AbortController().signal),
+    end: vi.fn(end),
+    busy: vi.fn(),
+    password: vi.fn(),
+  });
+
+  it('reports the leg that started as started when closing the flow rejects', async () => {
+    const flow = flowWith(() => Promise.reject(new Error('the flow could not be closed')));
+    const host = { resume: vi.fn((): Promise<HostedLaunch> => Promise.resolve(startedLaunch)) };
+    const outcome = await createGateResumer({ host, flow })(request);
+    expect(outcome).toBe(startedLaunch);
+    expect(flow.end, 'the flow was closed: the fault came from closing it').toHaveBeenCalledOnce();
+  });
+
+  it('still reports the host`s own refusal when closing the flow rejects too', async () => {
+    const refused: HostedLaunch = { kind: 'refused', reason: 'rejected', message: 'not approved' };
+    const flow = flowWith(() => Promise.reject(new Error('the flow could not be closed')));
+    const host = { resume: vi.fn((): Promise<HostedLaunch> => Promise.resolve(refused)) };
+    expect(await createGateResumer({ host, flow })(request)).toBe(refused);
+  });
+
+  it('leaves a host fault the host`s: closing the flow never hides why the resume failed', async () => {
+    const flow = flowWith(() => Promise.reject(new Error('the flow could not be closed')));
+    const host = { resume: vi.fn((): Promise<HostedLaunch> => Promise.reject(new Error('boom'))) };
+    await expect(createGateResumer({ host, flow })(request)).rejects.toThrow('boom');
   });
 });

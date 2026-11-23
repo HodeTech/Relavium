@@ -533,12 +533,13 @@ export class RunHost {
    */
   #abandon(leg: ActiveLeg | undefined): void {
     this.#abandoned = Object.freeze({ runId: leg?.runId });
-    // The leg's frame loop is sealed with it: a leg that ignores its stop never reaches the epilogue that would seal it, and the loop would
-    // keep repainting a view nobody reads until the process ends (`seal` is idempotent, and a renderer with no loop has none).
-    leg?.renderer?.seal?.();
+    // The finite exit is armed FIRST: it is what ends the process, so a renderer whose `seal` throws cannot be the reason it never is.
     leg?.lifetime.cleanupFailed(
       new CliError('internal', 'A hosted run did not settle after it was asked to stop.'),
     );
+    // The leg's frame loop is sealed with it: a leg that ignores its stop never reaches the epilogue that would seal it, and the loop would
+    // keep repainting a view nobody reads until the process ends (`seal` is idempotent, and a renderer with no loop has none).
+    leg?.renderer?.seal?.();
   }
 
   /** The reason a request cannot start now, as a settled launch; `undefined` when it may. */

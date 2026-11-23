@@ -179,6 +179,12 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   let settle: ((answer: string | symbol) => void) | undefined;
   let validate: ((value: string) => string | undefined) | undefined;
   let disposed = false;
+  /**
+   * A note published while a chord card is open. The card draws its own rows behind the host gutter and a note above them would sit at
+   * column 0, in the band the renderer reserves for itself, so the card shows none: the note is held until the card settles and then
+   * shows on the frame that follows it (a later prompt keeps it; a later chord card clears it, as it clears any note).
+   */
+  let heldNote: string | undefined;
   let picker: NativePickerController | undefined;
   const pickerDrains = new Set<Promise<void>>();
   let visibility: ((snapshot: NativePromptSnapshot) => boolean) | undefined;
@@ -206,8 +212,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     const callback = settle;
     settle = undefined;
     clear();
+    const held = heldNote;
+    heldNote = undefined;
     publish({
       ...snapshot,
+      ...(held === undefined ? {} : { note: held }),
       kind: 'busy',
       message: '',
       options: [],
@@ -261,6 +270,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       return Promise.resolve(NATIVE_PROMPT_CANCEL);
     if (settle) throw new Error('A native prompt is already active.');
     clear();
+    heldNote = undefined;
     chord.begin();
     validate = check;
     const selected = Math.max(
@@ -453,6 +463,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       cancel();
       disposed = true;
       clear();
+      heldNote = undefined;
       publish(initial);
       listeners.clear();
     },
@@ -469,20 +480,22 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       await Promise.allSettled([...pickerDrains]);
       await new Promise<void>((resolve) => setImmediate(resolve));
       clear();
+      heldNote = undefined;
       abort = undefined;
       if (!disposed) publish(initial);
     },
     cancel,
     note: (message, title) => {
-      if (snapshot.active && !abort?.signal.aborted)
-        publish({ ...snapshot, note: sanitizeInline(title ? `${title}: ${message}` : message) });
+      if (!snapshot.active || abort?.signal.aborted) return;
+      const text = sanitizeInline(title ? `${title}: ${message}` : message);
+      if (snapshot.kind === 'chord') heldNote = text;
+      else publish({ ...snapshot, note: text });
     },
     committedNote: (message, title) => {
-      if (snapshot.active)
-        publish({
-          ...snapshot,
-          note: sanitizeInline(title ? `${title}: ${message}` : message),
-        });
+      if (!snapshot.active) return;
+      const text = sanitizeInline(title ? `${title}: ${message}` : message);
+      if (snapshot.kind === 'chord') heldNote = text;
+      else publish({ ...snapshot, note: text });
     },
     busy: (message) => {
       if (snapshot.active && !abort?.signal.aborted)

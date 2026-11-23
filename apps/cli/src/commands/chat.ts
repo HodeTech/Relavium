@@ -182,7 +182,7 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
-import { stringifyJsonLine } from '../render/sanitize.js';
+import { sanitizeUntrustedInline, stringifyJsonLine } from '../render/sanitize.js';
 import {
   createEffectJournalPort,
   createEffectJournalStore,
@@ -2033,9 +2033,15 @@ export function createChatLineHandler(
         emitOutput(catalogNotice(scan('workflows'), scan('agents')));
       } catch (err) {
         workOwner?.failure(err);
-        // Surface the failure by its CODE — a raw catalog CliError message embeds the absolute `.relavium/` path,
-        // which the REPL transcript / a screenshare need not carry.
-        const reason = err instanceof CliError ? err.code : 'unexpected error';
+        // A catalog fault says why in its own words (the cap: "too many workflow files …"), as the Home's picker and `relavium list` do, so a
+        // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
+        // absolute path stays on the error's `cause`, never in the message.
+        const reason =
+          err instanceof CliError
+            ? err.message === ''
+              ? err.code
+              : sanitizeUntrustedInline(err.message)
+            : 'unexpected error';
         emitOutput(`could not list workflows: ${reason}`);
       }
     },

@@ -186,7 +186,10 @@ describe('the exit-guard card through RootApp', () => {
     controller.handleKey('', { return: true });
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     await waitFor(() => (harness.lastFrame() ?? '').includes('Starting chat…'));
-    expect(harness.lastFrame()).not.toContain('Terminal too small');
+    const frame = harness.lastFrame() ?? '';
+    // `waitFor` never throws, so the echo must be shown to be on screen before an absence on it means anything.
+    expect(frame, 'the loading echo is what is drawn').toContain('Starting chat…');
+    expect(frame).not.toContain('Terminal too small');
   });
 
   it('below the 80×24 minimum the card is drawn, Ctrl+N and Esc still reach it, and Ctrl+Y answers nothing', async () => {

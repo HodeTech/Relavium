@@ -186,7 +186,12 @@ describe('discoverCatalog', () => {
       }
     }
 
-    it('lists a directory of exactly the cap, every file of it', () => {
+    it('is 500 files: the number commands.md and home.md state', () => {
+      expect(MAX_CATALOG_FILES).toBe(500);
+    });
+
+    // Five hundred files are written and parsed one by one: the explicit bound keeps a slow Windows runner off the default's edge.
+    it('lists a directory of exactly the cap, every file of it', { timeout: 20_000 }, () => {
       writeMany(MAX_CATALOG_FILES);
       const entries = discoverCatalog({
         projectConfigDir: configDir,

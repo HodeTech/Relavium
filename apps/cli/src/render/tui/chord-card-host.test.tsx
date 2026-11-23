@@ -10,7 +10,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
-import { bracketed, flush } from './harness-util.js';
+import { bracketed, flush, settleFrames } from './harness-util.js';
 import {
   createNativePromptChannel,
   NATIVE_PROMPT_BACK,
@@ -27,7 +27,7 @@ afterEach(() => {
   for (const close of mounts.splice(0)) close();
 });
 
-function mount(cols: number, rows: number, escape?: NativePromptEscape) {
+function mount(cols: number, rows: number, escape?: NativePromptEscape, withCard = true) {
   const input = new OwnedTtyInput();
   const output = new OwnedTtyOutput();
   const stderr = new OwnedTtyOutput();
@@ -54,18 +54,19 @@ function mount(cols: number, rows: number, escape?: NativePromptEscape) {
     stderr.destroy();
   });
   const result = { done: false, value: undefined as unknown };
-  void channel.flow
-    .chord({
-      message: 'Allow MCP server on this machine?',
-      details: ['server     files (inline)', 'argument   [Ctrl+Y] Allow'],
-      allow: 'Allow, and remember it on this machine',
-      deny: 'Refuse, and start nothing',
-      ...(escape === undefined ? {} : { escape }),
-    })
-    .then((value) => {
-      result.done = true;
-      result.value = value;
-    });
+  if (withCard)
+    void channel.flow
+      .chord({
+        message: 'Allow MCP server on this machine?',
+        details: ['server     files (inline)', 'argument   [Ctrl+Y] Allow'],
+        allow: 'Allow, and remember it on this machine',
+        deny: 'Refuse, and start nothing',
+        ...(escape === undefined ? {} : { escape }),
+      })
+      .then((value) => {
+        result.done = true;
+        result.value = value;
+      });
   return {
     ...channel,
     input,
@@ -183,6 +184,38 @@ describe('the chord card in a terminal', () => {
       await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
       expect(f.result.value).toBe(NATIVE_PROMPT_CANCEL);
     }
+  });
+
+  it.each([
+    ['note', (f: ReturnType<typeof mount>, text: string) => f.flow.note(text)],
+    ['committedNote', (f: ReturnType<typeof mount>, text: string) => f.flow.committedNote?.(text)],
+  ] as const)(
+    'a %s published while the card is open is not drawn on it, and shows once the card has settled',
+    async (_name, publishNote) => {
+      const f = mount(80, 24);
+      await f.painted();
+      publishNote(f, 'LATE NOTE from a flow');
+      await settleFrames();
+      expect(f.ui.getSnapshot().note, 'the card carries no note').toBe('');
+      expect(f.text(), 'column 0 is the host`s: no note is drawn above the card').not.toContain(
+        'LATE NOTE',
+      );
+      // The card settles, and what a flow said meanwhile is not lost: it is on the frame that follows.
+      f.at(60_000);
+      f.input.push('\x1b');
+      await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
+      expect(f.ui.getSnapshot().note).toBe('LATE NOTE from a flow');
+    },
+  );
+
+  it('the same note published before a card opens is drawn', async () => {
+    const f = mount(80, 24, undefined, false);
+    f.flow.busy('Saving');
+    f.flow.note('EARLY NOTE from a flow');
+    await vi.waitFor(() => expect(f.text()).toContain('EARLY NOTE from a flow'), {
+      timeout: WAIT_MS,
+    });
+    expect(f.ui.getSnapshot().note).toBe('EARLY NOTE from a flow');
   });
 
   it('in back mode the line says so, Esc steps back and Ctrl+C leaves', async () => {

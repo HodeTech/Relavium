@@ -184,9 +184,10 @@ export function hostedRunCanBeShown(snapshot: RunHostSnapshot | undefined): bool
 export type ExitGuardPhase = 'confirm' | 'stopping';
 
 /**
- * The glyph of the exit-guard card's title row, each already the glyph of the same state elsewhere in the Home (the run view's `cancelling`
- * and the strip's `⚠`), so the card reads without colour as the other cards do (ADR-0122 §7.2): a warning while the run is still going,
- * the stop square once the person confirmed, and the quiet ring once there is nothing left to stop.
+ * The glyph of the exit-guard card's title row, so the card reads without colour as the other cards do (ADR-0122 §7.2): a warning while the
+ * run is still going, the stop square once the person confirmed, and the quiet ring once there is nothing left to stop. Each surface has its
+ * own glyph and a word for each state, and "the run is stopping" is not drawn alike: the strip's `▶` row says the word `cancelling`, the run
+ * view draws `■ cancelling`, and this card draws `⚠` (still asking) and then `■` (confirmed).
  */
 export const EXIT_GUARD_GLYPH = { warning: '⚠', stopping: '■', ended: '○' } as const;
 

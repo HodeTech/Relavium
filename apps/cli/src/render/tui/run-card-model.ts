@@ -430,7 +430,14 @@ export function createGateResumer(deps: {
       deps.flow.busy('Answering the gate…');
       return await deps.host.resume({ ...request, secrets: createSlotSecretPort(deps.flow) });
     } finally {
-      await deps.flow.end();
+      // Closing the flow never changes the answer already sent: a leg that started is a started leg, and an `end` that rejects (a picker
+      // that did not drain, a renderer that went away) must not turn it into "The answer could not be sent." The fault is discarded here:
+      // the flow's own owner reports what it needs to, and this port has nowhere else to put it.
+      try {
+        await deps.flow.end();
+      } catch {
+        // discarded on purpose, see above
+      }
     }
   };
 }

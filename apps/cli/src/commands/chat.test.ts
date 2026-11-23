@@ -57,6 +57,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { ChatApp, selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
+import { MAX_CATALOG_FILES } from '../workflows/catalog.js';
 import { formatTurnSummary, errorRecoveryHint } from '../render/tui/chat-projection.js';
 import { captureIo, parseNdjson, OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
 import { processIo } from '../process/io.js';
@@ -1075,6 +1076,19 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain('Workflows (1):');
     expect(err()).toContain('deploy'); // the catalog entry's slug, whether the file is valid or flagged invalid
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  it('/workflows says why a catalog above the cap cannot be listed, in the cap`s own words, and the session survives', async () => {
+    mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+    for (let i = 0; i <= MAX_CATALOG_FILES; i += 1)
+      writeFileSync(join(cwd, '.relavium', 'workflows', `w${String(i)}.relavium.yaml`), '');
+    const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('could not list workflows: too many workflow files in the catalog');
+    expect(err(), 'the code alone is not the whole of what is said').not.toContain(
+      'could not list workflows: invalid_invocation',
+    );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 

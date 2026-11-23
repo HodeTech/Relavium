@@ -34,6 +34,7 @@ import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
 import { CliError } from '../process/cli-error.js';
+import { EXIT_CODES } from '../process/exit-codes.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
@@ -354,7 +355,11 @@ describe('the owned Home and an abandoned hosted leg', () => {
       'the finite-exit bound is armed: it ends the process',
     ).toBeDefined();
     expect(outcome.kind).toBe('resolved');
-    expect(outcome.kind === 'resolved' ? outcome.code : undefined).toBeTypeOf('number');
+    expect(
+      outcome.kind === 'resolved' ? outcome.code : undefined,
+      'the abandon files an infrastructure fault (`cli_internal`), which is exit 9: the Home returned it, and it is what the process ends with',
+    ).toBe(EXIT_CODES.infrastructureFailed);
+    expect(h.f.registry.observations.exitCode()).toBe(EXIT_CODES.infrastructureFailed);
     expect(
       h.closeSpy,
       'the surface`s database tail did NOT close the connection the abandoned leg may still write to',
@@ -363,7 +368,11 @@ describe('the owned Home and an abandoned hosted leg', () => {
     // The leg that ignored the stop finishes later and can still write.
     h.stubborn.release();
     const end = await h.launch.ended;
-    expect(end.runId).toBe('run-stubborn');
+    expect(
+      end.runId,
+      'the leg that finishes later is the run the start named, which is the one the Home reported as abandoned',
+    ).toBe(h.launch.runId);
+    expect(h.host.exitFacts().map((fact) => fact.runId)).toEqual([h.launch.runId]);
   });
 
   it('says so on STDERR, once, naming the run and `relavium logs <id>`: the acknowledged stdout is closed to new work by then', async () => {
@@ -395,6 +404,10 @@ describe('the owned Home and an abandoned hosted leg', () => {
     // observation: a `Promise.all` rejects at the first failure and the line that decides it is never reached.
     const retain = vi.spyOn(SessionHomeLifetime.prototype, 'retainStore');
     const h = await mountOwnedHome({ closeRejects: true });
+    let reported: 'resolved' | 'rejected' | undefined;
+    void h.outcome.then((outcome) => {
+      reported = outcome.kind;
+    });
     await h.abandon();
 
     await vi.waitFor(
@@ -414,7 +427,13 @@ describe('the owned Home and an abandoned hosted leg', () => {
       () => expect(h.f.registry.observations.infrastructureCode()).toBe('output_unavailable'),
       { timeout: WAIT_MS / 2 },
     );
+    // The Home's own promise cannot be awaited here: after a cleanup it could not acknowledge the surface root holds for the process's
+    // finite exit (`session-surface-lifetime.ts`), which this mount never delivers, so awaiting it would only time the test out. What is
+    // pinned instead is what it must never do: report a clean exit over a failed cleanup. It rejects, or it is still held.
     await settle();
+    expect(reported, 'the Home did not resolve as if its cleanup had succeeded').not.toBe(
+      'resolved',
+    );
     expect(
       h.closeSpy,
       'the surface`s database tail closed nothing: the connection is the abandoned leg`s to keep',
