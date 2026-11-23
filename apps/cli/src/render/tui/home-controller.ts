@@ -46,6 +46,7 @@ import {
   withDefinedNote,
   withHistoryLoad,
   withHistoryLoadFailure,
+  withSessionsNote,
   type TabEntry,
   type TabHostState,
   type TabId,
@@ -53,6 +54,7 @@ import {
 } from './tab-host.js';
 import type { HistoryPort } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
+import { SESSIONS_RESUME_UNAVAILABLE, type SessionsPort } from './tab-host-sessions.js';
 import type { DefinedPort } from './tab-host-workflows.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
@@ -60,6 +62,7 @@ import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
+import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import type {
   HostedLaunch,
@@ -546,6 +549,16 @@ export interface HomeControllerDeps {
    * §5). Absent ⇒ `p` says pinning is unavailable.
    */
   readonly pins?: PinPort | undefined;
+  /**
+   * The `/agents` strip's Defined tab: the project's agent catalog, read again every time the tab is entered ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §3). Absent ⇒ a typed `/agents` says the agents are not available here.
+   */
+  readonly agents?: AgentsPort | undefined;
+  /**
+   * The `/agents` strip's Sessions tab: this project's saved conversations, the list the `/resume` picker offers, read again every time the
+   * tab is entered. `Enter` on a row resumes it through {@link HomeControllerDeps.resumeChat}. Absent ⇒ the tab says it cannot list.
+   */
+  readonly sessions?: SessionsPort | undefined;
   /**
    * The Defined tab's export card: prepare the export of one catalog workflow, show where it would be written, and write it only on a
    * Yes. It resolves with the sentence the tab shows; it holds the native action while the card is open. Absent ⇒ `x` says export is
@@ -1216,6 +1229,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     active: activeEntry(),
     history: deps.history,
     pins: deps.pins,
+    agents: deps.agents,
+    sessions: deps.sessions,
     now: interruptNow(),
   });
   /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
@@ -1500,6 +1515,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       active: activeEntry(),
       history: deps.history,
       pins: deps.pins,
+      agents: deps.agents,
+      sessions: deps.sessions,
       canArm:
         terminal === undefined ||
         sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
@@ -1507,6 +1524,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
     if (step.kind === 'close') {
       leaveTabHost(step.note);
+      return;
+    }
+    // `Enter` on a conversation of the Sessions tab: the screen closes and the resume begins in ONE state change (`resumeFromSessions`).
+    if (step.kind === 'resume') {
+      resumeFromSessions(step.sessionId, step.state);
       return;
     }
     tabMemory = tabHostMemory(step.state);
@@ -1809,9 +1831,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
-  const openNativeAction = (operation: () => Promise<void>, label: string): void => {
+  /**
+   * Start a native action: the keyboard is the flow's from here on. `patch` is published in the SAME state change as the busy mark, for a
+   * caller whose own change must not be seen on its own (the Sessions tab's resume: the screen leaves as the resume begins).
+   */
+  const openNativeAction = (
+    operation: () => Promise<void>,
+    label: string,
+    patch: Partial<HomeControllerState> = {},
+  ): void => {
     if (exiting || state.nativeActionBusy) return;
-    set({ nativeActionBusy: true, palette: undefined });
+    set({ nativeActionBusy: true, palette: undefined, ...patch });
     void driveNativeAction(operation, label).catch(failHome);
   };
 
@@ -1981,7 +2011,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  const openResume = (selectedId?: string): void => {
+  /**
+   * Resume a saved conversation: the one in `selectedId`, or the one the picker returns. `leaving` is published with the action's first state
+   * change (see {@link openNativeAction}); it is used only when the action starts, so a resume that is not available leaves it unpublished.
+   */
+  const openResume = (selectedId?: string, leaving?: Partial<HomeControllerState>): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
       const notice = 'Session resume is unavailable here. Use relavium chat resume.';
@@ -1989,7 +2023,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note(notice);
       return;
     }
-    openNativeAction(async () => {
+    const operation = async (): Promise<void> => {
       const old = state.session;
       const id = selectedId ?? (await deps.pickSession?.());
       if (id === undefined || exiting) return;
@@ -2042,7 +2076,30 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         submitBusy: true,
       });
       activateSession(result, () => set({ submitBusy: false }));
-    }, 'Session resume');
+    };
+    openNativeAction(operation, 'Session resume', leaving);
+  };
+
+  /**
+   * `Enter` on a conversation of the `/agents` Sessions tab: the resume the strip's session row makes (`openResume`), and the screen goes in
+   * the same state change that starts it, so the chat that opens is never under the tab host and the landing is never drawn between the two.
+   * What closing the screen would reset is reset here and published with it: the tab host's memory, the interrupt window and the parked rows.
+   * A Home that cannot resume says so on the tab, which stays. A conversation that cannot be resumed leaves the landing with the resume's own
+   * notice (the screen is already gone), and a tab host opened again starts at its top.
+   */
+  const resumeFromSessions = (sessionId: string, host: TabHostState): void => {
+    if (deps.resumeChat === undefined) {
+      const next = withSessionsNote(host, SESSIONS_RESUME_UNAVAILABLE);
+      tabMemory = tabHostMemory(next);
+      set({ screen: { kind: 'tab-host', host: next } });
+      return;
+    }
+    // No guard on `exiting` or `nativeActionBusy` here: a key reaches a screen only through `handleKey`, which drops every key in either state,
+    // and `openNativeAction` refuses both itself.
+    tabMemory = freshTabMemory();
+    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no Sessions tab
+    disarmInterrupt();
+    openResume(sessionId, { screen: undefined, ...parkedPatch() });
   };
 
   /**
@@ -2148,6 +2205,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else if (deps.defined === undefined)
         set({ notice: 'The project’s workflows are not available here.' });
       else openTabHost('defined');
+      return true;
+    }
+    // `/agents` at the Home opens the tab host on the agents strip's Defined tab (ADR-0140 §3, MVP-8 step 5). It is a Home command only: with a
+    // chat in front it is not routed here, so it reaches the chat as the unknown slash it is and starts nothing, as `/run` does.
+    if (state.session === undefined && /^\/agents(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/agents') set({ notice: '/agents accepts no arguments.' });
+      else if (deps.agents === undefined)
+        set({ notice: 'The project’s agents are not available here.' });
+      else openTabHost('agents');
       return true;
     }
     // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
@@ -2785,6 +2852,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           if (deps.defined === undefined)
             set({ notice: 'The project’s workflows are not available here.' });
           else openTabHost('defined');
+        } else if (step.command.name === 'agents' && active === undefined) {
+          // home: bare `/agents` opens the tab host on the agents strip's Defined tab (ADR-0140 §3) — the same as the typed command.
+          if (deps.agents === undefined)
+            set({ notice: 'The project’s agents are not available here.' });
+          else openTabHost('agents');
         } else if (step.command.name === 'permissions' && active === undefined) {
           // home: bare `/permissions` opens the tab host on its Permissions tab (ADR-0140 §3).
           if (deps.permissions === undefined)

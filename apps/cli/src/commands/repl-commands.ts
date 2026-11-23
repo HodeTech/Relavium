@@ -435,6 +435,20 @@ const HOME_WORKFLOWS_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/**
+ * The bare Home's `/agents` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §3, MVP-8 step 5): the tab host on its own two-tab strip, Defined and Sessions. A Home command only: a live chat has no `/agents`, so a
+ * line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
+ */
+const HOME_AGENTS_COMMAND = freezeReplCommand({
+  name: 'agents',
+  label: 'Agents',
+  description: 'The agents of this project, and its saved conversations.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 const HOME_RESUME_COMMAND = freezeReplCommand({
   name: 'resume',
   label: 'Resume session',
@@ -476,6 +490,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   HOME_RESUME_COMMAND,
   HOME_RUN_COMMAND,
   HOME_WORKFLOWS_COMMAND,
+  HOME_AGENTS_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

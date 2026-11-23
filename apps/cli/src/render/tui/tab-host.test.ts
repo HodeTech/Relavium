@@ -477,7 +477,7 @@ describe('what a tab remembers', () => {
     r.press('', { downArrow: true });
     expect(tabHostMemory(r.state)).toEqual({
       tab: 'permissions',
-      positions: { defined: 0, active: 0, history: 0, permissions: 1 },
+      positions: { defined: 0, active: 0, history: 0, permissions: 1, agents: 0, sessions: 0 },
     });
     r.press('', { tab: true });
     expect(tabHostMemory(r.state).tab).toBe('defined');

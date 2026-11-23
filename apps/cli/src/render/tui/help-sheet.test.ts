@@ -28,6 +28,22 @@ const textOf = (columns: number, terminalRows = 24, commands?: readonly ReplComm
 const commandRows = (lines: readonly string[]): string[] =>
   lines.filter((line) => /^ {2}\/[a-z]/u.test(line));
 
+/** The slash words a sheet names, in the order it names them: a described row names one, a row of names several. */
+const namedCommands = (lines: readonly string[]): string[] =>
+  commandRows(lines).flatMap((row) =>
+    row
+      .trim()
+      .split(/ {2,}/u)
+      .filter((part) => /^\/[a-z][a-z0-9-]*$/u.test(part)),
+  );
+
+/** A row that gives `name` a line of its own, with its description after it (a row of names alone does not). */
+const describedRow = (lines: readonly string[], name: string): string | undefined =>
+  commandRows(lines).find(
+    (row) =>
+      row.startsWith(`  /${name} `) && !/^ {2}\/[a-z0-9-]+( {2,}\/[a-z0-9-]+)+ *$/u.test(row),
+  );
+
 const SIZES: readonly (readonly [number, number])[] = [
   [80, 24],
   [81, 25],
@@ -38,8 +54,8 @@ const SIZES: readonly (readonly [number, number])[] = [
 ];
 
 describe('which commands the sheet lists', () => {
-  it('lists /help and every command the bare Home offers, each by name with its description', () => {
-    const rows = commandRows(textOf(200));
+  it('names /help and every command the bare Home offers, and gives a row with its description to as many as the rows allow', () => {
+    const lines = textOf(200);
     // The home-enabled registry commands, /help (typed at the landing, though the registry marks it a chat's) and the Home's own.
     const expected = new Set([
       'help',
@@ -49,42 +65,42 @@ describe('which commands the sheet lists', () => {
       ...HOME_PALETTE_COMMANDS.map((command) => command.name),
     ]);
     expect(expected.size).toBeGreaterThan(8);
-    expect(rows).toHaveLength(expected.size);
+    // The invariant: every command is named, whatever the number of commands is (the rows that are left give up descriptions first).
+    expect(namedCommands(lines).sort()).toEqual([...expected].map((name) => `/${name}`).sort());
+    let described = 0;
     for (const command of HOME_HELP_COMMANDS) {
-      const row = rows.find((candidate) => candidate.startsWith(`  /${command.name} `));
-      expect(row, `/${command.name} has a row`).toBeDefined();
+      const row = describedRow(lines, command.name);
+      if (row === undefined) continue;
+      described += 1;
       // A description longer than the row is cut with `…`: what is shown is then the start of it, and never anything else.
-      const shown = (row ?? '').slice((row ?? '').indexOf(' ', 3)).trim();
+      const shown = row.slice(row.indexOf(' ', 3)).trim();
       const whole = shown === command.description;
       const cut = shown.endsWith('…') && command.description.startsWith(shown.slice(0, -1));
       expect(whole || cut, `/${command.name}: ${shown}`).toBe(true);
       expect(shown.length, `/${command.name} shows more than its name`).toBeGreaterThan(5);
     }
+    expect(described, 'at least the first commands keep their description').toBeGreaterThan(4);
     expect(new Set(HOME_HELP_COMMANDS.map((command) => command.name))).toEqual(expected);
   });
 
   it('shows a short description whole', () => {
-    const rows = commandRows(textOf(200));
     const exit = HOME_HELP_COMMANDS.find((command) => command.name === 'exit');
-    expect(rows.find((row) => row.startsWith('  /exit '))).toContain(exit?.description);
+    expect(describedRow(textOf(200), 'exit')).toContain(exit?.description);
   });
 
   it('does not list a command that works only in a chat: /cost, /cancel, /export, /effort and the rest', () => {
     const listed = new Set(HOME_HELP_COMMANDS.map((command) => command.name));
-    const rows = commandRows(textOf(200));
+    const named = new Set(namedCommands(textOf(200)));
     for (const command of REPL_COMMANDS) {
       if (listed.has(command.name)) continue;
       expect(command.availableIn, `/${command.name} is a chat's`).not.toContain('home');
-      expect(
-        rows.some((row) => row.startsWith(`  /${command.name} `)),
-        `/${command.name} has no row`,
-      ).toBe(false);
+      expect(named.has(`/${command.name}`), `/${command.name} is not named`).toBe(false);
     }
     expect(listed.has('cost')).toBe(false);
   });
 
   it('lists the commands by name, in one order', () => {
-    const names = commandRows(textOf(200)).map((row) => row.trim().split(/\s+/u)[0] ?? '');
+    const names = namedCommands(textOf(200));
     expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en')));
     expect(names).toEqual(HOME_HELP_COMMANDS.map((command) => `/${command.name}`));
   });
@@ -133,12 +149,22 @@ describe('the frame', () => {
     },
   );
 
-  it('draws the whole of it at 80x24: both lists, the legend and no note about anything left out', () => {
+  it('draws the whole of it at 80x24: every command named, every key, the legend and no note about anything left out', () => {
     const lines = textOf(80);
     expect(lines[0]).toBe('Commands');
     expect(lines).toContain('Keys of the Home');
+    // The invariant, not a row count: never more rows than the sheet may take, and every command of the Home is named in them.
     expect(lines.length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
-    expect(lines.some((line) => /more$/u.test(line))).toBe(false);
+    expect(namedCommands(lines).sort()).toEqual(
+      HOME_HELP_COMMANDS.map((command) => `/${command.name}`).sort(),
+    );
+    for (const key of Object.values(HOME_KEYS))
+      expect(
+        lines.some((line) => line.includes(key.keys)),
+        key.keys,
+      ).toBe(true);
+    expect(lines.some((line) => /\d+ more$/u.test(line))).toBe(false);
+    expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
   });
 
   it('keeps every span inside its line', () => {
@@ -151,8 +177,8 @@ describe('the frame', () => {
         }
   });
 
-  it('cuts a list of commands too long for the rows, says how many it left out, and keeps the keys and the way out', () => {
-    const many: readonly ReplCommand[] = Array.from({ length: 40 }, (_, index) => ({
+  const commandsOf = (count: number): readonly ReplCommand[] =>
+    Array.from({ length: count }, (_, index) => ({
       name: `cmd${String.fromCharCode(97 + (index % 26))}${String(index)}`,
       label: 'x',
       description: `Does the ${String(index)}th thing.`,
@@ -160,12 +186,52 @@ describe('the frame', () => {
       run: () => undefined,
       availableIn: ['home' as const],
     }));
+
+  it.each([1, 13, 14, 15, 25, 40, 80])(
+    'with %i commands: never more rows than it may take, every command named, the keys and the way out kept',
+    (count) => {
+      const many = commandsOf(count);
+      const lines = textOf(80, 24, many);
+      expect(lines.length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
+      expect(namedCommands(lines)).toEqual(many.map((command) => `/${command.name}`));
+      expect(lines.some((line) => /^ {2}and \d+ more$/u.test(line))).toBe(false);
+      expect(lines).toContain('Keys of the Home');
+      for (const key of Object.values(HOME_KEYS))
+        expect(
+          lines.some((line) => line.includes(key.keys)),
+          key.keys,
+        ).toBe(true);
+      expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
+      for (const line of lines)
+        expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(80));
+    },
+  );
+
+  it('gives up descriptions before it gives up a command: the first commands keep theirs, the last are named alone, several to a row', () => {
+    const lines = textOf(80, 24, commandsOf(40));
+    const described = commandsOf(40).filter((command) => describedRow(lines, command.name));
+    expect(described.length, 'some keep a description').toBeGreaterThan(0);
+    expect(described.length, 'some do not').toBeLessThan(40);
+    // The commands that keep a description are the first ones, in order.
+    expect(described.map((command) => command.name)).toEqual(
+      commandsOf(40)
+        .slice(0, described.length)
+        .map((command) => command.name),
+    );
+    const rest = commandRows(lines).filter((row) =>
+      /^ {2}\/[a-z0-9-]+( {2,}\/[a-z0-9-]+)+ *$/u.test(row),
+    );
+    expect(rest.length, 'the rest are on rows of names').toBeGreaterThan(0);
+  });
+
+  it('counts what it leaves out only when even the names do not fit, and then names the count of what it did not show', () => {
+    const many = commandsOf(400);
     const lines = textOf(80, 24, many);
     expect(lines.length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
-    const shown = commandRows(lines).length;
+    const shown = namedCommands(lines).length;
     expect(shown).toBeGreaterThan(0);
-    expect(shown).toBeLessThan(40);
-    expect(lines).toContain(`  and ${String(40 - shown)} more`);
+    expect(shown).toBeLessThan(400);
+    expect(lines).toContain(`  and ${String(400 - shown)} more`);
     expect(lines).toContain('Keys of the Home');
     expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
   });

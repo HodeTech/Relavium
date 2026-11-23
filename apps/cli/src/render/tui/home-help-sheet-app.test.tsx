@@ -96,8 +96,9 @@ describe.each([
     expect(frame.split('\n').length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
     expect(frame, 'no prompt behind the screen').not.toContain('/ for commands');
     expect(frame).toContain('Commands');
+    // Every command is named as a whole word (it has its own row with a description, or is one of the names the last rows hold).
     for (const command of HOME_HELP_COMMANDS)
-      expect(frame, `/${command.name}`).toContain(`/${command.name} `);
+      expect(frame, `/${command.name}`).toMatch(new RegExp(`/${command.name}(?=\\s|$)`, 'mu'));
     for (const key of Object.values(HOME_KEYS)) expect(frame, key.keys).toContain(key.keys);
     expect(frame.split('\n').at(-1)).toBe('Esc / Ctrl+C close');
     expect(m.startChat).not.toHaveBeenCalled();

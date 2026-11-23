@@ -10,8 +10,10 @@
  * - **The keys** are {@link HOME_KEYS}, the landing's keys, each with the key press that does it, so the test presses every one of them and
  *   checks that it does what its verb says. {@link HELP_SHEET_KEYS} are the sheet's own: `Esc` and `Ctrl+C` close it and every other key
  *   does nothing, a key of the landing included, because the sheet is a screen of the slot and owns every key while it is open.
- * - **At most {@link HELP_SHEET_ROWS} rows** at any terminal size, one row to a command and to a key, every line cut to the width. Below
- *   80x24 it is two lines: the hint that says to enlarge, and the way out.
+ * - **At most {@link HELP_SHEET_ROWS} rows** at any terminal size, one row to a key, every line cut to the width. A command has a row of
+ *   its own, with its description, while they all fit; when one more command would not, the last ones are listed by name alone, several to a
+ *   row, so adding a command never takes another one off the sheet ({@link fitCommands}). Only when even the names do not fit does the sheet
+ *   count what it leaves out. Below 80x24 it is two lines: the hint that says to enlarge, and the way out.
  */
 
 import {
@@ -20,6 +22,7 @@ import {
   type ReplCommand,
 } from '../../commands/repl-commands.js';
 import { legend, legendSpans, type LegendItem } from './legend.js';
+import { displayWidth } from './viewport.js';
 import { sheetCanArm } from './permissions-sheet.js';
 import {
   clampSpans,
@@ -146,10 +149,60 @@ function legendLine(width: number): SheetLine {
   return { kind: 'legend', text, spans: clampSpans(legendSpans(LEGEND_ITEMS), text.length) };
 }
 
+/** One row of command names with no description (several to a row), and how many names it holds. */
+interface NameRow {
+  readonly text: string;
+  readonly count: number;
+}
+
+/** `commands` as rows of names alone, filled left to right up to `width` columns; a name wider than the row is cut. */
+function nameRows(commands: readonly ReplCommand[], width: number): readonly NameRow[] {
+  const rows: NameRow[] = [];
+  let text = '';
+  let count = 0;
+  for (const command of commands) {
+    const name = `/${command.name}`;
+    const joined = count === 0 ? `${INDENT}${name}` : `${text}${GAP}${name}`;
+    if (count > 0 && displayWidth(joined) > width) {
+      rows.push({ text: clipLine(text, width), count });
+      text = `${INDENT}${name}`;
+      count = 1;
+    } else {
+      text = joined;
+      count += 1;
+    }
+  }
+  if (count > 0) rows.push({ text: clipLine(text, width), count });
+  return rows;
+}
+
+/**
+ * How `commands` share `room` rows: the first `described` get a row each, with their description, and the rest are rows of names. The most
+ * commands keep their description that still lets every command be named; only when the names alone do not fit in `room` rows is the tail
+ * of them cut, and `left` says how many were left out (the sheet then names that count).
+ */
+function fitCommands(
+  commands: readonly ReplCommand[],
+  room: number,
+  width: number,
+): { readonly described: number; readonly names: readonly NameRow[]; readonly left: number } {
+  let described = Math.min(commands.length, Math.max(0, room));
+  for (; described > 0; described -= 1) {
+    const names = nameRows(commands.slice(described), width);
+    if (described + names.length <= room) return { described, names, left: 0 };
+  }
+  const names = nameRows(commands, width);
+  if (names.length <= room) return { described: 0, names, left: 0 };
+  // The note takes a row of its own: the names that are shown fill the rows before it.
+  const shown = names.slice(0, Math.max(0, room - 1));
+  const kept = shown.reduce((sum, row) => sum + row.count, 0);
+  return { described: 0, names: shown, left: commands.length - kept };
+}
+
 /**
  * The sheet's lines, top to bottom, for a terminal of this size: the commands, the keys and the legend. Never more than
- * {@link HELP_SHEET_ROWS} lines and never wider than the sheet frame's width. A list of commands too long for the rows left is cut and
- * says how many it left out, so the keys and the way out always stay on screen.
+ * {@link HELP_SHEET_ROWS} lines and never wider than the sheet frame's width. A list of commands too long for the rows left gives up
+ * descriptions before it gives up a command ({@link fitCommands}), so the keys and the way out always stay on screen.
  */
 export function helpSheetLines(
   geometry: SheetGeometry,
@@ -164,12 +217,13 @@ export function helpSheetLines(
   const keyRows = keys.map((key) => labelled(key.keys, keyWidth, key.verb, width));
   // The headings, the keys and the legend always stay; the commands take the rows that are left.
   const room = HELP_SHEET_ROWS - keyRows.length - 3;
-  const shown = commands.length > room ? commands.slice(0, Math.max(0, room - 1)) : commands;
+  const { described, names, left } = fitCommands(commands, room, width);
+  const shown = commands.slice(0, described);
   const nameWidth = Math.max(0, ...shown.map((command) => command.name.length + 1));
   const commandRows = shown.map((command) =>
     labelled(`/${command.name}`, nameWidth, command.description, width),
   );
-  const left = commands.length - shown.length;
+  const nameLines = names.map((row): SheetLine => ({ kind: 'row', text: row.text }));
   const more: readonly SheetLine[] =
     left === 0
       ? []
@@ -177,6 +231,7 @@ export function helpSheetLines(
   return [
     heading('Commands'),
     ...commandRows,
+    ...nameLines,
     ...more,
     heading('Keys of the Home'),
     ...keyRows,

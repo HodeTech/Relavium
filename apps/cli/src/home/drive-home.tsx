@@ -160,7 +160,9 @@ import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
+import { createAgentsPort } from './agents-port.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
+import { createSessionsPort } from './sessions-port.js';
 import { createPinPort } from './pin-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { runExportCard } from '../render/tui/export-card.js';
@@ -1870,17 +1872,20 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           keychain,
         });
       };
+      // The project's `.relavium/` directory, found afresh on every call (a `/init` in this Home is seen at once): the catalog of `/run`, and the
+      // agents of `/agents`, read it through this.
+      const currentProjectConfigDir = (): string | undefined => {
+        try {
+          return findProjectConfigDir(deps.global.cwd, homeDir);
+        } catch {
+          return undefined; // a home that cannot be resolved safely: there is no project to offer
+        }
+      };
       // `/run`: the picker, the form and the confirmation on the native prompt flow, then the host's single-flight start
       // (ADR-0139 §2, §7). The catalog finds the project directory afresh, so a `/init` in this Home is seen at once.
       const launchCatalog = createProjectCatalog({
         cwd: deps.global.cwd,
-        projectConfigDir: () => {
-          try {
-            return findProjectConfigDir(deps.global.cwd, homeDir);
-          } catch {
-            return undefined; // a home that cannot be resolved safely: there is no project to offer
-          }
-        },
+        projectConfigDir: currentProjectConfigDir,
         homeDir,
       });
       const runLaunch = createRunLaunch({
@@ -1953,6 +1958,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         defined,
         history,
         pins,
+        // The `/agents` strip (ADR-0140 §3, MVP-8 step 5): the project's agent catalog, found afresh and read every time its tab is entered, and
+        // this project's saved conversations, the very page the `/resume` picker lists (the same store and working directory).
+        agents: createAgentsPort({
+          projectConfigDir: currentProjectConfigDir,
+          cwd: deps.global.cwd,
+          homeDir,
+        }),
+        sessions: createSessionsPort({
+          store: opened.store,
+          cwd: fsPolicyWorkspace(fsPolicy),
+          now,
+        }),
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
         active: {

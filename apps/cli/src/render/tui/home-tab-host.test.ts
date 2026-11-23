@@ -512,6 +512,8 @@ describe('closing the tab host forgets what its tabs remembered', () => {
       active: 0,
       history: 0,
       permissions: 0,
+      agents: 0,
+      sessions: 0,
     });
   });
 

@@ -248,6 +248,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'resume',
       'run', // the launch of a hosted workflow run (ADR-0139 §7, MVP-8 step 3)
       'workflows', // the Defined tab of the tab host (ADR-0140 §2, MVP-8 step 4): the Home's own, not the chat's
+      'agents', // the `/agents` strip of the tab host (ADR-0140 §3, MVP-8 step 5): the Home's own, there is no chat `/agents`
     ]);
   });
 

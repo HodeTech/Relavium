@@ -1,6 +1,7 @@
 import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
 import type { ActiveRead } from '../../history/active-source.js';
+import type { AgentsPort } from '../../home/agents-port.js';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
@@ -29,6 +30,14 @@ import {
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
+import {
+  AGENTS_UNREADABLE,
+  agentsBody,
+  agentsLegendItems,
+  foldAgentsKey,
+  openAgentsTab,
+  type AgentsTabState,
+} from './tab-host-agents.js';
 import {
   activeBody,
   activeLegendItems,
@@ -67,6 +76,16 @@ import {
   type HistoryTabState,
 } from './tab-host-history.js';
 import type { PinPort } from './tab-host-pin.js';
+import {
+  SESSIONS_UNREADABLE,
+  foldSessionsKey,
+  openSessionsTab,
+  sessionsBody,
+  sessionsLegendItems,
+  withSessionsMessage,
+  type SessionsPort,
+  type SessionsTabState,
+} from './tab-host-sessions.js';
 import { escapeReviewCharacter } from './tool-review-projection.js';
 
 /**
@@ -75,7 +94,12 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  * to draw; it owns no `useInput`, no React and no clock (the host passes the time in), so the key ladder and every sentence are testable
  * without a terminal, as the sheet's are. `tab-host-view.tsx` paints it and `home-controller.ts` owns the slot it sits in.
  *
- * Four tabs: History lists the finished runs a page at a time and opens one run's detail (`tab-host-history.ts`), where `Enter` ASKS the host
+ * Two strips share the screen, each with its own tab set ({@link tabSetOf}; ADR-0140's 2026-11-23 note): the workflows strip has Defined,
+ * Active, History and Permissions, and the `/agents` strip has Defined and Sessions, as `agents` and `sessions` (`tab-host-agents.ts` and
+ * `tab-host-sessions.ts`). A tab's id says which strip it is on, so the screen slot needs no field for it. On the agents strip `Enter` on a
+ * Sessions row ASKS the host to resume that conversation in place ({@link TabHostStep} `resume`).
+ *
+ * Four tabs on the workflows strip: History lists the finished runs a page at a time and opens one run's detail (`tab-host-history.ts`), where `Enter` ASKS the host
  * to load the detail; Permissions is the ADR-0137 sheet composed under the tab strip (its body, its keys and its `Esc` ladder are the sheet's,
  * and the repository's `[chat]` allowlist is added under the list as read-only rows); Defined lists the project's workflows with their pins
  * (`tab-host-workflows.ts`), where `r` and `x` ASK the host to run or export a row; and Active lists the runs that are not finished
@@ -97,7 +121,7 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  */
 
 /** The tabs, in the order the strip draws them. */
-export type TabId = 'defined' | 'active' | 'history' | 'permissions';
+export type TabId = 'defined' | 'active' | 'history' | 'permissions' | 'agents' | 'sessions';
 
 export interface TabDef {
   readonly id: TabId;
@@ -110,6 +134,20 @@ export const TABS: readonly TabDef[] = [
   { id: 'history', title: 'History' },
   { id: 'permissions', title: 'Permissions' },
 ];
+
+/**
+ * The tabs of the `/agents` strip, in the order it draws them. The ids differ from the workflows strip's (`agents` is the strip's Defined,
+ * `sessions` its Sessions), so that a tab id alone says which strip the screen is on, and a key never moves between strips.
+ */
+export const AGENT_TABS: readonly TabDef[] = [
+  { id: 'agents', title: 'Defined' },
+  { id: 'sessions', title: 'Sessions' },
+];
+
+/** The strip `tab` is on: its tabs in the order they are drawn, and the order `←`/`→` and `Tab` move through. */
+export function tabSetOf(tab: TabId): readonly TabDef[] {
+  return tab === 'agents' || tab === 'sessions' ? AGENT_TABS : TABS;
+}
 
 /** The rows the tab host may use: what the Home's frame allows at 80×24, less the prompt's line. */
 export const TAB_HOST_ROWS = 23;
@@ -152,7 +190,14 @@ export interface TabMemory {
   readonly history?: HistoryMemory | undefined;
 }
 
-const TOP: TabPositions = Object.freeze({ defined: 0, active: 0, history: 0, permissions: 0 });
+const TOP: TabPositions = Object.freeze({
+  defined: 0,
+  active: 0,
+  history: 0,
+  permissions: 0,
+  agents: 0,
+  sessions: 0,
+});
 
 /** Nothing remembered: every tab at its top, on `tab`. */
 export function freshTabMemory(tab: TabId = 'permissions'): TabMemory {
@@ -170,7 +215,11 @@ export interface TabHostState {
   readonly active?: ActiveTabState | undefined;
   /** The History tab: its page, its pinned section and, once opened, a run's detail; absent on any other tab. */
   readonly history?: HistoryTabState | undefined;
-  /** Permissions or Defined was entered and its port could not be read: the tab says so instead of listing anything. */
+  /** The Defined agents tab: its list and, once opened, an agent's detail; absent on any other tab and when it could not be read. */
+  readonly agents?: AgentsTabState | undefined;
+  /** The Sessions tab: this project's saved conversations; absent on any other tab and when it could not be read. */
+  readonly sessions?: SessionsTabState | undefined;
+  /** Permissions, Defined, agents or sessions was entered and its port could not be read: the tab says so instead of listing anything. */
   readonly unreadable: boolean;
 }
 
@@ -187,6 +236,10 @@ export interface TabEntry {
   readonly history?: HistoryPort | undefined;
   /** What `p` pins and unpins through (none ⇒ `p` says pinning is unavailable). */
   readonly pins?: PinPort | undefined;
+  /** What the Defined agents tab reads (none ⇒ that tab says it cannot list). */
+  readonly agents?: AgentsPort | undefined;
+  /** What the Sessions tab reads (none ⇒ that tab says it cannot list). */
+  readonly sessions?: SessionsPort | undefined;
   readonly now: number;
 }
 
@@ -207,8 +260,17 @@ function positionOf(state: TabHostState): number {
     state.defined?.cursor ??
     state.active?.cursor ??
     state.history?.cursor ??
+    state.agents?.cursor ??
+    state.sessions?.cursor ??
     state.positions[state.tab]
   );
+}
+
+/** `host` with a sentence on the Sessions tab, which the next key drops; the same object when that tab is not the one in front. */
+export function withSessionsNote(host: TabHostState, text: string): TabHostState {
+  return host.sessions === undefined
+    ? host
+    : { ...host, sessions: withSessionsMessage(host.sessions, text) };
 }
 
 /** `host` with a sentence on the Defined tab, which the next key drops; the same object when that tab is not the one in front. */
@@ -284,6 +346,8 @@ export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHos
   if (tab === 'defined') return enterDefined(memory, entry);
   if (tab === 'active') return enterActive(memory, entry);
   if (tab === 'history') return enterHistory(memory, entry);
+  if (tab === 'agents') return enterAgents(memory, entry);
+  if (tab === 'sessions') return enterSessions(memory, entry);
   const opened =
     entry.port === undefined
       ? undefined
@@ -293,6 +357,50 @@ export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHos
   const last = sheetEntries(opened.snapshot).length - 1;
   const cursor = Math.max(0, Math.min(memory.positions.permissions, last));
   return { tab, positions: memory.positions, sheet: { ...opened, cursor }, unreadable: false };
+}
+
+/** The Defined agents tab entered: its port read now, the cursor where it was last. A port that is missing or cannot be read leaves `unreadable` set. */
+function enterAgents(memory: TabMemory, entry: TabEntry): TabHostState {
+  const unreadable: TabHostState = {
+    tab: 'agents',
+    positions: memory.positions,
+    sheet: undefined,
+    unreadable: true,
+  };
+  if (entry.agents === undefined) return unreadable;
+  try {
+    return {
+      tab: 'agents',
+      positions: memory.positions,
+      sheet: undefined,
+      agents: openAgentsTab(entry.agents.read(), memory.positions.agents),
+      unreadable: false,
+    };
+  } catch {
+    return unreadable;
+  }
+}
+
+/** The Sessions tab entered: its port read now, the cursor where it was last. A port that is missing or cannot be read leaves `unreadable` set. */
+function enterSessions(memory: TabMemory, entry: TabEntry): TabHostState {
+  const unreadable: TabHostState = {
+    tab: 'sessions',
+    positions: memory.positions,
+    sheet: undefined,
+    unreadable: true,
+  };
+  if (entry.sessions === undefined) return unreadable;
+  try {
+    return {
+      tab: 'sessions',
+      positions: memory.positions,
+      sheet: undefined,
+      sessions: openSessionsTab(entry.sessions.read(), memory.positions.sessions),
+      unreadable: false,
+    };
+  } catch {
+    return unreadable;
+  }
 }
 
 /** The Defined tab entered: its port read now, the cursor where it was last. A port that is missing or cannot be read leaves `unreadable` set. */
@@ -387,7 +495,8 @@ function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
 /**
  * What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), become another
  * state, ask the host to run or export one workflow of the Defined tab, ask it to reopen the view of the run it hosts or to open the gate
- * card of a paused run of the Active tab, or ask it to load a run's detail on the History tab, each carrying the state the tab is left in.
+ * card of a paused run of the Active tab, ask it to load a run's detail on the History tab, or ask it to resume a conversation of the Sessions
+ * tab in place, each carrying the state the tab is left in.
  * The slug is a catalog entry's own, never a row's label, and a run id is the one the read classified (the host reads the run again before
  * it opens anything).
  */
@@ -403,16 +512,21 @@ export type TabHostStep =
   | { readonly kind: 'export'; readonly slug: string; readonly state: TabHostState }
   | { readonly kind: 'open-view'; readonly runId: string; readonly state: TabHostState }
   | { readonly kind: 'open-gate'; readonly runId: string; readonly state: TabHostState }
-  | { readonly kind: 'open-detail'; readonly runId: string; readonly state: TabHostState };
+  | { readonly kind: 'open-detail'; readonly runId: string; readonly state: TabHostState }
+  | { readonly kind: 'resume'; readonly sessionId: string; readonly state: TabHostState };
 
-/** The tab a key moves to, or `undefined` for a key that moves none. `←`/`→` stop at the ends; `Tab` and `Shift+Tab` go around. */
+/**
+ * The tab a key moves to, or `undefined` for a key that moves none, within the strip `current` is on (never to another strip's tab).
+ * `←`/`→` stop at the ends; `Tab` and `Shift+Tab` go around.
+ */
 function movedTab(current: TabId, key: ChatKey): TabId | undefined {
   if (key.ctrl === true || key.meta === true) return undefined;
-  const at = TABS.findIndex((tab) => tab.id === current);
-  const last = TABS.length - 1;
-  if (key.leftArrow === true) return TABS[Math.max(0, at - 1)]?.id;
-  if (key.rightArrow === true) return TABS[Math.min(last, at + 1)]?.id;
-  if (key.tab === true) return TABS[(at + (key.shift === true ? last : 1)) % TABS.length]?.id;
+  const set = tabSetOf(current);
+  const at = set.findIndex((tab) => tab.id === current);
+  const last = set.length - 1;
+  if (key.leftArrow === true) return set[Math.max(0, at - 1)]?.id;
+  if (key.rightArrow === true) return set[Math.min(last, at + 1)]?.id;
+  if (key.tab === true) return set[(at + (key.shift === true ? last : 1)) % set.length]?.id;
   return undefined;
 }
 
@@ -460,7 +574,13 @@ export function foldTabHostKey(
     if (to === state.tab) return { kind: 'state', state };
     return { kind: 'state', state: enterTab(tabHostMemory(state), to, context) };
   }
-  if (key.escape === true && sheet === undefined && state.history?.detail === undefined)
+  // `Esc` closes a tab that has no detail to go back from; a detail (a run's, an agent's) takes its own `Esc`.
+  if (
+    key.escape === true &&
+    sheet === undefined &&
+    state.history?.detail === undefined &&
+    state.agents?.detail === undefined
+  )
     return { kind: 'close' };
   if (state.defined !== undefined) {
     const step = foldDefinedKey(state.defined, input, key);
@@ -479,6 +599,18 @@ export function foldTabHostKey(
   if (state.active !== undefined) {
     const step = foldActiveKey(state.active, key);
     const next = step.state === state.active ? state : { ...state, active: step.state };
+    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+  }
+  if (state.agents !== undefined) {
+    const step = foldAgentsKey(state.agents, key);
+    return {
+      kind: 'state',
+      state: step.state === state.agents ? state : { ...state, agents: step.state },
+    };
+  }
+  if (state.sessions !== undefined) {
+    const step = foldSessionsKey(state.sessions, key);
+    const next = step.state === state.sessions ? state : { ...state, sessions: step.state };
     return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
   }
   if (state.history !== undefined) {
@@ -525,6 +657,18 @@ export function tabHostLegendItems(state: TabHostState): readonly LegendItem[] {
       [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
       TAB_HOST_KEYS.close,
     );
+  if (state.agents !== undefined)
+    return agentsLegendItems(
+      state.agents,
+      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
+      TAB_HOST_KEYS.close,
+    );
+  if (state.sessions !== undefined)
+    return sessionsLegendItems(
+      state.sessions,
+      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
+      TAB_HOST_KEYS.close,
+    );
   if (sheet === undefined) return TAB_HOST_LEGEND_PLAIN_ITEMS;
   if (sheet.armed) return SHEET_LEGEND_ARMED_ITEMS;
   return sheetEntries(sheet.snapshot).length > 0
@@ -544,7 +688,7 @@ const CURRENT_MARK = '▸ ';
 function tabStrip(current: TabId, width: number): SheetLine {
   let text = '';
   const spans: SheetSpan[] = [];
-  TABS.forEach((tab, index) => {
+  tabSetOf(current).forEach((tab, index) => {
     if (index > 0) {
       spans.push({ from: text.length, to: text.length + STRIP_SEPARATOR.length, role: 'dim' });
       text += STRIP_SEPARATOR;
@@ -639,14 +783,17 @@ function allowlistLines(list: RepoAllowlist | undefined, width: number): readonl
   ];
 }
 
+/** What a tab says when its data could not be read; the Permissions tab's sentence is the fallback (Active has its own phase and is never drawn plain). */
+const TAB_UNREADABLE: Readonly<Partial<Record<TabId, string>>> = {
+  defined: DEFINED_UNREADABLE,
+  history: HISTORY_UNREADABLE,
+  agents: AGENTS_UNREADABLE,
+  sessions: SESSIONS_UNREADABLE,
+};
+
 /** The lines of a tab whose data could not be read. */
 function plainBody(state: TabHostState): readonly SheetLine[] {
-  const text =
-    state.tab === 'defined'
-      ? DEFINED_UNREADABLE
-      : state.tab === 'history'
-        ? HISTORY_UNREADABLE
-        : PERMISSIONS_UNREADABLE;
+  const text = TAB_UNREADABLE[state.tab] ?? PERMISSIONS_UNREADABLE;
   return [{ kind: 'failed', text }];
 }
 
@@ -662,6 +809,7 @@ const TOO_SMALL_BACK_TO_RUN: LegendItem = { keys: 'Esc', verb: 'back to the run'
 
 /** The `Esc` the legend below the floor names: the level it steps back to, or `close` from a tab's list (the tab host's own rule). */
 function tooSmallEscape(state: TabHostState): LegendItem {
+  if (state.agents?.detail !== undefined) return TOO_SMALL_BACK_TO_LIST;
   const detail = state.history?.detail;
   if (detail === undefined) return TAB_HOST_KEYS.close;
   return detail.node === undefined ? TOO_SMALL_BACK_TO_LIST : TOO_SMALL_BACK_TO_RUN;
@@ -697,6 +845,10 @@ export function tabHostLines(state: TabHostState, geometry: SheetGeometry): read
     return [...head, ...activeBody(state.active, width, budget - head.length - 1), foot];
   if (state.history !== undefined)
     return [...head, ...historyBody(state.history, width, budget - head.length - 1), foot];
+  if (state.agents !== undefined)
+    return [...head, ...agentsBody(state.agents, width, budget - head.length - 1), foot];
+  if (state.sessions !== undefined)
+    return [...head, ...sessionsBody(state.sessions, width, budget - head.length - 1), foot];
   if (sheet === undefined) return [...head, ...plainBody(state), foot];
   // The sheet's own note and message row sit under its list; its legend is replaced by the tab host's, which names the tab keys too.
   const sheetFoot = permissionsSheetChrome(sheet, geometry).foot.slice(0, 2);
