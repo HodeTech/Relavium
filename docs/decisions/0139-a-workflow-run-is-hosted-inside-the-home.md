@@ -169,3 +169,15 @@ This note records what the sitting changed in the built behaviour of the continu
 - **The question says what a Yes costs.** It reads `Run <id> is waiting for media jobs. Continue it here? It runs in this Home until the jobs finish, and leaving the Home cancels it.` The resumed engine marks the pause as already announced, so the leg keeps polling, holding the lease and the Home's one leg slot, and leaving the Home cancels it cooperatively: the run becomes `cancelled`, which cannot be resumed, and the paid jobs' output is never fetched. Ending a hosted continue on a leave in a way that keeps the run resumable is a follow-up the maintainer registered; it is not built here.
 - **A live lease is refused early.** `runs.status` stays `paused` while a media leg polls, so another process still offers the run. The media form of `resumeRun` reads the run's lease before it asks for a secret or may start a local server, and refuses a live one with `That run is being continued by another process.` An expired lease is not a refusal. The engine's acquire remains the authority and refuses a lease taken in the gap with the holder named.
 - **Two wordings.** A secret field left on this path says `Not continued: the secrets were not entered.` (the gate path's sentence names its gate and is unchanged), and a continue called without the secrets a run needs names neither a gate nor a shell command.
+
+### Maintainer ruling — 2026-11-23 (MVP-8 step 5, the as-built points)
+
+The maintainer ruled on the six points of the as-built note above, and on one more, by accepting the recommendations. The code stands in every case; this note and the as-built note together are the record.
+
+- **§4 and ADR-0115: the human gate's `Ctrl+N` keeps the card's lockout.** It is an exception to ADR-0115's "a rejection is never delayed", because rejecting a human gate continues the run, as an approval does. A rejection that only denies a tool call is still never delayed.
+- **§6, the database.** A leg abandoned past the grace and the settle bound leaves the shared database open: closing it under a writing leg is worse than an unclosed file that the lease expires and the next start settles.
+- **§4, resume.** A resumed leg runs the MCP consent check again for a server this machine holds no grant for (the ADR-0084 reading).
+- **§4, the consent row.** The grant is per machine, and the card says "on this machine".
+- **§4, the input gate.** The text field is not part of MVP-8. An input gate offers `Ctrl+N` only; the field is a later increment.
+- **§6, the exit wording.** The card and the reference say about thirteen seconds (ten of grace and three of settle).
+- **§6, an unclassified fault ends the Home.** A fault in a leg that no `CliError` mapping classifies ends the Home and its background run: a bug is not recoverable state, and the behaviour is pinned by a test. File reads, config, parse and storage faults are mapped to `CliError` and are notices.
