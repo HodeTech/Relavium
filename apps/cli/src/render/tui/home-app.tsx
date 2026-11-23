@@ -268,7 +268,12 @@ function ChatRegion(
         color={color}
       />
       {props.palette !== undefined && (
-        <PaletteView commands={HOME_CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
+        <PaletteView
+          commands={HOME_CHAT_PALETTE_COMMANDS}
+          state={props.palette}
+          color={color}
+          {...(viewport === undefined ? {} : { maxRows: viewport.rows - 1 })}
+        />
       )}
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
@@ -1032,6 +1037,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           rows={size.rows}
           color={color}
           paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          {...(state.palette === undefined
+            ? {}
+            : { palette: { commands: HOME_PALETTE_COMMANDS, state: state.palette } })}
           showBanner={props.showBanner}
           keyless={state.keyless}
           parkedRuns={state.parkedRuns}
@@ -1042,9 +1050,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           exitGuard={state.exitGuard}
         />
       )}
-      {state.palette !== undefined && homeFitsTerminal(size.cols, size.rows) && (
-        <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
-      )}
+      {/* The `/` palette is drawn by `HomeView`, in the prompt's place, so that the strip and the notice leave it its rows. */}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}

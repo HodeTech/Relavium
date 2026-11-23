@@ -168,6 +168,10 @@ import { createSessionsPort } from './sessions-port.js';
 import { createPinPort } from './pin-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { runExportCard } from '../render/tui/export-card.js';
+import { createImportPort } from './import-port.js';
+import { runImportCard } from '../render/tui/import-card.js';
+import { createPricingPort } from './pricing-port.js';
+import { runPricingCard } from '../render/tui/pricing-card.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
@@ -1979,6 +1983,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       });
       // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
+      // `/import` (ADR-0140 §9): the import card over `relavium import`'s own prepare and commit, on the same native flow.
+      const importPort = createImportPort({ global: deps.global, homeDir });
+      // `/pricing` (ADR-0140 §9): the pricing form over `relavium models pricing`'s own core, on the Home's one open `history.db` and the
+      // merged catalog the `/models` picker lists (read when the form opens). The database is always open here, so the form always exists.
+      const pricingPort = createPricingPort({
+        db: opened.db,
+        uuid,
+        now,
+        models: () => models.load().entries,
+      });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
@@ -2021,6 +2035,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },
             slug,
           ),
+        importDefined: () =>
+          runImportCard({
+            flow: promptFlow,
+            port: importPort,
+            assertAdmitting: assertHomeAdmitting,
+          }),
+        pricing: () =>
+          runPricingCard({
+            flow: promptFlow,
+            port: pricingPort,
+            assertAdmitting: assertHomeAdmitting,
+          }),
         // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
         // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
         hostedRuns,

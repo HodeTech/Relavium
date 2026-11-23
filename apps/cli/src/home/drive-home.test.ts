@@ -25,6 +25,7 @@ import {
   createClient,
   createEffectJournalStore,
   createRunHistoryStore,
+  createProviderStore,
   createRunPinStore,
   createSessionStore,
   runMigrations,
@@ -77,6 +78,8 @@ import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { agentSheetLines } from '../render/tui/agent-sheet.js';
 import { permissionsSheetOf } from '../render/tui/chat-sheet.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { IMPORT_PATH_MESSAGE } from '../render/tui/import-card.js';
+import { PRICING_ACTION_SET, PRICING_NOT_RECORDED } from '../render/tui/pricing-card.js';
 import {
   defaultSubscribeProcessExit,
   defaultSubscribeSignals,
@@ -2038,6 +2041,124 @@ workflow:
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+  });
+
+  describe('ADR-0140 §9: the bare Home’s `/import` and `/pricing` are wired to the Home’s own project, database and catalog', () => {
+    const WORKFLOW = `schema_version: '1.0'
+workflow:
+  id: shared
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+    /** A whole key as the host's `useInput` hands it to the prompt channel. */
+    const nativeKey = (over: Partial<typeof NATIVE_RETURN>): typeof NATIVE_RETURN => ({
+      ...NATIVE_RETURN,
+      return: false,
+      ...over,
+    });
+    const typeLine = (props: RootAppProps, line: string): void => {
+      props.controller.handlePaste(line);
+      props.controller.handleKey('', ENTER);
+    };
+    /** The Home, mounted, with its native prompt channel. */
+    function openHome() {
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const prompt = props.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt channel');
+      return { props, prompt, drivePromise };
+    }
+    const leave = async (props: RootAppProps, drivePromise: Promise<unknown>): Promise<void> => {
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    };
+
+    it('/import asks for a path, shows the import over the Home’s own project directory, and a No writes nothing', async () => {
+      mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+      mkdirSync(join(cwd, 'incoming'));
+      writeFileSync(join(cwd, 'incoming', 'shared.relavium.yaml'), WORKFLOW);
+      const { props, prompt, drivePromise } = openHome();
+      typeLine(props, '/import');
+      await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('text'), { timeout: WAIT_MS });
+      expect(prompt.getSnapshot().message).toBe(IMPORT_PATH_MESSAGE);
+      expect(props.controller.getSnapshot().nativeActionBusy, 'the keyboard is the card’s').toBe(
+        true,
+      );
+      prompt.paste('incoming/shared.relavium.yaml');
+      prompt.input('', nativeKey({ return: true }));
+      await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
+      const card = prompt.getSnapshot();
+      expect(card.message).toBe("Import workflow 'shared' into this project?");
+      expect(card.details[0]).toMatch(/^from\s+incoming\/shared\.relavium\.yaml$/u);
+      expect(card.details[1]).toMatch(/^to\s+\.relavium\/workflows\/shared\.relavium\.yaml$/u);
+      prompt.input('n', nativeKey({ ctrl: true }));
+      await vi.waitFor(
+        () => expect(props.controller.getSnapshot().notice).toBe('Nothing was written.'),
+        { timeout: WAIT_MS },
+      );
+      expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
+      expect(() =>
+        readFileSync(join(cwd, '.relavium', 'workflows', 'shared.relavium.yaml'), 'utf8'),
+      ).toThrow();
+      await leave(props, drivePromise);
+    });
+
+    it('/pricing lists the catalog the Home’s `/models` lists and the providers its own database holds, and leaving it records nothing', async () => {
+      // A provider registered in the very database the Home opened: the form's provider step lists it, so the port reads that handle.
+      createProviderStore(client.db, { uuid: () => randomUUID(), now: () => 1 }).upsert({
+        name: 'openai',
+        displayName: 'OpenAI',
+        baseUrl: 'https://api.openai.com/v1',
+      });
+      const { props, prompt, drivePromise } = openHome();
+      typeLine(props, '/pricing');
+      await vi.waitFor(
+        () => expect(prompt.getSnapshot().message).toBe('Model pricing: what do you want to do?'),
+        { timeout: WAIT_MS },
+      );
+      expect(props.controller.getSnapshot().nativeActionBusy, 'the keyboard is the form’s').toBe(
+        true,
+      );
+      expect(prompt.getSnapshot().options[0]?.label, 'the first option is the one chosen').toBe(
+        PRICING_ACTION_SET,
+      );
+      prompt.input('', nativeKey({ return: true })); // the first option: Set a price
+      await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Which model?'), {
+        timeout: WAIT_MS,
+      });
+      const options = prompt.getSnapshot().options.map((option) => option.label);
+      expect(options.at(-1)).toBe('Another model…');
+      expect(
+        options.length,
+        'the merged catalog the /models picker lists is behind the list: more than the one row for a model it does not show',
+      ).toBeGreaterThan(1);
+      prompt.input('', nativeKey({ upArrow: true })); // wraps to the last option: Another model…
+      prompt.input('', nativeKey({ return: true }));
+      await vi.waitFor(() => expect(prompt.getSnapshot().message).toBe('Model id'), {
+        timeout: WAIT_MS,
+      });
+      prompt.paste('my-own-model');
+      prompt.input('', nativeKey({ return: true }));
+      await vi.waitFor(
+        () => expect(prompt.getSnapshot().message).toBe("Which provider serves 'my-own-model'?"),
+        { timeout: WAIT_MS },
+      );
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['openai']);
+      prompt.input('c', nativeKey({ ctrl: true })); // leaves the form: nothing was recorded
+      await vi.waitFor(
+        () => expect(props.controller.getSnapshot().notice).toBe(PRICING_NOT_RECORDED),
+        { timeout: WAIT_MS },
+      );
+      expect(props.controller.getSnapshot().nativeActionBusy).toBe(false);
+      await leave(props, drivePromise);
     });
   });
 

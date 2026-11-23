@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import type { ReplCommand } from '../../commands/repl-commands.js';
 import { sanitizeInline } from './chat-projection.js';
 import { filterPaletteCommands, type PaletteState } from './palette-reducer.js';
+import { paletteLines } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 
 /**
@@ -18,6 +19,12 @@ export interface PaletteViewProps {
   readonly commands: readonly ReplCommand[];
   readonly state: PaletteState;
   readonly color: boolean;
+  /**
+   * The most rows the whole palette may draw, its gap, query line and legend included. When the matching entries do not all fit, a window of
+   * them is drawn ({@link paletteLines}) with a `▲ N more` / `▼ N more` marker for the entries it hides, and the highlighted entry is always
+   * inside it. Absent ⇒ every entry is drawn, as it always was.
+   */
+  readonly maxRows?: number | undefined;
 }
 
 export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
@@ -33,8 +40,16 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
           no matching command
         </Text>
       ) : (
-        filtered.map((command, index) => {
-          const selected = index === state.index;
+        paletteLines(filtered.length, state.index, props.maxRows).map((line) => {
+          if (line.kind === 'marker')
+            return (
+              <Text key={line.position} {...dimProps(color)} wrap="truncate-end">
+                {`  ${line.text}`}
+              </Text>
+            );
+          const command = filtered[line.index];
+          if (command === undefined) return null;
+          const selected = line.index === state.index;
           return (
             <Text
               key={command.name}

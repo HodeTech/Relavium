@@ -1,6 +1,7 @@
 import { Box, Text, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
+import type { ReplCommand } from '../../commands/repl-commands.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
@@ -29,6 +30,9 @@ import {
   type ParkedRunKind,
   type ParkedRunRow,
 } from './home-attention.js';
+import { PaletteView } from './palette-view.js';
+import type { PaletteState } from './palette-reducer.js';
+import { PALETTE_MIN_ROWS, paletteRowBudget } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
@@ -73,6 +77,12 @@ interface HomeViewProps {
   readonly color: boolean;
   /** When the `/` palette is open it owns the bottom of the view, so the prompt + footer hint are suppressed (2.5.C S3c). */
   readonly paletteOpen?: boolean;
+  /**
+   * The bare Home's open `/` palette, drawn here in the prompt's place so that the strip and the notice can leave it the rows it needs: the
+   * landing and the palette together are never taller than the terminal (`paletteRowBudget`, `paletteLines`). Absent ⇒ no palette is drawn
+   * here (`paletteOpen` alone only suppresses the prompt, as it does for the model picker, which the host draws).
+   */
+  readonly palette?: { readonly commands: readonly ReplCommand[]; readonly state: PaletteState };
   /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
   readonly showBanner?: boolean | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */
@@ -274,6 +284,15 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     exitGuard === undefined
       ? undefined
       : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000).length;
+  const palette = props.palette;
+  const paletteRows =
+    palette === undefined ? undefined : paletteRowBudget(rows, palette.commands.length);
+  // The notice leaves the palette what the prompt block would have left it (`homePromptRows + 3 + keyless`, the notice's own slack included)
+  // and the rest of the palette's rows (`paletteRows + 2`: the budget, the unused row and the same slack).
+  const paletteNoticeRows =
+    paletteRows === undefined
+      ? 0
+      : Math.max(0, paletteRows + 2 - (promptHeight + 3 + (keylessLine ? 1 : 0)));
   const noticeLayout = layoutHomeNotice({
     notice: guardRows === undefined ? notice : undefined,
     editor,
@@ -285,20 +304,25 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
     ...stripReach(parked, snapshot),
-    reservedRows: runRows,
+    reservedRows: runRows + paletteNoticeRows,
     ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
   });
-  // Reserve all headings/margins and the whole editor before allocating management rows.
-  let remaining = Math.max(
-    0,
-    rows -
-      (showBanner ? 4 : 1) -
-      (guardRows === undefined ? promptHeight + 2 + (keylessLine ? 1 : 0) : guardRows + 1) -
-      runRows -
-      (errorText === undefined ? 0 : 2) -
-      (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) -
-      (isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1),
-  );
+  // Reserve all headings/margins and the whole editor before allocating management rows. An open palette takes the prompt's place and the
+  // rows `paletteRowBudget` names (and the one row no frame uses): the strip is trimmed to what is left, as it is for a long prompt.
+  const reservedBelow =
+    (guardRows === undefined
+      ? palette === undefined
+        ? promptHeight + 2 + (keylessLine ? 1 : 0)
+        : 0
+      : guardRows + 1) + (paletteRows === undefined ? 0 : paletteRows + 1);
+  const fixedRows =
+    (showBanner ? 4 : 1) +
+    runRows +
+    (errorText === undefined ? 0 : 2) +
+    (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) +
+    (isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1);
+  const stripBudget = Math.max(0, rows - reservedBelow - fixedRows);
+  let remaining = stripBudget;
   let attentionRemaining = Math.max(
     0,
     remaining - (snapshot.recentSessions.length > 0 ? 4 : 0) - 2,
@@ -380,6 +404,11 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     key: a.agentSlug,
     line: agentLabel(a, nowMs),
   }));
+
+  // What the landing above the palette draws, by the very accounting that sized it; the palette may take the rest, less the unused row.
+  const bodyRows =
+    fixedRows + (stripBudget - remaining) + (guardRows === undefined ? 0 : guardRows + 1);
+  const paletteMaxRows = Math.max(PALETTE_MIN_ROWS, rows - 1 - bodyRows);
 
   return (
     <Box ref={frame} flexDirection="column">
@@ -539,6 +568,15 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
             })}
           </Text>
         </Box>
+      )}
+
+      {palette !== undefined && (
+        <PaletteView
+          commands={palette.commands}
+          state={palette.state}
+          color={color}
+          maxRows={paletteMaxRows}
+        />
       )}
     </Box>
   );

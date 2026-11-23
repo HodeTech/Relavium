@@ -491,6 +491,33 @@ const HOME_RUN_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/**
+ * `/import` at the bare Home ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §9): the card over `relavium import`'s own core, which writes a file only on a Yes and never overwrites. A Home command only: a live chat
+ * has no `/import` (the controller routes it, and this entry is in no chat palette).
+ */
+const HOME_IMPORT_COMMAND = freezeReplCommand({
+  name: 'import',
+  label: 'Import file',
+  description: 'Bring a YAML file into this project, after confirmation.',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
+/**
+ * `/pricing` at the bare Home (ADR-0140 §9): the form over `relavium models pricing`'s own core, which records a price only on a Yes. A Home
+ * command only, as `/import` is.
+ */
+const HOME_PRICING_COMMAND = freezeReplCommand({
+  name: 'pricing',
+  label: 'Model pricing',
+  description: 'Set or clear your own price for a model (models pricing).',
+  effect: 'write',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...CHAT_PALETTE_COMMANDS,
   HOME_PROVIDERS_COMMAND,
@@ -510,6 +537,8 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   HOME_RUN_COMMAND,
   HOME_WORKFLOWS_COMMAND,
   HOME_AGENTS_COMMAND,
+  HOME_IMPORT_COMMAND,
+  HOME_PRICING_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

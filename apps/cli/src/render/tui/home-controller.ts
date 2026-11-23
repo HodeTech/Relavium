@@ -590,6 +590,19 @@ export interface HomeControllerDeps {
    */
   readonly exportDefined?: ((slug: string) => Promise<string>) | undefined;
   /**
+   * `/import` at the landing ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §9): ask for a path, show what the import would write, and write the file only on a Yes. It resolves with the sentence the landing shows;
+   * it holds the native action while the card is open. A Home word: with a chat in front the typed line is the chat's. Absent ⇒ `/import`
+   * says import is unavailable in this session.
+   */
+  readonly importDefined?: (() => Promise<string>) | undefined;
+  /**
+   * `/pricing` at the landing (ADR-0140 §9): the form that sets or clears the operator's own price for a model, and the card that records it
+   * only on a Yes. It resolves with the sentence the landing shows; it holds the native action while the form is open. A Home word, as
+   * `/import` is. Absent ⇒ `/pricing` says model pricing is not available here.
+   */
+  readonly pricing?: (() => Promise<string>) | undefined;
+  /**
    * The Active tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §2). The Home polls them only while that tab is in front and no card or exit question is up, every 1.5 seconds and only when the
    * change token moved. Absent ⇒ the tab says it cannot be read.
@@ -1990,6 +2003,35 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Export');
   };
 
+  /**
+   * `/import` at the landing: the import card. Typed and chosen from the palette it is this one function, so the two cannot drift. What the
+   * card writes, it writes only on a Yes; the sentence it resolves with is the landing's notice, which is where the person who typed it looks.
+   */
+  const openImportCard = (): void => {
+    const importDefined = deps.importDefined;
+    if (importDefined === undefined) {
+      set({ notice: 'Import is unavailable in this session.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await importDefined();
+      if (!exiting) set({ notice });
+    }, 'Import');
+  };
+
+  /** `/pricing` at the landing: the model pricing form and its card, opened as {@link openImportCard} is. */
+  const openPricingCard = (): void => {
+    const pricing = deps.pricing;
+    if (pricing === undefined) {
+      set({ notice: 'Model pricing is not available here.' });
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await pricing();
+      if (!exiting) set({ notice });
+    }, 'Model pricing');
+  };
+
   /** A sentence for the person who is looking at the Active tab: its message row, which the next key drops. */
   const noteOnActiveTab = (text: string): void => {
     const screen = state.screen;
@@ -2274,6 +2316,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (text !== '/run')
         set({ notice: '/run accepts no arguments. Use its picker to choose a workflow.' });
       else openRunLaunch();
+      return true;
+    }
+    // `/import` and `/pricing` are Home words too (ADR-0140 §9): a card each, opened only at the landing. With a chat in front they are not
+    // routed here, and the chat's own dispatch answers the line as the unknown slash it is, as it answers `/run`.
+    if (state.session === undefined && /^\/import(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/import')
+        set({ notice: '/import accepts no arguments. It asks for the path.' });
+      else openImportCard();
+      return true;
+    }
+    if (state.session === undefined && /^\/pricing(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/pricing') set({ notice: '/pricing accepts no arguments.' });
+      else openPricingCard();
       return true;
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
@@ -3004,6 +3061,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           if (deps.permissions === undefined)
             set({ notice: 'Remembered commands are not available here.' });
           else openTabHost('permissions');
+        } else if (step.command.name === 'import' && active === undefined) {
+          // home: bare `/import` opens the import card (ADR-0140 §9) — the same function the typed command calls.
+          openImportCard();
+        } else if (step.command.name === 'pricing' && active === undefined) {
+          // home: bare `/pricing` opens the model pricing form (ADR-0140 §9) — the same function the typed command calls.
+          openPricingCard();
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).

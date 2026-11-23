@@ -167,6 +167,23 @@ describe('the frame', () => {
     expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
   });
 
+  it('names /import and /pricing at every size the sheet is drawn at, in at most 23 rows and with no note about anything left out', () => {
+    for (const [columns, rows] of SIZES) {
+      const lines = textOf(columns, rows); // every size in SIZES is at or above the floor the sheet is drawn at
+      const named = namedCommands(lines);
+      for (const word of ['/import', '/pricing'])
+        expect(named, `${word} at ${String(columns)}x${String(rows)}`).toContain(word);
+      expect(lines.length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
+      expect(lines.some((line) => /\d+ more$/u.test(line))).toBe(false);
+    }
+    // With the two new commands the 80x24 sheet holds every command of the Home and the rows it takes are the ones it may take.
+    const at80 = textOf(80, 24);
+    expect(HOME_HELP_COMMANDS.map((command) => command.name)).toEqual(
+      expect.arrayContaining(['import', 'pricing']),
+    );
+    expect(namedCommands(at80).length).toBe(HOME_HELP_COMMANDS.length);
+  });
+
   it('keeps every span inside its line', () => {
     for (const [columns, rows] of SIZES)
       for (const line of helpSheetLines({ columns, terminalRows: rows }))

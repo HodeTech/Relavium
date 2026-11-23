@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { HOME_PALETTE_COMMANDS, REPL_COMMANDS } from '../../commands/repl-commands.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { createChatStore } from './chat-store.js';
-import { HELP_SHEET_KEYS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
+import { HELP_SHEET_KEYS, HOME_HELP_COMMANDS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -190,6 +190,52 @@ describe('a registry word at the landing is answered, and never starts a chat', 
     expect(home.startChat).not.toHaveBeenCalled();
     expect(home.onExit).not.toHaveBeenCalled();
     expect(snapshot.input.text).toBe('');
+    await home.controller.teardownActive();
+  });
+});
+
+/**
+ * The Home's own words that the registry does not hold (`/import` and `/pricing`, ADR-0140 §9): `ANSWERS` above is the registry's, and its
+ * first test fails for a key that is not a registry word, so these have their own table. Each is a command of the bare Home's palette and so
+ * a row of the help sheet; at the landing it is answered by its own route (`home-import-pricing-route.test.ts` owns the cards), and it is
+ * never a message, so it starts no chat, however it reaches the prompt.
+ */
+describe.each([
+  ['/import', 'Import is unavailable in this session.'],
+  ['/pricing', 'Model pricing is not available here.'],
+] as const)('the Home word %s', (word, unavailable) => {
+  const name = word.slice(1);
+
+  it('is a command of the bare Home’s palette and a row of the help sheet, and is not a word of the registry', () => {
+    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name);
+    expect(HOME_HELP_COMMANDS.map((command) => command.name)).toContain(name);
+    expect(REPL_COMMANDS.map((command) => command.name)).not.toContain(name);
+  });
+
+  it.each([
+    ['pasted', pasted],
+    ['typed', typed],
+  ] as const)('when %s is answered at the landing and starts no chat', async (_how, enter) => {
+    const home = mount();
+    enter(home, word);
+    await flush();
+    expect(home.startChat).not.toHaveBeenCalled();
+    const snapshot = home.controller.getSnapshot();
+    expect(snapshot.notice).toBe(unavailable);
+    expect(snapshot.palette).toBeUndefined();
+    expect(snapshot.input.text).toBe('');
+    expect(snapshot.mode).toBe('home');
+    await home.controller.teardownActive();
+  });
+
+  it('with text after it is told it takes no arguments, and is not sent as a message', async () => {
+    const home = mount();
+    pasted(home, `${word} some/file.yaml`);
+    await flush();
+    expect(home.startChat).not.toHaveBeenCalled();
+    expect(home.controller.getSnapshot().notice).toMatch(
+      new RegExp(`^${word} accepts no arguments\\.`, 'u'),
+    );
     await home.controller.teardownActive();
   });
 });

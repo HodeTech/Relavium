@@ -11,6 +11,7 @@ import {
   REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from './repl-commands.js';
+import { filterPaletteCommands } from '../render/tui/palette-reducer.js';
 
 /**
  * DERIVED from `ReplCommandContext`, never hand-kept. Both this map and the `total` sum below used to enumerate the
@@ -280,6 +281,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'run', // the launch of a hosted workflow run (ADR-0139 §7, MVP-8 step 3)
       'workflows', // the Defined tab of the tab host (ADR-0140 §2, MVP-8 step 4): the Home's own, not the chat's
       'agents', // the `/agents` strip of the tab host (ADR-0140 §3, MVP-8 step 5): the Home's own, there is no chat `/agents`
+      'import', // the import card (ADR-0140 §9, MVP-8 step 5): the Home's own, a file written only on a Yes
+      'pricing', // the model pricing form (ADR-0140 §9, MVP-8 step 5): the Home's own, described as `models pricing`
     ]);
   });
 
@@ -309,6 +312,42 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
     // Nor is it a REPL command a chat could dispatch: a typed `/run` in a chat is an unknown slash.
     expect(REPL_COMMANDS_BY_NAME.has('run')).toBe(false);
+  });
+
+  it('/import and /pricing are Home commands only: in the Home palette, in no chat palette, and not a command a chat could dispatch (ADR-0140 §9)', () => {
+    for (const name of ['import', 'pricing']) {
+      const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
+      expect(command?.availableIn, `/${name}`).toEqual(['home']);
+      // Both write something (a file, a price) and ask first: the registry says `write`, as it does of `/run` and `/init`.
+      expect(command?.effect, `/${name}`).toBe('write');
+      for (const [setName, set] of [
+        ['PALETTE', PALETTE_COMMANDS],
+        ['CHAT', CHAT_PALETTE_COMMANDS],
+        ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
+      ] as const) {
+        expect(
+          set.map((entry) => entry.name),
+          `${setName} must not offer /${name}`,
+        ).not.toContain(name);
+      }
+      expect(REPL_COMMANDS_BY_NAME.has(name), `/${name} is no REPL command`).toBe(false);
+    }
+    expect(
+      HOME_PALETTE_COMMANDS.find((command) => command.name === 'pricing')?.description,
+      'the palette says which command this form is the other half of',
+    ).toContain('models pricing');
+  });
+
+  it('every command of the Home palette is the first answer to its own name, so a description never captures another command’s word', () => {
+    // The palette filter matches names AND descriptions. `/pricing`'s words include `clear` and `models`, and `/import`'s include `file` and
+    // `project`; none of them may put a command in front of the one a person named, whatever the query.
+    for (const command of HOME_PALETTE_COMMANDS) {
+      const first = filterPaletteCommands(HOME_PALETTE_COMMANDS, command.name)[0];
+      expect(first?.name, `the query "${command.name}"`).toBe(command.name);
+    }
+    // The new entries come after every older one, so they can only add a row at the end of an older command's results.
+    const names = HOME_PALETTE_COMMANDS.map((command) => command.name);
+    expect(names.slice(-2)).toEqual(['import', 'pricing']);
   });
 
   it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {

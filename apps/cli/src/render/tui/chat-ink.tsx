@@ -2026,7 +2026,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           color={color}
         />
         {palette !== undefined && (
-          <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
+          <PaletteView
+            commands={CHAT_PALETTE_COMMANDS}
+            state={palette}
+            color={color}
+            maxRows={windowSize.rows - 1}
+          />
         )}
         {search !== undefined && (
           <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
