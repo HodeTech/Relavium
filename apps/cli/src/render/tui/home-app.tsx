@@ -52,8 +52,9 @@ import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
-import type { PermissionsSheetState } from './permissions-sheet.js';
-import { PermissionsSheetView, SheetLinesView } from './permissions-sheet-view.js';
+import type { ChatSheetState } from './chat-sheet.js';
+import { ChatSheetView } from './chat-sheet-view.js';
+import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
 import { helpSheetLines } from './help-sheet.js';
 import { EffortTierList } from './effort-tier-list.js';
@@ -145,7 +146,7 @@ function ChatRegion(
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
     effortPicker: EffortPickerState | undefined;
-    permissionsSheet: PermissionsSheetState | undefined;
+    chatSheet: ChatSheetState | undefined;
     /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
      *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
@@ -241,7 +242,7 @@ function ChatRegion(
           props.mention !== undefined ||
           props.modelPicker !== undefined ||
           props.effortPicker !== undefined ||
-          props.permissionsSheet !== undefined
+          props.chatSheet !== undefined
         }
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
@@ -289,10 +290,10 @@ function ChatRegion(
           color={color}
         />
       )}
-      {/* The `/permissions` sheet in a live in-Home chat (ADR-0137 §2) — docked with the other overlays. */}
-      {props.permissionsSheet !== undefined && (
-        <PermissionsSheetView
-          state={props.permissionsSheet}
+      {/* The docked sheet of a live in-Home chat — `/permissions` (ADR-0137 §2) or `/agent` (ADR-0140 §3) — with the other overlays. */}
+      {props.chatSheet !== undefined && (
+        <ChatSheetView
+          state={props.chatSheet}
           color={color}
           columns={props.reviewSize.cols}
           rows={props.reviewSize.rows}
@@ -547,7 +548,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.mention === undefined &&
     state.modelPicker === undefined &&
     state.effortPicker === undefined &&
-    state.permissionsSheet === undefined &&
+    state.chatSheet === undefined &&
     !prompt.active &&
     !state.nativeActionBusy;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
@@ -875,7 +876,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           mention={state.mention}
           modelPicker={state.modelPicker}
           effortPicker={state.effortPicker}
-          permissionsSheet={state.permissionsSheet}
+          chatSheet={state.chatSheet}
           now={props.nowMs}
           cols={size.cols}
           // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which

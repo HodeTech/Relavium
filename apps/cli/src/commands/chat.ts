@@ -12,6 +12,7 @@ import {
   type CommandGrantStore,
 } from '../permissions/command-grants.js';
 import type { LocalDbNoticeContext } from '../db/checkpoint-notice.js';
+import { boundAgentView, type BoundAgentView } from '../chat/bound-agent-view.js';
 import { ownSessionOutput, ownSessionSubscriber } from '../chat/session-presentation.js';
 import { SessionChatTerminal } from '../chat/session-chat-terminal.js';
 import type { SessionInkMount } from '../chat/session-ink-mount.js';
@@ -178,6 +179,7 @@ import {
   sanitizeInline,
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
+import { agentNotice } from '../render/tui/agent-sheet.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { askUserOption, createAskUserPort } from '../chat/ask-user-port.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
@@ -315,6 +317,10 @@ export interface ChatDriveContext {
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2):
    *  present on an interactive (TTY, non-`--json`) driver only; absent ⇒ `/permissions` says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
+  /** The view of the agent this session is bound to ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): a typed (or palette-selected) bare `/agent` opens the docked sheet over it. Present on an interactive (TTY, non-`--json`) driver
+   *  only; absent ⇒ `/agent` dispatches and prints the same fields as a notice. */
+  readonly boundAgent?: () => BoundAgentView;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -1782,6 +1788,10 @@ export interface ChatLineHandler extends ChatModeControl {
   /** The `/permissions` sheet's port ([ADR-0137](../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)):
    *  present on an interactive session only, where there is someone to ask and a store to read. */
   readonly permissions: PermissionsPort | undefined;
+  /** The agent this session is bound to, as the `/agent` sheet and notice show it ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): read from the definition the session holds, never from a file, with the reasoning tier the session is using now; built afresh
+   *  on every call. */
+  readonly boundAgent: () => BoundAgentView;
 }
 
 /**
@@ -1955,6 +1965,13 @@ export function createChatLineHandler(
     ...(workOwner === undefined ? {} : { onFailure: workOwner.failure }),
   });
 
+  // The bound agent as `/agent` shows it (ADR-0140 §3): the definition THIS session holds (a reseat builds a new session over the swapped
+  // copy, so it is the provider and model the chat runs on now), scrubbed by the `/agents` detail's own builder, and the reasoning tier the
+  // session is using NOW, which is the footer's (`store.getSnapshot().reasoningEffort`): `/effort` changes it on the session and never on
+  // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows.
+  const boundAgent = (): BoundAgentView =>
+    boundAgentView(built.agent, store.getSnapshot().reasoningEffort);
+
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
   const replCtx: ReplCommandContext = {
@@ -2051,6 +2068,11 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
+    // `/agent` (ADR-0140 §3): the interactive hosts open the docked sheet before dispatch, so this is what a plain, `--json` or one-shot
+    // chat, which has no sheet, shows: the same fields, as a notice, from the same definition the session holds (nothing is read or written).
+    showAgent: () => {
+      emitOutput(agentNotice(boundAgent()));
+    },
     // `/permissions` (ADR-0118 §2): the project's remembered commands and this session's approvals, and withdrawing one.
     // `/permissions` reaches here only where no sheet opens (a plain, `--json` or one-shot chat): the interactive hosts open the sheet
     // before dispatch (ADR-0137 §2), so this is the sentence a surface with no one to ask gives.
@@ -2377,6 +2399,7 @@ export function createChatLineHandler(
     onModeChange: modeControl.onModeChange,
     onSetEffort: modeControl.onSetEffort,
     commandApprovals: modeControl.commandApprovals,
+    boundAgent,
     permissions: interactive
       ? createPermissionsPort(
           { grants: commandGrants, session: modeControl.commandApprovals },
@@ -3093,6 +3116,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onModeChange,
     onSetEffort,
     permissions,
+    boundAgent,
   } = createChatLineHandler(wiring, modeDeps);
   // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
   // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
@@ -3204,6 +3228,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {}),
       // The `/permissions` sheet opens only where someone can ask (ADR-0137 §2); a plain or `--json` driver gets no port and says so.
       ...(interactive && permissions !== undefined ? { permissions } : {}),
+      // The `/agent` sheet opens only in an interactive chat: a plain or `--json` driver has no sheet, and the command prints a notice there.
+      ...(interactive ? { boundAgent } : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
       // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside

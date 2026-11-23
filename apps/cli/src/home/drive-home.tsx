@@ -1057,6 +1057,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onModeChange,
           onSetEffort,
           permissions,
+          boundAgent,
           resumeAfterFailedClear,
         } = createChatLineHandler(
           {
@@ -1220,6 +1221,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           onSetEffort,
           // ADR-0137 §2: the in-Home chat opens the `/permissions` sheet over its own store and session approvals.
           ...(permissions === undefined ? {} : { permissions }),
+          // ADR-0140 §3: `/agent` opens the sheet of the agent THIS session holds (a reseat or a `/clear` wires a new chat, so a new view).
+          boundAgent,
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };

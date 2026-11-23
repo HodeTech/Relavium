@@ -225,7 +225,7 @@ describe('how the tab host is reached', () => {
     open(controller);
     expect(controller.getSnapshot().palette).toBeUndefined();
     expect(
-      controller.getSnapshot().permissionsSheet,
+      controller.getSnapshot().chatSheet,
       'the chat’s overlay is not this screen',
     ).toBeUndefined();
   });

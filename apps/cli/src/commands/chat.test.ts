@@ -1289,6 +1289,139 @@ describe('chatCommand', () => {
     );
   });
 
+  it('/agent on a headless chat prints the bound agent’s fields as a notice, never ends the session, and takes no argument (ADR-0140 §3)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/agent', '/agent now', 'hello', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    // The built-in default agent, from the definition the session holds: its id, name, provider, model, grant and prompt head.
+    expect(out).toContain('Agent · relavium-chat');
+    expect(out).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
+    expect(out).toMatch(/Provider\s+anthropic/u);
+    expect(out).toMatch(/Model\s+claude-sonnet-4-6/u);
+    expect(out).toMatch(/Tools\s+read_file, list_directory/u);
+    expect(out).toMatch(/System prompt\s+You are Relavium's built-in chat assistant/u);
+    expect(
+      out,
+      'the dispatch rejects a typed token, as it does for every zero-argument command',
+    ).toContain("/agent: unknown argument 'now'.");
+    expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  it('/agent shows the reasoning effort the session uses now, the footer’s, and says what the definition declares when that differs (ADR-0140 §3)', async () => {
+    const { d, err } = deps(['/agent', '/effort high', '/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: undefined }, d);
+    const shown = err()
+      .split('\n')
+      .filter((line) => line.includes('Reasoning effort'));
+    // Before `/effort`: no tier on the session and none in the definition. After it: the session's, and the definition's own is named.
+    expect(shown).toHaveLength(2);
+    expect(shown[0]).toMatch(/Reasoning effort\s+not set$/u);
+    expect(shown[1]).toMatch(/Reasoning effort\s+high \(declared: not set\)$/u);
+  });
+
+  it('an interactive chat hands the driver a view that follows /effort, made afresh on each call (ADR-0140 §3)', async () => {
+    const { d } = deps([], [textTurn('unused')]);
+    const seen: (string | undefined)[] = [];
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          ctx.startSession();
+          void ctx.onActivated?.(() => !ctx.shouldStop());
+          seen.push(ctx.boundAgent?.().sessionEffort);
+          await ctx.processLine('/effort high');
+          seen.push(ctx.boundAgent?.().sessionEffort);
+          seen.push(ctx.boundAgent?.().detail.reasoningEffort);
+          return { kind: 'exit' };
+        },
+      },
+    );
+    expect(seen).toEqual([undefined, 'high', undefined]);
+  });
+
+  it('chat --json /agent writes the fields to stderr, never to the stdout NDJSON stream', async () => {
+    const { io, out, err } = captureIo();
+    const store = createSessionStore(client.db);
+    let id = 0;
+    const d: ChatCommandDeps = {
+      io: { ...io, stdin: Readable.from(['/agent\n']) },
+      global: { ...globalOptions(cwd), json: true },
+      providers: scriptedResolver([textTurn('unused')]),
+      openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+      drive: driveJson,
+      now: () => 0,
+      uuid: () => `id-${id++}`,
+    };
+    expect(await chatCommand({ agent: undefined }, d)).toBe(EXIT_CODES.chatEnded);
+    parseNdjson(out()); // throws if a human line leaked onto stdout
+    expect(out()).not.toContain('Agent ·');
+    expect(out()).not.toContain('System prompt'); // the model rides `session:started`, so a field label is the leak test
+    expect(err()).toContain('Agent · relavium-chat');
+    expect(err()).toMatch(/Model\s+claude-sonnet-4-6/u);
+  });
+
+  it.each([
+    {
+      label: 'an interactive chat hands the driver',
+      interactive: true,
+      expected: 'claude-sonnet-4-6',
+    },
+    { label: 'a plain chat hands the driver no', interactive: false, expected: undefined },
+  ])(
+    '$label bound-agent view of the session’s own definition (ADR-0140 §3)',
+    async ({ interactive, expected }) => {
+      const { d } = deps([], [textTurn('unused')]);
+      let seen: string | undefined = 'not driven';
+      await chatCommand(
+        { agent: undefined },
+        {
+          ...d,
+          ...INERT_HOIST,
+          ...(interactive ? { io: { ...d.io, stdoutIsTty: true, stdinIsTty: true } } : {}),
+          drive: (ctx) => {
+            seen = ctx.boundAgent?.().detail.model;
+            ctx.startSession();
+            void ctx.onActivated?.(() => !ctx.shouldStop());
+            return Promise.resolve({ kind: 'exit' });
+          },
+        },
+      );
+      expect(seen).toBe(expected);
+    },
+  );
+
+  it('after a /models reseat the driver’s bound-agent view shows the reseated model, not the one the chat started on (ADR-0140 §3)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    const views: (string | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      views.push(ctx.boundAgent?.().detail.model);
+      ctx.startSession();
+      void ctx.onActivated?.(() => !ctx.shouldStop());
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
+    );
+    expect(views).toEqual(['claude-sonnet-4-6', 'claude-opus-4-8']);
+  });
+
   it('/help lists the curated commands on stderr without ending the session or persisting a turn', async () => {
     const { d, err, store, sessionId } = deps(['/help', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);

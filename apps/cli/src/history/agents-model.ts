@@ -93,7 +93,12 @@ export interface AgentsModel {
   readonly total: number;
 }
 
-function detailOf(agent: AgentFields): AgentDetail {
+/**
+ * The read-only detail of one definition: every free-form string through the one scrub-and-bound floor. Exported so the chat's bound-agent
+ * sheet (`chat/bound-agent-view.ts`) shows a definition through the SAME function the `/agents` detail does: a second builder
+ * would be a second scrub, and two screens could then mask one agent differently.
+ */
+export function agentDetailOf(agent: AgentFields): AgentDetail {
   const declared = agent.tools ?? [];
   const tools = declared.slice(0, AGENT_TOOLS_MAX).map((name) => scrubbedBounded(name));
   const { temperature, reasoning_effort: reasoningEffort } = agent;
@@ -108,6 +113,18 @@ function detailOf(agent: AgentFields): AgentDetail {
   };
 }
 
+/** What a screen says of a definition that declares no tool: it is granted none by its definition. */
+export const NO_TOOLS_DECLARED = 'none declared';
+
+/** The tool grant as the definition declares it, as one string: the names the detail kept, then how many it left out. */
+export function agentToolsText(detail: AgentDetail): string {
+  if (detail.tools.length === 0 && detail.toolsMore === 0) return NO_TOOLS_DECLARED;
+  const names = detail.tools.join(', ');
+  return detail.toolsMore > 0
+    ? `${names}${names === '' ? '' : ', '}… and ${String(detail.toolsMore)} more`
+    : names;
+}
+
 function rowOf(item: AgentsModelItem, entryIndex: number): AgentRow {
   const { entry, agent } = item;
   const base = {
@@ -118,7 +135,7 @@ function rowOf(item: AgentsModelItem, entryIndex: number): AgentRow {
   };
   // A file is ready only with its definition in hand: a `valid` entry with none is refused, not shown as an agent with no detail.
   if (entry.valid && agent !== undefined) {
-    return { state: 'ready', ...base, detail: detailOf(agent) };
+    return { state: 'ready', ...base, detail: agentDetailOf(agent) };
   }
   return {
     state: 'invalid',

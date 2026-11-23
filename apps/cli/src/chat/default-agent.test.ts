@@ -1,3 +1,4 @@
+import type { Agent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -7,6 +8,7 @@ import {
   DEFAULT_CHAT_TOOLS,
   buildDefaultChatAgent,
   inferProviderFromModel,
+  isBuiltInChatAgent,
 } from './default-agent.js';
 
 describe('inferProviderFromModel', () => {
@@ -138,5 +140,47 @@ describe('the default agent’s command prompt says who decides (ADR-0118 §4, r
     expect(prompt).toContain(
       'except in auto mode where only a command they remembered or approved for the session runs without asking',
     );
+  });
+});
+
+describe('isBuiltInChatAgent: the whole definition is the built-in one, not a subset of it', () => {
+  const builtIn = (): Agent => buildDefaultChatAgent('claude-sonnet-4-6', undefined, 'anthropic');
+
+  it('is true for the built-in agent over any model, provider and reasoning tier, as `/models` and the config default make it', () => {
+    expect(isBuiltInChatAgent(builtIn())).toBe(true);
+    expect(isBuiltInChatAgent(buildDefaultChatAgent('gpt-5.4', 'high', 'openai'))).toBe(true);
+    expect(isBuiltInChatAgent(buildDefaultChatAgent('claude-opus-4-8', 'off', 'anthropic'))).toBe(
+      true,
+    );
+    // A copy that went through a snapshot's JSON round trip (a resumed session) is the same definition.
+    expect(isBuiltInChatAgent(JSON.parse(JSON.stringify(builtIn())) as Agent)).toBe(true);
+  });
+
+  it.each<readonly [string, Partial<Agent>]>([
+    ['id', { id: 'my-chat' }],
+    ['name', { name: 'Someone else' }],
+    ['description', { description: 'An authored description' }],
+    ['system_prompt', { system_prompt: 'Be someone else.' }],
+    ['tools (one more)', { tools: [...DEFAULT_CHAT_TOOLS, 'http_request'] }],
+    ['tools (one fewer)', { tools: DEFAULT_CHAT_TOOLS.slice(1) }],
+    ['tools (the same names, another order)', { tools: [...DEFAULT_CHAT_TOOLS].reverse() }],
+    ['memory', { memory: { type: 'window', window_size: 4 } }],
+    ['output_schema', { output_schema: { type: 'object' } }],
+    ['input_schema', { input_schema: { type: 'object' } }],
+    [
+      'fallback_chain',
+      { fallback_chain: [{ model: 'gpt-5.4', provider: 'openai', max_attempts: 2 }] },
+    ],
+    ['max_tokens', { max_tokens: 100 }],
+    ['temperature', { temperature: 1.5 }],
+    ['retry', { retry: { max: 3, backoff: 'linear' } }],
+    ['mcp_servers', { mcp_servers: [{ ref: 'filesystem' }] }],
+  ])('is false when only %s differs from the built-in agent', (_field, over) => {
+    expect(isBuiltInChatAgent({ ...builtIn(), ...over })).toBe(false);
+  });
+
+  it('is false for a definition that holds a field the built-in one does not, even set to a value that looks like nothing', () => {
+    expect(isBuiltInChatAgent({ ...builtIn(), tools: [] })).toBe(false);
+    expect(isBuiltInChatAgent({ ...builtIn(), mcp_servers: [] })).toBe(false);
   });
 });

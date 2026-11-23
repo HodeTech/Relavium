@@ -293,16 +293,20 @@ describe('/agents inside a chat', () => {
     return mounted;
   }
 
-  it('is not the Home’s: the tab host does not open and its catalog is not read, and the line reaches the chat', async () => {
+  it('is not the Home’s: the tab host does not open and its catalog is not read, and the person is pointed at the chat’s own /agent', async () => {
     const { controller, lines, agentReads } = await chatting();
     controller.handlePaste('/agents');
     controller.handleKey('', ENTER);
     await flush();
     expect(controller.getSnapshot().screen).toBeUndefined();
     expect(agentReads).not.toHaveBeenCalled();
-    expect(lines, 'the chat received the line, as it receives any slash it does not own').toContain(
+    // The chat has its own `/agent` (ADR-0140 §3), and `/agents` is a near miss of it, so the controller answers the line with the
+    // suggestion that never runs the command it names, as it does for any near miss of a chat word; the chat is not asked to parse it.
+    expect(controller.getSnapshot().notice).toBe('Unknown command. Did you mean /agent?');
+    expect(lines, 'the suggestion never invokes /agent, and the line is not sent').not.toContain(
       '/agents',
     );
+    expect(lines).not.toContain('/agent');
   });
 
   it('is not in the chat palette either', async () => {

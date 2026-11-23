@@ -13,6 +13,7 @@ import {
   clipLine,
   flushRow,
   usableColumns,
+  titleRule,
   windowBody,
   type SheetGeometry,
   type SheetLine,
@@ -500,33 +501,30 @@ function sessionLines(
   return lines;
 }
 
-/** The rule that opens the sheet and carries its title, as the card's rule carries `Approval needed`: it also separates the sheet from the conversation above. */
+/** The rule that opens the sheet and carries its title. */
 function ruleLine(state: PermissionsSheetState, width: number): SheetLine {
-  const title = clipLine(sheetTitle(state), Math.max(1, width - 4));
-  const lead = `─ ${title} `;
-  const text = `${lead}${'─'.repeat(Math.max(2, width - displayWidth(lead)))}`;
-  return {
-    kind: 'rule',
-    text,
-    spans: [
-      { from: 0, to: 2, role: 'dim' },
-      { from: 2, to: 2 + title.length, role: 'strong' },
-      { from: 2 + title.length, to: text.length, role: 'dim' },
-    ],
-  };
+  return titleRule(sheetTitle(state), width);
 }
 
-/** The lines of the sheet when the terminal is below the floor: the title, why, and the way out. */
-function tooSmallLines(state: PermissionsSheetState): readonly SheetLine[] {
+/** The text a sheet shows below the floor, whatever the sheet is: why, and the way out. */
+export const SHEET_TOO_SMALL_TEXT = 'Enlarge the terminal to use this screen — Esc closes.';
+
+/** The lines of a sheet titled `title` when the terminal is below the floor: the title, why, and the way out. */
+export function tooSmallSheetLines(title: string): readonly SheetLine[] {
   return [
-    ruleLine(state, 52),
-    { kind: 'text', text: 'Enlarge the terminal to use this screen — Esc closes.' },
+    titleRule(title, 52),
+    { kind: 'text', text: SHEET_TOO_SMALL_TEXT },
     {
       kind: 'legend',
       text: legend(SHEET_LEGEND_EMPTY_ITEMS),
       spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS),
     },
   ];
+}
+
+/** The lines of the sheet when the terminal is below the floor: the title, why, and the way out. */
+function tooSmallLines(state: PermissionsSheetState): readonly SheetLine[] {
+  return tooSmallSheetLines(sheetTitle(state));
 }
 
 /** Whether the sheet's frame can show a withdrawal's question: the terminal is at least 80×24. */

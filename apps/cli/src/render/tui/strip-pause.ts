@@ -24,7 +24,8 @@ export interface StripPauseFacts {
   readonly palette: boolean;
   readonly modelPicker: boolean;
   readonly effortPicker: boolean;
-  readonly permissionsSheet: boolean;
+  /** A chat's docked sheet is open: `/permissions` or `/agent`. */
+  readonly chatSheet: boolean;
   readonly search: boolean;
   readonly mention: boolean;
   readonly exitGuard: boolean;
@@ -41,7 +42,7 @@ export function stripRefreshPaused(facts: StripPauseFacts): boolean {
     facts.palette ||
     facts.modelPicker ||
     facts.effortPicker ||
-    facts.permissionsSheet ||
+    facts.chatSheet ||
     facts.search ||
     facts.mention ||
     facts.exitGuard ||

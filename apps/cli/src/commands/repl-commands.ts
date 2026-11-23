@@ -36,6 +36,15 @@ export interface ReplCommandContext {
   readonly help: () => void | Promise<void>;
   /** List the project's discovered workflows + agents (the disk catalog) as a notice (2.5.C S4). */
   readonly showWorkflows: () => void | Promise<void>;
+  /**
+   * `/agent` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5)
+   * — show the agent THIS chat is bound to, read-only: its id and name, the provider and model the session runs on, the tool grant as the
+   * definition declares it, the temperature, the reasoning effort and the head of the system prompt. The interactive hosts (the standalone
+   * chat and the in-Home chat) intercept the command and open the docked sheet before it gets here, as they do `/permissions`; this runs
+   * where there is no sheet to open (a plain, `--json` or one-shot chat) and prints the same fields as a notice. Chat-only: the landing has
+   * no session, so it answers the word itself (ADR-0140 §3) and never runs this.
+   */
+  readonly showAgent: () => void | Promise<void>;
   /** Show the session's cumulative cost as a notice (2.5.C S4; the per-model breakdown is 2.6.C). */
   /** `/cost`, and `/cost --release` — ADR-0074 §1's escape hatch, on the surface that renders the amount. */
   readonly showCost: (release?: boolean) => void | Promise<void>;
@@ -176,6 +185,16 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     description: 'Scaffold the session so far to a .relavium.yaml.',
     effect: 'write',
     run: (ctx) => ctx.exportSession(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'agent',
+    label: 'Agent',
+    description: 'Show the agent this chat is bound to.',
+    // Listed before `/workflows`, whose description also says "agents": typing `agent` in the palette then selects this one first.
+    // `read`: it shows the definition the session already holds, and reads and writes nothing. Zero-arg: the dispatch rejects any token.
+    effect: 'read',
+    run: (ctx) => ctx.showAgent(),
     availableIn: ['chat'],
   },
   {

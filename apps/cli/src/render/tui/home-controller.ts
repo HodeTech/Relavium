@@ -23,11 +23,15 @@ import {
 } from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { HOME_HELP_COMMANDS } from './help-sheet.js';
+import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
+import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
 import {
-  disarmPermissionsSheet,
-  sheetCanArm,
-  type PermissionsSheetState,
-} from './permissions-sheet.js';
+  agentChatSheet,
+  permissionsChatSheet,
+  permissionsSheetOf,
+  type ChatSheetState,
+} from './chat-sheet.js';
+import type { BoundAgentView } from '../../chat/bound-agent-view.js';
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
@@ -210,6 +214,10 @@ export interface HomeChatSession {
   /** The `/permissions` sheet's port (ADR-0137 §2): a typed or palette-selected bare `/permissions` opens the sheet over this chat.
    *  Absent ⇒ the command is dispatched and says remembered commands are not available. */
   readonly permissions?: PermissionsPort;
+  /** The view of the agent this chat is bound to ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   *  §3): a typed or palette-selected bare `/agent` opens the read-only sheet over this chat, from the definition the session holds (a reseat
+   *  builds a new session, so it is the provider and model the chat runs on now). Absent ⇒ the command is dispatched and prints a notice. */
+  readonly boundAgent?: () => BoundAgentView;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
@@ -287,10 +295,12 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
-  /** The open `/permissions` sheet of a live in-Home chat (ADR-0137 §2) — `undefined` ⇒ closed. It shows both lists. A keyboard-owning
-   *  overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open. The bare Home's `/permissions` is not
-   *  this: it is the Permissions tab of the tab host, a kind of {@link HomeControllerState.screen} (ADR-0140 §3). */
-  readonly permissionsSheet: PermissionsSheetState | undefined;
+  /** The open docked sheet of a live in-Home chat — `undefined` ⇒ closed. ONE slot for every sheet a chat has, a union by kind
+   *  ({@link ChatSheetState}): `/permissions` (ADR-0137 §2, both lists) and `/agent` (ADR-0140 §3, the bound agent, read-only). A
+   *  keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open, and one value, so two
+   *  sheets cannot be open at once. The bare Home's `/permissions` is not this: it is the Permissions tab of the tab host, a kind of
+   *  {@link HomeControllerState.screen} (ADR-0140 §3). */
+  readonly chatSheet: ChatSheetState | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
   readonly interruptArmed: boolean;
@@ -823,7 +833,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     noticeRevision: 0,
     modelPicker: undefined,
     effortPicker: undefined,
-    permissionsSheet: undefined,
+    chatSheet: undefined,
     interruptArmed: false,
     hostedRun: undefined,
     exitGuard: undefined,
@@ -945,7 +955,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mentionOpen: state.mention !== undefined,
       modelPickerOpen: state.modelPicker !== undefined,
       effortPickerOpen: state.effortPicker !== undefined,
-      permissionsSheetOpen: state.permissionsSheet !== undefined,
+      chatSheetOpen: state.chatSheet !== undefined,
       approvalPending:
         state.session?.store.getSnapshot().approval !== undefined ||
         state.session?.store.getSnapshot().review !== undefined,
@@ -1199,7 +1209,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const overlayOpen = (): boolean =>
     state.palette !== undefined ||
     state.modelPicker !== undefined ||
-    state.permissionsSheet !== undefined ||
+    state.chatSheet !== undefined ||
     state.search !== undefined ||
     state.mention !== undefined ||
     state.effortPicker !== undefined;
@@ -1627,7 +1637,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
-          permissionsSheet: undefined, // and the `/permissions` sheet: a chat's own is gone with the chat, and the Home's is closed on a return
+          chatSheet: undefined, // and the chat's docked sheet (`/permissions`, `/agent`): it is gone with the chat, and with a reseat or a `/clear`
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -1694,7 +1704,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          permissionsSheet: undefined,
+          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -1774,7 +1784,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
-          permissionsSheet: undefined,
+          chatSheet: undefined,
           shellBusy: false,
           submitBusy: true, // keep input gated until disclosure rendering is acknowledged
           shellCommand: undefined,
@@ -2113,7 +2123,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         mention: undefined,
         modelPicker: undefined,
         effortPicker: undefined,
-        permissionsSheet: undefined,
+        chatSheet: undefined,
         shellBusy: false,
         shellCommand: undefined,
         submitBusy: true,
@@ -2343,7 +2353,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mention: undefined,
       modelPicker: undefined,
       effortPicker: undefined,
-      permissionsSheet: undefined,
+      chatSheet: undefined,
       historyEntries: history.entries,
     });
     awaitBuild(
@@ -2730,17 +2740,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // ---- The in-Home chat's `/permissions` sheet (ADR-0137 §2) -----------------------------------------------------------------
-  // Open on the data read NOW, in the chat's current mode: only at an idle prompt with nothing pending, so a card cannot arrive while
-  // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so. The bare
-  // Home has no such sheet: its `/permissions` is the Permissions tab of the tab host (ADR-0140 §3), a screen of the slot.
-  const openPermissionsSheet = (active: HomeChatSession): void => {
-    const port = active.permissions;
-    if (port === undefined) return;
+  // ---- The in-Home chat's docked sheets: `/permissions` (ADR-0137 §2) and `/agent` (ADR-0140 §3) ---------------------------------
+  /**
+   * Whether a docked sheet may open over this chat now: only at an idle prompt with nothing pending, so a card cannot arrive while it is
+   * open (the same gate ChatApp applies). The key gates above already keep a busy chat from reaching here (a running turn, a `!` command
+   * and a submit in flight all gate typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+   */
+  const sheetMayOpen = (active: HomeChatSession): boolean => {
     const snap = active.store.getSnapshot();
-    // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
-    // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
-    if (
+    return !(
       snap.state.status === 'running' ||
       state.shellBusy ||
       state.submitBusy ||
@@ -2748,25 +2756,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       snap.question !== undefined ||
       snap.checkpoint !== undefined ||
       snap.approval !== undefined
-    )
-      return;
+    );
+  };
+  // `/permissions`: open on the data read NOW, in the chat's current mode. A chat without a port is never offered the sheet; it dispatches
+  // and says so. The bare Home has no such sheet: its `/permissions` is the Permissions tab of the tab host (ADR-0140 §3), a screen of the slot.
+  const openPermissionsSheet = (active: HomeChatSession): void => {
+    const port = active.permissions;
+    if (port === undefined || !sheetMayOpen(active)) return;
     // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(port, snap.mode, interruptNow());
-    if (opened.sheet !== undefined) set({ permissionsSheet: opened.sheet });
+    const opened = openPermissionsSheetThroughPort(
+      port,
+      active.store.getSnapshot().mode,
+      interruptNow(),
+    );
+    if (opened.sheet !== undefined) set({ chatSheet: permissionsChatSheet(opened.sheet) });
     else active.store.note(opened.note);
   };
-  // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
-  // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
-  const routePermissionsSheetKey = (
+  // `/agent`: the definition THIS session holds, nothing read and nothing written. It goes into the one sheet slot, so it replaces
+  // whatever sheet was there (none can be, a sheet owns the keyboard) and no field is added to the state. A chat without the view is never
+  // offered the sheet; it dispatches and the chat prints a notice. A defect in the view's builder must not take the prompt down with it either.
+  const openAgentSheet = (active: HomeChatSession): void => {
+    const view = active.boundAgent;
+    if (view === undefined || !sheetMayOpen(active)) return;
+    try {
+      set({ chatSheet: agentChatSheet(view()) });
+    } catch {
+      active.store.note(AGENT_UNREADABLE);
+    }
+  };
+  // The open sheet owns every key. A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on
+  // to the card's own handling (the sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the
+  // product takes). The agent sheet is read-only: `Esc` and `Ctrl+C` close it and every other key is dropped. A permissions withdrawal runs
+  // through the port (the store is read again there) and the sheet reloads with the answer; a defect in the port must not leave the keyboard
+  // owned by a frozen sheet.
+  const routeChatSheetKey = (
     active: HomeChatSession | undefined,
     input: string,
     key: ChatKey,
   ): boolean => {
-    const open = state.permissionsSheet;
-    const port = active?.permissions;
+    const open = state.chatSheet;
     if (open === undefined) return false;
-    // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
-    // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
     const pending = active?.store.getSnapshot();
     if (
       pending !== undefined &&
@@ -2775,18 +2804,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         pending.checkpoint !== undefined ||
         pending.approval !== undefined)
     ) {
-      set({ permissionsSheet: undefined });
+      set({ chatSheet: undefined });
       return false;
     }
-    if (active === undefined || port === undefined) {
-      set({ permissionsSheet: undefined });
+    if (active === undefined) {
+      set({ chatSheet: undefined });
+      return true;
+    }
+    if (open.kind === 'agent') {
+      if (foldAgentSheetKey(input, key) === 'close') set({ chatSheet: undefined });
+      return true;
+    }
+    const port = active.permissions;
+    if (port === undefined) {
+      set({ chatSheet: undefined });
       return true;
     }
     const canArm =
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
-    const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
-    set({ permissionsSheet: result.sheet });
+    const result = foldPermissionsSheetThroughPort(
+      port,
+      open.sheet,
+      input,
+      key,
+      canArm,
+      interruptNow(),
+    );
+    set({ chatSheet: result.sheet === undefined ? undefined : permissionsChatSheet(result.sheet) });
     if (result.note !== undefined) active.store.note(result.note);
     return true;
   };
@@ -2859,6 +2904,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
     managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
+    showAgent: () => undefined, // `/agent` is a chat's (ADR-0140 §3): the landing has no session, so it answers the word itself and never runs this
     openDetails: () => undefined,
     setMode: (argument) => {
       managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
@@ -2969,6 +3015,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         } else if (step.command.name === 'permissions' && active.permissions !== undefined) {
           // chat: bare `/permissions` opens the sheet (ADR-0137 §2) — parity with the typed intercept below.
           openPermissionsSheet(active);
+        } else if (step.command.name === 'agent' && active.boundAgent !== undefined) {
+          // chat: bare `/agent` opens the bound agent's sheet (ADR-0140 §3) — parity with the typed intercept below.
+          openAgentSheet(active);
         } else if (step.command.name === 'effort' && canOpenEffortPicker(active)) {
           // chat: bare `/effort` on a reasoning-capable model opens the interactive overlay (ADR-0066 §6) — parity
           // with the typed-`/effort` intercept; a non-reasoning model falls through to the notice below.
@@ -3248,6 +3297,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       openPermissionsSheet(active);
       return;
     }
+    // Bare `/agent` opens the read-only sheet of the agent this chat is bound to (ADR-0140 §3), where the session holds its view.
+    // `/agent <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
+    if (trimmed === '/agent' && active.boundAgent !== undefined) {
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      openAgentSheet(active);
+      return;
+    }
     if (trimmed === '/effort' && canOpenEffortPicker(active)) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
@@ -3329,7 +3386,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.search !== undefined ||
       state.mention !== undefined ||
       (state.effortPicker !== undefined && active !== undefined) ||
-      state.permissionsSheet !== undefined
+      state.chatSheet !== undefined
     )
       return { kind: 'overlay' };
     if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
@@ -3616,9 +3673,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       routeEffortPickerKey(state.session, input, key);
       return;
     }
-    // The `/permissions` sheet (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither withdraws.
-    if (state.permissionsSheet !== undefined && routePermissionsSheetKey(state.session, input, key))
-      return;
+    // The docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
+    // withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
+    if (state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key)) return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
       return;
@@ -3638,7 +3695,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       palette: state.palette !== undefined,
       modelPicker: state.modelPicker !== undefined,
       effortPicker: state.effortPicker !== undefined,
-      permissionsSheet: state.permissionsSheet !== undefined,
+      chatSheet: state.chatSheet !== undefined,
       search: state.search !== undefined,
       mention: state.mention !== undefined,
       exitGuard: state.exitGuard !== undefined,
@@ -3760,9 +3817,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
       // and a card. Type-ahead behind a busy/overlay state is deferred (2.5.B).
       const pasted = text.replace(/\r\n?/g, '\n');
-      // A paste while the sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
-      if (state.permissionsSheet !== undefined)
-        set({ permissionsSheet: disarmPermissionsSheet(state.permissionsSheet) });
+      // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to (ADR-0137 §2).
+      // The agent sheet has no question to drop, and a paste changes nothing there; `pasteEditable` keeps it out of the composer.
+      const pastedOver = permissionsSheetOf(state.chatSheet);
+      if (pastedOver !== undefined)
+        set({ chatSheet: permissionsChatSheet(disarmPermissionsSheet(pastedOver)) });
       // An open `ask_user` card owns a paste (ADR-0132): it goes into the card's own-answer field or is dropped.
       if (pasted.length > 0 && state.session?.store.pasteIntoQuestion(pasted) === true) return;
       if (pasted.length === 0 || !pasteEditable()) return;

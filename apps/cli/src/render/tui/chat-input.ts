@@ -152,7 +152,7 @@ export interface PasteEditableFlags {
   readonly mentionOpen: boolean; // `@`-mention completion
   readonly modelPickerOpen: boolean; // `/models`
   readonly effortPickerOpen: boolean; // `/effort`
-  readonly permissionsSheetOpen: boolean; // `/permissions` (ADR-0137)
+  readonly chatSheetOpen: boolean; // a docked sheet: `/permissions` (ADR-0137) or `/agent` (ADR-0140)
   readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
 }
 
@@ -173,7 +173,7 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
     !f.mentionOpen &&
     !f.modelPickerOpen &&
     !f.effortPickerOpen &&
-    !f.permissionsSheetOpen &&
+    !f.chatSheetOpen &&
     !f.approvalPending
   );
 }

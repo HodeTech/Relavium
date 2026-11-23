@@ -26,6 +26,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, numbe
     exportSession: vi.fn(),
     help: vi.fn(),
     showWorkflows: vi.fn(),
+    showAgent: vi.fn(),
     showCost: vi.fn(),
     managePermissions: vi.fn(),
     runDoctor: vi.fn(),
@@ -59,6 +60,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'exit',
       'cancel',
       'export',
+      'agent',
       'workflows',
       'cost',
       'doctor',
@@ -91,6 +93,31 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(command?.rejectHint).toBe('Open /permissions and press d on a row to withdraw it.');
   });
 
+  it('/agent takes no argument and is a chat command: one capability, in the chat palette and /help, not in the bare Home’s palette (ADR-0140 §3)', async () => {
+    const spy = spyContext();
+    const command = REPL_COMMANDS_BY_NAME.get('agent');
+    await command?.run(spy.ctx, []);
+    expect(vi.mocked(spy.ctx.showAgent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(spy.ctx.showAgent).mock.calls[0]).toEqual([]);
+    // Zero-arg: no flag and no positional, so the dispatch rejects any typed token before the capability runs.
+    expect(command?.args ?? []).toEqual([]);
+    expect(command?.positional).toBeUndefined();
+    expect(command?.effect).toBe('read');
+    expect(command?.availableIn).toEqual(['chat']);
+    expect(command?.description).toBe('Show the agent this chat is bound to.');
+    for (const [name, set] of [
+      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
+    ] as const)
+      expect(
+        set.map((entry) => entry.name),
+        name,
+      ).toContain('agent');
+    expect(formatReplHelp()).toContain('/agent  Show the agent this chat is bound to.');
+    // The landing's palette is unchanged: `/agent` is a chat word, answered at the landing with the chat-only notice, never run there.
+    expect(HOME_PALETTE_COMMANDS.map((entry) => entry.name)).not.toContain('agent');
+  });
+
   it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {
     // ADR-0074 §1's escape hatch existed in code and no command called it. The `args.includes` binding is the
     // whole of what makes it reachable, so it needs its own row: presence in the command list proves nothing.
@@ -110,6 +137,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['exit', 'exit'],
       ['cancel', 'cancel'],
       ['export', 'exportSession'],
+      ['agent', 'showAgent'],
       ['workflows', 'showWorkflows'],
       ['cost', 'showCost'],
       ['permissions', 'managePermissions'],
@@ -152,7 +180,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /permissions, /trim, /clear, /models, /scrollback, /edit, /copy',
+      '/help, /exit, /cancel, /export, /agent, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /permissions, /trim, /clear, /models, /scrollback, /edit, /copy',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -169,6 +197,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'help',
       'exit',
       'cancel',
+      'agent',
       'workflows',
       'cost',
       'permissions',
@@ -196,6 +225,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'exit',
       'cancel',
       'export',
+      'agent',
       'workflows',
       'cost',
       'doctor',
@@ -217,6 +247,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'exit',
       'cancel',
       'export',
+      'agent',
       'workflows',
       'cost',
       'doctor',

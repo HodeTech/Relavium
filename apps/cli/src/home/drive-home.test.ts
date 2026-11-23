@@ -74,6 +74,8 @@ import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
+import { agentSheetLines } from '../render/tui/agent-sheet.js';
+import { permissionsSheetOf } from '../render/tui/chat-sheet.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   defaultSubscribeProcessExit,
@@ -1703,12 +1705,84 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, '/permissions');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined(), {
+    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet).toBeDefined(), {
       timeout: WAIT_MS,
     });
-    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('chat');
+    expect(permissionsSheetOf(props.controller.getSnapshot().chatSheet)?.surface).toBe('chat');
     props.controller.handleKey('', { escape: true });
-    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('ADR-0140 §3: the in-Home chat is wired to the /agent sheet through its own line handler, and a typed /agent opens the built-in agent’s fields', async () => {
+    // The wired-but-dead field again: a Home session built without `boundAgent` would still pass every controller test that hands the
+    // controller a fake session, and `/agent` would be dispatched to a chat that prints a notice behind the sheet's back. This drives the
+    // REAL `startChat` and reads what it built.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    const view = props.controller.getSnapshot().session?.boundAgent?.();
+    expect(view?.id, 'the session carries the view of its own agent').toBe('relavium-chat');
+    expect(view?.builtIn).toBe(true);
+
+    props.controller.handlePaste('/agent');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(props.controller.getSnapshot().chatSheet?.kind).toBe('agent'), {
+      timeout: WAIT_MS,
+    });
+    const sheet = props.controller.getSnapshot().chatSheet;
+    expect(sheet?.kind === 'agent' ? sheet.view.detail.model : undefined).toBe(view?.detail.model);
+    expect(sheet?.kind === 'agent' ? sheet.view.sessionEffort : 'a sheet').toBeUndefined();
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+
+    // The reasoning effort the row shows is the SESSION's, the footer's: `/effort` changes the session and never the definition, so a view
+    // made before it (or kept past it) would still say `not set`.
+    props.controller.handlePaste('/effort high');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () =>
+        expect(props.controller.getSnapshot().session?.store.getSnapshot().reasoningEffort).toBe(
+          'high',
+        ),
+      { timeout: WAIT_MS },
+    );
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    props.controller.handlePaste('/agent');
+    props.controller.handleKey('', ENTER);
+    const afterEffort = props.controller.getSnapshot().chatSheet;
+    expect(afterEffort?.kind === 'agent' ? afterEffort.view.sessionEffort : undefined).toBe('high');
+    expect(
+      afterEffort?.kind === 'agent' ? afterEffort.view.detail.reasoningEffort : 'a sheet',
+    ).toBeUndefined();
+    const drawn =
+      afterEffort?.kind === 'agent'
+        ? agentSheetLines(afterEffort.view, { columns: 80, terminalRows: 24 }).map(
+            (line) => line.text,
+          )
+        : [];
+    expect(drawn.join('\n')).toMatch(/Reasoning effort\s+high \(declared: not set\)/u);
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -2712,6 +2786,20 @@ workflow:
     const sessionId = oldSession?.sessionId ?? '';
     expect(sessionId).not.toBe('');
 
+    // ADR-0140 §3: `/agent` on the session as it starts shows the sonnet pair (no effort tier). Opened BEFORE the reseat on purpose: a view
+    // kept past the swap would be read here first, and the reseated chat would then show this one.
+    props.controller.handlePaste('/agent');
+    props.controller.handleKey('', ENTER);
+    const before = props.controller.getSnapshot().chatSheet;
+    expect(before?.kind === 'agent' ? before.view.detail.model : undefined).toBe(
+      'claude-sonnet-4-6',
+    );
+    expect(
+      before?.kind === 'agent' ? before.view.detail.reasoningEffort : 'a sheet',
+    ).toBeUndefined();
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
+
     // Open the reseat picker from the chat palette, filter to a DIFFERENT available model (opus), accept.
     props.controller.handleKey('/', {});
     type(props, 'models');
@@ -2764,6 +2852,20 @@ workflow:
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
+
+    // ADR-0140 §3: `/agent` on the RESEATED session shows the pair it runs on now. The real reseat built a new session over the swapped
+    // definition, and the sheet reads THAT one, not the definition the chat started on (sonnet, no effort tier).
+    props.controller.handlePaste('/agent');
+    props.controller.handleKey('', ENTER);
+    const agentSheet = props.controller.getSnapshot().chatSheet;
+    expect(agentSheet?.kind).toBe('agent');
+    const shown = agentSheet?.kind === 'agent' ? agentSheet.view : undefined;
+    expect(shown?.detail.model).toBe('claude-opus-4-8');
+    expect(shown?.detail.provider).toBe('anthropic');
+    expect(shown?.detail.reasoningEffort).toBe('medium');
+    expect(shown?.builtIn, 'the reseat kept the built-in agent, and the sheet knows it').toBe(true);
+    props.controller.handleKey('', { escape: true });
+    expect(props.controller.getSnapshot().chatSheet).toBeUndefined();
 
     // The durable row's agent snapshot updates to the switched model after the reseated session ends.
     props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')

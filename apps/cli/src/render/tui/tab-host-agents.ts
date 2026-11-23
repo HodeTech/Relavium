@@ -1,4 +1,4 @@
-import type { AgentRow } from '../../history/agents-model.js';
+import { agentToolsText, NO_TOOLS_DECLARED, type AgentRow } from '../../history/agents-model.js';
 import type { HomeAgentRequest } from '../../home/agent-start.js';
 import type { AgentsRead } from '../../home/agents-port.js';
 import type { ChatKey } from './chat-input.js';
@@ -8,10 +8,10 @@ import {
   clipLine,
   flushRow,
   windowBody,
+  wrappedLines,
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
-import { wrapWords } from './viewport.js';
 
 /**
  * The Defined tab of the `/agents` strip of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -169,24 +169,9 @@ function field(label: string, value: string, width: number): SheetLine {
   };
 }
 
-/** `text` wrapped to `width` into at most `max` lines, a cut shown by `…` on the last; never an empty list. */
-function wrappedLines(text: string, width: number, max: number): readonly string[] {
-  const wrapped = wrapWords(text, Math.max(1, width)).map((line) => line.trimEnd());
-  if (wrapped.length <= max) return wrapped;
-  const kept = wrapped.slice(0, max);
-  kept[max - 1] = clipLine(`${kept[max - 1] ?? ''}…`, width);
-  return kept;
-}
-
 /** The tool grant as the definition declares it, one string: the names the model kept, then how many it left out. */
 function toolsText(row: AgentRow): string {
-  const detail = row.detail;
-  if (detail === undefined || (detail.tools.length === 0 && detail.toolsMore === 0))
-    return 'none declared';
-  const names = detail.tools.join(', ');
-  return detail.toolsMore > 0
-    ? `${names}${names === '' ? '' : ', '}… and ${String(detail.toolsMore)} more`
-    : names;
+  return row.detail === undefined ? NO_TOOLS_DECLARED : agentToolsText(row.detail);
 }
 
 /** The detail page of one agent: the fixed fields, and the head of its system prompt. At most {@link AGENT_DETAIL_ROWS} lines. */
