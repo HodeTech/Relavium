@@ -25,7 +25,9 @@ import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invocationFixture } from '../process/invocation.test-support.js';
+import type { RunRenderer } from '../render/renderer.js';
 import { captureIo } from '../test-support.js';
+import { HOSTED_RUN_EXIT_BOUND_MS, HOSTED_RUN_EXIT_GRACE_MS } from '../render/tui/tui-constants.js';
 import { HOSTED_LEG_SETTLE_BOUND_MS, RunHost, type HostedLaunch } from './run-host.js';
 
 // The second net: anything that asks the OS for the home directory instead of being handed one is a leak.
@@ -59,6 +61,9 @@ const DETACHED: Exclude<RunDeparture, { readonly kind: 'continue' }> = {
   moneyDurability: 'durable',
   effectNeedsAttention: false,
 };
+
+/** The one named bound of every `vi.waitFor` in this file. */
+const WAIT_MS = 5000;
 
 let root: string;
 let home: string;
@@ -149,6 +154,8 @@ function rig(options: {
   readonly cancelEndsIt?: boolean;
   /** The engine never comes back: the leg is still preparing. */
   readonly buildHangs?: boolean;
+  /** The renderer every leg is given (the Home's run view feed, in production). */
+  readonly renderer?: RunRenderer;
 }) {
   const f = invocationFixture();
   const clock = virtualClock();
@@ -162,6 +169,7 @@ function rig(options: {
     vi.spyOn(engine, 'start').mockReturnValue(stubborn.handle);
     return Promise.resolve(engine);
   };
+  const renderer = options.renderer;
   const host = new RunHost({
     invocation: f.invocation,
     io: captureIo().io,
@@ -171,6 +179,7 @@ function rig(options: {
     buildEngine,
     sweepMedia: () => Promise.resolve(undefined),
     schedule: clock.schedule,
+    ...(renderer === undefined ? {} : { renderer: () => renderer }),
   });
   const path = join(root, 'abandon.relavium.yaml');
   writeFileSync(path, WORKFLOW);
@@ -185,6 +194,14 @@ async function started(launch: Promise<HostedLaunch>) {
 }
 
 describe('RunHost.close is bounded', () => {
+  it('is the wait the exit-guard card adds to the engine`s grace: ten seconds and then three, thirteen in all', () => {
+    expect(HOSTED_RUN_EXIT_GRACE_MS).toBe(10_000);
+    expect(HOSTED_LEG_SETTLE_BOUND_MS).toBe(3_000);
+    expect(HOSTED_RUN_EXIT_BOUND_MS, 'the card says this many seconds').toBe(
+      HOSTED_RUN_EXIT_GRACE_MS + HOSTED_LEG_SETTLE_BOUND_MS,
+    );
+  });
+
   it(
     'waits the bound for a leg that ignores its cancel, then settles, abandons it and arms the finite exit',
     { timeout: 2_000 },
@@ -270,6 +287,26 @@ describe('RunHost.close is bounded', () => {
       void launching;
     },
   );
+
+  it('seals the renderer of a leg it gives up on, so its frame loop does not outlive the abandon', async () => {
+    const seal = vi.fn();
+    const r = rig({ renderer: { onEvent: () => undefined, seal } });
+    const launch = await started(r.host.start({ workflow: r.path, rawInputs: { n: '3' } }));
+    await vi.waitFor(() => expect(r.host.snapshot().active?.runId).toBe('run-stubborn'), {
+      timeout: WAIT_MS,
+    });
+
+    const closing = r.host.close();
+    await turn();
+    expect(seal, 'the leg is still inside the bound: its loop runs').not.toHaveBeenCalled();
+    r.clock.advance(HOSTED_LEG_SETTLE_BOUND_MS);
+    await closing;
+    expect(r.host.abandoned).toBe(true);
+    expect(seal, 'the abandoned leg`s renderer was sealed by the abandon').toHaveBeenCalledOnce();
+
+    r.stubborn.release(); // the leg that ignored the stop ends later; its own epilogue seals again, which the renderer tolerates
+    await launch.ended;
+  });
 
   it('a second close is the first close', async () => {
     const r = rig({ cancelEndsIt: true });

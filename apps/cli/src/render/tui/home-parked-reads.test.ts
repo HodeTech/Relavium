@@ -142,3 +142,49 @@ describe('the parked rows are read when a leg starts or ends, not on every flip 
     expect(r.list).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('the run a leg is executing is not parked', () => {
+  const RESUMING_PREPARING: RunHostSnapshot = {
+    launching: true,
+    active: { leg: 'resume', runId: undefined, cancelling: false },
+    last: END,
+  };
+  const RESUMING: RunHostSnapshot = {
+    launching: false,
+    active: { leg: 'resume', runId: RUN, cancelling: false },
+    last: END,
+  };
+  const SETTLED_AGAIN: RunHostSnapshot = { launching: false, active: undefined, last: { ...END } };
+
+  it('drops the run from the Attention rows while a resumed leg executes it, though the log still says paused, and brings it back when the leg ends', () => {
+    const r = rig(PREPARING);
+    r.controller.openScreen('run-view', { runId: RUN }); // reads the host, so the poll that follows is watching it
+    expect(r.controller.getSnapshot().parkedRuns, 'the log lists the run').toEqual([ROW]);
+    r.set(RESUMING); // the leg began and the engine named the run between two polls: one boundary, one read
+    r.poll();
+    expect(r.list, 'the boundary read the log').toHaveBeenCalledTimes(2);
+    expect(
+      r.controller.getSnapshot().parkedRuns,
+      'the log still lists the run, but a leg is answering it: it is not waiting',
+    ).toEqual([]);
+    r.set(SETTLED_AGAIN);
+    r.poll();
+    expect(r.controller.getSnapshot().parkedRuns, 'the leg ended parked again').toEqual([ROW]);
+  });
+
+  it('drops the row when the engine names the run AFTER the start boundary, with no second read of the log', () => {
+    const r = rig(RESUMING_PREPARING);
+    r.controller.openScreen('run-view', { runId: RUN });
+    expect(
+      r.controller.getSnapshot().parkedRuns,
+      'the run is not named yet: the row is still the log`s',
+    ).toEqual([ROW]);
+    const reads = r.list.mock.calls.length;
+    r.set(RESUMING);
+    r.poll();
+    expect(r.controller.getSnapshot().parkedRuns).toEqual([]);
+    expect(r.list.mock.calls.length, 'naming the run is not a change of the log: no read').toBe(
+      reads,
+    );
+  });
+});

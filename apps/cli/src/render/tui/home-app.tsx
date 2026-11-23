@@ -10,7 +10,7 @@ import {
   nativePromptFits,
 } from './native-prompt-acknowledgement.js';
 import { displayWidth } from './viewport.js';
-import { Box, Text, useApp, useInput, usePaste, useStdout, type Key } from 'ink';
+import { Box, Text, useApp, useInput, usePaste, useStdout, type DOMElement, type Key } from 'ink';
 import {
   useEffect,
   useLayoutEffect,
@@ -18,6 +18,7 @@ import {
   useState,
   useSyncExternalStore,
   type ReactElement,
+  type ReactNode,
 } from 'react';
 
 import { HOME_CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
@@ -916,7 +917,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   }
   if (state.mode === 'loading') {
     return (
-      <Box flexDirection="column" width={layoutColumns(size.cols)}>
+      <LoadingEcho
+        width={layoutColumns(size.cols)}
+        // The echo is a landing too: the exit-guard card is drawn in it, and its `Ctrl+Y` counts only for a frame measured and flushed, as
+        // on the Home (ADR-0139 §6). A loading frame that is never committed would leave the card offering a key that is always refused.
+        onFrame={(node) => {
+          homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
+        }}
+      >
         <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
           {'> '}
           {sanitizeInline(state.pendingMessage)}
@@ -936,7 +944,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
             size={size}
           />
         )}
-      </Box>
+      </LoadingEcho>
     );
   }
   return (
@@ -1026,6 +1034,29 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           rows={size.rows}
         />
       )}
+    </Box>
+  );
+}
+
+/**
+ * The echo shown while the first chat is being built: the person's first line, and the exit-guard card when one is open. Every commit of
+ * its box goes to the Home's measured-frame evidence (`onFrame`), as `HomeView`'s does for the landing: a React commit alone is never
+ * evidence that the card was delivered.
+ */
+function LoadingEcho(
+  props: Readonly<{
+    width: number;
+    onFrame: (node: DOMElement | null) => void;
+    children: ReactNode;
+  }>,
+): ReactElement {
+  const frame = useRef<DOMElement | null>(null);
+  useLayoutEffect(() => {
+    props.onFrame(frame.current);
+  });
+  return (
+    <Box ref={frame} flexDirection="column" width={props.width}>
+      {props.children}
     </Box>
   );
 }

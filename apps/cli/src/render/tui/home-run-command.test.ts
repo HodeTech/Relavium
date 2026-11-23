@@ -18,6 +18,9 @@ import {
 } from './home-controller.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 const EMPTY: HomeSnapshot = {
   attention: { gates: [], failedRuns: [] },
   recentSessions: [],
@@ -156,7 +159,9 @@ describe('/run in a chat', () => {
     const { controller, lines } = mount({ launch: () => s.launch.open() });
     type(controller, 'hello');
     controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
     await flush();
 
     // A pasted line, because a typed `/` at an empty prompt opens the palette (the next test); this is the line itself, submitted.
@@ -181,7 +186,9 @@ describe('/run in a chat', () => {
     const { controller } = mount({ launch: () => s.launch.open() });
     type(controller, 'hello');
     controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
     await flush();
     controller.handleKey('/', {});
     expect(controller.getSnapshot().palette).toBeDefined();

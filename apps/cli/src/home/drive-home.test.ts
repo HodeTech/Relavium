@@ -63,6 +63,9 @@ import {
 import { shouldOpenHome } from './should-open-home.js';
 import { RunHost, type RunHostSnapshot } from './run-host.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
 const inkRenderer = vi.hoisted(() => ({ render: vi.fn<(typeof import('ink'))['render']>() }));
@@ -312,27 +315,35 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         ui.controller.handleKey('', ENTER);
         let previous = ui.controller.getSnapshot().session;
         if (cut === 'clear') {
-          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'));
-          await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'), {
+            timeout: WAIT_MS,
+          });
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false), {
+            timeout: WAIT_MS,
+          });
           previous = ui.controller.getSnapshot().session;
           ui.controller.handlePaste('/clear');
           ui.controller.handleKey('', ENTER);
         }
-        await vi.waitFor(() => expect(builds).toBe(cut === 'fresh' ? 1 : 2));
+        await vi.waitFor(() => expect(builds).toBe(cut === 'fresh' ? 1 : 2), { timeout: WAIT_MS });
         await flush();
         expect(closeMcp).not.toHaveBeenCalled();
         expect(closeOutputStore).not.toHaveBeenCalled();
         releaseJoin();
-        await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
         expect(closeOutputStore).toHaveBeenCalledOnce();
-        await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+        await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false), {
+          timeout: WAIT_MS,
+        });
         expect(ui.controller.getSnapshot().session).toBe(previous);
       } finally {
         releaseJoin();
         if (ui.controller.getSnapshot().mode === 'chat') {
           ui.controller.handleKey('c', CTRL_C);
           ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
+          await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'), {
+            timeout: WAIT_MS,
+          });
         }
         ui.controller.handleKey('c', CTRL_C);
         ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -375,25 +386,33 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     try {
       type(ui, 'first');
       ui.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'));
-      await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false));
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('chat'), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().submitBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       const original = ui.controller.getSnapshot().session;
       ui.controller.handleKey('/', {});
       type(ui, 'models');
       ui.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(ui.controller.getSnapshot().modelPicker).toBeDefined());
+      await vi.waitFor(() => expect(ui.controller.getSnapshot().modelPicker).toBeDefined(), {
+        timeout: WAIT_MS,
+      });
       type(ui, 'claude-opus-4-8');
       ui.controller.handleKey('', ENTER);
       if (ui.controller.getSnapshot().modelPicker?.phase === 'effort')
         ui.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(closeMcp).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
       expect(closeOutputStore).toHaveBeenCalledOnce();
       expect(ui.controller.getSnapshot().session).toBe(original);
     } finally {
       if (ui.controller.getSnapshot().mode === 'chat') {
         ui.controller.handleKey('c', CTRL_C);
         ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-        await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'));
+        await vi.waitFor(() => expect(ui.controller.getSnapshot().mode).toBe('home'), {
+          timeout: WAIT_MS,
+        });
       }
       ui.controller.handleKey('c', CTRL_C);
       ui.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
@@ -423,15 +442,18 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         },
       );
       const running = driveHome(deps);
-      await vi.waitFor(() => expect(props).toBeDefined());
+      await vi.waitFor(() => expect(props).toBeDefined(), { timeout: WAIT_MS });
       if (props === undefined) throw new Error('Home did not mount');
       const home = props;
       type(home, 'hello');
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => {
-        expect(home.controller.getSnapshot().mode).toBe('chat');
-        expect(home.controller.getSnapshot().submitBusy).toBe(false);
-      });
+      await vi.waitFor(
+        () => {
+          expect(home.controller.getSnapshot().mode).toBe('chat');
+          expect(home.controller.getSnapshot().submitBusy).toBe(false);
+        },
+        { timeout: WAIT_MS },
+      );
       const first = home.controller.getSnapshot().session;
       if (first === undefined) throw new Error('missing first chat');
       await first.processLine('PRIVATE_CANONICAL', '@visible-safe');
@@ -439,7 +461,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       // The controller consumes the stop on its own next slash submission.
       type(home, '/cancel');
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'));
+      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
       available = false;
       home.controller.handleKey('', { downArrow: true });
       expect(home.controller.getSnapshot().continueSessionId).toBe(first.sessionId);
@@ -448,15 +472,21 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         throw new Error('PRIVATE_DISPLAY_FAILURE');
       });
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('select'));
+      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('select'), {
+        timeout: WAIT_MS,
+      });
       expect(build).not.toHaveBeenCalled();
       expect(home.nativePrompt?.getSnapshot().selected).toBe(1); // Return is the safe default.
       home.nativePrompt?.input('', NATIVE_RETURN);
-      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       expect(home.controller.getSnapshot().mode).toBe('home');
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1));
-      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(1), { timeout: WAIT_MS });
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       const resumed = home.controller.getSnapshot().session;
       expect(resumed?.sessionId).toBe(first.sessionId);
       expect(
@@ -488,7 +518,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       // Return to Home and select a foreign context whose discovery column falsely claims the current cwd.
       type(home, '/cancel');
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'));
+      await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
       const record = store.loadFull(first.sessionId)?.session;
       if (record === undefined) throw new Error('missing durable record');
       store.createSession({
@@ -502,12 +534,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         .run(realpathSync.native(cwd), 'foreign-session');
       type(home, '/resume');
       home.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('picker'));
-      await vi.waitFor(() =>
-        expect(home.nativePrompt?.getSnapshot().options[0]?.value).toBe('foreign-session'),
+      await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('picker'), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(
+        () => expect(home.nativePrompt?.getSnapshot().options[0]?.value).toBe('foreign-session'),
+        { timeout: WAIT_MS },
       );
       home.nativePrompt?.input('', NATIVE_RETURN);
-      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       expect(home.controller.getSnapshot().notice).toContain('another directory');
       expect(build).toHaveBeenCalledTimes(1);
       home.controller.handleKey('c', { ctrl: true });
@@ -548,19 +585,22 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       );
       let hits = 0;
       try {
-        await vi.waitFor(() => expect(captured).toBeDefined());
+        await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
         if (captured === undefined) throw new Error('Home did not mount');
         const props = captured;
         for (const character of 'hello') props.controller.handleKey(character, {});
         props.controller.handleKey('', ENTER);
-        await vi.waitFor(() => {
-          const id = props.controller.getSnapshot().session?.sessionId;
-          expect(
-            id === undefined
-              ? []
-              : sessions.loadFull(id)?.messages.filter((message) => message.role === 'assistant'),
-          ).toHaveLength(1);
-        });
+        await vi.waitFor(
+          () => {
+            const id = props.controller.getSnapshot().session?.sessionId;
+            expect(
+              id === undefined
+                ? []
+                : sessions.loadFull(id)?.messages.filter((message) => message.role === 'assistant'),
+            ).toHaveLength(1);
+          },
+          { timeout: WAIT_MS },
+        );
         const session = props.controller.getSnapshot().session;
         if (session === undefined) throw new Error('Home did not create a session');
         observedSessionId = session.sessionId;
@@ -648,12 +688,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         { run, ...(owned ? { invocation: f.invocation } : {}) },
       );
       const running = driveHome(deps);
-      await vi.waitFor(() => expect(captured).toBeDefined());
+      await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
       const props = captured;
       if (props === undefined) throw new Error('Home not mounted');
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-      await vi.waitFor(() => expect(order).toContain('run:close:start'));
+      await vi.waitFor(() => expect(order).toContain('run:close:start'), { timeout: WAIT_MS });
       await flush();
       await flush();
       expect(order, 'HOME_RUN_HOST_JOIN_BEFORE_SHARED_DATABASE').toEqual(['run:close:start']);
@@ -696,7 +736,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       { run },
     );
     const running = driveHome(deps);
-    await vi.waitFor(() => expect(captured).toBeDefined());
+    await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
     const props = captured;
     if (props === undefined) throw new Error('Home not mounted');
     let settled = false;
@@ -732,7 +772,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     );
     expect(deps.run, 'the default is built by the Home, not injected').toBeUndefined();
     const running = driveHome(deps);
-    await vi.waitFor(() => expect(captured).toBeDefined());
+    await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
     const props = captured;
     if (props === undefined) throw new Error('Home not mounted');
     props.controller.handleKey('c', CTRL_C);
@@ -771,11 +811,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     if (props === undefined) throw new Error('Home not mounted');
     type(props, 'synthetic first turn');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
     const primary = new Error('PRIVATE_HOME_RENDERER_FAILURE');
     props.onRendererError?.(primary);
-    await vi.waitFor(() => expect(unmount).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(unmount).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
     expect(f.registry.observations.exitCode()).toBe(9);
     expect(f.registry.budget.deadline()).toBe(3000);
     expect(closeSpy, 'HOME_ACTUAL_HOST_JOIN_BEFORE_SHARED_DATABASE').not.toHaveBeenCalled();
@@ -1067,25 +1111,31 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, 'hello');
     props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
-    await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(5),
+    await vi.waitFor(
+      () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(5),
+      { timeout: WAIT_MS },
     );
     expect(props.controller.getSnapshot().mode).toBe('loading');
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
 
     const sessions = createSessionStore(client.db);
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(1); // the chat persisted its row
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
 
     props.controller.handleKey('/', {});
     type(props, 'clear');
     // The filter also matches /cost's "clears held estimates" description; choose the Clear row.
     props.controller.handleKey('', { downArrow: true });
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(6),
+    await vi.waitFor(
+      () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(6),
+      { timeout: WAIT_MS },
     );
-    await vi.waitFor(() => expect(estimates).toEqual([17, 17]));
+    await vi.waitFor(() => expect(estimates).toEqual([17, 17]), { timeout: WAIT_MS });
     expect(props.controller.getSnapshot().mode).toBe('chat');
     expect(estimates).toEqual([17, 17]);
     expect(sessions.listSessions({ limit: 10 })).toHaveLength(2);
@@ -1123,8 +1173,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     if (props === undefined) throw new Error('Home did not mount.');
     type(props, 'Read notes.txt');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
     const session = props.controller.getSnapshot().session;
     if (session === undefined) throw new Error('Home did not publish the session.');
     const details = [...session.store.getSnapshot().toolDisplays.values()];
@@ -1140,7 +1194,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     session.store.closeDetails();
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+      timeout: WAIT_MS,
+    });
     expect(session.store.getSnapshot().toolDisplays.size).toBe(0);
     expect(session.store.getSnapshot().review).toBeUndefined();
     session.store.applyToolLiveEvent({
@@ -1184,31 +1240,47 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     try {
       type(props, 'hello');
       props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
-      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       const original = props.controller.getSnapshot().session;
       expect(original).toBeDefined();
       props.controller.handlePaste('/clear');
       props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(permits, 'NATIVE_HOME_PENDING_FORWARDING').toHaveLength(1));
+      await vi.waitFor(() => expect(permits, 'NATIVE_HOME_PENDING_FORWARDING').toHaveLength(1), {
+        timeout: WAIT_MS,
+      });
       expect(invocation.registry.activeOwners).toBe(6);
       expect(props.controller.getSnapshot().session).toBe(original); // first replacement still initializes
       props.controller.handleKey('c', CTRL_C); // sticky /clear starts a second replacement
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-      await vi.waitFor(() => expect(permits).toHaveLength(2));
+      await vi.waitFor(() => expect(permits).toHaveLength(2), { timeout: WAIT_MS });
       expect(invocation.registry.activeOwners).toBe(8);
       permits[1]?.(); // second replacement wins while both native creations remain live
-      await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(original));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(original), {
+        timeout: WAIT_MS,
+      });
       const winner = props.controller.getSnapshot().session;
       expect(invocation.registry.activeOwners).toBe(7);
       permits[0]?.(); // stale completion may close only its own native creation
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(5));
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(5), {
+        timeout: WAIT_MS,
+      });
       expect(props.controller.getSnapshot().session).toBe(winner);
-      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
-      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(3), {
+        timeout: WAIT_MS,
+      });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
       expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -1237,8 +1309,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     try {
       type(props, 'hello');
       props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
-      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined(), {
+        timeout: WAIT_MS,
+      });
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       props.controller.handlePaste('/edit');
       props.controller.handleKey('', ENTER);
       await vi.waitFor(
@@ -1251,13 +1327,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     } finally {
       writeFileSync(release, 'release');
       await vi.waitFor(() => expect(invocation.registry.activeOwners).toBe(4), { timeout: 6000 });
-      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+      await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+        timeout: WAIT_MS,
+      });
       props.suspendPort.attach(undefined);
     }
     expect(readFileSync(marker, 'utf8')).toBe('ready\nreleased\n');
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+      timeout: WAIT_MS,
+    });
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);
@@ -1466,8 +1546,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, 'hello');
     props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
-    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'));
-    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
     const permissions = props.controller.getSnapshot().session?.permissions;
     expect(permissions?.surface, 'the session carries the port').toBe('chat');
     // The port reads the real store through the mocked keychain: no key was ever written, so the project's list is empty and readable.
@@ -1476,7 +1560,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     type(props, '/permissions');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
     expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('chat');
     props.controller.handleKey('', { escape: true });
     expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
@@ -1519,7 +1605,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('/', {});
     for (const ch of 'permissions') props.controller.handleKey(ch, {});
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined());
+    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
     props.controller.handleKey('', { escape: true });
     expect(props.controller.getSnapshot().mode).toBe('home');
     props.controller.handleKey('c', CTRL_C);
@@ -1576,13 +1664,17 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', ENTER);
       };
       openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
+        timeout: WAIT_MS,
+      });
       props.controller.handleKey('', { escape: true });
       // Another terminal: `relavium permissions revoke --all` (the file and the digest key go), then a chat remembers something new.
       projectStore(keychain).revokeAll();
       await projectStore(keychain).remember(['node', '--version']);
       openFromPalette();
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']));
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['node, 1 argument']), {
+        timeout: WAIT_MS,
+      });
       props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
@@ -1639,7 +1731,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       props.controller.handleKey('/', {});
       for (const ch of 'permissions') props.controller.handleKey(ch, {});
       props.controller.handleKey('', ENTER);
-      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']));
+      await vi.waitFor(() => expect(rowLabels(props)).toEqual(['npm, 1 argument']), {
+        timeout: WAIT_MS,
+      });
       props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
@@ -1738,7 +1832,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     if (props === undefined) throw new Error('the injected render was never invoked');
     type(props, 'first');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
     const first = props.controller.getSnapshot().session;
     expect(freshAsk).toBeDefined();
     expect(await drawsACard(first?.store, freshAsk)).toBe(true);
@@ -1750,7 +1846,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     type(props, 'claude-opus-4-8');
     props.controller.handleKey('', ENTER);
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first));
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
+      timeout: WAIT_MS,
+    });
     expect(reseatAsk).toBeDefined();
     expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
 
@@ -1797,7 +1895,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     // Start a chat (bound to the default claude-sonnet-4-6) + run one turn so the transcript persists.
     type(props, 'first');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined());
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).toBeDefined(), {
+      timeout: WAIT_MS,
+    });
     expect(props.controller.getSnapshot().mode).toBe('chat');
     const oldSession = props.controller.getSnapshot().session;
     const sessionId = oldSession?.sessionId ?? '';
@@ -1819,11 +1919,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(effortPicker?.phase).toBe('effort');
     expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
     props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
-    await vi.waitFor(() =>
-      expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
+    await vi.waitFor(
+      () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_RESEAT_FORWARDING').toBe(6),
+      { timeout: WAIT_MS },
     );
-    await vi.waitFor(() => expect(resumedEstimates).toEqual([17]));
-    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(oldSession));
+    await vi.waitFor(() => expect(resumedEstimates).toEqual([17]), { timeout: WAIT_MS });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(oldSession), {
+      timeout: WAIT_MS,
+    });
 
     // The session was reseated: a NEW session object, the SAME sessionId, bound to opus, carrying the prior turn.
     const reseated = props.controller.getSnapshot().session;
@@ -1991,8 +2094,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         props.controller.handleKey('', ENTER);
         await flush();
         if (resizeRows !== undefined)
-          await vi.waitFor(() =>
-            expect(stdout.frames.some((frame) => frame.includes('first reply'))).toBe(true),
+          await vi.waitFor(
+            () => expect(stdout.frames.some((frame) => frame.includes('first reply'))).toBe(true),
+            { timeout: WAIT_MS },
           );
         const sessionId = props.controller.getSnapshot().session?.sessionId;
         if (sessionId === undefined) throw new Error('missing active session');
@@ -2030,9 +2134,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
             props.controller.handleKey('', ENTER);
           if (typeof mode === 'string')
-            await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error));
+            await vi.waitFor(() => expect(rendererError).toBeInstanceOf(Error), {
+              timeout: WAIT_MS,
+            });
           else
-            await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+            await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+              timeout: WAIT_MS,
+            });
           await instance?.waitUntilRenderFlush();
         };
         await pick('claude-opus-4-8');
@@ -2121,10 +2229,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         if (captured !== undefined) await captured.controller.teardownActive();
         await settled;
         instance?.cleanup();
-        await vi.waitFor(() => {
-          expect(stdout.listenerCount('close')).toBe(0);
-          expect(stdout.listenerCount('error')).toBe(0);
-        });
+        await vi.waitFor(
+          () => {
+            expect(stdout.listenerCount('close')).toBe(0);
+            expect(stdout.listenerCount('error')).toBe(0);
+          },
+          { timeout: WAIT_MS },
+        );
         input.destroy();
         stdout.destroy();
         stderr.destroy();
@@ -2898,7 +3009,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     );
     type(props, 'write');
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(executions).toBe(1));
+    await vi.waitFor(() => expect(executions).toBe(1), { timeout: WAIT_MS });
     await built?.whenHostSafeToClose();
     const transcript =
       props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
@@ -3040,42 +3151,59 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         if (props === undefined) throw new Error('Home render missing');
         type(props, 'hello');
         props.controller.handleKey('', ENTER);
-        await vi.waitFor(() => {
-          expect(props.controller.getSnapshot().mode).toBe('chat');
-          expect(props.controller.getSnapshot().submitBusy).toBe(false);
-        });
+        await vi.waitFor(
+          () => {
+            expect(props.controller.getSnapshot().mode).toBe('chat');
+            expect(props.controller.getSnapshot().submitBusy).toBe(false);
+          },
+          { timeout: WAIT_MS },
+        );
         const first = props.controller.getSnapshot().session;
         if (surface === 'resumed') {
           type(props, '/cancel');
           props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'));
+          await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+            timeout: WAIT_MS,
+          });
           props.controller.handleKey('', { downArrow: true });
           props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => {
-            expect(props.controller.getSnapshot().mode).toBe('chat');
-            expect(props.controller.getSnapshot().session).not.toBe(first);
-          });
+          await vi.waitFor(
+            () => {
+              expect(props.controller.getSnapshot().mode).toBe('chat');
+              expect(props.controller.getSnapshot().session).not.toBe(first);
+            },
+            { timeout: WAIT_MS },
+          );
         } else if (surface === 'cleared') {
           type(props, '/clear');
           props.controller.handleKey('', { downArrow: true });
           props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => {
-            expect(props.controller.getSnapshot().session).not.toBe(first);
-            expect(props.controller.getSnapshot().mode).toBe('chat');
-          });
+          await vi.waitFor(
+            () => {
+              expect(props.controller.getSnapshot().session).not.toBe(first);
+              expect(props.controller.getSnapshot().mode).toBe('chat');
+            },
+            { timeout: WAIT_MS },
+          );
         } else if (surface === 'reseated') {
           type(props, '/models');
           props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined());
+          await vi.waitFor(() => expect(props.controller.getSnapshot().modelPicker).toBeDefined(), {
+            timeout: WAIT_MS,
+          });
           type(props, 'claude-opus-4-8');
           props.controller.handleKey('', ENTER);
           if (props.controller.getSnapshot().modelPicker?.phase === 'effort')
             props.controller.handleKey('', ENTER);
-          await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first));
+          await vi.waitFor(() => expect(props.controller.getSnapshot().session).not.toBe(first), {
+            timeout: WAIT_MS,
+          });
         }
         if (built === undefined || built.startingMode === undefined)
           throw new Error('Home host missing');
-        await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false));
+        await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+          timeout: WAIT_MS,
+        });
         applyChatMode(
           makeChatModeEnv({
             session: built.session,
@@ -3088,22 +3216,24 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         );
         type(props, 'write');
         props.controller.handleKey('', ENTER);
-        await vi.waitFor(() => expect(executions).toBe(1));
+        await vi.waitFor(() => expect(executions).toBe(1), { timeout: WAIT_MS });
         const originatingStore = props.controller.getSnapshot().session?.store;
         if (liveAbort) {
           built.session.abort();
           release();
           await built.whenHostSafeToClose();
-          await vi.waitFor(() =>
-            expect(
-              originatingStore
-                ?.getSnapshot()
-                .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
-            ).toBe(true),
+          await vi.waitFor(
+            () =>
+              expect(
+                originatingStore
+                  ?.getSnapshot()
+                  .state.transcript.some((entry) => entry.text === ABORTED_EFFECT_ATTENTION_NOTICE),
+              ).toBe(true),
+            { timeout: WAIT_MS },
           );
         }
         made.signalHandlers[0]?.(15);
-        await vi.waitFor(() => expect(made.unmount).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(made.unmount).toHaveBeenCalledOnce(), { timeout: WAIT_MS });
         expect(released).toBe(liveAbort);
         if (!liveAbort) {
           expect(errs.join('')).not.toContain(ABORTED_EFFECT_ATTENTION_NOTICE);
@@ -3112,7 +3242,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         release();
         await built.whenHostSafeToClose();
         if (delivery === 'held') {
-          await vi.waitFor(() => expect(deliveryEntered).toBe(true));
+          await vi.waitFor(() => expect(deliveryEntered).toBe(true), { timeout: WAIT_MS });
           expect(order).toContain('restored');
           expect(f.exit).not.toHaveBeenCalled();
           expect(closeSpy).not.toHaveBeenCalled();
@@ -3147,8 +3277,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
           // Infrastructure failure reserves the existing diagnostic interval before its finite backstop.
           f.advance(3_000);
         }
-        await vi.waitFor(() =>
-          expect(f.exit).toHaveBeenCalledWith(delivery === 'failed' ? 9 : 143),
+        await vi.waitFor(
+          () => expect(f.exit).toHaveBeenCalledWith(delivery === 'failed' ? 9 : 143),
+          { timeout: WAIT_MS },
         );
       } finally {
         release();

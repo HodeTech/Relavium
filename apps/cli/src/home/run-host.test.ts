@@ -50,6 +50,9 @@ import {
   type RunHostOptions,
 } from './run-host.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 let root: string;
 /**
  * The home every config load in this file resolves to, and what each load saw.
@@ -918,15 +921,24 @@ describe('the consent card closes with the leg that asked', () => {
     const r = rig({ startMcpClient, consent: createNativeConsentPrompter(channel.flow) });
     const path = writeWorkflow('mcp.relavium.yaml', MCP_GATED);
     const launching = r.host.start({ workflow: path, rawInputs: { n: '3' } });
-    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'));
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
+      timeout: WAIT_MS,
+    });
 
     expect(r.host.cancel(), 'a leg is preparing: the stop reaches it').toBe(true);
 
-    // Without the signal the card stays open and the launch waits for the flow's own cancel for ever; a short race says which.
-    const outcome = await Promise.race([
-      launching,
-      new Promise<string>((resolve) => setTimeout(() => resolve('still waiting on the card'), 500)),
-    ]);
+    // Without the signal the card stays open and the launch waits for the flow's own cancel for ever: the wait is on the launch ending,
+    // and it fails, bounded and by name, when it never does.
+    let outcome: HostedLaunch | undefined;
+    void launching.then((value) => {
+      outcome = value;
+    });
+    await vi.waitFor(
+      () => expect(outcome, 'the launch ended once the card was closed').toBeDefined(),
+      {
+        timeout: WAIT_MS,
+      },
+    );
     expect(outcome).toMatchObject({ kind: 'refused', reason: 'stopped' });
     expect(channel.ui.getSnapshot().kind, 'the card is gone').not.toBe('chord');
     expect(startMcpClient, 'nothing was spawned').not.toHaveBeenCalled();
@@ -962,7 +974,7 @@ describe('the live view holds no frame loop once its leg is over', () => {
       { renderer: feed.renderer },
     );
     const end = started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
-    await vi.waitFor(() => expect(state.started).toBe(1));
+    await vi.waitFor(() => expect(state.started).toBe(1), { timeout: WAIT_MS });
     expect(state.running, 'the leg runs: its frame loop does').toBe(1);
     await s.host.close();
     expect((await end).terminal.disposition).toBe('cancelled');

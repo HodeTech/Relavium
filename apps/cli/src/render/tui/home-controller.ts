@@ -524,6 +524,20 @@ function readParkedRows(
   }
 }
 
+/**
+ * `rows` without the run a leg is executing now. A resumed leg is read at its start boundary, while the log still says the run is paused:
+ * the run is not waiting on anyone while a leg answers it, so its own Attention row must not read as parked (or take the `↓` focus) until
+ * that leg ends and the log is read again. Returns `rows` itself when nothing is taken out.
+ */
+function withoutExecutingRun(
+  rows: readonly ParkedRunRow[],
+  snapshot: RunHostSnapshot | undefined,
+): readonly ParkedRunRow[] {
+  const running = snapshot?.active?.runId;
+  if (running === undefined || !rows.some((row) => row.runId === running)) return rows;
+  return rows.filter((row) => row.runId !== running);
+}
+
 function sameParkedRows(a: readonly ParkedRunRow[], b: readonly ParkedRunRow[]): boolean {
   return (
     a.length === b.length &&
@@ -790,10 +804,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /**
    * The parked runs as the log says now, as a patch for `set`: empty when nothing changed (so an unchanged strip is never repainted), and
    * dropping the focus from a run that is no longer parked. Read when the landing is shown again and when the run host's state changes.
+   * The run a leg is executing is never one of them. With `reread` false the rows already held are only filtered again (no database page):
+   * the engine naming a leg's run is not a change of the log, but it is when the run stops being parked.
    */
-  const parkedPatch = (): Partial<HomeControllerState> => {
+  const parkedPatch = (
+    reread = true,
+    hosted: RunHostSnapshot | undefined = deps.hostedRuns?.snapshot(),
+  ): Partial<HomeControllerState> => {
     if (deps.gateCards === undefined) return {};
-    const read = readParkedRows(deps.gateCards, state.parkedRuns);
+    const read = withoutExecutingRun(
+      reread ? readParkedRows(deps.gateCards, state.parkedRuns) : state.parkedRuns,
+      hosted,
+    );
     const parkedRuns = sameParkedRows(read, state.parkedRuns) ? state.parkedRuns : read;
     const parkedFocus = parkedRuns.some((row) => row.runId === state.parkedFocus)
       ? state.parkedFocus
@@ -812,7 +834,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const screenChanged = screen !== state.screen;
     // A leg that started or ended changes which runs are parked: the Attention rows follow it. A cancel request, the run's id arriving or the
     // launch latch flipping change nothing in the log, so they read nothing (the read is a database page per project).
-    const parked = hostedChanged && legBoundary(snapshot, state.hostedRun) ? parkedPatch() : {};
+    const parked = hostedChanged
+      ? parkedPatch(legBoundary(snapshot, state.hostedRun), snapshot)
+      : {};
     if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen, ...parked });
     else if (hostedChanged) set({ hostedRun: snapshot, ...parked });
     else if (screenChanged) set({ screen });

@@ -36,21 +36,21 @@ const ESC = '\x1b';
 /** Every guard layer off: the tests of the guard are `run-card-keys.test.ts`'s, and what is left here is the painted frame. */
 const OFF: ApprovalGuard = { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 };
 
+/** The one named bound of every wait in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5_000;
+
 /**
- * Poll until `predicate` holds, in real time, and FAIL when it does not: a lone `Esc` byte is held back by ink for its escape-sequence
- * window, so a bounded count of macrotask yields is not enough for it, and a wait that gave up quietly would let a stale frame be asserted.
+ * Wait until `predicate` holds, and FAIL, naming it, when it does not within {@link WAIT_MS}: a lone `Esc` byte is held back by ink for
+ * its escape-sequence window, so a bounded count of macrotask yields is not enough for it, and a wait that gave up quietly would let a
+ * stale frame be asserted.
  */
-async function eventually(
-  predicate: () => boolean,
-  what = 'the condition',
-  timeoutMs = 3_000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() > deadline)
-      throw new Error(`${what} was not reached within ${String(timeoutMs)} ms`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+async function eventually(predicate: () => boolean, what = 'the condition'): Promise<void> {
+  await vi.waitFor(
+    () => {
+      if (!predicate()) throw new Error(`${what} was not reached within ${String(WAIT_MS)} ms`);
+    },
+    { timeout: WAIT_MS, interval: 5 },
+  );
 }
 
 const EMPTY: HomeSnapshot = {

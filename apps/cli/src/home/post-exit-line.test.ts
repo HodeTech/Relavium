@@ -24,15 +24,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
+import type { CliInvocation } from '../process/invocation.js';
 import type { CliIo } from '../process/io.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { GlobalOptions } from '../process/options.js';
-import { SHOW_CURSOR } from '../render/alt-screen.js';
+import { DISABLE_MOUSE } from '../render/alt-screen.js';
 import type { JobControlLifecycle } from '../render/suspend.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { captureIo } from '../test-support.js';
 import { driveHome, type HomeDeps, type OnboardingTerminalLifecycle } from './drive-home.js';
 import { RunHost, type HostedExitFact, type HostedLegEnd } from './run-host.js';
+
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
 
 const WORKFLOW = `schema_version: '1.0'
 workflow:
@@ -225,10 +229,18 @@ describe('driveHome prints the line once the screen is restored', () => {
     setRawMode: () => undefined,
   };
 
-  /** The Home over an injected mount (no TTY), recording the order of what reached the terminal and what closed. */
-  function mountHome(run: RunHost) {
+  /**
+   * The Home over an injected mount (no TTY), recording the order of what reached the terminal and what closed.
+   *
+   * With an `invocation` the Home is OWNED, as the product runs it: the controls and the line then both go through the ACKNOWLEDGED
+   * stdout (the controls through the surface's control writes, the line through `writeOutAcknowledged`), where an unowned Home (an
+   * embedding) writes the line with the plain `writeOut`. `out` is the line's stream either way.
+   */
+  function mountHome(run: RunHost, options: { readonly invocation?: CliInvocation } = {}) {
     const order: string[] = [];
     const out: string[] = [];
+    // Which stream each line took: the plain one (an unowned Home) or the acknowledged one (an owned Home, the product).
+    const streams: ('plain' | 'acknowledged')[] = [];
     const closeSpy = vi.fn(() => {
       order.push('db:close');
     });
@@ -241,9 +253,19 @@ describe('driveHome prints the line once the screen is restored', () => {
       writeOut: (text) => {
         order.push('line');
         out.push(text);
+        streams.push('plain');
       },
       writeErr: () => undefined,
-      writeOutAcknowledged: () => Promise.resolve(),
+      writeOutAcknowledged: (text) => {
+        // The owned Home's controls arrive here too: the write that switches the mouse reporting off is the screen being restored.
+        if (text.includes(DISABLE_MOUSE)) order.push('screen restored');
+        else {
+          order.push('line');
+          out.push(text);
+          streams.push('acknowledged');
+        }
+        return Promise.resolve();
+      },
       writeErrAcknowledged: () => Promise.resolve(),
       env: {},
       stdoutIsTty: true,
@@ -299,7 +321,8 @@ describe('driveHome prints the line once the screen is restored', () => {
       jobControlLifecycle: INERT_JOB_CONTROL,
       onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
       writeControl: (sequence) => {
-        if (sequence.includes(SHOW_CURSOR)) order.push('screen restored');
+        // The unowned Home writes its restoration piece by piece; the mouse reporting going off is the last of them.
+        if (sequence.includes(DISABLE_MOUSE)) order.push('screen restored');
       },
       exit: () => undefined,
       onboardingPrompter: {
@@ -311,17 +334,18 @@ describe('driveHome prints the line once the screen is restored', () => {
         isCancel: (v): v is symbol => typeof v === 'symbol',
       },
       run,
+      ...(options.invocation === undefined ? {} : { invocation: options.invocation }),
     };
     const running = driveHome(deps);
     const leave = async (): Promise<number> => {
-      await vi.waitFor(() => expect(captured).toBeDefined());
+      await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
       const props = captured;
       if (props === undefined) throw new Error('Home not mounted');
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms
       return running;
     };
-    return { leave, order, out, closeSpy };
+    return { leave, order, out, streams, closeSpy };
   }
 
   function idleHost(): RunHost {
@@ -345,11 +369,50 @@ describe('driveHome prints the line once the screen is restored', () => {
     const home = mountHome(run);
     expect(await home.leave()).toBe(0);
     expect(home.out, 'one line, newline-terminated, naming the run').toEqual([`${fact.line}\n`]);
+    expect(home.streams, 'an unowned Home writes it plainly').toEqual(['plain']);
     expect(home.out[0]).toContain('run-0007');
+    // Both markers must be there before their order means anything: `indexOf` of a missing one is -1, which is "before" everything.
+    expect(home.order, 'the screen was restored').toContain('screen restored');
+    expect(home.order, 'the line was printed').toContain('line');
+    expect(home.order, 'the mount was torn down').toContain('unmount');
     expect(home.order.indexOf('screen restored'), 'the controls were restored first').toBeLessThan(
       home.order.indexOf('line'),
     );
     expect(home.order.indexOf('unmount')).toBeLessThan(home.order.indexOf('line'));
+  });
+
+  it('prints the same one line from an OWNED Home, on the acknowledged stream, after the screen was restored', async () => {
+    const f = invocationFixture();
+    const run = idleHost();
+    const fact: HostedExitFact = {
+      kind: 'safety',
+      runId: 'run-0009',
+      line: 'Run run-0009: an external effect needs attention. Do not retry; read `relavium logs run-0009`.',
+    };
+    vi.spyOn(run, 'exitFacts').mockReturnValue([fact]);
+    const home = mountHome(run, { invocation: f.invocation });
+    expect(await home.leave()).toBe(0);
+    expect(home.out, 'exactly one line, newline-terminated, naming the run').toEqual([
+      `${fact.line}\n`,
+    ]);
+    expect(home.streams, 'the owned Home delivers it on the acknowledged stream').toEqual([
+      'acknowledged',
+    ]);
+    expect(home.order, 'the screen was restored').toContain('screen restored');
+    expect(home.order, 'the line was printed').toContain('line');
+    expect(
+      home.order.filter((step) => step === 'line'),
+      'one line, and no other write of text',
+    ).toHaveLength(1);
+    expect(home.order.indexOf('screen restored'), 'the controls were restored first').toBeLessThan(
+      home.order.indexOf('line'),
+    );
+    expect(home.order.indexOf('unmount')).toBeLessThan(home.order.indexOf('line'));
+    expect(
+      f.registry.termination,
+      'the Home ended on its own: nothing armed the finite-exit bound',
+    ).toBeUndefined();
+    expect(f.registry.activeOwners, 'every owner of the Home retired').toBe(0);
   });
 
   it('prints one line per fact, and nothing else', async () => {

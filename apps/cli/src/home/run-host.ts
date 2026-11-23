@@ -16,6 +16,7 @@ import type { CliInvocation } from '../process/invocation.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
+import { HOSTED_RUN_EXIT_SETTLE_MS } from '../render/tui/tui-constants.js';
 import type { RunJobControl } from '../render/run-job-control.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
@@ -194,6 +195,11 @@ interface ActiveLeg {
   readonly kind: LegKind;
   readonly lifetime: HostedRunLifetime;
   runId: string | undefined;
+  /**
+   * The leg's renderer, once the drive made it: held here so that a leg the host abandons can be sealed too (its frame loop must not
+   * outlive the Home's attention), and so that the leg's own epilogue seals the very one it was given.
+   */
+  renderer: RunRenderer | undefined;
   /** Settles once the leg's whole teardown is done: stream joined, departed, MCP closed, owner retired. */
   done: Promise<void>;
 }
@@ -207,7 +213,7 @@ const NOOP_RENDERER: RunRenderer = { onEvent: () => undefined };
  * keep `close` (and with it the Home) waiting for ever. Past this bound the leg is ABANDONED: its owner stays registered, the invocation's
  * finite-exit bound is armed so the process ends, and the shared database is not closed under a leg that may still write to it.
  */
-export const HOSTED_LEG_SETTLE_BOUND_MS = 3000;
+export const HOSTED_LEG_SETTLE_BOUND_MS = HOSTED_RUN_EXIT_SETTLE_MS;
 
 /**
  * The Home has no terminal for a run to take: its run view is a screen of the Home's own tree, painted from the
@@ -542,6 +548,9 @@ export class RunHost {
    */
   #abandon(leg: ActiveLeg | undefined): void {
     this.#abandoned = Object.freeze({ runId: leg?.runId });
+    // The leg's frame loop is sealed with it: a leg that ignores its stop never reaches the epilogue that would seal it, and the loop would
+    // keep repainting a view nobody reads until the process ends (`seal` is idempotent, and a renderer with no loop has none).
+    leg?.renderer?.seal?.();
     leg?.lifetime.cleanupFailed(
       new CliError('internal', 'A hosted run did not settle after it was asked to stop.'),
     );
@@ -616,7 +625,13 @@ export class RunHost {
     this.notices.clear();
     const io = this.#legIo();
     const resources = this.#createResources(lifetime, io);
-    const leg: ActiveLeg = { kind, lifetime, runId: undefined, done: Promise.resolve() };
+    const leg: ActiveLeg = {
+      kind,
+      lifetime,
+      runId: undefined,
+      renderer: undefined,
+      done: Promise.resolve(),
+    };
     this.#active = leg;
     let acquired: Acquisition;
     try {
@@ -662,8 +677,6 @@ export class RunHost {
     const { engine, handle, runId } = acquired;
     let facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
     let fault: unknown;
-    // Held in an object: the renderer is made inside `driveRun`'s callback, which the compiler does not follow.
-    const held: { renderer: RunRenderer | undefined } = { renderer: undefined };
     try {
       const outcome: RunOutcome | undefined = await driveRun({
         lifetime,
@@ -671,8 +684,11 @@ export class RunHost {
         handle,
         makeRenderer: (creation) => {
           creation.acknowledgeNoAcquisition();
-          held.renderer = this.#renderer?.({ runId, leg: kind }) ?? NOOP_RENDERER;
-          return held.renderer;
+          // Held on the leg, not in a local: the renderer is made inside this callback, which the compiler does not follow, and an
+          // abandon (`#abandon`) must reach it from outside this method.
+          const renderer = this.#renderer?.({ runId, leg: kind }) ?? NOOP_RENDERER;
+          leg.renderer = renderer;
+          return renderer;
         },
         // A pause hands off: with no prompter the drive departs at the pause (`shouldBreakOnPause`).
         makeGatePrompter: () => undefined,
@@ -716,7 +732,7 @@ export class RunHost {
     await resources.releaseMcp();
     // A leg that failed, or that ended while the Home was closing, never reaches the renderer's own `finalize`: seal it here so the
     // frame loop it holds stops with the leg (`seal` is idempotent, and a renderer that has no loop has no `seal`).
-    held.renderer?.seal?.();
+    leg.renderer?.seal?.();
     resources.closeHistoryDb();
     const retirement = await lifetime.finish();
     const terminal =

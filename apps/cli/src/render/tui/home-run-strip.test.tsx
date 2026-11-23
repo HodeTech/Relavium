@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { HomeView } from './home-view.js';
+import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 const RUN_ID = '0b8c2f4e-9d4a-4f6e-8a51-3c7d1e2f9a60';
 const IDLE: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
@@ -210,7 +211,9 @@ describe('the exit-guard card', () => {
   it('says it is stopping once confirmed', () => {
     const frame = frameOf({ hostedRun: running(true), exitGuard: 'stopping' });
     expect(frame).toContain('Stopping the run…');
-    expect(frame).toContain('within 10 s');
+    expect(frame).toContain(
+      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)} s`, // the grace and then the host's settle bound
+    );
   });
 
   it('is drawn in the below-minimum degrade too, where the Home cannot show anything else', () => {

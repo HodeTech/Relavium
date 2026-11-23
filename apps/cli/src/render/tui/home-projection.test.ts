@@ -311,9 +311,9 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
   });
 
   it('says the run is already stopping, and names the wait', () => {
-    const lines = exitGuardLines('confirm', running(true), 10);
+    const lines = exitGuardLines('confirm', running(true), 13);
     expect(lines[0]).toBe(`The run is stopping: ${RUN_ID}.`);
-    expect(lines[1]).toContain('up to 10 s');
+    expect(lines[1]).toContain('(about 13 s)');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
@@ -322,8 +322,8 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
   });
 
   it('says it is stopping once the person confirmed, and for how long the Home waits', () => {
-    const lines = exitGuardLines('stopping', running(true), 10);
+    const lines = exitGuardLines('stopping', running(true), 13);
     expect(lines[0]).toBe('Stopping the run…');
-    expect(lines[1]).toContain('within 10 s');
+    expect(lines[1]).toContain('within about 13 s');
   });
 });

@@ -2156,6 +2156,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         runHost?.close() ?? Promise.resolve(),
       ];
       await Promise.all(closing);
+      // A leg the host gave up on may still be writing to the shared connection, which the surface's database tail would close under it:
+      // keep the handle open for the process's exit, which the leg's armed finite-exit bound brings (ADR-0139 §6), as the unowned path does.
+      if (runHost?.abandoned === true) ownership.retainStore();
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
         let restored = false;
         try {

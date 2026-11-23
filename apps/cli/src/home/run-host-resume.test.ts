@@ -47,6 +47,9 @@ import {
   type RunHostOptions,
 } from './run-host.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 let root: string;
 let fallbackHome: string | undefined;
 vi.mock('../config/load.js', async (importOriginal) => {
@@ -448,11 +451,14 @@ describe('(c) a masked slot is asked for once, by name', () => {
     const enter = (): void => void channel.ui.input('', { ...key, return: true } as never);
     const resume = createGateResumer({ host: r.host, flow: channel.flow });
     const waitFor = async (text: string): Promise<void> => {
-      await vi.waitFor(() => {
-        const snapshot = channel.ui.getSnapshot();
-        expect(snapshot.kind).toBe('password');
-        expect(snapshot.message).toContain(text);
-      });
+      await vi.waitFor(
+        () => {
+          const snapshot = channel.ui.getSnapshot();
+          expect(snapshot.kind).toBe('password');
+          expect(snapshot.message).toContain(text);
+        },
+        { timeout: WAIT_MS },
+      );
     };
 
     // Leave the second field: nothing is answered, no engine is built, the gate stays pending.

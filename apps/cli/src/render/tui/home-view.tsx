@@ -27,7 +27,7 @@ import { parkedRunLabel, type ParkedRunRow } from './home-attention.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
-import { HOSTED_RUN_EXIT_GRACE_MS } from './tui-constants.js';
+import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 /**
  * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
@@ -97,7 +97,7 @@ export function ExitGuardCard(
     color: boolean;
   }>,
 ): ReactElement {
-  const lines = exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_GRACE_MS / 1000);
+  const lines = exitGuardLines(props.phase, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000);
   return (
     <Box flexDirection="column">
       {lines.map((line, row) => (
@@ -239,7 +239,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const guardRows =
     exitGuard === undefined
       ? undefined
-      : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_GRACE_MS / 1000).length;
+      : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000).length;
   const noticeLayout = layoutHomeNotice({
     notice: guardRows === undefined ? notice : undefined,
     editor,

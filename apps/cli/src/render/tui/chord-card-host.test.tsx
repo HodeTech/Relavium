@@ -19,6 +19,9 @@ import {
 } from './native-prompt-channel.js';
 import { NativePromptHost } from './native-prompt-host.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 const mounts: Array<() => void> = [];
 afterEach(() => {
   for (const close of mounts.splice(0)) close();
@@ -75,10 +78,13 @@ function mount(cols: number, rows: number, escape?: NativePromptEscape) {
     text: (): string => output.frames.join(''),
     /** The card is drawn, measured and acknowledged. */
     painted: () =>
-      vi.waitFor(() => {
-        expect(shown).toHaveBeenCalled();
-        expect(() => channel.ui.assertVisible(channel.ui.getSnapshot())).not.toThrow();
-      }),
+      vi.waitFor(
+        () => {
+          expect(shown).toHaveBeenCalled();
+          expect(() => channel.ui.assertVisible(channel.ui.getSnapshot())).not.toThrow();
+        },
+        { timeout: WAIT_MS },
+      ),
     resize: (columns: number, height: number): void => {
       output.columns = columns;
       output.rows = height;
@@ -115,7 +121,7 @@ describe('the chord card in a terminal', () => {
     expect(f.result.done).toBe(false);
     f.at(60_000); // long after the typing and the dwell
     f.input.push('\x19'); // Ctrl+Y
-    await vi.waitFor(() => expect(f.result.done).toBe(true));
+    await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
     expect(f.result.value).toBe('allow');
   });
 
@@ -129,7 +135,7 @@ describe('the chord card in a terminal', () => {
     expect(f.result.done).toBe(false);
     f.at(5000);
     f.input.push('\x0e'); // Ctrl+N refuses at any time
-    await vi.waitFor(() => expect(f.result.done).toBe(true));
+    await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
     expect(f.result.value).toBe('deny');
   });
 
@@ -146,7 +152,7 @@ describe('the chord card in a terminal', () => {
     await flush();
     expect(f.result.done).toBe(false);
     f.input.push('\x1b');
-    await vi.waitFor(() => expect(f.result.done).toBe(true));
+    await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
     expect(f.result.value).toBe(NATIVE_PROMPT_CANCEL);
   });
 
@@ -156,7 +162,7 @@ describe('the chord card in a terminal', () => {
     expect(f.shown).toHaveBeenCalledTimes(1);
     f.at(10_000);
     f.resize(80, 24);
-    await vi.waitFor(() => expect(f.shown).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(f.shown).toHaveBeenCalledTimes(2), { timeout: WAIT_MS });
     f.at(10_100); // 100 ms after the redrawn frame
     f.input.push('\x19');
     await flush();
@@ -164,7 +170,7 @@ describe('the chord card in a terminal', () => {
     expect(f.result.done).toBe(false);
     f.at(20_000);
     f.input.push('\x19');
-    await vi.waitFor(() => expect(f.result.done).toBe(true));
+    await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
     expect(f.result.value).toBe('allow');
   });
 
@@ -174,7 +180,7 @@ describe('the chord card in a terminal', () => {
       await f.painted();
       f.at(60_000);
       f.input.push(bytes);
-      await vi.waitFor(() => expect(f.result.done).toBe(true));
+      await vi.waitFor(() => expect(f.result.done).toBe(true), { timeout: WAIT_MS });
       expect(f.result.value).toBe(NATIVE_PROMPT_CANCEL);
     }
   });
@@ -185,7 +191,7 @@ describe('the chord card in a terminal', () => {
     expect(stepped.text()).toContain('Esc back · Ctrl+C leave');
     stepped.at(60_000);
     stepped.input.push('\x1b');
-    await vi.waitFor(() => expect(stepped.result.done).toBe(true));
+    await vi.waitFor(() => expect(stepped.result.done).toBe(true), { timeout: WAIT_MS });
     expect(stepped.result.value).toBe(NATIVE_PROMPT_BACK);
     expect(stepped.ui.signal()?.aborted).toBe(false);
 
@@ -193,7 +199,7 @@ describe('the chord card in a terminal', () => {
     await left.painted();
     left.at(60_000);
     left.input.push('\x03');
-    await vi.waitFor(() => expect(left.result.done).toBe(true));
+    await vi.waitFor(() => expect(left.result.done).toBe(true), { timeout: WAIT_MS });
     expect(left.result.value).toBe(NATIVE_PROMPT_CANCEL);
     expect(left.ui.signal()?.aborted).toBe(true);
   });

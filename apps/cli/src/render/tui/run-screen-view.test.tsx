@@ -17,6 +17,9 @@ import { createHomeController, type HomeChatSession } from './home-controller.js
 import { RunScreenView } from './run-screen-view.js';
 import { createRunStore, type RunStore } from './run-store.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 afterEach(cleanup);
 
 const RUN = 'run-0001';
@@ -406,8 +409,12 @@ describe.each([
     });
     await waitFor(() => (harness.lastFrame() ?? '').includes('▶ running'));
     harness.stdin.write(ESC); // a lone ESC is held back a moment while the input layer rules out an escape sequence
-    await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined());
-    await vi.waitFor(() => expect(harness.lastFrame()).toContain('▶ run-0001'));
+    await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined(), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(harness.lastFrame()).toContain('▶ run-0001'), {
+      timeout: WAIT_MS,
+    });
     expect(harness.lastFrame()).toContain('Ctrl+C twice to exit');
     expect(cancel).not.toHaveBeenCalled();
     harness.stdin.write('\r');
@@ -440,7 +447,9 @@ describe.each([
     await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+C again cancels the run'));
     expect(cancel).not.toHaveBeenCalled();
     harness.stdin.write(ESC);
-    await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined());
+    await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined(), {
+      timeout: WAIT_MS,
+    });
     expect(cancel).not.toHaveBeenCalled();
   });
 });

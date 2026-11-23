@@ -38,6 +38,9 @@ import {
   CONSENT_ALLOW_LABEL,
 } from './consent-card.js';
 
+/** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
+const WAIT_MS = 5000;
+
 const none: Key = {
   upArrow: false,
   downArrow: false,
@@ -247,7 +250,9 @@ function harness() {
     connectWorkflowMcp(workflow, { cwd: process.cwd(), startMcpClient: start, consentGate: gate });
   /** Wait for the card, then let it be painted and read. */
   const cardUp = async (): Promise<void> => {
-    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'));
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'), {
+      timeout: WAIT_MS,
+    });
     now = 0;
     channel.ui.shown(channel.ui.getSnapshot());
     now = 10_000;
@@ -327,7 +332,7 @@ describe('an allow reaches the spawn, once, and is remembered on this machine', 
       () => 'resolved',
       (error: unknown) => error,
     );
-    await vi.waitFor(() => expect(f.ui.getSnapshot().kind).toBe('chord'));
+    await vi.waitFor(() => expect(f.ui.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
     f.at(0);
     f.ui.shown(f.ui.getSnapshot());
     f.at(100); // 100 ms after the frame: too soon to have been read

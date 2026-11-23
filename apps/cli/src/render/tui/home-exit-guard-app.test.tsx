@@ -14,6 +14,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { settleFrames, waitFor } from './harness-util.js';
+import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 afterEach(cleanup);
 
@@ -99,7 +100,9 @@ describe('the exit-guard card through RootApp', () => {
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
-    expect(harness.lastFrame()).toContain('within 10 s');
+    expect(harness.lastFrame()).toContain(
+      `within about ${String(HOSTED_RUN_EXIT_BOUND_MS / 1000)} s`, // the grace and then the host's settle bound
+    );
     expect(onExit, 'the leg has not settled and the grace has not run out').not.toHaveBeenCalled();
   });
 
@@ -113,6 +116,21 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
     expect(harness.lastFrame()).not.toContain('Starting chat… · Ctrl+C to exit');
+  });
+
+  it('Ctrl+Y counts in the loading echo too, once that frame is on screen: the echo is measured like the landing', async () => {
+    const { controller, harness, cancel } = mount();
+    await settleFrames();
+    controller.handleKey('h', {});
+    controller.handleKey('', { return: true });
+    await waitFor(() => controller.getSnapshot().mode === 'loading');
+    harness.stdin.write(CTRL_C);
+    await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await settleFrames(); // the echo's exact frame is measured and flushed: only then does Ctrl+Y count
+    harness.stdin.write(CTRL_Y);
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('below the 80×24 minimum the card is drawn, Ctrl+N and Esc still reach it, and Ctrl+Y answers nothing', async () => {

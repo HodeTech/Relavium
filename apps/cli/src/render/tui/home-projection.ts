@@ -191,21 +191,22 @@ export type ExitGuardPhase = 'confirm' | 'stopping';
 export function exitGuardLines(
   phase: ExitGuardPhase,
   snapshot: RunHostSnapshot | undefined,
-  graceSeconds: number,
+  /** The longest a confirmed exit waits for the run: the grace and then the host's settle bound ({@link HOSTED_RUN_EXIT_BOUND_MS}). */
+  boundSeconds: number,
 ): readonly string[] {
   const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
   const id = active?.runId === undefined ? undefined : sanitizeInline(active.runId);
   if (phase === 'stopping')
     return [
       'Stopping the run…',
-      `The Home leaves as soon as it has stopped, within ${graceSeconds} s.`,
+      `The Home leaves as soon as it has stopped, within about ${boundSeconds} s.`,
     ];
   if (!hostedRunIsLive(snapshot))
     return ['The run has ended.', 'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay'];
   if (active?.cancelling === true)
     return [
       `The run is stopping${id === undefined ? '' : `: ${id}`}.`,
-      `Ctrl+Y leave once it has stopped (up to ${graceSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
+      `Ctrl+Y leave when it has stopped (about ${boundSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
     ];
   return [
     `A workflow run is executing${id === undefined ? '' : `: ${id}`}.`,
