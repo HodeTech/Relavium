@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import type { RunDeparture, RunHandle } from '@relavium/core';
 import { createClient, createRunHistoryReader, runMigrations, type DbClient } from '@relavium/db';
 import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
 import type { RunEvent } from '@relavium/shared';
@@ -35,6 +36,7 @@ import { mcpConsentPath, type ConsentPrompter } from '../engine/mcp-consent-gate
 import { approvalDecision, inputDecision, rejectionDecision } from '../gate/decision.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import type { InvocationOwner } from '../process/invocation-registry.js';
+import type { RunRenderer } from '../render/renderer.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import { captureIo } from '../test-support.js';
@@ -755,4 +757,127 @@ describe('a gate answered from the Home that another process already decided', (
         .sort(),
     ).toEqual(['g1', 'g2']);
   });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A resumed leg that another process took over while it answered.
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('a resumed leg that finds the run taken over by another process', () => {
+  type Departure = Exclude<RunDeparture, { readonly kind: 'continue' }>;
+  const DETACHED: Departure = {
+    kind: 'detached',
+    moneyDurability: 'durable',
+    effectNeedsAttention: false,
+  };
+
+  /**
+   * The handle a leg holds after another process took its run (ADR-0079 §5): the stream ends with no terminal (or with the stale pause the
+   * engine had buffered before it found the fence), the disposition is `uncertain`, and nothing durable was written by this process. A real
+   * run cannot be put there on demand, so the handle is scripted and the run core, the host and the run store around it are real.
+   */
+  function fencedHandle(runId: string, stream: readonly RunEvent[]): RunHandle {
+    return {
+      runId,
+      events: (async function* (): AsyncGenerator<RunEvent> {
+        await Promise.resolve();
+        yield* stream;
+      })(),
+      subscribe: () => () => undefined,
+      cancel: () => undefined,
+      depart: () => Promise.resolve(DETACHED),
+      whenConsumersReady: () => Promise.resolve(),
+      highWaterMark: 256,
+      bufferedCount: 0,
+      durability: () => 'uncertain',
+      terminalError: () => undefined,
+    };
+  }
+
+  const stalePause = (runId: string): RunEvent => ({
+    runId,
+    timestamp: '2026-11-23T00:00:00.000Z',
+    sequenceNumber: 1,
+    type: 'run:paused',
+    pendingGateCount: 1,
+    gateIds: ['gate-1'],
+  });
+
+  /** A parked run, and a host whose NEXT engine answers `resumeFromCheckpoint` with the fenced handle (the park itself is a real leg). */
+  async function parkedThenFenced(stream: (runId: string) => readonly RunEvent[]) {
+    let fenced = false;
+    const seen: RunEvent[] = [];
+    const sealed = vi.fn();
+    const renderer = (): RunRenderer => ({
+      onEvent: (event) => {
+        seen.push(event);
+      },
+      seal: sealed,
+    });
+    const r = rig({
+      renderer,
+      buildEngine: async (options?: BuildEngineOptions) => {
+        const engine = await buildEngine(options);
+        if (fenced)
+          vi.spyOn(engine, 'resumeFromCheckpoint').mockImplementation((params) =>
+            Promise.resolve(fencedHandle(params.runId, stream(params.runId))),
+          );
+        return engine;
+      },
+    });
+    const runId = await park(r, GATED, 'fenced.relavium.yaml');
+    seen.length = 0;
+    fenced = true;
+    return { r, runId, seen, sealed };
+  }
+
+  it.each([
+    { name: 'a stream that closes with no terminal', stream: () => [] },
+    {
+      name: 'a stale pause the engine buffered before it found the fence',
+      stream: (runId: string) => [stalePause(runId)],
+    },
+  ])(
+    '$name is a takeover the Home reports as such: exit class 6, nothing handed off, nothing claimed',
+    async ({ stream }) => {
+      const { r, runId, seen, sealed } = await parkedThenFenced(stream);
+      const end = await started(
+        r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
+      );
+
+      expect(end.leg).toBe('resume');
+      expect(end.runId).toBe(runId);
+      expect(
+        end.terminal,
+        'the disposition is the typed takeover, not a failure and not a pause',
+      ).toMatchObject({
+        disposition: 'taken_over',
+        safety: 6,
+      });
+      expect(end.terminal.headline).toContain('taken over by another process');
+      expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+      expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
+      expect(end.handedOff, 'this host did not hand the run off').toBe(false);
+      expect(
+        seen.some((event) => event.type === 'run:completed'),
+        'the run view was never told the run completed',
+      ).toBe(false);
+      expect(sealed, 'the leg`s renderer was sealed with the leg').toHaveBeenCalled();
+
+      // The Home's exit class and the line it owes the person.
+      expect(r.registry.observations.exitCode(), 'the safety fact is published as exit 6').toBe(6);
+      const facts = r.host.exitFacts();
+      expect(facts).toHaveLength(1);
+      expect(facts[0]).toMatchObject({ kind: 'safety', runId });
+      expect(facts[0]?.line).toContain('taken over by another process');
+
+      // The leg's owner (the Home's side of the lease) is retired, and the host is free for the next leg.
+      expect(end.retirement).toBe('retired');
+      expect(r.registry.activeOwners).toBe(0);
+      expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+      expect(r.host.snapshot().last).toBe(end);
+      // This process wrote nothing about the run: it is still parked, as the other process left it.
+      expect(runStatus(client, runId)).toBe('paused');
+    },
+  );
 });
