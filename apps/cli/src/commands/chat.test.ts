@@ -38,6 +38,7 @@ import { createElement } from 'react';
 
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { createCommandGrantStore } from '../permissions/command-grants.js';
+import { NOT_WIRED_MARK } from '../render/tui/agent-sheet.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   ABORTED_EFFECT_ATTENTION_NOTICE,
@@ -100,6 +101,11 @@ const EMPTY_CHAT: ResolvedChatConfig = {
 };
 
 const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
+
+/** The label `/agent` shows for the file the catalog-agent tests bind: relative to the working directory, never absolute. */
+const AGENT_LABEL = join('.relavium', 'agents', 'checker.agent.yaml');
+const escapeForRegExp = (text: string): string =>
+  text.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
 
 function globalOptions(cwd: string): GlobalOptions {
   return { json: false, color: false, cwd, configPath: undefined, verbosity: 'normal' };
@@ -1346,13 +1352,86 @@ describe('chatCommand', () => {
     expect(out).toMatch(/Name\s+Relavium chat · the built-in chat agent/u);
     expect(out).toMatch(/Provider\s+anthropic/u);
     expect(out).toMatch(/Model\s+claude-sonnet-4-6/u);
-    expect(out).toMatch(/Tools\s+read_file, list_directory/u);
+    // A headless chat has no question card, so the grant's `ask_user` is not offered and the notice says so (the count leads).
+    expect(out).toMatch(/Tools\s+\d+ of 9 offered: read_file, list_directory/u);
+    expect(out).toContain(`ask_user ${NOT_WIRED_MARK}`);
+    expect(out, 'a definition the host owns has no file to name').not.toMatch(/\bFile\s/u);
     expect(out).toMatch(/System prompt\s+You are Relavium's built-in chat assistant/u);
     expect(
       out,
       'the dispatch rejects a typed token, as it does for every zero-argument command',
     ).toContain("/agent: unknown argument 'now'.");
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
+  });
+
+  /** A project agent file under `.relavium/agents/` of the test's working directory, granting `tools`; its path. */
+  const writeCatalogAgent = (tools: readonly string[]): string => {
+    mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
+    const file = join(cwd, '.relavium', 'agents', 'checker.agent.yaml');
+    writeFileSync(
+      file,
+      [
+        'id: checker',
+        'name: Checker',
+        'provider: anthropic',
+        'model: claude-sonnet-4-6',
+        'system_prompt: Check things.',
+        'tools:',
+        ...tools.map((tool) => `  - ${tool}`),
+        '',
+      ].join('\n'),
+    );
+    return file;
+  };
+
+  it('/agent on a chat bound to a catalog file names the file, and marks the declared tool this host does not wire (register: MVP-8 step 5)', async () => {
+    const file = writeCatalogAgent(['read_file', 'ask_user']);
+    const { d, err } = deps(['/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: file }, d);
+    const out = err();
+    expect(out).toContain('Agent · checker');
+    // The label is relative, never the absolute path the file was read from.
+    expect(out).toMatch(new RegExp(String.raw`File\s+${escapeForRegExp(AGENT_LABEL)}$`, 'mu'));
+    expect(out).not.toContain(cwd);
+    // The grant exactly as declared, with `ask_user` marked: a headless chat has no question card to put it on.
+    expect(out).toMatch(
+      /Tools\s+1 of 2 offered: read_file,\s+ask_user \(not available in this chat\)/u,
+    );
+  });
+
+  it('/agent on a chat whose host wires every declared tool shows the file and no mark and no count', async () => {
+    const file = writeCatalogAgent(['read_file', 'search_files']);
+    const { d, err } = deps(['/agent', '/exit'], [textTurn('unused')]);
+    await chatCommand({ agent: file }, d);
+    const out = err();
+    expect(out).toMatch(new RegExp(String.raw`File\s+${escapeForRegExp(AGENT_LABEL)}$`, 'mu'));
+    expect(out).toMatch(/Tools\s+read_file, search_files$/mu);
+    expect(out).not.toContain(NOT_WIRED_MARK);
+    expect(out).not.toContain('offered');
+  });
+
+  it('an interactive chat hands the driver a view that names the file and marks only what ITS host does not wire (a question card is wired there)', async () => {
+    const file = writeCatalogAgent(['read_file', 'ask_user', 'invoke_agent']);
+    const { d } = deps([], [textTurn('unused')]);
+    const seen: { label: string | undefined; unwired: readonly boolean[] | undefined }[] = [];
+    await chatCommand(
+      { agent: file },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true, stdinIsTty: true },
+        drive: async (ctx) => {
+          ctx.startSession();
+          void ctx.onActivated?.(() => !ctx.shouldStop());
+          const view = ctx.boundAgent?.();
+          seen.push({ label: view?.sourceLabel, unwired: view?.toolOffer?.unwired });
+          await ctx.processLine('/exit');
+          return { kind: 'exit' };
+        },
+      },
+    );
+    // `ask_user` is offered where a person can answer; `invoke_agent` is wired nowhere.
+    expect(seen).toEqual([{ label: AGENT_LABEL, unwired: [false, false, true] }]);
   });
 
   it('/agent shows the reasoning effort the session uses now, the footer’s, and says what the definition declares when that differs (ADR-0140 §3)', async () => {

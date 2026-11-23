@@ -19,7 +19,7 @@ import {
   mkdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 
 import {
   BudgetExceededError,
@@ -3489,6 +3489,167 @@ describe('the ask_user wiring (ADR-0132 §1): one boolean feeds both advertise g
     const second = JSON.stringify(requests[1]?.messages ?? []);
     expect(second).toContain('alpha.ts');
     expect(second).toContain('answered');
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+});
+
+describe('what the /agent sheet is told of the session: the tools the host wires and the file the agent was read from', () => {
+  /** A project in a temp directory with one agent file under `.relavium/agents/`, granting `tools`. */
+  function project(tools: readonly string[]) {
+    const workspace = mkdtempSync(join(tmpdir(), 'relavium-sheet-ws-'));
+    const agentsDir = join(workspace, '.relavium', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const file = join(agentsDir, 'checker.agent.yaml');
+    writeFileSync(
+      file,
+      [
+        'id: checker',
+        'model: claude-sonnet-4-6',
+        'provider: anthropic',
+        'system_prompt: check things',
+        'tools:',
+        ...tools.map((tool) => `  - ${tool}`),
+        '',
+      ].join('\n'),
+    );
+    return { workspace, file, configDir: join(workspace, '.relavium') };
+  }
+  const offeredTo = (requests: readonly LlmRequest[]): string[] =>
+    (requests[0]?.tools ?? []).map((tool) => tool.name).sort();
+  const LABEL = join('.relavium', 'agents', 'checker.agent.yaml');
+  const ISO = '2026-06-25T00:00:00.000Z';
+
+  it('wiredTools is the grant the host narrowed to what it wires: a declared tool with no wiring is missing, and it is what the model is offered', async () => {
+    const { workspace, file } = project(['read_file', 'ask_user', 'invoke_agent']);
+    try {
+      for (const asks of [false, true]) {
+        const { providers, requests } = capturingResolver([textTurn('hi')]);
+        const built = await build({
+          cwd: workspace,
+          agentRef: file,
+          providers,
+          ...(asks ? { askUser: () => Promise.resolve({ kind: 'skipped' as const }) } : {}),
+        });
+        // The author's grant is kept whole on `agent`; the sheet marks the difference.
+        expect(built.agent.tools).toEqual(['read_file', 'ask_user', 'invoke_agent']);
+        expect(built.wiredTools, `question card wired: ${String(asks)}`).toEqual(
+          asks ? ['read_file', 'ask_user'] : ['read_file'],
+        );
+        built.session.start();
+        await built.session.sendMessage('go');
+        built.session.cancel();
+        await built.recordedEvents;
+        expect(offeredTo(requests), 'it is the very set the model was offered').toEqual(
+          [...built.wiredTools].sort(),
+        );
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('a host with no capability wires none of the capability tools, and the built-in agent keeps its whole grant on `agent`', async () => {
+    const built = await build({ toolHost: {} });
+    expect(built.agent.tools).toContain('read_file');
+    expect(built.wiredTools).not.toContain('read_file');
+    expect(built.wiredTools).not.toContain('ask_user');
+    built.session.cancel();
+    await built.recordedEvents;
+  });
+
+  it('a resumed session says the same: the frozen snapshot keeps its grant, and wiredTools is what the resumed host wires', async () => {
+    for (const interactive of [true, false]) {
+      const { providers, requests } = capturingResolver([textTurn('continued')]);
+      const built = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: {
+          id: 'sess-r',
+          agentSlug: 'relavium-chat',
+          agentSnapshot: buildDefaultChatAgent('claude-sonnet-4-6'),
+          context: { workingDir: '/workspace', fsScopeTier: 'project' },
+          status: 'ended',
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          totalCostMicrocents: 0,
+          totalConservativeMicrocents: 0,
+          createdAt: ISO,
+          updatedAt: ISO,
+        },
+        messages: [],
+        now: () => Date.parse(ISO),
+        providers,
+        toolHost: {},
+        consentGate: () => Promise.resolve(new Map()),
+        ...(interactive ? { askUser: () => Promise.resolve({ kind: 'skipped' as const }) } : {}),
+      });
+      expect(built.agent.tools).toContain('ask_user');
+      expect(built.wiredTools).toEqual(interactive ? ['ask_user'] : []);
+      await built.session.sendMessage('continue');
+      expect(offeredTo(requests)).toEqual([...built.wiredTools].sort());
+      expect(built).not.toHaveProperty('agentSourceLabel'); // a resumed session runs a frozen snapshot, not a file
+      built.session.cancel();
+      await built.recordedEvents;
+    }
+  });
+
+  it('agentSourceLabel is the catalog-relative label of the file, whether the agent was named by path or by id', async () => {
+    const { workspace, file, configDir } = project(['read_file']);
+    try {
+      const byPath = await build({ cwd: workspace, agentRef: file });
+      expect(byPath.agentSourceLabel).toBe(LABEL);
+      const byId = await build({
+        cwd: workspace,
+        agentRef: 'checker',
+        projectConfigDir: configDir,
+      });
+      expect(byId.agentSourceLabel).toBe(LABEL);
+      for (const built of [byPath, byId]) {
+        built.session.cancel();
+        await built.recordedEvents;
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('agentSourceLabel follows the file the Home read (`mcpArtifact`), and a definition handed in without one has none', async () => {
+    const { workspace, file } = project(['read_file']);
+    try {
+      const agent = buildDefaultChatAgent('claude-sonnet-4-6');
+      const fromHome = await build({ cwd: workspace, agent, mcpArtifact: file });
+      expect(fromHome.agentSourceLabel).toBe(LABEL);
+      // A `/clear` rebind hands the agent in by value: there is no file to name, and the label is absent rather than stale.
+      const rebound = await build({ cwd: workspace, agent });
+      expect(rebound).not.toHaveProperty('agentSourceLabel');
+      for (const built of [fromHome, rebound]) {
+        built.session.cancel();
+        await built.recordedEvents;
+      }
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it('agentSourceLabel is never an absolute path, even for a file outside the working directory', async () => {
+    const { file } = project(['read_file']);
+    const elsewhere = mkdtempSync(join(tmpdir(), 'relavium-sheet-cwd-'));
+    try {
+      const built = await build({ cwd: elsewhere, agentRef: file });
+      expect(built.agentSourceLabel).toBeDefined();
+      expect(isAbsolute(built.agentSourceLabel ?? '/')).toBe(false);
+      expect(built.agentSourceLabel).toContain('checker.agent.yaml');
+      built.session.cancel();
+      await built.recordedEvents;
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+      rmSync(join(file, '..', '..', '..'), { recursive: true, force: true });
+    }
+  });
+
+  it('the built-in default agent has no file to name', async () => {
+    const built = await build();
+    expect(built).not.toHaveProperty('agentSourceLabel');
     built.session.cancel();
     await built.recordedEvents;
   });

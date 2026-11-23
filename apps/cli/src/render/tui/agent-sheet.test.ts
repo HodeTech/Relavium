@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
 import type { Agent, ReasoningEffort } from '@relavium/shared';
@@ -11,7 +13,9 @@ import {
   agentSheetLines,
   agentSheetTitle,
   BUILT_IN_AGENT_NOTE,
+  boundToolsText,
   foldAgentSheetKey,
+  NOT_WIRED_MARK,
 } from './agent-sheet.js';
 import type { ChatKey } from './chat-input.js';
 import { permissionsChatSheet, agentChatSheet, permissionsSheetOf } from './chat-sheet.js';
@@ -155,6 +159,249 @@ describe('what the sheet lists', () => {
       const rule = agentSheetLines(view, size)[0];
       expect(displayWidth(rule?.text ?? '')).toBeLessThanOrEqual(Math.min(size.columns - 2, 100));
     }
+  });
+});
+
+describe('the tools this chat does not offer, and the file the agent was read from', () => {
+  /** The view of `agent` for a chat whose host wires `wired` and whose agent was read from `label`, as the host makes it. */
+  const hostView = (agent: Agent, wired: readonly string[], label?: string): BoundAgentView =>
+    boundAgentView(agent, undefined, { wiredTools: wired, sourceLabel: label });
+  const toolsRow = (view: BoundAgentView): string =>
+    texts(agentSheetBody(view, 78, 12)).find((line) => line.includes('Tools')) ?? '';
+
+  it('marks each declared tool the host does not wire after its name, and says how many are offered, in front', () => {
+    const view = hostView(
+      definition({ tools: ['read_file', 'ask_user', 'search_files', 'invoke_agent'] }),
+      ['read_file', 'search_files'],
+    );
+    expect(NOT_WIRED_MARK).toBe('(not available in this chat)');
+    expect(boundToolsText(view)).toBe(
+      `2 of 4 offered: read_file, ask_user ${NOT_WIRED_MARK}, search_files, invoke_agent ${NOT_WIRED_MARK}`,
+    );
+    // On the sheet at 80×24 and in the notice a chat with no sheet prints: the same words.
+    const drawn = texts(agentSheetLines(view, { columns: 80, terminalRows: 24 })).join('\n');
+    expect(drawn).toMatch(
+      /Tools\s+2 of 4 offered: read_file,\s+ask_user \(not available in this chat\), search_files,\s+invoke_agent \(not available in this chat\)/u,
+    );
+    // The notice wraps at its own width, between names, so the words are the same once the line breaks are one space.
+    expect(agentNotice(view).replaceAll(/\s+/gu, ' ')).toContain(boundToolsText(view));
+  });
+
+  it('shows the grant exactly as declared, plus the marks: every name stays, in order, and an offered tool carries no mark', () => {
+    const declared = ['read_file', 'ask_user', 'write_file', 'invoke_agent'];
+    const view = hostView(definition({ tools: declared }), ['read_file', 'write_file']);
+    const text = boundToolsText(view);
+    const withoutMarks = text
+      .replace(/^\d+ of \d+ offered: /u, '')
+      .split(NOT_WIRED_MARK)
+      .join('')
+      .replaceAll(/ ,/gu, ',')
+      .trimEnd();
+    expect(withoutMarks.replaceAll(/\s+/gu, ' ').split(', ')).toEqual(declared);
+    // A mark follows ONLY a tool the host does not wire.
+    expect(text).toContain(`ask_user ${NOT_WIRED_MARK}`);
+    expect(text).toContain(`invoke_agent ${NOT_WIRED_MARK}`);
+    expect(text).not.toContain(`read_file ${NOT_WIRED_MARK}`);
+    expect(text).not.toContain(`write_file ${NOT_WIRED_MARK}`);
+  });
+
+  it('draws a grant the host wires whole exactly as before: no mark and no count', () => {
+    const view = hostView(definition({ tools: ['read_file', 'edit_file'] }), [
+      'read_file',
+      'edit_file',
+      'mcp__server__lookup',
+    ]);
+    expect(boundToolsText(view)).toBe('read_file, edit_file');
+    expect(toolsRow(view)).toMatch(/Tools\s+read_file, edit_file$/u);
+    expect(agentNotice(view)).not.toContain('offered');
+    expect(agentNotice(view)).not.toContain(NOT_WIRED_MARK);
+    // And a view made without the host’s word marks nothing, whatever the grant.
+    expect(boundToolsText(viewOf(definition({ tools: ['ask_user'] })))).toBe('ask_user');
+  });
+
+  it('says `none declared` for an agent with no tools, with or without the host’s word', () => {
+    const bare: Agent = { id: 'bare', model: 'm', provider: 'anthropic', system_prompt: '' };
+    expect(boundToolsText(hostView(bare, []))).toBe('none declared');
+    expect(boundToolsText(viewOf(bare))).toBe('none declared');
+  });
+
+  it('says how many more tools there are past the ones it names, and counts them among the offered', () => {
+    const many = Array.from({ length: AGENT_TOOLS_MAX + 6 }, (_, index) => `tool_${String(index)}`);
+    const view = hostView(definition({ tools: many }), many.slice(0, AGENT_TOOLS_MAX + 2));
+    const text = boundToolsText(view);
+    expect(
+      text.startsWith(
+        `${String(AGENT_TOOLS_MAX + 2)} of ${String(AGENT_TOOLS_MAX + 6)} offered: tool_0, `,
+      ),
+    ).toBe(true);
+    expect(text.endsWith('… and 6 more')).toBe(true);
+    expect(text).not.toContain(NOT_WIRED_MARK);
+  });
+
+  it('keeps the count in front when the grant is cut, and keeps the marks before the offered names', () => {
+    const many = Array.from(
+      { length: AGENT_TOOLS_MAX },
+      (_, index) => `a_long_tool_name_${String(index)}`,
+    );
+    const view = hostView(definition({ tools: many }), many.slice(0, 7));
+    const drawn = texts(agentSheetLines(view, { columns: 80, terminalRows: 24 })).join('\n');
+    expect(drawn).toMatch(/Tools\s+7 of 64 offered:/u);
+    expect(drawn).toContain(`a_long_tool_name_7 ${NOT_WIRED_MARK}`);
+    expect(drawn).toContain('…');
+  });
+
+  it('a cut leaves out OFFERED names before it leaves out a mark, so the tools this chat cannot call stay on the sheet and in the notice', () => {
+    // The built-in agent in a chat that cannot ask or run: nine declared tools, the last two not wired, and a grant too long for the lines.
+    const agent = buildDefaultChatAgent('claude-sonnet-4-6', undefined, 'anthropic');
+    const declared = agent.tools ?? [];
+    const wired = declared.filter((tool) => tool !== 'ask_user' && tool !== 'run_command');
+    const view = hostView(agent, wired);
+    expect(declared.length).toBe(9);
+    for (const [name, text] of [
+      ['the sheet at 80×24', texts(agentSheetLines(view, SIZES[0])).join('\n')],
+      ['the notice', agentNotice(view)],
+    ] as const) {
+      expect(text, name).toMatch(/Tools\s+7 of 9 offered: read_file, list_directory,/u);
+      expect(text, name).toContain(`run_command ${NOT_WIRED_MARK}`);
+      expect(text, name).toContain(`ask_user ${NOT_WIRED_MARK}`);
+      // The names that are offered are what a cut leaves out, shown by one `…`, and the order of what stays is the declared order.
+      expect(text.indexOf('run_command'), name).toBeLessThan(text.indexOf('ask_user'));
+    }
+    expect(texts(agentSheetLines(view, SIZES[0])).join('\n')).toMatch(
+      /search_files, … run_command/u,
+    );
+  });
+
+  it('never splits a mark over two lines, at any width a sheet is drawn at', () => {
+    const tools = ['read_file', 'ask_user', 'search_files', 'invoke_agent', 'http_request'];
+    const view = hostView(definition({ tools }), ['read_file', 'search_files']);
+    for (const size of SIZES) {
+      const lines = texts(agentSheetLines(view, size));
+      const marks = lines.filter((line) => line.includes('(not')).length;
+      expect(marks, `${String(size.columns)}x${String(size.terminalRows)}`).toBeGreaterThan(0);
+      for (const line of lines) {
+        if (line.includes('(not')) expect(line).toContain(NOT_WIRED_MARK);
+        expect(line.trim().startsWith('chat)')).toBe(false);
+        expect(line.trim().startsWith('this chat')).toBe(false);
+      }
+    }
+    // Only a name wider than its line is cut inside (and then with `…`): at 70 columns the longest name with its mark still fits.
+    for (const width of [70, 78]) {
+      for (const line of texts(agentSheetBody(view, width, 12)))
+        if (line.includes('(not')) expect(line).toContain(NOT_WIRED_MARK);
+    }
+  });
+
+  it('draws a File row, after the name, for an agent read from a file, and none for a definition with no file', () => {
+    const label = join('.relavium', 'agents', 'reviewer.agent.yaml');
+    const withFile = texts(
+      agentSheetBody(hostView(definition(), ['read_file', 'search_files'], label), 78, 10),
+    );
+    expect(withFile[0]).toMatch(/^\s+Name\s+Code reviewer$/u);
+    expect(withFile[1]).toMatch(
+      new RegExp(
+        String.raw`^\s+File\s+${label.replaceAll('\\', '\\\\').replaceAll('.', String.raw`\.`)}$`,
+        'u',
+      ),
+    );
+    expect(withFile[2]).toMatch(/^\s+Provider\s+anthropic$/u);
+    for (const none of [
+      hostView(definition(), ['read_file', 'search_files']),
+      hostView(buildDefaultChatAgent('claude-sonnet-4-6', undefined, 'anthropic'), []),
+      viewOf(definition()),
+    ]) {
+      expect(texts(agentSheetBody(none, 78, 10)).join('\n')).not.toMatch(/File\s/u);
+      expect(agentNotice(none)).not.toMatch(/File\s/u);
+    }
+    // The notice a chat with no sheet prints names the file too.
+    expect(agentNotice(hostView(definition(), [], label))).toContain(label);
+  });
+
+  it('cuts a long file label from the FRONT, so the name of the file survives the cut', () => {
+    const label = `${'deep/'.repeat(40)}reviewer.agent.yaml`;
+    const row =
+      texts(agentSheetBody(hostView(definition(), [], label), 78, 10)).find((line) =>
+        line.includes('File'),
+      ) ?? '';
+    expect(row).toMatch(/File\s+…/u);
+    expect(row).toMatch(/reviewer\.agent\.yaml$/u);
+    expect(displayWidth(row)).toBeLessThanOrEqual(78);
+  });
+
+  it('cuts a label of wide characters without leaving the row wider than the sheet', () => {
+    for (const label of [`${'日本語'.repeat(40)}.agent.yaml`, `agents/${'👩‍💻'.repeat(30)}.yaml`]) {
+      for (const width of [30, 40, 78, 98]) {
+        const row = texts(agentSheetBody(hostView(definition(), [], label), width, 10)).find(
+          (line) => line.includes('File'),
+        );
+        expect(displayWidth(row ?? ''), `${label} at ${String(width)}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it('is no taller at 80×24 than before, with the longest grant of marked tools and the longest label: twelve rows, the File and the count among them', () => {
+    const many = Array.from(
+      { length: AGENT_TOOLS_MAX },
+      (_, index) => `a_long_tool_name_${String(index)}`,
+    );
+    const worst = hostView(
+      definition({
+        name: 'n'.repeat(500),
+        tools: many,
+        system_prompt: 'word '.repeat(300),
+        temperature: 1.5,
+        reasoning_effort: 'medium',
+      }),
+      many.slice(0, 3),
+      `.relavium/agents/${'long-directory-name/'.repeat(8)}reviewer.agent.yaml`,
+    );
+    for (const size of SIZES) {
+      const lines = agentSheetLines(worst, size);
+      const out = texts(lines);
+      expect(
+        lines.length,
+        `${String(size.columns)}x${String(size.terminalRows)}`,
+      ).toBeLessThanOrEqual(cardRowBudget(size.terminalRows));
+      for (const line of lines)
+        expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(
+          Math.min(size.columns - 2, 100),
+        );
+      expect(out.join('\n')).toMatch(/File\s+…?.*reviewer\.agent\.yaml/u);
+      expect(out.join('\n')).toMatch(/Tools\s+3 of 64 offered:/u);
+      expect(out.join('\n')).toContain('System prompt');
+      expect(lines.at(-1)?.kind).toBe('legend');
+    }
+    const small = agentSheetLines(worst, { columns: 80, terminalRows: 24 });
+    expect(small).toHaveLength(12);
+    // The grant with marks takes a third line, and the head of the prompt keeps the two that are left.
+    const prompt = texts(small).findIndex((line) => line.includes('System prompt'));
+    expect(texts(small).slice(prompt, -1)).toHaveLength(2);
+    expect(
+      texts(small).slice(
+        texts(small).findIndex((line) => line.includes('Tools')),
+        prompt,
+      ),
+    ).toHaveLength(3);
+  });
+
+  it('is as sanitized as every other field: an escape in the label, or in a view built by hand, reaches no terminal', () => {
+    const made = hostView(definition(), ['read_file'], '.relavium/agents/x.agent.yaml');
+    const hostile: BoundAgentView = {
+      ...made,
+      sourceLabel: 'agents/\u001b[31mevil\u001b]0;pwned\u0007.agent.yaml',
+    };
+    for (const size of SIZES) {
+      const drawn = texts(agentSheetLines(hostile, size)).join('\n');
+      expect(drawn).not.toMatch(ESCAPES);
+      expect(drawn).toContain('.agent.yaml');
+    }
+    expect(agentNotice(hostile)).not.toMatch(ESCAPES);
+  });
+
+  it('keeps the spans of the File row inside it', () => {
+    const view = hostView(definition(), [], `${'d/'.repeat(100)}x.agent.yaml`);
+    for (const line of agentSheetLines(view, SIZES[0]))
+      for (const span of line.spans ?? []) expect(span.to).toBeLessThanOrEqual(line.text.length);
   });
 });
 

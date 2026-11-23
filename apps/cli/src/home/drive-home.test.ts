@@ -2300,6 +2300,56 @@ workflow:
       await leaveHome(props, running);
     });
 
+    it('the `/agent` sheet of a chat started by `c` names the file the detail showed and marks the tool the Home’s chat does not wire; a `/clear` holds the definition and names no file', async () => {
+      writeProjectAgent(['  - invoke_agent']);
+      const { providers } = capturingResolver([textTurn('first')]);
+      const { props, running } = await onDetail({ providers });
+      props.controller.handleKey('c', {});
+      await settledChat(props);
+
+      // The label is the catalog's own, relative to the Home's working directory: never the absolute path the consent prompt names.
+      const label = join('.relavium', 'agents', 'reviewer.agent.yaml');
+      const view = props.controller.getSnapshot().session?.boundAgent?.();
+      expect(view?.sourceLabel).toBe(label);
+      expect(view?.sourceLabel).not.toContain(cwd);
+      // The Home's chat can ask, so only the tool wired nowhere is marked.
+      expect(view?.toolOffer).toEqual({ unwired: [false, false, true], declared: 3, offered: 2 });
+      props.controller.handlePaste('/agent');
+      props.controller.handleKey('', ENTER);
+      const sheet = props.controller.getSnapshot().chatSheet;
+      const drawn =
+        sheet?.kind === 'agent'
+          ? agentSheetLines(sheet.view, { columns: 80, terminalRows: 24 })
+              .map((line) => line.text)
+              .join('\n')
+          : '';
+      expect(drawn).toMatch(/File\s+\.relavium[\\/]agents[\\/]reviewer\.agent\.yaml/u);
+      expect(drawn).toMatch(/Tools\s+2 of 3 offered: read_file, search_files,/u);
+      expect(drawn).toContain('invoke_agent (not available in this chat)');
+      props.controller.handleKey('', { escape: true });
+
+      // A `/clear` rebinds the definition the session holds, with no file behind it: the view names none, and still marks the same tool.
+      const first = props.controller.getSnapshot().session;
+      props.controller.handlePaste('/clear');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(
+        () => expect(props.controller.getSnapshot().session?.sessionId).not.toBe(first?.sessionId),
+        { timeout: WAIT_MS },
+      );
+      await settledChat(props);
+      const cleared = props.controller.getSnapshot().session?.boundAgent?.();
+      expect(cleared?.id).toBe('reviewer');
+      expect(cleared?.sourceLabel).toBeUndefined();
+      expect(cleared?.toolOffer?.unwired).toEqual([false, false, true]);
+
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
+      await leaveHome(props, running);
+    });
+
     it('a Home that starts no agent still binds the built-in one: the same call with no reference', async () => {
       writeProjectAgent();
       const { providers, requests } = capturingResolver([textTurn('first')]);

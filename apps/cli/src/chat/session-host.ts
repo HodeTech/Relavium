@@ -93,6 +93,7 @@ import {
 import { resolveChatAgentSource, type ResolvedChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostDeadlineTimer, hostSleep } from '../process/sleep.js';
+import { sourceLabel } from '../process/source-label.js';
 import type { SessionWorkOwner } from './session-work-owner.js';
 import type { SessionHostOwner } from './session-host-owner.js';
 import { ownSessionNotification } from './session-presentation.js';
@@ -305,6 +306,19 @@ export interface BuiltChatSession {
    * whose `tools` is unioned with the discovered MCP ids (2.R), constructed internally and not surfaced here.
    */
   readonly agent: AgentDefinition;
+  /**
+   * The tool ids the session actually OFFERS the model: the agent's grant (with the discovered MCP tool ids) after the 2.5.A advertise-filter
+   * narrowed it to the tools whose host capability this chat wires (an `ask_user` on a driver with no question card, an `invoke_agent`
+   * anywhere). {@link agent} keeps the author's whole grant, so a declared tool missing here is one this chat cannot call; the `/agent` sheet
+   * marks exactly those. It says nothing of the chat MODE, which hides governed tools per turn ([chat-mode-host.ts](chat-mode-host.ts)).
+   */
+  readonly wiredTools: readonly string[];
+  /**
+   * The label of the file {@link agent} was read from, relative to the working directory ({@link sourceLabel}: never absolute); absent for
+   * the built-in agent and for a definition handed in by value (a `/clear` rebind), and never set by a resumed session, which runs a frozen
+   * snapshot and not the file. The `/agent` sheet shows it as a `File` row.
+   */
+  readonly agentSourceLabel?: string;
   /** The frozen session context (working dir + fs-scope tier) the session ran against. */
   readonly context: SessionContext;
   /**
@@ -1240,6 +1254,10 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       handle,
       sessionId,
       agent,
+      wiredTools: sessionAgent.tools ?? [],
+      ...(mcpArtifact === undefined
+        ? {}
+        : { agentSourceLabel: sourceLabel(opts.cwd, mcpArtifact) }),
       context,
       ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),
@@ -1593,6 +1611,7 @@ export async function buildResumedChatSession(
       handle,
       sessionId: record.id,
       agent,
+      wiredTools: sessionAgent.tools ?? [],
       context,
       ...sessionBuildMetadata(opts),
       contextWindowTokens: sessionContextWindow(agent, deps),

@@ -1979,9 +1979,14 @@ export function createChatLineHandler(
   // The bound agent as `/agent` shows it (ADR-0140 §3): the definition THIS session holds (a reseat builds a new session over the swapped
   // copy, so it is the provider and model the chat runs on now), scrubbed by the `/agents` detail's own builder, and the reasoning tier the
   // session is using NOW, which is the footer's (`store.getSnapshot().reasoningEffort`): `/effort` changes it on the session and never on
-  // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows.
+  // the definition. Made afresh on every call, so a view never says a tier the footer no longer shows. The tools this chat's host does not
+  // wire and the label of the file the agent was read from ride with the session (`wiredTools`, `agentSourceLabel`), so the sheet marks a
+  // declared tool that the model is never offered and names the file the person chose.
   const boundAgent = (): BoundAgentView =>
-    boundAgentView(built.agent, store.getSnapshot().reasoningEffort);
+    boundAgentView(built.agent, store.getSnapshot().reasoningEffort, {
+      wiredTools: built.wiredTools,
+      sourceLabel: built.agentSourceLabel,
+    });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
