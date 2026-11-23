@@ -1,3 +1,5 @@
+import type { AgentDefinition } from '@relavium/core';
+
 import { buildAgentsModel, type AgentsModel } from '../history/agents-model.js';
 import { discoverAgentDefinitions } from '../workflows/catalog.js';
 
@@ -15,6 +17,12 @@ export interface AgentsRead {
   readonly slugOf: (entryIndex: number) => string | undefined;
   /** The catalog path of that same entry, as the catalog read it (the raw path, not the row's sanitized label); `undefined` when none sits there. */
   readonly pathOf: (entryIndex: number) => string | undefined;
+  /**
+   * The parsed definition the catalog read for that same entry (the whole of it, not the page's scrubbed text); `undefined` for a file that did
+   * not parse and when none sits there. The page is drawn from it, so a `c` compares what it reads then with this: what the person read is
+   * what is bound, or nothing is.
+   */
+  readonly definitionOf: (entryIndex: number) => AgentDefinition | undefined;
 }
 
 /** The agents list's read, behind a port so the browser is testable without a project. May throw a `CliError` (an unreadable or over-large catalog directory). */
@@ -54,6 +62,7 @@ export function createAgentsPort(options: AgentsPortOptions): AgentsPort {
         model,
         slugOf: (entryIndex) => items[entryIndex]?.entry.slug,
         pathOf: (entryIndex) => items[entryIndex]?.entry.path,
+        definitionOf: (entryIndex) => items[entryIndex]?.agent,
       };
     },
   };

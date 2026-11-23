@@ -114,6 +114,28 @@ describe('createAgentsPort', () => {
     expect(second.slugOf(0)).toBe('beta');
   });
 
+  it('holds the whole parsed definition of each ready entry, as the catalog read it, and none for a file that did not parse', () => {
+    write('alpha.agent.yaml', agentYaml('alpha', { tools: ['read_file'], temperature: 0.3 }, 'P'));
+    write('broken.agent.yaml', 'id: [unclosed\n');
+    const read = port().read();
+    // The definition is the parse of the file, not the page's scrubbed text: a key-shaped prompt is held whole.
+    expect(read.definitionOf(0)).toEqual({
+      id: 'alpha',
+      name: 'Agent alpha',
+      model: 'claude-sonnet-4-6',
+      provider: 'anthropic',
+      system_prompt: 'P',
+      tools: ['read_file'],
+      temperature: 0.3,
+    });
+    expect(read.slugOf(1)).toBe('broken');
+    expect(read.definitionOf(1), 'a file that did not parse has none').toBeUndefined();
+    expect(read.definitionOf(2)).toBeUndefined();
+    // A read already taken keeps the definition it listed when the file changes under it.
+    write('alpha.agent.yaml', agentYaml('alpha', { tools: ['read_file', 'write_file'] }, 'P'));
+    expect(read.definitionOf(0)?.tools).toEqual(['read_file']);
+  });
+
   it('keeps an invalid file as a row with a reason and none of its contents', () => {
     // A schema violation (an unknown key whose value is a key-shaped string) and a YAML syntax fault, both full of text a leak
     // would show; the id a refused file takes is its file stem.

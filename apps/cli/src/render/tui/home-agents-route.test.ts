@@ -2,14 +2,22 @@
  * `/agents` at the Home ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
  * §3 and its 2026-11-23 note, MVP-8 step 5): typed on the bare Home or chosen from its palette it opens the tab host on the agents strip's
  * Defined tab and starts no chat; from the Sessions tab, `Enter` resumes a conversation in place, the screen leaving in the very state change
- * that starts the resume. With a chat in front `/agents` is not the Home's, and it opens nothing.
+ * that starts the resume; and `c` on an agent's detail starts a chat bound to that agent, the screen leaving in the very state change that
+ * starts the build. With a chat in front `/agents` is not the Home's, and it opens nothing.
  *
  * The Home controller is real; its agents port, sessions port and resume are scripted, so "starts no chat" is proved at the one place a chat
  * would begin (`startChat`) and "resumes" at the resume's own entry (`resumeChat`).
  */
+import type { AgentDefinition } from '@relavium/core';
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildAgentsModel, type AgentsModelItem } from '../../history/agents-model.js';
+import {
+  HomeAgentStartError,
+  agentStartNotice,
+  type AgentStartReason,
+  type HomeAgentRequest,
+} from '../../home/agent-start.js';
 import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import { createChatStore } from './chat-store.js';
@@ -72,11 +80,16 @@ const items: readonly AgentsModelItem[] = [
   },
 ];
 
-function agentsPort() {
+/** The whole definition the catalog holds for an item: what its page is drawn from, and what a chat is asked to be still. */
+const definitionOf = (item: AgentsModelItem | undefined): AgentDefinition | undefined =>
+  item?.agent === undefined ? undefined : { id: item.entry.slug, ...item.agent };
+
+function agentsPort(listed: readonly AgentsModelItem[] = items) {
   const read = vi.fn(() => ({
-    model: buildAgentsModel(items),
-    slugOf: (index: number) => items[index]?.entry.slug,
-    pathOf: (index: number) => items[index]?.entry.path,
+    model: buildAgentsModel(listed),
+    slugOf: (index: number) => listed[index]?.entry.slug,
+    pathOf: (index: number) => listed[index]?.entry.path,
+    definitionOf: (index: number) => definitionOf(listed[index]),
   }));
   return { port: { read } satisfies AgentsPort, read };
 }
@@ -101,6 +114,8 @@ interface Options {
   readonly sessions?: SessionsPort | undefined;
   /** What `resumeChat` answers; absent ⇒ no resume is wired. */
   readonly resume?: ((sessionId: string) => Promise<ResumeResult>) | 'none';
+  /** What `startChat` answers (the built session, or a rejection); absent ⇒ a session that is ready at once. */
+  readonly startChat?: (agent?: HomeAgentRequest) => Promise<HomeChatSession>;
 }
 
 function mount(options: Options = {}) {
@@ -120,7 +135,9 @@ function mount(options: Options = {}) {
       teardown: () => Promise.resolve(),
     };
   };
-  const startChat = vi.fn(() => Promise.resolve(chatSession('sess-started')));
+  const startChat = vi.fn<(agent?: HomeAgentRequest) => Promise<HomeChatSession>>(
+    options.startChat ?? (() => Promise.resolve(chatSession('sess-started'))),
+  );
   const fakeAgents = agentsPort();
   const fakeSessions = sessionsPort();
   const agents = 'agents' in options ? options.agents : fakeAgents.port;
@@ -431,3 +448,225 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
   });
 });
+
+describe('`c` on an agent’s detail starts a chat bound to that agent', () => {
+  /**
+   * What `c` on `reviewer`'s page asks for: the path the agents port holds for its row (what the detail showed, and the only thing a chat
+   * may be bound by) and the definition the port holds for it (what the page was drawn from).
+   */
+  const REVIEWER_REQUEST: HomeAgentRequest = {
+    path: '.relavium/agents/reviewer.agent.yaml',
+    listed: {
+      id: 'reviewer',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'You review code.',
+      tools: ['read_file'],
+    },
+  };
+
+  /** The tab host open on the Defined tab, the detail of `reviewer` (a ready agent) open. */
+  function onDetail(options: Options = {}, slug = 'reviewer') {
+    const mounted = mount(options);
+    submit(mounted.controller, '/agents');
+    mounted.controller.handleKey('', ENTER);
+    expect(hostOf(mounted.controller)?.agents?.detail?.slug).toBe(slug);
+    return mounted;
+  }
+
+  it('closes the screen and begins the build with the agent’s own path in ONE state change, then opens the chat idle with nothing under it', async () => {
+    const { controller, startChat, lines } = onDetail();
+    const states: HomeControllerState[] = [];
+    const unsubscribe = controller.subscribe(() => states.push(controller.getSnapshot()));
+    controller.handleKey('c', {});
+    // Synchronously, before anything settles: exactly one transition, and it both took the screen away and began the build.
+    expect(states, 'one state change for the key').toHaveLength(1);
+    expect(states[0]?.screen, 'the screen is gone in that very change').toBeUndefined();
+    expect(states[0]?.mode, 'and the build is what is on screen').toBe('loading');
+    expect(states[0]?.pendingMessage, 'there is no typed message to echo').toBe('');
+    expect(startChat).toHaveBeenCalledTimes(1);
+    // The exact argument list: the path and the definition the port holds, and nothing else (no label, no second argument).
+    expect(startChat.mock.calls).toEqual([[REVIEWER_REQUEST]]);
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    unsubscribe();
+    const after = controller.getSnapshot();
+    expect(after.session?.sessionId).toBe('sess-started');
+    expect(after.screen, 'the chat is not under a tab host').toBeUndefined();
+    expect(after.notice).toBeUndefined();
+    expect(lines, 'no message was sent: the chat opens idle').toEqual([]);
+    expect(
+      states.every((state) => state.screen === undefined),
+      'no state after the key shows a screen',
+    ).toBe(true);
+    expect(
+      states.some((state) => state.mode === 'home' && state.screen === undefined),
+      'the landing is never drawn between the detail and the chat',
+    ).toBe(false);
+  });
+
+  it('`C` (Caps Lock) is the same key', () => {
+    const { controller, startChat } = onDetail();
+    controller.handleKey('C', {});
+    expect(startChat.mock.calls).toEqual([[REVIEWER_REQUEST]]);
+    expect(controller.getSnapshot().mode).toBe('loading');
+  });
+
+  it('binds by the catalog’s path and never by a label: an agent whose id looks like a path and whose file has another name', () => {
+    const { controller, startChat } = onDetail(
+      {
+        agents: agentsPort([
+          {
+            entry: {
+              slug: '../../x',
+              name: 'Agent x',
+              path: '.relavium/agents/a-file-of-another-name.agent.yaml',
+              valid: true,
+            },
+            agent: {
+              model: 'claude-opus-4-8',
+              provider: 'anthropic',
+              system_prompt: 'x',
+              tools: ['read_file'],
+            },
+          },
+        ]).port,
+      },
+      '../../x',
+    );
+    controller.handleKey('c', {});
+    expect(startChat.mock.calls).toEqual([
+      [
+        {
+          path: '.relavium/agents/a-file-of-another-name.agent.yaml',
+          listed: {
+            id: '../../x',
+            model: 'claude-opus-4-8',
+            provider: 'anthropic',
+            system_prompt: 'x',
+            tools: ['read_file'],
+          },
+        },
+      ],
+    ]);
+  });
+
+  it('Ctrl+C on the detail closes the screen and starts no chat', () => {
+    const { controller, startChat } = onDetail();
+    controller.handleKey('c', { ctrl: true });
+    expect(controller.getSnapshot().screen).toBeUndefined();
+    expect(controller.getSnapshot().mode).toBe('home');
+    expect(controller.getSnapshot().interruptArmed, 'a browser arms nothing').toBe(false);
+    expect(startChat).not.toHaveBeenCalled();
+  });
+
+  it('an invalid agent has no detail and so no `c`: the key starts nothing and the tab host stays', () => {
+    const { controller, startChat } = mount();
+    submit(controller, '/agents');
+    controller.handleKey('', DOWN);
+    controller.handleKey('', ENTER); // broken-one: says why it has no detail
+    expect(hostOf(controller)?.agents?.detail).toBeUndefined();
+    controller.handleKey('c', {});
+    controller.handleKey('C', {});
+    expect(startChat).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().screen?.kind).toBe('tab-host');
+    expect(controller.getSnapshot().mode).toBe('home');
+  });
+
+  it('an agent that vanished between the list and the key: the landing says why in one fixed sentence, and nothing is left half-open', async () => {
+    const { controller, startChat } = onDetail({
+      startChat: () => Promise.reject(new HomeAgentStartError('unreadable', new Error('PRIVATE'))),
+    });
+    controller.handleKey('c', {});
+    expect(controller.getSnapshot().mode, 'building').toBe('loading');
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'), {
+      timeout: WAIT_MS,
+    });
+    const after = controller.getSnapshot();
+    expect(after.notice).toBe(
+      'The agent could not be started: its file is missing or cannot be read.',
+    );
+    expect(after.mode, 'the loading state is gone').toBe('home');
+    expect(after.nativeActionBusy, 'no native action is left holding the keyboard').toBe(false);
+    expect(after.session, 'no chat started').toBeUndefined();
+    expect(after.screen, 'the Home stays on the landing').toBeUndefined();
+    expect(after.errorText).toBeUndefined();
+    expect(after.pendingMessage).toBe('');
+    expect(startChat).toHaveBeenCalledTimes(1);
+    // The keyboard really is the prompt's again.
+    controller.handleKey('x', {});
+    expect(controller.getSnapshot().input.text).toBe('x');
+  });
+
+  it.each([
+    ['invalid', 'The agent could not be started: its definition is not valid.'],
+    ['unreadable', 'The agent could not be started: its file is missing or cannot be read.'],
+    ['no_key', 'The agent could not be started: its provider has no usable key (see /providers).'],
+    ['unbuilt', 'The agent could not be started: its session could not be built.'],
+    ['changed', 'The agent changed since it was listed. Open the list again.'],
+  ] as const satisfies readonly (readonly [AgentStartReason, string])[])(
+    'a build refused for the reason `%s` says exactly its fixed sentence',
+    async (reason, sentence) => {
+      expect(agentStartNotice(reason)).toBe(sentence);
+      const { controller } = onDetail({
+        startChat: () => Promise.reject(new HomeAgentStartError(reason)),
+      });
+      controller.handleKey('c', {});
+      await vi.waitFor(() => expect(controller.getSnapshot().notice).toBe(sentence), {
+        timeout: WAIT_MS,
+      });
+    },
+  );
+
+  it('any other failure of the build is the last fixed sentence, and nothing the error said is shown', async () => {
+    const { controller } = onDetail({
+      startChat: () => Promise.reject(new Error('PRIVATE_FAULT_TEXT /home/me/secret.agent.yaml')),
+    });
+    controller.handleKey('c', {});
+    await vi.waitFor(
+      () =>
+        expect(controller.getSnapshot().notice).toBe(
+          'The agent could not be started: its session could not be built.',
+        ),
+      { timeout: WAIT_MS },
+    );
+    expect(JSON.stringify(controller.getSnapshot())).not.toContain('PRIVATE_FAULT_TEXT');
+    expect(controller.getSnapshot().errorText).toBeUndefined();
+    expect(controller.getSnapshot().mode).toBe('home');
+  });
+
+  it('a Home that is leaving while the agent builds reclaims the session it finished, and never opens it', async () => {
+    let finish: (session: HomeChatSession) => void = () => undefined;
+    const teardown = vi.fn(() => Promise.resolve());
+    const { controller } = onDetail({
+      startChat: () =>
+        new Promise<HomeChatSession>((resolve) => {
+          finish = resolve;
+        }),
+    });
+    controller.handleKey('c', {});
+    expect(controller.getSnapshot().mode).toBe('loading');
+    const leaving = controller.teardownActive();
+    finish({ ...chatOf('sess-late'), teardown });
+    await leaving;
+    await flush();
+    expect(teardown, 'the build that finished after the exit is torn down').toHaveBeenCalled();
+    expect(controller.getSnapshot().session, 'and never opened').toBeUndefined();
+  });
+});
+
+/** A bare chat session the tests above build their own variants from. */
+function chatOf(sessionId: string): HomeChatSession {
+  return {
+    store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
+    sessionId,
+    processLine: () => Promise.resolve(),
+    shouldStop: () => false,
+    stopReason: () => 'exit',
+    teardown: () => Promise.resolve(),
+  };
+}

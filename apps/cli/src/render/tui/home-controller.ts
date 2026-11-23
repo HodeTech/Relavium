@@ -62,6 +62,11 @@ import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
+import {
+  agentStartNotice,
+  agentStartReasonOf,
+  type HomeAgentRequest,
+} from '../../home/agent-start.js';
 import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import type {
@@ -482,8 +487,17 @@ export interface HomeModelsPort {
 }
 
 export interface HomeControllerDeps {
-  /** Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject. */
-  readonly startChat: () => Promise<HomeChatSession>;
+  /**
+   * Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject.
+   *
+   * With no argument it binds the built-in agent. With `agent` (the `/agents` detail's `c`, ADR-0140 §3) it binds that agent of the project:
+   * `agent.path` is the catalog's own path of the file the detail showed (read through the agents port), never text a person typed, and
+   * `agent.listed` is the definition the detail was drawn from. The host reads the file once through the catalog's hardened read, refuses
+   * it unless it is still that definition, and binds what it read through the session build `relavium chat --agent` uses, so its tool grant
+   * and the consent for the MCP servers it declares are that path's, and every tool call still asks. A rejection is shown as a fixed
+   * sentence, never as the error's own words.
+   */
+  readonly startChat: (agent?: HomeAgentRequest) => Promise<HomeChatSession>;
   /** Reseat the in-Home chat onto a NEW model (ADR-0059) — reload + resume the current session's transcript under the
    *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat).
    *
@@ -1531,6 +1545,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       resumeFromSessions(step.sessionId, step.state);
       return;
     }
+    // `c` on an agent's detail: the screen closes and the chat bound to that agent begins in ONE state change (`startAgentChat`).
+    if (step.kind === 'chat') {
+      startAgentChat(step.agent);
+      return;
+    }
     tabMemory = tabHostMemory(step.state);
     if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
     // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
@@ -2250,6 +2269,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return answerTypedWord(text);
   };
 
+  /**
+   * Track the build of a fresh chat in the `loading` state, so a signal (or a mid-build exit) can reclaim its just-spawned session (its MCP
+   * child, its frame loop) rather than orphan it (see `teardownActive`), and hand the built session to `ready` or the rejection to `failed`.
+   * A build that finishes after the Home is leaving, or while the exit guard stops the run, is torn down at once and neither runs.
+   */
+  const awaitBuild = (
+    build: Promise<HomeChatSession>,
+    ready: (built: HomeChatSession) => void,
+    failed: (error: unknown) => void,
+  ): void => {
+    buildInFlight = build;
+    void build.then(
+      (built) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting || state.exitGuard === 'stopping') {
+          void built.teardown().catch(() => undefined); // exited (or leaving, the run being stopped) mid-build ⇒ reclaim the just-built session
+          return;
+        }
+        ready(built);
+      },
+      (err: unknown) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) return;
+        failed(err);
+      },
+    );
+  };
+
   const submit = (): void => {
     if (exiting) return;
     const trimmed = state.input.text.trim();
@@ -2278,27 +2325,60 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       permissionsSheet: undefined,
       historyEntries: history.entries,
     });
-    // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
-    // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
-    const build = deps.startChat();
-    buildInFlight = build;
-    void build.then(
+    awaitBuild(
+      deps.startChat(),
       (built) => {
-        if (buildInFlight === build) buildInFlight = undefined;
-        if (exiting || state.exitGuard === 'stopping') {
-          void built.teardown().catch(() => undefined); // exited (or leaving, the run being stopped) mid-build ⇒ reclaim the just-built session
-          return;
-        }
         set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
         activateSession(built, () => sendChatLine(built, trimmed, trimmed));
       },
-      (err: unknown) => {
-        if (buildInFlight === build) buildInFlight = undefined;
-        if (exiting) return;
+      (err) => {
         set({
           errorText: err instanceof Error ? err.message : String(err),
           pendingMessage: '',
           mode: 'home', // route a build failure back to Home with the banner
+        });
+      },
+    );
+  };
+
+  /**
+   * `c` on an agent's detail (ADR-0140 §3): the screen closes and the build of a chat bound to that agent begins in ONE state change, as a
+   * resume's does (`resumeFromSessions`), so the chat that opens is never under the tab host and the landing is never drawn between the two.
+   * `agent` is the catalog's path of the file the detail showed and the definition the detail was drawn from. The chat opens idle (there is no
+   * first message to send), and the person types the first one. A build that fails leaves the landing with ONE fixed sentence and nothing
+   * half-open: the loading state is gone, no session is held, and what the error said is never shown. The host decides why: the file vanished
+   * or is refused by the hardened read, it no longer parses, it is no longer the definition the detail showed (the sentence then says the list
+   * is out of date), its provider has no key, or a server it declares was not approved. A Home that is leaving, or a chat already in front,
+   * starts nothing.
+   */
+  const startAgentChat = (agent: HomeAgentRequest): void => {
+    // No guard on `nativeActionBusy` here: a key reaches a screen only through `handleKey`, which drops every key while one is set. A chat
+    // in front or one already building has no agent detail to come from, and is not disturbed all the same.
+    if (exiting || state.session !== undefined || state.mode !== 'home') return;
+    tabMemory = freshTabMemory();
+    tabHostIsTheCommand = false; // only a bare `relavium permissions` is the command, and its tab host has no agent detail
+    disarmInterrupt();
+    doctorRunId += 1; // as a submit does: an in-flight /doctor run must not land its report on the chat that opens
+    set({
+      screen: undefined,
+      ...parkedPatch(),
+      errorText: undefined,
+      notice: undefined,
+      pendingMessage: '', // there is no typed message to echo while it builds
+      mode: 'loading',
+      palette: undefined,
+    });
+    awaitBuild(
+      deps.startChat(agent),
+      (built) => {
+        set({ session: built, mode: 'chat', submitBusy: true, exitGuard: undefined });
+        activateSession(built, () => set({ submitBusy: false }));
+      },
+      (err) => {
+        set({
+          notice: agentStartNotice(agentStartReasonOf(err)),
+          pendingMessage: '',
+          mode: 'home',
         });
       },
     );

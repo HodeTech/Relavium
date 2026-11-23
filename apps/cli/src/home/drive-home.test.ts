@@ -6,12 +6,14 @@ import {
   witnessNativeToolProcess,
 } from '../commands/native-forwarding.test-support.js';
 import {
+  copyFileSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,6 +37,7 @@ import {
   type RunEvent,
 } from '@relavium/shared';
 import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
+import type { LlmProvider, LlmRequest, StreamChunk } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { render as renderInk, type Instance, type Key } from 'ink';
@@ -44,9 +47,11 @@ import {
   ABORTED_EFFECT_ATTENTION_NOTICE,
   buildChatSession,
   buildResumedChatSession,
+  type BuildChatSessionOptions,
 } from '../chat/session-host.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
-import { scriptedResolver, stop, textTurn } from '../chat/test-support.js';
+import { scriptedProvider, scriptedResolver, stop, textTurn } from '../chat/test-support.js';
+import { createConsentGate, type ConsentSubject } from '../engine/mcp-consent-gate.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { findProjectConfigDir } from '../config/paths.js';
 import type { KeychainStore } from '../secrets/keychain.js';
@@ -127,6 +132,28 @@ vi.mock('../engine/providers.js', async (importOriginal) => {
  * builds a real default-agent session. The session state machine itself is unit-tested in home-controller.test.ts.
  */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+/** A resolver whose provider records each request it is sent, so a test sees the tools the model was offered. */
+function capturingResolver(scripts: StreamChunk[][]): {
+  readonly providers: ProviderResolver;
+  readonly requests: LlmRequest[];
+} {
+  const requests: LlmRequest[] = [];
+  const inner = scriptedProvider(scripts);
+  const provider: LlmProvider = {
+    ...inner,
+    stream: (request, key, options) => {
+      requests.push(request);
+      return inner.stream(request, key, options);
+    },
+  };
+  return {
+    providers: {
+      resolveProvider: (id) => (id === 'anthropic' ? provider : undefined),
+      keyFor: () => 'test-key',
+    },
+    requests,
+  };
+}
 /** The Permissions tab's sheet, while the Home's tab host is open on it (the bare Home's `/permissions`, ADR-0140 §3); `undefined` otherwise. */
 const tabSheetOf = (props: RootAppProps) => {
   const screen = props.controller.getSnapshot().screen;
@@ -1937,6 +1964,322 @@ workflow:
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+  });
+
+  describe('ADR-0140 §3: `c` on an agent’s detail starts a chat bound to that agent, through the path `chat --agent` uses', () => {
+    /** The agent of the project the detail names; its grant is the file's own. */
+    const writeProjectAgent = (extra: readonly string[] = []): string => {
+      mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
+      const file = join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml');
+      writeFileSync(
+        file,
+        [
+          'id: reviewer',
+          'name: Code Reviewer',
+          'model: claude-sonnet-4-6',
+          'provider: anthropic',
+          'system_prompt: You review code.',
+          'tools:',
+          '  - read_file',
+          '  - search_files',
+          ...extra,
+          '',
+        ].join('\n'),
+      );
+      return file;
+    };
+    const nameOf = (request: LlmRequest | undefined): string[] =>
+      (request?.tools ?? []).map((tool) => tool.name).sort();
+    const settledChat = async (props: RootAppProps): Promise<void> => {
+      await vi.waitFor(
+        () => {
+          expect(props.controller.getSnapshot().mode).toBe('chat');
+          expect(props.controller.getSnapshot().submitBusy).toBe(false);
+        },
+        { timeout: WAIT_MS },
+      );
+    };
+    /** The Home on the detail of `reviewer`, the build recorded (and, with `wrap`, rewritten) by the test. */
+    async function onDetail(
+      overrides: Partial<HomeDeps> = {},
+      wrap: (options: BuildChatSessionOptions) => BuildChatSessionOptions = (options) => options,
+    ) {
+      const builds: BuildChatSessionOptions[] = [];
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), {
+        buildSession: async (options) => {
+          builds.push(options);
+          return buildChatSession(wrap(options));
+        },
+        ...overrides,
+      });
+      const running = driveHome(deps);
+      await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
+      if (captured === undefined) throw new Error('the Home did not mount');
+      const props = captured;
+      type(props, '/agents');
+      props.controller.handleKey('', ENTER);
+      props.controller.handleKey('', ENTER);
+      const screen = props.controller.getSnapshot().screen;
+      expect(screen?.kind === 'tab-host' ? screen.host.agents?.detail?.slug : undefined).toBe(
+        'reviewer',
+      );
+      return { props, running, builds };
+    }
+    const leaveHome = async (props: RootAppProps, running: Promise<number>): Promise<void> => {
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+      expect(await running).toBe(EXIT_CODES.success);
+    };
+
+    it('binds that agent and no other: the tools the model is offered are the definition’s own, the file is the one the detail showed, and a `/clear` keeps the agent', async () => {
+      const file = writeProjectAgent();
+      // The agents list and the build share the Home's working directory (`deps.global.cwd`), which is not the process's: the list's
+      // cwd-relative path finds the file only because the build resolves it against the same one.
+      expect(process.cwd()).not.toBe(cwd);
+      const { providers, requests } = capturingResolver([textTurn('first'), textTurn('second')]);
+      const { props, running, builds } = await onDetail({ providers });
+      props.controller.handleKey('c', {});
+      await settledChat(props);
+
+      // The build is the ordinary one with the agent the file declares: no reference to re-resolve, and the file named for the consent prompt.
+      expect(builds).toHaveLength(1);
+      expect(builds[0]?.agent?.id).toBe('reviewer');
+      expect(builds[0]?.agentRef, 'nothing re-reads the file by a reference').toBeUndefined();
+      expect(builds[0]?.mcpArtifact).toBe(file);
+      expect(builds[0]?.consentGate, 'the Home’s consent gate is wired for it').toBeDefined();
+
+      // The grant, observed where it matters: what the model is offered is exactly what the definition declares.
+      const first = props.controller.getSnapshot().session;
+      if (first === undefined) throw new Error('no chat opened');
+      await first.processLine('hello', 'hello');
+      expect(nameOf(requests[0])).toEqual(['read_file', 'search_files']);
+
+      // `/clear` carries the agent the session holds: the same grant, no reading of a file again.
+      props.controller.handlePaste('/clear');
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(
+        () => expect(props.controller.getSnapshot().session?.sessionId).not.toBe(first.sessionId),
+        { timeout: WAIT_MS },
+      );
+      await settledChat(props);
+      expect(builds).toHaveLength(2);
+      expect(builds[1]?.agent?.id).toBe('reviewer');
+      expect(builds[1]?.agentRef).toBeUndefined();
+      const second = props.controller.getSnapshot().session;
+      if (second === undefined) throw new Error('no chat after /clear');
+      await second.processLine('again', 'again');
+      expect(nameOf(requests[1])).toEqual(['read_file', 'search_files']);
+
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
+      await leaveHome(props, running);
+    });
+
+    it('a Home that starts no agent still binds the built-in one: the same call with no reference', async () => {
+      writeProjectAgent();
+      const { providers, requests } = capturingResolver([textTurn('first')]);
+      let captured: RootAppProps | undefined;
+      const builds: BuildChatSessionOptions[] = [];
+      const { deps } = makeDeps((p) => (captured = p), {
+        providers,
+        buildSession: (options) => {
+          builds.push(options);
+          return buildChatSession(options);
+        },
+      });
+      const running = driveHome(deps);
+      await vi.waitFor(() => expect(captured).toBeDefined(), { timeout: WAIT_MS });
+      if (captured === undefined) throw new Error('the Home did not mount');
+      type(captured, 'hello');
+      captured.controller.handleKey('', ENTER);
+      await settledChat(captured);
+      expect(builds[0]?.agent).toBeUndefined();
+      expect(builds[0]?.mcpArtifact).toBeUndefined();
+      expect(nameOf(requests[0]).length, 'the built-in agent’s own, larger grant').toBeGreaterThan(
+        2,
+      );
+      captured.controller.handleKey('c', CTRL_C);
+      captured.controller.handleKey('c', CTRL_C);
+      await vi.waitFor(() => expect(captured?.controller.getSnapshot().mode).toBe('home'), {
+        timeout: WAIT_MS,
+      });
+      await leaveHome(captured, running);
+    });
+
+    it.each([
+      [
+        'vanished',
+        (file: string) => rmSync(file),
+        'The agent could not be started: its file is missing or cannot be read.',
+      ],
+      [
+        'changed so that it no longer parses',
+        (file: string) => writeFileSync(file, 'id: [unclosed\n'),
+        'The agent could not be started: its definition is not valid.',
+      ],
+    ])(
+      'an agent that %s between the list and `c` starts nothing: the landing says why, and nothing is half-open',
+      async (_name, change, sentence) => {
+        const file = writeProjectAgent();
+        const { props, running, builds } = await onDetail();
+        change(file);
+        props.controller.handleKey('c', {});
+        await vi.waitFor(() => expect(props.controller.getSnapshot().notice).toBe(sentence), {
+          timeout: WAIT_MS,
+        });
+        const after = props.controller.getSnapshot();
+        expect(after.mode).toBe('home');
+        expect(after.nativeActionBusy).toBe(false);
+        expect(after.session).toBeUndefined();
+        expect(after.screen).toBeUndefined();
+        expect(builds, 'no session was built').toHaveLength(0);
+        expect(createSessionStore(client.db).listSessions({ limit: 10 })).toHaveLength(0);
+        await leaveHome(props, running);
+      },
+    );
+
+    it('a refusal through an OWNED Home is a refusal and not an infrastructure failure: the Home goes on, and leaves cleanly', async () => {
+      const f = invocationFixture();
+      const file = writeProjectAgent();
+      const { props, running, builds } = await onDetail({ invocation: f.invocation });
+      rmSync(file);
+      props.controller.handleKey('c', {});
+      await vi.waitFor(
+        () =>
+          expect(props.controller.getSnapshot().notice).toBe(
+            'The agent could not be started: its file is missing or cannot be read.',
+          ),
+        { timeout: WAIT_MS },
+      );
+      expect(builds).toHaveLength(0);
+      expect(f.registry.termination, 'a fixed refusal ends nothing').toBeUndefined();
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      await leaveHome(props, running);
+      expect(f.registry.activeOwners).toBe(0);
+    });
+
+    it('an agent edited between the list and `c` to a DIFFERENT, still valid definition starts nothing: the page the person read is no longer the file', async () => {
+      const file = writeProjectAgent();
+      const { props, running, builds } = await onDetail();
+      // The same id and the same file, parsing as an agent: only the tool grant is wider than the page showed.
+      writeProjectAgent(['  - write_file', '  - run_command']);
+      expect(readFileSync(file, 'utf8')).toContain('run_command');
+      props.controller.handleKey('c', {});
+      await vi.waitFor(
+        () =>
+          expect(props.controller.getSnapshot().notice).toBe(
+            'The agent changed since it was listed. Open the list again.',
+          ),
+        { timeout: WAIT_MS },
+      );
+      const after = props.controller.getSnapshot();
+      expect(after.mode).toBe('home');
+      expect(after.nativeActionBusy).toBe(false);
+      expect(after.session).toBeUndefined();
+      expect(after.screen).toBeUndefined();
+      expect(builds, 'nothing was built, so nothing was bound').toHaveLength(0);
+      expect(createSessionStore(client.db).listSessions({ limit: 10 })).toHaveLength(0);
+      await leaveHome(props, running);
+    });
+
+    it('a symlink swapped in for the agent file, to a perfectly good agent outside the project, is refused and nothing is bound', async () => {
+      const file = writeProjectAgent();
+      const outside = mkdtempSync(join(tmpdir(), 'relavium-agent-outside-'));
+      try {
+        const target = join(outside, 'reviewer.agent.yaml');
+        copyFileSync(file, target); // byte for byte the definition the page showed: only where it lives is wrong
+        const { props, running, builds } = await onDetail();
+        rmSync(file);
+        symlinkSync(target, file);
+        props.controller.handleKey('c', {});
+        await vi.waitFor(
+          () =>
+            expect(props.controller.getSnapshot().notice).toBe(
+              'The agent could not be started: its file is missing or cannot be read.',
+            ),
+          { timeout: WAIT_MS },
+        );
+        expect(props.controller.getSnapshot().mode).toBe('home');
+        expect(props.controller.getSnapshot().session).toBeUndefined();
+        expect(builds).toHaveLength(0);
+        await leaveHome(props, running);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('an agent whose provider has no key starts nothing and says so, before anything is built', async () => {
+      writeProjectAgent();
+      let keyed = true;
+      const resolver = scriptedResolver([textTurn('never')]);
+      const { props, running, builds } = await onDetail({
+        providers: { ...resolver, hasKey: () => keyed },
+      });
+      keyed = false;
+      props.controller.handleKey('c', {});
+      await vi.waitFor(
+        () =>
+          expect(props.controller.getSnapshot().notice).toBe(
+            'The agent could not be started: its provider has no usable key (see /providers).',
+          ),
+        { timeout: WAIT_MS },
+      );
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      expect(builds).toHaveLength(0);
+      await leaveHome(props, running);
+    });
+
+    it('an agent that declares a stdio MCP server goes through the consent every path uses, naming the file, and nothing spawns without it', async () => {
+      const file = writeProjectAgent([
+        'mcp_servers:',
+        '  - id: fs',
+        '    transport: stdio',
+        `    command: ${JSON.stringify(process.execPath)}`,
+      ]);
+      // The REAL gate, with a prompt that declines: the card's subject is what the person would have been shown.
+      const subjects: ConsentSubject[] = [];
+      const gate = createConsentGate({
+        io,
+        global,
+        homeDir: testHomeDir,
+        nativeCard: true,
+        prompt: (subject) => {
+          subjects.push(subject);
+          return Promise.resolve(false);
+        },
+      });
+      const startMcpClient = vi.fn(() =>
+        Promise.reject(new Error('a declined server must not start')),
+      );
+      const { props, running, builds } = await onDetail({}, (options) => ({
+        ...options,
+        consentGate: gate,
+        startMcpClient,
+      }));
+      props.controller.handleKey('c', {});
+      await vi.waitFor(
+        () =>
+          expect(props.controller.getSnapshot().notice).toBe(
+            'The agent could not be started: its session could not be built.',
+          ),
+        { timeout: WAIT_MS },
+      );
+      expect(
+        builds[0]?.consentGate,
+        'the Home wired a gate of its own for the build',
+      ).toBeDefined();
+      expect(subjects, 'one decision for the one server').toHaveLength(1);
+      expect(subjects[0]?.serverId).toBe('fs');
+      expect(subjects[0]?.artifact, 'the card names the file the agent was read from').toBe(file);
+      expect(startMcpClient, 'a declined server never spawns').not.toHaveBeenCalled();
+      expect(props.controller.getSnapshot().mode).toBe('home');
+      expect(props.controller.getSnapshot().session).toBeUndefined();
+      await leaveHome(props, running);
     });
   });
 

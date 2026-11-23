@@ -1,4 +1,5 @@
 import type { AgentRow } from '../../history/agents-model.js';
+import type { HomeAgentRequest } from '../../home/agent-start.js';
 import type { AgentsRead } from '../../home/agents-port.js';
 import type { ChatKey } from './chat-input.js';
 import type { LegendItem } from './legend.js';
@@ -22,7 +23,10 @@ import { wrapWords } from './viewport.js';
  *   on the line under the list while it is selected. The model sanitized and bounded every string, so nothing here trusts a label.
  * - **Keys.** `↑`/`↓` move and stop at the ends. `Enter` on a ready agent opens its detail page; on an invalid one it says why there is
  *   none, and opens nothing. `Esc` and `Backspace` leave the detail for the list; `Esc` on the list closes the screen (the tab host's own
- *   rule). Every other key is nothing: the tab has no bare-letter action in this increment, so no letter of another strip is answered here.
+ *   rule). `c` on a detail (and Caps Lock's `C`) asks the host to start a chat bound to that agent: the request carries the catalog's own path of
+ *   the file the detail showed, never a label, and the definition the detail was drawn from, and the host does the rest (it reads the file once
+ *   through the catalog's hardened read, refuses it unless it is still that definition, and binds it through the session build `chat --agent`
+ *   uses; the Home adds no authority). Every other key is nothing: no letter of another strip is answered here, and the list has no letter at all.
  * - **The detail is a fixed list of fields**, read-only: the model, the provider, the temperature, the reasoning effort, the tool grant
  *   as the definition declares it and the head of the system prompt. It shows nothing else of the file, and it takes no more rows than
  *   {@link AGENT_DETAIL_ROWS}, so it fits the tab host's budget at the smallest terminal the screen is drawn in.
@@ -41,16 +45,21 @@ export interface AgentsTabState {
   readonly message?: string | undefined;
 }
 
-/** What a key does on the tab. It only ever becomes another state: nothing here asks the host for anything. */
-export interface AgentsStep {
-  readonly kind: 'state';
-  readonly state: AgentsTabState;
-}
+/**
+ * What a key does on the tab: become another state, or (`c` on a detail) ask the host to start a chat bound to the agent whose file the detail
+ * showed. The request is the catalog's own path of that file and the definition the page was drawn from, both read through the port with the
+ * row's entry index, so a label (which can look like anything) is never what a chat is bound by, and the host can tell whether the file is still
+ * the agent the person read.
+ */
+export type AgentsStep =
+  | { readonly kind: 'state'; readonly state: AgentsTabState }
+  | { readonly kind: 'chat'; readonly agent: HomeAgentRequest; readonly state: AgentsTabState };
 
 /** The keys the tab's legend names that are its own. The test presses every one of them. */
 export const AGENTS_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   open: { keys: 'Enter', verb: 'open' },
+  chat: { keys: '[c]', verb: 'chat' },
   back: { keys: 'Esc', verb: 'back' },
 } as const satisfies Readonly<Record<string, LegendItem>>;
 
@@ -79,17 +88,31 @@ function noDetail(row: AgentRow): string {
   return `${row.slug} cannot be opened: ${row.note ?? 'its file could not be read'}.`;
 }
 
+/** Why a detail cannot start a chat: its file is not in the read it was opened from (the list says it, as `Enter` on an invalid row does). */
+function noChat(row: AgentRow): string {
+  return `${row.slug} cannot be started: its file is not in the catalog.`;
+}
+
 /** Fold one key (already past the tab host's own tab keys and `Esc` on the list) into the tab. */
-export function foldAgentsKey(state: AgentsTabState, key: ChatKey): AgentsStep {
+export function foldAgentsKey(state: AgentsTabState, input: string, key: ChatKey): AgentsStep {
   const cleared: AgentsTabState =
     state.message === undefined ? state : { ...state, message: undefined };
   const stay: AgentsStep = { kind: 'state', state: cleared };
-  // A chord (`Ctrl+X`, a meta key) is never one of these keys.
+  // A chord (`Ctrl+X`, a meta key) is never one of these keys: `c` is a bare letter, and `Ctrl+C` is the tab host's own close.
   if (key.ctrl === true || key.meta === true) return stay;
   if (state.detail !== undefined) {
     if (key.escape === true || key.backspace === true)
       return { kind: 'state', state: { ...cleared, detail: undefined } };
-    return stay;
+    // A bare letter is the same key with Caps Lock on. Only a READY agent has a detail, so there is no `c` for an invalid one.
+    if (input.toLowerCase() !== 'c') return stay;
+    const path = state.read.pathOf(state.detail.entryIndex);
+    const listed = state.read.definitionOf(state.detail.entryIndex);
+    if (path === undefined || listed === undefined)
+      return {
+        kind: 'state',
+        state: { ...cleared, detail: undefined, message: noChat(state.detail) },
+      };
+    return { kind: 'chat', agent: { path, listed }, state: cleared };
   }
   const rows = state.read.model.rows;
   if (key.upArrow === true || key.downArrow === true) {
@@ -241,7 +264,7 @@ export function agentsLegendItems(
   tabItems: readonly LegendItem[],
   closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.detail !== undefined) return [...tabItems, AGENTS_KEYS.back];
+  if (state.detail !== undefined) return [...tabItems, AGENTS_KEYS.chat, AGENTS_KEYS.back];
   if (state.read.model.rows.length === 0) return [...tabItems, closeItem];
   return [...tabItems, AGENTS_KEYS.select, AGENTS_KEYS.open, closeItem];
 }

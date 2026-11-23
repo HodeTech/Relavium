@@ -6,6 +6,7 @@
  * Every key a legend names is pressed here and does what the legend says, on the list and on the detail page; and the strip's keys are shown
  * not to collide with the workflows strip's (a bare letter of that strip does nothing here, and no key leaves the strip).
  */
+import type { AgentDefinition } from '@relavium/core';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -74,6 +75,10 @@ const ready = (
   agent: fields(over),
 });
 
+/** The whole definition the catalog would hold for an item: what the page was drawn from. */
+const definitionOf = (item: AgentsModelItem): AgentDefinition | undefined =>
+  item.agent === undefined ? undefined : { id: item.entry.slug, ...item.agent };
+
 const invalid = (slug: string, error: string): AgentsModelItem => ({
   entry: {
     slug,
@@ -122,6 +127,10 @@ function agentsPortOver(items: readonly AgentsModelItem[]) {
         model: buildAgentsModel(listed),
         slugOf: (index) => listed[index]?.entry.slug,
         pathOf: (index) => listed[index]?.entry.path,
+        definitionOf: (index) => {
+          const item = listed[index];
+          return item === undefined ? undefined : definitionOf(item);
+        },
       };
     },
   };
@@ -234,7 +243,7 @@ describe('the /agents strip is its own: Defined │ Sessions', () => {
     expect([...seen].sort()).toEqual(['agents', 'sessions']);
   });
 
-  it('answers no bare letter of the workflows strip, on either tab: r x p a f n and c do nothing here', () => {
+  it('answers no bare letter of the workflows strip, on either tab’s list: r x p a f n and c do nothing there (c is the detail’s only letter)', () => {
     const r = rig();
     for (const tab of ['agents', 'sessions'] as const) {
       if (r.state.tab !== tab) r.press('', RIGHT);
@@ -455,29 +464,102 @@ describe('the legends name exactly the keys each page answers to, and every one 
     expect(r.press('', ESC).kind, 'Esc on the list closes the screen').toBe('close');
   });
 
-  it('Defined detail: the tab keys and Esc back, and the legend names no `c`', () => {
+  it('Defined detail: the tab keys, [c] chat and Esc back; the list’s legend names no `c`', () => {
     const r = rig();
+    // The list names no chat key: the chat is started from an agent's page, which is where its tool grant is read.
+    for (const item of tabHostLegendItems(r.state)) expect(item.keys, 'the list').not.toBe('[c]');
+    expect(r.legendText()).not.toContain('chat');
     r.press('', ENTER);
     const items = tabHostLegendItems(r.state);
-    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', 'Esc']);
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · Esc back');
-    const chatKeys = ['c', '[c]'];
-    for (const item of items)
-      expect(chatKeys, 'no chat key yet').not.toContain(item.keys.toLowerCase());
-    // The list's legend has none either.
-    r.press('', ESC);
-    for (const item of tabHostLegendItems(r.state))
-      expect(chatKeys, item.keys).not.toContain(item.keys.toLowerCase());
-    expect(r.legendText()).not.toContain('chat');
-    // `c` does nothing on the detail either.
-    r.press('', ENTER);
-    expect(r.press('c').kind).toBe('state');
-    expect(r.state.agents?.detail?.slug).toBe('reviewer');
+    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', '[c]', 'Esc']);
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [c] chat · Esc back');
+    expect(AGENTS_KEYS.chat).toEqual({ keys: '[c]', verb: 'chat' });
     // Esc backs out to the list on the row it came from, and a second Esc closes the screen.
     expect(r.press('', ESC).kind).toBe('state');
     expect(r.state.agents?.detail).toBeUndefined();
     expect(r.state.agents?.cursor).toBe(0);
     expect(r.press('', ESC).kind).toBe('close');
+  });
+
+  it('`c` on a detail asks the host to start a chat bound to that agent, by the catalog’s own path and never by a label; `C` is the same key', () => {
+    // The listed file is NOT named after the agent's id, and the id looks like a path: neither is what the request carries.
+    const item: AgentsModelItem = {
+      entry: {
+        slug: '../../x',
+        name: 'Agent x',
+        path: '.relavium/agents/a-file-of-another-name.agent.yaml',
+        valid: true,
+      },
+      agent: fields({ tools: ['read_file'] }),
+    };
+    const items = [item];
+    for (const letter of ['c', 'C']) {
+      const r = rig({ items });
+      r.press('', ENTER);
+      expect(r.state.agents?.detail?.slug).toBe('../../x');
+      const step = r.press(letter);
+      expect(step.kind, `${letter} asks for a chat`).toBe('chat');
+      expect(step.kind === 'chat' ? step.agent : undefined).toEqual({
+        path: '.relavium/agents/a-file-of-another-name.agent.yaml',
+        // The definition the page was drawn from rides with the request, so the host can tell whether the file is still it.
+        listed: definitionOf(item),
+      });
+      // The tab is carried with the request exactly as the key left it: the detail is still the agent that was asked about.
+      expect(step.kind === 'chat' ? step.state.agents?.detail?.slug : undefined).toBe('../../x');
+    }
+  });
+
+  it('`c` is the detail’s key only: Ctrl+C closes (it is not a chat), Meta+C is nothing, and the list, an invalid agent and Sessions have no `c`', () => {
+    const r = rig();
+    r.press('', ENTER);
+    expect(r.press('c', { ctrl: true }).kind, 'Ctrl+C closes the screen').toBe('close');
+    expect(r.press('C', { ctrl: true }).kind, 'Ctrl+C with Caps Lock closes too').toBe('close');
+    expect(r.press('c', { meta: true }).kind, 'a meta chord is not the key').toBe('state');
+    expect(r.press('cc').kind, 'a paste of letters is not the key').toBe('state');
+    expect(r.press('x').kind, 'another letter does nothing on the detail').toBe('state');
+    expect(r.state.agents?.detail?.slug).toBe('reviewer');
+    // The list: a letter does nothing there, and an invalid agent has no detail to press it on.
+    r.press('', BACKSPACE);
+    expect(r.press('c').kind).toBe('state');
+    r.press('', DOWN); // broken-one: invalid
+    expect(r.press('', ENTER).kind).toBe('state');
+    expect(r.state.agents?.detail, 'an invalid agent opens no detail').toBeUndefined();
+    expect(r.press('c').kind, 'so there is no chat for it').toBe('state');
+    expect(r.press('C').kind).toBe('state');
+    // Sessions has no `c` either.
+    r.press('', RIGHT);
+    expect(r.state.tab).toBe('sessions');
+    expect(r.press('c').kind).toBe('state');
+    expect(r.legendText()).not.toContain('chat');
+  });
+
+  it('`c` on a detail whose file is no longer in the read it was opened from starts nothing and says so on the list', () => {
+    const r = rig();
+    r.press('', ENTER);
+    const agents = r.state.agents;
+    if (agents === undefined) throw new Error('no agents tab');
+    // A port whose entry went away between the row being listed and the key (it answers nothing for the row's index).
+    r.state = {
+      ...r.state,
+      agents: { ...agents, read: { ...agents.read, pathOf: () => undefined } },
+    };
+    expect(r.press('c').kind).toBe('state');
+    expect(r.state.agents?.detail, 'back at the list').toBeUndefined();
+    expect(r.text()).toContain('reviewer cannot be started: its file is not in the catalog.');
+  });
+
+  it('`c` on a detail with no definition to compare with starts nothing either: a chat is bound only to what the person read', () => {
+    const r = rig();
+    r.press('', ENTER);
+    const agents = r.state.agents;
+    if (agents === undefined) throw new Error('no agents tab');
+    r.state = {
+      ...r.state,
+      agents: { ...agents, read: { ...agents.read, definitionOf: () => undefined } },
+    };
+    expect(r.press('c').kind).toBe('state');
+    expect(r.state.agents?.detail, 'back at the list').toBeUndefined();
+    expect(r.text()).toContain('reviewer cannot be started: its file is not in the catalog.');
   });
 
   it('Backspace backs out of the detail too, the tab keys leave it, and a chord closes the whole screen', () => {

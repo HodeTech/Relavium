@@ -1,6 +1,7 @@
 import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
 import type { ActiveRead } from '../../history/active-source.js';
+import type { HomeAgentRequest } from '../../home/agent-start.js';
 import type { AgentsPort } from '../../home/agents-port.js';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
@@ -97,7 +98,8 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  * Two strips share the screen, each with its own tab set ({@link tabSetOf}; ADR-0140's 2026-11-23 note): the workflows strip has Defined,
  * Active, History and Permissions, and the `/agents` strip has Defined and Sessions, as `agents` and `sessions` (`tab-host-agents.ts` and
  * `tab-host-sessions.ts`). A tab's id says which strip it is on, so the screen slot needs no field for it. On the agents strip `Enter` on a
- * Sessions row ASKS the host to resume that conversation in place ({@link TabHostStep} `resume`).
+ * Sessions row ASKS the host to resume that conversation in place ({@link TabHostStep} `resume`), and `c` on an agent's detail ASKS it to start
+ * a chat bound to that agent ({@link TabHostStep} `chat`, carrying the catalog's own path of the file the detail showed).
  *
  * Four tabs on the workflows strip: History lists the finished runs a page at a time and opens one run's detail (`tab-host-history.ts`), where `Enter` ASKS the host
  * to load the detail; Permissions is the ADR-0137 sheet composed under the tab strip (its body, its keys and its `Esc` ladder are the sheet's,
@@ -495,10 +497,10 @@ function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
 /**
  * What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), become another
  * state, ask the host to run or export one workflow of the Defined tab, ask it to reopen the view of the run it hosts or to open the gate
- * card of a paused run of the Active tab, ask it to load a run's detail on the History tab, or ask it to resume a conversation of the Sessions
- * tab in place, each carrying the state the tab is left in.
+ * card of a paused run of the Active tab, ask it to load a run's detail on the History tab, ask it to resume a conversation of the Sessions
+ * tab in place, or ask it to start a chat bound to the agent of an open detail, each carrying the state the tab is left in.
  * The slug is a catalog entry's own, never a row's label, and a run id is the one the read classified (the host reads the run again before
- * it opens anything).
+ * it opens anything). The path of a `chat` is the catalog's own path of the agent's file, never a row's label, and it carries the definition the detail was drawn from.
  */
 export type TabHostStep =
   | { readonly kind: 'close'; readonly note?: string }
@@ -513,7 +515,8 @@ export type TabHostStep =
   | { readonly kind: 'open-view'; readonly runId: string; readonly state: TabHostState }
   | { readonly kind: 'open-gate'; readonly runId: string; readonly state: TabHostState }
   | { readonly kind: 'open-detail'; readonly runId: string; readonly state: TabHostState }
-  | { readonly kind: 'resume'; readonly sessionId: string; readonly state: TabHostState };
+  | { readonly kind: 'resume'; readonly sessionId: string; readonly state: TabHostState }
+  | { readonly kind: 'chat'; readonly agent: HomeAgentRequest; readonly state: TabHostState };
 
 /**
  * The tab a key moves to, or `undefined` for a key that moves none, within the strip `current` is on (never to another strip's tab).
@@ -602,11 +605,9 @@ export function foldTabHostKey(
     return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
   }
   if (state.agents !== undefined) {
-    const step = foldAgentsKey(state.agents, key);
-    return {
-      kind: 'state',
-      state: step.state === state.agents ? state : { ...state, agents: step.state },
-    };
+    const step = foldAgentsKey(state.agents, input, key);
+    const next = step.state === state.agents ? state : { ...state, agents: step.state };
+    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
   }
   if (state.sessions !== undefined) {
     const step = foldSessionsKey(state.sessions, key);

@@ -52,6 +52,7 @@ import {
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
+  type BuildChatSessionOptions,
   type BuiltChatSession,
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
@@ -160,6 +161,7 @@ import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
+import { resolveHomeChatAgent, type HomeAgentRequest } from './agent-start.js';
 import { createAgentsPort } from './agents-port.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
 import { createSessionsPort } from './sessions-port.js';
@@ -1236,6 +1238,15 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       }
     };
 
+    // The project's `.relavium/` directory, found afresh on every call (a `/init` in this Home is seen at once): the catalog of `/run`, the
+    // agents of `/agents` and the read an agent's `c` makes of its file, all go through this.
+    const currentProjectConfigDir = (): string | undefined => {
+      try {
+        return findProjectConfigDir(deps.global.cwd, homeDir);
+      } catch {
+        return undefined; // a home that cannot be resolved safely: there is no project to offer
+      }
+    };
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const constructChat = (
       factory: (host?: SessionHostOwner) => Promise<HomeChatSession>,
@@ -1243,9 +1254,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       ownership === undefined ? factory() : ownership.hosts.construct(factory);
     const startChat = (
       bound?: Pick<BuiltChatSession, 'agent' | 'context' | 'fsPolicy'>,
+      agentRequest?: HomeAgentRequest,
     ): Promise<HomeChatSession> =>
       constructChat(async (host) => {
         const cwd = bound?.context.workingDir ?? deps.global.cwd;
+        // An agent of the project (`c` on its detail, ADR-0140 §3): its file is read ONCE, through the catalog's hardened single-file read, and
+        // before anything is built; the definition that read produced is what is bound, and the file is never read again. A file that
+        // vanished, is refused by that read (a link out of the project, a FIFO), no longer parses, or is no longer the definition the
+        // detail was drawn from stops here with a fixed reason. The Home adds no authority: the session is bound to that definition's own
+        // grant, the MCP consent gate below is the one every path uses (its card names the file), and every tool call still asks (ADR-0057).
+        const resolvedAgent =
+          agentRequest === undefined
+            ? undefined
+            : resolveHomeChatAgent(agentRequest, {
+                cwd,
+                projectConfigDir: currentProjectConfigDir(),
+                homeDir,
+                hasKey: (id) => providerHasKey(providers, id),
+              });
         const start = startingModes.resolve(cwd);
         // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
         // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
@@ -1277,6 +1303,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The Home is always a terminal with a person at it: it can always ask (ADR-0132).
         const askPort = createAskUserPort();
         askPort.bind(store);
+        // A `/clear` rebinds the agent the session already holds; `c` binds the definition the one read above produced. Neither reads a file, and
+        // the file's path rides with the second so the consent prompt names it (ADR-0084 §7).
+        const boundAgent: Pick<BuildChatSessionOptions, 'agent' | 'mcpArtifact'> =
+          bound !== undefined
+            ? { agent: bound.agent }
+            : resolvedAgent === undefined
+              ? {}
+              : { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
             startingMode: start.startingMode,
@@ -1313,7 +1347,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             ...(config.maxTokensEstimate === undefined
               ? {}
               : { maxTokensEstimate: config.maxTokensEstimate }),
-            ...(bound === undefined ? {} : { agent: bound.agent }),
+            ...boundAgent,
             agentRef: undefined,
             cwd,
             projectConfigDir,
@@ -1872,15 +1906,6 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           keychain,
         });
       };
-      // The project's `.relavium/` directory, found afresh on every call (a `/init` in this Home is seen at once): the catalog of `/run`, and the
-      // agents of `/agents`, read it through this.
-      const currentProjectConfigDir = (): string | undefined => {
-        try {
-          return findProjectConfigDir(deps.global.cwd, homeDir);
-        } catch {
-          return undefined; // a home that cannot be resolved safely: there is no project to offer
-        }
-      };
       // `/run`: the picker, the form and the confirmation on the native prompt flow, then the host's single-flight start
       // (ADR-0139 §2, §7). The catalog finds the project directory afresh, so a `/init` in this Home is seen at once.
       const launchCatalog = createProjectCatalog({
@@ -2027,7 +2052,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           },
           'project',
         ),
-        startChat,
+        // The controller asks for an agent of the project by its catalog path and the definition the page showed; a `/clear` carries its own
+        // bound agent (`clear`).
+        startChat: (agent) => startChat(undefined, agent),
         reseatChat,
         resumeChat,
         pickSession: () =>
