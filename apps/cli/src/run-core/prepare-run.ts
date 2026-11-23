@@ -59,6 +59,11 @@ import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import type { RunResources } from './run-resources.js';
 import type { RunLifetime } from './run-lifetime.js';
+import { assertWorkflowSourceDigest } from './source-digest.js';
+
+/** What a second `PreparedRun.start()` says: a host bug, so fixed text that names the misuse and carries no stored value. */
+export const PREPARED_RUN_REUSED =
+  'a PreparedRun was reused: its start ran twice; prepare one run for each start';
 
 /**
  * Parse the workflow, turning an authored fault into the surface's typed exit-2 invocation error.
@@ -83,6 +88,16 @@ export interface PrepareRunRequest {
   readonly workflow: string;
   /** The parsed `--input` arguments, before they are coerced against the declared inputs. */
   readonly rawInputs: Readonly<Record<string, string>>;
+  /**
+   * The digest (`workflowSourceDigest`) of the workflow text a person confirmed before this start. Absent, nothing is bound: the
+   * shell commands pass none and behave as they always did. Present, the text this start reads must have exactly that digest, or the
+   * start is refused (`WORKFLOW_SOURCE_CHANGED`) before anything is parsed, prompted for, connected or acquired.
+   *
+   * It binds the workflow file only. A file the workflow names is not covered (the CLI reads no external agent file while preparing,
+   * and an `agent_ref` that is not declared inline is left to run time), and neither is anything the run takes from the operator's
+   * configuration or the machine's grants (the MCP servers it connects, their consent).
+   */
+  readonly expectedSourceDigest?: string | undefined;
 }
 
 /** The injectable services a start uses. Every member is the one `RunCommandDeps` already carries. */
@@ -140,7 +155,11 @@ export interface PreparedRun {
   /** The global content-addressed store root, present exactly when durable history is. */
   readonly mediaCasRoot: string | undefined;
   readonly mediaGcGraceMs: ResolvedConfig['mediaGcGraceMs'];
-  /** Start the prepared workflow on the prepared engine and adopt its handle: the one place the start options are written. */
+  /**
+   * Start the prepared workflow on the prepared engine and adopt its handle: the one place the start options are written. A
+   * preparation starts ONE run: a second call throws an `internal` error ({@link PREPARED_RUN_REUSED}) and starts nothing,
+   * whatever the first call did.
+   */
   readonly start: () => RunHandle;
 }
 
@@ -178,6 +197,12 @@ export async function prepareRun(
     projectConfigDir,
     homeDir,
   });
+
+  // **A confirmed start runs the file that was confirmed** (LAUNCH-5). Checked on the very text parsed below, so there is no second
+  // read between the check and the parse, and before the parse and every side effect after it: no secret asked, no key resolved, no
+  // MCP server connected, no consent card, no history opened, no engine built, no lease taken.
+  if (request.expectedSourceDigest !== undefined)
+    assertWorkflowSourceDigest(request.expectedSourceDigest, source.yaml);
 
   const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   assertOrdinaryInputsAllowed(def, rawInputs);
@@ -410,6 +435,7 @@ export async function prepareRun(
   // gate, a run younger than one lease TTL and a run whose lease is live — another process is executing it. Best-effort — a run that cannot start because an unrelated run could not be repaired
   // would be the wrong trade.
   await engine.reconcile().catch(() => undefined);
+  let started = false;
   return {
     engine,
     workflow: runWorkflow,
@@ -417,6 +443,11 @@ export async function prepareRun(
     mediaCasRoot,
     mediaGcGraceMs: config.mediaGcGraceMs,
     start: () => {
+      // One preparation, one run (the `RunResources` rule: a reuse is a host bug, named by fixed text). The flag is set before anything
+      // else can throw, so a start that failed (a stop, a plan refusal) cannot be retried into a second leg off the same engine,
+      // lease and frozen definition.
+      if (started) throw new CliError('internal', PREPARED_RUN_REUSED);
+      started = true;
       // The AUGMENTED workflow — the same one the store froze above, so the durable snapshot and the executed
       // graph are one thing rather than two that happen to be close.
       // `toolGrantsFinal`: the MCP servers were connected and the workflow rewritten above, so every inline

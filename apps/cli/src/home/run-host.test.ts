@@ -42,6 +42,7 @@ import type { RunLifetime } from '../run-core/run-lifetime.js';
 import { RunResources } from '../run-core/run-resources.js';
 import type { CliIo } from '../process/io.js';
 import { captureIo } from '../test-support.js';
+import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import {
   RunHost,
   type HostedLaunch,
@@ -1023,5 +1024,48 @@ describe('a fault that ends a leg', () => {
     expect(s.f.registry.observations.hasInfrastructureFailure()).toBe(true);
     expect(s.f.registry.activeOwners).toBe(0);
     expect(s.host.snapshot()).toMatchObject({ active: undefined, last: end });
+  });
+});
+
+describe('a start bound to the digest of a confirmed file (LAUNCH-5)', () => {
+  it('turns away a file that is not the confirmed one before anything is asked, built or connected', async () => {
+    const startMcpClient = vi.fn(() => realStartMcpClient([]));
+    const r = rig({ startMcpClient });
+    const path = writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+    // A server nothing approved would be refused with its digest; the confirmed file is another one, and that is said first.
+    const launch = await r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      expectedSourceDigest: workflowSourceDigest(HAPPY),
+    });
+    expect(launch).toEqual({
+      kind: 'refused',
+      reason: 'rejected',
+      message: 'The workflow file changed after you confirmed. Open the list again.',
+    });
+    expect(launch.kind === 'refused' ? launch.message : '').toBe(WORKFLOW_SOURCE_CHANGED);
+    expect(startMcpClient).not.toHaveBeenCalled();
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(r.host.notices.snapshot(), 'no consent digest was noticed').toEqual([]);
+    expect(runCount()).toBe(0);
+    expect(r.f.registry.activeOwners, 'the leg`s owner retired').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+  });
+
+  it('starts the confirmed file, and a start with no digest is unchanged', async () => {
+    const r = rig();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const bound = await started(
+      r.host.start({
+        workflow: path,
+        rawInputs: { n: '3' },
+        expectedSourceDigest: workflowSourceDigest(HAPPY),
+      }),
+    );
+    expect(bound.terminal.disposition).toBe('completed');
+    const unbound = await started(r.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    expect(unbound.terminal.disposition).toBe('completed');
+    expect(runCount()).toBe(2);
+    expect(r.builds).toHaveBeenCalledTimes(2);
   });
 });

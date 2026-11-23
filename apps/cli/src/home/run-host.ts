@@ -52,6 +52,12 @@ export interface HostedStartRequest {
   readonly rawInputs: Readonly<Record<string, string>>;
   /** Asked for the declared `secret` inputs, once the workflow parsed and the ordinary inputs were admitted. */
   readonly secrets?: HostedSecretPort | undefined;
+  /**
+   * The digest of the workflow text the person confirmed (`workflowSourceDigest`, `run-core/source-digest.ts`). Present, the start reads the
+   * file and is refused, before anything else happens, when its text is not the confirmed one. Absent, nothing is bound. It binds the
+   * workflow file only (see `PrepareRunRequest.expectedSourceDigest`).
+   */
+  readonly expectedSourceDigest?: string | undefined;
 }
 
 /** Answer a parked run: the next leg, on a fresh engine, through the one resume core. */
@@ -836,7 +842,13 @@ export class RunHost {
   async #acquireStart(request: HostedStartRequest, context: LegContext): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
     const prepared = await prepareRun(
-      { workflow: request.workflow, rawInputs: request.rawInputs },
+      {
+        workflow: request.workflow,
+        rawInputs: request.rawInputs,
+        ...(request.expectedSourceDigest === undefined
+          ? {}
+          : { expectedSourceDigest: request.expectedSourceDigest }),
+      },
       {
         io,
         global: { cwd: this.#projectRoot, configPath: this.#global.configPath },

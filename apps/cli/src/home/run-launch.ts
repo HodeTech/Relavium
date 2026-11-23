@@ -12,6 +12,7 @@ import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-prompt-channel.js';
+import { workflowSourceDigest } from '../run-core/source-digest.js';
 import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import type { HostedLaunch, HostedSecretPort, RunHost } from './run-host.js';
@@ -59,11 +60,18 @@ export interface LaunchField {
 
 type InputDecl = NonNullable<WorkflowDefinition['workflow']['inputs']>[number];
 
-/** What the form has so far: the workflow, its fields and the NON-SECRET values given (never a masked one). */
+/**
+ * What the form has so far: the workflow, its fields and the NON-SECRET values given (never a masked one).
+ *
+ * `sourceDigest` is the digest of the exact file text the fields and the confirmation were built from. It goes to the host with the
+ * start, which refuses when the file it reads is not that text (LAUNCH-5). It is not a secret, and it binds the workflow file only: a
+ * file the workflow names and the operator's configuration are not in it (see `PrepareRunRequest.expectedSourceDigest`).
+ */
 interface LaunchForm {
   readonly choice: LaunchChoice;
   readonly fields: readonly LaunchField[];
   readonly values: Readonly<Record<string, string>>;
+  readonly sourceDigest: string;
 }
 
 export type LaunchState =
@@ -97,6 +105,8 @@ export type LaunchEvent =
       readonly turn: number;
       readonly choice: LaunchChoice;
       readonly fields: readonly LaunchField[];
+      /** The digest of the file text `fields` were built from, carried to the start. */
+      readonly sourceDigest: string;
     }
   /** The answer to the field being asked. `undefined` for a masked field (its value is in the hold, not here) or an omitted one. */
   | { readonly kind: 'answered'; readonly turn: number; readonly value: string | undefined }
@@ -300,6 +310,7 @@ export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep
         choice: event.choice,
         fields: event.fields,
         values: Object.create(null) as Record<string, string>,
+        sourceDigest: event.sourceDigest,
       };
       return toField(state, state.choices, form, 0, []);
     }
@@ -331,12 +342,22 @@ export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep
 // The catalog the picker offers, and the one-line reasons for what it does not.
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** A workflow file read once: what it parsed to, and the digest of the exact text that was parsed. */
+export interface LoadedWorkflow {
+  readonly definition: WorkflowDefinition;
+  /** `workflowSourceDigest` of the text `definition` was parsed from: the one the start is later checked against. */
+  readonly sourceDigest: string;
+}
+
 /** The project's workflow files and their parsed definitions, behind a port so the flow is testable without a project. */
 export interface LaunchCatalog {
   /** Every workflow file, valid or not. May throw a {@link CliError} (an unreadable catalog directory). */
   readonly list: () => readonly CatalogEntry[];
-  /** Read and parse one file by its project-relative path. Throws a {@link CliError} for a path that no longer resolves or parses. */
-  readonly load: (path: string) => WorkflowDefinition;
+  /**
+   * Read and parse one file by its project-relative path, ONCE: the definition and the digest come from the same text, so the form and
+   * the confirmation built from the first are bound by the second. Throws a {@link CliError} for a path that no longer resolves or parses.
+   */
+  readonly load: (path: string) => LoadedWorkflow;
 }
 
 /**
@@ -363,7 +384,9 @@ export function createProjectCatalog(options: {
         homeDir,
       });
       try {
-        return parseWorkflow(source.yaml, { source: sourceLabel(cwd, source.path) });
+        const definition = parseWorkflow(source.yaml, { source: sourceLabel(cwd, source.path) });
+        // The digest is of the very string the parse was given. The host digests the string IT reads the same way, before it parses.
+        return { definition, sourceDigest: workflowSourceDigest(source.yaml) };
       } catch (cause) {
         if (cause instanceof WorkflowParseError)
           throw new CliError('invalid_invocation', cause.message, { cause });
@@ -757,10 +780,20 @@ function runSession(options: {
     const fresh = catalog.load(choice.path);
     // The file is read again here, after the list: what it declares now must be what the list showed, or the form and the confirmation
     // would name one workflow and run another.
-    if (fresh.workflow.id !== choice.slug)
-      throw new CliError('invalid_invocation', launchChanged(choice.slug, fresh.workflow.id));
-    loaded = fresh;
-    dispatch({ kind: 'picked', turn: effect.turn, choice, fields: launchFields(fresh) });
+    if (fresh.definition.workflow.id !== choice.slug)
+      throw new CliError(
+        'invalid_invocation',
+        launchChanged(choice.slug, fresh.definition.workflow.id),
+      );
+    loaded = fresh.definition;
+    // The digest of that very read goes into the form, and so to the start: the id above is a name, this is the content.
+    dispatch({
+      kind: 'picked',
+      turn: effect.turn,
+      choice,
+      fields: launchFields(fresh.definition),
+      sourceDigest: fresh.sourceDigest,
+    });
   }
 
   async function askField(effect: Extract<LaunchEffect, { kind: 'ask' }>): Promise<void> {
@@ -828,11 +861,13 @@ function runSession(options: {
       return;
     }
     flow.busy('Starting the run…');
-    const { choice, values } = effect.form;
+    const { choice, values, sourceDigest } = effect.form;
     const launch = await host.start({
       workflow: choice.path,
       rawInputs: values,
       secrets: hold.port,
+      // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
+      expectedSourceDigest: sourceDigest,
     });
     dispatch({ kind: 'launched', turn: effect.turn, notice: launchNotice(choice, launch) });
   }

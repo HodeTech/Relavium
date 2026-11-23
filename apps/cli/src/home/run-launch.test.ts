@@ -8,6 +8,7 @@
  * a state a real run cannot be put in on demand script it. Every operator home is a temporary directory handed in as `homeDir`; the
  * module's two nets (a config load with no home, `os.homedir()`) throw, so no path here reaches the real `~/.relavium`.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,7 @@ import {
 import { selectLayout, selectPageRows } from '../render/tui/native-select-window.js';
 import { captureIo } from '../test-support.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
+import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { RunHost, type HostedLaunch, type HostedStartRequest } from './run-host.js';
 import {
@@ -503,7 +505,7 @@ describe('a double submit starts one run', () => {
       for (const effect of step.effects) if (effect.kind === 'start') starts.push(effect.turn);
     };
     feed({ kind: 'opened', choices: [choice] });
-    feed({ kind: 'picked', turn: state.turn, choice, fields: [] });
+    feed({ kind: 'picked', turn: state.turn, choice, fields: [], sourceDigest: 'd'.repeat(64) });
     expect(state.kind).toBe('confirming');
     const turn = state.turn;
     feed({ kind: 'confirmed', turn, yes: true });
@@ -523,6 +525,140 @@ describe('a double submit starts one run', () => {
     keys(r).esc();
     expect(await first).toBe(LAUNCH_CANCELLED);
     expect(await second).toBe(LAUNCH_CANCELLED);
+  });
+});
+
+describe('the confirmation is bound to the file it was built from (LAUNCH-5)', () => {
+  /** The digest of a file's text, computed here without the module under test. */
+  const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+  /** The same id and shape, a different graph: what a writer who edited the file after the confirmation card left behind. */
+  const EDITED = HAPPY.replace('inputs.n * 2', 'inputs.n * 3');
+
+  it('refuses a file edited after the confirmation with the sentence, starts nothing, and the list opened again runs the file as it is', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await toConfirmation(r);
+    writeWorkflow('happy.relavium.yaml', EDITED); // the writer, after the card is up
+    k.up(); // a deliberate move to Yes
+    k.enter();
+
+    const notice = await opened;
+    expect(notice).toBe('The workflow file changed after you confirmed. Open the list again.');
+    expect(notice).toBe(WORKFLOW_SOURCE_CHANGED);
+    // The host was asked, with the digest of the text the confirmation was built from, and turned the start away.
+    expect(r.startCalls).toHaveLength(1);
+    expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(HAPPY));
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(r.startMcpClient, 'no MCP connect').not.toHaveBeenCalled();
+    expect(runCount(), 'no run was recorded').toBe(0);
+    expect(r.channel.ui.getSnapshot().active, 'the flow is closed').toBe(false);
+    expect(r.states.map((state) => state.kind)).toEqual([
+      'picking',
+      'asking',
+      'confirming',
+      'starting',
+      'closed',
+    ]);
+    // The flags are clear and the owner retired: nothing of this start is left holding the host.
+    await idle(r);
+    expect(r.registry.activeOwners).toBe(0);
+
+    // The remedy the sentence names works: the list opened again reads the file as it is now, and that is what is confirmed and run.
+    const again = r.launch.open();
+    await toConfirmation(r);
+    k.up();
+    k.enter();
+    expect(await again).toMatch(/^Started host-happy as run /);
+    expect(r.startCalls[1]?.request.expectedSourceDigest).toBe(sha256(EDITED));
+    expect(runCount()).toBe(1);
+    await idle(r);
+    expect(runStatuses()).toEqual(['completed']);
+  });
+
+  it('refuses a change that only adds a character', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await toConfirmation(r);
+    writeWorkflow('happy.relavium.yaml', `${HAPPY}\n`);
+    k.up();
+    k.enter();
+    expect(await opened).toBe(WORKFLOW_SOURCE_CHANGED);
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    await idle(r);
+  });
+
+  it('starts a file that did not change exactly as before, and the start carries the digest of its exact text (CRLF, a BOM, a decomposed letter)', async () => {
+    const BOM = String.fromCharCode(0xfeff);
+    const ACUTE = String.fromCharCode(0x0301); // a decomposed é: NFC would change the text
+    const text = `${BOM}${HAPPY.replaceAll('\n', '\r\n')}# cafe${ACUTE}  \r\n\r\n`;
+    writeWorkflow('happy.relavium.yaml', text);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await toConfirmation(r);
+    k.up();
+    k.enter();
+    expect(await opened).toMatch(/^Started host-happy as run /);
+    expect(r.startCalls).toHaveLength(1);
+    expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(text));
+    expect(r.builds).toHaveBeenCalledTimes(1);
+    expect(runCount()).toBe(1);
+    await idle(r);
+    expect(runStatuses()).toEqual(['completed']);
+  });
+
+  it('the catalog digests the string it parsed, which is the string the host reads', () => {
+    const text = `${HAPPY}# ünïcode\n`;
+    writeWorkflow('happy.relavium.yaml', text);
+    const home = mkdtempSync(join(tmpdir(), 'relavium-run-launch-home-'));
+    scratch.push(home);
+    const catalog = createProjectCatalog({
+      cwd: root,
+      projectConfigDir: () => join(root, '.relavium'),
+      homeDir: home,
+    });
+    const loaded = catalog.load(join('.relavium', 'workflows', 'happy.relavium.yaml'));
+    expect(loaded.sourceDigest).toBe(sha256(text));
+    expect(loaded.sourceDigest).toBe(workflowSourceDigest(text));
+    expect(loaded.definition.workflow.id).toBe('host-happy');
+  });
+
+  it('the machine alone: the start effect carries the digest the form was picked with, and no other', () => {
+    const choice: LaunchChoice = { path: 'w.yaml', slug: 'w', label: 'w' };
+    let state: LaunchState = { kind: 'idle', turn: 0 };
+    const digests: string[] = [];
+    const feed = (event: Parameters<typeof reduceLaunch>[1]): void => {
+      const step = reduceLaunch(state, event);
+      state = step.state;
+      for (const effect of step.effects)
+        if (effect.kind === 'start') digests.push(effect.form.sourceDigest);
+    };
+    feed({ kind: 'opened', choices: [choice] });
+    feed({ kind: 'picked', turn: state.turn, choice, fields: [], sourceDigest: '1'.repeat(64) });
+    feed({ kind: 'confirmed', turn: state.turn, yes: true });
+    expect(digests).toEqual(['1'.repeat(64)]);
+    expect(state.kind).toBe('starting');
+  });
+
+  it('a second Enter in one tick still starts one run, and it is bound by the one digest', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await toConfirmation(r);
+    k.up();
+    k.enter();
+    k.enter();
+    expect(await opened).toMatch(/^Started host-happy as run /);
+    expect(r.startCalls).toHaveLength(1);
+    expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(sha256(HAPPY));
+    expect(runCount()).toBe(1);
+    await idle(r);
   });
 });
 
@@ -546,7 +682,7 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
       for (const effect of step.effects) effects.push(effect.kind);
     };
     feed({ kind: 'opened', choices: [choice] });
-    feed({ kind: 'picked', turn: state.turn, choice, fields: [] });
+    feed({ kind: 'picked', turn: state.turn, choice, fields: [], sourceDigest: 'd'.repeat(64) });
     feed({ kind: 'confirmed', turn: state.turn, yes: true });
     expect(state.kind).toBe('starting');
     effects.length = 0;
