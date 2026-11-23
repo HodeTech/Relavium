@@ -412,7 +412,7 @@ const searchFilesTool = defineBuiltin({
     fields: [{ name: 'pattern', value: args.pattern }],
   }),
   description:
-    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit; results do not confer read-before-edit evidence.',
+    'Search authorized UTF-8 text for a literal, with optional case and whole-word matching. Respects root ignore rules and refuses confidentiality paths. Scan, match and line limits are explicit: when stats.incomplete is true the matches are only a partial answer, so narrow path or glob before concluding that the literal is absent. Results do not confer read-before-edit evidence.',
   args: z
     .object({
       path: utf8String(4096, 1).default('.'),
