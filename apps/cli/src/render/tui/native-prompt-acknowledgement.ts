@@ -1,6 +1,7 @@
 import type { DOMElement } from 'ink';
 import type { NativePromptSnapshot, NativePromptUi } from './native-prompt-channel.js';
 import { reduceEditorMotion, type ChatKey } from './chat-input.js';
+import { selectPageRows } from './native-select-window.js';
 import {
   createMeasuredFrameAcknowledgement,
   fitsTerminalBounds as fitsBounds,
@@ -126,6 +127,7 @@ export function createNativePromptAcknowledgement(
     );
   };
   ui.bindVisibility(visible);
+  ui.bindPageRows(() => selectPageRows(ui.getSnapshot(), getSize()));
   return {
     invalidate,
     visible,
@@ -199,6 +201,7 @@ export function createNativePromptAcknowledgement(
       disposed = true;
       sharedFrame.dispose();
       ui.bindVisibility(undefined);
+      ui.bindPageRows(undefined);
       unsubscribe();
       notify();
       listeners.clear();

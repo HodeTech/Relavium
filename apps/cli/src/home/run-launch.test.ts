@@ -26,6 +26,7 @@ import {
   createNativePromptChannel,
   type NativePromptSnapshot,
 } from '../render/tui/native-prompt-channel.js';
+import { selectLayout, selectPageRows } from '../render/tui/native-select-window.js';
 import { captureIo } from '../test-support.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createNativeConsentPrompter } from './consent-card.js';
@@ -400,6 +401,36 @@ describe('the picker offers only what can run', () => {
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(r.channel.ui.getSnapshot().active, 'the flow is closed').toBe(false);
+  });
+
+  it('offers 60 workflows as a window of the picker at 80x24, pages through it, and runs the one the cursor is on (LAUNCH-4)', async () => {
+    for (let index = 0; index < 60; index += 1) {
+      const id = `wf-${String(index).padStart(2, '0')}`;
+      writeWorkflow(`${id}.relavium.yaml`, NO_INPUTS.replace('id: no-inputs', `id: ${id}`));
+    }
+    const r = rig();
+    // What the live host's acknowledgement binds: how far a page moves the cursor on the terminal the picker is drawn on.
+    const terminal = { cols: 80, rows: 24 };
+    r.channel.ui.bindPageRows(() => selectPageRows(r.channel.ui.getSnapshot(), terminal));
+    const opened = r.launch.open();
+    const picker = await shows(r, 'select', 'Run which workflow?');
+    expect(picker.options).toHaveLength(60);
+    // The card the terminal cannot hold whole is windowed: the first rows, and a marker for the rest.
+    const layout = selectLayout(picker, terminal);
+    expect(layout?.lines.at(-1)).toEqual({ kind: 'marker', position: 'below', text: '▼ 40 more' });
+    expect(layout?.lines.filter((line) => line.kind === 'option')).toHaveLength(20);
+    r.channel.ui.input('', { ...none, pageDown: true });
+    const paged = r.channel.ui.getSnapshot();
+    expect(paged.selected).toBe(19);
+    // Enter answers the row the cursor is on: the launch goes on with that workflow, which names itself on the confirmation.
+    keys(r).enter();
+    const confirmation = await shows(r, 'select', 'Run ');
+    expect(confirmation.message).toContain(paged.options[19]?.label ?? 'unreachable');
+    expect(confirmation.message).toContain('wf-19');
+    // Esc at the confirmation steps back to the picker; Ctrl+C leaves the flow.
+    keys(r).ctrlC();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    expect(r.startCalls).toHaveLength(0);
   });
 
   it('with no valid workflow, offers nothing, opens no prompt, and gives the reason', async () => {

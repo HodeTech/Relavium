@@ -68,6 +68,12 @@ export interface NativePromptUi {
     check: ((snapshot: NativePromptSnapshot) => boolean) | undefined,
   ) => void;
   /**
+   * Installed by the live terminal host's acknowledgement: how many rows `PgUp`/`PgDn` move the cursor of a `select` card whose options
+   * do not all fit the terminal (the window the card draws), or `undefined` when the card is drawn whole. Only a number: the host's size
+   * and the card's rows stay with the host.
+   */
+  readonly bindPageRows: (rows: (() => number | undefined) | undefined) => void;
+  /**
    * Installed by the live terminal host's acknowledgement: this exact snapshot has just been measured and flushed as a NEW frame
    * (its first, or the first after a resize or a lost screen). A chord card's dwell counts from here, never from its publication.
    */
@@ -188,6 +194,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   let picker: NativePickerController | undefined;
   const pickerDrains = new Set<Promise<void>>();
   let visibility: ((snapshot: NativePromptSnapshot) => boolean) | undefined;
+  let pageRows: (() => number | undefined) | undefined;
   const listeners = new Set<() => void>();
   const publish = (next: NativePromptSnapshot): void => {
     snapshot = next;
@@ -389,6 +396,15 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
             ...snapshot,
             selected: (snapshot.selected + (key.upArrow ? count - 1 : 1)) % count,
           });
+      } else if (key.pageUp || key.pageDown) {
+        // A page moves the cursor by the rows of the window the card draws and stops at the ends (the arrows wrap, a page never does). A
+        // card drawn whole has no window, so the keys do nothing there, as they never did.
+        const step = pageRows?.();
+        const last = snapshot.options.length - 1;
+        if (step !== undefined && last >= 0) {
+          const to = Math.max(0, Math.min(last, snapshot.selected + (key.pageUp ? -step : step)));
+          if (to !== snapshot.selected) publish({ ...snapshot, selected: to });
+        }
       } else if (submitted) {
         const option = snapshot.options[snapshot.selected];
         if (option) finish(option.value);
@@ -434,6 +450,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     },
     bindVisibility: (check) => {
       visibility = check;
+    },
+    bindPageRows: (rows) => {
+      pageRows = rows;
     },
     shown: (frame) => {
       if (frame === snapshot && snapshot.kind === 'chord' && settle !== undefined) chord.shown();

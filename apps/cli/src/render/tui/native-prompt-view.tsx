@@ -8,6 +8,12 @@ import {
 import { dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { hardWrap } from './question-card.js';
+import {
+  SELECT_MARKER_INDENT,
+  selectLayout,
+  selectLegend,
+  selectRowText,
+} from './native-select-window.js';
 
 /**
  * The host's gutter. EVERY row of a chord card's body starts with it, so column 0 belongs to the renderer: text the card's author wrote
@@ -60,6 +66,8 @@ export function NativePromptView({
         {back ? 'Esc steps back · Ctrl+C leaves.' : 'Esc cancels.'}
       </Text>
     );
+  // A select whose options do not all fit the terminal draws a window of them (LAUNCH-4); every other card, and a select that fits, is drawn whole.
+  const selectWindow = snapshot.kind === 'select' ? selectLayout(snapshot, size) : undefined;
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       {snapshot.note !== '' && <Text wrap="wrap">{snapshot.note}</Text>}
@@ -117,13 +125,22 @@ export function NativePromptView({
         </>
       )}
       {snapshot.kind === 'select' &&
-        snapshot.options.map((option, index) => (
-          <Text key={option.value}>
-            {index === snapshot.selected ? '❯ ' : '  '}
-            {option.label}
-            {option.hint ? ` — ${option.hint}` : ''}
-          </Text>
-        ))}
+        (selectWindow === undefined
+          ? snapshot.options.map((option, index) => (
+              <Text key={option.value}>{selectRowText(snapshot, index)}</Text>
+            ))
+          : selectWindow.lines.map((line) =>
+              line.kind === 'marker' ? (
+                <Text key={line.position} {...dimProps(color)} wrap="truncate-end">
+                  {SELECT_MARKER_INDENT}
+                  {line.text}
+                </Text>
+              ) : (
+                <Text key={snapshot.options[line.index]?.value ?? line.index} wrap="truncate-end">
+                  {selectRowText(snapshot, line.index)}
+                </Text>
+              ),
+            ))}
       {(snapshot.kind === 'password' || snapshot.kind === 'text') && (
         <Text>
           {'> '}
@@ -139,7 +156,7 @@ export function NativePromptView({
               : 'Edit filter · Esc cancel'
             : '↑/↓ select · Enter resume · Tab scope · PgUp/PgDn pages · Esc cancel'
           : snapshot.kind === 'select'
-            ? `↑/↓ select · Enter continue · ${leave}`
+            ? selectLegend(back, selectWindow !== undefined)
             : snapshot.kind === 'busy' || snapshot.kind === 'chord'
               ? leave
               : `Enter continue · ${leave}`}
