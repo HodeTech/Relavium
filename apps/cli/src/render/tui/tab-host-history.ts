@@ -341,6 +341,15 @@ export function historyMemoryOf(state: HistoryTabState): HistoryMemory | undefin
   };
 }
 
+/**
+ * `state` with a run's detail already asked for (the strip's `Enter` on a failed or recent run, ADR-0140 §6): the tab is on `Reading the
+ * run…`, and the host's load lands on it as it lands on a detail opened from a row ({@link withHistoryDetail}). A list that could not be
+ * read still shows the detail: the tab is then `ready` with no page, so `Esc` goes back to the line that says the history could not be read.
+ */
+export function withHistoryDetailLoading(state: HistoryTabState, runId: string): HistoryTabState {
+  return { ...state, phase: 'ready', detail: { runId, phase: 'loading', cursor: 0 } };
+}
+
 /** `state` with a sentence the next key drops. */
 export function withHistoryMessage(state: HistoryTabState, message: string): HistoryTabState {
   return { ...state, message };

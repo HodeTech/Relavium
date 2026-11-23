@@ -24,11 +24,17 @@ export interface HomeNoticeOptions {
   readonly isEmpty: boolean;
   readonly hasSessions: boolean;
   /**
-   * The project parks runs: the Attention rows come first in the strip and are what `↓` focuses, so the notice leaves them the three
-   * rows they cost at the least (their heading, the gap under it and one row). Without it a long notice could leave no row drawn
-   * while `↓` still focused one, and `Enter` would open a card the person had not seen listed.
+   * The strip lists an Attention row that `↓` can focus (a run parked in this directory, or a failed run): the Attention rows come first
+   * and are what `↓` reaches first, so the notice leaves them the three rows they cost at the least (their heading, the gap under it and
+   * one row). Without it a long notice could leave no row drawn while `↓` still focused one, and `Enter` would open a run the person had
+   * not seen listed.
    */
-  readonly hasParkedRuns?: boolean;
+  readonly hasAttentionRuns?: boolean;
+  /**
+   * The strip lists a recent run, which `↓` can focus too. With no session above it, its section costs the margin, the two headings and
+   * its row (four rows); with sessions the room is the sessions' own, which give way to the focused run.
+   */
+  readonly hasRecentRuns?: boolean;
   readonly page?: number;
   /** Rows the Home spends above the notice that this layout does not know about (the `▶` run row, ADR-0139 §3). Default 0. */
   readonly reservedRows?: number;
@@ -51,9 +57,16 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
   })
     ? 4
     : 1;
-  // One Continue row needs body margin + two headings + its title/directory lines.
-  const management =
-    (options.hasSessions ? 5 : options.isEmpty ? 0 : 1) + (options.hasParkedRuns === true ? 3 : 0);
+  // One Continue row needs body margin + two headings + its title/directory lines; a recent run alone needs the margin, the headings and
+  // its row.
+  const continueRows = options.hasSessions
+    ? 5
+    : options.hasRecentRuns === true
+      ? 4
+      : options.isEmpty
+        ? 0
+        : 1;
+  const management = continueRows + (options.hasAttentionRuns === true ? 3 : 0);
   const available = Math.max(
     2,
     options.rows -

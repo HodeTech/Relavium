@@ -150,7 +150,7 @@ import { createActiveReader } from '../history/active-source.js';
 import { createHistorySource } from '../history/history-source.js';
 import { createNodeDetailLoader } from '../history/node-detail-source.js';
 import { createRunDetailLoader } from '../history/run-detail-source.js';
-import { createChangeProbe, dataVersionOf } from '../history/change-probe.js';
+import { createChangeProbe, dataVersionOf, type ChangeToken } from '../history/change-probe.js';
 import { createFileTerminalOutbox, terminalOutboxStamp } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createRunViewFeed } from '../render/tui/run-view-feed.js';
@@ -1938,6 +1938,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         }),
         loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
       };
+      // The token adds the hosted run's id to the probe's pair: a leg that starts or ends changes what the Active tab labels `hosted`, and
+      // which runs the strip shows as parked. The Active tab's poll and the strip's idle refresh both compare it.
+      const changeToken = (): ChangeToken => ({
+        ...changeProbe.token(),
+        hostedRunId: hostedRuns.snapshot().active?.runId,
+      });
       // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
       controller = createHomeController({
@@ -1950,11 +1956,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
         active: {
-          // The token adds the hosted run's id to the probe's pair: a leg that starts or ends changes what the tab labels `hosted`.
-          token: () => ({
-            ...changeProbe.token(),
-            hostedRunId: hostedRuns.snapshot().active?.runId,
-          }),
+          token: changeToken,
           read: createActiveReader({
             reader: runReader,
             projectRoot: deps.global.cwd,
@@ -1967,6 +1969,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           }),
           isClosed: () => dbClosed,
         },
+        // The strip's idle refresh (ADR-0140 §6): the same probe, so a tick that finds the token where the last read left it reads nothing.
+        strip: { token: changeToken, isClosed: () => dbClosed },
         exportDefined: (slug) =>
           runExportCard(
             { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },

@@ -424,7 +424,7 @@ describe('the sheet owns every key while it is open', () => {
       }
       expect(snapshot.palette, 'no palette opens behind it').toBeUndefined();
       expect(snapshot.input.text, 'nothing is typed into the prompt').toBe('');
-      expect(snapshot.continueSessionId, 'no row is moved onto').toBeUndefined();
+      expect(snapshot.stripFocus?.id, 'no row is moved onto').toBeUndefined();
       expect(snapshot.interruptArmed, 'no interrupt is armed').toBe(false);
       expect(home.startChat).not.toHaveBeenCalled();
       expect(home.onExit).not.toHaveBeenCalled();
@@ -501,19 +501,19 @@ describe('every key the sheet names does what it says on the landing', () => {
     rows: () => {
       const home = mount({ snapshot: WITH_SESSION });
       pressAll(home, 'rows');
-      expect(home.controller.getSnapshot().continueSessionId).toBe('saved');
+      expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
       // From an empty prompt only: with something typed, `↓` moves nothing.
       const typedFirst = mount({ snapshot: WITH_SESSION });
       typedFirst.controller.handleKey('a', {});
       pressAll(typedFirst, 'rows');
-      expect(typedFirst.controller.getSnapshot().continueSessionId).toBeUndefined();
+      expect(typedFirst.controller.getSnapshot().stripFocus?.id).toBeUndefined();
     },
     back: () => {
       const home = mount({ snapshot: WITH_SESSION });
       pressAll(home, 'rows');
-      expect(home.controller.getSnapshot().continueSessionId).toBe('saved');
+      expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
       pressAll(home, 'back');
-      expect(home.controller.getSnapshot().continueSessionId).toBeUndefined();
+      expect(home.controller.getSnapshot().stripFocus?.id).toBeUndefined();
       expect(home.startChat).not.toHaveBeenCalled();
     },
     eof: () => {

@@ -32,6 +32,13 @@ import {
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
+import {
+  isFocused,
+  stripReach,
+  stripRows,
+  type StripFocus,
+  type StripRole,
+} from './strip-focus.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 /**
@@ -70,7 +77,6 @@ interface HomeViewProps {
   readonly showBanner?: boolean | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */
   readonly keyless?: boolean;
-  readonly continueSessionId?: string | undefined;
   readonly noticePage?: number;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` exits the Home, and the hint says so. */
   readonly interruptArmed?: boolean | undefined;
@@ -85,8 +91,11 @@ interface HomeViewProps {
    * its *Continue* runs. Absent or empty ⇒ no such row.
    */
   readonly parkedRuns?: readonly ParkedRunRow[] | undefined;
-  /** The parked run `↓` moved onto (`Enter` opens its card), or `undefined`. */
-  readonly parkedFocus?: string | undefined;
+  /**
+   * The strip row `↓` moved onto, or `undefined` (ADR-0140 §6): a run row (parked, failed or recent) or a session row, named by its identity.
+   * The focused row is marked `>` and is always one of the rows drawn; the hint bar says what `Enter` does on it.
+   */
+  readonly stripFocus?: StripFocus | undefined;
 }
 
 const NO_PARKED: readonly ParkedRunRow[] = [];
@@ -167,21 +176,25 @@ function Section(
  */
 function homeHint(state: {
   readonly interruptArmed: boolean;
-  readonly resuming: boolean;
+  /** What the focused strip row is (`↓` moved onto it), or `undefined` when none is: it says what `Enter` does on that kind of row. */
+  readonly focusedRole: StripRole | undefined;
   readonly emptyDraft: boolean;
   readonly hasRecentSessions: boolean;
   readonly hasParkedRuns: boolean;
-  /** What the focused parked row is (`↓` moved onto it), or `undefined` when none is: `Enter` opens its gate, or says why it cannot. */
+  /** What the focused parked row waits on, when that is the focused row: `Enter` opens its gate, or says why it cannot. */
   readonly parkedFocusKind: ParkedRunKind | undefined;
   /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
   readonly runCanBeShown: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
-  if (state.parkedFocusKind !== undefined)
+  if (state.focusedRole === 'parked')
     // The same words as the row's own cue: a row that has no gate to decide says why on `Enter`, and the bar must not promise a gate.
     return `↑/↓ select · ${state.parkedFocusKind === 'none' ? 'Enter says why' : 'Enter open the gate'} · Esc return to prompt · Ctrl+C twice to exit`;
-  if (state.resuming)
+  if (state.focusedRole === 'session')
     return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
+  // A failed or recent run opens its detail (the run this Home hosts opens its view): read-only either way.
+  if (state.focusedRole !== undefined)
+    return '↑/↓ select · Enter open the run · Esc return to prompt · Ctrl+C twice to exit';
   if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
   if (state.runCanBeShown) {
     // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
@@ -205,11 +218,20 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const exitGuard = props.exitGuard;
   const parked = props.parkedRuns ?? NO_PARKED;
   const parkedIds = new Set(parked.map((row) => row.runId));
-  const focusedParked = parked.find((row) => row.runId === props.parkedFocus);
+  const focus = props.stripFocus;
+  // The focused row, by identity, among the rows the strip lets `↓` reach (the controller keeps its focus on the same list).
+  const focusedRow = stripRows(parked, snapshot).find((row) => isFocused(row, focus));
+  const focusedParked =
+    focusedRow?.role === 'parked' ? parked.find((row) => row.runId === focusedRow.id) : undefined;
+  const runFocused = (runId: string): boolean => focus?.kind === 'run' && focus.id === runId;
   const runCanBeShown = hostedRunCanBeShown(props.hostedRun);
-  // `Enter` at the empty prompt shows a live run, or opens the gate of a focused parked row, BEFORE it sets a provider up: while either
-  // is on offer the keyless line's own `Enter` would promise what the key does not do, so the line waits until neither is.
-  const keylessLine = props.keyless === true && !runCanBeShown && focusedParked === undefined;
+  // `Enter` at the empty prompt shows a live run, or opens the row of a focused run (a parked run's gate, a failed or recent run's detail),
+  // BEFORE it sets a provider up: while either is on offer the keyless line's own `Enter` would promise what the key does not do, so the
+  // line waits until neither is.
+  const keylessLine =
+    props.keyless === true &&
+    !runCanBeShown &&
+    (focusedRow === undefined || focusedRow.kind === 'session');
   // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
   const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
@@ -262,7 +284,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     showBanner: props.showBanner,
     isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
-    hasParkedRuns: parked.length > 0,
+    ...stripReach(parked, snapshot),
     reservedRows: runRows,
     ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
   });
@@ -281,19 +303,23 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     0,
     remaining - (snapshot.recentSessions.length > 0 ? 4 : 0) - 2,
   );
+  // A focused failed run is drawn after the rows above it, so they leave it one row: the focused row is always one of the rows drawn.
+  const failedFocusIndex = snapshot.attention.failedRuns.findIndex((run) => runFocused(run.runId));
+  let attentionReserve = failedFocusIndex >= 0 ? 1 : 0;
   const takeAttention = <T,>(items: readonly T[], max = attentionRemaining): readonly T[] => {
-    const selected = items.slice(0, Math.min(attentionRemaining, max));
+    const room = Math.max(0, attentionRemaining - attentionReserve);
+    const selected = items.slice(0, Math.min(room, max));
     attentionRemaining -= selected.length;
     return selected;
   };
   // The parked runs of this project come first: they are the rows the person can act on from here. The window follows the focus, so the
   // focused row is always one of the rows drawn.
-  const parkedFocusIndex = parked.findIndex((row) => row.runId === props.parkedFocus);
-  const parkedCapacity = Math.max(0, attentionRemaining);
+  const parkedFocusIndex = parked.findIndex((row) => runFocused(row.runId));
+  const parkedCapacity = Math.max(0, attentionRemaining - attentionReserve);
   const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
   const parkedRows: StripRow[] = takeAttention(parked.slice(parkedStart)).map((row) => ({
     key: `parked:${row.runId}`,
-    line: `${row.runId === props.parkedFocus ? '> ' : '  '}${parkedRunLabel(row, row.runId === props.parkedFocus, cols - PARKED_ROW_INDENT_COLUMNS)}`,
+    line: `${runFocused(row.runId) ? '> ' : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS)}`,
   }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
   const gateRows = takeAttention(
@@ -303,40 +329,52 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     line: `⚠ ${gateLabel(g, nowMs)}`,
     expired: gateExpired(g, nowMs),
   }));
-  const failed: StripRow[] = takeAttention(snapshot.attention.failedRuns).map((r) => ({
-    key: r.runId,
-    line: `✗ ${runLabel(r, nowMs)}`,
-  }));
+  attentionReserve = 0; // the failed runs are the last of the Attention rows: what is left is theirs
+  const failedStart = Math.max(0, failedFocusIndex - attentionRemaining + 1);
+  const failed: StripRow[] = takeAttention(snapshot.attention.failedRuns.slice(failedStart)).map(
+    (r) => ({
+      key: r.runId,
+      line: `✗ ${runLabel(r, nowMs)}`,
+      selected: runFocused(r.runId),
+    }),
+  );
   const attentionCount = parkedRows.length + unreadable.length + gateRows.length + failed.length;
   if (attentionCount > 0) remaining -= attentionCount + 2;
   let continueHeading = false;
-  const takeSection = <T,>(items: readonly T[], cost = 1): readonly T[] => {
+  const takeSection = <T,>(items: readonly T[], cost = 1, reserve = 0): readonly T[] => {
     const chrome = continueHeading ? 1 : 2;
-    const selected = items.slice(0, Math.max(0, Math.floor((remaining - chrome) / cost)));
+    const selected = items.slice(0, Math.max(0, Math.floor((remaining - chrome - reserve) / cost)));
     if (selected.length > 0) {
       remaining -= chrome + selected.length * cost;
       continueHeading = true;
     }
     return selected;
   };
-  const sessionCapacity = Math.max(0, Math.floor((remaining - 2) / 2));
+  const recentRuns = snapshot.recentRuns.filter((r) => !parkedIds.has(r.runId));
+  const runFocusIndex = recentRuns.findIndex((r) => runFocused(r.runId));
+  // A focused recent run is drawn after the sessions, so they leave it its section's title and its own row.
+  const sessionReserve = runFocusIndex >= 0 ? 2 : 0;
+  const sessionCapacity = Math.max(0, Math.floor((remaining - 2 - sessionReserve) / 2));
   const focusedIndex = snapshot.recentSessions.findIndex(
-    (s) => s.sessionId === props.continueSessionId,
+    (s) => focus?.kind === 'session' && s.sessionId === focus.id,
   );
   const sessionStart = Math.max(0, focusedIndex - sessionCapacity + 1);
-  const sessions: StripRow[] = takeSection(snapshot.recentSessions.slice(sessionStart), 2).map(
-    (s) => ({
-      key: s.sessionId,
-      line: sessionLabel(s, nowMs),
-      hint: sanitizeInline(s.workingDir),
-      selected: s.sessionId === props.continueSessionId,
-    }),
-  );
-  const runs: StripRow[] = takeSection(
-    snapshot.recentRuns.filter((r) => !parkedIds.has(r.runId)),
-  ).map((r) => ({
+  const sessions: StripRow[] = takeSection(
+    snapshot.recentSessions.slice(sessionStart),
+    2,
+    sessionReserve,
+  ).map((s) => ({
+    key: s.sessionId,
+    line: sessionLabel(s, nowMs),
+    hint: sanitizeInline(s.workingDir),
+    selected: focus?.kind === 'session' && s.sessionId === focus.id,
+  }));
+  const runCapacity = Math.max(0, remaining - (continueHeading ? 1 : 2));
+  const runStart = Math.max(0, runFocusIndex - runCapacity + 1);
+  const runs: StripRow[] = takeSection(recentRuns.slice(runStart)).map((r) => ({
     key: r.runId,
     line: runLabel(r, nowMs),
+    selected: runFocused(r.runId),
   }));
   const agents: StripRow[] = takeSection(snapshot.recentAgents).map((a) => ({
     key: a.agentSlug,
@@ -430,7 +468,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
                 ))}
                 {failed.map((f) => (
                   <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-                    {'  '}
+                    {f.selected === true ? '> ' : '  '}
                     {f.line}
                   </Text>
                 ))}
@@ -492,7 +530,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
           <Text {...dimProps(color)} wrap="truncate-end">
             {homeHint({
               interruptArmed,
-              resuming: props.continueSessionId !== undefined,
+              focusedRole: focusedRow?.role,
               emptyDraft: editor.text.length === 0,
               hasRecentSessions: snapshot.recentSessions.length > 0,
               hasParkedRuns: parked.length > 0,

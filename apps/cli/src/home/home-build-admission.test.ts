@@ -126,7 +126,7 @@ describe.each(['fresh', 'resume'] as const)('Home %s builder admission handoff',
           controller.handleKey('', { return: true });
           await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
           controller.handleKey('', { downArrow: true });
-          expect(controller.getSnapshot().continueSessionId).toBeDefined();
+          expect(controller.getSnapshot().stripFocus).toBeDefined();
           controller.handleKey('', { return: true });
           await vi.waitFor(() => expect(resumed).toHaveBeenCalledOnce());
         }

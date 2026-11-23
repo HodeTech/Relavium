@@ -490,7 +490,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       });
       available = false;
       home.controller.handleKey('', { downArrow: true });
-      expect(home.controller.getSnapshot().continueSessionId).toBe(first.sessionId);
+      expect(home.controller.getSnapshot().stripFocus).toMatchObject({
+        kind: 'session',
+        id: first.sessionId,
+      });
       const display = vi.spyOn(store, 'loadUserDisplayTexts');
       display.mockImplementationOnce(() => {
         throw new Error('PRIVATE_DISPLAY_FAILURE');

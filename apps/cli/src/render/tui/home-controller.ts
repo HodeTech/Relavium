@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReasoningEffort } from '@relavium/shared';
@@ -33,6 +35,7 @@ import {
 } from './permissions-sheet-port.js';
 import {
   disarmTabHost,
+  enterHistoryAtDetail,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
@@ -43,6 +46,7 @@ import {
   withDefinedNote,
   withHistoryLoad,
   withHistoryLoadFailure,
+  type TabEntry,
   type TabHostState,
   type TabId,
   type TabMemory,
@@ -143,6 +147,15 @@ import {
   HOSTED_RUN_POLL_MS,
 } from './tui-constants.js';
 import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
+import { stripRefreshPaused } from './strip-pause.js';
+import {
+  focusFor,
+  resolveFocus,
+  stepFocus,
+  stripRows,
+  type StripFocus,
+  type StripRow,
+} from './strip-focus.js';
 import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
@@ -221,7 +234,6 @@ export interface HomeControllerState {
   readonly mode: HomeMode;
   readonly keyless: boolean;
   readonly nativeActionBusy: boolean;
-  readonly continueSessionId: string | undefined;
   readonly snapshot: HomeSnapshot;
   readonly errorText: string | undefined;
   readonly pendingMessage: string;
@@ -292,8 +304,12 @@ export interface HomeControllerState {
    * {@link HomeControllerDeps.gateCards}.
    */
   readonly parkedRuns: readonly ParkedRunRow[];
-  /** The parked run the person has moved onto with `↓` at the empty prompt (`Enter` opens its card), or `undefined` for none. */
-  readonly parkedFocus: string | undefined;
+  /**
+   * The strip row the person has moved onto with `↓` at the empty prompt, or `undefined` for none ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §6). It names the row by its identity (the run id or the session id, `strip-focus.ts`), so a read that moves the row never moves the
+   * focus off it; `Enter` does what the row's kind says (a parked run's card, a failed or recent run's detail, a session's resume).
+   */
+  readonly stripFocus: StripFocus | undefined;
   /** The Home can open a gate card (a port is wired): the run view of a parked run then offers `Enter`. */
   readonly gateCards: boolean;
 }
@@ -397,6 +413,18 @@ export interface HomeActivePort {
   /** One read of the Active tab's runs. Called only while the tab is in front, when the token moved, and never twice at once. */
   readonly read: () => Promise<ActiveRead>;
   /** The database is closed: the poll reads nothing more. Asked before every read. */
+  readonly isClosed: () => boolean;
+}
+
+/**
+ * What the strip's idle refresh asks ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §6): the change token to compare, and whether the database is gone. It is the Active tab's own probe, so a tick that finds the token where
+ * the last read left it reads nothing; `driveHome` wires the real one over its own connection.
+ */
+export interface HomeStripPort {
+  /** The change token now (`PRAGMA data_version`, the in-process generation and the hosted run). May throw for a closed database. */
+  readonly token: () => ChangeToken;
+  /** The database is closed: the tick reads nothing more. Asked before every read. */
   readonly isClosed: () => boolean;
 }
 
@@ -531,6 +559,13 @@ export interface HomeControllerDeps {
    */
   readonly active?: HomeActivePort | undefined;
   /**
+   * The strip's idle refresh ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §6): every {@link STRIP_REFRESH_MS} the Home looks at the change token, and re-reads the strip's rows only when it moved. The tick is
+   * paused while a screen, a card, an overlay or the help sheet is in front, while a chat or its build is, and below 80×24, and it leaves no
+   * timer behind when the Home ends. Absent ⇒ the strip is read when the Home opens and when a chat or a screen returns, as it always was.
+   */
+  readonly strip?: HomeStripPort | undefined;
+  /**
    * The Home's workflow-run host, as far as leaving the Home needs it ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
    * §3, §6): `snapshot` says whether a leg is executing or cancelling, `cancel` requests the cooperative stop, and `close` is the Home's
    * teardown of the host. With a leg live, every way to end the Home asks first, and a confirmed exit cancels the leg and waits for it
@@ -588,7 +623,8 @@ export interface HomeController {
    *  or a mid-turn/build/`!`-shell/submit state is active. Paste never reaches the key reducers. */
   readonly handlePaste: (text: string) => void;
   /** The terminal's size, told by the host whenever it changes: the permissions sheet needs it to know whether it can show a
-   *  withdrawal's question (ADR-0137 §2). Until it is told, the sheet assumes a terminal that can. */
+   *  withdrawal's question (ADR-0137 §2), and the strip's idle tick reads nothing below 80×24 (ADR-0140 §6). Until it is told, both
+   *  assume a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
   /**
    * Open the tab host on the Permissions tab as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3,
@@ -627,6 +663,22 @@ export interface HomeController {
   readonly bindHomeFrame: (visible: ((state: HomeControllerState) => boolean) | undefined) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
+}
+
+/** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
+const RUN_HISTORY_UNAVAILABLE =
+  'The run history is not available here. `relavium status` shows where a run stands.';
+
+/** What `Enter` says on a focused row the strip no longer lists: nothing was opened. */
+const STRIP_ROW_GONE = 'That row is no longer on the strip. Nothing was opened.';
+
+/** How often the strip looks at the change token while the landing is in front (ADR-0140 §6). */
+export const STRIP_REFRESH_MS = 5000;
+
+/** What one tick of the strip's refresh reads: the aggregation and the parked rows, taken together. */
+interface StripRead {
+  readonly snapshot: HomeSnapshot;
+  readonly parked: readonly ParkedRunRow[];
 }
 
 const NO_NOTICES: readonly string[] = Object.freeze([]);
@@ -706,11 +758,19 @@ function legBoundary(now: RunHostSnapshot, before: RunHostSnapshot | undefined):
 
 export function createHomeController(deps: HomeControllerDeps): HomeController {
   const listeners = new Set<() => void>();
+  // The strip's change token as it is BEFORE the first read of the strip (the state below reads it), so the idle tick compares with a
+  // token that cannot be newer than what the Home shows.
+  const stripSeed = ((): ChangeToken | undefined => {
+    try {
+      return deps.strip?.token();
+    } catch {
+      return undefined; // a closed database: the poll then reads at once and reports it
+    }
+  })();
   let state: HomeControllerState = {
     mode: 'home',
     keyless: deps.providerSetup?.initialKeyless ?? false,
     nativeActionBusy: false,
-    continueSessionId: undefined,
     snapshot: deps.homeStore.read(),
     errorText: undefined,
     pendingMessage: '',
@@ -734,7 +794,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     exitGuard: undefined,
     screen: undefined,
     parkedRuns: readParkedRows(deps.gateCards, NO_PARKED),
-    parkedFocus: undefined,
+    stripFocus: undefined,
     gateCards: deps.gateCards !== undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
@@ -745,6 +805,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // The Active tab's poll (ADR-0140 §2): created the first time the tab is in front, started and cancelled by `syncActivePoll` as the
   // screen changes, and cancelled with the Home's other timers when it ends. `lastActiveRead` is what a re-entered tab is shown at once.
   let activePoll: ActivePoll | undefined;
+  // The strip's idle refresh (ADR-0140 §6): one poll for the life of the Home, created below once everything it asks about exists.
+  let stripPoll: ActivePoll | undefined;
   let activePollRunning = false;
   let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
@@ -855,9 +917,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     });
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
+    const before = state;
     state = { ...state, ...patch, noticeRevision };
+    // The strip's focus is the identity of a row (`strip-focus.ts`): whenever the rows are replaced it is resolved on the new ones, so it
+    // follows its row, moves to the nearest one when the row is gone, and is never left naming nothing.
+    if (!('stripFocus' in patch) && ('snapshot' in patch || 'parkedRuns' in patch)) {
+      const stripFocus = resolveFocus(
+        stripRows(state.parkedRuns, state.snapshot),
+        state.stripFocus,
+      );
+      if (stripFocus !== state.stripFocus) state = { ...state, stripFocus };
+    }
     syncActivePoll();
     notify();
+    // The landing is back from a screen: the strip is read again now rather than at the next tick (ADR-0140 §6).
+    if (before.screen !== undefined && state.screen === undefined) stripPoll?.refresh();
   };
   // ---- The Active tab's poll (ADR-0140 §2) -----------------------------------------------------------------------------------
   // It runs while, and only while, the tab host is in front on the Active tab: a gate card, a run view, the landing and the end of the
@@ -965,6 +1039,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const stopHostedTimers = (): void => {
     activePollRunning = false;
     activePoll?.cancel(); // the Active tab's poll is a timer too: the Home ending, or a signal, leaves nothing scheduled
+    stripPoll?.cancel(); // and so is the strip's idle refresh
     cancelHostedPoll?.();
     cancelHostedPoll = undefined;
     cancelExitGrace?.();
@@ -1004,8 +1079,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       : { ...screen, notices };
   };
   /**
-   * The parked runs as the log says now, as a patch for `set`: empty when nothing changed (so an unchanged strip is never repainted), and
-   * dropping the focus from a run that is no longer parked. Read when the landing is shown again and when the run host's state changes.
+   * The parked runs as the log says now, as a patch for `set`: empty when nothing changed (so an unchanged strip is never repainted).
+   * Read when the landing is shown again and when the run host's state changes.
    * The run a leg is executing is never one of them. With `reread` false the rows already held are only filtered again (no database page):
    * the engine naming a leg's run is not a change of the log, but it is when the run stops being parked.
    */
@@ -1019,12 +1094,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       hosted,
     );
     const parkedRuns = sameParkedRows(read, state.parkedRuns) ? state.parkedRuns : read;
-    const parkedFocus = parkedRuns.some((row) => row.runId === state.parkedFocus)
-      ? state.parkedFocus
-      : undefined;
-    return parkedRuns === state.parkedRuns && parkedFocus === state.parkedFocus
-      ? {}
-      : { parkedRuns, parkedFocus };
+    // The focus is resolved on the new rows by `set`: it follows its row, and moves to the nearest one when the run is no longer parked.
+    return parkedRuns === state.parkedRuns ? {} : { parkedRuns };
   };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
   const refreshHostedRun = (): void => {
@@ -1068,7 +1139,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       exitGuard: 'confirm',
       hostedRun: snapshot,
       palette: undefined,
-      continueSessionId: undefined,
+      stripFocus: undefined,
     });
     watchHostedRun(); // the card names the run's state, so it follows it until the card is closed
   };
@@ -1108,7 +1179,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       snapshot !== undefined && hostedKey(snapshot) !== hostedKey(state.hostedRun)
         ? { hostedRun: snapshot }
         : {};
-    set({ screen, continueSessionId: undefined, ...hosted, ...extra });
+    // A focus on a run stays through the screen it opened (the way back lands on the row), a focus on a session does not.
+    set({
+      screen,
+      ...(state.stripFocus?.kind === 'session' ? { stripFocus: undefined } : {}),
+      ...hosted,
+      ...extra,
+    });
     // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
     if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
   };
@@ -1132,16 +1209,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /** What entering the Active tab starts from: the last read this Home kept, or `undefined` when nothing feeds the tab. */
   const activeEntry = (): { readonly last: ActiveRead | undefined } | undefined =>
     deps.active === undefined ? undefined : { last: lastActiveRead };
+  /** What entering a tab reads from, as it is now. */
+  const tabEntry = (): TabEntry => ({
+    port: deps.permissions,
+    defined: deps.defined,
+    active: activeEntry(),
+    history: deps.history,
+    pins: deps.pins,
+    now: interruptNow(),
+  });
   /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
   const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
-    const host = enterTab(memory, memory.tab, {
-      port: deps.permissions,
-      defined: deps.defined,
-      active: activeEntry(),
-      history: deps.history,
-      pins: deps.pins,
-      now: interruptNow(),
-    });
+    const host = enterTab(memory, memory.tab, tabEntry());
     // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
     // a typed `/workflows` asked for, and the other tabs are one key away.
     return host.unreadable && host.tab === 'permissions' ? undefined : { kind: 'tab-host', host };
@@ -1883,6 +1962,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  /**
+   * `Enter` on a failed or recent run of the strip (ADR-0140 §6): the tab host opens on the History tab at that run's detail, loaded as
+   * a detail opened from a History row is, and `Esc` steps back to the list and then to the landing. No run is written, resumed or
+   * cancelled from the strip (`p` on the detail only marks a finished run), so a run of another directory opens as well as this one's. A
+   * Home with no history to read says so.
+   */
+  const openRunDetail = (runId: string): boolean => {
+    if (deps.history === undefined) {
+      set({ notice: RUN_HISTORY_UNAVAILABLE });
+      return false;
+    }
+    if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
+    const host = enterHistoryAtDetail(freshTabMemory('history'), tabEntry(), runId);
+    tabMemory = tabHostMemory(host);
+    putScreen({ kind: 'tab-host', host });
+    openHistoryDetail(runId);
+    return true;
+  };
+
   const openResume = (selectedId?: string): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
@@ -1931,7 +2029,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         pendingMessage: '',
         errorText: undefined,
         notice: undefined,
-        continueSessionId: undefined,
+        stripFocus: undefined,
         attachments: [],
         historyEntries: [],
         search: undefined,
@@ -3214,38 +3312,56 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * A key while a parked run is focused on the landing (`↓` at the empty prompt put it there). `↑`/`↓` move along the rows (`↓` past the last
-   * reaches the sessions, `↑` before the first returns to the prompt), `Enter` opens the focused run's card and `Esc` returns to the prompt.
-   * Returns whether the key was handled; any other key ends the focus and is then typed as usual.
+   * What `Enter` does on a focused strip row (ADR-0140 §6): a parked run opens its gate or budget card, a session is resumed, and a failed or
+   * recent run opens its detail in History (nothing is resumed or answered from it). The run this Home hosts opens its view instead, as the `▶` row does.
    */
-  const routeParkedFocusKey = (focus: string, key: HomeKey & ChatKey): boolean => {
-    const rows = state.parkedRuns;
-    const index = rows.findIndex((row) => row.runId === focus);
-    if (index < 0) {
-      set({ parkedFocus: undefined });
+  const activateStripRow = (row: StripRow): void => {
+    if (row.role === 'session') {
+      openResume(row.id);
+      return;
+    }
+    if (row.role === 'parked') {
+      openGateCard(row.id, 'landing');
+      return;
+    }
+    const hosted = deps.hostedRuns?.snapshot().active?.runId === row.id;
+    if (hosted && openRunView()) return;
+    openRunDetail(row.id);
+  };
+
+  /**
+   * A key while a strip row is focused on the landing (`↓` at the empty prompt put it there). `↑`/`↓` move along the rows in the order the
+   * strip draws them (`↓` past the last stays on it, `↑` before the first returns to the prompt), `Enter` does what the row's kind says and
+   * `Esc` returns to the prompt. The focus names a row by its identity: a refresh that takes the row off the strip drops the focus (it never
+   * moves it onto another row). Returns whether the key was handled; any other key ends the focus and is then typed as usual.
+   */
+  const routeStripFocusKey = (focus: StripFocus, key: HomeKey & ChatKey): boolean => {
+    const rows = stripRows(state.parkedRuns, state.snapshot);
+    const index = focusFor(rows, focus);
+    const row = index === undefined ? undefined : rows[index];
+    if (row === undefined) {
+      // Not reachable while `set` keeps the focus on the rows it is given; a focus that names a row the strip no longer lists opens
+      // nothing and says so (ADR-0140 §6), and is dropped. Any other key is typed as usual.
+      if (key.return === true) {
+        set({ stripFocus: undefined, notice: STRIP_ROW_GONE });
+        return true;
+      }
+      set({ stripFocus: undefined });
       return false;
     }
     if (key.escape === true) {
-      set({ parkedFocus: undefined });
+      set({ stripFocus: undefined });
       return true;
     }
     if (key.return === true) {
-      openGateCard(focus, 'landing');
+      activateStripRow(row);
       return true;
     }
-    if (key.upArrow === true) {
-      set({ parkedFocus: index === 0 ? undefined : rows[index - 1]?.runId });
+    if (key.upArrow === true || key.downArrow === true) {
+      set({ stripFocus: stepFocus(rows, focus, key.upArrow === true ? -1 : 1) });
       return true;
     }
-    if (key.downArrow === true) {
-      const next = rows[index + 1];
-      const firstSession = state.snapshot.recentSessions[0];
-      if (next !== undefined) set({ parkedFocus: next.runId });
-      else if (firstSession !== undefined)
-        set({ parkedFocus: undefined, continueSessionId: firstSession.sessionId });
-      return true;
-    }
-    set({ parkedFocus: undefined });
+    set({ stripFocus: undefined });
     return false;
   };
 
@@ -3257,40 +3373,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     const action = reduceHomeKey(input, key);
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
-    const sessions = state.snapshot.recentSessions;
-    const focused = state.continueSessionId;
-    if (state.parkedFocus !== undefined && routeParkedFocusKey(state.parkedFocus, key)) return;
-    if (focused !== undefined) {
-      const index = sessions.findIndex((session) => session.sessionId === focused);
-      if (key.escape === true) {
-        set({ continueSessionId: undefined });
+    if (state.stripFocus !== undefined) {
+      if (routeStripFocusKey(state.stripFocus, key)) return;
+    } else if (key.downArrow === true && state.input.text.length === 0) {
+      // The first row the strip draws, across its sections in their order: the parked runs, the failed runs, the sessions, the recent runs.
+      const first = stepFocus(stripRows(state.parkedRuns, state.snapshot), undefined, 1);
+      if (first !== undefined) {
+        set({ stripFocus: first });
         return;
       }
-      if (key.return === true) {
-        if (index >= 0) openResume(focused);
-        else set({ continueSessionId: undefined });
-        return;
-      }
-      if (key.upArrow === true || key.downArrow === true) {
-        const next = index + (key.upArrow === true ? -1 : 1);
-        set({
-          continueSessionId:
-            next < 0 ? undefined : sessions[Math.min(next, sessions.length - 1)]?.sessionId,
-        });
-        return;
-      }
-      set({ continueSessionId: undefined });
-    } else if (
-      key.downArrow === true &&
-      state.input.text.length === 0 &&
-      state.parkedRuns.length > 0
-    ) {
-      // The Attention rows come first: `↓` moves onto the newest parked run, and `↓` past the last one reaches the sessions.
-      set({ parkedFocus: state.parkedRuns[0]?.runId });
-      return;
-    } else if (key.downArrow === true && state.input.text.length === 0 && sessions.length > 0) {
-      set({ continueSessionId: sessions[0]?.sessionId });
-      return;
     }
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
@@ -3366,6 +3457,70 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     handleHomeKey(input, key);
   };
+
+  // ---- The strip's idle refresh (ADR-0140 §6) --------------------------------------------------------------------------------
+  // The strip is read when the Home opens and when a chat or a screen returns; between those, a person looking at the landing sees what
+  // another terminal does only through this tick. It uses the Active tab's poll (`createActivePoll`): every five seconds it asks the change
+  // token (`PRAGMA data_version`, the in-process generation, the hosted run) and reads the strip only when that moved. It is paused, not
+  // stopped, while anything else has the keyboard or the screen, and it is cancelled with the Home's other timers when the Home ends.
+  const stripPollPaused = (): boolean =>
+    stripRefreshPaused({
+      mode: state.mode,
+      screen: state.screen !== undefined,
+      palette: state.palette !== undefined,
+      modelPicker: state.modelPicker !== undefined,
+      effortPicker: state.effortPicker !== undefined,
+      permissionsSheet: state.permissionsSheet !== undefined,
+      search: state.search !== undefined,
+      mention: state.mention !== undefined,
+      exitGuard: state.exitGuard !== undefined,
+      nativeActionBusy: state.nativeActionBusy,
+      terminal,
+    });
+  /** A newer read of the strip: published only when it differs from what the landing shows, so an idle tick never repaints. */
+  const applyStripRead = (read: StripRead): void => {
+    const parked = withoutExecutingRun(read.parked, deps.hostedRuns?.snapshot());
+    const snapshotMoved = !isDeepStrictEqual(read.snapshot, state.snapshot);
+    const parkedMoved = !sameParkedRows(parked, state.parkedRuns);
+    if (!snapshotMoved && !parkedMoved) return;
+    set({
+      ...(snapshotMoved ? { snapshot: read.snapshot } : {}),
+      ...(parkedMoved ? { parkedRuns: parked } : {}),
+    });
+  };
+  const strip = deps.strip;
+  if (strip !== undefined) {
+    stripPoll = createActivePoll<StripRead>({
+      schedule: (callback, delayMs) => schedule(callback, delayMs),
+      now: () => interruptNow(),
+      token: strip.token,
+      // Both reads of the strip are SQLite on the Home's own connection, taken in one synchronous stretch: the rows of one read describe
+      // one moment, and the poll applies them in the same turn, so a card cannot open between the read and its paint.
+      read: () =>
+        Promise.resolve({
+          snapshot: deps.homeStore.read(),
+          parked: readParkedRows(deps.gateCards, state.parkedRuns),
+        }),
+      apply: (read) => {
+        // A timer or promise callback has no input handler around it to route a listener's failure, so it is routed here.
+        try {
+          applyStripRead(read);
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      paused: stripPollPaused,
+      isClosed: strip.isClosed,
+      onError: () => undefined, // a failed read keeps the rows the strip has; the next tick reads again
+      intervalMs: STRIP_REFRESH_MS,
+      // Nothing about the strip depends on the clock alone, so a token that has not moved is never a reason to read.
+      maxAgeMs: Number.POSITIVE_INFINITY,
+      // The strip was read as the Home was built, so the first tick compares with the token taken before that read instead of reading
+      // again: a commit that landed in between is read at the first tick. A token that could not be taken makes the poll read at once.
+      after: stripSeed,
+    });
+    stripPoll.start();
+  }
 
   return {
     subscribe(listener) {
@@ -3448,8 +3603,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({
         input: insertAtCursor(state.input, pasted),
         notice: undefined,
-        continueSessionId: undefined,
-        parkedFocus: undefined,
+        stripFocus: undefined,
       });
     },
     async teardownActive() {

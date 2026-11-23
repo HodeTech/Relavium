@@ -119,9 +119,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('FINAL_RECOVERY_REMEDY'));
         expect(h.frame('doctor:')).toContain('wired tools');
         h.input.push('\x1b[B');
-        await vi.waitFor(() =>
-          expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'),
-        );
+        await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
         expect(h.frame('doctor:')).toContain('> Saved conversation 0');
@@ -154,7 +152,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       h.resize(80, 24);
       await vi.waitFor(() => expect(h.output.frames.join('')).toContain('Saved conversation'));
       h.input.push('\x1b[B');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'));
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       // Enter arrives before React can paint the resize: admission must read actual geometry.
       h.resize(40, 24);
       h.input.push('\r');
@@ -165,13 +163,13 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       expect(h.startChat).not.toHaveBeenCalled();
       expect(h.controller.getSnapshot().input.text).toBe('');
       h.input.push('\x1b');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBeUndefined());
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBeUndefined());
       h.resize(80, 24);
       await vi.waitFor(() =>
         expect(h.frame('Saved conversation')).not.toContain('Terminal too small'),
       );
       h.input.push('\x1b[B');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().continueSessionId).toBe('saved-0'));
+      await vi.waitFor(() => expect(h.controller.getSnapshot().stripFocus?.id).toBe('saved-0'));
       h.input.push('\r');
       await vi.waitFor(() => expect(h.resumeChat).toHaveBeenCalledWith('saved-0'));
     } finally {

@@ -256,6 +256,44 @@ describe('cancelled on close and on teardown', () => {
   });
 });
 
+describe('a poll started after a read the caller already holds', () => {
+  it('reads nothing at the start, and at the first tick only when the token moved since the one the held read was taken under', async () => {
+    const TAKEN = { dataVersion: 1, generation: 0 }; // the probe's token before anything is bumped
+    const unchanged = rig({ after: TAKEN });
+    unchanged.poll.start();
+    expect(unchanged.read, 'start reads nothing').not.toHaveBeenCalled();
+    unchanged.time.advance(ACTIVE_POLL_MS * 3);
+    expect(
+      unchanged.read,
+      'the token the held read was made under has not moved',
+    ).not.toHaveBeenCalled();
+
+    const moved = rig({ after: TAKEN });
+    moved.probe.bump(); // a commit after the held read's token was taken and before the start
+    moved.poll.start();
+    expect(moved.read).not.toHaveBeenCalled();
+    moved.time.advance(ACTIVE_POLL_MS);
+    expect(
+      moved.read,
+      'a commit between the held read and the start is read at the first tick',
+    ).toHaveBeenCalledTimes(1);
+    await moved.answer('after');
+    expect(moved.applied).toEqual(['after']);
+  });
+
+  it('still arms its one timer, and reads nothing for a closed database', () => {
+    const armed = rig({ after: { dataVersion: 1, generation: 0 } });
+    armed.poll.start();
+    expect(armed.time.pending()).toBe(1);
+
+    const closed = rig({ after: { dataVersion: 1, generation: 0 } });
+    closed.state.closed = true;
+    closed.poll.start();
+    expect(closed.token, 'a closed database is not even probed').not.toHaveBeenCalled();
+    expect(closed.time.pending(), 'and the poll stopped for good').toBe(0);
+  });
+});
+
 describe('no read after the database closes', () => {
   it('checks the closed flag before every read: a database closed between two ticks is not read, and the poll stops', async () => {
     const { poll, time, read, state, probe, answer } = rig();

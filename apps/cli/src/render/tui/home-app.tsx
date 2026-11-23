@@ -46,6 +46,7 @@ import {
   tooSmallMessage,
 } from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
+import { stripReach } from './strip-focus.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
@@ -709,14 +710,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
     const live = getSizeRef.current();
-    // `Enter` on a row `↓` just moved onto (a session to resume, a parked run to open) counts only once that very frame is on screen: a
+    // `Enter` on a row `↓` just moved onto (a session to resume, a run to open) counts only once that very frame is on screen: a
     // coalesced `↓` + `Enter` cannot act on a row the person has not seen.
-    if (
-      key.return &&
-      (current.continueSessionId !== undefined || current.parkedFocus !== undefined) &&
-      !homeFrame.visible(current)
-    )
-      return true;
+    if (key.return && current.stripFocus !== undefined && !homeFrame.visible(current)) return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
       // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
       if (
@@ -756,7 +752,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       showBanner: props.showBanner,
       isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
       hasSessions: current.snapshot.recentSessions.length > 0,
-      hasParkedRuns: current.parkedRuns.length > 0,
+      ...stripReach(current.parkedRuns, current.snapshot),
       reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
       page: same ? previous.page : 0,
     });
@@ -1027,9 +1023,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
           showBanner={props.showBanner}
           keyless={state.keyless}
-          continueSessionId={state.continueSessionId}
           parkedRuns={state.parkedRuns}
-          parkedFocus={state.parkedFocus}
+          stripFocus={state.stripFocus}
           noticePage={noticePage}
           interruptArmed={state.interruptArmed}
           hostedRun={state.hostedRun}

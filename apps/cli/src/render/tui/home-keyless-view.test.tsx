@@ -2,6 +2,7 @@ import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { HomeView } from './home-view.js';
+import type { StripFocus } from './strip-focus.js';
 
 describe('keyless Home view', () => {
   it.each([true, false])(
@@ -34,7 +35,7 @@ describe('keyless Home view', () => {
           color={false}
           keyless={keyless}
           notice={'notice '.repeat(100)}
-          continueSessionId="session-7"
+          stripFocus={{ kind: 'session', id: 'session-7' }}
         />,
       );
       const frame = view.lastFrame() ?? '';
@@ -88,7 +89,7 @@ describe('the Home hint bar', () => {
   const frameOf = (over: {
     text?: string;
     sessions?: readonly (typeof session)[];
-    continueSessionId?: string;
+    stripFocus?: StripFocus;
     interruptArmed?: boolean;
   }): string => {
     const sessions = over.sessions ?? [];
@@ -107,7 +108,7 @@ describe('the Home hint bar', () => {
         cols={120}
         rows={30}
         color={false}
-        continueSessionId={over.continueSessionId}
+        stripFocus={over.stripFocus}
         interruptArmed={over.interruptArmed}
       />,
     );
@@ -121,9 +122,9 @@ describe('the Home hint bar', () => {
   });
 
   it('names the session picker keys while a session is being continued', () => {
-    expect(frameOf({ sessions: [session], continueSessionId: 'session-1' })).toContain(
-      '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit',
-    );
+    expect(
+      frameOf({ sessions: [session], stripFocus: { kind: 'session', id: 'session-1' } }),
+    ).toContain('↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit');
   });
 
   it('says how to send once the person is composing', () => {
@@ -174,7 +175,9 @@ describe('the keyless line and the other things Enter does first', () => {
         keyless={over.keyless ?? true}
         hostedRun={over.hostedRun}
         parkedRuns={PARKED}
-        parkedFocus={over.parkedFocus}
+        stripFocus={
+          over.parkedFocus === undefined ? undefined : { kind: 'run', id: over.parkedFocus }
+        }
       />,
     );
     const frame = view.lastFrame() ?? '';
@@ -223,7 +226,7 @@ describe('the hint bar on a focused parked row', () => {
         rows={24}
         color={false}
         parkedRuns={[{ runId: 'run-0002', kind, gates: kind === 'none' ? 0 : 1 }]}
-        parkedFocus="run-0002"
+        stripFocus={{ kind: 'run', id: 'run-0002' }}
       />,
     );
     const frame = view.lastFrame() ?? '';
@@ -266,7 +269,7 @@ describe('the focused parked row at 80 columns', () => {
         rows={24}
         color={false}
         parkedRuns={[{ runId: UUID, kind, gates: kind === 'none' ? 0 : 3 }]}
-        parkedFocus={UUID}
+        stripFocus={{ kind: 'run', id: UUID }}
       />,
     );
     const frame = view.lastFrame() ?? '';

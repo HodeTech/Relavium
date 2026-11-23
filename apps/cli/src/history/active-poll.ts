@@ -47,6 +47,12 @@ export interface ActivePollDeps<T> {
   readonly onError?: ((cause: unknown) => void) | undefined;
   readonly intervalMs?: number | undefined;
   readonly maxAgeMs?: number | undefined;
+  /**
+   * For a caller that already holds what a read would give: the token as it was taken BEFORE that read. {@link ActivePoll.start} then reads
+   * nothing and records this token as the one the held read was made under, so the first tick reads when the token has moved since (a
+   * commit between the caller's read and the start is picked up there, never lost). Absent, `start` reads now.
+   */
+  readonly after?: ChangeToken | undefined;
 }
 
 export interface ActivePoll {
@@ -150,7 +156,10 @@ export function createActivePoll<T>(deps: ActivePollDeps<T>): ActivePoll {
       if (running) return;
       running = true;
       arm();
-      attempt(true);
+      const held = deps.after;
+      if (held === undefined) attempt(true);
+      else if (deps.isClosed()) cancel();
+      else applied = { token: held, at: deps.now() };
     },
     refresh: () => {
       if (running) attempt(true);

@@ -307,7 +307,7 @@ async function fixture(
   };
   const resume = async () => {
     mounted.controller.handleKey('', { downArrow: true });
-    expect(mounted.controller.getSnapshot().continueSessionId).toBeDefined();
+    expect(mounted.controller.getSnapshot().stripFocus).toBeDefined();
     mounted.controller.handleKey('', ENTER);
     return ready();
   };

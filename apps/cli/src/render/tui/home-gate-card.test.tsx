@@ -189,7 +189,7 @@ async function openCard(m: Mounted): Promise<void> {
   await settleFrames();
   m.harness.stdin.write(DOWN);
   await eventually(
-    () => m.controller.getSnapshot().parkedFocus !== undefined,
+    () => m.controller.getSnapshot().stripFocus?.id !== undefined,
     'the focus on the row',
   );
   // `Enter` on a row counts only once the frame that shows the focus is on screen: wait for that evidence, not for a count of yields.
@@ -239,9 +239,9 @@ describe('the Attention rows', () => {
     m.harness.stdin.write(DOWN);
     await eventually(() => m.frame().includes('> ‖ run-0001  ·  approval gate  ·  Enter opens'));
     expect(m.frame()).toContain('Enter open the gate');
-    expect(m.controller.getSnapshot().parkedFocus).toBe(RUN);
+    expect(m.controller.getSnapshot().stripFocus?.id).toBe(RUN);
     m.harness.stdin.write(ESC);
-    await eventually(() => m.controller.getSnapshot().parkedFocus === undefined);
+    await eventually(() => m.controller.getSnapshot().stripFocus?.id === undefined);
     await eventually(() => m.frame().includes('↓ selects'));
     expect(m.frame()).not.toContain('Enter opens');
   });
@@ -323,7 +323,7 @@ describe('the Attention rows keep a row on screen at 80×24, whatever else the H
     for (const expected of ROWS) {
       m.harness.stdin.write(DOWN);
       await eventually(
-        () => m.controller.getSnapshot().parkedFocus === expected.runId,
+        () => m.controller.getSnapshot().stripFocus?.id === expected.runId,
         `focus on ${expected.runId}`,
       );
       await eventually(
@@ -354,7 +354,7 @@ describe('opening the card', () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(`${DOWN}${ENTER}`);
-    await eventually(() => m.controller.getSnapshot().parkedFocus !== undefined, 'the focus');
+    await eventually(() => m.controller.getSnapshot().stripFocus?.id !== undefined, 'the focus');
     await settleFrames(8);
     expect(
       m.controller.getSnapshot().screen,

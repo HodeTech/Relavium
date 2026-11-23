@@ -61,6 +61,7 @@ import {
   openHistoryTab,
   unreadableHistoryTab,
   withHistoryDetail,
+  withHistoryDetailLoading,
   type HistoryMemory,
   type HistoryPort,
   type HistoryTabState,
@@ -345,6 +346,28 @@ function enterHistory(memory: TabMemory, entry: TabEntry): TabHostState {
   } catch {
     return unreadable;
   }
+}
+
+/**
+ * The History tab entered with the detail of `runId` already asked for (the strip's `Enter` on a failed or recent run, ADR-0140 §6): the
+ * list behind it is read as `enterHistory` reads it, with the cursor on that run when the page lists it, and the host loads the detail. A
+ * Home with nothing to read the history from has no detail to ask for, and the tab says it cannot be read.
+ */
+export function enterHistoryAtDetail(
+  memory: TabMemory,
+  entry: TabEntry,
+  runId: string,
+): TabHostState {
+  const host = enterHistory(
+    {
+      ...memory,
+      tab: 'history',
+      history: { scope: 'project', status: undefined, focus: `row:${runId}`, cursor: 0 },
+    },
+    entry,
+  );
+  if (entry.history === undefined || host.history === undefined) return host;
+  return { ...host, history: withHistoryDetailLoading(host.history, runId) };
 }
 
 /** The Active tab entered on the last read the host kept; a host with nothing to feed it leaves the tab saying it cannot be read. */
