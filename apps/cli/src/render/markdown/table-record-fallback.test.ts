@@ -59,6 +59,19 @@ describe('a table too wide for one line keeps its grid (ADR-0143)', () => {
     expect(texts(source, 35)).toContain('│ bbbb     │                      │');
   });
 
+  it('shares the excess in proportion to each column’s room above its floor, not first come', () => {
+    // Natural widths 31, 36 and 13 share 40 columns of excess by room above their floors (23, 28, 5): proportional
+    // shares 16, 20 and 3, then one more to the first column. First-come sharing would give 8, 19 and 13 instead.
+    const source = `| ${'aaaaaaaa bbbbbbbb cccccccc dddd'} | ${'eeeeeeee ffffffff gggggggg hhhh iiii'} | ${'jjjjjjjj kkkk'} |\n| --- | --- | --- |\n| x | y | z |`;
+    expect(gridWidths(texts(source, 50))).toEqual([14, 16, 10]);
+  });
+
+  it('draws the grid exactly at its floors, and records one column narrower', () => {
+    // The floors of the sample are 24 and 8: 32 columns of content, so the grid needs a width of 39.
+    expect(texts(WIDE, 39)[0]?.startsWith('┌')).toBe(true);
+    expect(texts(WIDE, 38)[0]).toBe('table shown as records: its grid does ');
+  });
+
   it('keeps every header and every cell, wrapped and never cropped', () => {
     const columns = columnTexts(texts(WIDE, 40));
     expect(columns[0]).toContain(LONG);
@@ -84,12 +97,73 @@ describe('a table too wide for one line keeps its grid (ADR-0143)', () => {
     expect(body.some((line) => line.spans.some((s) => s.strong && s.text === 'Claim'))).toBe(true);
   });
 
-  it('aligns every wrapped line of a right aligned column', () => {
-    const source = '| a | b |\n| ---: | --- |\n| one two three four | x |';
-    const lines = texts(source, 16).filter((line) => line.startsWith('│'));
-    // Every content line closes its first column at the same position, so the right edge holds.
-    const firstBorders = lines.map((line) => line.indexOf('│', 1));
-    expect(new Set(firstBorders).size).toBe(1);
+  it('right aligns every wrapped line to the same edge', () => {
+    // The break space must not count as content: each wrapped line of the right column ends one space before its border.
+    expect(texts('| a | b |\n| ---: | --- |\n| one two three four | x |', 16)).toEqual([
+      '┌──────────┬───┐',
+      '│        a │ b │',
+      '├──────────┼───┤',
+      '│  one two │ x │',
+      '│    three │   │',
+      '│     four │   │',
+      '└──────────┴───┘',
+    ]);
+  });
+
+  it('centres every wrapped line, with the extra space on the right', () => {
+    expect(
+      texts(
+        '| Description | n |\n| :---: | --- |\n| the quick brown fox jumps over the lazy dog | 1 |',
+        24,
+      ),
+    ).toEqual([
+      '┌──────────────────┬───┐',
+      '│   Description    │ n │',
+      '├──────────────────┼───┤',
+      '│ the quick brown  │ 1 │',
+      '│  fox jumps over  │   │',
+      '│   the lazy dog   │   │',
+      '└──────────────────┴───┘',
+    ]);
+  });
+
+  it('keeps a run of spaces inside a cell from making a blank grid row', () => {
+    const lines = texts(`| x${' '.repeat(200)}y | z |\n| --- | --- |\n| a | b |`, 40);
+    const firstColumns = lines
+      .filter((line) => line.startsWith('│'))
+      .map((line) => line.split('│')[1]?.trim());
+    expect(firstColumns).toEqual(['x', 'y', 'a']);
+  });
+
+  it('keeps a grapheme wider than its column whole, and never writes a question mark for it', () => {
+    // Halfwidth katakana with combining voiced marks: one grapheme, 30 columns wide, taller than any floor.
+    const wideGrapheme = `ｶ${'ﾞ'.repeat(29)}`;
+    const lines = texts(`| h | b |\n| --- | --- |\n| ${wideGrapheme} | word word word |`, 40);
+    expect(lines.join('\n')).toContain(wideGrapheme);
+    expect(lines.join('')).not.toContain('?');
+  });
+
+  it('keeps a character wider than a record value line, as literal source, and never writes a question mark', () => {
+    const lines = texts('| a | b |\n| --- | --- |\n| 漢 | 字 |', 3);
+    expect(lines.join('')).not.toContain('?');
+    expect(lines.join('')).toContain('漢');
+  });
+
+  it('does not expand a small table into a large transcript when its records would repeat a long header', () => {
+    // Records repeat every header for every body row. Here they would be far larger than the source, so the table
+    // stays literal and its output stays within a small multiple of its source.
+    const header = Array.from({ length: 400 }, () => 'abcdefgh').join(' ');
+    const source = `| ${header} | y |\n| --- | --- |\n${Array.from({ length: 127 }, () => '| x | y |').join('\n')}`;
+    const lines = texts(source, 12);
+    expect(lines.some((line) => line.includes('table shown as records'))).toBe(false);
+    expect(lines.join('\n').length).toBeLessThan(4 * source.length);
+  });
+
+  it('keeps every record value on its two-space indent, with no stray leading space', () => {
+    const lines = texts('| Claim | Evidence |\n| --- | --- |\n| aaaaaaaa bbbb text here | ok |', 8);
+    const values = lines.filter((line) => line.startsWith(' '));
+    expect(values.length).toBeGreaterThan(0);
+    expect(values.every((line) => /^ {2}\S/u.test(line))).toBe(true);
   });
 
   it('rules body rows apart only when some cell wraps', () => {
@@ -154,6 +228,17 @@ describe('records are the fallback when even the floors do not fit', () => {
         );
       }
     }
+  });
+
+  it('pairs each label with its own value, and draws labels bold and the notice dim', () => {
+    const lines = texts(WIDE, 16);
+    expect(lines[lines.indexOf('Claim') + 1]?.trimStart().startsWith('aaaaaaaa')).toBe(true);
+    expect(lines[lines.indexOf('Evidence') + 1]?.trimStart().startsWith('src/x.ts')).toBe(true);
+    const body = rows(WIDE, 16);
+    const claim = body.find((line) => line.text === 'Claim');
+    expect(claim?.spans.every((span) => span.strong === true)).toBe(true);
+    const notice = body.find((line) => line.text.startsWith('table shown'));
+    expect(notice?.spans.every((span) => span.dim === true)).toBe(true);
   });
 
   it('stays literal when only a header is too wide, because there is no record to draw', () => {

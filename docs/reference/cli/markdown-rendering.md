@@ -174,7 +174,7 @@ table render as records:
 color enabled it is word-wrapped to the width like prose, so it is not a
 verbatim, column-preserving copy. It applies to a table over a fixed limit, a
 table with a hard break inside a cell, a header-only table, and a width with no
-room for the grid frame or the record indent. A table kept literal starts each
+too narrow for any record value (two columns or fewer). A table kept literal starts each
 wrapped line at its text, not at the space that broke the line, because a
 table's spacing is not prose. With color disabled, every table keeps the
 color-off path of [Scope and source](#scope-and-source): records would drop the

@@ -264,13 +264,42 @@ function longestCellWord(spans: readonly MarkdownSpan[]): number {
   return longest;
 }
 
+/**
+ * Removes the spaces a wrap leaves at the end of a line: the space it broke at stays on the previous line, and counting
+ * it would pull a right-aligned or centred cell one column off. A plain loop, so a long run of spaces stays linear.
+ */
+function stripTrailingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
+  const result = [...spans];
+  while (result.length > 0) {
+    const last = result[result.length - 1];
+    if (last === undefined) break;
+    let end = last.text.length;
+    while (end > 0 && /\s/u.test(last.text.charAt(end - 1))) end--;
+    if (end === last.text.length) break;
+    if (end > 0) {
+      result[result.length - 1] = { ...last, text: last.text.slice(0, end) };
+      break;
+    }
+    result.pop();
+  }
+  return result;
+}
+
+/** The width of the widest grapheme cluster in a cell: a column can never be narrower than one cluster. */
+function widestGrapheme(spans: readonly MarkdownSpan[]): number {
+  let widest = 0;
+  for (const { segment } of segmenter.segment(cellText(spans)))
+    widest = Math.max(widest, displayWidth(segment));
+  return widest;
+}
+
 /** Removes the spaces a wrap leaves at the start of a continuation line; cell text is never indented. */
 function stripLeadingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
   const result = [...spans];
   while (result.length > 0) {
     const first = result[0];
     if (first === undefined) break;
-    const rest = first.text.replace(/^ +/u, '');
+    const rest = first.text.replace(/^\s+/u, '');
     if (rest.length === first.text.length) break;
     if (rest.length > 0) {
       result[0] = { ...first, text: rest };
@@ -286,14 +315,12 @@ function stripLeadingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
  * its tallest cell. The columns give up the excess in proportion to how far each sits above its floor, so no column
  * drops below its floor and no text is cropped or lost. Alignment applies to every wrapped line. Returns `undefined`
  * when the floors do not fit, which hands the table to records. A header-only table, a hard break in a cell, and a
- * width with no room for the frame stay literal, as before.
+ * width too narrow for any record value stay literal, as before.
  */
 function wrappedGrid(block: MarkdownBlock, columns: number): MarkdownDisplayLine[] | undefined {
   const rows = block.rows ?? [];
   if (rows.length < 2) return undefined;
   const cells = rows.map((row) => row.map((cell) => expandCell(parseInline(cell), 0)));
-  if (cells.some((row) => row.some((cell) => cell.some((span) => span.text.includes('\n')))))
-    return undefined;
   const count = cells[0]?.length ?? 0;
   const budget = columns - (1 + 3 * count);
   if (count === 0 || budget < count) return undefined;
@@ -306,13 +333,16 @@ function wrappedGrid(block: MarkdownBlock, columns: number): MarkdownDisplayLine
   for (let column = 0; column < count; column++) {
     let width = 1;
     let word = 0;
+    let grapheme = 0;
     for (const row of padded) {
       const cell = row[column] ?? [];
       width = Math.max(width, displayWidth(cellText(cell)));
       word = Math.max(word, longestCellWord(cell));
+      grapheme = Math.max(grapheme, widestGrapheme(cell));
     }
     natural.push(width);
-    floors.push(Math.min(width, Math.max(CELL_FLOOR, Math.min(word, CELL_WORD_CAP))));
+    // A grapheme wider than the word cap still needs its whole column, or wrap would replace it with '?'.
+    floors.push(Math.min(width, Math.max(CELL_FLOOR, Math.min(word, CELL_WORD_CAP), grapheme)));
   }
   const floorSum = floors.reduce((sum, floor) => sum + floor, 0);
   if (floorSum > budget) return undefined;
@@ -339,9 +369,15 @@ function wrappedGrid(block: MarkdownBlock, columns: number): MarkdownDisplayLine
   const wrapped = padded.map((row) =>
     row.map((cell, column) => {
       if (isBlankCell(cell)) return [[] as MarkdownSpan[]];
-      return wrap(cell, widths[column] ?? 1).map((wrappedLine) =>
-        stripLeadingSpace(wrappedLine.spans),
-      );
+      // A run of spaces inside a cell wraps into lines with no text; those are dropped, so the row stays compact.
+      // Only a continuation loses its leading space: on the first line a leading space can be code-span content.
+      return wrap(cell, widths[column] ?? 1)
+        .map((wrappedLine, index) =>
+          stripTrailingSpace(
+            index === 0 ? wrappedLine.spans : stripLeadingSpace(wrappedLine.spans),
+          ),
+        )
+        .filter((spans, index) => index === 0 || cellText(spans).trim() !== '');
     }),
   );
   const multiLine = wrapped.some((row) => row.some((lines) => lines.length > 1));
@@ -390,24 +426,42 @@ function records(block: MarkdownBlock, columns: number): MarkdownDisplayLine[] |
   const rows = block.rows ?? [];
   if (rows.length < 2 || columns <= displayWidth(RECORD_INDENT)) return undefined;
   const cells = rows.map((row) => row.map((cell) => parseInline(cell)));
-  if (cells.some((row) => row.some((cell) => cell.some((span) => span.text.includes('\n')))))
-    return undefined;
   const [headers = [], ...body] = cells;
   const labels = headers.map((header, column) =>
     isBlankCell(header)
       ? [{ text: `column ${column + 1}`, dim: true }]
       : header.map((span) => ({ ...span, strong: true })),
   );
+  // Every record repeats every label, so the output grows as labels times body rows. Past four times the source's size
+  // the records would turn a small table into a large transcript, so the table stays literal instead (ADR-0143).
+  const labelCharacters = labels.reduce((sum, label) => sum + cellText(label).length, 0);
+  if (labelCharacters * body.length > 4 * Math.max(1, block.source.length)) return undefined;
+  // A grapheme wider than its line would be replaced with '?', so such a table stays literal and keeps every character.
+  const widestLabel = Math.max(0, ...labels.map((label) => widestGrapheme(label)));
+  const widestValue = Math.max(0, ...body.flat().map((cell) => widestGrapheme(cell)));
+  if (widestLabel > columns || widestValue > columns - displayWidth(RECORD_INDENT))
+    return undefined;
   const result = wrap(
     [{ text: 'table shown as records: its grid does not fit this width', dim: true }],
     columns,
+    '',
+    '',
+    0,
+    true,
   );
   for (const row of body) {
     result.push(line([]));
     row.forEach((cell, column) => {
-      result.push(...wrap(labels[column] ?? [], columns));
+      result.push(...wrap(labels[column] ?? [], columns, '', '', 0, true));
       result.push(
-        ...wrap(isBlankCell(cell) ? [EMPTY_CELL] : cell, columns, RECORD_INDENT, RECORD_INDENT),
+        ...wrap(
+          isBlankCell(cell) ? [EMPTY_CELL] : cell,
+          columns,
+          RECORD_INDENT,
+          RECORD_INDENT,
+          0,
+          true,
+        ),
       );
     });
   }

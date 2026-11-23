@@ -2,7 +2,7 @@
 
 - **Status**: Superseded by [ADR-0143](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md) — 2026-11-23, before acceptance. The maintainer asked for tables to stay tables, so records are no longer the default. They remain the fallback below the floors, as ADR-0143 describes. The text below is the reasoning as it stood before that change. Acceptance tier: D64 "other UX and rendering" (per milestone review), with the rendering tests and the reference update as the evidence.
 - **Date**: 2026-11-23
-- **Amends**: [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md) §Tables, in place (dated note at the top of that ADR).
+- **Amends**: nothing in the end. The note this ADR once planned for [ADR-0114](0114-in-house-markdown-rendering-for-the-chat-transcript.md) §Tables now points at [ADR-0143](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md), which supersedes this record.
 - **Related**: [markdown-rendering.md](../reference/cli/markdown-rendering.md) (the canonical contract), [accessibility.md](../reference/cli/accessibility.md) ("color is never required for meaning"), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md), [ADR-0069](0069-string-width-for-the-cli-renderer.md).
 
 ## Context

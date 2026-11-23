@@ -3515,7 +3515,8 @@ export class MarkdownStream {
         cutOffset >= this.sourceLength - this.lineLength
       )
         blocks.push(literal(pending));
-      else if (this.pendingTable) blocks.push(literal(pending));
+      // A pending table is table source, so its wrapped lines start at their text, as the finished table's do (ADR-0143).
+      else if (this.pendingTable) blocks.push({ ...literal(pending), tableSource: true });
       else if (pendingFence) {
         const cut = this.pendingSize > LIVE_SOURCE_LIMIT;
         const opening = pendingFence;
