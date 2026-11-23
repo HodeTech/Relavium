@@ -611,9 +611,9 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeWorkflow('none-moved.relavium.yaml', NO_INPUTS);
     const r = rig();
     const notice = await r.launch.open('no-inputs', listed);
-    expect(notice).toBe(launchMoved('no-inputs', listed, now));
+    expect(notice).toBe(launchMoved('no-inputs', now));
     expect(notice).toMatch(
-      /^Not started\. Open the list again: no-inputs is now in none-moved, not none\.$/u,
+      /^Not started\. Open the list again: no-inputs is now in none-moved\.relavium\.yaml\.$/u,
     );
     expect(r.snapshots, 'no prompt was ever published').toEqual([]);
     expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
@@ -630,11 +630,7 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     const r = rig();
     const notice = await r.launch.open('no-inputs', listed);
     expect(notice).toBe(
-      launchMoved(
-        'no-inputs',
-        listed,
-        join('.relavium', 'workflows', 'took-the-slug.relavium.yaml'),
-      ),
+      launchMoved('no-inputs', join('.relavium', 'workflows', 'took-the-slug.relavium.yaml')),
     );
     expect(r.snapshots).toEqual([]);
     expect(r.startCalls).toHaveLength(0);
@@ -645,7 +641,7 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     writeFileSync(join(root, 'x.relavium.yaml'), NO_INPUTS.replace('id: no-inputs', 'id: x'));
     const r = rig();
     const notice = await r.launch.open('no-inputs', '../../x.relavium.yaml');
-    expect(notice).toBe(launchMoved('no-inputs', '../../x.relavium.yaml', listed));
+    expect(notice).toBe(launchMoved('no-inputs', listed));
     expect(r.snapshots).toEqual([]);
     expect(r.startCalls).toHaveLength(0);
   });
@@ -712,15 +708,16 @@ describe('two files that declare one workflow id', () => {
     expect(r.startCalls).toHaveLength(0);
   });
 
-  it('a file that moved to a name with the same stem is named with its suffix, both ways round', () => {
+  it('a file that moved to a name with the same stem is named with its suffix, so the sentence says which file', () => {
     const listed = join('.relavium', 'workflows', 'deploy.yaml');
     const now = join('.relavium', 'workflows', 'deploy.relavium.yaml');
-    expect(launchMoved('nightly', listed, now)).toBe(
-      'Not started. Open the list again: nightly is now in deploy.relavium.yaml, not deploy.yaml.',
+    expect(launchMoved('nightly', now)).toBe(
+      'Not started. Open the list again: nightly is now in deploy.relavium.yaml.',
     );
-    expect(launchMoved('nightly', now, listed)).toBe(
-      'Not started. Open the list again: nightly is now in deploy.yaml, not deploy.relavium.yaml.',
+    expect(launchMoved('nightly', listed)).toBe(
+      'Not started. Open the list again: nightly is now in deploy.yaml.',
     );
+    expect(launchMoved('nightly', now).length, 'the row shows all of it').toBeLessThanOrEqual(78);
   });
 
   it('make `r` on that id refuse with both file names named, in 78 columns, and begin no flow; another id still starts', async () => {

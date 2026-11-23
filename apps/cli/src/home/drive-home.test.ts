@@ -1834,7 +1834,7 @@ workflow:
       props.controller.handleKey('', { downArrow: true }); // `alpha`
       props.controller.handleKey('r', {});
       await vi.waitFor(
-        () => expect(definedOf(props)?.message).toMatch(/is now in alpha-moved, not alpha\./u),
+        () => expect(definedOf(props)?.message).toMatch(/is now in alpha-moved\.relavium\.yaml\./u),
         {
           timeout: WAIT_MS,
         },

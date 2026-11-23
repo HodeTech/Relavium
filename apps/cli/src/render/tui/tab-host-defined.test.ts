@@ -278,8 +278,8 @@ describe('a refused launch names its files on the message row at 80 columns, how
   it.each([
     [
       'a file that moved',
-      launchMoved('nightly', first, second),
-      'Not started. Open the list again: nightly is now in second, not first.',
+      launchMoved('nightly', second),
+      'Not started. Open the list again: nightly is now in second.relavium.yaml.',
     ],
     [
       'two files with one id',

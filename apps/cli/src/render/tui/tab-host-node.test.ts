@@ -357,6 +357,7 @@ describe('what the node page shows', () => {
     // The node page has no `p`: p answers nothing (no pin message), and the footer it leaves, which is the hint once no message is set, says so.
     r.press('p');
     expect(r.node()?.message, 'p answers nothing on the node page').toBeUndefined();
+    expect(store.listPins({ kind: 'run' }), 'and pins nothing').toEqual([]);
     expect(r.text()).toContain('No run is changed here.');
     r.press('', ESC);
     expect(r.node()).toBeUndefined();

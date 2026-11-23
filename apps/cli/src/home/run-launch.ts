@@ -150,17 +150,17 @@ function fileNames(first: string, second: string): readonly [string, string] {
 /**
  * What `open(slug, path)` says when the file that holds `slug` now is not the one the list showed: a file that changed its id since the list
  * was read, or a second file that took the slug, would otherwise be confirmed and run under a file the person never saw. No flow is begun.
- * The remedy comes first, then the two file names.
+ * The remedy comes first, then the file that holds the slug now, by its full file name. The listed file is not named: the list reads again,
+ * and naming it as well made the sentence longer than the 78-column row when the two names keep their suffixes.
  */
-export function launchMoved(slug: string, listed: string, now: string): string {
-  const [nowName, listedName] = fileNames(now, listed);
-  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is now in ${bounded(nowName, REASON_LIMIT)}, not ${bounded(listedName, REASON_LIMIT)}.`;
+export function launchMoved(slug: string, now: string): string {
+  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is now in ${bounded(basename(now), REASON_LIMIT)}.`;
 }
 
 /**
  * What `open(slug)` says when two valid files of the project declare that workflow id: no flow is begun, because which of the two a
  * `slug` means is not for this flow to guess (the export refuses a clash the same way). The remedy comes first, then the two file names
- * (the catalog's own paths are not shown; see {@link fileName}).
+ * (the catalog's own paths are not shown; see {@link fileNames}).
  */
 export function launchAmbiguous(slug: string, first: string, second: string): string {
   const [firstName, secondName] = fileNames(first, second);
@@ -628,7 +628,7 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
       const [first, second] = choices.filter((choice) => choice.slug === slug);
       if (first === undefined) return launchNotOffered(slug);
       if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
-      if (path !== undefined && first.path !== path) return launchMoved(slug, path, first.path);
+      if (path !== undefined && first.path !== path) return launchMoved(slug, first.path);
     }
 
     const signal = flow.begin();
