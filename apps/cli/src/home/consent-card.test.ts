@@ -161,6 +161,39 @@ describe('askConsent returns a decision and nothing else', () => {
   });
 });
 
+describe('a card closes with the work it asks about', () => {
+  it('a signal that aborts while the card is open closes it, settles it as a refusal and leaves the flow open', async () => {
+    const channel = createNativePromptChannel();
+    channel.flow.begin();
+    const stop = new AbortController();
+    const asked = askConsent(channel.flow, subject(), { signal: stop.signal });
+    expect(channel.ui.getSnapshot().kind).toBe('chord');
+    stop.abort();
+    expect(await asked).toBe('refuse');
+    expect(channel.ui.getSnapshot().kind, 'the card is gone').toBe('busy');
+    expect(channel.ui.getSnapshot().active, 'the flow is the caller`s to end').toBe(true);
+    await channel.flow.end();
+  });
+
+  it('a signal that aborts after the card was answered changes nothing, and leaves no listener behind', async () => {
+    const channel = createNativePromptChannel({ now: () => 10_000 });
+    channel.ui.bindVisibility((snapshot) => snapshot === channel.ui.getSnapshot());
+    channel.flow.begin();
+    const stop = new AbortController();
+    const asked = askConsent(channel.flow, subject(), { signal: stop.signal });
+    channel.ui.shown(channel.ui.getSnapshot());
+    channel.ui.input('n', ctrl);
+    expect(await asked).toBe('refuse');
+    // A second card is open now: the first one's abort must not close it.
+    const second = askConsent(channel.flow, subject());
+    stop.abort();
+    expect(channel.ui.getSnapshot().kind, 'the next card is untouched').toBe('chord');
+    channel.flow.cancel();
+    expect(await second).toBe('refuse');
+    await channel.flow.end();
+  });
+});
+
 /** The real gate and the real connect path over a native chord card, with a counter where a server would be started. */
 function harness() {
   let now = 0;

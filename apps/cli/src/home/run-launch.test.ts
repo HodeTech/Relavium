@@ -284,24 +284,61 @@ const keys = (r: Pick<Rig, 'channel'>) => ({
   ctrlN: (): boolean => r.channel.ui.input('n', { ...none, ctrl: true }),
 });
 
+/**
+ * The most a wait may take, and how often a wait on a host that publishes no event looks. A wait on the prompt channel does not poll at
+ * all: it listens to the channel, so what it waits for is the event itself and the bound is only the failure message's.
+ */
+const WAIT = { timeout: 5_000, interval: 5 } as const;
+
+/**
+ * Wait until the prompt channel shows a snapshot that satisfies `holds`, by listening to the channel, and FAIL with what it last showed
+ * when it does not within the bound. Returns that snapshot.
+ */
+function untilPrompt(
+  r: Pick<Rig, 'channel'>,
+  holds: (snapshot: NativePromptSnapshot) => boolean,
+  what: string,
+): Promise<NativePromptSnapshot> {
+  return new Promise((resolve, reject) => {
+    let unsubscribe: () => void = () => undefined;
+    const timer = setTimeout(() => {
+      unsubscribe();
+      const last = r.channel.ui.getSnapshot();
+      reject(
+        new Error(
+          `${what} was not shown within ${String(WAIT.timeout)} ms; the prompt shows kind=${last.kind} message=${JSON.stringify(last.message)}`,
+        ),
+      );
+    }, WAIT.timeout);
+    const check = (): void => {
+      const snapshot = r.channel.ui.getSnapshot();
+      if (!holds(snapshot)) return;
+      unsubscribe();
+      clearTimeout(timer);
+      resolve(snapshot);
+    };
+    unsubscribe = r.channel.ui.subscribe(check);
+    check(); // it may already be there
+  });
+}
+
 /** Wait until the open prompt is of `kind` and its message contains `text`; returns that snapshot. */
-async function shows(
+function shows(
   r: Pick<Rig, 'channel'>,
   kind: NativePromptSnapshot['kind'],
   text: string,
 ): Promise<NativePromptSnapshot> {
-  await vi.waitFor(() => {
-    const snapshot = r.channel.ui.getSnapshot();
-    expect(snapshot.kind).toBe(kind);
-    expect(snapshot.message).toContain(text);
-  });
-  return r.channel.ui.getSnapshot();
+  return untilPrompt(
+    r,
+    (snapshot) => snapshot.kind === kind && snapshot.message.includes(text),
+    `a ${kind} prompt saying ${JSON.stringify(text)}`,
+  );
 }
 
 const idle = (r: Rig): Promise<void> =>
   vi.waitFor(() => {
     expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
-  });
+  }, WAIT);
 
 function runCount(): number {
   const row = client.sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get();
@@ -502,7 +539,11 @@ describe('the form validates with the workflow`s own validator', () => {
     await shows(r, 'text', 'Input 1 of 1: n (number, required)');
     k.type('abc');
     k.enter();
-    await vi.waitFor(() => expect(r.channel.ui.getSnapshot().error).toContain('decimal number'));
+    await untilPrompt(
+      r,
+      (snapshot) => snapshot.error.includes('decimal number'),
+      'the number field`s refusal',
+    );
     expect(r.channel.ui.getSnapshot().kind, 'still at the field').toBe('text');
     for (let i = 0; i < 3; i += 1) k.backspace();
     k.type('7');
@@ -626,7 +667,7 @@ describe('a masked value stays out of everything', () => {
     expect(card.options[card.selected]?.label).toBe('No');
     k.enter();
 
-    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false));
+    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), WAIT);
     expect(controller.getSnapshot().notice).toMatch(/^Started host-secret as run /);
     await idle(r);
     // The run got the secret: it completed. (Blank or missing, the run core would have refused it.)
@@ -711,12 +752,22 @@ describe('a masked value stays out of everything', () => {
     k.enter();
     await shows(r, 'password', 'Input 2 of 2: token');
     k.type(SECRET);
+    // The channel's masked buffer holds the value: one bullet per character is what shows of it.
+    expect(r.channel.ui.getSnapshot().display).toBe('•'.repeat(SECRET.length));
     k.ctrlC();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(r.builds).not.toHaveBeenCalled();
     expect(JSON.stringify(r.states) + r.snapshots.join('')).not.toContain(SECRET);
-    expect(r.channel.ui.getSnapshot().active).toBe(false);
+    // Not only free of the value: the buffer that held it is empty, and nothing is left to take it.
+    const after = r.channel.ui.getSnapshot();
+    expect(after.display, 'the masked buffer is empty').toBe('');
+    expect(after.kind).not.toBe('password');
+    expect(after.active).toBe(false);
+    expect(r.channel.ui.input('', { ...none, return: true }), 'nothing is open to submit it').toBe(
+      false,
+    );
+    expect(r.startCalls, 'and nothing started').toHaveLength(0);
   });
 });
 

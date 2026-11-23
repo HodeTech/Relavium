@@ -16,7 +16,8 @@ import { readPerRunOrDegrade } from '../history/per-run-read.js';
  *   actionable only in its own workspace, ADR-0139 §7).
  * - **Chunks of at most {@link RUN_GATES_CHUNK} runs.** The reader pages by keyset, one page of that many ids at a time (the largest
  *   page the summary read accepts, and the largest id list `loadRunLeases` takes), and stops at {@link RUN_GATES_MAX_RUNS}: a project
- *   that parks without ever answering costs one bounded read per call, never an unbounded one.
+ *   that parks without ever answering costs one bounded read per call, never an unbounded one. A caller that keeps fewer (`maxRuns`) asks
+ *   for `maxRuns + 1` rows at most: one more than it keeps is enough to say the project parks more.
  * - **Per-run isolation.** Each run's log is read inside `readPerRunOrDegrade`: one damaged log degrades that run (it is named in
  *   `degradedRunIds` and carries no gate), and the others are read. Any other fault is not a per-run condition and propagates.
  * - **Text is the card's to clean.** `message` is the workflow author's text (it can interpolate model output) and is returned as
@@ -172,9 +173,11 @@ export function readProjectRunGates(
   const degradedRunIds: string[] = [];
   let before: { readonly createdAt: number; readonly id: string } | undefined;
   let truncated = false;
+  // One row more than the call may keep is enough to know it was truncated: a Home that shows eight parked runs reads nine summaries, not a chunk.
+  const limit = Math.min(RUN_GATES_CHUNK, maxRuns + 1);
   for (;;) {
     const page = reader.listRunSummaries({
-      limit: RUN_GATES_CHUNK,
+      limit,
       status: 'paused',
       projectRoot,
       ...(before === undefined ? {} : { before }),
@@ -190,7 +193,7 @@ export function readProjectRunGates(
       if (read.degraded) degradedRunIds.push(run.id);
     }
     const last = page.at(-1);
-    if (truncated || page.length < RUN_GATES_CHUNK || last === undefined) break;
+    if (truncated || page.length < limit || last === undefined) break;
     before = { createdAt: Date.parse(last.createdAt), id: last.id };
   }
   return { runs, degradedRunIds, truncated };

@@ -89,6 +89,12 @@ export interface PrepareRunRequest {
 export interface PrepareRunDeps {
   readonly io: CliIo;
   readonly global: Pick<GlobalOptions, 'cwd' | 'configPath'>;
+  /**
+   * The operator home the configuration is loaded from (`~/.relavium` lives under it). Absent, the OS home: that is what the shell uses.
+   * A host that was handed one (the Home's tests) forwards it, so a start reads the same home a resume does and no test needs a module
+   * mock to keep a start off the real one.
+   */
+  readonly home?: string | undefined;
   readonly buildEngine?: (options?: BuildEngineOptions) => Promise<WorkflowEngine>;
   readonly providers?: ProviderResolver;
   /** Construct key/provider services only after complete pure input admission. */
@@ -164,6 +170,7 @@ export async function prepareRun(
   const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
+    ...(deps.home === undefined ? {} : { home: deps.home }),
   });
 
   const source = resolveWorkflowSource(request.workflow, {

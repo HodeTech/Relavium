@@ -89,6 +89,7 @@ import {
   createNativePromptChannel,
   NativePromptVisibilityRefusedError,
 } from '../render/tui/native-prompt-channel.js';
+import { createChordHistory } from '../render/tui/chord-guard.js';
 import { createProviderSetupCoordinator, sampleProviderSetup } from './provider-setup.js';
 import type { OnboardingDefaultResult } from '../onboarding/wizard.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -297,7 +298,10 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
   const startingModes = createStartingModeRuntime(initialConfig, true);
   const configReadObserver = startingModeConfigObserver(startingModes.authority);
   const fsPolicy = admitChatFsPolicy(grants, deps.global.cwd, config.chat.extraRoots);
-  const nativePrompt = createNativePromptChannel();
+  // One chord history for every card the Home shows (ADR-0139 §4): the MCP consent card (this channel), the gate and budget cards and the
+  // exit guard (the controller). What one answered, the next is locked against, so a key held through an answer cannot answer the next card.
+  const chordHistory = createChordHistory();
+  const nativePrompt = createNativePromptChannel({ history: chordHistory });
   let lastSavedSessionId: string | undefined;
   let finalSetupNote: string | undefined;
   const promptFlow = {
@@ -1861,6 +1865,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
+        chordHistory,
         launchRun: () => runLaunch.open(),
         // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
         // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
@@ -2182,7 +2187,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // joined BEFORE the shared db closes, as in the owned path.
       await runHost?.close().catch(() => undefined);
       if (unmounted && pasteDisabled && mouseDisabled) await flushEffectAttention();
-      closeDb(); // always close the shared db
+      // Always close the shared db, except under a leg `close` gave up on: it may still be writing to it, so the handle is left to the
+      // process's exit, which the leg's armed finite-exit bound brings (ADR-0139 §6).
+      if (runHost?.abandoned !== true) closeDb();
     }
     nativePrompt.ui.dispose();
     ownership?.surface.work.signal.removeEventListener('abort', stopProviderSetup);
@@ -2194,6 +2201,24 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       else {
         ownership.surface.work.assertAdmitting();
         await deps.io.writeOutAcknowledged(resumeHint(lastSavedSessionId));
+      }
+    }
+    // What the Home owes the person about a hosted run, once the screen is restored (ADR-0139 §6): one plain line for the leg that ended
+    // with a safety fact (it also set the exit code) and one for a leg it had to abandon, each naming the run and the shell remedy.
+    for (const fact of runHost?.exitFacts() ?? []) {
+      const line = `${fact.line}\n`;
+      if (ownership === undefined) deps.io.writeOut(line);
+      else if (ownership.surface.invocation.registry.termination === undefined) {
+        ownership.surface.work.assertAdmitting();
+        await deps.io.writeOutAcknowledged(line);
+      } else {
+        // An abandoned leg armed the finite-exit bound, so the process is ending: the acknowledged channel is closed to new work, and
+        // a plain best-effort write is all that is left to say it with.
+        try {
+          deps.io.writeErr(line);
+        } catch {
+          // the line is advice; the exit code carries the fact
+        }
       }
     }
   }

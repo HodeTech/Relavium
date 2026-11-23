@@ -69,7 +69,7 @@ export type HostedRefusal =
   | 'busy'
   /** The Home is closing. */
   | 'closing'
-  /** The run belongs to another directory ([ADR-0139] §7). */
+  /** The run belongs to another directory, or was recorded with none ([ADR-0139] §7). */
   | 'other_project'
   /** The leg was stopped before it started. */
   | 'stopped'
@@ -102,6 +102,18 @@ export interface HostedLegEnd {
   readonly retirement: HostedLegRetirement;
   /** The sanitized message of a fault that ended the leg abnormally, else `undefined`. */
   readonly fault: string | undefined;
+}
+
+/**
+ * What the Home owes the person once the screen is restored: the leg that ended with a workflow safety fact (money not confirmed 8, an
+ * effect needing attention 7, a held terminal 5, taken over elsewhere 6), or the one it had to abandon. One run, one line, and only
+ * fixed vocabulary plus the sanitized run id.
+ */
+export interface HostedExitFact {
+  readonly kind: 'safety' | 'abandoned';
+  readonly runId: string;
+  /** The sentence the Home prints: what happened, and the shell remedy. */
+  readonly line: string;
 }
 
 export interface RunHostSnapshot {
@@ -146,6 +158,13 @@ export interface RunHostOptions {
   readonly sweepMedia?: typeof sweepHostMediaBestEffort | undefined;
   /** Test seam: the one place a leg's resources are made. */
   readonly createResources?: ((lifetime: RunLifetime, io: CliIo) => RunResources) | undefined;
+  /** How much longer `close` waits for a stopped leg (default {@link HOSTED_LEG_SETTLE_BOUND_MS}). */
+  readonly settleBoundMs?: number | undefined;
+  /**
+   * The timer behind that bound: call `callback` once after `delayMs` and return the function that cancels it. Default is a referenced
+   * `setTimeout` (the bound must hold even when nothing else keeps the process alive); a test injects its own clock so nothing sleeps.
+   */
+  readonly schedule?: ((callback: () => void, delayMs: number) => () => void) | undefined;
 }
 
 /** The services both cores read, with an absent one left out (the shell's own `exactOptionalPropertyTypes` shape). */
@@ -182,6 +201,15 @@ interface ActiveLeg {
 const NOOP_RENDERER: RunRenderer = { onEvent: () => undefined };
 
 /**
+ * How much longer {@link RunHost.close} waits for a leg to settle, once it was asked to stop
+ * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The Home's own wait for a confirmed exit
+ * is the engine's grace window (ten seconds), and the host's `close` runs after it; a leg whose work ignores the cancel would otherwise
+ * keep `close` (and with it the Home) waiting for ever. Past this bound the leg is ABANDONED: its owner stays registered, the invocation's
+ * finite-exit bound is armed so the process ends, and the shared database is not closed under a leg that may still write to it.
+ */
+export const HOSTED_LEG_SETTLE_BOUND_MS = 3000;
+
+/**
  * The Home has no terminal for a run to take: its run view is a screen of the Home's own tree, painted from the
  * events the one reader folds. This is the view a leg's `RunLifetime` is given: every member runs inline and
  * acquires nothing, and `seal()` is the Home closing.
@@ -208,6 +236,22 @@ class HostedRunView implements RunTerminalView {
   }
   runViewOperation<T>(factory: () => T | Promise<T>): Promise<T> {
     return Promise.resolve().then(factory);
+  }
+}
+
+/** The registry's order of the workflow safety facts (its sticky priority: 8, then 7, 5, 6); no fact ranks below every one. */
+function safetyRank(safety: HostedRunTerminal['safety']): number {
+  switch (safety) {
+    case 8:
+      return 4;
+    case 7:
+      return 3;
+    case 5:
+      return 2;
+    case 6:
+      return 1;
+    default:
+      return 0;
   }
 }
 
@@ -317,9 +361,15 @@ export class RunHost {
   readonly #sweepMedia: typeof sweepHostMediaBestEffort;
   readonly #createResources: (lifetime: RunLifetime, io: CliIo) => RunResources;
   readonly #view = new HostedRunView();
+  readonly #settleBoundMs: number;
+  readonly #schedule: (callback: () => void, delayMs: number) => () => void;
   #launching: { readonly kind: LegKind; readonly promise: Promise<HostedLaunch> } | undefined;
   #active: ActiveLeg | undefined;
   #last: HostedLegEnd | undefined;
+  /** The leg that ended with the most serious workflow safety fact so far (8, then 7, 5, 6): the Home's exit code carries it. */
+  #safetyEnd: HostedLegEnd | undefined;
+  /** The leg `close` gave up on: it may still be writing to the Home's database, which must then stay open. */
+  #abandoned: { readonly runId: string | undefined } | undefined;
   #closing: Promise<void> | undefined;
 
   constructor(options: RunHostOptions) {
@@ -333,6 +383,13 @@ export class RunHost {
     this.notices = options.notices ?? new RunNotices();
     this.#renderer = options.renderer;
     this.#sweepMedia = options.sweepMedia ?? sweepHostMediaBestEffort;
+    this.#settleBoundMs = options.settleBoundMs ?? HOSTED_LEG_SETTLE_BOUND_MS;
+    this.#schedule =
+      options.schedule ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs);
+        return () => clearTimeout(timer);
+      });
     this.#createResources =
       options.createResources ?? ((lifetime, io) => new RunResources(lifetime, io));
     this.#services = {
@@ -396,22 +453,98 @@ export class RunHost {
    * Cancel the leg, wait for its teardown, and settle. The teardown order is the ADR's (§6): cancel the leg,
    * join its stream, `depart()` (it must return `detached` or `closed`), close the leg's MCP clients and work,
    * retire the owner. This never closes the Home's database: the caller closes it only after this settles.
+   *
+   * **It waits for a bounded time** ({@link HOSTED_LEG_SETTLE_BOUND_MS}, measured from this call). A leg that has not settled
+   * by then is abandoned: it is recorded ({@link abandoned}), its owner stays registered and the invocation's finite-exit bound is
+   * armed so the process ends. The caller must then NOT close the database, which the leg may still write to: it is left to the
+   * process's exit.
    */
   close(): Promise<void> {
     this.#closing ??= this.#teardown();
     return this.#closing;
   }
 
+  /** `close` gave up on a leg that had not settled: the Home's database must stay open for it. `false` until then. */
+  get abandoned(): boolean {
+    return this.#abandoned !== undefined;
+  }
+
+  /**
+   * What the Home owes the person once its screen is restored ([ADR-0139] §6): one line for the leg that carried the most serious
+   * safety fact, and one for a leg that had to be abandoned, each naming the run and the shell remedy. Empty when nothing needs saying.
+   */
+  exitFacts(): readonly HostedExitFact[] {
+    const facts: HostedExitFact[] = [];
+    const safety = this.#safetyEnd;
+    if (safety !== undefined)
+      facts.push(
+        Object.freeze({
+          kind: 'safety',
+          runId: safety.runId,
+          line: sanitizeInline(
+            `${safety.terminal.headline} ${safety.terminal.remedy ?? ''}`.trim(),
+          ),
+        }),
+      );
+    const abandoned = this.#abandoned;
+    if (abandoned !== undefined) {
+      const id = abandoned.runId === undefined ? undefined : sanitizeInline(abandoned.runId);
+      facts.push(
+        Object.freeze({
+          kind: 'abandoned',
+          runId: id ?? '',
+          line:
+            id === undefined
+              ? 'A workflow run was still starting when the Home left. Its lease expires within a minute; read `relavium status`.'
+              : `Run ${id} was still stopping when the Home left. Its lease expires within a minute and the next start settles it; read \`relavium logs ${id}\`.`,
+        }),
+      );
+    }
+    return facts;
+  }
+
   async #teardown(): Promise<void> {
     this.#view.seal();
     this.#active?.lifetime.stop();
-    const launching = this.#launching;
-    // The launch boundary: past it nothing is half-built, and a leg that started is stopped below.
-    if (launching !== undefined) await launching.promise.catch(() => undefined);
-    const leg = this.#active;
-    if (leg === undefined) return;
-    leg.lifetime.stop();
-    await leg.done;
+    let cancelBound: () => void = () => undefined;
+    const bound = new Promise<false>((resolve) => {
+      cancelBound = this.#schedule(() => resolve(false), this.#settleBoundMs);
+    });
+    /** Whether `work` settled before the bound ran out (a rejection counts: it is settled). */
+    const settles = (work: Promise<unknown>): Promise<boolean> =>
+      Promise.race([
+        work.then(
+          () => true,
+          () => true,
+        ),
+        bound,
+      ]);
+    try {
+      const launching = this.#launching;
+      // The launch boundary: past it nothing is half-built, and a leg that started is stopped below.
+      if (launching !== undefined && !(await settles(launching.promise))) {
+        this.#abandon(this.#active);
+        return;
+      }
+      const leg = this.#active;
+      if (leg === undefined) return;
+      leg.lifetime.stop();
+      if (!(await settles(leg.done))) this.#abandon(leg);
+    } finally {
+      cancelBound();
+    }
+  }
+
+  /**
+   * Give up on a leg that ignored its cancel: say so in the record the Home prints, keep its owner registered (`cleanupFailed`
+   * makes `finish` report `retained`) and arm the invocation's finite-exit bound, which is what ends the process. Nothing here
+   * touches the database.
+   */
+  #abandon(leg: ActiveLeg | undefined): void {
+    this.#abandoned = Object.freeze({ runId: leg?.runId });
+    leg?.lifetime.cleanupFailed(
+      new CliError('internal', 'A hosted run did not settle after it was asked to stop.'),
+    );
   }
 
   /** The reason a request cannot start now, as a settled launch; `undefined` when it may. */
@@ -442,6 +575,12 @@ export class RunHost {
     }
     // A run that does not exist is the resume core's refusal to word; one recorded elsewhere is ours.
     if (recorded === undefined || recorded === this.#projectRoot) return undefined;
+    // A run with no recorded root is not "another directory's": there is no directory to open the Home in, and the words must not say there is.
+    if (recorded === null)
+      return refused(
+        'other_project',
+        'This run was recorded without a project root, so the Home does not answer it. Answer it from the shell; `relavium status` shows how.',
+      );
     return refused(
       'other_project',
       'This run belongs to another directory. Open Home there to answer it.',
@@ -523,6 +662,8 @@ export class RunHost {
     const { engine, handle, runId } = acquired;
     let facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
     let fault: unknown;
+    // Held in an object: the renderer is made inside `driveRun`'s callback, which the compiler does not follow.
+    const held: { renderer: RunRenderer | undefined } = { renderer: undefined };
     try {
       const outcome: RunOutcome | undefined = await driveRun({
         lifetime,
@@ -530,7 +671,8 @@ export class RunHost {
         handle,
         makeRenderer: (creation) => {
           creation.acknowledgeNoAcquisition();
-          return this.#renderer?.({ runId, leg: kind }) ?? NOOP_RENDERER;
+          held.renderer = this.#renderer?.({ runId, leg: kind }) ?? NOOP_RENDERER;
+          return held.renderer;
         },
         // A pause hands off: with no prompter the drive departs at the pause (`shouldBreakOnPause`).
         makeGatePrompter: () => undefined,
@@ -572,6 +714,9 @@ export class RunHost {
     }
     // The cleanup tail: the leg's MCP clients and work, the (no-op) history close, and only then the owner.
     await resources.releaseMcp();
+    // A leg that failed, or that ended while the Home was closing, never reaches the renderer's own `finalize`: seal it here so the
+    // frame loop it holds stops with the leg (`seal` is idempotent, and a renderer that has no loop has no `seal`).
+    held.renderer?.seal?.();
     resources.closeHistoryDb();
     const retirement = await lifetime.finish();
     const terminal =
@@ -587,6 +732,11 @@ export class RunHost {
       fault: fault === undefined ? undefined : sanitizeUntrustedInline(toUserFacing(fault).message),
     });
     this.#last = end;
+    if (
+      end.terminal.safety !== undefined &&
+      safetyRank(end.terminal.safety) > safetyRank(this.#safetyEnd?.terminal.safety)
+    )
+      this.#safetyEnd = end;
     if (this.#active === leg) this.#active = undefined;
     return end;
   }
@@ -675,6 +825,8 @@ export class RunHost {
       {
         io,
         global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
+        // The same home a resume loads from: with none injected the load falls back to the OS home, as the shell's does.
+        ...(this.#homeDir === undefined ? {} : { home: this.#homeDir }),
         ...this.#services,
         openRunStore: (workflow, homeDir, projectRoot) =>
           this.#historyOverHome(workflow, homeDir, projectRoot),

@@ -16,7 +16,13 @@ import type { HostedLaunch, HostedLegEnd, RunHostSnapshot } from '../../home/run
 import { flush, settleFrames } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import type { ParkedRunRow } from './home-attention.js';
-import { createHomeController, type HomeGateCardsPort } from './home-controller.js';
+import {
+  createHomeController,
+  type HomeController,
+  type HomeControllerState,
+  type HomeGateCardsPort,
+} from './home-controller.js';
+import type { RunCardSnapshot } from './run-card-model.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 
 afterEach(cleanup);
@@ -34,10 +40,15 @@ const OFF: ApprovalGuard = { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs:
  * Poll until `predicate` holds, in real time, and FAIL when it does not: a lone `Esc` byte is held back by ink for its escape-sequence
  * window, so a bounded count of macrotask yields is not enough for it, and a wait that gave up quietly would let a stale frame be asserted.
  */
-async function eventually(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+async function eventually(
+  predicate: () => boolean,
+  what = 'the condition',
+  timeoutMs = 3_000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() > deadline) throw new Error('the condition was not reached in time');
+    if (Date.now() > deadline)
+      throw new Error(`${what} was not reached within ${String(timeoutMs)} ms`);
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
@@ -122,7 +133,7 @@ function mount(options: Options = {}) {
     resume,
     guard: options.guard ?? OFF,
   };
-  const controller = createHomeController({
+  const real = createHomeController({
     doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat: () => new Promise(() => {}),
     homeStore: { read: () => options.snapshot ?? EMPTY },
@@ -136,6 +147,20 @@ function mount(options: Options = {}) {
     onExit: vi.fn(),
     onError: vi.fn(),
   });
+  // The host's own evidence that a frame is on screen, as `RootApp` binds it: kept here so a test waits on THAT, not on a count of yields.
+  let homeVisible: ((state: HomeControllerState) => boolean) | undefined;
+  let cardVisible: ((snapshot: RunCardSnapshot) => boolean) | undefined;
+  const controller: HomeController = {
+    ...real,
+    bindHomeFrame: (visible) => {
+      homeVisible = visible;
+      real.bindHomeFrame(visible);
+    },
+    bindGateCardFrame: (visible) => {
+      cardVisible = visible;
+      real.bindGateCardFrame(visible);
+    },
+  };
   const size = options.size ?? { cols: 100, rows: 30 };
   const harness = render(
     <RootApp
@@ -147,7 +172,14 @@ function mount(options: Options = {}) {
     />,
   );
   const frame = (): string => harness.lastFrame() ?? '';
-  return { controller, harness, resume, list, frame };
+  /** The landing's exact current state has been measured and flushed. */
+  const homePainted = (): boolean => homeVisible?.(controller.getSnapshot()) === true;
+  /** The open card's exact current snapshot has been measured and flushed. */
+  const cardPainted = (): boolean => {
+    const screen = controller.getSnapshot().screen;
+    return screen?.kind === 'gate-card' && cardVisible?.(screen.card.getSnapshot()) === true;
+  };
+  return { controller, harness, resume, list, frame, homePainted, cardPainted };
 }
 
 type Mounted = ReturnType<typeof mount>;
@@ -156,21 +188,28 @@ type Mounted = ReturnType<typeof mount>;
 async function openCard(m: Mounted): Promise<void> {
   await settleFrames();
   m.harness.stdin.write(DOWN);
-  await eventually(() => m.controller.getSnapshot().parkedFocus !== undefined);
-  // `Enter` on a row counts only once the frame that shows the focus is on screen.
-  await eventually(() => m.frame().includes('Enter opens'));
-  await settleFrames();
+  await eventually(
+    () => m.controller.getSnapshot().parkedFocus !== undefined,
+    'the focus on the row',
+  );
+  // `Enter` on a row counts only once the frame that shows the focus is on screen: wait for that evidence, not for a count of yields.
+  await eventually(
+    () => m.frame().includes('Enter opens') && m.homePainted(),
+    'the focused row on screen',
+  );
   m.harness.stdin.write(ENTER);
-  await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
-  await eventually(() => m.frame().includes('waiting for you'));
+  await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+  await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
 }
 
-/** Press `Ctrl+Y` until the card takes it: a key before the card's frame was measured and flushed is refused, and the next one is not. */
+/**
+ * Press `Ctrl+Y` once the card's exact frame has been measured and flushed. A key before that is refused, and the test waits for the
+ * host's own evidence (`bindGateCardFrame`) rather than pressing again until something gives.
+ */
 async function answerOnceThePaintLanded(m: Mounted): Promise<void> {
-  for (let attempt = 0; attempt < 200 && m.resume.mock.calls.length === 0; attempt += 1) {
-    m.harness.stdin.write(CTRL_Y);
-    await flush();
-  }
+  await eventually(m.cardPainted, 'the card`s frame being painted');
+  m.harness.stdin.write(CTRL_Y);
+  await eventually(() => m.resume.mock.calls.length > 0, 'the answer reaching the run host');
 }
 
 describe('the Attention rows', () => {
@@ -207,6 +246,32 @@ describe('the Attention rows', () => {
     expect(m.frame()).not.toContain('Enter opens');
   });
 
+  it('a recent run that is also a parked run is listed once, as the parked row, and the other recent runs still are', async () => {
+    const recent = (runId: string, workflowSlug: string) => ({
+      runId,
+      workflowSlug,
+      status: 'paused' as const,
+      createdAt: '2026-11-23T00:00:00.000Z',
+      startedAt: '2026-11-23T00:00:00.000Z',
+      completedAt: undefined,
+      totalCostMicrocents: 0,
+    });
+    const m = mount({
+      snapshot: {
+        ...EMPTY,
+        isEmpty: false,
+        recentRuns: [recent(RUN, 'deploy-flow'), recent('run-0002', 'nightly-flow')],
+      },
+    });
+    await settleFrames();
+    await eventually(() => m.frame().includes('Continue'), 'the Continue list');
+    const frame = m.frame();
+    expect(frame, 'the parked row, once').toContain('‖ run-0001  ·  approval gate');
+    expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
+    expect(frame, 'its recent-run row is not repeated under Runs').not.toContain('deploy-flow');
+    expect(frame, 'a recent run that is not parked still is').toContain('nightly-flow');
+  });
+
   it('the strip`s own gate row of the same run is not repeated beside it', async () => {
     const m = mount({
       snapshot: {
@@ -239,6 +304,39 @@ describe('the Attention rows', () => {
   });
 });
 
+describe('the Attention rows keep a row on screen at 80×24, whatever else the Home shows', () => {
+  const ROWS: readonly ParkedRunRow[] = ['run-0001', 'run-0002', 'run-0003'].map((runId) => ({
+    runId,
+    kind: 'approval' as const,
+    gates: 1,
+  }));
+  const LONG_NOTICE = Array.from({ length: 16 }, (_, n) => `report line ${String(n + 1)}`).join(
+    '\n',
+  );
+
+  it('with a 16-line notice, `↓` never focuses a row that is not drawn: every focus is a row the frame shows', async () => {
+    const m = mount({ rows: ROWS, size: { cols: 80, rows: 24 } });
+    m.controller.setProviderState(false, LONG_NOTICE);
+    await settleFrames();
+    await eventually(() => m.frame().includes('report line 1'), 'the notice');
+    const seen: string[] = [];
+    for (const expected of ROWS) {
+      m.harness.stdin.write(DOWN);
+      await eventually(
+        () => m.controller.getSnapshot().parkedFocus === expected.runId,
+        `focus on ${expected.runId}`,
+      );
+      await eventually(
+        () => m.frame().includes(`> ‖ ${expected.runId}`),
+        `the row of ${expected.runId} drawn when it is focused`,
+      );
+      seen.push(expected.runId);
+    }
+    expect(seen).toEqual(ROWS.map((row) => row.runId));
+    expect(m.frame().split('\n').length, 'the whole Home fits 24 rows').toBeLessThanOrEqual(24);
+  });
+});
+
 describe('opening the card', () => {
   it('`Enter` on the focused row opens the card in front of the landing: the message behind the gutter, the gate and the keys', async () => {
     const m = mount();
@@ -252,12 +350,34 @@ describe('opening the card', () => {
     expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card', back: 'landing' });
   });
 
+  it('a `↓` and an `Enter` in ONE chunk open nothing: the row is not on screen yet, so it is not the person`s choice', async () => {
+    const m = mount();
+    await settleFrames();
+    m.harness.stdin.write(`${DOWN}${ENTER}`);
+    await eventually(() => m.controller.getSnapshot().parkedFocus !== undefined, 'the focus');
+    await settleFrames(8);
+    expect(
+      m.controller.getSnapshot().screen,
+      'no card opened behind the unseen row',
+    ).toBeUndefined();
+    expect(m.resume).not.toHaveBeenCalled();
+    // Once the frame that shows the focus is on screen, the same key opens it.
+    await eventually(
+      () => m.frame().includes('Enter opens') && m.homePainted(),
+      'the focused row on screen',
+    );
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+  });
+
   it('a run that is no longer parked here opens nothing and says so', async () => {
     const m = mount({ run: undefined });
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('Enter opens'));
-    await settleFrames();
+    await eventually(
+      () => m.frame().includes('Enter opens') && m.homePainted(),
+      'the focused row on screen',
+    );
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
@@ -273,8 +393,10 @@ describe('opening the card', () => {
     });
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('Enter says why'));
-    await settleFrames();
+    await eventually(
+      () => m.frame().includes('Enter says why') && m.homePainted(),
+      'the focused row on screen',
+    );
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
@@ -296,6 +418,31 @@ describe('opening the card', () => {
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'run-view');
     await eventually(() => m.frame().includes('paused'));
     expect(m.resume).not.toHaveBeenCalled();
+  });
+
+  it('`Enter` on a run that ended parked but cannot open says why in the run view itself, and the key line says it will try again', async () => {
+    // The run was answered elsewhere meanwhile: the log no longer has it parked here.
+    const m = mount({ host: PARKED_HOST, run: undefined });
+    await settleFrames();
+    expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
+    await eventually(() => m.frame().includes('Enter opens the gate'), 'the key line');
+    m.harness.stdin.write(ENTER);
+    await eventually(
+      () => m.frame().includes('is not parked in this directory any more.'),
+      'the reason in the run view',
+    );
+    expect(m.frame()).toContain('note: Run run-0001 is not parked in this directory any more.');
+    expect(m.frame()).toContain('Enter tries the gate again · Esc / Ctrl+C close');
+    expect(m.controller.getSnapshot().screen, 'the view stays; no card opened').toMatchObject({
+      kind: 'run-view',
+      runId: RUN,
+    });
+    // The landing`s notice is not where the person is looking: it is left alone.
+    expect(m.controller.getSnapshot().notice).toBeUndefined();
+    // It is the view's own note: it goes with the view.
+    m.harness.stdin.write(ESC);
+    await eventually(() => m.controller.getSnapshot().screen === undefined, 'the landing');
+    expect(m.controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('a run view of a run that did not end parked offers no gate: `Enter` does nothing there', async () => {
@@ -384,8 +531,10 @@ describe('a card that has not been painted refuses an answer', () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('Enter opens'));
-    await settleFrames();
+    await eventually(
+      () => m.frame().includes('Enter opens') && m.homePainted(),
+      'the focused row on screen',
+    );
     m.harness.stdin.write(ENTER);
     m.harness.stdin.write(CTRL_Y);
     await eventually(() => m.frame().includes('waiting for you'));
@@ -464,6 +613,30 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     expect(m.resume).not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().interruptArmed).toBe(false);
     expect(m.frame()).not.toContain('Press Ctrl+C again to exit');
+  });
+
+  it('Ctrl+C on a card opened from the run view closes the card AND the view (ADR-0139 §5), arming nothing; Esc is the one step back', async () => {
+    const m = mount({ host: PARKED_HOST });
+    await settleFrames();
+    expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
+    await eventually(() => m.frame().includes('Enter opens the gate'), 'the run view');
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+    await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
+    m.harness.stdin.write(CTRL_C);
+    await eventually(() => m.controller.getSnapshot().screen === undefined, 'the landing');
+    expect(m.resume, 'a close decides nothing').not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().interruptArmed).toBe(false);
+    expect(m.frame()).not.toContain('Press Ctrl+C again to exit');
+
+    // Esc, by contrast, steps back to the view.
+    expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
+    await eventually(() => m.frame().includes('Enter opens the gate'), 'the run view');
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+    await settleFrames(8);
+    m.harness.stdin.write(ESC);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'run-view', 'the run view');
   });
 
   it('a card closed while an answer is in flight does not take the answer back, and the closed card answers nothing more', async () => {

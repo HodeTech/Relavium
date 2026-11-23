@@ -136,6 +136,12 @@ const MCP_GATED = GATED.replace('id: resume-gated', 'id: resume-mcp').replace(
   nodes:`,
 );
 
+/**
+ * How far in the future `g2`'s deadline is when the run parks. It is far enough that no real park can reach it, and the tests that need it
+ * overdue move the clock past it (`parkedPastDeadline`) instead of sleeping.
+ */
+const GATE_DEADLINE_MS = 60_000;
+
 /** Two gates side by side: `g1` waits for a person, `g2` has a deadline that approves it. Both must be decided to finish. */
 const TWO_GATES = `schema_version: '1.0'
 workflow:
@@ -145,7 +151,7 @@ workflow:
   nodes:
     - { id: start, type: input }
     - { id: g1, type: human_gate, gate_type: approval }
-    - { id: g2, type: human_gate, gate_type: approval, timeout_ms: 25, timeout_action: approve }
+    - { id: g2, type: human_gate, gate_type: approval, timeout_ms: ${String(GATE_DEADLINE_MS)}, timeout_action: approve }
     - { id: out, type: output }
   edges:
     - { from: start, to: g1 }
@@ -156,7 +162,7 @@ workflow:
 
 /** The same two gates with no deadline at all, for the two-process case. */
 const TWO_GATES_NO_DEADLINE = TWO_GATES.replace(
-  ', timeout_ms: 25, timeout_action: approve',
+  `, timeout_ms: ${String(GATE_DEADLINE_MS)}, timeout_action: approve`,
   '',
 ).replace('id: resume-two-gates', 'id: resume-two-gates-open');
 
@@ -263,8 +269,6 @@ function runStatus(db: DbClient, runId: string): unknown {
   return typeof row === 'object' && row !== null && 'status' in row ? row.status : undefined;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 // ---------------------------------------------------------------------------------------------------------------------
 // 1. Another directory's run.
 // ---------------------------------------------------------------------------------------------------------------------
@@ -300,6 +304,32 @@ describe('(a) a run belongs to the directory it was started in', () => {
       there.host.resume({ runId, kind: 'human', decision: approvalDecision(), secrets: SECRETS }),
     );
     expect(answered.terminal.disposition).toBe('completed');
+  });
+
+  it('a run recorded with no project root is refused in words that say so, not as another directory`s', async () => {
+    const r = rig();
+    const runId = await park(r, GATED_TWO_SECRETS, 'none.relavium.yaml', SECRETS);
+    client.sqlite.prepare('UPDATE runs SET project_root = NULL WHERE id = ?').run(runId);
+    const buildsBefore = r.builds.mock.calls.length;
+    const ownersBefore = r.registered.length;
+    const port = vi.fn<HostedSecretPort>(() => Promise.resolve({}));
+    const refused = await r.host.resume({
+      runId,
+      kind: 'human',
+      decision: approvalDecision(),
+      secrets: port,
+    });
+    expect(refused).toMatchObject({ kind: 'refused', reason: 'other_project' });
+    const message = refused.kind === 'refused' ? refused.message : '';
+    expect(message).toContain('recorded without a project root');
+    expect(message, 'there is no other directory to open the Home in').not.toContain(
+      'another directory',
+    );
+    expect(message).toContain('relavium status');
+    expect(r.builds.mock.calls.length, 'no engine for the refusal').toBe(buildsBefore);
+    expect(r.registered, 'no owner for the refusal').toHaveLength(ownersBefore);
+    expect(port, 'no secret was asked for').not.toHaveBeenCalled();
+    expect(runStatus(client, runId), 'the gate is still pending').toBe('paused');
   });
 });
 
@@ -546,11 +576,22 @@ describe('(b) a resumed leg runs the consent check again', () => {
 // ---------------------------------------------------------------------------------------------------------------------
 
 describe('an overdue gate is answered in both orders, and never runs twice', () => {
-  /** Park `TWO_GATES` and let `g2`'s deadline pass: a parked run holds no timer, so the deadline is only a fact in the log. */
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Park `TWO_GATES` and let `g2`'s deadline pass: a parked run holds no timer, so the deadline is only a fact in the log.
+   *
+   * The deadline passes by moving the clock, not by waiting for it: only `Date` is replaced (the engine and the log read it for
+   * deadlines, and every real timer still runs), it stands still while the run parks, and then it is set past `g2`'s deadline. The
+   * run cannot park late enough to meet a deadline a minute away, so no machine, however loaded, changes what this proves.
+   */
   async function parkedPastDeadline() {
+    vi.useFakeTimers({ toFake: ['Date'] });
     const r = rig();
     const runId = await park(r, TWO_GATES, 'two.relavium.yaml');
-    await sleep(80);
+    vi.setSystemTime(Date.now() + 2 * GATE_DEADLINE_MS);
     const reader = createRunHistoryReader(client.db);
     const read = readRunGates(reader, root, runId);
     const gate = (nodeId: string): { gateId: string } => {

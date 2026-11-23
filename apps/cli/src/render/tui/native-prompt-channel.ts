@@ -4,6 +4,7 @@ import {
   createChordGuard,
   reduceChordKey,
   type ChordAnswer,
+  type ChordHistory,
   type ChordStamp,
 } from './chord-guard.js';
 import type { ApprovalGuard } from './tool-review-model.js';
@@ -132,6 +133,8 @@ export interface NativeChordPort {
     allow: string;
     deny: string;
     escape?: NativePromptEscape;
+    /** When it aborts the card closes and the call settles with {@link NATIVE_PROMPT_CANCEL}: a card must not outlive the work it asks about. */
+    signal?: AbortSignal;
   }) => Promise<ChordAnswer | symbol>;
 }
 /** One shared empty body, so a snapshot that has none keeps the same reference (the acknowledgement compares it). */
@@ -155,6 +158,8 @@ export interface NativePromptChannelOptions {
   readonly now?: () => number;
   /** The approval guard's numbers (default the product's own); `0` switches a layer off. */
   readonly guard?: ApprovalGuard;
+  /** The Home's shared chord history (`createChordHistory`): what the other cards stamped locks this one too. Default: its own. */
+  readonly history?: ChordHistory;
 }
 
 /** Only the flow port can receive an answer; the UI port never exposes the private editor. */
@@ -165,6 +170,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
   const chord = createChordGuard({
     now: options?.now ?? (() => performance.now()),
     guard: options?.guard,
+    history: options?.history,
   });
   let snapshot = initial;
   let secret = '';
@@ -558,7 +564,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
         escape: options.escape ?? 'cancel',
       }),
     chord: async (options) => {
-      const value = await prompt(
+      const before = settle;
+      const pending = prompt(
         'chord',
         options.message,
         [
@@ -569,7 +576,20 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
         undefined,
         { escape: options.escape ?? 'cancel', details: options.details ?? NO_DETAILS },
       );
-      return typeof value === 'symbol' ? value : value === 'allow' ? 'allow' : 'deny';
+      // The card this call opened, if it opened one: an abort closes THAT card and no other that may have replaced it.
+      const mine = settle !== before ? settle : undefined;
+      const signal = options.signal;
+      const onAbort = (): void => {
+        if (mine !== undefined && settle === mine) finish(NATIVE_PROMPT_CANCEL);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted === true) onAbort();
+      try {
+        const value = await pending;
+        return typeof value === 'symbol' ? value : value === 'allow' ? 'allow' : 'deny';
+      } finally {
+        signal?.removeEventListener('abort', onAbort);
+      }
     },
   };
   return { ui, flow };

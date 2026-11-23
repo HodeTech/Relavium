@@ -34,6 +34,9 @@ import {
 import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import { approvalDecision, rejectionDecision } from '../gate/decision.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
+import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
+import { createRunViewFeed } from '../render/tui/run-view-feed.js';
+import { createNativeConsentPrompter } from './consent-card.js';
 import type { InvocationOwner } from '../process/invocation-registry.js';
 import type { RunLifetime } from '../run-core/run-lifetime.js';
 import { RunResources } from '../run-core/run-resources.js';
@@ -51,10 +54,11 @@ let root: string;
 /**
  * The home every config load in this file resolves to, and what each load saw.
  *
- * `prepareRun` loads its own configuration and has no home seam, so a start leg's load falls back to
- * `fallbackHome`: the temporary home of the rig that was built last WITHOUT an explicit `homeDir`. The host's own
- * load (a resume) forwards `homeDir`, and nothing here replaces a home it was given. With neither, the load
- * throws: there is no path from this file to the operator's real `~/.relavium`.
+ * A start leg's config load is handed the host's `homeDir` (`PrepareRunDeps.home`), exactly as a resume's is, and
+ * `run-host-home-seam.test.ts` proves that with no module mock. This mock stays as the second net for the rigs in this
+ * file: a load that arrives with no home falls back to `fallbackHome`, the temporary home of the rig that was built
+ * last WITHOUT an explicit `homeDir`, and nothing here replaces a home it was given. With neither, the load throws:
+ * there is no path from this file to the operator's real `~/.relavium`.
  */
 let fallbackHome: string | undefined;
 const configLoads: {
@@ -903,6 +907,88 @@ describe('MCP consent in a hosted leg', () => {
     expect(startMcpClient).toHaveBeenCalledOnce();
     expect(end.handedOff).toBe(true);
     expect(r.f.registry.activeOwners).toBe(0);
+  });
+});
+
+describe('the consent card closes with the leg that asked', () => {
+  it('stop() while the card is open closes it: the launch ends as stopped, and nothing is spawned', async () => {
+    const channel = createNativePromptChannel();
+    channel.flow.begin(); // the card opens only while a flow is open
+    const startMcpClient = vi.fn(() => realStartMcpClient([]));
+    const r = rig({ startMcpClient, consent: createNativeConsentPrompter(channel.flow) });
+    const path = writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+    const launching = r.host.start({ workflow: path, rawInputs: { n: '3' } });
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('chord'));
+
+    expect(r.host.cancel(), 'a leg is preparing: the stop reaches it').toBe(true);
+
+    // Without the signal the card stays open and the launch waits for the flow's own cancel for ever; a short race says which.
+    const outcome = await Promise.race([
+      launching,
+      new Promise<string>((resolve) => setTimeout(() => resolve('still waiting on the card'), 500)),
+    ]);
+    expect(outcome).toMatchObject({ kind: 'refused', reason: 'stopped' });
+    expect(channel.ui.getSnapshot().kind, 'the card is gone').not.toBe('chord');
+    expect(startMcpClient, 'nothing was spawned').not.toHaveBeenCalled();
+    expect(r.f.registry.activeOwners).toBe(0);
+    await channel.flow.end();
+  });
+});
+
+describe('the live view holds no frame loop once its leg is over', () => {
+  /** The feed's frame timer, counted: how many intervals were started and not stopped. */
+  function countedFeed() {
+    const state = { running: 0, started: 0 };
+    const feed = createRunViewFeed({
+      color: () => false,
+      everyFrame: () => {
+        state.running += 1;
+        state.started += 1;
+        let live = true;
+        return () => {
+          if (!live) return;
+          live = false;
+          state.running -= 1;
+        };
+      },
+    });
+    return { feed, state };
+  }
+
+  it('a leg that ends while the Home closes never reaches the renderer`s own finalize, and still leaves no interval behind', async () => {
+    const { feed, state } = countedFeed();
+    const s = scriptedRig(
+      { terminal: 'cancelled', holdUntilCancel: true },
+      { renderer: feed.renderer },
+    );
+    const end = started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
+    await vi.waitFor(() => expect(state.started).toBe(1));
+    expect(state.running, 'the leg runs: its frame loop does').toBe(1);
+    await s.host.close();
+    expect((await end).terminal.disposition).toBe('cancelled');
+    expect(state.running, 'the leg is over: so is its loop').toBe(0);
+  });
+
+  it('a leg that ends in a fault leaves no interval behind either', async () => {
+    const { feed, state } = countedFeed();
+    const s = scriptedRig(
+      { terminal: 'completed' },
+      {
+        renderer: (leg) => {
+          const inner = feed.renderer(leg);
+          return {
+            ...inner,
+            onEvent: () => {
+              throw new Error('PRIVATE_RENDER_FAULT');
+            },
+          };
+        },
+      },
+    );
+    const end = await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
+    expect(end.fault).toBeDefined();
+    expect(state.started).toBe(1);
+    expect(state.running).toBe(0);
   });
 });
 

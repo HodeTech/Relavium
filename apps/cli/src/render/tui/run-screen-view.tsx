@@ -31,6 +31,8 @@ export interface RunScreenViewProps {
   readonly interruptArmed: boolean;
   /** A gate card can be opened: a run that ended parked offers `Enter` for it. */
   readonly openGate?: boolean | undefined;
+  /** The last `Enter` could not open the card: the key line says it will try again (the view's own note row says why). */
+  readonly gateOpenFailed?: boolean | undefined;
   readonly columns: number;
   readonly rows: number;
   readonly color: boolean;
@@ -45,6 +47,7 @@ export function RunScreenView(props: Readonly<RunScreenViewProps>): ReactElement
     columns: props.columns,
     rows: props.rows,
     openGate: props.openGate,
+    gateOpenFailed: props.gateOpenFailed,
   });
   const { color } = props;
   const card = model.card;

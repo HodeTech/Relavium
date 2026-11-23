@@ -100,6 +100,8 @@ function virtualTimers() {
       }
       now = target;
     },
+    /** How many timers are armed right now. */
+    pending: (): number => pending.size,
   };
 }
 
@@ -444,9 +446,11 @@ describe('the slot', () => {
   });
 
   it('is closed by the signal teardown path without a key: nothing is left armed', async () => {
-    const { controller } = viewing();
+    const { controller, timers } = viewing();
     ctrl(controller, 'c');
+    expect(timers.pending(), 'a live leg is watched: the poll is armed').toBeGreaterThan(0);
     await controller.teardownActive();
+    expect(timers.pending(), 'nothing of the watch outlives the teardown').toBe(0);
     // A Home that was told to end takes no more keys at all.
     controller.handleKey('', ESC);
     expect(controller.getSnapshot().screen?.runId).toBe(RUN);

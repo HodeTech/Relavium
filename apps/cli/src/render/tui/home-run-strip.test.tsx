@@ -80,6 +80,32 @@ function frameOf(props: {
 const rowsOf = (frame: string): string[] => frame.split('\n');
 const runRows = (frame: string): string[] => rowsOf(frame).filter((line) => line.includes('▶'));
 
+const hintRow = (frame: string): string =>
+  rowsOf(frame).find((line) => line.includes('Ctrl+C twice to exit')) ?? '';
+
+describe('the landing hint while a leg executes', () => {
+  it.each([
+    ['an empty Home', EMPTY, 'type a message to chat'],
+    ['a Home with sessions', FULL, '↓ Continue'],
+  ] as const)(
+    'names `Enter shows it` first, and keeps one more door open (%s)',
+    (_name, snapshot, door) => {
+      const hint = hintRow(frameOf({ snapshot, hostedRun: running() }));
+      expect(hint).toContain('Enter shows it');
+      expect(hint).toContain(door);
+      expect(hint.length, 'it fits 80 columns').toBeLessThanOrEqual(80);
+    },
+  );
+
+  it.each([
+    ['no host', undefined],
+    ['an idle host', IDLE],
+    ['a leg still preparing', { launching: true, active: undefined, last: undefined }],
+  ] as const)('does not say it with %s: there is nothing to show', (_name, hostedRun) => {
+    expect(hintRow(frameOf({ hostedRun }))).not.toContain('Enter shows it');
+  });
+});
+
 describe('the ▶ row', () => {
   it('is present with an active run: the glyph, the id and a state word, with colour off', () => {
     const rows = runRows(frameOf({ hostedRun: running() }));
@@ -106,6 +132,15 @@ describe('the ▶ row', () => {
     const frame = frameOf({ hostedRun });
     expect(frame).not.toContain('▶');
     expect(frame).not.toContain('running');
+  });
+
+  it('tells the person how to come back to a live run: the row says `Enter shows it` once the run has an id, and not before', () => {
+    expect(runRows(frameOf({ hostedRun: running() }))[0]).toContain('Enter shows it');
+    expect(runRows(frameOf({ hostedRun: running(true) }))[0]).toContain('Enter shows it');
+    expect(
+      runRows(frameOf({ hostedRun: { launching: true, active: undefined, last: undefined } }))[0],
+      'a leg still preparing has no run to show',
+    ).not.toContain('Enter shows it');
   });
 
   it('is one line that fits 80 columns', () => {

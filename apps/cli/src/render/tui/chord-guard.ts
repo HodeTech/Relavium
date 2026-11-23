@@ -10,7 +10,9 @@
  *
  * - an AFFIRMATIVE chord (`Ctrl+Y`) must clear dwell, quiet gap, typeahead and lockout, and the card's exact frame must be on
  *   screen right now (measured and flushed, at 80x24);
- * - a REJECTION (`Ctrl+N`) is never delayed and needs no guard: refusing is the safe answer;
+ * - a REJECTION (`Ctrl+N`) is never delayed and needs no guard where refusing is the safe answer (an MCP consent card, a budget
+ *   abort). A human gate's rejection is not that: it CONTINUES the run, because the author routes on it, so the card asks for it to
+ *   pass the same layers as an approval (`strict`);
  * - `Esc` and `Ctrl+C` are the channel's own keys and answer nothing, here or anywhere.
  *
  * Every time is on ONE monotonic clock, so a wall-clock step changes nothing (PR #99 security sitting G3).
@@ -38,6 +40,26 @@ export function reduceChordKey(input: string, key: ChatKey): ChordAnswer | undef
   return undefined;
 }
 
+/**
+ * The three times that say what the person's hands have been doing, shared by every chord surface of one Home: the MCP consent card (the
+ * native prompt channel), the gate and budget cards, and the exit guard. One history means a key that answered one of them also locks the
+ * next, so a key held down on a gate card cannot answer the consent card the answer opened, on auto-repeat. What is NOT shared is a
+ * card's own `shownAt` (its dwell), which belongs to the frame it measures.
+ */
+export interface ChordHistory {
+  previousKeyAt: number;
+  lastForeignKeyAt: number;
+  lastResolvedAt: number;
+}
+
+export function createChordHistory(): ChordHistory {
+  return {
+    previousKeyAt: Number.NEGATIVE_INFINITY,
+    lastForeignKeyAt: Number.NEGATIVE_INFINITY,
+    lastResolvedAt: Number.NEGATIVE_INFINITY,
+  };
+}
+
 /** What was true just BEFORE one key arrived: the evidence that key is judged against. */
 export interface ChordStamp {
   readonly now: number;
@@ -58,38 +80,45 @@ export interface ChordGuard {
   /** The card's exact frame was just measured and flushed (a new frame restarts the dwell). */
   readonly shown: () => void;
   /**
-   * Whether this chord answers. A rejection always does. An affirmative one needs every layer clear AND `painted`; when it does not
-   * count and a card was resolved by a key a moment ago, the lockout restarts, so a key that stays down keeps the card locked
-   * until it has been released for the whole window.
+   * Whether this chord answers. An affirmative one needs every layer clear AND `painted`; a rejection answers at once unless `strict`
+   * says it is as consequential as an approval (default: only an affirmative chord is strict). When a strict chord does not count and
+   * a card was resolved by a key a moment ago, the lockout restarts, so a key that stays down keeps the card locked until it has been
+   * released for the whole window.
    */
   readonly decide: (
     stamp: ChordStamp,
     chord: ChordAnswer,
     painted: boolean,
+    strict?: boolean,
   ) => ChordAnswer | undefined;
 }
 
 export function createChordGuard(options: {
   readonly now: () => number;
   readonly guard?: ApprovalGuard | undefined;
+  /** The Home's shared history; a guard without one keeps its own (a surface that stands alone). */
+  readonly history?: ChordHistory | undefined;
 }): ChordGuard {
   const numbers = resolveApprovalGuard(options.guard);
-  let previousKeyAt = Number.NEGATIVE_INFINITY;
-  let lastForeignKeyAt = Number.NEGATIVE_INFINITY;
-  let lastResolvedAt = Number.NEGATIVE_INFINITY;
+  const history = options.history ?? createChordHistory();
   let shownAt: number | undefined;
   return {
     stamp: () => {
       const now = options.now();
-      const before: ChordStamp = { now, previousKeyAt, lastForeignKeyAt, lastResolvedAt };
-      previousKeyAt = now;
+      const before: ChordStamp = {
+        now,
+        previousKeyAt: history.previousKeyAt,
+        lastForeignKeyAt: history.lastForeignKeyAt,
+        lastResolvedAt: history.lastResolvedAt,
+      };
+      history.previousKeyAt = now;
       return before;
     },
     foreign: (stamp) => {
-      lastForeignKeyAt = stamp.now;
+      history.lastForeignKeyAt = stamp.now;
     },
     resolved: (stamp) => {
-      lastResolvedAt = stamp.now;
+      history.lastResolvedAt = stamp.now;
     },
     begin: () => {
       shownAt = undefined;
@@ -97,10 +126,10 @@ export function createChordGuard(options: {
     shown: () => {
       shownAt = options.now();
     },
-    decide: (stamp, chord, painted) => {
-      if (chord === 'deny') {
-        lastResolvedAt = stamp.now;
-        return 'deny';
+    decide: (stamp, chord, painted, strict = chord === 'allow') => {
+      if (!strict) {
+        history.lastResolvedAt = stamp.now;
+        return chord;
       }
       const refusal = approvalKeyRefusal(numbers, {
         now: stamp.now,
@@ -110,11 +139,11 @@ export function createChordGuard(options: {
         lastResolvedAt: stamp.lastResolvedAt,
       });
       if (refusal === undefined && painted) {
-        lastResolvedAt = stamp.now;
-        return 'allow';
+        history.lastResolvedAt = stamp.now;
+        return chord;
       }
       if (numbers.lockoutMs > 0 && stamp.now - stamp.lastResolvedAt < numbers.lockoutMs)
-        lastResolvedAt = stamp.now;
+        history.lastResolvedAt = stamp.now;
       return undefined;
     },
   };

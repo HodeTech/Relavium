@@ -123,7 +123,8 @@ import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
 import type { ParkedRunRow } from './home-attention.js';
 import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
-import type { ApprovalGuard } from './tool-review-model.js';
+import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
+import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
 import { sanitizeInline } from '../sanitize.js';
 
 /**
@@ -288,7 +289,13 @@ export interface RunViewScreen {
   readonly kind: 'run-view';
   readonly runId: string;
   readonly store: RunStore | undefined;
+  /** The host's notice ring, then {@link RunViewScreen.note} when there is one: the view shows the newest rows. */
   readonly notices: readonly string[];
+  /**
+   * What the view itself has to say: why a gate card could not open from it. It is the newest notice row, and it goes with the screen
+   * (the view offers `Enter` again, and the key line says it will try again).
+   */
+  readonly note?: string | undefined;
 }
 
 /**
@@ -426,6 +433,12 @@ export interface HomeControllerDeps {
   /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
   readonly exitGraceMs?: number;
   /**
+   * The Home's one chord history ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4): the gate
+   * and budget cards and the exit guard stamp and read the same lockout the MCP consent card does, so a key held down through one answer
+   * cannot answer the next card on auto-repeat. Default: one of its own, which the consent card (built elsewhere) then does not share.
+   */
+  readonly chordHistory?: ChordHistory | undefined;
+  /**
    * The one timer the run watch and the exit grace use: call `callback` once after `delayMs` and return the function that cancels it.
    * Default is `setTimeout` with an unreferenced handle; a test injects its own clock so nothing sleeps.
    */
@@ -485,6 +498,12 @@ export interface HomeController {
   readonly bindGateCardFrame: (
     visible: ((snapshot: RunCardSnapshot) => boolean) | undefined,
   ) => void;
+  /**
+   * The host's evidence that the landing's exact state (the exit-guard card among it) is on screen, measured and flushed at 80×24. The
+   * exit guard's `Ctrl+Y` cancels a run for good, so it counts only while this says so; with none bound it never does. `RootApp` binds it
+   * on mount.
+   */
+  readonly bindHomeFrame: (visible: ((state: HomeControllerState) => boolean) | undefined) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -537,6 +556,11 @@ function hostedKey(snapshot: RunHostSnapshot | undefined): string {
   return !snapshot.launching && active === '' && last === ''
     ? ''
     : `${snapshot.launching}|${active}|${last}`;
+}
+
+/** Whether a leg started or ended between two reads of the run host: a different liveness, or a different last end (by identity). */
+function legBoundary(now: RunHostSnapshot, before: RunHostSnapshot | undefined): boolean {
+  return hostedRunIsLive(now) !== hostedRunIsLive(before) || now.last !== before?.last;
 }
 
 export function createHomeController(deps: HomeControllerDeps): HomeController {
@@ -749,10 +773,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
   /** The run host's notice ring as it is now (oldest first); empty with no host or no ring. */
   const readNotices = (): readonly string[] => deps.hostedRuns?.notices?.snapshot() ?? NO_NOTICES;
+  /** The ring as it is now, with the view's own note last (the newest row). */
+  const noticesWith = (note: string | undefined): readonly string[] => {
+    const ring = readNotices();
+    return note === undefined ? ring : [...ring, note];
+  };
   /** `screen` with the notice ring as it is now: the same object when nothing changed, so an idle read never repaints. */
   const withFreshNotices = (screen: HomeScreen): HomeScreen => {
     if (screen.kind !== 'run-view') return screen; // a card has no notice ring
-    const notices = readNotices();
+    const notices = noticesWith(screen.note);
     return notices.length === screen.notices.length &&
       notices.every((line, index) => line === screen.notices[index])
       ? screen
@@ -781,8 +810,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const hostedChanged = hostedKey(snapshot) !== hostedKey(state.hostedRun);
     const screen = state.screen === undefined ? undefined : withFreshNotices(state.screen);
     const screenChanged = screen !== state.screen;
-    // A leg that started, paused or ended changes which runs are parked: the Attention rows follow it.
-    const parked = hostedChanged ? parkedPatch() : {};
+    // A leg that started or ended changes which runs are parked: the Attention rows follow it. A cancel request, the run's id arriving or the
+    // launch latch flipping change nothing in the log, so they read nothing (the read is a database page per project).
+    const parked = hostedChanged && legBoundary(snapshot, state.hostedRun) ? parkedPatch() : {};
     if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen, ...parked });
     else if (hostedChanged) set({ hostedRun: snapshot, ...parked });
     else if (screenChanged) set({ screen });
@@ -845,14 +875,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const slotAdmits = (): boolean =>
     !exiting && state.exitGuard === undefined && state.mode === 'home' && !overlayOpen();
   /** The ONE place a screen enters the slot: the interrupt state is dropped, and the strip and the screen read one host snapshot. */
-  const putScreen = (screen: HomeScreen): void => {
+  const putScreen = (screen: HomeScreen, extra: Partial<HomeControllerState> = {}): void => {
     disarmInterrupt();
     const snapshot = deps.hostedRuns?.snapshot();
     const hosted =
       snapshot !== undefined && hostedKey(snapshot) !== hostedKey(state.hostedRun)
         ? { hostedRun: snapshot }
         : {};
-    set({ screen, continueSessionId: undefined, ...hosted });
+    set({ screen, continueSessionId: undefined, ...hosted, ...extra });
     // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
     if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
   };
@@ -897,6 +927,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // re-read after an answer would find the gate still pending (the next leg has not claimed it yet) and offer it a second time. An answer
   // that arrives after another process decided the gate is answered by the host with what the log holds, and the card says so.
   let gateCardVisible: ((snapshot: RunCardSnapshot) => boolean) | undefined;
+  /** The one chord history of every card this controller opens and of the exit guard (see {@link HomeControllerDeps.chordHistory}). */
+  const chordHistory = deps.chordHistory ?? createChordHistory();
+  let homeFrameVisible: ((state: HomeControllerState) => boolean) | undefined;
   /** One refresh after an answer went out: the strip shows the leg it started, and the rows follow the run's state. */
   const afterAnswer = (): void => {
     if (exiting) return;
@@ -913,8 +946,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     afterAnswer(); // the host latched its launch synchronously: the strip shows `starting` from here
     return reply.finally(afterAnswer);
   };
-  const notParked = (runId: string, why: string): void => {
-    set({ notice: `Run ${sanitizeInline(runId)} ${why}`, ...parkedPatch() });
+  /**
+   * A card could not open. From the run view the reason is the view's own note row (the landing's notice is not on screen there), and from
+   * the landing it is the landing's notice: either way it is where the person who pressed `Enter` is looking.
+   */
+  const notParked = (runId: string, why: string, back: GateCardScreen['back']): void => {
+    const text = `Run ${sanitizeInline(runId)} ${why}`;
+    const screen = state.screen;
+    if (back === 'run-view' && screen?.kind === 'run-view' && screen.runId === runId) {
+      set({ screen: { ...screen, notices: noticesWith(text), note: text }, ...parkedPatch() });
+      return;
+    }
+    set({ notice: text, ...parkedPatch() });
   };
   const openGateCard = (runId: string, back: GateCardScreen['back']): boolean => {
     const port = deps.gateCards;
@@ -923,11 +966,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     try {
       run = port.read(runId);
     } catch {
-      notParked(runId, 'could not be read. `relavium status` shows what it waits for.');
+      notParked(runId, 'could not be read. `relavium status` shows what it waits for.', back);
       return false;
     }
     if (run === undefined) {
-      notParked(runId, 'is not parked in this directory any more.');
+      notParked(runId, 'is not parked in this directory any more.', back);
       return false;
     }
     const gates = cardGatesOf(run);
@@ -935,6 +978,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       notParked(
         runId,
         `is parked with no gate to decide here. \`relavium status ${sanitizeInline(runId)}\` shows what it waits for.`,
+        back,
       );
       return false;
     }
@@ -944,9 +988,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       resume: answerGate,
       ...(deps.now === undefined ? {} : { now: deps.now }),
       ...(port.guard === undefined ? {} : { guard: port.guard }),
+      history: chordHistory,
       painted: (snapshot) => gateCardVisible?.(snapshot) === true,
     });
-    putScreen({ kind: 'gate-card', runId: run.runId, card, back });
+    // The Attention rows are read again as the card opens: what put the person here may be a moment old.
+    putScreen({ kind: 'gate-card', runId: run.runId, card, back }, parkedPatch());
     return true;
   };
   /** `Esc` and `Ctrl+C` on a card: it closes and decides nothing; the run view it came from, if any, is back in front. */
@@ -987,16 +1033,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
+  // while a card the person just answered still holds the lockout (a key held down through that answer repeats onto this one). Dwell,
+  // quiet gap and typeahead are the answer cards' layers for text that may be typed; this card is opened by a key and read before it is
+  // answered, so the two that tell a held or unseen key from a deliberate one are the whole guard.
+  const exitGuardChord = createChordGuard({
+    now: deps.now ?? ((): number => performance.now()),
+    guard: {
+      ...resolveApprovalGuard(deps.gateCards?.guard),
+      settleMs: 0,
+      quietMs: 0,
+      typeaheadMs: 0,
+    },
+    history: chordHistory,
+  });
   const routeExitGuardKey = (
     phase: ExitGuardPhase,
     input: string,
     key: HomeKey & ChatKey & PaletteKey,
   ): void => {
     disarmInterrupt(); // any key at the card ends the armed interrupt state (ADR-0115 §1)
+    const stamp = exitGuardChord.stamp();
     if (phase === 'stopping') return; // the wait is bounded and cannot be taken back: no key changes it
     const answer = pressExitGuardKey(input, key);
-    if (answer === 'confirm') confirmExit();
-    else if (answer === 'stay') set({ exitGuard: undefined });
+    if (answer === 'confirm') {
+      if (exitGuardChord.decide(stamp, 'allow', homeFrameVisible?.(state) === true) === undefined)
+        return; // refused: the card is still open and nothing is decided
+      confirmExit();
+    } else if (answer === 'stay') set({ exitGuard: undefined });
   };
 
   const endChat = (ended: HomeChatSession): void => {
@@ -1297,7 +1361,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     openNativeAction(async () => {
       const notice = await launch();
       if (exiting) return;
-      set({ notice });
+      set({ notice, ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
       openRunView(); // a run that started is shown at once; `Esc` leaves it running and `Enter` on the empty prompt comes back
     }, 'Run workflow');
   };
@@ -2444,9 +2508,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // moment after the leg ended must not cancel anything. The first press only arms; nothing is cancelled until the second.
   const handleScreenInterrupt = (screen: HomeScreen): void => {
     if (screen.kind === 'gate-card') {
-      // `Ctrl+C` on a card is a close like `Esc`: it never answers, and it arms nothing (a card is not a run to cancel).
+      // `Ctrl+C` on a card closes the card AND the view it was opened from (ADR-0139 §5): it never answers, and it arms nothing (a card
+      // is not a run to cancel). `Esc` is the one step back, to the view.
       showInterruptHint(false);
-      closeGateCard(screen);
+      closeScreen();
       return;
     }
     const leg = runScreenLeg(screen.runId, deps.hostedRuns?.snapshot() ?? state.hostedRun);
@@ -2762,6 +2827,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     closeScreen,
     bindGateCardFrame(visible) {
       gateCardVisible = visible;
+    },
+    bindHomeFrame(visible) {
+      homeFrameVisible = visible;
     },
     openPermissionsAsCommand() {
       if (exiting) return;

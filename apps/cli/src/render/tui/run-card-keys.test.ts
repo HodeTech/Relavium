@@ -10,7 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunGate } from '../../home/run-gates.js';
+import type { RunBudgetGate, RunCardGate, RunGate } from '../../home/run-gates.js';
 import type { HostedLaunch } from '../../home/run-host.js';
 import { flush } from './harness-util.js';
 import type { ChatKey } from './chat-input.js';
@@ -44,7 +44,18 @@ const STARTED: HostedLaunch = {
   ended: new Promise(() => undefined),
 };
 
-function fixture(guard: ApprovalGuard, gates: readonly RunGate[] = [gate('a')]) {
+/** A budget gate whose allowance can be approved: its `Ctrl+N` aborts the step, which is never delayed. */
+function budgetGate(id: string): RunBudgetGate {
+  return {
+    runId: RUN,
+    gateId: id,
+    nodeId: `node-${id}`,
+    allowance: { kind: 'amount', microcents: 4_200_000 },
+    accepts: ['approved', 'rejected'],
+  };
+}
+
+function fixture(guard: ApprovalGuard, gates: readonly RunCardGate[] = [gate('a')]) {
   let now = 0;
   let painted = true;
   const resume = vi.fn(() => Promise.resolve(STARTED));
@@ -287,12 +298,56 @@ describe('the dwell, the quiet gap, the typeahead and the lockout', () => {
     expect(f.chord('y')).toMatchObject({ kind: 'answered', gateId: 'b' });
   });
 
-  it('a rejection is never delayed by a layer: it answers unpainted, unshown, mid-typing and inside the lockout', () => {
-    const f = fixture({ settleMs: 5_000, quietMs: 5_000, typeaheadMs: 5_000, lockoutMs: 5_000 });
+  it('a budget abort is never delayed by a layer: it answers unpainted, unshown, mid-typing and inside the lockout', () => {
+    // An abort stops the step at the budget, and refusing is the safe answer there: no layer stands between the person and it.
+    const f = fixture({ settleMs: 5_000, quietMs: 5_000, typeaheadMs: 5_000, lockoutMs: 5_000 }, [
+      budgetGate('b1'),
+    ]);
     f.paint(false);
     f.at(10);
     f.card.input('x', {});
     f.at(20);
+    expect(f.chord('n')).toMatchObject({ kind: 'answered', decision: { decision: 'rejected' } });
+  });
+
+  it('a human gate`s rejection continues the run, so it is a deliberate key too: it needs the layers and a painted frame', async () => {
+    const f = fixture(only('typeaheadMs', 400));
+    f.show();
+    f.at(1_000);
+    f.card.input('x', {}); // typing
+    f.at(1_100);
+    expect(f.chord('n'), 'a chord on the heels of typing').toEqual({ kind: 'refused' });
+    expect(f.resume).not.toHaveBeenCalled();
+    f.at(2_000);
+    expect(f.chord('n')).toMatchObject({ kind: 'answered', decision: { decision: 'rejected' } });
+    await flush();
+  });
+
+  it('a held Ctrl+N on a human gate stays refused until the key has been released for the whole lockout', async () => {
+    const f = fixture(only('lockoutMs', 700), [gate('a'), gate('b'), gate('c')]);
+    f.show();
+    f.at(1_000);
+    expect(f.chord('y')).toMatchObject({ kind: 'answered', gateId: 'a' });
+    await flush();
+    f.at(1_300);
+    f.card.update([gate('b'), gate('c')]);
+    expect(f.chord('n'), 'a key held down through the answer').toEqual({ kind: 'refused' });
+    f.at(1_900); // inside the restarted window
+    expect(f.chord('n')).toEqual({ kind: 'refused' });
+    f.at(2_700);
+    expect(f.chord('n')).toMatchObject({ kind: 'answered', gateId: 'b' });
+  });
+
+  it('an unpainted human gate refuses a bare Ctrl+N as it refuses Ctrl+Y', () => {
+    const f = fixture(OFF);
+    f.paint(false);
+    f.show();
+    f.at(10_000);
+    expect(f.chord('n')).toEqual({ kind: 'refused' });
+    expect(f.resume).not.toHaveBeenCalled();
+    expect(f.card.getSnapshot().phase, 'a refusal changes nothing').toBe('open');
+    f.paint(true);
+    f.at(20_000);
     expect(f.chord('n')).toMatchObject({ kind: 'answered', decision: { decision: 'rejected' } });
   });
 });
@@ -317,9 +372,10 @@ describe('an unpainted frame refuses', () => {
     card.shown(card.getSnapshot());
     expect(card.input('y', CTRL)).toEqual({ kind: 'refused' });
     expect(resume).not.toHaveBeenCalled();
-    expect(card.input('n', CTRL), 'a rejection needs no painted frame').toMatchObject({
-      kind: 'answered',
+    expect(card.input('n', CTRL), 'a human gate`s rejection needs the painted frame too').toEqual({
+      kind: 'refused',
     });
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it('asks the host about the very snapshot the chord is judged against', () => {

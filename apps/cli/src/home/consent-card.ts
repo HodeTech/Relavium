@@ -72,7 +72,8 @@ export function consentCardText(subject: ConsentSubject): ConsentCardText {
 
 /**
  * Ask. Only a `Ctrl+Y` the chord card accepted is `allow`; `Ctrl+N`, `Esc` (a step back or a cancel), `Ctrl+C` and a flow that was
- * cancelled under the card are all `refuse`, as is a signal that has already aborted (no card is opened for it).
+ * cancelled under the card are all `refuse`, as is a signal that has already aborted (no card is opened for it) or that aborts while the
+ * card is open (the card closes, so a stopped leg is not left waiting on a question nobody can answer).
  */
 export async function askConsent(
   port: NativeChordPort,
@@ -87,6 +88,8 @@ export async function askConsent(
     allow: text.allow,
     deny: text.deny,
     escape: options?.escape ?? 'cancel',
+    // The card closes with the work it asks about: a leg that is stopped while it waits must not leave it open.
+    ...(options?.signal === undefined ? {} : { signal: options.signal }),
   });
   return answer === 'allow' ? 'allow' : 'refuse';
 }

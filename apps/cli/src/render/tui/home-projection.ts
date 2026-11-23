@@ -168,7 +168,16 @@ export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | 
   if (snapshot === undefined || !hostedRunIsLive(snapshot)) return undefined;
   const active = snapshot.active;
   if (active === undefined || active.runId === undefined) return `▶ run${SEP}starting`;
-  return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}`;
+  // Once the engine has named the run, `Enter` at the empty prompt brings its view back: the row says so, because nothing else does.
+  return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
+}
+
+/** What `Enter` at the empty prompt does while a leg is live and has a run to show: the words the `▶` row and the landing's hint share. */
+export const HOSTED_RUN_ENTER_CUE = 'Enter shows it';
+
+/** Whether a leg is live and has named its run, so `Enter` at the empty prompt can show its view (`openRunView`). */
+export function hostedRunCanBeShown(snapshot: RunHostSnapshot | undefined): boolean {
+  return snapshot?.active?.runId !== undefined;
 }
 
 /** What the exit-guard card is showing: it asks first, then waits for the run to stop. */

@@ -413,6 +413,13 @@ describe.each([
     harness.stdin.write('\r');
     await waitFor(() => controller.getSnapshot().screen !== undefined);
     await waitFor(() => (harness.lastFrame() ?? '').includes('▶ running  ·  run run-0001'));
+    // `waitFor` only waits: what it waited for is asserted here, or the test would end on a stale frame.
+    expect(controller.getSnapshot().screen, 'Enter brought the run view back').toMatchObject({
+      kind: 'run-view',
+      runId: 'run-0001',
+    });
+    expect(harness.lastFrame()).toContain('▶ running  ·  run run-0001');
+    expect(cancel, 'coming back to the view cancels nothing').not.toHaveBeenCalled();
   });
 
   it('below the minimum draws the enlarge line and still takes Esc and Ctrl+C, and nothing else', async () => {

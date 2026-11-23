@@ -709,6 +709,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(props.controller.getSnapshot().exitGuard).toBe('confirm');
     expect(settled, 'the Home is still there').toBe(false);
     expect(cancel).not.toHaveBeenCalled();
+    props.controller.bindHomeFrame(() => true); // the host measured the card on screen (this mount paints nothing)
     props.controller.handleKey('y', { ctrl: true }); // Ctrl+Y
     expect(cancel).toHaveBeenCalledOnce();
     expect(await running).toBe(0);

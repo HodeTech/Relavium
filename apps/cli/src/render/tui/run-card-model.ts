@@ -10,8 +10,9 @@
  *   nothing either: they leave the card pending (`Esc` is the run view's key, `Ctrl+C` its interrupt ladder's) and neither can reject,
  *   because a rejection continues the run (the author routes on it).
  * - **The guards of the other native cards.** An affirmative chord passes dwell, quiet gap, typeahead and lockout (`createChordGuard`)
- *   and counts only while this exact frame is painted and measured (`painted`); a rejection is never delayed. The dwell restarts for
- *   every new frame: a different gate under the cursor, a re-read of the gates, an answer that moved the cursor.
+ *   and counts only while this exact frame is painted and measured (`painted`). So does a human gate's rejection, which continues the
+ *   run; a budget abort is never delayed. The dwell restarts for every new frame: a different gate under the cursor, a re-read of the
+ *   gates, an answer that moved the cursor. The lockout is the Home's one (`history`), shared with the consent card.
  * - **A cursor over the open gates.** With more than one, `↑`/`↓` move it and an answer applies to the gate under it only.
  * - **A budget gate is the same card with other words.** `Ctrl+Y` approves exactly the frozen allowance the log recorded (its structured
  *   field, never a figure read from text) and `Ctrl+N` aborts; an allowance that cannot be approved (unpriced, unrepresentable, legacy)
@@ -40,7 +41,12 @@ import type { HostedLaunch, HostedResumeRequest, RunHost } from '../../home/run-
 import { CliError } from '../../process/errors.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
-import { createChordGuard, reduceChordKey, type ChordStamp } from './chord-guard.js';
+import {
+  createChordGuard,
+  reduceChordKey,
+  type ChordHistory,
+  type ChordStamp,
+} from './chord-guard.js';
 import { formatCostUsd, type StatusColor } from './format.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
@@ -85,7 +91,7 @@ export type RunCardKeyOutcome =
   | { readonly kind: 'ignored' }
   /** The cursor moved. */
   | { readonly kind: 'moved' }
-  /** An affirmative chord that a guard layer (or an unpainted frame) refused. The gate is untouched. */
+  /** A chord that a guard layer (or an unpainted frame) refused: an approval, or a human gate's rejection. The gate is untouched. */
   | { readonly kind: 'refused' }
   /** An answer was sent for this gate. */
   | { readonly kind: 'answered'; readonly gateId: string; readonly decision: GateDecision };
@@ -99,6 +105,12 @@ export interface RunCardDeps {
   readonly now?: () => number;
   /** The guard's numbers (default the product's own); `0` switches a layer off. */
   readonly guard?: ApprovalGuard | undefined;
+  /**
+   * The Home's one chord history (`createChordHistory`), shared with the MCP consent card and the exit guard: an answer on this card
+   * stamps the same lockout the next card reads, so a key held down through an answer cannot answer what the answer opens. Default:
+   * this card's own (a card that stands alone).
+   */
+  readonly history?: ChordHistory | undefined;
   /**
    * Whether this exact snapshot is on screen right now, measured and flushed at 80×24. The default is `false`: a host that has not
    * said so can never approve anything.
@@ -186,6 +198,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
   const guard = createChordGuard({
     now: deps.now ?? (() => performance.now()),
     guard: deps.guard,
+    history: deps.history,
   });
   const painted = deps.painted ?? (() => false);
   const listeners = new Set<() => void>();
@@ -311,7 +324,11 @@ export function createRunCard(deps: RunCardDeps): RunCard {
         guard.foreign(stamp);
         return { kind: 'ignored' };
       }
-      if (guard.decide(stamp, chord, painted(snapshot)) === undefined) return { kind: 'refused' };
+      // A human gate's rejection continues the run (the author routes on it), so it passes every layer an approval does. A budget abort
+      // stops the step at the budget, and refusing is the safe answer there: it is never delayed.
+      const strict = chord === 'allow' || !isBudgetGate(gate);
+      if (guard.decide(stamp, chord, painted(snapshot), strict) === undefined)
+        return { kind: 'refused' };
       send(gate, decision);
       return { kind: 'answered', gateId: gate.gateId, decision };
     },

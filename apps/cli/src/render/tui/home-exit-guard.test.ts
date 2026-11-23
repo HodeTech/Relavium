@@ -13,6 +13,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { createChatStore } from './chat-store.js';
+import { createChordHistory, type ChordHistory } from './chord-guard.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -126,6 +127,12 @@ function mount(
     startChat?: HomeControllerDeps['startChat'];
     launchRun?: () => Promise<string>;
     withHost?: boolean;
+    /** Whether the exit-guard card's exact frame is on screen (default: it is; `false` is a host that has not measured it). */
+    painted?: boolean;
+    /** The monotonic clock the card's lockout runs on (default: it never moves). */
+    now?: () => number;
+    /** The Home's one chord history, shared with whatever answered a card a moment ago. */
+    chordHistory?: ChordHistory;
   } = {},
 ) {
   const log: string[] = [];
@@ -146,10 +153,12 @@ function mount(
     ...(options.launchRun === undefined ? {} : { launchRun: options.launchRun }),
     ...(options.withHost === false ? {} : { hostedRuns: run.host }),
     schedule: clock.schedule,
-    now: () => 0,
+    now: options.now ?? (() => 0),
+    ...(options.chordHistory === undefined ? {} : { chordHistory: options.chordHistory }),
     onExit,
     onError,
   });
+  if (options.painted !== false) controller.bindHomeFrame(() => true);
   return { controller, run, clock, log, onExit };
 }
 
@@ -523,6 +532,68 @@ describe('the exit-guard card', () => {
     expect(clock.pending()).toBe(0);
     clock.advance(HOSTED_RUN_EXIT_GRACE_MS * 2);
     expect(onExit, 'the signal path owns the exit').not.toHaveBeenCalled();
+  });
+});
+
+describe("the exit-guard card's Ctrl+Y cancels a run for good, so it is a deliberate key", () => {
+  const openWith = (options: Parameters<typeof mount>[1]) => {
+    const rig = mount(RUNNING, options);
+    ctrl(rig.controller, 'd');
+    expect(rig.controller.getSnapshot().exitGuard).toBe('confirm');
+    return rig;
+  };
+
+  it('answers nothing while the card has not been measured on screen, and answers once it has', () => {
+    const { controller, run, onExit } = openWith({ painted: false });
+    ctrl(controller, 'y');
+    expect(controller.getSnapshot().exitGuard, 'the card is still asking').toBe('confirm');
+    expect(run.host.cancel, 'nothing was cancelled').not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+    controller.bindHomeFrame(() => true); // the host measured and flushed the card
+    ctrl(controller, 'y');
+    expect(controller.getSnapshot().exitGuard).toBe('stopping');
+    expect(run.host.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers nothing with no host evidence bound at all', () => {
+    const { controller, run } = openWith({ painted: false });
+    controller.bindHomeFrame(undefined);
+    ctrl(controller, 'y');
+    expect(run.host.cancel).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().exitGuard).toBe('confirm');
+  });
+
+  it('refuses a held Ctrl+Y that arrives inside the lockout, and every refused repeat restarts the window', () => {
+    let t = 0;
+    const chordHistory = createChordHistory();
+    // Another card (a gate card, the consent card) was resolved by a key at t = 0 and the key is still down.
+    chordHistory.lastResolvedAt = 0;
+    const { controller, run, onExit } = openWith({ now: () => t, chordHistory });
+    for (const at of [100, 1900, 3800]) {
+      t = at;
+      ctrl(controller, 'y');
+      expect(controller.getSnapshot().exitGuard, `refused at ${String(at)} ms`).toBe('confirm');
+    }
+    expect(run.host.cancel, 'a held key cancelled nothing').not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+    t = 3800 + 2000; // released for the whole window
+    ctrl(controller, 'y');
+    expect(controller.getSnapshot().exitGuard).toBe('stopping');
+    expect(run.host.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('still lets Esc, Ctrl+C and Ctrl+N close the card inside the lockout', () => {
+    for (const [input, key] of [
+      ['', { escape: true }],
+      ['c', { ctrl: true }],
+      ['n', { ctrl: true }],
+    ] as const) {
+      const chordHistory = createChordHistory();
+      chordHistory.lastResolvedAt = 0;
+      const { controller } = openWith({ now: () => 100, chordHistory, painted: false });
+      controller.handleKey(input, key);
+      expect(controller.getSnapshot().exitGuard).toBeUndefined();
+    }
   });
 });
 

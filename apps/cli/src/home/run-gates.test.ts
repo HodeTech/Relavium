@@ -294,6 +294,30 @@ describe('chunks of at most 200', () => {
     expect(pages.length).toBeLessThanOrEqual(Math.ceil(RUN_GATES_MAX_RUNS / RUN_GATES_CHUNK) + 1);
   });
 
+  it('a caller that keeps eight asks for nine summaries, never a chunk: one more than it keeps is enough to say there are more', () => {
+    const { read, pages } = scriptedReader(37);
+    const result = readProjectRunGates(read, HERE, { maxRuns: 8 });
+    expect(result.runs.map((run) => run.runId)).toHaveLength(8);
+    expect(result.truncated).toBe(true);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.limit, 'maxRuns + 1, not RUN_GATES_CHUNK').toBe(9);
+    expect(read.listRunSummaries).toHaveBeenCalledTimes(1);
+  });
+
+  it('a caller that keeps eight and finds exactly eight reads one short page and is not truncated', () => {
+    const { read, pages } = scriptedReader(8);
+    const result = readProjectRunGates(read, HERE, { maxRuns: 8 });
+    expect(result.runs).toHaveLength(8);
+    expect(result.truncated).toBe(false);
+    expect(pages.map((page) => [page.limit, page.served])).toEqual([[9, 8]]);
+  });
+
+  it('never asks for more than a chunk, however many runs the caller keeps', () => {
+    const { read, pages } = scriptedReader(450);
+    readProjectRunGates(read, HERE, { maxRuns: 450 });
+    expect(pages.every((page) => page.limit <= RUN_GATES_CHUNK)).toBe(true);
+  });
+
   it('is not truncated by a project that parks exactly the bound', () => {
     const { read } = scriptedReader(RUN_GATES_MAX_RUNS);
     const result = readProjectRunGates(read, HERE);

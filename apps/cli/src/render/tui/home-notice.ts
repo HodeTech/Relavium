@@ -23,6 +23,12 @@ export interface HomeNoticeOptions {
   readonly showBanner: boolean | undefined;
   readonly isEmpty: boolean;
   readonly hasSessions: boolean;
+  /**
+   * The project parks runs: the Attention rows come first in the strip and are what `↓` focuses, so the notice leaves them the three
+   * rows they cost at the least (their heading, the gap under it and one row). Without it a long notice could leave no row drawn
+   * while `↓` still focused one, and `Enter` would open a card the person had not seen listed.
+   */
+  readonly hasParkedRuns?: boolean;
   readonly page?: number;
   /** Rows the Home spends above the notice that this layout does not know about (the `▶` run row, ADR-0139 §3). Default 0. */
   readonly reservedRows?: number;
@@ -46,7 +52,8 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
     ? 4
     : 1;
   // One Continue row needs body margin + two headings + its title/directory lines.
-  const management = options.hasSessions ? 5 : options.isEmpty ? 0 : 1;
+  const management =
+    (options.hasSessions ? 5 : options.isEmpty ? 0 : 1) + (options.hasParkedRuns === true ? 3 : 0);
   const available = Math.max(
     2,
     options.rows -

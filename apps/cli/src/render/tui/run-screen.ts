@@ -136,6 +136,8 @@ export interface RunScreenInput {
    * the closing one, as before.
    */
   readonly openGate?: boolean | undefined;
+  /** The last `Enter` could not open the card (the run view's own note says why): the key line then says `Enter` tries it again. */
+  readonly gateOpenFailed?: boolean | undefined;
 }
 
 /** The disposition card of a leg that has ended: its rows, already wrapped and cut to the width. */
@@ -216,7 +218,12 @@ function cardOf(end: HostedLegEnd, width: number): RunScreenCard {
   };
 }
 
-function keysFor(phase: RunScreenPhase, armed: boolean, openGate: boolean): string {
+function keysFor(
+  phase: RunScreenPhase,
+  armed: boolean,
+  openGate: boolean,
+  gateOpenFailed: boolean,
+): string {
   const leave: LegendItem = { keys: 'Esc', verb: 'leaves it running' };
   switch (phase) {
     case 'launching':
@@ -233,7 +240,9 @@ function keysFor(phase: RunScreenPhase, armed: boolean, openGate: boolean): stri
     case 'settled':
     case 'replaced':
       return legend([
-        ...(openGate && phase === 'settled' ? [{ keys: 'Enter', verb: 'opens the gate' }] : []),
+        ...(openGate && phase === 'settled'
+          ? [{ keys: 'Enter', verb: gateOpenFailed ? 'tries the gate again' : 'opens the gate' }]
+          : []),
         { keys: 'Esc / Ctrl+C', verb: 'close' },
       ]);
   }
@@ -297,6 +306,7 @@ export function runScreenModel(input: RunScreenInput): RunScreenModel {
       phase,
       input.armed && leg === 'executing',
       input.openGate === true && end?.terminal.disposition === 'paused',
+      input.gateOpenFailed === true,
     ),
     liveRows: fits ? Math.max(RUN_SCREEN_MIN_LIVE_ROWS, input.rows - 1 - fixed) : 0,
   };

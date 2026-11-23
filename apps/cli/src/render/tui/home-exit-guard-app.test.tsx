@@ -94,6 +94,8 @@ describe('the exit-guard card through RootApp', () => {
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
@@ -113,7 +115,7 @@ describe('the exit-guard card through RootApp', () => {
     expect(harness.lastFrame()).not.toContain('Starting chat… · Ctrl+C to exit');
   });
 
-  it('below the 80×24 minimum the card is drawn and its two chords still reach it', async () => {
+  it('below the 80×24 minimum the card is drawn, Ctrl+N and Esc still reach it, and Ctrl+Y answers nothing', async () => {
     const { controller, harness, cancel } = mount({ size: { cols: 60, rows: 20 } });
     await settleFrames();
     harness.stdin.write(CTRL_Y);
@@ -126,8 +128,13 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
     expect(harness.lastFrame()).toContain('Terminal too small (60×20)');
+    // A cancel that cannot be undone needs the card on screen as the person is meant to read it: at 80×24 or more, never in the degrade.
     harness.stdin.write(CTRL_Y);
-    await waitFor(() => controller.getSnapshot().exitGuard === 'stopping');
-    expect(cancel).toHaveBeenCalledTimes(1);
+    await settleFrames();
+    expect(controller.getSnapshot().exitGuard, 'the card is still asking').toBe('confirm');
+    expect(cancel).not.toHaveBeenCalled();
+    harness.stdin.write(CTRL_N);
+    await waitFor(() => controller.getSnapshot().exitGuard === undefined);
+    expect(cancel).not.toHaveBeenCalled();
   });
 });

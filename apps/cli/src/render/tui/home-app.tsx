@@ -408,6 +408,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     }),
   );
   useEffect(() => () => homeFrame.dispose(), [homeFrame]);
+  // The exit guard's `Ctrl+Y` cancels a run for good, so the controller asks this whether the exact landing it holds is on screen.
+  useEffect(() => {
+    controller.bindHomeFrame(homeFrame.visible);
+    return () => controller.bindHomeFrame(undefined);
+  }, [controller, homeFrame]);
   // The gate and budget card's own measured-frame evidence: the card takes an affirmative chord only while its exact snapshot is on
   // screen, and its dwell counts from the first frame that was (ADR-0139 §4). The controller asks it through `bindGateCardFrame`.
   const [cardFrame] = useState(() =>
@@ -744,6 +749,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       showBanner: props.showBanner,
       isEmpty: homeIsEmpty(current.snapshot, current.parkedRuns),
       hasSessions: current.snapshot.recentSessions.length > 0,
+      hasParkedRuns: current.parkedRuns.length > 0,
       reservedRows: hostedRunLabel(current.hostedRun) === undefined ? 0 : 1,
       page: same ? previous.page : 0,
     });
@@ -958,6 +964,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           notices={state.screen.notices}
           interruptArmed={state.interruptArmed}
           openGate={state.gateCards}
+          gateOpenFailed={state.screen.note !== undefined}
           columns={size.cols}
           rows={size.rows}
           color={color}

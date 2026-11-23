@@ -14,6 +14,8 @@ import {
   gateLabel,
   homeFitsTerminal,
   homeIsEmpty,
+  HOSTED_RUN_ENTER_CUE,
+  hostedRunCanBeShown,
   hostedRunLabel,
   runLabel,
   sessionLabel,
@@ -165,6 +167,8 @@ function homeHint(state: {
   readonly hasRecentSessions: boolean;
   readonly hasParkedRuns: boolean;
   readonly parkedFocused: boolean;
+  /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
+  readonly runCanBeShown: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
   if (state.parkedFocused)
@@ -172,6 +176,15 @@ function homeHint(state: {
   if (state.resuming)
     return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
   if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+  if (state.runCanBeShown) {
+    // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
+    const next = state.hasParkedRuns
+      ? '↓ Open a parked run'
+      : state.hasRecentSessions
+        ? '↓ Continue'
+        : 'type a message to chat';
+    return `/ commands · ${HOSTED_RUN_ENTER_CUE} · ${next} · Ctrl+C twice to exit`;
+  }
   if (state.hasParkedRuns)
     return '/ commands · ↓ Open a parked run · type a message to chat · Ctrl+C twice to exit';
   return state.hasRecentSessions
@@ -237,6 +250,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     showBanner: props.showBanner,
     isEmpty,
     hasSessions: snapshot.recentSessions.length > 0,
+    hasParkedRuns: parked.length > 0,
     reservedRows: runRows,
     ...(props.noticePage === undefined ? {} : { page: props.noticePage }),
   });
@@ -473,6 +487,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               hasRecentSessions: snapshot.recentSessions.length > 0,
               hasParkedRuns: parked.length > 0,
               parkedFocused: props.parkedFocus !== undefined,
+              runCanBeShown: hostedRunCanBeShown(props.hostedRun),
             })}
           </Text>
         </Box>
