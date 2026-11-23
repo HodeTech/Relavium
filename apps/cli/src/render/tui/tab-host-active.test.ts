@@ -308,6 +308,18 @@ describe('what a key does', () => {
     },
   );
 
+  it('keeps what to do on screen at 80 columns for a run paused in another project, however long that project’s path is: the path comes last', () => {
+    const long = `/work/${'a-deep-directory/'.repeat(6)}project`;
+    expect(long.length).toBeGreaterThan(100);
+    const rows = classify([run(IDS.elsewhere, 'paused', { projectRoot: long })]);
+    const r = rig(read(rows));
+    const line = lineWith(textOf(r.state), 'answer it from there');
+    expect(line.startsWith('Paused in another project: answer it from there')).toBe(true);
+    expect(displayWidth(line)).toBeLessThanOrEqual(78);
+    // The whole sentence is longer than the line: what the clip took is the end of the path, not the sentence's action.
+    expect(`Paused in another project: answer it from there (${long}).`.length).toBeGreaterThan(78);
+  });
+
   it('says there is no cross-process cancel for a run another process owns', () => {
     const r = rig();
     while (focusedId(r.state) !== IDS.other) r.press('', DOWN);

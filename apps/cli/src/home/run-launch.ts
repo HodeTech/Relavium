@@ -135,6 +135,14 @@ export function launchNotOffered(slug: string): string {
 }
 
 /**
+ * What `open(slug, path)` says when the file that holds `slug` now is not the one the list showed: a file that changed its id since the list
+ * was read, or a second file that took the slug, would otherwise be confirmed and run under a path the person never saw. No flow is begun.
+ */
+export function launchMoved(slug: string, listed: string, now: string): string {
+  return `Not started. ${bounded(slug, LABEL_LIMIT)} is declared by ${bounded(now, REASON_LIMIT)} now, not by ${bounded(listed, REASON_LIMIT)} as listed. Open the list again.`;
+}
+
+/**
  * What `open(slug)` says when two valid files of the project declare that workflow id: no flow is begun, because which of the two a
  * `slug` means is not for this flow to guess (the export refuses a clash the same way). The two paths are the catalog's own.
  */
@@ -554,9 +562,11 @@ export interface RunLaunch {
    * With a `slug` the picker is skipped once and the form starts for that workflow (the Defined tab's `r`), through the same
    * machine, validation, confirmation (default No) and single-start latch. The slug is only COMPARED with the slugs of the valid
    * catalog entries: it is never a path, never read from disk, and one that matches no entry opens nothing ({@link launchNotOffered}).
-   * `Esc` at the first field steps back to the picker, which then opens on that workflow.
+   * `Esc` at the first field steps back to the picker, which then opens on that workflow. With the catalog `path` the row was listed
+   * from, the flow refuses a slug whose file is another one now ({@link launchMoved}): the form and the confirmation then name the file
+   * the person saw. It is compared with the fresh catalog's own path and is never read or resolved.
    */
-  readonly open: (slug?: string) => Promise<string>;
+  readonly open: (slug?: string, path?: string) => Promise<string>;
   /** The launch in flight, if any. */
   readonly session: () => LaunchSession | undefined;
 }
@@ -573,7 +583,7 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
   const { flow, catalog } = deps;
   let current: { readonly session: LaunchSession; readonly done: Promise<string> } | undefined;
 
-  const open = async (slug?: string): Promise<string> => {
+  const open = async (slug?: string, path?: string): Promise<string> => {
     if (current !== undefined) return current.done;
     deps.assertAdmitting?.();
     let entries: readonly CatalogEntry[];
@@ -592,6 +602,7 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
       const [first, second] = choices.filter((choice) => choice.slug === slug);
       if (first === undefined) return launchNotOffered(slug);
       if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
+      if (path !== undefined && first.path !== path) return launchMoved(slug, path, first.path);
     }
 
     const signal = flow.begin();

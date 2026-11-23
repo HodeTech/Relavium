@@ -1,5 +1,6 @@
 import type { RunDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent, ToolActivityEntry } from '@relavium/shared';
+import * as scrubModule from '@relavium/llm/scrub-secrets';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -27,6 +28,15 @@ import {
   SCRUB_INPUT_CHARS,
   type NodeRow,
 } from './run-detail-model.js';
+
+// The real scrubber, counted: what a value costs is how many strings, and how many characters, are handed to it, which is the same on
+// every machine under every load, where a clock is not.
+vi.mock('@relavium/llm/scrub-secrets', async (importOriginal) => {
+  const actual = await importOriginal<typeof scrubModule>();
+  return { ...actual, scrubSecrets: vi.fn(actual.scrubSecrets) };
+});
+const scrubCharsHandedOver = (): number =>
+  vi.mocked(scrubModule.scrubSecrets).mock.calls.reduce((sum, [text]) => sum + text.length, 0);
 
 const RUN_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const T = '2026-11-22T10:00:00.000Z';
@@ -1552,8 +1562,8 @@ describe('readStoredError and clipCodePoints', () => {
   });
 
   it('keeps a pathological code, message or node id to a bound: the scrubbed text is refused above it, and boundedIdentifier cuts before its filter', () => {
-    // Under the document gate (1 MiB) a code or a message above the scrub bound is not scrubbed and not shown in
-    // part: a fixed sentence says only its size. A node id is not scrubbed, so it is cut to its window instead.
+    // Under the document gate (1 MiB) a code, a message or a node id above the scrub bound is not scrubbed and not shown in
+    // part: a fixed sentence says only its size (a stored error is data from the history file, so its node id is scrubbed too).
     const view = readStoredError(
       JSON.stringify({
         code: 'c'.repeat(500_000),
@@ -1563,7 +1573,7 @@ describe('readStoredError and clipCodePoints', () => {
     );
     expect(view?.code).toBe('text too large to show (500000 bytes)');
     expect(view?.message).toBe('text too large to show (300000 bytes)');
-    expect(Array.from(view?.nodeId ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
+    expect(view?.nodeId).toBe('text too large to show (200000 bytes)');
     // The bound is on what a non-scrubbing filter is handed, not only on what is shown.
     const handed: number[] = [];
     boundedIdentifier('x'.repeat(5_000_000), (text) => {
@@ -1621,8 +1631,15 @@ describe('readStoredError and clipCodePoints', () => {
     );
     expect(view?.code).not.toContain('sk-ant-api03');
     expect(view?.message).not.toContain('sk-ant-api03');
-    // The node id is an identifier the workflow authored: it passes the floor and the cut, not the scrubber.
     expect(readStoredError(JSON.stringify({ nodeId: 'plain-node' }))?.nodeId).toBe('plain-node');
+  });
+
+  it('masks a secret in the stored error’s node id too: it is text from the history file, scrubbed whole before it is cut', () => {
+    const secret = `sk-ant-api03-${'N'.repeat(40)}`;
+    const view = readStoredError(JSON.stringify({ code: 'x', nodeId: `node-${secret}` }));
+    expect(view?.nodeId).not.toContain('sk-ant-api03');
+    expect(view?.nodeId).not.toContain(secret.slice(14));
+    expect(view?.nodeId?.startsWith('node-')).toBe(true);
   });
 
   it('boundedIdentifier runs its filter before the final cut, so a secret is masked before any of it can be clipped', () => {
@@ -1676,16 +1693,27 @@ describe('readStoredError and clipCodePoints', () => {
 });
 
 describe('scrubbedBounded scrubs a value whole, or does not show it (ADR-0122 §7.5)', () => {
+  /**
+   * The most strings the floor hands the scrubber for one value, and the most passes over its characters: the floor reads it whole, again
+   * after the terminal controls are gone, and once more per piece around a mask (four calls and three passes today), with room to spare. A
+   * walk that read the value once per character would be tens of thousands of calls.
+   */
+  const CALL_BOUND = 6;
+  const PASS_BOUND = 4;
   const secret = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
   const tooLarge = (bytes: number): string => `text too large to show (${bytes} bytes)`;
 
-  it('scrubs a value of exactly the bound WHOLE, to its very last character, and returns promptly', () => {
+  it('scrubs a value of exactly the bound WHOLE, to its very last character, in a bounded number of passes', () => {
     // The secret ends the value and the whole value is the window, so only a scrub of ALL of it can mask it.
     const value = `${'x'.repeat(SCRUB_INPUT_CHARS - secret.length - 1)} ${secret}`;
     expect(value).toHaveLength(SCRUB_INPUT_CHARS);
-    const started = Date.now();
+    vi.mocked(scrubModule.scrubSecrets).mockClear();
     const shown = scrubbedBounded(value, SCRUB_INPUT_CHARS);
-    expect(Date.now() - started).toBeLessThan(2000);
+    // The work is counted, not timed: the scrubber reads the value a constant number of times (the floor's own passes over it), so the
+    // characters it is handed are a constant multiple of the value's length, never a pass per character.
+    expect(vi.mocked(scrubModule.scrubSecrets).mock.calls.length).toBeGreaterThan(0);
+    expect(vi.mocked(scrubModule.scrubSecrets).mock.calls.length).toBeLessThanOrEqual(CALL_BOUND);
+    expect(scrubCharsHandedOver()).toBeLessThanOrEqual(PASS_BOUND * SCRUB_INPUT_CHARS);
     expect(shown).not.toContain(secret);
     expect(shown).not.toContain('sk-ant');
     expect(shown.startsWith('xxxx')).toBe(true);

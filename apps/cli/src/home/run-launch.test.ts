@@ -38,6 +38,7 @@ import {
   LAUNCH_CANCELLED,
   LAUNCH_NO_WORKFLOWS,
   launchAmbiguous,
+  launchMoved,
   launchNotOffered,
   reduceLaunch,
   type LaunchChoice,
@@ -579,6 +580,63 @@ describe('open(slug) starts the form for one workflow (the Defined tab’s r)', 
     expect(notice.includes(String.fromCharCode(0x1b)), 'no escape byte').toBe(false);
     expect(notice.includes(String.fromCharCode(0x202e)), 'no bidi override').toBe(false);
     expect(r.snapshots).toEqual([]);
+  });
+});
+
+describe('open(slug, path) refuses a slug whose file is not the one the row was listed from', () => {
+  /** The path the Defined row carried: the catalog's own, as it listed `none.relavium.yaml` before the file changed. */
+  const listed = join('.relavium', 'workflows', 'none.relavium.yaml');
+
+  it('starts the form when the fresh catalog holds the slug in the very file the row named', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('no-inputs', listed);
+    await shows(r, 'select', 'Run no-inputs');
+    keys(r).enter();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
+
+  it('a file that moved: the slug is in another file now, so it refuses with both paths and begins no flow', async () => {
+    // The row was listed from `none.relavium.yaml`; by the time `r` is pressed that file is gone and the slug is declared elsewhere.
+    const now = join('.relavium', 'workflows', 'none-moved.relavium.yaml');
+    writeWorkflow('none-moved.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const notice = await r.launch.open('no-inputs', listed);
+    expect(notice).toBe(launchMoved('no-inputs', listed, now));
+    expect(notice).toMatch(/^Not started\. no-inputs is declared by .*none-moved.* now, not by /u);
+    expect(r.snapshots, 'no prompt was ever published').toEqual([]);
+    expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
+    expect(r.startCalls).toHaveLength(0);
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    expect(r.states, 'the machine never left idle').toEqual([]);
+  });
+
+  it('a file that changed its id: the slug now belongs to a second file, and the row’s file is not confirmed in its place', async () => {
+    // `none.relavium.yaml` now declares another id, and a second file took `no-inputs`.
+    writeWorkflow('none.relavium.yaml', NO_INPUTS.replace('id: no-inputs', 'id: renamed'));
+    writeWorkflow('took-the-slug.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const notice = await r.launch.open('no-inputs', listed);
+    expect(notice).toBe(
+      launchMoved(
+        'no-inputs',
+        listed,
+        join('.relavium', 'workflows', 'took-the-slug.relavium.yaml'),
+      ),
+    );
+    expect(r.snapshots).toEqual([]);
+    expect(r.startCalls).toHaveLength(0);
+  });
+
+  it('a path that never was a catalog path is only compared: it names no file and opens nothing', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    writeFileSync(join(root, 'x.relavium.yaml'), NO_INPUTS.replace('id: no-inputs', 'id: x'));
+    const r = rig();
+    const notice = await r.launch.open('no-inputs', '../../x.relavium.yaml');
+    expect(notice).toBe(launchMoved('no-inputs', '../../x.relavium.yaml', listed));
+    expect(r.snapshots).toEqual([]);
+    expect(r.startCalls).toHaveLength(0);
   });
 });
 

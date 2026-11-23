@@ -1,6 +1,6 @@
 # Remembered command permissions
 
-> Last updated: 2026-11-21
+> Last updated: 2026-11-23
 
 - **Status**: Reference — the grant store, `relavium permissions`, the command card with its *This session* and *Remember* answers, and the chat's `/permissions` are implemented on `development` (MVP-4 steps 3 to 7; the chat's `/permissions` is a sheet since step 5, and the bare Home and a bare `relavium permissions` opened it since step 7; since MVP-8 step 4 they open the **Permissions tab of the Home's tab host**, which composes this sheet, see the *On the bare Home* item of the sheet's section below and [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23)).
 - **Surface**: CLI (`relavium permissions`, the chat's command card, `!`)

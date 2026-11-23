@@ -184,7 +184,8 @@ function explain(row: ActiveRow): string {
     case 'other-paused-elsewhere':
       return row.projectRoot === undefined
         ? 'Paused, and its project was not recorded: it cannot be answered here.'
-        : `Paused in another project (${row.projectRoot}): answer it from there.`;
+        : // What to do comes first and the root last, so a long project path is the part a narrow terminal cuts.
+          `Paused in another project: answer it from there (${row.projectRoot}).`;
     case 'held':
       return 'Its end is held in the outbox. relavium status shows what to do.';
   }

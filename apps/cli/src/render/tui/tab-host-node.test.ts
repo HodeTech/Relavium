@@ -360,9 +360,38 @@ describe('what the node page shows', () => {
     await r.openNode(FIXTURE_RUN_IDS.failed, 'build');
     expect(r.page()).toContain('? unavailable  build');
     expect(r.text()).toContain(ABSENCE_SENTENCES.unavailable);
+    // Two rows, each whole at 80 columns: the reason is not the tail of a sentence a narrow terminal cuts.
+    const rows = r.text().split('\n');
+    expect(rows).toContain('  The record of this node is unavailable.');
+    expect(rows).toContain("  Its attempt, or the run's event log, could not be read.");
     expect(legend(tabHostLegendItems(r.state))).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · Esc back');
     r.press('n');
     expect(r.node()?.message).toBe(NODE_NO_ATTEMPT);
+  });
+});
+
+describe('below the 80×24 floor the legend names the level `Esc` steps back to', () => {
+  const SMALL = { columns: 79, terminalRows: 24 };
+  const smallLines = (state: TabHostState): string[] =>
+    tabHostLines(state, SMALL).map((line) => line.text);
+  const HINT = 'Enlarge the terminal — Esc steps back, or closes at the list.';
+
+  it('says `back to the run` on a node page, `back to the list` on a run’s detail, and `close` only at the list', async () => {
+    const r = rig();
+    await r.openNode(FIXTURE_RUN_IDS.failed, 'build');
+    expect(smallLines(r.state), 'a node page: Esc goes back to the run').toEqual([
+      HINT,
+      'Esc back to the run',
+    ]);
+    r.press('', ESC);
+    expect(r.node(), 'Esc stepped back to the run’s detail').toBeUndefined();
+    expect(smallLines(r.state), 'a run’s detail: Esc goes back to the list').toEqual([
+      HINT,
+      'Esc back to the list',
+    ]);
+    r.press('', ESC);
+    expect(r.state.history?.detail, 'Esc stepped back to the list').toBeUndefined();
+    expect(smallLines(r.state), 'the list: Esc closes the screen').toEqual([HINT, 'Esc close']);
   });
 });
 
@@ -638,8 +667,9 @@ describe('p on the run detail pins the run', () => {
     const full = rig();
     await full.openFromList(FIXTURE_RUN_IDS.failed);
     full.press('p');
+    // The store holds fifty run pins and no workflow pin: the sentence names both counts, as the Defined tab's does.
     expect(full.state.history?.detail?.message).toBe(
-      `Cannot pin 11111111: ${String(MAX_RUN_PINS)} pins is the limit. Unpin one first.`,
+      `Cannot pin 11111111: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, 0 of them workflows.`,
     );
     expect(store.listPins()).toHaveLength(MAX_RUN_PINS);
 
@@ -875,7 +905,8 @@ describe('no value reaches a line raw', () => {
       errorJson: JSON.stringify({
         code: `code ${hostile}`,
         message: `msg ${hostile}`,
-        nodeId: `n ${controls}`,
+        // The error's node id is text from the history file: a key-shaped one is masked, not only cleaned of its controls.
+        nodeId: `n ${hostile}`,
       }),
       errorByteLength: 1,
     };
@@ -904,8 +935,9 @@ describe('no value reaches a line raw', () => {
       detail,
       attempts: [attempt],
       events: [started, terminal],
-      // The authored agent is the workflow's identifier (only its controls go); the authored model is scrubbed as a stored one is.
-      authored: { agentSlug: `agent ${controls}`, model: `model ${controls}` },
+      // The authored agent and model come out of the frozen snapshot (a file the project can change): both are scrubbed whole, as a stored
+      // value is, so a key-shaped agent name is masked and not only cleaned of its controls.
+      authored: { agentSlug: `agent ${hostile}`, model: `model ${controls}` },
       runFinished: true,
     });
     const row: NodeRow = buildRunDetailModel({
@@ -950,6 +982,88 @@ describe('no value reaches a line raw', () => {
     expect(drawn).toContain('REDACTED');
     expect(drawn).toContain('tool ');
     expect(drawn).toContain('masked');
+  });
+
+  it('masks the whole output of a node whose id labels a credential, on the page a person reads and in the lines it keeps, and says it masked', () => {
+    const OPAQUE = 'opaqueNODEvalue';
+    const at2 = '2026-11-23T10:00:00.000Z';
+    const detail: StepDetailRecord = {
+      nodeId: 'x-api-key',
+      nodeType: 'agent',
+      status: 'completed',
+      attemptNumber: 1,
+      costMicrocents: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      durationMs: 10,
+      cachedTokens: 0,
+      outputJson: JSON.stringify(OPAQUE),
+      outputByteLength: 1,
+      errorJson: null,
+      errorByteLength: null,
+    };
+    const attempt: StepSummaryRecord = detail;
+    const row = buildRunDetailModel({
+      run: {
+        id: 'r',
+        workflowId: 'w',
+        status: 'completed',
+        executionMode: 'local',
+        triggerType: 'manual',
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        createdAt: at2,
+        updatedAt: at2,
+        outputJson: null,
+        outputByteLength: null,
+        errorJson: null,
+        errorByteLength: null,
+      },
+      steps: [attempt],
+      events: [],
+    }).rows[0];
+    if (row === undefined) throw new Error('the run detail lists the node');
+    const model = buildNodeDetailModel({
+      detail,
+      attempts: [attempt],
+      events: [],
+      runFinished: true,
+    });
+    const state = openNodeTab('r', row, {
+      kind: 'ready',
+      detail: { runId: 'r', nodeId: 'x-api-key', model, attemptNumbers: [1], eventsComplete: true },
+    });
+    const drawn = nodeBody(state, 78, 500)
+      .map((line) => line.text)
+      .join('\n');
+    const kept = state.lines.map((line) => `${line.left} ${line.right ?? ''}`).join('\n');
+    for (const text of [drawn, kept])
+      expect(text, 'the value of a credential-named node').not.toContain(OPAQUE);
+    expect(drawn).toContain('[REDACTED]');
+    expect(drawn).toContain('masked');
+    // The same value under a node id that labels nothing is shown as it is: the mask is the id's doing, not the page's habit.
+    const plainModel = buildNodeDetailModel({
+      detail: { ...detail, nodeId: 'writer' },
+      attempts: [attempt],
+      events: [],
+      runFinished: true,
+    });
+    const plain = openNodeTab('r', row, {
+      kind: 'ready',
+      detail: {
+        runId: 'r',
+        nodeId: 'writer',
+        model: plainModel,
+        attemptNumbers: [1],
+        eventsComplete: true,
+      },
+    });
+    expect(
+      nodeBody(plain, 78, 500)
+        .map((line) => line.text)
+        .join('\n'),
+    ).toContain(OPAQUE);
   });
 
   it('never shows a secret shape from a stored output, error or trace on the page a person opens', async () => {

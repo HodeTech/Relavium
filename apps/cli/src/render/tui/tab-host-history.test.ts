@@ -383,6 +383,24 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(text).not.toContain('◐ running');
   });
 
+  it('keeps the remedy of a held end on screen at 80 columns: the explanation is what a narrow terminal cuts', () => {
+    const r = rig({ total: 2 });
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(0, 'completed').id, {
+      kind: 'ready',
+      detail: detailRead({ held: true }),
+    });
+    const note = r.lines(80).find((line) => line.includes('Its end is held in the outbox'));
+    expect(note, 'the note is drawn').toBeDefined();
+    expect(note).toContain('relavium status shows what to do.');
+    expect(displayWidth(note ?? '')).toBeLessThanOrEqual(78);
+    // The whole note is longer than the line, so the cut is real: it falls on the explanation, which comes last.
+    expect(HISTORY_HELD_NOTE.length).toBeGreaterThan(78);
+    expect(HISTORY_HELD_NOTE.indexOf('relavium status shows what to do.')).toBeLessThan(
+      HISTORY_HELD_NOTE.indexOf('The run is over'),
+    );
+  });
+
   it('scrolls the detail with ↑ and ↓ and keeps the line it is on in view, however long the log', () => {
     const detail = detailRead({ events: 500 });
     const r = rig({ total: 2, detail: { kind: 'ready', detail } });
@@ -418,6 +436,8 @@ describe('the run detail says what it could not read, and keeps what identifies 
     expect(text).toContain('2 rows were written by a newer version and skipped.');
     expect(text, 'the events heading says the count is a floor').toContain('Events (3+)');
     expect(r.lines().filter((line) => line.includes('Only the first'))).toHaveLength(1);
+    // The remedy is a row of its own, so a narrow terminal cannot cut it off the end of the sentence before it.
+    expect(r.lines(80)).toContain('  relavium logs shows the rest.');
     // Each is a notice line, not a plain one.
     const kinds = tabHostLines(r.state, { columns: 80, terminalRows: 24 })
       .filter((line) => /Outbox unreadable|Only the first|newer version/u.test(line.text))
@@ -545,19 +565,59 @@ describe('the keys of the list', () => {
     );
   });
 
-  it('never throws out of a key for a cost that cannot be read for a reason that is not the run’s: the row draws `…` and the next key asks again', () => {
+  it('never throws out of a key for a cost that cannot be read for a reason that is not the run’s: that row says `unreadable`, the rows after it are still read, and no later key asks about it again', () => {
     const failing = summary(2, 'cancelled').id;
     const r = rig({ total: 5, costThrows: new Set([failing]) });
     expect(r.text(), 'opening the tab did not fail').toContain('page 1 (last)');
-    expect(r.lines().filter((line) => line.includes('…')).length).toBeGreaterThan(0);
-    const asked = r.costFor.mock.calls.filter(([id]) => id === failing).length;
-    expect(() => r.press('', DOWN)).not.toThrow();
-    expect(r.cursor()).toBe(1);
-    expect(
-      r.costFor.mock.calls.filter(([id]) => id === failing).length,
-      'the run was asked about again',
-    ).toBeGreaterThan(asked);
+    const asked = (): number => r.costFor.mock.calls.filter(([id]) => id === failing).length;
+    expect(asked(), 'the run was asked about once, when the tab was entered').toBe(1);
+    const rowOf = (index: number): string | undefined =>
+      r.lines().find((line) => line.includes(String(index).padStart(8, '0')));
+    // The faulting run says so in its cost slot as well as in its state, and the two rows after it carry their cost: one run's fault
+    // does not leave the rest of the window without a figure.
+    expect(rowOf(2)).toMatch(/^ {2}\? unreadable 00000002 {2}deploy\s+3h ago {2}unreadable$/u);
+    expect(rowOf(3)).toContain('$0.0123');
+    expect(rowOf(4)).toContain('$0.0123');
+    expect(r.text(), 'no row is left reading `…`').not.toContain('…');
+    for (let key = 0; key < 4; key += 1) expect(() => r.press('', DOWN)).not.toThrow();
+    expect(r.cursor()).toBe(4);
+    expect(asked(), 'the run was not asked about again by any later key').toBe(1);
     expect(r.text()).not.toContain('PRIVATE');
+  });
+
+  it('draws `unreadable` in the cost slot of a run whose log cannot be read, never a bare dash', () => {
+    const damaged = summary(1, 'failed').id;
+    const r = rig({ total: 3, unreadable: new Set([damaged]) });
+    expect(r.lines().find((line) => line.includes('00000001'))).toMatch(/ago\s+unreadable$/u);
+    expect(r.text()).not.toContain('—');
+  });
+
+  it('drops the cost shown least recently when the cache is full: a pinned run above every page stays, whoever scrolls past it', () => {
+    // The pinned run sits at the top of every page, so its cost is looked at again at the start of each one. It was the first cost read,
+    // so a map that dropped the oldest read would lose it as soon as 500 other runs were read; one that drops the least recently shown
+    // keeps it for as long as it is on screen.
+    const pinnedRun = summary(9_000, 'completed');
+    const pinned = rowsOf([pinnedRun], new Set([pinnedRun.id]));
+    const r = rig({ total: 600, pinned });
+    for (let index = 0; index < 599; index += 1) r.press('', DOWN);
+    expect(r.state.history?.read?.query.page, 'the walk reached the last page').toBe(29);
+    expect(r.state.history?.costs.size, '600 rows and the pinned run were read, 500 are kept').toBe(
+      HISTORY_COST_CACHE_MAX,
+    );
+    expect(
+      r.state.history?.costs.has(pinnedRun.id),
+      'the pinned run was shown again and again, so it stayed',
+    ).toBe(true);
+    // Kept, not read again: a map that dropped it while it was not in view (it is only in the window at the top of a page) would ask the
+    // port for it once more at the next page, and the cost would be read twice.
+    expect(
+      r.costFor.mock.calls.filter(([id]) => id === pinnedRun.id),
+      'the pinned run’s cost was read once for the whole walk',
+    ).toHaveLength(1);
+    expect(
+      r.state.history?.costs.has(summary(0, 'completed').id),
+      'a run shown once, long ago, went',
+    ).toBe(false);
   });
 
   it('keeps the cursor on the run it was on across a read, and remembers the position while the screen lives', () => {

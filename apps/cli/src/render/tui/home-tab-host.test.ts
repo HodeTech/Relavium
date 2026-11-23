@@ -136,6 +136,7 @@ function mount(options: Options = {}) {
             read: () => ({
               model: buildDefinedModel({ entries: [], pins: [] }),
               slugOf: (): string | undefined => undefined,
+              pathOf: (): string | undefined => undefined,
             }),
           },
         }

@@ -46,6 +46,11 @@ export interface DefinedRead {
   /** The slug of the catalog entry a row's `entryIndex` names, or `undefined` when no entry sits at that index. */
   readonly slugOf: (entryIndex: number) => string | undefined;
   /**
+   * The catalog path of that same entry, as the catalog read it (the raw path, not the row's sanitized label), or `undefined` when no entry
+   * sits there. A `run` request carries it, so the launch can refuse when the file that holds the slug is no longer this one.
+   */
+  readonly pathOf: (entryIndex: number) => string | undefined;
+  /**
    * What the pin store holds in total, read with the rows: the store caps pins across every project and both kinds, and the tab lists
    * only workflow pins, so a pin refused at the cap names these counts. Absent when the read does not know them.
    */
@@ -72,7 +77,13 @@ export interface DefinedTabState {
  */
 export type DefinedStep =
   | { readonly kind: 'state'; readonly state: DefinedTabState }
-  | { readonly kind: 'run'; readonly slug: string; readonly state: DefinedTabState }
+  | {
+      readonly kind: 'run';
+      readonly slug: string;
+      /** The catalog path the row was listed from: the launch refuses a slug whose file is another one by the time `r` is pressed. */
+      readonly path: string;
+      readonly state: DefinedTabState;
+    }
   | { readonly kind: 'export'; readonly slug: string; readonly state: DefinedTabState }
   | { readonly kind: 'pin'; readonly row: DefinedRow; readonly state: DefinedTabState };
 
@@ -110,20 +121,23 @@ function refusal(verb: 'run' | 'export' | 'pin', row: DefinedRow): string {
   return `Cannot ${verb} ${row.slug}: ${why}.`;
 }
 
+/** The sentence for an entry that is not at its index any more. */
+const goneFromCatalog = (verb: 'run' | 'export', row: DefinedRow): string =>
+  `Cannot ${verb} ${row.slug}: it is not in the catalog any more.`;
+
 /**
- * The slug a request for this row carries, or the sentence that says why there is none. Only a row that parsed, and whose entry is still
- * at its index, has one; nothing is ever derived from the row's label.
+ * The slug (and the catalog path, which only `r` needs) a request for this row carries, or the sentence that says why there is none. Only a
+ * row that parsed, and whose entry is still at its index, has one; nothing is ever derived from the row's label.
  */
 function requestSlug(
   verb: 'run' | 'export',
   state: DefinedTabState,
   row: DefinedRow,
-): { readonly slug: string } | { readonly message: string } {
+): { readonly slug: string; readonly path: string | undefined } | { readonly message: string } {
   if (row.state !== 'ready' || row.entryIndex === undefined) return { message: refusal(verb, row) };
   const slug = state.read.slugOf(row.entryIndex);
-  if (slug === undefined)
-    return { message: `Cannot ${verb} ${row.slug}: it is not in the catalog any more.` };
-  return { slug };
+  if (slug === undefined) return { message: goneFromCatalog(verb, row) };
+  return { slug, path: state.read.pathOf(row.entryIndex) };
 }
 
 /** Fold one key (already past the tab host's own tab keys and `Esc`) into the tab. */
@@ -149,9 +163,11 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
   const request = requestSlug(verb, state, row);
   if ('message' in request)
     return { kind: 'state', state: { ...cleared, message: request.message } };
-  return verb === 'run'
-    ? { kind: 'run', slug: request.slug, state: cleared }
-    : { kind: 'export', slug: request.slug, state: cleared };
+  if (verb === 'export') return { kind: 'export', slug: request.slug, state: cleared };
+  // A run is asked for by the file the row was listed from as well as by its slug: with no file there is nothing to compare, so no request.
+  if (request.path === undefined)
+    return { kind: 'state', state: { ...cleared, message: goneFromCatalog(verb, row) } };
+  return { kind: 'run', slug: request.slug, path: request.path, state: cleared };
 }
 
 /** The row's identity across a read: the catalog entry it names (by slug), else the pin's label. */
@@ -248,8 +264,11 @@ function detailLine(row: DefinedRow, width: number): SheetLine {
   if (row.state === 'other-project')
     return {
       kind: 'text',
+      // What `p` does comes first and the root last, so a long project path is the part a narrow terminal cuts.
       text: clipLine(
-        `Pinned in ${row.projectRoot ?? 'another project'}; p removes the pin.`,
+        (row.projectRoot ?? '') === ''
+          ? 'Pinned in another project; p removes the pin.'
+          : `Pinned in another project; p removes the pin (${row.projectRoot}).`,
         width,
       ),
     };

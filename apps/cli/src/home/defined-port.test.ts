@@ -36,6 +36,11 @@ describe('createDefinedPort', () => {
     expect(first.slugOf(1)).toBe('beta');
     expect(first.slugOf(2), 'no entry sits there').toBeUndefined();
     expect(first.slugOf(-1)).toBeUndefined();
+    // The path is the catalog's own for the same entry (the raw path a launch compares, not a row's sanitized label).
+    expect(first.pathOf(0)).toBe('.relavium/workflows/alpha.relavium.yaml');
+    expect(first.pathOf(1)).toBe('.relavium/workflows/beta.relavium.yaml');
+    expect(first.pathOf(2), 'no entry sits there').toBeUndefined();
+    expect(first.pathOf(-1)).toBeUndefined();
 
     // The catalog changed: a read already taken keeps naming the entries it listed, and the next read lists the new ones.
     entries = [entry('gamma')];

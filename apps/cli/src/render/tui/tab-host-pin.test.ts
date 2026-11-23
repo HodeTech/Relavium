@@ -69,13 +69,15 @@ function rig(
     readonly entries?: readonly CatalogEntry[];
     readonly history?: HistoryPort;
     readonly pins?: PinPort | undefined;
+    /** The Defined read knows only this project's pins (a Home that cannot list every pin the store holds). */
+    readonly withoutAllPins?: boolean;
   } = {},
 ) {
   const list = vi.fn(() => over.entries ?? []);
   const defined = createDefinedPort({
     catalog: { list },
     pins: () => workflowPins(),
-    allPins: () => store.listPins(),
+    allPins: over.withoutAllPins === true ? undefined : () => store.listPins(),
   });
   const reads = vi.fn(defined.read);
   const pins = 'pins' in over ? over.pins : pinPort();
@@ -180,6 +182,18 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     // The next key drops the message, as every message is dropped.
     r.press('', DOWN);
     expect(r.message()).toBeUndefined();
+  });
+
+  it('at the cap says the limit alone when the read does not know what the store holds: no counts are invented', () => {
+    for (let index = 0; index < MAX_RUN_PINS; index += 1)
+      store.pinItem({ kind: 'run', projectRoot: '', ref: `r${String(index)}`, at: index });
+    const r = rig('defined', { entries, withoutAllPins: true });
+    expect(r.state.defined?.read.stored, 'this read carries no counts').toBeUndefined();
+    r.press('p');
+    expect(r.message()).toBe(
+      `Cannot pin alpha: ${String(MAX_RUN_PINS)} pins is the limit. Unpin one first.`,
+    );
+    expect(workflowPins()).toEqual([]);
   });
 
   it('at the cap names what the store holds, lists the pins of other projects as rows, and p on such a row removes it so the pin then fits', () => {
@@ -349,12 +363,62 @@ describe('p on a History row pins the run under its canonical key', () => {
     const readsBefore = r.read.mock.calls.length;
     const before = r.state.history?.read;
     r.press('p');
+    // The sentence the Defined tab gives, with the store's own counts: the total, and how many of them this list does not hold.
     expect(r.message()).toBe(
-      `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} pins is the limit. Unpin one first.`,
+      `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS)} of them workflows.`,
     );
     expect(store.listPins({ kind: 'run' })).toEqual([]);
     expect(r.read.mock.calls.length).toBe(readsBefore);
     expect(r.state.history?.read).toBe(before);
+  });
+
+  it('at the cap names the counts from the store, runs included: the run pins are what this list holds, the workflow pins are not', async () => {
+    for (let index = 0; index < 3; index += 1)
+      store.pinItem({ kind: 'run', projectRoot: '', ref: `r${String(index)}`, at: index });
+    for (let index = 0; index < MAX_RUN_PINS - 3; index += 1)
+      store.pinItem({
+        kind: 'workflow',
+        projectRoot: ROOT,
+        ref: `w${String(index)}`,
+        at: 100 + index,
+      });
+    const r = await historyRig();
+    // The three run pins name no run: they head the list as missing entries, and the run itself is the last entry.
+    r.press('', { end: true });
+    r.press('p');
+    expect(r.message()).toBe(
+      `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS - 3)} of them workflows.`,
+    );
+  });
+
+  describe('at the cap, when the pin port cannot say what the store holds', () => {
+    const full = (): void => {
+      for (let index = 0; index < MAX_RUN_PINS; index += 1)
+        store.pinItem({ kind: 'workflow', projectRoot: ROOT, ref: `w${String(index)}`, at: index });
+    };
+    const LIMIT_ALONE = `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} pins is the limit. Unpin one first.`;
+
+    it('says the limit alone when it has no counts', async () => {
+      full();
+      const r = await historyRig({ pins: { ...pinPort(), counts: undefined } });
+      r.press('p');
+      expect(r.message()).toBe(LIMIT_ALONE);
+    });
+
+    it('says the limit alone, and nothing of the fault, when asking for them throws', async () => {
+      full();
+      const r = await historyRig({
+        pins: {
+          ...pinPort(),
+          counts: () => {
+            throw new Error('PRIVATE-STORE-FAULT');
+          },
+        },
+      });
+      r.press('p');
+      expect(r.message()).toBe(LIMIT_ALONE);
+      expect(r.message()).not.toContain('PRIVATE');
+    });
   });
 
   it('removes a pin whose run is gone by its row', async () => {

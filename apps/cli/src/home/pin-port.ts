@@ -13,7 +13,7 @@ import type { PinPort } from '../render/tui/tab-host-pin.js';
  * - **A row** is removed by its row id, for a pin whose key cannot be spelled back.
  */
 export interface PinPortDeps {
-  readonly store: Pick<RunPinStore, 'pinItem' | 'unpinItem' | 'unpinByRow'>;
+  readonly store: Pick<RunPinStore, 'pinItem' | 'unpinItem' | 'unpinByRow' | 'listPins'>;
   /** The directory a workflow pin is keyed by: the project root, or the working directory when there is no project. May throw. */
   readonly workflowRoot: () => string;
   /** Epoch milliseconds, for the pin's time. */
@@ -39,5 +39,10 @@ export function createPinPort(deps: PinPortDeps): PinPort {
     // (`unpinByRow` removes what the number names NOW). It is the only handle a pin whose key cannot be spelled has, and the window is
     // one list read to one key press; the register records it (deferred-tasks.md, "MVP-8 step 4 review").
     unpinRow: (rowid) => deps.store.unpinByRow(rowid),
+    // Read only when a pin is refused at the cap: every pin the store holds, and how many of them are runs.
+    counts: () => {
+      const all = deps.store.listPins();
+      return { total: all.length, runs: all.filter((pin) => pin.kind === 'run').length };
+    },
   };
 }

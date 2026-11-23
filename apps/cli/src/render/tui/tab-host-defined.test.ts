@@ -79,6 +79,7 @@ function portOver(entries: readonly DefinedEntry[], pins: readonly DefinedPin[] 
           lastRuns: new Map([['code-review', 'completed']]),
         }),
         slugOf: (index) => listed[index]?.slug,
+        pathOf: (index) => listed[index]?.path,
       };
     },
   };
@@ -158,6 +159,56 @@ describe('the rows say what they are, in a glyph and a word', () => {
     );
   });
 
+  it('keeps what `p` does on screen at 80 columns for a pin of another project, however long that project’s path is: the path comes last', () => {
+    const long = `/work/${'a-deep-directory/'.repeat(6)}project`;
+    expect(long.length).toBeGreaterThan(100);
+    const port: DefinedPort = {
+      read: () => ({
+        model: buildDefinedModel({
+          entries: [],
+          pins: [],
+          otherPins: [
+            { kind: 'workflow', ref: 'elsewhere', rowid: 9, oversized: false, projectRoot: long },
+          ],
+        }),
+        slugOf: () => undefined,
+        pathOf: () => undefined,
+      }),
+    };
+    const state = enterTab(freshTabMemory('defined'), 'defined', {
+      port: undefined,
+      defined: port,
+      now: 0,
+    });
+    const lines = tabHostLines(state, { columns: 80, terminalRows: 24 }).map((l) => l.text);
+    const line = lines.find((l) => l.startsWith('Pinned in another project')) ?? '';
+    expect(line, 'the sentence about the pin is drawn').toContain('p removes the pin');
+    expect(displayWidth(line)).toBeLessThanOrEqual(78);
+    expect(`Pinned in another project; p removes the pin (${long}).`.length).toBeGreaterThan(78);
+    // Without a project root the sentence has nothing to add.
+    const bare = tabHostLines(
+      enterTab(freshTabMemory('defined'), 'defined', {
+        port: undefined,
+        defined: {
+          read: () => ({
+            model: buildDefinedModel({
+              entries: [],
+              pins: [],
+              otherPins: [
+                { kind: 'workflow', ref: 'elsewhere', rowid: 9, oversized: false, projectRoot: '' },
+              ],
+            }),
+            slugOf: () => undefined,
+            pathOf: () => undefined,
+          }),
+        },
+        now: 0,
+      }),
+      { columns: 80, terminalRows: 24 },
+    ).map((l) => l.text);
+    expect(bare).toContain('Pinned in another project; p removes the pin.');
+  });
+
   it('says so when the project has no workflow, and when the tab cannot be listed', () => {
     expect(rig([]).lines().join('\n')).toContain(DEFINED_EMPTY);
     const unreadable = enterTab(freshTabMemory('defined'), 'defined', {
@@ -222,7 +273,12 @@ describe('r runs the row’s workflow through the launch flow', () => {
     const r = rig(READY);
     r.press('', DOWN);
     const step = r.press('r');
-    expect(step).toMatchObject({ kind: 'run', slug: 'nightly' });
+    // The request carries the slug and the catalog path the row was listed from, so the launch can refuse a file that is another one by then.
+    expect(step).toMatchObject({
+      kind: 'run',
+      slug: 'nightly',
+      path: '.relavium/workflows/nightly.relavium.yaml',
+    });
     expect(step.kind === 'run' ? step.state.defined?.cursor : undefined).toBe(1);
   });
 
@@ -319,13 +375,32 @@ describe('a crafted slug is inert', () => {
     if (stale === undefined) throw new Error('the tab was not read');
     const shrunk: TabHostState = {
       ...r.state,
-      defined: { ...stale, read: { ...stale.read, slugOf: () => undefined } },
+      defined: {
+        ...stale,
+        read: { ...stale.read, slugOf: () => undefined, pathOf: () => undefined },
+      },
     };
     r.state = shrunk;
     expect(r.press('r').kind).toBe('state');
     expect(r.lines().join('\n')).toContain(
       'Cannot run code-review: it is not in the catalog any more.',
     );
+  });
+
+  it('a request needs the entry’s path as well as its slug: a read that knows the slug and not the file asks the launch for nothing', () => {
+    const r = rig(READY);
+    const stale = r.state.defined;
+    if (stale === undefined) throw new Error('the tab was not read');
+    r.state = {
+      ...r.state,
+      defined: { ...stale, read: { ...stale.read, pathOf: () => undefined } },
+    };
+    expect(r.press('r').kind).toBe('state');
+    expect(r.lines().join('\n')).toContain(
+      'Cannot run code-review: it is not in the catalog any more.',
+    );
+    // Export names no path: it needs the slug alone, as it always did.
+    expect(r.press('x')).toMatchObject({ kind: 'export', slug: 'code-review' });
   });
 });
 

@@ -20,7 +20,12 @@ import {
   runMigrations,
   type DbClient,
 } from '@relavium/db';
-import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavium/shared';
+import {
+  REASONING_EFFORTS,
+  RunEventSchema,
+  type ReasoningEffort,
+  type RunEvent,
+} from '@relavium/shared';
 import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -44,12 +49,15 @@ import {
 } from '../permissions/command-grants.js';
 import type { ChatStoreController } from '../render/tui/chat-store.js';
 import { reconcileInterruptedRuns } from '../history/reconcile.js';
+import { terminalOutboxPath } from '../history/open.js';
+import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
+import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
@@ -66,6 +74,8 @@ import { RunHost, type RunHostSnapshot } from './run-host.js';
 
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
 const WAIT_MS = 5000;
+/** The slack a real-clock dwell is waited past its constant, so a key pressed at the edge lands inside the window it needs. */
+const SETTLE_MARGIN_MS = 200;
 
 // Default production mounts are intercepted only to supply owned, handle-free TTY streams.
 // Preserve every production render option and observe real Ink writes before the journal sweep.
@@ -1696,6 +1706,42 @@ workflow:
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });
 
+    it('lists a workflow pinned under ANOTHER project as an `other-project` row, and names the pins the store holds: the Home hands the tab every pin, not only this project’s', async () => {
+      // The wired-but-dead field once more: a Home built without the all-pins read would list this project's pins alone, the store's cap
+      // would count pins the tab never showed, and every controller test would still pass.
+      project();
+      const otherRoot = mkdtempSync(join(tmpdir(), 'relavium-other-project-'));
+      try {
+        createRunPinStore(client.db).pinItem({
+          kind: 'workflow',
+          projectRoot: otherRoot,
+          ref: 'elsewhere',
+          at: 2,
+        });
+        let captured: RootAppProps | undefined;
+        const { deps } = makeDeps((p) => (captured = p));
+        const drivePromise = driveHome(deps);
+        const props = captured;
+        if (props === undefined) throw new Error('the injected render was never invoked');
+        typeLine(props, '/workflows');
+        await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+        const rows = definedOf(props)?.read.model.rows ?? [];
+        expect(rows.map((row) => [row.slug, row.state, row.pinned])).toEqual([
+          ['beta', 'ready', true],
+          ['elsewhere', 'other-project', true],
+          ['alpha', 'ready', false],
+        ]);
+        // The pin of the other project is a row that can be removed from here, and the store's own total is what the read names.
+        expect(definedOf(props)?.read.stored).toEqual({ total: 2, elsewhere: 1 });
+        props.controller.handleKey('', { escape: true });
+        props.controller.handleKey('c', CTRL_C);
+        props.controller.handleKey('c', CTRL_C);
+        expect(await drivePromise).toBe(EXIT_CODES.success);
+      } finally {
+        rmSync(otherRoot, { recursive: true, force: true });
+      }
+    });
+
     it('x opens the export card over the real prepare, naming the destination in this directory; a No writes nothing', async () => {
       project();
       let captured: RootAppProps | undefined;
@@ -1798,6 +1844,92 @@ workflow:
     });
   });
 
+  describe('ADR-0140 §2: the bare Home’s Active tab is the Home’s own database, outbox and hosted leg', () => {
+    const activeOf = (props: RootAppProps) => {
+      const screen = props.controller.getSnapshot().screen;
+      return screen?.kind === 'tab-host' ? screen.host.active : undefined;
+    };
+    const classOf = (props: RootAppProps, runId: string): string | undefined =>
+      activeOf(props)?.rows.find((row) => row.runId === runId)?.class;
+    /** A terminal event as the outbox holds it: the run is over, and the log has no end for it. */
+    const terminalOf = (runId: string): RunEvent => ({
+      type: 'run:completed',
+      runId,
+      sequenceNumber: 9,
+      timestamp: '2026-11-23T10:00:00.000Z',
+      outputs: {},
+      totalTokensUsed: { input: 1, output: 1 },
+      totalCostMicrocents: 5,
+      durationMs: 10,
+    });
+
+    it('lists the hosted leg and a run whose end is held, from the Home’s own outbox, and re-reads when the leg ends: the change token carries the hosted run', async () => {
+      // The wired-but-dead fields once more: the reader's `hostedRunId` and `listHeld`, and the token's `hostedRunId`. Each is a closure in
+      // `driveHome`, and a Home built without any of them would still pass every controller test, which scripts them.
+      const hosted = await seedRun(client.db, {
+        slug: 'wf',
+        runId: 'hosted-run',
+        state: 'running',
+        atMs: 1_750_000_000_000 - 5_000,
+      });
+      const held = await seedRun(client.db, {
+        slug: 'wf',
+        runId: 'held-run',
+        state: 'running',
+        atMs: 1_750_000_000_000 - 4_000,
+      });
+      // Both ends are in the outbox, as a leg that was cut off at its end leaves them; the hosted leg is still `hosted` (precedence).
+      mkdirSync(join(testHomeDir, '.relavium'), { recursive: true });
+      const outbox = createFileTerminalOutbox(terminalOutboxPath(testHomeDir));
+      await outbox.put(terminalOf(hosted));
+      await outbox.put(terminalOf(held));
+
+      const f = invocationFixture();
+      const run = new RunHost({
+        invocation: f.invocation,
+        io,
+        global,
+        db: client.db,
+        homeDir: testHomeDir,
+      });
+      const idle: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+      const executing: RunHostSnapshot = {
+        launching: false,
+        active: { leg: 'start', runId: hosted, cancelling: false },
+        last: undefined,
+      };
+      let live = true;
+      vi.spyOn(run, 'snapshot').mockImplementation(() => (live ? executing : idle));
+      vi.spyOn(run, 'cancel').mockImplementation(() => {
+        live = false;
+        return true;
+      });
+      vi.spyOn(run, 'close').mockResolvedValue(undefined);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), { run });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'active' })).toBe(true);
+      await vi.waitFor(() => expect(activeOf(props)?.phase).toBe('ready'), { timeout: WAIT_MS });
+      expect(classOf(props, hosted), 'the leg this Home executes').toBe('hosted');
+      expect(classOf(props, held), 'a run whose terminal sits in the Home’s own outbox').toBe(
+        'held',
+      );
+
+      // The leg ends. Nothing is written to the database, so only the token's hosted run tells the poll that what the tab labels moved: the
+      // next tick (the poll's own, on the real clock) reads again, and the run is no longer the leg this Home executes.
+      live = false;
+      await vi.waitFor(() => expect(classOf(props, hosted)).toBe('held'), { timeout: WAIT_MS });
+      expect(classOf(props, held)).toBe('held');
+
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+  });
+
   describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {
     const memoryKeychain = (): KeychainStore => {
       const entries = new Map<string, string>();
@@ -1877,11 +2009,28 @@ workflow:
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
       expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      // The controller runs on the real clock here: the sheet settles (400 ms), then the question must have stood for 800 ms.
-      await new Promise<void>((resolve) => setTimeout(resolve, 600));
+      // The controller runs on the real clock here (`performance.now`): the sheet settles before a `d` arms it, and the question must have
+      // stood for its dwell before `Enter` answers it. Both waits are on the times the sheet recorded itself, bounded and explicit.
+      const opened = tabSheetOf(props)?.openedAt;
+      if (opened === undefined) throw new Error('the permissions sheet is not open');
+      await vi.waitFor(
+        () =>
+          expect(performance.now() - opened).toBeGreaterThanOrEqual(
+            SHEET_SETTLE_MS + SETTLE_MARGIN_MS,
+          ),
+        { timeout: WAIT_MS, interval: 25 },
+      );
       props.controller.handleKey('d', {});
       expect(tabSheetOf(props)?.armed).toBe(true);
-      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      const armed = tabSheetOf(props)?.armedAt;
+      if (armed === undefined) throw new Error('the withdrawal question is not up');
+      await vi.waitFor(
+        () =>
+          expect(performance.now() - armed).toBeGreaterThanOrEqual(
+            SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS,
+          ),
+        { timeout: WAIT_MS, interval: 25 },
+      );
       props.controller.handleKey('', ENTER);
       expect(tabSheetOf(props)?.message?.tone).toBe('done');
       expect(rowLabels(props)).toEqual([]);

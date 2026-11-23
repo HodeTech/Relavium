@@ -1528,11 +1528,14 @@ B2's missing-vertex fail-closed as one-line fixes; they were recorded below inst
   entry's provider to match. *(low · apps/cli/src/chat/session-host.ts)*
 - [~] **The session builders fall back to an env-only key resolver.** *Low; latent.* *(C5)* Every production caller
   passes a keychain-aware one. **Re-check:** make `providers` required. *(low · apps/cli/src/chat/session-host.ts)*
-- [~] **Run outputs show a credential nested under a credential's name.** *Low.* *(D3)* An object or array under
-  `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under such a name
-  prints `[REDACTED]`, and a value that cannot be represented prints no note. **Re-check:** mask any non-null value
-  under a name the scrubber reads as a credential, keep `null`, carry `masked` out of the catch. *(low ·
-  apps/cli/src/render/run-outputs.ts)*
+- [~] **Run outputs and the node page show a credential nested under a credential's name.** *Low.* *(D3)* An object
+  or array under `x-api-key` or `api-key` (a name the scrubber reads as a credential's label) is shown, a `null` under
+  such a name prints `[REDACTED]`, and a value that cannot be represented prints no note. The gap is in the one
+  masking seam, `apps/cli/src/render/output-masking.ts` (`maskedAsMember`), so it has two surfaces: the final summary
+  (`apps/cli/src/render/run-outputs.ts`) and the node page's output preview (`apps/cli/src/history/node-detail-model.ts`,
+  MVP-8 step 4), which mask through it. **Re-check:** mask any non-null value under a name the scrubber reads as a
+  credential, keep `null`, carry `masked` out of the catch; the change is made in the seam and both surfaces are
+  tested. *(low · apps/cli/src/render/output-masking.ts, run-outputs.ts; apps/cli/src/history/node-detail-model.ts)*
 - [~] **The secret walk and the media walk have no depth bound.** *Low; fails closed.* *(D5)* About 3,000 levels
   make the summary `[unserializable]`. **Re-check:** a depth cap with a fixed marker. *(low ·
   packages/core/src/tools/bounding.ts)*

@@ -47,6 +47,7 @@ import {
 import {
   PIN_KEY,
   PIN_UNAVAILABLE,
+  runPinFullMessage,
   toggleRunPin,
   type PinPort,
   type PinToggle,
@@ -164,8 +165,11 @@ export const HISTORY_REREAD_FAILED = 'The history could not be read again.';
 export const HISTORY_NO_FAILED_NODE = 'No node of this run ended failed.';
 export const HISTORY_MISSING_RUN =
   'That pinned run is not in the history any more. p removes the pin.';
+/** The remedy sits in the first 64 columns, so it survives the clip at the 80-column floor; the explanation is what a narrow terminal cuts. */
 export const HISTORY_HELD_NOTE =
-  'Its end is held in the outbox: the run is over, but its record has no end. relavium status shows what to do.';
+  'Its end is held in the outbox. relavium status shows what to do. The run is over, but its record has no end.';
+/** The remedy of a log read in part: its own row on the run detail. */
+export const HISTORY_PARTIAL_REMEDY = 'relavium logs shows the rest.';
 export const HISTORY_HELD_UNREAD =
   'Outbox unreadable: this run’s end may be held, and it may not be running.';
 
@@ -219,11 +223,13 @@ export function unreadableHistoryTab(): HistoryTabState {
 }
 
 /**
- * The costs of the rows within {@link HISTORY_COST_REACH} of `cursor`, added to `known` (through the source, which keeps each fold). The
- * same map when every one of them is already known, so a key that scrolls over rows already read costs nothing. The map keeps at most
- * {@link HISTORY_COST_CACHE_MAX} runs (the oldest read goes first, the source's own bound), so a long scroll does not grow it without end.
- * A read that fails for a reason that is not about the run (the source degrades a damaged log itself) stops the reads of this key: the rows
- * left without a cost draw `…`, and the next key asks again, so a key never throws out of the tab.
+ * The costs of the rows within {@link HISTORY_COST_REACH} of `cursor`, added to `known` (through the source, which keeps each fold). A row
+ * already known is not asked for again, so a key that scrolls over rows already read costs the source nothing. The map keeps at most
+ * {@link HISTORY_COST_CACHE_MAX} runs and drops the one shown LEAST RECENTLY first: every row of the window is moved to the end of the map
+ * before anything is added (a pinned run that sits above every page stays, and a row of the window is never what a new read pushes out),
+ * so a long scroll does not grow it without end. A read that throws for a reason that is not about the run (the source degrades a damaged
+ * log itself) is kept as `unreadable` for this screen: the row says so, the rows after it are still read, and the next key does not ask
+ * again, so a key never throws out of the tab and one faulting run never blocks the rest of the window.
  */
 function costsAround(
   known: ReadonlyMap<string, HistoryCost>,
@@ -234,25 +240,35 @@ function costsAround(
   const entries = entriesOf(read);
   const from = Math.max(0, cursor - HISTORY_COST_REACH);
   const to = Math.min(entries.length, cursor + HISTORY_COST_REACH + 1);
-  let costs: Map<string, HistoryCost> | undefined;
+  const costs = new Map(known);
+  const missing: HistoryRow[] = [];
   for (let index = from; index < to; index += 1) {
     const entry = entries[index];
-    if (entry?.kind !== 'run' || known.has(entry.row.id) || costs?.has(entry.row.id) === true)
-      continue;
-    let cost: HistoryCost;
-    try {
-      cost = port.cost(entry.row);
-    } catch {
-      break;
-    }
-    costs ??= new Map(known);
-    costs.set(entry.row.id, cost);
-    if (costs.size > HISTORY_COST_CACHE_MAX) {
-      const oldest = costs.keys().next();
-      if (oldest.done !== true) costs.delete(oldest.value);
+    if (entry?.kind !== 'run') continue;
+    const kept = costs.get(entry.row.id);
+    if (kept === undefined) missing.push(entry.row);
+    else {
+      // Shown now: the youngest in the map, so the oldest to go is a row that is not in view.
+      costs.delete(entry.row.id);
+      costs.set(entry.row.id, kept);
     }
   }
-  return costs ?? known;
+  for (const row of missing) {
+    if (costs.has(row.id)) continue;
+    let cost: HistoryCost;
+    try {
+      cost = port.cost(row);
+    } catch {
+      cost = { kind: 'unreadable' };
+    }
+    costs.set(row.id, cost);
+    while (costs.size > HISTORY_COST_CACHE_MAX) {
+      const oldest = costs.keys().next();
+      if (oldest.done === true) break;
+      costs.delete(oldest.value);
+    }
+  }
+  return costs;
 }
 
 /**
@@ -492,8 +508,12 @@ function pinSelected(
     pinned,
     rowid: entry.pinRowid,
   });
-  // The cap changed nothing, so there is nothing to read again.
-  if (toggled.outcome === 'full') return withHistoryMessage(state, toggled.message);
+  // The cap changed nothing, so there is nothing to read again; the reason names what the store holds, which this list does not all show.
+  if (toggled.outcome === 'full')
+    return withHistoryMessage(
+      state,
+      runPinFullMessage(context.pins, entry.kind === 'run' ? entry.row.shortId : entry.label),
+    );
   const runId = entryRunId(entry);
   const again = reread(
     state,
@@ -526,9 +546,14 @@ function pinDetail(
     pinned: isRunPinned(list, detail.runId),
     rowid: undefined,
   });
-  // The cap changed nothing, so there is nothing to read again.
-  if (toggled.outcome === 'full' || list === undefined)
-    return withDetailMessage(state, detail, toggled.message);
+  // The cap changed nothing, so there is nothing to read again; the reason names what the store holds, which this list does not all show.
+  if (toggled.outcome === 'full')
+    return withDetailMessage(
+      state,
+      detail,
+      runPinFullMessage(context.pins, shortRunId(detail.runId)),
+    );
+  if (list === undefined) return withDetailMessage(state, detail, toggled.message);
   const again = reread(
     state,
     context.history,
@@ -653,10 +678,11 @@ function statusLine(read: HistoryRead): string {
   return `${SCOPE_WORDS[scope]} · ${status ?? 'every finished run'} · page ${String(page + 1)}${last}`;
 }
 
+/** The cost slot of a row: a figure, `…` before it is read, `not final` for a run that has not ended, `unreadable` for a log that cannot be read (never a bare dash). */
 function costWords(cost: HistoryCost | undefined): string {
   if (cost === undefined) return '…';
   if (cost.kind === 'text') return clipLine(cost.text, COST_COLUMN);
-  return cost.kind === 'not-final' ? 'not final' : '—';
+  return cost.kind === 'not-final' ? 'not final' : 'unreadable';
 }
 
 /** The glyph and the word of a run row: its status, or `unreadable` when its log could not be read. */
@@ -881,11 +907,14 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
   }
   if (read.terminalHeld) lines.push({ kind: 'notice', left: HISTORY_HELD_NOTE });
   if (read.heldUnread) lines.push({ kind: 'notice', left: HISTORY_HELD_UNREAD });
-  if (!read.eventsComplete)
+  // Two rows, not one: the remedy is a row of its own, so a narrow terminal cannot clip it away.
+  if (!read.eventsComplete) {
     lines.push({
       kind: 'notice',
-      left: `Only the first ${String(read.events.length)} events were read: the figures may be partial. relavium logs shows the rest.`,
+      left: `Only the first ${String(read.events.length)} events were read: the figures may be partial.`,
     });
+    lines.push({ kind: 'notice', left: HISTORY_PARTIAL_REMEDY });
+  }
   if (read.skippedRows > 0)
     lines.push({
       kind: 'notice',

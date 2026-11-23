@@ -587,7 +587,7 @@ describe('what is drawn', () => {
     expect(lines.at(-1)).toBe('[Enter] withdraw · Esc keep');
   });
 
-  it('below 80×24 is the one line that says to enlarge, and the way out', () => {
+  it('below 80×24 is two lines: the hint that says to enlarge, and the legend with the way out (`Esc close` at a tab’s list)', () => {
     for (const geometry of [
       { columns: 79, terminalRows: 24 },
       { columns: 80, terminalRows: 23 },

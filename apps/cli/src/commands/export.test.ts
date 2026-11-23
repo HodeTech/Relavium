@@ -36,9 +36,12 @@ mcp_servers:
 
 describe('exportCommand (2.J)', () => {
   let cwd: string;
+  /** A temporary operator home: the path rules read it, so no test can reach the real one. */
+  let homeDir: string;
 
   beforeEach(() => {
     cwd = mkdtempSync(join(tmpdir(), 'relavium-export-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'relavium-export-home-'));
     mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
     mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
     writeFileSync(join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'), WORKFLOW);
@@ -46,6 +49,7 @@ describe('exportCommand (2.J)', () => {
   });
   afterEach(() => {
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   function deps(json = false): { d: ExportCommandDeps; out: () => string } {
@@ -57,7 +61,7 @@ describe('exportCommand (2.J)', () => {
       configPath: undefined,
       verbosity: 'normal',
     };
-    return { d: { io, global }, out };
+    return { d: { io, global, homeDir }, out };
   }
 
   it('exports a workflow by id to <id>.relavium.yaml in cwd, re-importable + comment-free', () => {

@@ -64,6 +64,7 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
       return {
         model,
         slugOf: (entryIndex) => entries[entryIndex]?.slug,
+        pathOf: (entryIndex) => entries[entryIndex]?.path,
         ...(all === undefined
           ? {}
           : {

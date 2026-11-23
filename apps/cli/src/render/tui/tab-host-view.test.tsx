@@ -96,6 +96,7 @@ const definedHost = (): TabHostState =>
             ],
           }),
           slugOf: (index: number) => entries[index]?.slug,
+          pathOf: (index: number) => entries[index]?.path,
         };
       },
     },

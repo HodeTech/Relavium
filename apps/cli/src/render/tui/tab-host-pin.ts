@@ -30,6 +30,17 @@ export interface PinPort {
   readonly unpinRun: (runId: string) => boolean;
   /** Remove the pin whose row has this id: the way out for a pin whose key cannot be spelled. */
   readonly unpinRow: (rowid: number) => boolean;
+  /**
+   * What the store holds now, for a refusal at the cap on the History tab (it lists run pins only, so the person needs the stored total to see
+   * why a pin was refused). Absent ⇒ the refusal does not name the counts. May throw: the refusal then does not name them either.
+   */
+  readonly counts?: (() => PinCounts) | undefined;
+}
+
+/** What the pin store holds: every pin, and how many of them are run pins. */
+export interface PinCounts {
+  readonly total: number;
+  readonly runs: number;
 }
 
 /** What a toggle did. `message` is the sentence for the tab's message row. */
@@ -58,11 +69,36 @@ export interface PinsStored {
   readonly elsewhere: number;
 }
 
-/** The reason for a refusal at the cap; with the store's counts when the caller has them. */
-export function pinFullMessage(label: string, stored?: PinsStored): string {
+/** What the Defined tab calls the pins it does not list: the workflow pins of other projects, and the run pins. */
+const ELSEWHERE_ON_DEFINED = 'in other projects or runs';
+/** What the History tab calls the pins it does not list: the workflow pins. */
+const ELSEWHERE_ON_HISTORY = 'of them workflows';
+
+/** The reason for a refusal at the cap; with the store's counts when the caller has them. `others` names the pins the tab does not list. */
+export function pinFullMessage(
+  label: string,
+  stored?: PinsStored,
+  others: string = ELSEWHERE_ON_DEFINED,
+): string {
   if (stored === undefined)
     return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} pins is the limit. Unpin one first.`;
-  return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} is the limit; ${String(stored.total)} stored, ${String(stored.elsewhere)} in other projects or runs.`;
+  return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} is the limit; ${String(stored.total)} stored, ${String(stored.elsewhere)} ${others}.`;
+}
+
+/**
+ * The refusal at the cap on the History tab: the same sentence the Defined tab gives, with the store's own counts (the total, and how many of
+ * them are not runs, which this list does not hold). Without a count, or when the store cannot be read, the sentence without them.
+ */
+export function runPinFullMessage(port: PinPort, label: string): string {
+  let stored: PinsStored | undefined;
+  try {
+    const counts = port.counts?.();
+    if (counts !== undefined)
+      stored = { total: counts.total, elsewhere: counts.total - counts.runs };
+  } catch {
+    stored = undefined;
+  }
+  return pinFullMessage(label, stored, ELSEWHERE_ON_HISTORY);
 }
 
 /** What a toggle that threw says: content-free, because the cause may quote a stored value. */

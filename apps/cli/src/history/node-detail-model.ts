@@ -14,7 +14,6 @@ import {
   NODE_ROW_GLYPH,
   absenceText,
   allSettled,
-  boundedIdentifier,
   buildNodeCost,
   buildNodeTokens,
   buildToolActivityForAttempt,
@@ -545,7 +544,7 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
     authored: {
       ...(input.authored?.agentSlug === undefined
         ? {}
-        : { agent: boundedIdentifier(input.authored.agentSlug) }),
+        : { agent: scrubbedBounded(input.authored.agentSlug) }),
       ...(input.authored?.model === undefined
         ? {}
         : { model: scrubbedBounded(input.authored.model) }),

@@ -207,7 +207,7 @@ describe('createFileTerminalOutbox', () => {
     expect(held[0]?.type === 'run:completed' ? held[0].outputs : undefined).toEqual(hostile);
   });
 
-  it('stamps the file by size and mtime, so a poll can tell an unchanged outbox from one that was appended to', async () => {
+  it('stamps the file by its size, so a poll can tell an unchanged outbox from one that was appended to', async () => {
     expect(terminalOutboxStamp(path), 'an absent file has a stamp of its own').toBe('absent');
     const outbox = createFileTerminalOutbox(path);
     await outbox.put(terminal('r1'));
@@ -219,9 +219,11 @@ describe('createFileTerminalOutbox', () => {
   });
 
   it('has no stamp for a file it cannot look at, which is a reason to read it whole', () => {
-    // A path whose parent is a regular file: stat fails with ENOTDIR, not ENOENT.
+    // A path whose parent is a regular file: POSIX stat fails with ENOTDIR, which is not ENOENT, so there is no stamp and the file is read
+    // whole. Windows reports ENOENT for the same path, which stamps as an absent file (`absent`): either answer is a correct one for a
+    // path that holds no outbox.
     const file = join(dir, 'plain');
     writeFileSync(file, 'x');
-    expect(terminalOutboxStamp(join(file, 'inside'))).toBeUndefined();
+    expect([undefined, 'absent']).toContain(terminalOutboxStamp(join(file, 'inside')));
   });
 });

@@ -70,7 +70,7 @@ const RUNNING: RunHostSnapshot = {
 interface Options {
   readonly withChat?: boolean;
   readonly defined?: DefinedPort | undefined;
-  readonly launch?: ((slug?: string) => Promise<string>) | undefined;
+  readonly launch?: ((slug?: string, path?: string) => Promise<string>) | undefined;
   readonly exporter?: ((slug: string) => Promise<string>) | undefined;
   readonly host?: () => RunHostSnapshot;
   /** Pins that put an entry the catalog lacks in front of the others. */
@@ -89,6 +89,7 @@ function definedPort(pinned: readonly string[] = []) {
       })),
     }),
     slugOf: (index: number) => entries[index]?.slug,
+    pathOf: (index: number) => entries[index]?.path,
   }));
   return { port: { read } satisfies DefinedPort, read };
 }
@@ -258,7 +259,8 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     controller.handleKey('', DOWN);
     controller.handleKey('r', {});
     expect(launch).toHaveBeenCalledTimes(1);
-    expect(launch).toHaveBeenCalledWith('nightly');
+    // The row's slug and the catalog path it was listed from: the flow refuses a slug whose file is another one by the time of the press.
+    expect(launch).toHaveBeenCalledWith('nightly', 'nightly.relavium.yaml');
     expect(controller.getSnapshot().nativeActionBusy).toBe(true);
     // The flow owns the keyboard: a key at the screen behind it moves nothing (the cursor is on the last row, so only ↑ would show it).
     controller.handleKey('', UP);
@@ -287,6 +289,59 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     controller.handleKey('', ESC);
     expect(hostOf(controller)?.tab).toBe('defined');
     expect(hostOf(controller)?.defined?.cursor).toBe(1);
+  });
+
+  it('r with a leg already executing shows the refusal on the tab and does not open the view of the other run', async () => {
+    // The host refuses a second start while a leg executes, so the flow's notice is the refusal; the leg that is executing is another run,
+    // and its view is not what `r` asked for.
+    const launch = vi.fn(() => Promise.resolve('A run is already executing: run-0001.'));
+    const { controller } = mount({ launch, host: () => RUNNING });
+    submit(controller, '/workflows');
+    controller.handleKey('', DOWN);
+    controller.handleKey('r', {});
+    await flush();
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().screen?.kind, 'the tab host is still in front').toBe(
+      'tab-host',
+    );
+    expect(hostOf(controller)?.tab).toBe('defined');
+    expect(messageOf(controller)).toBe('A run is already executing: run-0001.');
+    expect(hostOf(controller)?.defined?.cursor, 'the tab is left where it was').toBe(1);
+  });
+
+  it('r that ends with the leg gone and nothing started shows what the flow said on the tab', async () => {
+    let snapshot: RunHostSnapshot = RUNNING;
+    const launch = vi.fn(() => {
+      snapshot = IDLE; // the leg that was executing settled while the form was open, and this launch was left
+      return Promise.resolve('Run cancelled.');
+    });
+    const { controller } = mount({ launch, host: () => snapshot });
+    submit(controller, '/workflows');
+    controller.handleKey('', DOWN);
+    controller.handleKey('r', {});
+    await flush();
+    expect(controller.getSnapshot().screen?.kind).toBe('tab-host');
+    expect(messageOf(controller)).toBe('Run cancelled.');
+  });
+
+  it('r that starts a run while another one ended meanwhile shows the new run’s view', async () => {
+    let snapshot: RunHostSnapshot = RUNNING;
+    const launch = vi.fn(() => {
+      snapshot = {
+        launching: false,
+        active: { leg: 'start', runId: 'run-0002', cancelling: false },
+        last: undefined,
+      };
+      return Promise.resolve('Started nightly as run run-0002. It runs in the background.');
+    });
+    const { controller } = mount({ launch, host: () => snapshot });
+    submit(controller, '/workflows');
+    controller.handleKey('', DOWN);
+    controller.handleKey('r', {});
+    await flush();
+    const screen = controller.getSnapshot().screen;
+    expect(screen?.kind).toBe('run-view');
+    expect(screen?.kind === 'run-view' ? screen.runId : undefined).toBe('run-0002');
   });
 
   it('r on a row that is not a workflow of the catalog opens no flow', async () => {

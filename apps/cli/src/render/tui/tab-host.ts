@@ -371,7 +371,12 @@ function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
 export type TabHostStep =
   | { readonly kind: 'close'; readonly note?: string }
   | { readonly kind: 'state'; readonly state: TabHostState }
-  | { readonly kind: 'run'; readonly slug: string; readonly state: TabHostState }
+  | {
+      readonly kind: 'run';
+      readonly slug: string;
+      readonly path: string;
+      readonly state: TabHostState;
+    }
   | { readonly kind: 'export'; readonly slug: string; readonly state: TabHostState }
   | { readonly kind: 'open-view'; readonly runId: string; readonly state: TabHostState }
   | { readonly kind: 'open-gate'; readonly runId: string; readonly state: TabHostState }
@@ -626,9 +631,23 @@ function plainBody(state: TabHostState): readonly SheetLine[] {
  */
 export const TAB_HOST_TOO_SMALL = 'Enlarge the terminal — Esc steps back, or closes at the list.';
 
-/** The lines when the terminal is below the floor: why, and the way out. */
-function tooSmallLines(): readonly SheetLine[] {
-  const items: readonly LegendItem[] = [TAB_HOST_KEYS.close];
+/** What `Esc` does on a run's detail and on a node page: it steps back one level, and the legend says which. */
+const TOO_SMALL_BACK_TO_LIST: LegendItem = { keys: 'Esc', verb: 'back to the list' };
+const TOO_SMALL_BACK_TO_RUN: LegendItem = { keys: 'Esc', verb: 'back to the run' };
+
+/** The `Esc` the legend below the floor names: the level it steps back to, or `close` from a tab's list (the tab host's own rule). */
+function tooSmallEscape(state: TabHostState): LegendItem {
+  const detail = state.history?.detail;
+  if (detail === undefined) return TAB_HOST_KEYS.close;
+  return detail.node === undefined ? TOO_SMALL_BACK_TO_LIST : TOO_SMALL_BACK_TO_RUN;
+}
+
+/**
+ * The lines when the terminal is below the floor: why (the hint), and the way out (the legend), two lines. The legend names the level
+ * `Esc` steps back to, so a run's detail and a node page do not promise a close that the key does not make.
+ */
+function tooSmallLines(state: TabHostState): readonly SheetLine[] {
+  const items: readonly LegendItem[] = [tooSmallEscape(state)];
   return [
     { kind: 'text', text: TAB_HOST_TOO_SMALL },
     { kind: 'legend', text: legend(items), spans: legendSpans(items) },
@@ -638,10 +657,10 @@ function tooSmallLines(): readonly SheetLine[] {
 /**
  * The tab host's lines, top to bottom, for a terminal of this size: the strip and a rule, the tab's body, and the foot (on Permissions the
  * note, the message row and the legend; on the others, the legend). At most {@link TAB_HOST_ROWS} lines, one row spare in a terminal of
- * exactly 24, so the inline renderer never reaches the bottom edge. Below the floor it is the one line that says to enlarge, and the way out.
+ * exactly 24, so the inline renderer never reaches the bottom edge. Below the floor it is two lines: the hint that says to enlarge, and the legend with the way out.
  */
 export function tabHostLines(state: TabHostState, geometry: SheetGeometry): readonly SheetLine[] {
-  if (!tabHostCanArm(geometry)) return tooSmallLines();
+  if (!tabHostCanArm(geometry)) return tooSmallLines(state);
   const width = usableColumns(geometry.columns);
   const budget = Math.min(TAB_HOST_ROWS, geometry.terminalRows - 1);
   const head = [tabStrip(state.tab, width), rule(width)];

@@ -41,6 +41,32 @@ const scrubbedModelNames = (): Set<string> => {
   return names;
 };
 
+/**
+ * `work`'s result and how many code points its `for…of` walks over strings asked their iterator for: the work of a walk, counted. The
+ * string iterator is replaced for the span of the call only, and put back whatever `work` does.
+ */
+function countCodePointSteps<T>(work: () => T): { readonly value: T; readonly steps: number } {
+  const original = String.prototype[Symbol.iterator];
+  let steps = 0;
+  String.prototype[Symbol.iterator] = function counted(this: string): IterableIterator<string> {
+    const inner = original.call(this);
+    return {
+      next: () => {
+        steps += 1;
+        return inner.next();
+      },
+      [Symbol.iterator]() {
+        return this;
+      },
+    };
+  };
+  try {
+    return { value: work(), steps };
+  } finally {
+    String.prototype[Symbol.iterator] = original;
+  }
+}
+
 const RUN_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const T = '2026-11-22T10:00:00.000Z';
 const base = (sequenceNumber: number) => ({ runId: RUN_ID, timestamp: T, sequenceNumber });
@@ -210,10 +236,14 @@ describe('boundText', () => {
   });
 
   it('walks only as far as the bound, so a very large value costs a bound, not its length', () => {
-    const started = performance.now();
-    const cut = boundText('x'.repeat(50_000_000));
+    // The work is counted, not timed: every step the string's iterator is asked for is one code point walked, so the count is the same on
+    // every machine under every load.
+    const { value: cut, steps } = countCodePointSteps(() => boundText('x'.repeat(50_000_000)));
     expect(cut).toMatchObject({ truncated: true, chars: OUTPUT_PREVIEW_MAX_CHARS });
-    expect(performance.now() - started).toBeLessThan(1000);
+    expect(cut.text).toHaveLength(OUTPUT_PREVIEW_MAX_CHARS);
+    // One step per code point kept, and the one that found the bound: never a step for the rest of the 50 million.
+    expect(steps).toBeLessThanOrEqual(OUTPUT_PREVIEW_MAX_CHARS + 1);
+    expect(steps, 'the walk did walk the string').toBeGreaterThan(0);
   });
 });
 
@@ -288,13 +318,12 @@ describe('buildOutputPreview: the cost is a bound, not the stored document', () 
     expect(Buffer.byteLength(eightMiB)).toBe(8 * 1024 * 1024);
     const parse = vi.spyOn(JSON, 'parse');
     try {
-      const started = performance.now();
       const preview = buildOutputPreview(eightMiB);
       expect(preview.text).toBe('output too large to preview (8388608 bytes)');
       expect(preview).toMatchObject({ truncated: false, masked: false, lines: 1 });
+      // The work is counted, not timed: the document is neither parsed nor handed to the scrubber, so it cost nothing but its length.
       expect(parse).not.toHaveBeenCalled();
       expect(scrubCalls()).toBe(0);
-      expect(performance.now() - started).toBeLessThan(500);
     } finally {
       parse.mockRestore();
     }
@@ -318,14 +347,16 @@ describe('buildOutputPreview: the cost is a bound, not the stored document', () 
     expect(buildOutputPreview(wide).text).toMatch(/^output too large to preview \(\d+ bytes\)$/u);
   });
 
-  it('previews a large document under the bound, bounded, and quickly', () => {
+  it('previews a large document under the bound, bounded: the scrubber is handed a bounded number of strings, never one per row', () => {
     const rows = Array.from({ length: 30_000 }, (_, index) => ({ n: index, text: `row ${index}` }));
     const stored = JSON.stringify(rows);
     expect(Buffer.byteLength(stored)).toBeGreaterThan(500_000);
     expect(Buffer.byteLength(stored)).toBeLessThan(MAX_STORED_OUTPUT_BYTES);
-    const started = performance.now();
     const preview = buildOutputPreview(stored);
-    expect(performance.now() - started).toBeLessThan(500);
+    // The work is counted, not timed: at most five strings per line shown and the one emitted text (output-masking.test.ts derives the
+    // five), where a walk of all 30,000 rows would hand over tens of thousands.
+    expect(scrubCalls()).toBeLessThanOrEqual(5 * OUTPUT_PREVIEW_MAX_LINES + 1);
+    expect(scrubCalls(), 'the walk did read the rows it showed').toBeGreaterThan(0);
     expect(preview).toMatchObject({ truncated: true, lines: OUTPUT_PREVIEW_MAX_LINES });
     // The preview is the head of what a full pretty-print would show, cut at the line bound.
     expect(preview.text).toBe(
@@ -606,6 +637,21 @@ describe('buildNodeDetailModel', () => {
     expect(model.error?.message).not.toContain('\n');
     expect(model.error?.message).not.toContain('sk-ant-api03');
     expect(model.outputPreview?.text).toBe('partial\noutput');
+  });
+
+  it('masks an authored agent that is shaped like a key, as it masks the authored model: both come out of a file the project can change', () => {
+    const secret = `sk-ant-api03-${'B'.repeat(40)}`;
+    const model = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [],
+      authored: { agentSlug: `agent-${secret}`, model: 'plain-model' },
+    });
+    expect(model.authored.agent).toBeDefined();
+    expect(model.authored.agent).not.toContain('sk-ant-api03');
+    expect(JSON.stringify(model.authored)).not.toContain(secret);
+    expect(model.authored.agent?.startsWith('agent-')).toBe(true);
+    expect(model.authored.model).toBe('plain-model');
   });
 
   it('masks an authored model that is shaped like a key, as it masks a stored one', () => {

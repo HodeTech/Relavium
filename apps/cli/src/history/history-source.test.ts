@@ -18,13 +18,16 @@ import type { RunStatus } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { seedRun } from '../test-support.js';
+import { buildHistoryRows, type HistoryRow } from './history-model.js';
 import {
+  HISTORY_COST_CACHE_MAX,
   HISTORY_FETCH_ROWS,
   HISTORY_VIEW_ROWS,
   createHistorySource,
   type HistoryEntry,
   type HistorySource,
 } from './history-source.js';
+import { UNVERIFIED_USAGE } from './usage-coverage.js';
 
 const HERE = '/work/here';
 const THERE = '/work/there';
@@ -343,5 +346,94 @@ describe('the cost: lazy, folded once per finished run', () => {
     expect(source.cost(damaged)).toEqual({ kind: 'unreadable' });
     expect(source.cost(healthy).kind, 'its neighbour is read').toBe('text');
     expect(foldCalls, 'the damaged fold was attempted once').toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('the cost cache: at most HISTORY_COST_CACHE_MAX runs, and the run asked for least recently goes first', () => {
+  /** `count` finished rows, `run-000`…, read straight from records (the cache is keyed by the row, so no database is needed to fill it). */
+  function rowsOf(count: number): readonly HistoryRow[] {
+    const at = new Date(T0).toISOString();
+    return buildHistoryRows({
+      runs: Array.from({ length: count }, (_, index) => ({
+        id: `run-${String(index).padStart(3, '0')}`,
+        workflowId: 'wf',
+        status: 'completed' as const,
+        executionMode: 'local' as const,
+        triggerType: 'manual' as const,
+        startedAt: at,
+        completedAt: at,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostMicrocents: 0,
+        createdAt: at,
+        updatedAt: at,
+      })),
+      nowMs: NOW,
+      pinnedRunIds: new Set(),
+    });
+  }
+
+  /** A source whose fold is a counted stand-in: the claim is how often the cache folds, not what a fold reads. */
+  function countingSource() {
+    const folds = vi.fn((runId: string) => {
+      void runId;
+      return {
+        totalCostMicrocents: 0,
+        usageCoverage: UNVERIFIED_USAGE,
+        unpricedCalls: 0,
+        nodes: new Map(),
+      };
+    });
+    const source = createHistorySource({
+      reader,
+      listRunPins: () => [],
+      projectRoot: HERE,
+      now: () => NOW,
+      readCoverage: folds,
+    });
+    return { source, folds };
+  }
+
+  it('keeps at most 500 folds of 600 finished runs: the first hundred were dropped, and a re-read of one folds again', () => {
+    const rows = rowsOf(600);
+    const { source, folds } = countingSource();
+    for (const row of rows) source.cost(row);
+    expect(folds, 'each run folded once the first time').toHaveBeenCalledTimes(600);
+
+    const [oldest, newest] = [rows[0], rows[599]];
+    const firstKept = rows[600 - HISTORY_COST_CACHE_MAX];
+    if (oldest === undefined || newest === undefined || firstKept === undefined)
+      throw new Error('the rows exist');
+    // The newest read is kept, and so is the oldest of the five hundred kept: neither folds again.
+    source.cost(newest);
+    source.cost(firstKept);
+    expect(folds, 'the five hundred newest are kept').toHaveBeenCalledTimes(600);
+    // The oldest was dropped past the bound: asking for it folds it again.
+    source.cost(oldest);
+    expect(folds, 'an evicted run folds again').toHaveBeenCalledTimes(601);
+    expect(folds).toHaveBeenLastCalledWith(oldest.id);
+  });
+
+  it('drops the run asked for least recently, not the one folded first: a run asked for again survives the eviction that follows', () => {
+    const rows = rowsOf(HISTORY_COST_CACHE_MAX + 1);
+    const { source, folds } = countingSource();
+    for (const row of rows.slice(0, HISTORY_COST_CACHE_MAX)) source.cost(row);
+    const [first, second, extra] = [rows[0], rows[1], rows[HISTORY_COST_CACHE_MAX]];
+    if (first === undefined || second === undefined || extra === undefined)
+      throw new Error('the rows exist');
+    // The cache is full. The oldest fold is asked for again, so it is the youngest; a new run then pushes one out.
+    source.cost(first);
+    source.cost(extra);
+    expect(folds).toHaveBeenCalledTimes(HISTORY_COST_CACHE_MAX + 1);
+    // What went was the second fold (now the least recently asked for), and the first stayed.
+    source.cost(first);
+    expect(folds, 'the run asked for again was kept').toHaveBeenCalledTimes(
+      HISTORY_COST_CACHE_MAX + 1,
+    );
+    source.cost(second);
+    expect(folds, 'the least recently asked for was dropped').toHaveBeenCalledTimes(
+      HISTORY_COST_CACHE_MAX + 2,
+    );
+    expect(folds).toHaveBeenLastCalledWith(second.id);
   });
 });

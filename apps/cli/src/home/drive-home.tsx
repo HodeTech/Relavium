@@ -1943,7 +1943,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
-        launchRun: (slug) => runLaunch.open(slug),
+        launchRun: (slug, path) => runLaunch.open(slug, path),
         defined,
         history,
         pins,

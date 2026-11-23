@@ -483,9 +483,10 @@ export interface HomeControllerDeps {
    * picker, the form and the confirmation, all on the native prompt channel, then the host's start. It resolves with the notice the
    * Home shows; it holds the native action for as long as the flow is open, so no key reaches the composer meanwhile. A Home command
    * only: a live chat never reaches it (the typed `/run` is routed here only with no session, and the chat palette does not list it).
-   * Absent ⇒ `/run` says it is unavailable.
+   * Absent ⇒ `/run` says it is unavailable. With a `slug` the picker is skipped (the Defined tab's `r`), and with the catalog `path` the
+   * row was listed from the flow refuses a slug whose file is another one by then.
    */
-  readonly launchRun?: (slug?: string) => Promise<string>;
+  readonly launchRun?: (slug?: string, path?: string) => Promise<string>;
   /**
    * The Defined tab's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
    * §2): read again every time the tab is entered. Absent ⇒ the tab says it cannot list, and a typed `/workflows` at the Home says the
@@ -1372,7 +1373,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     tabMemory = tabHostMemory(step.state);
     if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
     // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
-    if (step.kind === 'run') openDefinedRun(step.slug);
+    if (step.kind === 'run') openDefinedRun(step.slug, step.path);
     else if (step.kind === 'export') openDefinedExport(step.slug);
     // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
     else if (step.kind === 'open-view') openActiveView(step.runId);
@@ -1730,19 +1731,24 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /**
    * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
    * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
-   * refused or left says so on the tab.
+   * refused or left says so on the tab. A run STARTED is told by the leg it left behind: the run this Home hosts is another one than it was
+   * before the flow began. A refusal (another leg already executes) leaves that other leg as it was, and its view is not what `r` asked for,
+   * so the refusal is shown on the tab instead.
    */
-  const openDefinedRun = (slug: string): void => {
+  const openDefinedRun = (slug: string, path: string): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
       noteOnDefinedTab('Running a workflow is unavailable in this session.');
       return;
     }
     openNativeAction(async () => {
-      const notice = await launch(slug);
+      const hostedBefore = deps.hostedRuns?.snapshot().active?.runId;
+      const notice = await launch(slug, path);
       if (exiting) return;
       set({ notice, ...parkedPatch() });
-      if (!openRunView('tab-host')) noteOnDefinedTab(notice);
+      const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
+      const started = hostedAfter !== undefined && hostedAfter !== hostedBefore;
+      if (!started || !openRunView('tab-host')) noteOnDefinedTab(notice);
     }, 'Run workflow');
   };
 

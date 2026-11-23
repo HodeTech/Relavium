@@ -327,10 +327,9 @@ function noAttemptLines(
 function unavailableLines(row: NodeRow): readonly NodeLine[] {
   return [
     { kind: 'heading', left: `? ${UNAVAILABLE}  ${row.label}` },
-    {
-      kind: 'failed',
-      left: `The record of this node is ${UNAVAILABLE}: its attempt, or the run's event log, could not be read.`,
-    },
+    // Two rows, not one: the reason is a row of its own, so a narrow terminal cannot clip it away.
+    { kind: 'failed', left: `The record of this node is ${UNAVAILABLE}.` },
+    { kind: 'failed', left: "Its attempt, or the run's event log, could not be read." },
   ];
 }
 

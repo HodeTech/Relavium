@@ -37,7 +37,7 @@ export const HISTORY_VIEW_ROWS = 20;
 export const HISTORY_FETCH_ROWS = 200;
 /** The most pages kept in memory. */
 export const HISTORY_PAGES_MAX = 3;
-/** The most run costs kept; the oldest is dropped past it. */
+/** The most run costs kept; the one asked for least recently is dropped past it. */
 export const HISTORY_COST_CACHE_MAX = 500;
 
 export type HistoryScope = 'project' | 'all';
@@ -294,7 +294,12 @@ export function createHistorySource(deps: HistorySourceDeps): HistorySource {
       // A run that is not finished can still change, and a held end has no durable total: nothing is folded or kept for it.
       if (!isFinishedRun(row.status)) return { kind: 'not-final' };
       const kept = costs.get(row.id);
-      if (kept !== undefined) return kept;
+      if (kept !== undefined) {
+        // A run asked for again is the youngest in the map, so what goes first is the one not asked for the longest.
+        costs.delete(row.id);
+        costs.set(row.id, kept);
+        return kept;
+      }
       const read = readPerRunOrDegrade(undefined, () => readCoverage(row.id));
       const cost: HistoryCost =
         read.degraded || read.value === undefined

@@ -679,7 +679,7 @@ function oversizedError(bytes: number): StoredErrorView {
  * with no byte length is no error at all. A text above {@link MAX_STORED_ERROR_BYTES} is refused the same way before
  * it is parsed, so what is scrubbed below is bounded. The message and the code are then each scrubbed whole, passed
  * through the one-line floor, and only then cut ({@link scrubbedBounded}) to {@link MAX_ERROR_MESSAGE_CHARS} and
- * {@link MAX_IDENTIFIER_CHARS}; the node id passes the floor and the same cut. An unreadable document yields a
+ * {@link MAX_IDENTIFIER_CHARS}; the node id is scrubbed whole and cut the same way (a stored error is data from the history file, so its node id can carry a secret). An unreadable document yields a
  * fixed sentence, never a throw.
  */
 export function readStoredError(
@@ -706,7 +706,7 @@ export function readStoredError(
     ...(typeof message === 'string'
       ? { message: scrubbedBounded(message, MAX_ERROR_MESSAGE_CHARS) }
       : {}),
-    ...(typeof nodeId === 'string' ? { nodeId: boundedIdentifier(nodeId) } : {}),
+    ...(typeof nodeId === 'string' ? { nodeId: scrubbedBounded(nodeId) } : {}),
   };
 }
 
