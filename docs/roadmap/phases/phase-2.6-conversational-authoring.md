@@ -6334,3 +6334,45 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 
 **Closed (2026-11-23).** Step 3 is closed on `91effdbb`, its full local gate green. Step 4 (the browsers) is next.
 
+
+### MVP-8 step 4 implementation record (2026-11-23)
+
+**What step 4 delivers** (the management browsers inside the Home; [ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) and the step-4 row of the plan above):
+
+- **The read-only batches** (`53abf28b`). `gate list` and `status` read every run's state events in batches of at most two hundred runs, falling back per run; a run whose batch answer is corrupt is read the old way, so the corruption is reported as before.
+- **The tab host** (`2a8df76e`, `5ccba9f8`). The permissions sheet splits into a body and chrome, and node output masks through one seam. The Home's tab host has four tabs (Defined, Active, History, Permissions) over the same screen slot, with one key model and a shared legend; `/permissions` and a bare `relavium permissions` open it on the Permissions tab, and a bare command ends with its screen.
+- **Pins and the Defined tab** (`6d8eb96b`, `11fc46b8`). `run_pins` lists each pin by its row and removes it by that row; a workflow pin keys on the canonical project root. Defined lists the project's workflows with their node count and last status, `r` starts one through the launch form (a moved file, or two files that declare one id, is refused before anything is asked), and `x` opens the export card (`Ctrl+Y` writes, `Ctrl+N` or `Esc` writes nothing).
+- **The Active tab** (`e350c3fe`). The project's unfinished runs in four groups, polled through a change token (`PRAGMA data_version` and an in-process generation) and never reconciled by the poll; a run whose lease has been missing for more than one TTL is `stalled`.
+- **The History tab and the run detail** (`015683cd`). Finished runs newest first, by a `(created_at, id)` keyset cursor, this project's by default and every project with `a`; the run detail reads the terminal outbox first, so a run whose end is held says `held`, never `in progress`.
+- **The node page and the absence vocabulary** (`9c0f67e5`). A node's attempts, its first failed attempt on `n`, its output masked by the summary's own rule, and fifteen absence sentences (`render/absence.ts`), mirrored in `home.md`.
+- **The review fixes** (`daf29b6b`, `8909d502`, `c7c44874`, `d602cc2b`, `310bc1d4`, `eabb4849`). Rounds one to six, below.
+
+**Review and proof.**
+
+- **Rounds one to three** (in the earlier session): fixes in `daf29b6b` (a page re-read after eviction, the Active poll's re-reads, the pin cap's wording, a node page that masked less than the summary), `8909d502` (the tab host's wiring through `driveHome`, a refused launch no longer opening another run's view, a moved file refused) and `c7c44874` (the cost window covers the drawn rows, a refused launch cannot read as started, one-line messages put the remedy first, the runbook and the reference describe the export card, and the bare permissions command exits when its host closes). The round-three security sitting passed.
+- **Round four** (four read-only reviewers at `c7c44874`: correctness and resources, UX and documents, tests and register, and an opus security sitting, PASS). No blocker, high or security finding. Two mediums: the node page's `N` was never pressed in a test, and the launch refusals put their paths after a filler that the 78-column row cut, so no path showed. Both fixed in `d602cc2b`, with the lows: a key that moves nothing asks again for a faulted cost, the bare permissions command keeps the Home open with its reason when the permissions cannot be read on the way back, and the hints and the reference match the pin key.
+- **Round five** (two reviewers at `d602cc2b`). Two mediums and a set of lows. The node page's footer named a `p` the page does not answer, and `d602cc2b`'s message repeats that claim; `310bc1d4` corrects it, and the commit message of `d602cc2b` is left as written. A refusal named two files by their stems, so `deploy.yaml` and `deploy.relavium.yaml` both read `deploy`; the suffixes now stay when the stems are equal. The register's round-four entries cited a record that does not yet exist and a wrong commit; corrected.
+- **Round six** (one reviewer at `310bc1d4`). No blocker, high or medium. Three lows, all fixed in `eabb4849`: the moved-file sentence with both suffixes was 90 columns and clipped the listed name, so it names only the file the slug is in now; two stale references to `fileName`; and the node page's `p` test now asserts that nothing is pinned.
+- **The gate.** `pnpm gate` passed on `eabb4849` (the round-six fix commit, the head it ran on): `the local gate passed` after 33 minutes, from 14:15 to 14:48 on 2026-11-23, with the log line `GATE-EXIT=0`. It ran with an isolated `HOME`, and it started on a machine whose load average was above thirty, from other applications; its 25 steps all passed, and no step was rerun.
+
+**Decisions taken in step 4 that no ADR records** (each is a choice the maintainer may want to see; none changes an accepted ADR):
+
+- **Refusals name file names, not paths.** A path is longer than the 78-column message row, so a sentence that carried one showed none of it. The two-files refusal names the two stems (both file names when the stems are equal); the moved-file refusal names the file the slug is in now. The export card's clash sentence still names the two paths, because the card wraps.
+- **The remedy comes first on every one-line message.** A clip takes the end of a sentence, so each message says what to do before it says why.
+- **`↓` and `↑` cross pages on History.** The last row of a page reads the next page, and the first row reads the previous one; `PgUp`, `PgDn`, `Home` and `End` stay on the page.
+- **A letter with Caps Lock on is the same key.** Every fold lowercases a bare letter after it has refused `Ctrl` and `Meta`.
+- **`Esc` steps back and `Ctrl+C` closes.** Esc on a view opened from the tab host returns to the tab on the row it came from; `Ctrl+C` closes the whole screen, and a bare command with it.
+- **A pin is removed by its row, not by its label.** Two projects can pin a workflow of the same name; a label is nobody's identity.
+- **The node page has no `p`, and its footer says so.** `p` marks a run, on the run detail only.
+
+**Deviations and what is not built.**
+
+- **ADR-0140 §2's "`Enter` on another process's run shows its node boundaries" is not built.** The Active tab's rows of another process are read-only, and `Enter` says why. Decide whether step 4 closes without it (the register carries it as open, with a maintainer decision needed).
+- **The run detail reads a second time for its node page.** A node's page re-reads the log instead of reusing the detail's events. Registered; not a correctness issue.
+
+**Open obligations carried forward** (each entry is in the [step-4 register section](../deferred-tasks.md#mvp-8-step-4-review-2026-11-23--round-1-closed-by-the-fixes-and-what-is-left-open), and the rounds 2 to 4 section that follows it):
+
+- The Windows interactive evidence rows 1 to 30 are written and not run by hand. Rows 26 to 30 cover the tab host, Defined's keys, the export card and the bare permissions command.
+- The step-3 maintainer decisions still stand, unchanged by this step: the rejection lockout for a human gate (ADR-0115 against ADR-0139 §4), the database retention after an abandon (ADR-0139 §6), the resumed consent check (ADR-0139 §4), the consent row's wording, the input gate's text field, and the exit wording.
+- The commit `c7c44874`'s message says a missing-file case that is in fact ENOTDIR; the step-4 record states the correct cases, and the commit is not amended.
+- The register's open items from rounds one, two to four, and the round-five and round-six lows (the cursor after a same-name pin is removed, the root found again at unpin, the History cost identity, and the two untested `stay()` paths).
