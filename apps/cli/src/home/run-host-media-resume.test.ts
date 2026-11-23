@@ -13,7 +13,11 @@
  *   4. a run another process holds the lease of is refused exactly as a gate answer is refused (the same words, the same published
  *      facts), and this process writes nothing;
  *   5. the leg is the host's one single flight: a second request while it executes is turned away `busy`, and the leg's owner retires;
- *   6. the run's `secret` inputs are asked for by name, as for a gate answer (the engine will not continue without them).
+ *   6. the run's `secret` inputs are asked for by name, as for a gate answer (the engine will not continue without them);
+ *   7. a run whose lease another process holds NOW is refused before a secret is asked for or a local server may start, and an expired
+ *      lease is not a refusal (the engine's acquire stays the authority, and a race that loses it is refused the same way);
+ *   8. a takeover in the middle of the leg ends it as a takeover, with nothing written after it; a leg that parks again on a second job
+ *      hands the lease back like the first.
  *
  * Every operator home is a temporary directory handed in as `homeDir`; the module's two nets (a config load with no home, `os.homedir()`)
  * throw, so no path here reaches the real `~/.relavium`.
@@ -34,10 +38,18 @@ import {
   type DbClient,
 } from '@relavium/db';
 import type { LlmProvider, MediaJobStatus } from '@relavium/llm';
+import { startMcpClient as realStartMcpClient } from '@relavium/mcp';
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
+import {
+  appendGrant,
+  fingerprint,
+  resolveStdioSpawn,
+  type ConsentGrant,
+} from '../engine/mcp-consent.js';
+import { mcpConsentPath, type ConsentPrompter } from '../engine/mcp-consent-gate.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { approvalDecision } from '../gate/decision.js';
 import { MEDIA_RESUME_REFUSALS } from '../run-core/resume-run.js';
@@ -169,6 +181,43 @@ const MEDIA_ONLY_SECRET = MEDIA_ONLY.replace(
   '  inputs:\n    - { name: api_key, type: secret }\n  agents:',
 ).replace('id: media-only-park', 'id: media-only-secret');
 
+/** One more generative node after the first: the continued run parks AGAIN on a second job. */
+const TWO_JOBS = `schema_version: '1.0'
+workflow:
+  id: two-jobs-park
+  agents:
+    - { id: painter, model: gen-model, provider: openai, system_prompt: paint }
+  nodes:
+    - { id: start, type: input }
+    - { id: paint, type: agent, agent_ref: painter, prompt_template: 'draw a cat', output_modalities: ['image'] }
+    - { id: again, type: agent, agent_ref: painter, prompt_template: 'draw a dog', output_modalities: ['image'] }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: paint }
+    - { from: paint, to: again }
+    - { from: again, to: out }
+`;
+
+/**
+ * The media-only park with a masked slot AND a local MCP server (declared by an agent no node uses: only the consent gate cares): what a
+ * continue would ask the person for (a secret, a card) before the engine ever looks at the lease.
+ */
+const MEDIA_ONLY_GUARDED = MEDIA_ONLY_SECRET.replace(
+  'id: media-only-secret',
+  'id: media-only-guarded',
+).replace(
+  '    - { id: painter, model: gen-model, provider: openai, system_prompt: paint }\n',
+  `    - { id: painter, model: gen-model, provider: openai, system_prompt: paint }
+    - id: worker
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: []
+      mcp_servers:
+        - { id: local, transport: stdio, command: ${JSON.stringify(process.execPath)} }
+`,
+);
+
 function writeWorkflow(name: string, yaml: string): string {
   const path = join(root, name);
   writeFileSync(path, yaml);
@@ -189,8 +238,14 @@ interface JobProvider {
   readonly polled: () => readonly string[];
 }
 
-/** `generateMedia` accepts a job (`job-1`); `pollMediaJob` answers `script`, in order, repeating the last. */
-function jobProvider(script: readonly MediaJobStatus[]): JobProvider {
+/**
+ * `generateMedia` accepts a job (`job-1`, then `job-2`, …); `pollMediaJob` answers `script`, in order, repeating the last, or, with
+ * `answer`, what it says for the job id asked about.
+ */
+function jobProvider(
+  script: readonly MediaJobStatus[],
+  answer?: (jobId: string) => MediaJobStatus,
+): JobProvider {
   let generated = 0;
   const polled: string[] = [];
   const provider: LlmProvider = {
@@ -202,12 +257,13 @@ function jobProvider(script: readonly MediaJobStatus[]): JobProvider {
     },
     generateMedia: () => {
       generated += 1;
-      return Promise.resolve({ jobId: 'job-1', raw: {} });
+      return Promise.resolve({ jobId: `job-${String(generated)}`, raw: {} });
     },
     pollMediaJob: (jobId) => {
       polled.push(jobId);
       return Promise.resolve(
-        script[Math.min(polled.length - 1, script.length - 1)] ?? { state: 'pending' },
+        answer?.(jobId) ??
+          script[Math.min(polled.length - 1, script.length - 1)] ?? { state: 'pending' },
       );
     },
   };
@@ -533,16 +589,33 @@ describe('a continue is refused before an engine, a key or a card', () => {
 
 describe('a continue takes the run`s lease as a gate answer does, and fails closed when another process holds it', () => {
   it.each([
-    { name: 'a media park', yaml: MEDIA_ONLY, file: 'lease-media.relavium.yaml' },
-    { name: 'a gate park', yaml: GATE_ONLY, file: 'lease-gate.relavium.yaml' },
+    {
+      name: 'a gate park, held before the answer',
+      yaml: GATE_ONLY,
+      file: 'lease-gate.relavium.yaml',
+    },
+    {
+      name: 'a media park, taken in the gap between the early check and the engine`s acquire',
+      yaml: MEDIA_ONLY,
+      file: 'lease-media.relavium.yaml',
+    },
   ])(
-    '$name: refused with the holder named, nothing written, no fact published, and the other process keeps the lease',
+    '$name: refused by the engine with the holder named, nothing written, no fact published, and the other process keeps the lease',
     async ({ yaml, file }) => {
       const provider = jobProvider([DONE]);
-      const r = rig(provider);
+      // The engine is built AFTER the early lease check, so a lease taken as it is built is the race the check cannot close: the
+      // engine's acquire (the authority) is what refuses it.
+      let raceFor: string | undefined;
+      const r = rig(provider, {
+        buildEngine: async (options?: BuildEngineOptions) => {
+          if (raceFor !== undefined) await holdLeaseElsewhere(raceFor, 'someone-else');
+          return buildEngine(options);
+        },
+      });
       const runId = await park(r, yaml, file);
       const before = eventsOf(runId).length;
-      await holdLeaseElsewhere(runId, 'someone-else');
+      if (yaml === MEDIA_ONLY) raceFor = runId;
+      else await holdLeaseElsewhere(runId, 'someone-else');
 
       const refused = await r.host.resume(
         yaml === MEDIA_ONLY
@@ -566,5 +639,215 @@ describe('a continue takes the run`s lease as a gate answer does, and fails clos
       expect(runStatus(runId)).toBe('paused');
       expect(r.registry.activeOwners).toBe(0);
     },
+  );
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// 4. The early check of a live lease.
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('a run another process is working now is refused before a secret is asked for or a server may start', () => {
+  async function digest(): Promise<ConsentGrant> {
+    const spawn = await resolveStdioSpawn(
+      { serverId: 'local', command: process.execPath, provenance: { kind: 'inline' } },
+      root,
+    );
+    return {
+      v: 1,
+      digest: fingerprint(spawn),
+      command: spawn.resolvedCommand,
+      args: [...spawn.args],
+      envNames: Object.keys(spawn.env),
+      cwd: spawn.cwd,
+      grantedAt: '2026-11-23T00:00:00.000Z',
+    };
+  }
+
+  const SECRETS: HostedSecretPort = () => Promise.resolve({ api_key: 'a-secret-value' });
+
+  /** A media park with a masked slot and a local server; the machine's grant is withdrawn, so a resumed leg would ask. */
+  async function parkedGuarded(consentAnswer: boolean) {
+    const provider = jobProvider([DONE]);
+    const consent = vi.fn<ConsentPrompter>(() => Promise.resolve(consentAnswer));
+    const startMcpClient = vi.fn(() => realStartMcpClient([]));
+    const r = rig(provider, { consent, startMcpClient });
+    const home = scratch.at(-1) ?? '';
+    appendGrant(mcpConsentPath(home), await digest());
+    const runId = await park(r, MEDIA_ONLY_GUARDED, 'guarded.relavium.yaml', SECRETS);
+    expect(consent, 'the start leg found the grant and asked nothing').not.toHaveBeenCalled();
+    rmSync(mcpConsentPath(home));
+    return { r, runId, provider, consent, startMcpClient };
+  }
+
+  it('refuses a live lease at once: no secret is asked, no card is opened, no server starts, no engine is built, nothing is written', async () => {
+    const { r, runId, provider, consent, startMcpClient } = await parkedGuarded(true);
+    await holdLeaseElsewhere(runId, 'someone-else');
+    const secrets = vi.fn<HostedSecretPort>(SECRETS);
+    const before = eventsOf(runId).length;
+    const buildsBefore = r.builds.mock.calls.length;
+    const startsBefore = startMcpClient.mock.calls.length;
+
+    const refused = await r.host.resume({ kind: 'media', runId, secrets });
+
+    expect(refused).toEqual({
+      kind: 'refused',
+      reason: 'rejected',
+      message: MEDIA_RESUME_REFUSALS.liveLease,
+    });
+    expect(MEDIA_RESUME_REFUSALS.liveLease).toBe('That run is being continued by another process.');
+    expect(secrets, 'no secret was asked for').not.toHaveBeenCalled();
+    expect(consent, 'no card was opened').not.toHaveBeenCalled();
+    expect(startMcpClient.mock.calls.length, 'no server was started').toBe(startsBefore);
+    expect(r.builds.mock.calls.length, 'no engine was built').toBe(buildsBefore);
+    expect(eventsOf(runId)).toHaveLength(before);
+    expect(provider.polled()).toEqual([]);
+    expect(
+      createRunHistoryReader(client.db).loadRunLeases([runId]).get(runId)?.ownerId,
+      'the other owner still holds it',
+    ).toBe('someone-else');
+    expect(r.registry.activeOwners).toBe(0);
+  });
+
+  it('does not refuse an EXPIRED lease: the owner is gone, so the secrets are asked for and the card opens (the engine takes the lease over)', async () => {
+    const { r, runId, consent } = await parkedGuarded(false);
+    await holdLeaseElsewhere(runId, 'gone-owner');
+    client.sqlite
+      .prepare('UPDATE run_leases SET expires_at = ? WHERE run_id = ?')
+      .run(Date.now() - 1_000, runId);
+    const secrets = vi.fn<HostedSecretPort>(SECRETS);
+
+    const refused = await r.host.resume({ kind: 'media', runId, secrets });
+
+    // The card said no, so the leg stops there: past the early check, past the secrets, at the consent gate.
+    expect(secrets).toHaveBeenCalledTimes(1);
+    expect(consent).toHaveBeenCalledTimes(1);
+    expect(refused).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(refused.kind === 'refused' ? refused.message : '').toContain('was not approved');
+    expect(refused.kind === 'refused' ? refused.message : '').not.toBe(
+      MEDIA_RESUME_REFUSALS.liveLease,
+    );
+  });
+
+  it('does not refuse a run nobody holds: the check is about a live lease and nothing else', async () => {
+    const { r, runId, consent } = await parkedGuarded(false);
+    const refused = await r.host.resume({ kind: 'media', runId, secrets: SECRETS });
+    expect(consent, 'no lease: the leg went on to the card').toHaveBeenCalledTimes(1);
+    expect(refused.kind === 'refused' ? refused.message : '').toContain('was not approved');
+  });
+});
+
+describe('a continue without the secrets the run needs says so without naming a gate', () => {
+  it('refuses with what is missing and stops, with no shell command to copy', async () => {
+    const provider = jobProvider([DONE]);
+    const r = rig(provider);
+    const secrets: HostedSecretPort = () => Promise.resolve({ api_key: 'a-secret-value' });
+    const runId = await park(r, MEDIA_ONLY_SECRET, 'nosecrets.relavium.yaml', secrets);
+    const buildsBefore = r.builds.mock.calls.length;
+
+    const refused = await r.host.resume({ kind: 'media', runId });
+
+    const message = refused.kind === 'refused' ? refused.message : '';
+    expect(refused).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(message).toContain('needs its `secret` input(s) [api_key] re-supplied to continue');
+    expect(message).toContain('they are never persisted.');
+    expect(message).not.toMatch(/gate|--secret-stdin|relavium gate/u);
+    expect(r.builds.mock.calls.length).toBe(buildsBefore);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// 5. A takeover in the middle of the leg, and a leg that parks again.
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('a continued leg whose run another process takes while it polls', () => {
+  it(
+    'ends as a takeover (exit class 6), writes nothing after it, leaves the other owner its lease, and retires its owner',
+    async () => {
+      const provider = jobProvider([DONE]);
+      const r = rig(provider);
+      const runId = await park(r, MEDIA_ONLY, 'takeover.relavium.yaml');
+      const launch = await r.host.resume({ kind: 'media', runId });
+      if (launch.kind !== 'started') throw new Error('the leg did not start');
+      expect(provider.polled(), 'the leg is waiting for its first poll').toEqual([]);
+
+      // Another process takes the run (a new generation under another owner) while this leg waits to poll.
+      client.sqlite
+        .prepare('UPDATE run_leases SET owner_id = ?, generation = generation + 1 WHERE run_id = ?')
+        .run('taker', runId);
+      const before = eventsOf(runId).length;
+
+      const end = await launch.ended;
+
+      expect(end.leg).toBe('resume');
+      expect(end.runId).toBe(runId);
+      expect(end.terminal, 'the typed takeover, not a failure and not a pause').toMatchObject({
+        disposition: 'taken_over',
+        safety: 6,
+      });
+      expect(end.terminal.headline).toContain('taken over by another process');
+      expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+      expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
+      expect(end.handedOff).toBe(false);
+      expect(eventsOf(runId), 'this process wrote nothing after the takeover').toHaveLength(before);
+      expect(eventsOf(runId).some((event) => event.type === 'run:completed')).toBe(false);
+      expect(runStatus(runId)).toBe('paused');
+      expect(
+        createRunHistoryReader(client.db).loadRunLeases([runId]).get(runId)?.ownerId,
+        'the taker keeps its lease',
+      ).toBe('taker');
+      // The Home's exit class and the line it owes the person.
+      expect(r.registry.observations.exitCode()).toBe(6);
+      const facts = r.host.exitFacts();
+      expect(facts).toHaveLength(1);
+      expect(facts[0]).toMatchObject({ kind: 'safety', runId });
+      expect(facts[0]?.line).toContain('taken over by another process');
+      // The leg's owner is retired and the host is free for the next leg.
+      expect(end.retirement).toBe('retired');
+      expect(r.registry.activeOwners).toBe(0);
+      expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    },
+    RESUMED_LEG_MS,
+  );
+});
+
+describe('a continued leg that parks again on a second job', () => {
+  it(
+    'hands the lease back at the second park, as the first leg did, ends paused, and leaves the run continuable',
+    async () => {
+      // `job-1` is done at its first poll; `job-2` (the second node's) is never polled, because the leg departs at the second pause.
+      const provider = jobProvider([], (jobId) =>
+        jobId === 'job-1' ? DONE : { state: 'pending' },
+      );
+      const r = rig(provider);
+      const runId = await park(r, TWO_JOBS, 'twice.relavium.yaml');
+      expect(provider.generated(), 'the first leg submitted the first job').toBe(1);
+
+      const end = await started(r.host.resume({ kind: 'media', runId }));
+
+      expect(end.terminal.disposition, 'parked again, not completed').toBe('paused');
+      expect(end.fault).toBeUndefined();
+      expect(
+        provider.generated(),
+        'the second node submitted its own job; the first was not submitted again',
+      ).toBe(2);
+      expect(provider.polled(), 'the first job was re-attached by its recorded id').toEqual([
+        'job-1',
+      ]);
+      const pauses = eventsOf(runId).filter((event) => event.type === 'run:paused');
+      expect(pauses).toHaveLength(2);
+      expect(
+        pauses.at(-1)?.type === 'run:paused' ? pauses.at(-1)?.pendingMediaJobNodeIds : undefined,
+      ).toEqual(['again']);
+      expect(runStatus(runId)).toBe('paused');
+      // No lease row is left once the leg has departed at the second park, and the owner retired: another Home may continue it now.
+      expect(
+        createRunHistoryReader(client.db).loadRunLeases([runId]).size,
+        'the second park gave the lease back',
+      ).toBe(0);
+      expect(end.retirement).toBe('retired');
+      expect(r.registry.activeOwners).toBe(0);
+      expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    },
+    RESUMED_LEG_MS,
   );
 });

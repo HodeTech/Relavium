@@ -471,7 +471,11 @@ describe('(c) a masked slot is asked for once, by name', () => {
     enter();
     await waitFor('Secret input 2 of 2');
     channel.ui.input('', { ...key, escape: true } as never);
-    expect(await left).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(await left).toEqual({
+      kind: 'refused',
+      reason: 'rejected',
+      message: 'The answer was cancelled. The gate is still pending.',
+    });
     expect(r.builds.mock.calls.length).toBe(buildsBefore);
     expect(runStatus(client, runId)).toBe('paused');
 

@@ -14,6 +14,7 @@ import {
   createEffectJournalPort,
   createEffectResumePort,
   createEffectJournalStore,
+  createRunHistoryReader,
   createRunHistoryStore,
   createRunLeasePort,
   loadRunSnapshot,
@@ -186,6 +187,7 @@ export const MEDIA_RESUME_REFUSALS = Object.freeze({
   pendingGate:
     'The run is waiting for a decision, not only for media jobs: answer its gate or its budget gate.',
   noMediaJobs: 'The run is not waiting for media jobs.',
+  liveLease: 'That run is being continued by another process.',
 });
 
 /** The injectable services a resume uses. Every member is the one `GateCommandDeps` already carries. */
@@ -328,6 +330,12 @@ export async function resumeRun(
     // A doubled decision (run finished / gate already resolved) — a clean no-op, NOT a double-advance.
     return { kind: 'settled', message: selection.message };
   }
+
+  // A run another process is working NOW (its lease is live) is refused here, before a secret is asked for or a local server is started:
+  // `runs.status` stays `paused` while a media leg polls, so every other Home's strip and Active tab offer a continue for it, and only the
+  // engine's acquire (the authority, below) would refuse it, after the person typed the secrets and approved a server. An EXPIRED lease is
+  // not a refusal: the owner is gone, and the engine takes it over.
+  if (gateRequest === undefined) assertNoLiveLease(opened.db, runId, Date.now());
 
   // From here on a request either decides one gate (`answer` is set) or continues the media park (it is not): everything below that is
   // about a gate, a decision or a budget approval is asked of `answer` alone, so a media continue passes none of it and adds none of it.
@@ -601,6 +609,17 @@ export function selectMediaPark(checkpoint: CheckpointState): MediaSelection {
   return { kind: 'media' };
 }
 
+/**
+ * Refuse a continue of a run whose lease another process holds and has not let expire. It reads the ownership row the Active tab reads for
+ * stalled runs (`loadRunLeases`) and writes nothing; it is an early, cheap refusal and not a guarantee, because the lease can be taken
+ * between this read and the engine's acquire, which stays the authority and refuses the same way (`run_owned_elsewhere`).
+ */
+function assertNoLiveLease(db: Db, runId: string, nowMs: number): void {
+  const lease = createRunHistoryReader(db).loadRunLeases([runId]).get(runId);
+  if (lease !== undefined && lease.expiresAt > nowMs)
+    throw new CliError('run_owned_elsewhere', MEDIA_RESUME_REFUSALS.liveLease);
+}
+
 function pendingList(pending: readonly { readonly gateId: string }[]): string {
   return pending.length === 0 ? '' : ` (pending: ${pending.map((gate) => gate.gateId).join(', ')})`;
 }
@@ -710,10 +729,12 @@ async function resolveSecretInputs(
     return inputs;
   }
   if (request.secretStdin !== true) {
+    // A media continue has no gate to name and no shell command to copy (`secretPipeHint` speaks of both): it says what is missing and stops.
+    const remedy = request.kind === 'media' ? '' : ` ${secretPipeHint(resumeInvocation)}`;
     throw new CliError(
       'invalid_invocation',
-      `run ${request.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to resume — ` +
-        `they are never persisted. ${secretPipeHint(resumeInvocation)}`,
+      `run ${request.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to ${request.kind === 'media' ? 'continue' : 'resume'} — ` +
+        `they are never persisted.${remedy}`,
     );
   }
   const supplied = await ports.secretInputs({

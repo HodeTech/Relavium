@@ -386,10 +386,12 @@ type SlotFlow = Pick<NativePromptFlow, 'password'>;
 /**
  * The values of a resumed run's masked slots, one native masked field per slot, in the order the run core names them. The value lives
  * in the prompt channel and in this call's result; nothing is kept. A field that is left (`Esc`, `Ctrl+C`) leaves the whole answer,
- * and the gate stays pending.
+ * and the gate stays pending. `cancelled` is the sentence that says so: the gate path's default names its gate, and a caller with no
+ * gate (the continue of a media park) passes its own.
  */
 export function createSlotSecretPort(
   flow: SlotFlow,
+  cancelled = 'The answer was cancelled. The gate is still pending.',
 ): (names: readonly string[]) => Promise<Readonly<Record<string, string>>> {
   return async (names) => {
     const out: Record<string, string> = Object.create(null) as Record<string, string>;
@@ -399,11 +401,7 @@ export function createSlotSecretPort(
         validate: (value) => (value.trim() === '' ? 'A secret input cannot be blank.' : undefined),
         escape: 'cancel',
       });
-      if (typeof answer !== 'string')
-        throw new CliError(
-          'invalid_invocation',
-          'The answer was cancelled. The gate is still pending.',
-        );
+      if (typeof answer !== 'string') throw new CliError('invalid_invocation', cancelled);
       out[name] = answer;
     }
     return out;

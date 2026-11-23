@@ -18,10 +18,21 @@ import type { HostedLaunch, RunHost } from './run-host.js';
  *   for the leg itself.
  */
 
-/** The question: the run named by its first characters (cut first, then through the one-line floor), the default answer No. */
+/**
+ * What the question says before a Yes, because a Yes has two costs the person must know. The leg runs in THIS Home until the jobs finish
+ * (it holds the Home's one leg slot, so a gate answer or `/run` meanwhile is refused as busy), and leaving the Home cancels it: a
+ * cancelled run cannot be resumed, and the output of the jobs already paid for is never fetched.
+ */
+export const MEDIA_CONTINUE_CONSEQUENCE =
+  'It runs in this Home until the jobs finish, and leaving the Home cancels it.';
+
+/** The question: the run named by its first characters (cut first, then through the one-line floor), what it costs, the default answer No. */
 export function mediaContinueQuestion(runId: string): string {
-  return `Run ${shortRunId(runId)} is waiting for media jobs. Continue it here?`;
+  return `Run ${shortRunId(runId)} is waiting for media jobs. Continue it here? ${MEDIA_CONTINUE_CONSEQUENCE}`;
 }
+
+/** What a left secret field says on this path: there is no gate to name, so it names what did not happen. */
+export const MEDIA_CONTINUE_SECRETS_CANCELLED = 'Not continued: the secrets were not entered.';
 
 /** What the Home says when another prompt is already open: a refusal, not a queue. */
 export const MEDIA_CONTINUE_PROMPT_OPEN =
@@ -64,7 +75,7 @@ export async function runMediaContinue(
     const launch = await deps.host.resume({
       kind: 'media',
       runId,
-      secrets: createSlotSecretPort(deps.flow),
+      secrets: createSlotSecretPort(deps.flow, MEDIA_CONTINUE_SECRETS_CANCELLED),
     });
     return launchNotice(launch);
   } finally {

@@ -224,7 +224,10 @@ describe('driveHome asks about a media park, and a Yes is the run host`s media r
     h.ask();
     await until(() => h.props.nativePrompt?.getSnapshot().active === true, 'the question');
     const question = h.props.nativePrompt?.getSnapshot();
-    expect(question?.message).toBe('Run run-medi is waiting for media jobs. Continue it here?');
+    expect(question?.message).toBe(
+      'Run run-medi is waiting for media jobs. Continue it here? ' +
+        'It runs in this Home until the jobs finish, and leaving the Home cancels it.',
+    );
     expect(question?.options[question.selected]?.label, 'the default is No').toBe('No');
     expect(h.resume, 'nothing is sent before the answer').not.toHaveBeenCalled();
 

@@ -11,6 +11,7 @@ import { flush } from '../render/tui/harness-util.js';
 import { createNativePromptChannel } from '../render/tui/native-prompt-channel.js';
 import {
   MEDIA_CONTINUE_PROMPT_OPEN,
+  MEDIA_CONTINUE_SECRETS_CANCELLED,
   mediaContinueQuestion,
   runMediaContinue,
   type MediaContinueDeps,
@@ -70,9 +71,10 @@ async function asked(channel: ReturnType<typeof createNativePromptChannel>) {
 }
 
 describe('the question', () => {
-  it('names the run by its first eight characters, says it waits for media jobs, and asks to continue it here', () => {
+  it('names the run by its first eight characters, says it waits for media jobs, asks to continue it here, and says what a Yes costs before it is given', () => {
     expect(mediaContinueQuestion(RUN)).toBe(
-      'Run 0b8f3a52 is waiting for media jobs. Continue it here?',
+      'Run 0b8f3a52 is waiting for media jobs. Continue it here? ' +
+        'It runs in this Home until the jobs finish, and leaving the Home cancels it.',
     );
   });
 
@@ -81,7 +83,9 @@ describe('the question', () => {
     const text = mediaContinueQuestion(forged);
     expect(text).not.toContain('\u001b');
     expect(text).not.toContain('\n');
-    expect(text.length).toBeLessThan(80);
+    // The id is cut before it is cleaned: the bound is the id's eight characters plus the fixed words, never the forged length.
+    expect(text.length).toBeLessThan(160);
+    expect(text).toContain('leaving the Home cancels it.');
   });
 
   it('is asked on the channel with the answer No selected: the default is No', async () => {
@@ -174,6 +178,40 @@ describe('what an answer does', () => {
     channel.ui.input('', ENTER);
     await expect(answer).rejects.toThrow('host fault');
     expect(channel.ui.getSnapshot().active, 'the flow is closed again').toBe(false);
+  });
+});
+
+describe('a left secret field', () => {
+  it('says the run was not continued and names no gate: there is none on this path', async () => {
+    const channel = createNativePromptChannel();
+    // The host as the real one answers a port that throws: a refusal in its own words, not a fault.
+    const resume = vi.fn(
+      async (request: HostedResumeRequest | HostedMediaResumeRequest): Promise<HostedLaunch> => {
+        try {
+          await request.secrets?.(['api_key']);
+        } catch (cause) {
+          return {
+            kind: 'refused',
+            reason: 'rejected',
+            message: cause instanceof Error ? cause.message : 'unexpected',
+          };
+        }
+        return STARTED;
+      },
+    );
+    const answer = runMediaContinue({ host: { resume }, flow: channel.flow }, RUN);
+    await asked(channel);
+    channel.ui.input('', UP);
+    channel.ui.input('', ENTER); // Yes
+    await vi.waitFor(() => expect(channel.ui.getSnapshot().kind).toBe('password'), {
+      timeout: 2000,
+    });
+    channel.ui.input('', ESC); // leave the secret field
+    const notice = await answer;
+    expect(notice).toBe(MEDIA_CONTINUE_SECRETS_CANCELLED);
+    expect(notice).toBe('Not continued: the secrets were not entered.');
+    expect(notice).not.toContain('gate');
+    expect(channel.ui.getSnapshot().active).toBe(false);
   });
 });
 
