@@ -63,9 +63,11 @@ type InputDecl = NonNullable<WorkflowDefinition['workflow']['inputs']>[number];
 /**
  * What the form has so far: the workflow, its fields and the NON-SECRET values given (never a masked one).
  *
- * `sourceDigest` is the digest of the exact file text the fields and the confirmation were built from. It goes to the host with the
- * start, which refuses when the file it reads is not that text (LAUNCH-5). It is not a secret, and it binds the workflow file only: a
- * file the workflow names and the operator's configuration are not in it (see `PrepareRunRequest.expectedSourceDigest`).
+ * `sourceDigest` is the digest of the exact file text of ONE read: the pick-time `catalog.load`. The fields, the `choice.label` the
+ * confirmation prints (rebuilt at the pick from that read, not taken from the list's) and the values asked for are all from it, so
+ * the digest binds what the confirmation names and asks. It goes to the host with the start, which refuses when the file it reads is
+ * not that text (LAUNCH-5). It is not a secret. It binds the workflow file only: the project and global configuration, the consent
+ * grants and the other things a start reads are not in it (see `PrepareRunRequest.expectedSourceDigest`).
  */
 interface LaunchForm {
   readonly choice: LaunchChoice;
@@ -400,6 +402,11 @@ const LABEL_LIMIT = 60;
 const REASON_LIMIT = 80;
 const SKIPPED_LISTED = 3;
 
+/** What a workflow is called on the picker, the confirmation and the notices: its name, or its id when it has none. One rule for the list read and the pick read. */
+function workflowLabel(name: string | undefined, id: string): string {
+  return bounded(name ?? id, LABEL_LIMIT);
+}
+
 function bounded(text: string, limit: number): string {
   const clean = sanitizeUntrustedInline(text);
   return clean.length <= limit ? clean : `${clean.slice(0, limit - 1)}…`;
@@ -417,7 +424,7 @@ export function offeredWorkflows(entries: readonly CatalogEntry[]): {
       choices.push({
         path: entry.path,
         slug: entry.slug,
-        label: bounded(entry.name ?? entry.slug, LABEL_LIMIT),
+        label: workflowLabel(entry.name, entry.slug),
       });
     else invalid.push(entry);
   }
@@ -786,11 +793,17 @@ function runSession(options: {
         launchChanged(choice.slug, fresh.definition.workflow.id),
       );
     loaded = fresh.definition;
-    // The digest of that very read goes into the form, and so to the start: the id above is a name, this is the content.
+    // The digest of that very read goes into the form, and so to the start: the id above is a name, this is the content. The label the
+    // confirmation prints is rebuilt from the same read: the list's label may be from a file that has changed since (a new `name:`
+    // with the id kept), and the question would then name one workflow over the graph another file digested.
+    const named: LaunchChoice = {
+      ...choice,
+      label: workflowLabel(fresh.definition.workflow.name, fresh.definition.workflow.id),
+    };
     dispatch({
       kind: 'picked',
       turn: effect.turn,
-      choice,
+      choice: named,
       fields: launchFields(fresh.definition),
       sourceDigest: fresh.sourceDigest,
     });

@@ -91,11 +91,14 @@ export interface PrepareRunRequest {
   /**
    * The digest (`workflowSourceDigest`) of the workflow text a person confirmed before this start. Absent, nothing is bound: the
    * shell commands pass none and behave as they always did. Present, the text this start reads must have exactly that digest, or the
-   * start is refused (`WORKFLOW_SOURCE_CHANGED`) before anything is parsed, prompted for, connected or acquired.
+   * start is refused (`WORKFLOW_SOURCE_CHANGED`) before the workflow is parsed and before the first workflow-related effect (the secret
+   * port, keys, MCP consent and connect, the history and its lease, the engine). The configuration load and the host's own leg owner
+   * come first.
    *
-   * It binds the workflow file only. A file the workflow names is not covered (the CLI reads no external agent file while preparing,
-   * and an `agent_ref` that is not declared inline is left to run time), and neither is anything the run takes from the operator's
-   * configuration or the machine's grants (the MCP servers it connects, their consent).
+   * It binds the workflow file only; it does NOT bind a file the workflow names (the CLI reads no external agent file while preparing),
+   * the project files `.relavium/project.toml` and `.relavium/workspace.toml` (read after the confirmation; they set `[defaults].fs_scope`
+   * and add `mcp_servers` registrations), the global configuration, the consent grant log, the keychain, the pricing and catalog rows, or
+   * the MCP tool lists discovered at connect time. A changed MCP command still meets the consent gate: consent is fingerprinted on the declaration.
    */
   readonly expectedSourceDigest?: string | undefined;
 }
@@ -199,8 +202,10 @@ export async function prepareRun(
   });
 
   // **A confirmed start runs the file that was confirmed** (LAUNCH-5). Checked on the very text parsed below, so there is no second
-  // read between the check and the parse, and before the parse and every side effect after it: no secret asked, no key resolved, no
-  // MCP server connected, no consent card, no history opened, no engine built, no lease taken.
+  // read between the check and the parse. What precedes it: the host's leg owner (registered by the host before this call, and retired
+  // on a refusal) and the configuration load above (which may tighten the global config file's mode). What follows it, and so does not
+  // happen for a refused start: the parse, the secret port, key resolution, the MCP consent card and spawn, opening the history, the
+  // engine, `reconcile` and the lease.
   if (request.expectedSourceDigest !== undefined)
     assertWorkflowSourceDigest(request.expectedSourceDigest, source.yaml);
 

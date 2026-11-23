@@ -612,6 +612,46 @@ describe('the confirmation is bound to the file it was built from (LAUNCH-5)', (
     expect(runStatuses()).toEqual(['completed']);
   });
 
+  it('names the workflow the confirmation binds: a name that changed between the list and the pick is the new name, in the question and in the notice', async () => {
+    const named = (name: string): string =>
+      HAPPY.replace('id: host-happy', `id: host-happy\n  name: ${name}`);
+    writeWorkflow('happy.relavium.yaml', named('Old name'));
+    const r = rig({
+      catalog: (real) => ({
+        list: () => real.list(),
+        load: (path) => {
+          // The writer, after the list was read and before the pick: the id is kept, the name and the graph are not.
+          writeWorkflow(
+            'happy.relavium.yaml',
+            named('New name').replace('inputs.n * 2', 'inputs.n * 3'),
+          );
+          return real.load(path);
+        },
+      }),
+    });
+    const k = keys(r);
+    const opened = r.launch.open();
+    const picker = await shows(r, 'select', 'Run which workflow?');
+    expect(
+      picker.options.map((option) => option.label),
+      'the list read says the old name',
+    ).toEqual(['Old name']);
+    k.enter();
+    await shows(r, 'text', 'Input 1 of 1: n');
+    k.type('3');
+    k.enter();
+    const card = await shows(r, 'select', 'Run ');
+    expect(card.message).toBe('Run New name with n=3?');
+    expect(card.message).not.toContain('Old name');
+    k.up();
+    k.enter();
+    expect(await opened).toMatch(/^Started New name as run /);
+    expect(r.startCalls[0]?.request.expectedSourceDigest).toBe(
+      sha256(named('New name').replace('inputs.n * 2', 'inputs.n * 3')),
+    );
+    await idle(r);
+  });
+
   it('the catalog digests the string it parsed, which is the string the host reads', () => {
     const text = `${HAPPY}# ünïcode\n`;
     writeWorkflow('happy.relavium.yaml', text);

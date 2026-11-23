@@ -54,8 +54,9 @@ export interface HostedStartRequest {
   readonly secrets?: HostedSecretPort | undefined;
   /**
    * The digest of the workflow text the person confirmed (`workflowSourceDigest`, `run-core/source-digest.ts`). Present, the start reads the
-   * file and is refused, before anything else happens, when its text is not the confirmed one. Absent, nothing is bound. It binds the
-   * workflow file only (see `PrepareRunRequest.expectedSourceDigest`).
+   * file and is refused, before the workflow is parsed and before the first workflow-related effect (secrets, keys, MCP, history, engine),
+   * when its text is not the confirmed one; the leg's own owner is registered first and retires on the refusal. Absent, nothing is
+   * bound. It binds the workflow file only (see `PrepareRunRequest.expectedSourceDigest` for what it does not).
    */
   readonly expectedSourceDigest?: string | undefined;
 }

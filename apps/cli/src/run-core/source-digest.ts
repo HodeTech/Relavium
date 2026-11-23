@@ -14,9 +14,11 @@ export const WORKFLOW_SOURCE_CHANGED =
  * is about to parse. It is over the decoded text (UTF-8, as the file was read), never over a different view of the bytes, a trimmed
  * copy or a parsed definition.
  *
- * **It binds the workflow file only.** A file the workflow merely names is not in it: the CLI reads no external agent file while it
- * prepares a run (an `agent_ref` that is not declared inline is left to run time), and the MCP servers a workflow declares are
- * resolved from the operator's configuration and the machine's consent grants, which are not part of this file.
+ * **It binds the workflow file only.** What it does NOT bind: a file the workflow merely names (the CLI reads no external agent file
+ * while it prepares a run; an `agent_ref` not declared inline is left to run time); the project files `.relavium/project.toml` and
+ * `.relavium/workspace.toml`, which are read after the confirmation and can set `[defaults].fs_scope` and add `mcp_servers`
+ * registrations; the global configuration; the consent grant log; the keychain; the pricing and catalog rows; and the MCP tool lists
+ * discovered at connect time. A changed MCP command still meets the consent gate, because consent is fingerprinted on the declaration.
  */
 export function workflowSourceDigest(yaml: string): string {
   return createHash('sha256').update(yaml, 'utf8').digest('hex');
