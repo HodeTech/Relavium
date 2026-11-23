@@ -151,7 +151,9 @@ describe('one review document per frozen preview', () => {
     void store.requestApproval(request, true, undefined, { callId: 'big', preview });
     expect(createReviewDocument(preview)).toBe(store.getSnapshot().review?.document);
     expect(sideScans(), 'before and after are each scanned exactly once').toBe(2);
-  });
+    // It builds a 4 MiB document synchronously: a deliberately heavy case, so its timeout is set above the
+    // five-second default that a loaded machine can exceed. The assertion is a count, not a time.
+  }, 30_000);
 
   it('shares the scans of the diff sides with the details view, which adds only its own fields', () => {
     const preview = frozenEdit(64 * 1024);
