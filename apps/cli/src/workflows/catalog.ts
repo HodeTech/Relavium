@@ -17,6 +17,7 @@ import {
   WorkflowParseError,
   parseAgent,
   parseWorkflow,
+  type AgentDefinition,
 } from '@relavium/core';
 
 import { CliError } from '../process/errors.js';
@@ -97,6 +98,57 @@ export function discoverCatalog(opts: {
   readonly kind: CatalogKind;
   readonly homeDir?: string;
 }): CatalogEntry[] {
+  const scan = scanCatalogDirectory(opts);
+  if (scan === undefined) return []; // no workflows/ (or agents/) directory — an empty catalog, not an error
+  const entries = scan.names.map((name) =>
+    readEntry(join(scan.dir, name), opts.cwd, opts.kind, scan.root, opts.homeDir),
+  );
+  return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
+}
+
+/** One agent file of the catalog: its entry, and the parsed definition when (and only when) the file is valid. */
+export interface AgentCatalogItem {
+  readonly entry: CatalogEntry;
+  readonly agent: AgentDefinition | undefined;
+}
+
+/**
+ * {@link discoverCatalog} for the agents catalog, keeping each valid file's parsed definition beside its entry (a read the Home's
+ * agent browser needs: the entry carries only the slug and the name). It is the SAME hardened read, not a second one: the same
+ * directory scan (containment, the file cap, the extension filter) and the same per-file read (admitted project artifact, within the
+ * catalog root, a regular file, a size ceiling, an exact-identity open) through {@link readCatalogText}, then the strict core
+ * {@link parseAgent}. A file that fails any step is a `valid: false` entry with no definition, never a throw, and the entries sort by
+ * slug exactly as {@link discoverCatalog} sorts them.
+ */
+export function discoverAgentDefinitions(opts: {
+  readonly projectConfigDir: string;
+  readonly cwd: string;
+  readonly homeDir?: string;
+}): AgentCatalogItem[] {
+  const scan = scanCatalogDirectory({ ...opts, kind: 'agents' });
+  if (scan === undefined) return [];
+  const items = scan.names.map((name) =>
+    readAgentItem(join(scan.dir, name), opts.cwd, scan.root, opts.homeDir),
+  );
+  return items.sort((a, b) => byCodeUnit(a.entry.slug, b.entry.slug));
+}
+
+/** The catalog directory a scan read: its path, its real root, and the candidate file names (not yet opened). */
+interface CatalogScan {
+  readonly dir: string;
+  readonly root: string;
+  readonly names: readonly string[];
+}
+
+/**
+ * The directory half of a catalog read, shared by {@link discoverCatalog} and {@link discoverAgentDefinitions}: contain the directory,
+ * list its YAML files, refuse a directory over {@link MAX_CATALOG_FILES}. `undefined` when the directory does not exist.
+ */
+function scanCatalogDirectory(opts: {
+  readonly projectConfigDir: string;
+  readonly kind: CatalogKind;
+  readonly homeDir?: string;
+}): CatalogScan | undefined {
   const dir = join(opts.projectConfigDir, opts.kind);
   assertProjectArtifactPath(dir, opts.homeDir);
   let names: readonly string[];
@@ -113,7 +165,7 @@ export function discoverCatalog(opts: {
       .filter((name) => name.endsWith('.yaml') || name.endsWith('.yml'));
   } catch (err) {
     if (errnoCode(err) === 'ENOENT') {
-      return []; // no workflows/ (or agents/) directory — an empty catalog, not an error
+      return undefined; // no workflows/ (or agents/) directory — an empty catalog, not an error
     }
     throw new CliError('invalid_invocation', `could not read the ${opts.kind} catalog directory.`, {
       cause: err,
@@ -127,10 +179,7 @@ export function discoverCatalog(opts: {
       `too many ${opts.kind === 'workflows' ? 'workflow' : 'agent'} files in the catalog (more than ${String(MAX_CATALOG_FILES)}); move some out of .relavium/${opts.kind}/ to list them.`,
     );
   }
-  const entries = names.map((name) =>
-    readEntry(join(dir, name), opts.cwd, opts.kind, root, opts.homeDir),
-  );
-  return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
+  return { dir, root, names };
 }
 
 /**
@@ -176,14 +225,21 @@ function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
   };
 }
 
-/** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
-function readEntry(
-  path: string,
-  cwd: string,
-  kind: CatalogKind,
-  root: string,
-  homeDir?: string,
-): CatalogEntry {
+/** The hardened read of one catalog file: its text, or the `valid: false` entry that says why it was not read. */
+type CatalogText =
+  | { readonly ok: true; readonly yaml: string; readonly rel: string }
+  | { readonly ok: false; readonly entry: CatalogEntry };
+
+function refused(path: string, rel: string, reason: string): CatalogText {
+  return { ok: false, entry: invalidEntry(path, rel, reason) };
+}
+
+/**
+ * The file half of a catalog read, shared by every kind and by {@link discoverAgentDefinitions}: admit the path (a project
+ * artifact, inside the catalog root), require a regular file under the size ceiling, open its canonical target by exact identity
+ * and read it in bounded chunks. Any fault is a refusal carrying a short, path-free reason, never a throw.
+ */
+function readCatalogText(path: string, cwd: string, root: string, homeDir?: string): CatalogText {
   const rel = sourceLabel(cwd, path);
   let yaml: string;
   try {
@@ -191,28 +247,23 @@ function readEntry(
     try {
       assertProjectArtifactPath(canonical, homeDir);
     } catch {
-      return invalidEntry(
-        path,
-        rel,
-        'not an admitted project artifact; check global catalog links',
-      );
+      return refused(path, rel, 'not an admitted project artifact; check global catalog links');
     }
-    if (!isWithinFsRoot(root, canonical))
-      return invalidEntry(path, rel, 'outside the project catalog');
+    if (!isWithinFsRoot(root, canonical)) return refused(path, rel, 'outside the project catalog');
     const stats = statSync(canonical, { bigint: true });
     // statSync FOLLOWS a symlink, so a `.yaml` symlinked to a directory, FIFO, or character device (e.g.
     // /dev/zero) resolves here — and readFileSync on a FIFO/char-device BLOCKS INDEFINITELY (a local DoS via a
     // crafted symlink in the catalog dir). Reject anything that is not a regular file BEFORE reading; the size
     // check cannot guard it (a device reports stat.size 0, which passes).
     if (!stats.isFile()) {
-      return invalidEntry(path, rel, 'not a regular file');
+      return refused(path, rel, 'not a regular file');
     }
     // The parser's authoritative cap is a CHARACTER count; `stat.size` is BYTES. UTF-8 encodes at most 4
     // bytes/char, so `chars * 4` is a byte ceiling that never false-rejects a within-limit file (a dense
     // multibyte file just under the char cap is not wrongly hidden) while still bailing before we slurp a
     // genuinely huge file into memory. The parser then re-applies the exact char cap.
     if (stats.size > BigInt(MAX_SOURCE_CHARS * 4)) {
-      return invalidEntry(path, rel, 'exceeds the size limit');
+      return refused(path, rel, 'exceeds the size limit');
     }
     // Contained aliases are allowed; open their canonical target without following a newly planted final link.
     const fd = openSync(
@@ -224,7 +275,7 @@ function readEntry(
       // 64-bit file IDs exceed a Number's precision.
       const opened = fstatSync(fd, { bigint: true });
       if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) {
-        return invalidEntry(path, rel, 'not the admitted regular file');
+        return refused(path, rel, 'not the admitted regular file');
       }
       const maxBytes = MAX_SOURCE_CHARS * 4;
       const chunks: Buffer[] = [];
@@ -234,7 +285,7 @@ function readEntry(
         const count = readSync(fd, buffer, 0, buffer.length, null);
         if (count === 0) break;
         total += count;
-        if (total > maxBytes) return invalidEntry(path, rel, 'exceeds the size limit');
+        if (total > maxBytes) return refused(path, rel, 'exceeds the size limit');
         chunks.push(buffer.subarray(0, count));
       }
       yaml = Buffer.concat(chunks, total).toString('utf8');
@@ -244,29 +295,59 @@ function readEntry(
   } catch (err) {
     // Generic, path-free reason — never echo a raw fs `err.message` (it carries the absolute path) into the
     // catalog entry / `--json` `error` field (error-handling.md; same discipline as parseReason below).
-    return invalidEntry(
+    return refused(
       path,
       rel,
       errnoCode(err) === 'EACCES' ? 'permission denied' : 'could not read the file',
     );
   }
 
+  return { ok: true, yaml, rel };
+}
+
+/** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */
+function readEntry(
+  path: string,
+  cwd: string,
+  kind: CatalogKind,
+  root: string,
+  homeDir?: string,
+): CatalogEntry {
+  if (kind === 'agents') return readAgentItem(path, cwd, root, homeDir).entry;
+  const text = readCatalogText(path, cwd, root, homeDir);
+  if (!text.ok) return text.entry;
   try {
-    if (kind === 'workflows') {
-      const def = parseWorkflow(yaml, { source: rel });
-      return {
-        slug: def.workflow.id,
-        name: def.workflow.name,
-        tags: def.workflow.tags ?? [],
-        nodeCount: def.workflow.nodes.length,
-        path: rel,
-        valid: true,
-      };
-    }
-    const agent = parseAgent(yaml, { source: rel });
-    return { slug: agent.id, name: agent.name, tags: [], path: rel, valid: true };
+    const def = parseWorkflow(text.yaml, { source: text.rel });
+    return {
+      slug: def.workflow.id,
+      name: def.workflow.name,
+      tags: def.workflow.tags ?? [],
+      nodeCount: def.workflow.nodes.length,
+      path: text.rel,
+      valid: true,
+    };
   } catch (err) {
-    return invalidEntry(path, rel, parseReason(err));
+    return invalidEntry(path, text.rel, parseReason(err));
+  }
+}
+
+/** Read + parse one agent file: the entry `discoverCatalog` lists, and the definition it parsed (absent when the file is refused). */
+function readAgentItem(
+  path: string,
+  cwd: string,
+  root: string,
+  homeDir?: string,
+): AgentCatalogItem {
+  const text = readCatalogText(path, cwd, root, homeDir);
+  if (!text.ok) return { entry: text.entry, agent: undefined };
+  try {
+    const agent = parseAgent(text.yaml, { source: text.rel });
+    return {
+      entry: { slug: agent.id, name: agent.name, tags: [], path: text.rel, valid: true },
+      agent,
+    };
+  } catch (err) {
+    return { entry: invalidEntry(path, text.rel, parseReason(err)), agent: undefined };
   }
 }
 
