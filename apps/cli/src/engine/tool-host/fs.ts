@@ -33,6 +33,7 @@ import {
 import { captureRequiredCreationMask } from './fs-creation-mask.js';
 import { nativeWriteAttentionFailure, runNativeStage } from './fs-native-write.js';
 import { foldPathComponent } from './fs-path-component.js';
+import { literalFailureTable, scanLiteral } from './literal-search.js';
 import {
   captureFsStageInventory,
   FsStageInventoryError,
@@ -1726,11 +1727,18 @@ const SCAN_ENTRIES = 10000;
 const SCAN_DIRS = 1000;
 const SCAN_DEPTH = 32;
 const SCAN_IGNORE_ANCESTORS = 32;
-const SCAN_FILES = 1000;
-const SCAN_BYTES = 16 * 1024 * 1024;
+// Files and bytes are hard ceilings for a whole call. A typical repository finishes well inside them, so a reached
+// ceiling means the search really was too large, not that the budget was spent on bookkeeping (ADR-0142).
+const SCAN_FILES = 10000;
+const SCAN_BYTES = 64 * 1024 * 1024;
 const SCAN_FILE_BYTES = 1024 * 1024;
 const SCAN_MATCHES = 200;
+// Units of linear work for the ignore and glob matchers. Kept apart from the literal search, so a hostile ignore file
+// cannot buy more work by raising the search ceiling (ADR-0142).
 const SCAN_WORK = 16 * 1024 * 1024;
+// Units of linear work for the literal search: UTF-16 units read by its case fold and its matcher, plus one unit per
+// line and one pattern read per file. A hard ceiling for the whole call (ADR-0142).
+const SCAN_SEARCH_WORK = 64 * 1024 * 1024;
 const IGNORE_BYTES = 64 * 1024;
 const IGNORE_RULES = 256;
 const LINE_BYTES = 2048;
@@ -1916,10 +1924,11 @@ async function discover(
   }
   await inspectAncestors();
   const ignored = compileIgnore(...bodies);
-  let work = 0;
+  let matcherWork = 0;
+  let searchWork = 0;
   const matcherLimit = new Error('filesystem matcher work limit reached');
   const consumeMatcherWork = (): void => {
-    if (++work > SCAN_WORK) throw matcherLimit;
+    if (++matcherWork > SCAN_WORK) throw matcherLimit;
   };
   const matchesGlob = glob === undefined ? () => true : compileGlob(glob, consumeMatcherWork);
   const files: { path: string; sizeBytes: number; lastModified: string; mtimeMs: number }[] = [];
@@ -1966,7 +1975,7 @@ async function discover(
       ): 'stop' | 'ignored' | 'matched' | 'unmatched' {
         try {
           // Meter actual comparisons and retries; workspace rules do not own granted sibling roots.
-          work += rel.length + workspaceRel.length + 2;
+          matcherWork += rel.length + workspaceRel.length + 2;
           consumeMatcherWork();
           const ignoredCandidate =
             isSensitivePolicyReadPath(candidate, config.pathPolicy) ||
@@ -2135,27 +2144,31 @@ async function discover(
             return 'next';
           }
           async function searchLines(text: string): Promise<'next' | 'stop'> {
-            const needle =
-              searchOptions.caseSensitive === false
-                ? foldPattern(searchOptions.pattern)
-                : searchOptions.pattern;
+            const insensitive = searchOptions.caseSensitive === false;
+            const needle = insensitive ? foldPattern(searchOptions.pattern) : searchOptions.pattern;
+            const failure = literalFailureTable(needle);
+            // The pattern is read once per file, to build its failure table; the lines never re-read it.
+            searchWork += needle.length;
             const lines = text.split('\n');
             for (let i = 0; i < lines.length; i++) {
+              throwIfAborted(signal);
               const line = lines[i] ?? '';
-              // Charge the worst-case literal comparisons across all indexOf retries, plus folding.
-              // Each retry resumes at least one folded UTF-16 unit later, so their searched spans do
-              // not cause an uncharged quadratic rescan; the needle multiplier bounds comparisons.
-              work += (line.length * 3 + 1) * (needle.length + 1);
-              if (work > SCAN_WORK) {
+              const folded = insensitive ? await foldWithSpans(line, signal) : undefined;
+              const haystack = folded?.text ?? line;
+              // Charge the units each line is read in: the fold reads the line once, the matcher reads the haystack once,
+              // and one unit covers the loop. Linear in the text, so the budget bounds real work (ADR-0142).
+              searchWork += (folded === undefined ? 0 : line.length) + haystack.length + 1;
+              if (searchWork > SCAN_SEARCH_WORK) {
                 stop('work');
                 break;
               }
-              const at = await findLiteral(
+              const at = firstLiteralStart(
                 line,
+                haystack,
                 needle,
-                searchOptions.caseSensitive === false,
+                failure,
+                folded,
                 searchOptions.wholeWord === true,
-                signal,
               );
               if (at < 0) continue;
               matches.push({
@@ -2230,13 +2243,19 @@ function searchExcerpt(line: string, at: number): { content: string; omittedByte
 function foldPattern(text: string): string {
   return Array.from(text, (part) => part.toLowerCase()).join('');
 }
+/** The folded line and, per folded unit, the source span it came from, so a match maps back to the original text. */
+interface FoldedLine {
+  readonly text: string;
+  readonly starts: readonly number[];
+  readonly ends: readonly number[];
+}
 async function foldWithSpans(
   line: string,
-  starts: number[],
-  ends: number[],
   signal: AbortSignalLike | undefined,
-): Promise<string> {
+): Promise<FoldedLine> {
   const chunks: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
   let source = 0;
   let foldedCount = 0;
   for (const part of line) {
@@ -2252,41 +2271,27 @@ async function foldWithSpans(
     }
     source += part.length;
   }
-  return chunks.join('');
+  return { text: chunks.join(''), starts, ends };
 }
-async function findLiteral(
+/** The source offset of the first occurrence that satisfies the word rule, or -1. Linear in the haystack (ADR-0142). */
+function firstLiteralStart(
   line: string,
+  haystack: string,
   needle: string,
-  insensitive: boolean,
+  failure: Int32Array,
+  folded: FoldedLine | undefined,
   wholeWord: boolean,
-  signal: AbortSignalLike | undefined,
-): Promise<number> {
-  let haystack = line;
-  const starts: number[] = [];
-  const ends: number[] = [];
-  if (insensitive) {
-    haystack = await foldWithSpans(line, starts, ends, signal);
-  }
-  let from = 0;
-  let attempts = 0;
-  while (from <= haystack.length) {
-    if (++attempts % 16384 === 0) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      throwIfAborted(signal);
-    }
-    const at = haystack.indexOf(needle, from);
-    if (at < 0) return -1;
-    const start = insensitive ? starts[at] : at;
-    const end = insensitive ? ends[at + needle.length - 1] : at + needle.length;
-    if (
-      start !== undefined &&
-      end !== undefined &&
-      (!wholeWord || (!wordBefore(line, start) && !wordAfter(line, end)))
-    )
-      return start;
-    from = at + 1;
-  }
-  return -1;
+): number {
+  let found = -1;
+  scanLiteral(haystack, needle, failure, (at) => {
+    const start = folded === undefined ? at : folded.starts[at];
+    const end = folded === undefined ? at + needle.length : folded.ends[at + needle.length - 1];
+    if (start === undefined || end === undefined) return false;
+    if (wholeWord && (wordBefore(line, start) || wordAfter(line, end))) return false;
+    found = start;
+    return true;
+  });
+  return found;
 }
 function wordBefore(value: string, at: number): boolean {
   if (at <= 0) return false;
