@@ -600,6 +600,31 @@ describe('what is drawn', () => {
     }
   });
 
+  it('below 80×24 with a withdrawal’s question still up, `Esc close` is true: the question is not on screen, so the first `Esc` closes the screen and withdraws nothing', () => {
+    const r = rig(snapshotOf(2));
+    r.advance(SHEET_SETTLE_MS + 100);
+    r.press('d');
+    expect(r.state.sheet?.armed, 'the question is up').toBe(true);
+    // The terminal was made smaller after the question was asked: it cannot be shown, and it is still up.
+    const small = { columns: 60, terminalRows: 20 };
+    expect(textOf(tabHostLines(r.state, small))).toEqual([
+      'Enlarge the terminal — Esc steps back, or closes at the list.',
+      'Esc close',
+    ]);
+    // What the legend says is what the key does there (the sheet's rule: a frame that cannot say what it asks never leaves it waiting).
+    expect(r.press('', ESC, { canArm: false }).kind).toBe('close');
+    expect(r.withdraw).not.toHaveBeenCalled();
+    // At the floor the question is on screen, and its own legend says what `Esc` does there: it keeps the row, and the screen stays.
+    const floor = rig(snapshotOf(2));
+    floor.advance(SHEET_SETTLE_MS + 100);
+    floor.press('d');
+    expect(textOf(tabHostLines(floor.state, { columns: 80, terminalRows: 24 })).at(-1)).toBe(
+      '[Enter] withdraw · Esc keep',
+    );
+    expect(floor.press('', ESC).kind).toBe('state');
+    expect(floor.state.sheet?.armed).toBe(false);
+  });
+
   it('draws the project list unchanged next to the sheet’s own body: the same rows, the same markers', () => {
     const r = rig(snapshotOf(30));
     for (let i = 0; i < 12; i += 1) r.press('', { downArrow: true });

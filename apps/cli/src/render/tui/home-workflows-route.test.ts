@@ -309,6 +309,35 @@ describe('the Defined tab’s keys reach the Home’s flows', () => {
     expect(hostOf(controller)?.defined?.cursor, 'the tab is left where it was').toBe(1);
   });
 
+  it('r refused while a resume leg is still acquiring its run keeps the Defined tab: the id that leg gets later is not a run this launch started', async () => {
+    // A resume leg is between its confirmation and the engine's start result: `launching`, a leg with no run id yet. This launch is refused
+    // ("a run is already starting"), and by the time the flow answers the resume has its id.
+    let snapshot: RunHostSnapshot = {
+      launching: true,
+      active: { leg: 'resume', runId: undefined, cancelling: false },
+      last: undefined,
+    };
+    const launch = vi.fn(() => {
+      snapshot = {
+        launching: false,
+        active: { leg: 'resume', runId: 'run-0009', cancelling: false },
+        last: undefined,
+      };
+      return Promise.resolve('A run is already starting.');
+    });
+    const { controller } = mount({ launch, host: () => snapshot });
+    submit(controller, '/workflows');
+    controller.handleKey('', DOWN);
+    controller.handleKey('r', {});
+    await flush();
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().screen?.kind, 'the run view of the resume is not opened').toBe(
+      'tab-host',
+    );
+    expect(hostOf(controller)?.tab).toBe('defined');
+    expect(messageOf(controller)).toBe('A run is already starting.');
+  });
+
   it('r that ends with the leg gone and nothing started shows what the flow said on the tab', async () => {
     let snapshot: RunHostSnapshot = RUNNING;
     const launch = vi.fn(() => {

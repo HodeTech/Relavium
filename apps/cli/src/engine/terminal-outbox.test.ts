@@ -220,10 +220,12 @@ describe('createFileTerminalOutbox', () => {
 
   it('has no stamp for a file it cannot look at, which is a reason to read it whole', () => {
     // A path whose parent is a regular file: POSIX stat fails with ENOTDIR, which is not ENOENT, so there is no stamp and the file is read
-    // whole. Windows reports ENOENT for the same path, which stamps as an absent file (`absent`): either answer is a correct one for a
-    // path that holds no outbox.
+    // whole. Windows reports ENOENT for the same path, which stamps as an absent file (`absent`), so only there is that answer accepted: on
+    // POSIX an `absent` would be a stamp for an error that is not "the file is not there", and the poll would never read the file.
     const file = join(dir, 'plain');
     writeFileSync(file, 'x');
-    expect([undefined, 'absent']).toContain(terminalOutboxStamp(join(file, 'inside')));
+    const stamp = terminalOutboxStamp(join(file, 'inside'));
+    if (process.platform === 'win32') expect([undefined, 'absent']).toContain(stamp);
+    else expect(stamp).toBeUndefined();
   });
 });

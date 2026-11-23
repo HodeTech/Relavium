@@ -331,9 +331,31 @@ describe('the command is over once its screen is gone, however it went', () => {
     ['a gate card’s Ctrl+C', true],
     ['the run view’s own close', false],
   ] as const)(
-    '%s closes the screen and keeps the Home open; an Esc on a tab host opened later with /workflows closes that screen only',
-    async (_label, card) => {
+    '%s closes the whole screen, and a bare `relavium permissions` ends with it, with success',
+    (_label, card) => {
       const { controller, onExit } = commandThenView(card);
+      expect(onExit, 'the screen is still open').not.toHaveBeenCalled();
+      ctrl(controller, 'c');
+      expect(onExit, 'the command’s screen is gone, so the command is over').toHaveBeenCalledTimes(
+        1,
+      );
+    },
+  );
+
+  it.each([
+    ['a gate card’s Ctrl+C', true],
+    ['the run view’s own close', false],
+  ] as const)(
+    'an ordinary tab host ends nothing: %s closes the screen and keeps the Home open, and an Esc on a tab host opened later closes that screen only',
+    async (_label, card) => {
+      const { controller, onExit } = mount({ host: PARKED, gateCards: true, withDefined: true });
+      await typedPermissions(controller);
+      expect(hostOf(controller)?.tab).toBe('permissions');
+      expect(controller.openScreen('run-view', { runId: RUN, from: 'tab-host' })).toBe(true);
+      if (card) {
+        controller.handleKey('', ENTER);
+        expect(controller.getSnapshot().screen?.kind).toBe('gate-card');
+      }
       ctrl(controller, 'c');
       expect(controller.getSnapshot().screen, 'the screen is gone').toBeUndefined();
       expect(onExit, 'and the Home is still open').not.toHaveBeenCalled();

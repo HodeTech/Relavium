@@ -68,7 +68,7 @@ import { displayWidth } from './viewport.js';
  *   (the tab host's rule). The cursor follows the run, not the row number, across a re-read.
  * - **The cost is read for the rows near the cursor** and kept by the source, per finished run: a row that scrolls into view is folded
  *   once, and a row that was folded is never folded again. A row shows `…` for a cost that was not read yet, `not final` for a run that
- *   is not finished, and a run whose log cannot be read is shown as `unreadable`, never hidden.
+ *   is not finished, a run whose log cannot be read is shown as `unreadable`, never hidden, and a cost read that failed just now says `not read` and is read again by the next key.
  * - **The detail.** `Enter` asks the host to load the run (the terminal outbox is a file, so the load is asynchronous; the tab says
  *   `Reading the run…` until the host hands the result in, {@link withHistoryDetail}). The detail is a list of lines: the header, the
  *   node table, then the events. `↑`/`↓` move, `Esc` and `Backspace` go back to the list on the row it came from. A run whose end is
@@ -80,6 +80,9 @@ import { displayWidth } from './viewport.js';
  *   `? missing`, `★ pinned`; colour only repeats what the words say.
  * - **Every string from the history file is sanitized** (labels, ids, project roots, node ids, error text) before it is drawn.
  */
+
+/** What the tab holds of a run's cost: what the source answered, or `fault` for a read that threw (the next key reads it again). */
+export type CostSlot = HistoryCost | { readonly kind: 'fault' };
 
 /** The reads the tab needs: the source's, and the detail's asynchronous load. */
 export interface HistoryPort extends HistorySource {
@@ -127,8 +130,8 @@ export interface HistoryTabState {
   readonly cursor: number;
   /** The key of the selected entry: it survives a re-read that moves the run. */
   readonly focus: string | undefined;
-  /** The cost of each run read so far, by run id (the source keeps the folds; this is what the tab has shown). */
-  readonly costs: ReadonlyMap<string, HistoryCost>;
+  /** The cost of each run read so far, by run id (the source keeps the folds; this is what the tab has shown). Per screen: a new screen starts empty. */
+  readonly costs: ReadonlyMap<string, CostSlot>;
   /** One sentence the last key left; the next key drops it. */
   readonly message?: string | undefined;
   readonly detail?: HistoryDetailState | undefined;
@@ -162,6 +165,11 @@ export const HISTORY_DETAIL_UNREADABLE =
   'The event log of this run could not be read. relavium logs shows what is wrong with it.';
 export const HISTORY_DETAIL_FAULT = 'The run could not be loaded just now. Enter tries again.';
 export const HISTORY_REREAD_FAILED = 'The history could not be read again.';
+/**
+ * What a cost read that threw says. The cause is unknown (the source degrades a damaged log itself, so a throw is a fault of the moment),
+ * so the run's log is not blamed, and the next key reads it again.
+ */
+export const HISTORY_COST_FAULT = 'the cost could not be read; press a key to retry';
 export const HISTORY_NO_FAILED_NODE = 'No node of this run ended failed.';
 export const HISTORY_MISSING_RUN =
   'That pinned run is not in the history any more. p removes the pin.';
@@ -173,8 +181,21 @@ export const HISTORY_PARTIAL_REMEDY = 'relavium logs shows the rest.';
 export const HISTORY_HELD_UNREAD =
   'Outbox unreadable: this run’s end may be held, and it may not be running.';
 
-/** How many rows either side of the cursor have their cost read: more than any screen draws, so a drawn row always has one. */
-export const HISTORY_COST_REACH = 10;
+/**
+ * The most rows the tab's body is ever given: the tab host's rows less the strip, its rule and its legend. `tab-host.ts` owns the budget
+ * (it imports this module, so it cannot be imported here); a test holds the two numbers together.
+ */
+export const HISTORY_BODY_ROOM_MAX = 20;
+/** The list's own lines around its entries: the status line, the selected entry's line and the message row. */
+const LIST_CHROME_ROWS = 3;
+/** The most entry lines the list ever draws (the heading lines of the pinned section only take some of them away). */
+export const HISTORY_LIST_ENTRIES_MAX = HISTORY_BODY_ROOM_MAX - LIST_CHROME_ROWS;
+/**
+ * How many rows either side of the cursor have their cost read. The list draws its window around the cursor, and the window can start at
+ * the cursor (at the top) or end at it (at the bottom), so the reach is the whole of the list's height: a drawn row always has its cost,
+ * and the two numbers cannot drift because one is the other.
+ */
+export const HISTORY_COST_REACH = HISTORY_LIST_ENTRIES_MAX;
 /** How far `PgUp` and `PgDn` move. */
 export const HISTORY_PAGE_STEP = 8;
 /** The terminal width the legend must fit: the Home's 80-column floor. */
@@ -211,7 +232,7 @@ function indexOfKey(read: HistoryRead, key: string | undefined): number {
   return -1;
 }
 
-function costOf(state: HistoryTabState, row: HistoryRow): HistoryCost | undefined {
+function costOf(state: HistoryTabState, row: HistoryRow): CostSlot | undefined {
   return state.costs.get(row.id);
 }
 
@@ -228,39 +249,40 @@ export function unreadableHistoryTab(): HistoryTabState {
  * {@link HISTORY_COST_CACHE_MAX} runs and drops the one shown LEAST RECENTLY first: every row of the window is moved to the end of the map
  * before anything is added (a pinned run that sits above every page stays, and a row of the window is never what a new read pushes out),
  * so a long scroll does not grow it without end. A read that throws for a reason that is not about the run (the source degrades a damaged
- * log itself) is kept as `unreadable` for this screen: the row says so, the rows after it are still read, and the next key does not ask
- * again, so a key never throws out of the tab and one faulting run never blocks the rest of the window.
+ * log itself) is kept as a `fault` for this screen: the row says the cost could not be read, the rows after it are still read, a key never
+ * throws out of the tab, and the next key asks for that cost again (a fault of the moment is not a verdict on the run, so it is not
+ * remembered as one). A run listed twice (pinned, and in the page) is asked about once per key.
  */
 function costsAround(
-  known: ReadonlyMap<string, HistoryCost>,
+  known: ReadonlyMap<string, CostSlot>,
   read: HistoryRead,
   port: HistorySource,
   cursor: number,
-): ReadonlyMap<string, HistoryCost> {
+): ReadonlyMap<string, CostSlot> {
   const entries = entriesOf(read);
   const from = Math.max(0, cursor - HISTORY_COST_REACH);
   const to = Math.min(entries.length, cursor + HISTORY_COST_REACH + 1);
   const costs = new Map(known);
-  const missing: HistoryRow[] = [];
+  const missing = new Map<string, HistoryRow>();
   for (let index = from; index < to; index += 1) {
     const entry = entries[index];
     if (entry?.kind !== 'run') continue;
     const kept = costs.get(entry.row.id);
-    if (kept === undefined) missing.push(entry.row);
+    if (kept === undefined || kept.kind === 'fault') missing.set(entry.row.id, entry.row);
     else {
       // Shown now: the youngest in the map, so the oldest to go is a row that is not in view.
       costs.delete(entry.row.id);
       costs.set(entry.row.id, kept);
     }
   }
-  for (const row of missing) {
-    if (costs.has(row.id)) continue;
-    let cost: HistoryCost;
+  for (const row of missing.values()) {
+    let cost: CostSlot;
     try {
       cost = port.cost(row);
     } catch {
-      cost = { kind: 'unreadable' };
+      cost = { kind: 'fault' };
     }
+    costs.delete(row.id);
     costs.set(row.id, cost);
     while (costs.size > HISTORY_COST_CACHE_MAX) {
       const oldest = costs.keys().next();
@@ -448,8 +470,10 @@ function foldDetailKey(
   const cleared: HistoryDetailState =
     detail.message === undefined ? detail : { ...detail, message: undefined };
   const held: HistoryTabState = cleared === detail ? state : { ...state, detail: cleared };
-  if (input === 'p') return { kind: 'state', state: pinDetail(held, cleared, context) };
-  if (input === 'n') return { kind: 'state', state: jumpToFirstFailed(held, cleared, read) };
+  // A bare letter is the same key with Caps Lock on.
+  const letter = input.toLowerCase();
+  if (letter === 'p') return { kind: 'state', state: pinDetail(held, cleared, context) };
+  if (letter === 'n') return { kind: 'state', state: jumpToFirstFailed(held, cleared, read) };
   if (key.return === true) return { kind: 'state', state: openNode(held, cleared, read, context) };
   const last = detailLineCount(read) - 1;
   let to = detail.cursor;
@@ -630,10 +654,12 @@ function foldListKey(
       state: { ...cleared, detail },
     };
   }
-  if (input === 'p') return { kind: 'state', state: pinSelected(cleared, read, context) };
-  if (input === 'a' || input === 'f') {
+  // A bare letter is the same key with Caps Lock on.
+  const letter = input.toLowerCase();
+  if (letter === 'p') return { kind: 'state', state: pinSelected(cleared, read, context) };
+  if (letter === 'a' || letter === 'f') {
     const query: HistoryQuery =
-      input === 'a'
+      letter === 'a'
         ? {
             scope: read.query.scope === 'project' ? 'all' : 'project',
             status: read.query.status,
@@ -678,15 +704,19 @@ function statusLine(read: HistoryRead): string {
   return `${SCOPE_WORDS[scope]} · ${status ?? 'every finished run'} · page ${String(page + 1)}${last}`;
 }
 
-/** The cost slot of a row: a figure, `…` before it is read, `not final` for a run that has not ended, `unreadable` for a log that cannot be read (never a bare dash). */
-function costWords(cost: HistoryCost | undefined): string {
+/**
+ * The cost slot of a row: a figure, `…` before it is read, `not final` for a run that has not ended, `unreadable` for a log that cannot be
+ * read, `not read` for a read that failed just now (never a bare dash).
+ */
+function costWords(cost: CostSlot | undefined): string {
   if (cost === undefined) return '…';
   if (cost.kind === 'text') return clipLine(cost.text, COST_COLUMN);
+  if (cost.kind === 'fault') return 'not read';
   return cost.kind === 'not-final' ? 'not final' : 'unreadable';
 }
 
 /** The glyph and the word of a run row: its status, or `unreadable` when its log could not be read. */
-function stateOf(row: HistoryRow, cost: HistoryCost | undefined): { glyph: string; word: string } {
+function stateOf(row: HistoryRow, cost: CostSlot | undefined): { glyph: string; word: string } {
   if (cost?.kind === 'unreadable') return { glyph: '?', word: 'unreadable' };
   return { glyph: row.glyph, word: row.word };
 }
@@ -742,9 +772,11 @@ function detailLine(
       ? `cost ${cost.text}`
       : cost?.kind === 'unreadable'
         ? `its event log could not be read (it was ${row.word})`
-        : cost?.kind === 'not-final'
-          ? 'not finished: its cost is not final'
-          : '';
+        : cost?.kind === 'fault'
+          ? HISTORY_COST_FAULT
+          : cost?.kind === 'not-final'
+            ? 'not finished: its cost is not final'
+            : '';
   // What the run cost (or why it has no figure) comes first, so a long id or project path is the part a narrow terminal cuts.
   const parts = [money, scrubbedBounded(row.id), row.projectRoot ?? ''].filter(
     (part) => part !== '',
@@ -809,7 +841,7 @@ function listBody(state: HistoryTabState, width: number, room: number): readonly
     return [status, empty, footer].slice(0, room);
   }
   const lines = listLines(state, read, width);
-  const height = Math.max(3, room - 3);
+  const height = Math.max(3, room - LIST_CHROME_ROWS);
   const cursorLine = lines.findIndex((line) => line.entry === state.cursor);
   const { start, end } = windowBody(lines.length, Math.max(0, cursorLine), height);
   const shown: SheetLine[] = lines.slice(start, end).map((line) => line.line);

@@ -130,6 +130,22 @@ describe('readPermissions: the repository’s allowlist (ADR-0140 §3)', () => {
     expect(long.commands[0]?.endsWith('…')).toBe(true);
   });
 
+  it('masks a secret before it cuts the entry: a token that straddles the cut is not left as a fragment', () => {
+    const secret = `sk-ant-api03-${'K'.repeat(40)}`;
+    // The token starts 24 characters before the cut, so the cut text alone would hold a fragment of it and no whole token.
+    const straddling = `${'a'.repeat(MAX_ROW_TEXT - 25)} ${secret} ${'b'.repeat(50)}`;
+    const list = readPermissions(
+      withAllowlist(() => ({ commands: [straddling], globs: [straddling] })),
+    ).allowlist;
+    if (list?.ok !== true) throw new Error('the allowlist was readable');
+    for (const entry of [...list.commands, ...list.globs]) {
+      expect(entry).toContain('[REDACTED]');
+      expect(entry).not.toContain('sk-ant');
+      expect(entry).not.toContain('KKKK');
+      expect([...entry].length).toBeLessThanOrEqual(MAX_ROW_TEXT);
+    }
+  });
+
   it('says a config that cannot be read in a fixed sentence that carries nothing of the error, and still reads the rest', () => {
     const snapshot = readPermissions({
       ...deps({ list: GRANTS }),

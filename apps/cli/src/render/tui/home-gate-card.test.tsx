@@ -382,7 +382,7 @@ describe('opening the card', () => {
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
     expect(m.controller.getSnapshot().notice).toContain(
-      'is not parked in this directory any more.',
+      'Not parked in this directory any more: run ',
     );
   });
 
@@ -400,8 +400,11 @@ describe('opening the card', () => {
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().notice !== undefined);
     expect(m.controller.getSnapshot().screen).toBeUndefined();
-    expect(m.controller.getSnapshot().notice).toContain('no gate to decide here');
-    expect(m.controller.getSnapshot().notice).toContain('relavium status run-0001');
+    expect(m.controller.getSnapshot().notice).toContain('No gate to decide here');
+    expect(m.controller.getSnapshot().notice).toContain(
+      '`relavium status` shows what it waits for',
+    );
+    expect(m.controller.getSnapshot().notice).toContain('(run run-0001)');
   });
 
   it('a run that ended parked offers its card from the run view: the key line says so, `Enter` opens it, `Esc` returns to the view', async () => {
@@ -428,10 +431,10 @@ describe('opening the card', () => {
     await eventually(() => m.frame().includes('Enter opens the gate'), 'the key line');
     m.harness.stdin.write(ENTER);
     await eventually(
-      () => m.frame().includes('is not parked in this directory any more.'),
+      () => m.frame().includes('Not parked in this directory any more: run '),
       'the reason in the run view',
     );
-    expect(m.frame()).toContain('note: Run run-0001 is not parked in this directory any more.');
+    expect(m.frame()).toContain('note: Not parked in this directory any more: run run-0001.');
     expect(m.frame()).toContain('Enter tries the gate again · Esc / Ctrl+C close');
     expect(m.controller.getSnapshot().screen, 'the view stays; no card opened').toMatchObject({
       kind: 'run-view',

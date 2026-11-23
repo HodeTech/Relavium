@@ -1,4 +1,5 @@
 import { scrubbedCommandDisplay } from '@relavium/core';
+import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
 import type { SessionCommandApproval } from '../chat/chat-mode.js';
 import type { CommandGrantStore } from './command-grants.js';
@@ -95,7 +96,8 @@ export type ProjectPermissions =
 
 /**
  * The repository's `[chat]` allowlist as the Permissions tab lists it, read-only and bounded: at most {@link MAX_ALLOWLIST_ENTRIES} entries
- * of each list are kept, each cut to {@link MAX_ROW_TEXT} characters, and `omitted` counts what was not kept. It pre-approves nothing in a
+ * of each list are kept, each masked by the shared scrubber and THEN cut to {@link MAX_ROW_TEXT} characters (a secret that straddled the
+ * cut would otherwise be left as a fragment no pattern matches), and `omitted` counts what was not kept. It pre-approves nothing in a
  * chat ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1, amended 2026-11-21): the
  * file is the repository's, not the person's, so a listed command only says so on its card.
  */
@@ -160,6 +162,14 @@ function bounded(text: string): string {
     : `${characters.slice(0, MAX_ROW_TEXT - 1).join('')}…`;
 }
 
+/**
+ * An allowlist entry as the snapshot keeps it: its secret shapes masked while the text is WHOLE, then cut. The file is the repository's and
+ * can hold a pasted token anywhere, including across the cut, where a cut text would hold a fragment the scrubber cannot recognise.
+ */
+function scrubbedBounded(text: string): string {
+  return bounded(scrubSecrets(text));
+}
+
 /** The sheet's data, read now. Synchronous: the store and the cache are both in this process. It never throws: what cannot be read is said in a sentence. */
 export function readPermissions(deps: PermissionsDeps): PermissionsSnapshot {
   let project: ProjectPermissions;
@@ -207,8 +217,8 @@ function readAllowlist(read: () => RepoAllowlistSource): RepoAllowlist {
     const globs = source.globs ?? [];
     return {
       ok: true,
-      commands: commands.slice(0, MAX_ALLOWLIST_ENTRIES).map(bounded),
-      globs: globs.slice(0, MAX_ALLOWLIST_ENTRIES).map(bounded),
+      commands: commands.slice(0, MAX_ALLOWLIST_ENTRIES).map(scrubbedBounded),
+      globs: globs.slice(0, MAX_ALLOWLIST_ENTRIES).map(scrubbedBounded),
       omitted:
         Math.max(0, commands.length - MAX_ALLOWLIST_ENTRIES) +
         Math.max(0, globs.length - MAX_ALLOWLIST_ENTRIES),

@@ -254,6 +254,54 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     expect(r.message()).toBe('Pinned alpha.');
   });
 
+  it('puts the cursor on the pin it removed by that pin’s row id, never on another row with the same name', () => {
+    // Two other projects pin a workflow of the same name. The cursor is on the second; `p` removes it. A cursor that followed the NAME would
+    // jump to the first project's pin, and the next `p` would remove a pin the person never looked at.
+    store.pinItem({ kind: 'workflow', projectRoot: '/work/other-a', ref: 'deploy', at: 1 });
+    store.pinItem({ kind: 'workflow', projectRoot: '/work/other-b', ref: 'deploy', at: 2 });
+    const r = rig('defined', { entries: [entry('alpha')] });
+    const rows = r.state.defined?.read.model.rows ?? [];
+    expect(rows.map((row) => `${row.state}:${row.slug}`)).toEqual([
+      'other-project:deploy',
+      'other-project:deploy',
+      'ready:alpha',
+    ]);
+    // The first of the two rows is the one that stays.
+    const keptRoot = rows[0]?.projectRoot;
+    expect(keptRoot).toMatch(/^\/work\/other-[ab]$/u);
+    r.press('', DOWN);
+    expect(r.state.defined?.cursor).toBe(1);
+    r.press('p');
+    expect(r.message()).toBe('Unpinned deploy.');
+    expect(
+      store.listPins({ kind: 'workflow' }).map((pin) => pin.projectRoot),
+      'the second row’s pin is the one that went',
+    ).toEqual([keptRoot]);
+    const after = r.state.defined;
+    expect(after?.cursor, 'the cursor kept its place in the list').toBe(1);
+    expect(after?.read.model.rows[after.cursor]).toMatchObject({ state: 'ready', slug: 'alpha' });
+    // The next `p` acts on that row (it pins `alpha`), and the other project's pin is still there.
+    r.press('p');
+    expect(r.message()).toBe('Pinned alpha.');
+    expect(
+      store.listPins({ kind: 'workflow' }).map((pin) => `${pin.projectRoot}:${pin.ref}`),
+    ).toContain(`${String(keptRoot)}:deploy`);
+  });
+
+  it('says that nothing was removed, not that it unpinned, when the store held no such pin any more', () => {
+    store.pinItem({ kind: 'workflow', projectRoot: ROOT, ref: 'alpha', at: T0 });
+    const r = rig('defined', { entries });
+    expect(r.state.defined?.read.model.rows[0]).toMatchObject({ slug: 'alpha', pinned: true });
+    // Another process removed the pin after the tab was read: the row still says pinned.
+    store.unpinItem({ kind: 'workflow', projectRoot: ROOT, ref: 'alpha' });
+    r.press('p');
+    expect(r.message()).toBe('Nothing was removed: alpha is not pinned.');
+    expect(r.message()).not.toContain('Unpinned');
+    expect(r.state.defined?.read.model.rows.find((row) => row.slug === 'alpha')).toMatchObject({
+      pinned: false,
+    });
+  });
+
   it('removes a pin whose workflow left the catalog by its row', () => {
     store.pinItem({ kind: 'workflow', projectRoot: ROOT, ref: 'gone', at: T0 });
     const r = rig('defined', { entries: [entry('alpha')] });
@@ -419,6 +467,17 @@ describe('p on a History row pins the run under its canonical key', () => {
       expect(r.message()).toBe(LIMIT_ALONE);
       expect(r.message()).not.toContain('PRIVATE');
     });
+  });
+
+  it('says that nothing was removed, not that it unpinned, when the store held no such pin any more', async () => {
+    const r = await historyRig();
+    r.press('p');
+    expect(r.message()).toBe('Pinned a1b2c3d4.');
+    // Another process removed the pin after the list was read: the row still says pinned.
+    store.unpinItem({ kind: 'run', projectRoot: '', ref: RUN });
+    r.press('p');
+    expect(r.message()).toBe('Nothing was removed: a1b2c3d4 is not pinned.');
+    expect(r.message()).not.toContain('Unpinned');
   });
 
   it('removes a pin whose run is gone by its row', async () => {

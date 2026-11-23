@@ -5,7 +5,15 @@ import {
   holdNativeToolProcess,
   witnessNativeToolProcess,
 } from '../commands/native-forwarding.test-support.js';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -57,7 +65,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
-import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from '../render/tui/permissions-sheet.js';
+import { SHEET_CONFIRM_DWELL_MS } from '../render/tui/permissions-sheet.js';
 import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
@@ -1718,6 +1726,14 @@ workflow:
           ref: 'elsewhere',
           at: 2,
         });
+        // A run pin holds a slot of the store's cap too, and the tab lists none of it: the stored total must count it, so a read that fed the
+        // tab only the workflow pins (the kind filtered away) would name two stored pins where the store holds three.
+        createRunPinStore(client.db).pinItem({
+          kind: 'run',
+          projectRoot: '',
+          ref: 'a1b2c3d4-0000-4000-8000-000000000001',
+          at: 3,
+        });
         let captured: RootAppProps | undefined;
         const { deps } = makeDeps((p) => (captured = p));
         const drivePromise = driveHome(deps);
@@ -1732,7 +1748,7 @@ workflow:
           ['alpha', 'ready', false],
         ]);
         // The pin of the other project is a row that can be removed from here, and the store's own total is what the read names.
-        expect(definedOf(props)?.read.stored).toEqual({ total: 2, elsewhere: 1 });
+        expect(definedOf(props)?.read.stored).toEqual({ total: 3, elsewhere: 2 });
         props.controller.handleKey('', { escape: true });
         props.controller.handleKey('c', CTRL_C);
         props.controller.handleKey('c', CTRL_C);
@@ -1790,6 +1806,41 @@ workflow:
       await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Run cancelled.'), {
         timeout: WAIT_MS,
       });
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('r refuses a workflow whose file moved since the tab was read, through the Home’s own wiring: the row’s catalog path reaches the launch, and no prompt opens', async () => {
+      // The wired-but-dead field once more: a Home that passed the slug alone (`launchRun: (slug) => runLaunch.open(slug)`) would find the
+      // slug in its new file and open the form for it, and every controller test (which scripts the launch) would still pass.
+      project();
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const prompt = props.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt channel');
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+      // The tab has read `alpha` from `alpha.relavium.yaml`; the same workflow id is now declared by a file of another name.
+      const workflows = join(cwd, '.relavium', 'workflows');
+      renameSync(
+        join(workflows, 'alpha.relavium.yaml'),
+        join(workflows, 'alpha-moved.relavium.yaml'),
+      );
+      props.controller.handleKey('', { downArrow: true }); // `alpha`
+      props.controller.handleKey('r', {});
+      await vi.waitFor(
+        () => expect(definedOf(props)?.message).toMatch(/declared by .* now, not by/u),
+        {
+          timeout: WAIT_MS,
+        },
+      );
+      expect(definedOf(props)?.message).toMatch(/^Not started\. Open the list again: alpha /u);
+      expect(prompt.getSnapshot().active, 'no prompt was opened for the moved file').toBe(false);
       props.controller.handleKey('', { escape: true });
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
@@ -2009,27 +2060,18 @@ workflow:
       const props = captured;
       if (props === undefined) throw new Error('the injected render was never invoked');
       expect(rowLabels(props)).toEqual(['npm, 1 argument']);
-      // The controller runs on the real clock here (`performance.now`): the sheet settles before a `d` arms it, and the question must have
-      // stood for its dwell before `Enter` answers it. Both waits are on the times the sheet recorded itself, bounded and explicit.
-      const opened = tabSheetOf(props)?.openedAt;
-      if (opened === undefined) throw new Error('the permissions sheet is not open');
+      // The controller runs on the real clock here. The sheet answers an early `d` with its own wait note (which is not typing) and arms
+      // on the first one that lands after it settled, so `d` is pressed until the sheet says the question is up. An `Enter` that comes
+      // before the question's dwell drops the question instead, so it cannot be retried: it is waited out on a timer, past the constant.
       await vi.waitFor(
-        () =>
-          expect(performance.now() - opened).toBeGreaterThanOrEqual(
-            SHEET_SETTLE_MS + SETTLE_MARGIN_MS,
-          ),
+        () => {
+          props.controller.handleKey('d', {});
+          expect(tabSheetOf(props)?.armed).toBe(true);
+        },
         { timeout: WAIT_MS, interval: 25 },
       );
-      props.controller.handleKey('d', {});
-      expect(tabSheetOf(props)?.armed).toBe(true);
-      const armed = tabSheetOf(props)?.armedAt;
-      if (armed === undefined) throw new Error('the withdrawal question is not up');
-      await vi.waitFor(
-        () =>
-          expect(performance.now() - armed).toBeGreaterThanOrEqual(
-            SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS,
-          ),
-        { timeout: WAIT_MS, interval: 25 },
+      await new Promise((resolve) =>
+        setTimeout(resolve, SHEET_CONFIRM_DWELL_MS + SETTLE_MARGIN_MS),
       );
       props.controller.handleKey('', ENTER);
       expect(tabSheetOf(props)?.message?.tone).toBe('done');

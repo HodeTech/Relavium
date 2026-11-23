@@ -155,11 +155,13 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
     );
     return to === state.cursor ? stay : { kind: 'state', state: { ...cleared, cursor: to } };
   }
-  if (input !== 'r' && input !== 'x' && input !== 'p') return stay;
+  // A bare letter is the same key with Caps Lock on.
+  const letter = input.toLowerCase();
+  if (letter !== 'r' && letter !== 'x' && letter !== 'p') return stay;
   const row = rows[state.cursor];
   if (row === undefined) return stay;
-  if (input === 'p') return { kind: 'pin', row, state: cleared };
-  const verb = input === 'r' ? 'run' : 'export';
+  if (letter === 'p') return { kind: 'pin', row, state: cleared };
+  const verb = letter === 'r' ? 'run' : 'export';
   const request = requestSlug(verb, state, row);
   if ('message' in request)
     return { kind: 'state', state: { ...cleared, message: request.message } };
@@ -170,7 +172,12 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
   return { kind: 'run', slug: request.slug, path: request.path, state: cleared };
 }
 
-/** The row's identity across a read: the catalog entry it names (by slug), else the pin's label. */
+/**
+ * The row's identity across a read: the catalog entry it names (by slug), else the pin it is (by the pin's row id). A label is nobody's
+ * identity: two other projects can pin a workflow of the same name, and a cursor that followed the label would land on the other one, so
+ * a second `p` would remove a pin the person never looked at. A row that has neither (its pin is gone) is found nowhere, and the cursor
+ * keeps its index.
+ */
 function sameRow(
   before: { readonly row: DefinedRow; readonly slug: string | undefined },
   after: DefinedRead,
@@ -180,12 +187,13 @@ function sameRow(
   if (candidate === undefined) return false;
   if (before.slug !== undefined)
     return candidate.entryIndex !== undefined && after.slugOf(candidate.entryIndex) === before.slug;
-  return candidate.state === before.row.state && candidate.slug === before.row.slug;
+  return before.row.pinRowid !== undefined && candidate.pinRowid === before.row.pinRowid;
 }
 
 /**
  * `p` on a row: pin its workflow, or unpin it, through `pins`; then read the list again through `port` so the row's pin word is the
- * store's, and keep the cursor on the row it was on (a pinned row sorts first, so its place changes). A row that is not a catalog
+ * store's, and keep the cursor on the row it was on (a pinned row sorts first, so its place changes; a row that is gone leaves the cursor
+ * at its index, never on another row of the same name). A row that is not a catalog
  * workflow that parsed cannot be pinned (it can be unpinned); a refused pin (the cap) changes nothing and says why in the message row.
  */
 export function pinOnDefined(

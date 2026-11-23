@@ -45,7 +45,7 @@ export interface PinCounts {
 
 /** What a toggle did. `message` is the sentence for the tab's message row. */
 export interface PinToggle {
-  readonly outcome: 'pinned' | 'unpinned' | 'full' | 'failed';
+  readonly outcome: 'pinned' | 'unpinned' | 'absent' | 'full' | 'failed';
   readonly message: string;
 }
 
@@ -101,6 +101,14 @@ export function runPinFullMessage(port: PinPort, label: string): string {
   return pinFullMessage(label, stored, ELSEWHERE_ON_HISTORY);
 }
 
+/**
+ * What an unpin says when the store held no such pin any more (another process removed it, or the row was stale): nothing was removed, and
+ * the sentence says so instead of reporting a removal that did not happen.
+ */
+export function pinAbsentMessage(label: string): string {
+  return `Nothing was removed: ${label} is not pinned.`;
+}
+
 /** What a toggle that threw says: content-free, because the cause may quote a stored value. */
 export function pinFailedMessage(label: string): string {
   return `Could not change the pin of ${label}.`;
@@ -110,10 +118,11 @@ export function pinFailedMessage(label: string): string {
  * Carry out a toggle: `act` runs the store calls and says what the pin is now. A throw is `failed` and changes nothing the tab shows
  * (the tab reads the rows again, so it shows what the store holds).
  */
-function toggle(label: string, act: () => 'pinned' | 'unpinned' | 'full'): PinToggle {
+function toggle(label: string, act: () => 'pinned' | 'unpinned' | 'absent' | 'full'): PinToggle {
   try {
     const outcome = act();
     if (outcome === 'full') return { outcome, message: pinFullMessage(label) };
+    if (outcome === 'absent') return { outcome, message: pinAbsentMessage(label) };
     return {
       outcome,
       message: outcome === 'pinned' ? `Pinned ${label}.` : `Unpinned ${label}.`,
@@ -126,6 +135,16 @@ function toggle(label: string, act: () => 'pinned' | 'unpinned' | 'full'): PinTo
 
 function pinResult(result: PinStoreResult): 'pinned' | 'full' {
   return result === 'full' ? 'full' : 'pinned';
+}
+
+/** What an unpin did, as the store answered it: `unpinned` only when a pin was removed. */
+function removed(wasRemoved: boolean): 'unpinned' | 'absent' {
+  return wasRemoved ? 'unpinned' : 'absent';
+}
+
+/** The removal of a pin by its row id; a pin with no row id has nothing to remove. */
+function unpinRowOf(port: PinPort, rowid: number | undefined): boolean {
+  return rowid === undefined ? false : port.unpinRow(rowid);
 }
 
 /** A Defined row to toggle: its catalog slug when it has one, and the pin it carries when it is pinned. */
@@ -149,10 +168,9 @@ export function toggleWorkflowPin(port: PinPort, target: WorkflowPinTarget): Pin
       return pinResult(port.pinWorkflow(slug));
     }
     // Removed through the key when there is one (the key is the authority: a row id names whatever sits at that row now); a pin the
-    // catalog no longer has has no key to spell, and goes by its row.
-    if (slug !== undefined) port.unpinWorkflow(slug);
-    else if (rowid !== undefined) port.unpinRow(rowid);
-    return 'unpinned';
+    // catalog no longer has has no key to spell, and goes by its row. The store says whether it removed one: when it did not, the
+    // sentence says nothing was removed.
+    return removed(slug !== undefined ? port.unpinWorkflow(slug) : unpinRowOf(port, rowid));
   });
 }
 
@@ -173,8 +191,6 @@ export function toggleRunPin(port: PinPort, target: RunPinTarget): PinToggle {
       if (runId === undefined) throw new Error('an entry with no run is not pinned here');
       return pinResult(port.pinRun(runId));
     }
-    if (runId !== undefined) port.unpinRun(runId);
-    else if (rowid !== undefined) port.unpinRow(rowid);
-    return 'unpinned';
+    return removed(runId !== undefined ? port.unpinRun(runId) : unpinRowOf(port, rowid));
   });
 }

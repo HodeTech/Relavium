@@ -407,7 +407,8 @@ export function foldNodeKey(
   if (key.escape === true || key.backspace === true) return { kind: 'back' };
   const cleared: NodeTabState =
     state.message === undefined ? state : { ...state, message: undefined };
-  if (input === 'n') return foldFirstFailed(cleared, context);
+  // A bare letter is the same key with Caps Lock on.
+  if (input.toLowerCase() === 'n') return foldFirstFailed(cleared, context);
   const last = state.lines.length - 1;
   let to = state.cursor;
   if (key.upArrow === true) to -= 1;

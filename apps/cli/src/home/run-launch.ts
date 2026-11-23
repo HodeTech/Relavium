@@ -137,17 +137,27 @@ export function launchNotOffered(slug: string): string {
 /**
  * What `open(slug, path)` says when the file that holds `slug` now is not the one the list showed: a file that changed its id since the list
  * was read, or a second file that took the slug, would otherwise be confirmed and run under a path the person never saw. No flow is begun.
+ * The remedy comes first and the two paths last: the message row clips what does not fit, and a clip must take a path, never the remedy.
  */
 export function launchMoved(slug: string, listed: string, now: string): string {
-  return `Not started. ${bounded(slug, LABEL_LIMIT)} is declared by ${bounded(now, REASON_LIMIT)} now, not by ${bounded(listed, REASON_LIMIT)} as listed. Open the list again.`;
+  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is declared by ${bounded(now, REASON_LIMIT)} now, not by ${bounded(listed, REASON_LIMIT)} as listed.`;
 }
 
 /**
  * What `open(slug)` says when two valid files of the project declare that workflow id: no flow is begun, because which of the two a
- * `slug` means is not for this flow to guess (the export refuses a clash the same way). The two paths are the catalog's own.
+ * `slug` means is not for this flow to guess (the export refuses a clash the same way). The remedy comes first and the two paths (the
+ * catalog's own) last, so a clip takes a path and never the remedy.
  */
 export function launchAmbiguous(slug: string, first: string, second: string): string {
-  return `Not started. ${bounded(slug, LABEL_LIMIT)} is declared by two workflow files, ${bounded(first, REASON_LIMIT)} and ${bounded(second, REASON_LIMIT)}. Rename one.`;
+  return `Not started. Rename one of the two files: ${bounded(slug, LABEL_LIMIT)} is declared by two workflow files, ${bounded(first, REASON_LIMIT)} and ${bounded(second, REASON_LIMIT)}.`;
+}
+
+/**
+ * What the launch says when the file the person picked declares another workflow id by the time it is read: the list (or the row) is stale,
+ * and nothing is confirmed under a name the file no longer carries. The remedy first, then the id the file declares now.
+ */
+export function launchChanged(slug: string, now: string): string {
+  return `Not started. Open the list again: the file listed as ${bounded(slug, LABEL_LIMIT)} declares ${bounded(now, LABEL_LIMIT)} now.`;
 }
 
 const IGNORED = (state: LaunchState): LaunchStep => ({ state, effects: [] });
@@ -563,8 +573,9 @@ export interface RunLaunch {
    * machine, validation, confirmation (default No) and single-start latch. The slug is only COMPARED with the slugs of the valid
    * catalog entries: it is never a path, never read from disk, and one that matches no entry opens nothing ({@link launchNotOffered}).
    * `Esc` at the first field steps back to the picker, which then opens on that workflow. With the catalog `path` the row was listed
-   * from, the flow refuses a slug whose file is another one now ({@link launchMoved}): the form and the confirmation then name the file
-   * the person saw. It is compared with the fresh catalog's own path and is never read or resolved.
+   * from, the flow refuses a slug whose file is another one now ({@link launchMoved}), so the form and the confirmation (which name the
+   * workflow by its label) are never shown for a file the person did not see. It is compared with the fresh catalog's own path and is
+   * never read or resolved. The file the flow then reads must still declare the id it was listed under ({@link launchChanged}).
    */
   readonly open: (slug?: string, path?: string) => Promise<string>;
   /** The launch in flight, if any. */
@@ -725,8 +736,13 @@ function runSession(options: {
       dispatch({ kind: 'stop' });
       return;
     }
-    loaded = catalog.load(choice.path);
-    dispatch({ kind: 'picked', turn: effect.turn, choice, fields: launchFields(loaded) });
+    const fresh = catalog.load(choice.path);
+    // The file is read again here, after the list: what it declares now must be what the list showed, or the form and the confirmation
+    // would name one workflow and run another.
+    if (fresh.workflow.id !== choice.slug)
+      throw new CliError('invalid_invocation', launchChanged(choice.slug, fresh.workflow.id));
+    loaded = fresh;
+    dispatch({ kind: 'picked', turn: effect.turn, choice, fields: launchFields(fresh) });
   }
 
   async function askField(effect: Extract<LaunchEffect, { kind: 'ask' }>): Promise<void> {

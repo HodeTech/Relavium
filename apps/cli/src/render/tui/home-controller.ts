@@ -1162,11 +1162,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (screen === undefined) return;
     if (screen.kind === 'gate-card') screen.card.dispose();
     tabMemory = freshTabMemory(); // the tab host's life ends with the screen (ADR-0140 §1)
-    // A bare `relavium permissions` is the tab host as the command's whole job: once the screen is gone by any way out (`leaveTabHost`
-    // has read the flag before it calls this), a card's `Ctrl+C` or a run view's close included, the command is over, and a tab host
-    // opened later is an ordinary one. A flag left set made an `Esc` on a later `/workflows` leave the Home.
+    // A bare `relavium permissions` is the tab host as the command's whole job. A screen that is closed here is the whole chain leaving (the
+    // tab host through `leaveTabHost`, which has cleared the flag and asked for the exit itself; or a card's `Ctrl+C`, or a run view's
+    // close, opened from the tab host: the one slot closes and the tab host goes with them), so the flag is read before it is cleared and
+    // the command ends with the screen by any way out. A flag left set made an `Esc` on a later `/workflows` leave the Home.
+    const asCommand = tabHostIsTheCommand;
     tabHostIsTheCommand = false;
     disarmInterrupt();
+    if (asCommand) {
+      // The exit guard may hold the Home open (a leg is live): the screen is closed behind its card, as `leaveTabHost` closes it.
+      requestExit();
+      if (exiting) return; // the last frame such a run leaves is the screen's, not a Home prompt
+    }
     // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
     set({ screen: undefined, ...parkedPatch() });
   };
@@ -1220,16 +1227,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return reply.finally(afterAnswer);
   };
   /**
-   * A card could not open. From the run view the reason is the view's own note row (the landing's notice is not on screen there), and from
-   * the landing it is the landing's notice: either way it is where the person who pressed `Enter` is looking.
+   * A card could not open, and `text` says why. From the run view the reason is the view's own note row (the landing's notice is not on
+   * screen there), and from the landing it is the landing's notice: either way it is where the person who pressed `Enter` is looking. The
+   * row is one line that a narrow terminal clips, so every sentence puts the reason and the remedy first and the run id last: a clip then
+   * takes the tail of an id, never the remedy.
    */
   const notParked = (
     runId: string,
-    why: string,
+    text: string,
     back: GateCardScreen['back'],
     from: ScreenOrigin = 'landing',
   ): void => {
-    const text = `Run ${sanitizeInline(runId)} ${why}`;
     const screen = state.screen;
     if (back === 'run-view' && screen?.kind === 'run-view' && screen.runId === runId) {
       set({ screen: { ...screen, notices: noticesWith(text), note: text }, ...parkedPatch() });
@@ -1255,18 +1263,28 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     try {
       run = port.read(runId);
     } catch {
-      notParked(runId, 'could not be read. `relavium status` shows what it waits for.', back, from);
+      notParked(
+        runId,
+        `\`relavium status\` shows what the run waits for. Could not read run ${sanitizeInline(runId)}.`,
+        back,
+        from,
+      );
       return false;
     }
     if (run === undefined) {
-      notParked(runId, 'is not parked in this directory any more.', back, from);
+      notParked(
+        runId,
+        `Not parked in this directory any more: run ${sanitizeInline(runId)}.`,
+        back,
+        from,
+      );
       return false;
     }
     const gates = cardGatesOf(run);
     if (gates.length === 0) {
       notParked(
         runId,
-        `is parked with no gate to decide here. \`relavium status ${sanitizeInline(runId)}\` shows what it waits for.`,
+        `No gate to decide here: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
         back,
         from,
       );
@@ -1732,8 +1750,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
    * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
    * refused or left says so on the tab. A run STARTED is told by the leg it left behind: the run this Home hosts is another one than it was
-   * before the flow began. A refusal (another leg already executes) leaves that other leg as it was, and its view is not what `r` asked for,
-   * so the refusal is shown on the tab instead.
+   * before the flow began, and the host was not already starting one then: a leg that is still acquiring its run (a resume) has no run id
+   * yet, so the id it gets while this launch is refused would read as a run THIS launch started. A refusal (another leg already executes
+   * or starts) leaves that other leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
     const launch = deps.launchRun;
@@ -1742,12 +1761,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     openNativeAction(async () => {
-      const hostedBefore = deps.hostedRuns?.snapshot().active?.runId;
+      const before = deps.hostedRuns?.snapshot();
+      const hostedBefore = before?.active?.runId;
       const notice = await launch(slug, path);
       if (exiting) return;
       set({ notice, ...parkedPatch() });
       const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
-      const started = hostedAfter !== undefined && hostedAfter !== hostedBefore;
+      const started =
+        before?.launching !== true && hostedAfter !== undefined && hostedAfter !== hostedBefore;
       if (!started || !openRunView('tab-host')) noteOnDefinedTab(notice);
     }, 'Run workflow');
   };

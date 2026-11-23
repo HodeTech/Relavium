@@ -38,9 +38,11 @@ import {
   LAUNCH_CANCELLED,
   LAUNCH_NO_WORKFLOWS,
   launchAmbiguous,
+  launchChanged,
   launchMoved,
   launchNotOffered,
   reduceLaunch,
+  type LaunchCatalog,
   type LaunchChoice,
   type LaunchState,
   type RunLaunch,
@@ -213,7 +215,13 @@ interface Rig {
 }
 
 /** The real thing: a real channel, catalog, run host and run core, over the shared in-memory `history.db`. */
-function rig(over: { readonly consent?: boolean } = {}): Rig {
+function rig(
+  over: {
+    readonly consent?: boolean;
+    /** Wraps the project's real catalog: a test changes what the catalog says between the list and the read of the picked file. */
+    readonly catalog?: (real: LaunchCatalog) => LaunchCatalog;
+  } = {},
+): Rig {
   const f = invocationFixture();
   const home = mkdtempSync(join(tmpdir(), 'relavium-run-launch-home-'));
   scratch.push(home);
@@ -249,14 +257,15 @@ function rig(over: { readonly consent?: boolean } = {}): Rig {
     return realStart(request);
   });
   const states: LaunchState[] = [];
+  const realCatalog = createProjectCatalog({
+    cwd: root,
+    projectConfigDir: () => join(root, '.relavium'),
+    homeDir: home,
+  });
   const launch = createRunLaunch({
     flow: channel.flow,
     host,
-    catalog: createProjectCatalog({
-      cwd: root,
-      projectConfigDir: () => join(root, '.relavium'),
-      homeDir: home,
-    }),
+    catalog: over.catalog === undefined ? realCatalog : over.catalog(realCatalog),
     observe: (state) => states.push(state),
   });
   return {
@@ -603,7 +612,9 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     const r = rig();
     const notice = await r.launch.open('no-inputs', listed);
     expect(notice).toBe(launchMoved('no-inputs', listed, now));
-    expect(notice).toMatch(/^Not started\. no-inputs is declared by .*none-moved.* now, not by /u);
+    expect(notice).toMatch(
+      /^Not started\. Open the list again: no-inputs is declared by .*none-moved.* now, not by /u,
+    );
     expect(r.snapshots, 'no prompt was ever published').toEqual([]);
     expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
     expect(r.startCalls).toHaveLength(0);
@@ -637,6 +648,54 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     expect(notice).toBe(launchMoved('no-inputs', '../../x.relavium.yaml', listed));
     expect(r.snapshots).toEqual([]);
     expect(r.startCalls).toHaveLength(0);
+  });
+});
+
+describe('the file that is read for the pick must still declare the id it was listed under', () => {
+  /** A catalog that lists the workflow as `no-inputs`, and has its file declare another id by the time the file is read. */
+  const changesIdBeforeRead = (real: LaunchCatalog): LaunchCatalog => ({
+    list: () => real.list(),
+    load: (path) => {
+      writeWorkflow('none.relavium.yaml', NO_INPUTS.replace('id: no-inputs', 'id: renamed'));
+      return real.load(path);
+    },
+  });
+
+  it('refuses a slug that was asked for (the Defined tab’s `r`), names the id the file declares now, and shows no form or confirmation', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig({ catalog: changesIdBeforeRead });
+    const notice = await r.launch.open('no-inputs');
+    expect(notice).toBe(launchChanged('no-inputs', 'renamed'));
+    expect(notice).toMatch(/^Not started\. Open the list again: .* declares renamed now\.$/u);
+    // The flow was begun (the channel says it is busy while the file is read), but no question or card was ever put up for the changed file.
+    const shown = r.snapshots.map((snapshot) => (JSON.parse(snapshot) as { kind: string }).kind);
+    expect(shown.filter((kind) => kind !== 'busy' && kind !== 'idle')).toEqual([]);
+    expect(r.states.map((state) => state.kind)).not.toContain('confirming');
+    expect(r.states.map((state) => state.kind)).not.toContain('asking');
+    expect(r.startCalls).toHaveLength(0);
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+  });
+
+  it('refuses a workflow picked from the list the same way', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig({ catalog: changesIdBeforeRead });
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    keys(r).enter();
+    expect(await opened).toBe(launchChanged('no-inputs', 'renamed'));
+    expect(r.states.map((state) => state.kind)).not.toContain('confirming');
+    expect(r.startCalls).toHaveLength(0);
+    expect(runCount()).toBe(0);
+  });
+
+  it('starts the form for a file that still declares the id it was listed under', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig({ catalog: (real) => ({ list: () => real.list(), load: (p) => real.load(p) }) });
+    const opened = r.launch.open('no-inputs');
+    await shows(r, 'select', 'Run no-inputs');
+    keys(r).enter();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 });
 

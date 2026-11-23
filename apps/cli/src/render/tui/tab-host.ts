@@ -550,8 +550,10 @@ function legendLine(items: readonly LegendItem[], width: number): SheetLine {
 }
 
 /**
- * What an entry of the allowlist is drawn as: its secret shapes masked by the shared scrubber, read WHOLE (as the command card masks a
- * command: the repository's file can hold a pasted token), then every control, invisible and `<` character shown as the card shows it.
+ * What an entry of the allowlist is drawn as: its secret shapes masked by the shared scrubber, then every control, invisible and `<`
+ * character shown as the card shows it. The snapshot's reader already masked each entry whole before it cut it to its bound (a token across
+ * the cut would otherwise be a fragment no pattern matches), so this mask is the second, and changes nothing in an entry already masked;
+ * it is the one a snapshot that reached the tab by another way still gets.
  */
 function escapedEntry(text: string): string {
   return [...scrubSecrets(text)].map((char) => escapeReviewCharacter(char, false)).join('');

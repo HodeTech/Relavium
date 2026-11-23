@@ -310,14 +310,14 @@ describe('what a key does', () => {
 
   it('keeps what to do on screen at 80 columns for a run paused in another project, however long that project’s path is: the path comes last', () => {
     const long = `/work/${'a-deep-directory/'.repeat(6)}project`;
-    expect(long.length).toBeGreaterThan(100);
     const rows = classify([run(IDS.elsewhere, 'paused', { projectRoot: long })]);
     const r = rig(read(rows));
     const line = lineWith(textOf(r.state), 'answer it from there');
     expect(line.startsWith('Paused in another project: answer it from there')).toBe(true);
     expect(displayWidth(line)).toBeLessThanOrEqual(78);
-    // The whole sentence is longer than the line: what the clip took is the end of the path, not the sentence's action.
-    expect(`Paused in another project: answer it from there (${long}).`.length).toBeGreaterThan(78);
+    // The sentence is longer than the line, so the cut is real: what the clip took is the end of the path, not the sentence's action.
+    expect(line.endsWith('…'), 'the line was cut').toBe(true);
+    expect(line, 'the whole path did not fit').not.toContain(long);
   });
 
   it('says there is no cross-process cancel for a run another process owns', () => {
@@ -748,7 +748,7 @@ describe('a paused row opens its gate card, and Esc returns to the tab on the sa
     home.controller.handleKey('', ENTER);
     expect(home.controller.getSnapshot().screen?.kind).toBe('tab-host');
     expect(activeOf(home.controller)?.message).toContain(
-      'is not parked in this directory any more.',
+      'Not parked in this directory any more: run ',
     );
     expect(
       home.controller.getSnapshot().notice,
@@ -761,8 +761,49 @@ describe('a paused row opens its gate card, and Esc returns to the tab on the sa
     await openActive(home);
     moveTo(home, IDS.gate);
     home.controller.handleKey('', ENTER);
-    expect(activeOf(home.controller)?.message).toContain('is parked with no gate to decide here.');
+    expect(activeOf(home.controller)?.message).toContain('No gate to decide here: ');
   });
+});
+
+describe('a card that cannot open says why, and keeps the remedy on the row at 80 columns however long the run id is', () => {
+  const LONG = 'a1b2c3d4-0000-4000-8000-0000000000aa';
+  const rows = classify([run(LONG, 'paused')], { pendingGateCounts: new Map([[LONG, 1]]) });
+
+  it.each([
+    [
+      'could not be read',
+      (): RunGates | undefined => {
+        throw new Error('PRIVATE');
+      },
+      '`relavium status` shows what the run waits for.',
+    ],
+    [
+      'is gone',
+      (): RunGates | undefined => undefined,
+      'Not parked in this directory any more: run ',
+    ],
+    [
+      'has no gate to decide',
+      (): RunGates | undefined => ({ ...GATE_RUN, runId: LONG, gates: [] }),
+      'No gate to decide here: `relavium status` shows what it waits for (run ',
+    ],
+  ])(
+    '%s: the sentence starts with what to do, and the id is what a clip takes',
+    async (_why, parked, lead) => {
+      const home = mount({ current: read(rows), parked });
+      await openActive(home);
+      home.controller.handleKey('', ENTER);
+      expect(home.controller.getSnapshot().screen?.kind).toBe('tab-host');
+      const host = tabHostOf(home.controller);
+      if (host === undefined) throw new Error('the tab host is not open');
+      const line = lineWith(textOf(host), lead.slice(0, 20));
+      expect(line.startsWith(lead), 'the remedy is the start of the row').toBe(true);
+      expect(displayWidth(line)).toBeLessThanOrEqual(78);
+      expect(line).not.toContain('PRIVATE');
+      // The id is the part of the sentence that comes last: the message carries it whole, and a clip takes it, never the remedy.
+      expect(activeOf(home.controller)?.message).toContain(LONG);
+    },
+  );
 });
 
 describe('the hosted leg’s row reopens its view, and Esc returns to the tab on the same row', () => {

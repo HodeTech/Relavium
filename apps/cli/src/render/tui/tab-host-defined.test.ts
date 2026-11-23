@@ -14,6 +14,7 @@ import {
   type DefinedEntry,
   type DefinedPin,
 } from '../../history/defined-model.js';
+import { launchAmbiguous, launchChanged, launchMoved } from '../../home/run-launch.js';
 import type { ChatKey } from './chat-input.js';
 import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
@@ -161,7 +162,6 @@ describe('the rows say what they are, in a glyph and a word', () => {
 
   it('keeps what `p` does on screen at 80 columns for a pin of another project, however long that project’s path is: the path comes last', () => {
     const long = `/work/${'a-deep-directory/'.repeat(6)}project`;
-    expect(long.length).toBeGreaterThan(100);
     const port: DefinedPort = {
       read: () => ({
         model: buildDefinedModel({
@@ -184,7 +184,10 @@ describe('the rows say what they are, in a glyph and a word', () => {
     const line = lines.find((l) => l.startsWith('Pinned in another project')) ?? '';
     expect(line, 'the sentence about the pin is drawn').toContain('p removes the pin');
     expect(displayWidth(line)).toBeLessThanOrEqual(78);
-    expect(`Pinned in another project; p removes the pin (${long}).`.length).toBeGreaterThan(78);
+    // The cut is real, and it falls on the project path (which comes last), never on what `p` does.
+    expect(line.endsWith('…'), 'the line was cut').toBe(true);
+    expect(line, 'the whole path did not fit').not.toContain(long);
+    expect(line).toContain('/work/a-deep-directory/');
     // Without a project root the sentence has nothing to add.
     const bare = tabHostLines(
       enterTab(freshTabMemory('defined'), 'defined', {
@@ -257,7 +260,7 @@ describe('↑ and ↓ move the cursor and stop at the ends', () => {
     const before = r.state;
     const step = r.press('', ENTER);
     expect(step).toEqual({ kind: 'state', state: before });
-    for (const letter of ['a', 'R', 'X', 'p', 'd', ' ']) {
+    for (const letter of ['a', 'd', 'z', ' ']) {
       expect(r.press(letter).kind, letter).toBe('state');
     }
     expect(r.state.defined?.cursor).toBe(0);
@@ -265,6 +268,39 @@ describe('↑ and ↓ move the cursor and stop at the ends', () => {
 
   it('Esc closes the screen, as it does on every tab with no question to drop', () => {
     expect(rig(READY).press('', ESC).kind).toBe('close');
+  });
+});
+
+describe('a refused launch keeps its remedy on the message row at 80 columns, however long the paths are', () => {
+  const first = `.relavium/workflows/${'a-deep-directory/'.repeat(4)}first.relavium.yaml`;
+  const second = `.relavium/workflows/${'another-directory/'.repeat(4)}second.relavium.yaml`;
+
+  it.each([
+    [
+      'a file that moved',
+      launchMoved('nightly', first, second),
+      'Not started. Open the list again: ',
+    ],
+    [
+      'two files with one id',
+      launchAmbiguous('nightly', first, second),
+      'Not started. Rename one of the two files: ',
+    ],
+    [
+      'a file whose id changed',
+      launchChanged('nightly', 'a-new-id'.repeat(9)),
+      'Not started. Open the list again: ',
+    ],
+  ])('%s: the row starts with what to do, and a clip takes a path', (_what, message, lead) => {
+    const r = rig(READY);
+    const noted = withDefinedNote(r.state, message);
+    const row = tabHostLines(noted, { columns: 80, terminalRows: 24 })
+      .map((line) => line.text)
+      .find((line) => line.startsWith('Not started.'));
+    expect(row, 'the message is drawn').toBeDefined();
+    expect(row?.startsWith(lead), 'what to do comes first').toBe(true);
+    expect(displayWidth(row ?? '')).toBeLessThanOrEqual(78);
+    expect(row?.endsWith('…'), 'the sentence is longer than the row: the cut is real').toBe(true);
   });
 });
 
@@ -286,6 +322,36 @@ describe('r runs the row’s workflow through the launch flow', () => {
     const r = rig(READY, [pin('nightly', 3)]);
     // `nightly` is pinned, so it is the first row although it is the second entry of the catalog.
     expect(r.press('r')).toMatchObject({ kind: 'run', slug: 'nightly' });
+  });
+
+  it('a letter with Caps Lock on is the same key: R, X and P act as r, x and p', () => {
+    const r = rig(READY);
+    expect(r.press('R')).toMatchObject({ kind: 'run', slug: 'code-review' });
+    expect(r.press('X')).toMatchObject({ kind: 'export', slug: 'code-review' });
+    const pinned = vi.fn();
+    const asked = foldTabHostKey(
+      r.state,
+      'P',
+      {},
+      {
+        port: undefined,
+        defined: r.port,
+        pins: {
+          pinWorkflow: (slug) => {
+            pinned(slug);
+            return 'pinned';
+          },
+          unpinWorkflow: () => true,
+          pinRun: () => 'pinned',
+          unpinRun: () => true,
+          unpinRow: () => true,
+        },
+        now: 10_000,
+        canArm: true,
+      },
+    );
+    expect(asked.kind).toBe('state');
+    expect(pinned, 'P pinned the row, as p does').toHaveBeenCalledWith('code-review');
   });
 
   it('a Ctrl+R or Meta+R is not an R: nothing is asked', () => {

@@ -408,9 +408,15 @@ describe('the cost cache: at most HISTORY_COST_CACHE_MAX runs, and the run asked
     source.cost(newest);
     source.cost(firstKept);
     expect(folds, 'the five hundred newest are kept').toHaveBeenCalledTimes(600);
+    // The run just before the five hundred kept is a miss: a bound of 501 would have kept it too.
+    const lastDropped = rows[600 - HISTORY_COST_CACHE_MAX - 1];
+    if (lastDropped === undefined) throw new Error('the rows exist');
+    source.cost(lastDropped);
+    expect(folds, 'the 501st newest was dropped, so it folds again').toHaveBeenCalledTimes(601);
+    expect(folds).toHaveBeenLastCalledWith(lastDropped.id);
     // The oldest was dropped past the bound: asking for it folds it again.
     source.cost(oldest);
-    expect(folds, 'an evicted run folds again').toHaveBeenCalledTimes(601);
+    expect(folds, 'an evicted run folds again').toHaveBeenCalledTimes(602);
     expect(folds).toHaveBeenLastCalledWith(oldest.id);
   });
 

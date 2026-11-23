@@ -35,6 +35,9 @@ import {
 } from './tab-host.js';
 import { HISTORY_COST_CACHE_MAX } from '../../history/history-source.js';
 import {
+  HISTORY_BODY_ROOM_MAX,
+  HISTORY_COST_FAULT,
+  HISTORY_COST_REACH,
   HISTORY_HELD_NOTE,
   HISTORY_HELD_UNREAD,
   HISTORY_KEYS,
@@ -394,11 +397,9 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(note, 'the note is drawn').toBeDefined();
     expect(note).toContain('relavium status shows what to do.');
     expect(displayWidth(note ?? '')).toBeLessThanOrEqual(78);
-    // The whole note is longer than the line, so the cut is real: it falls on the explanation, which comes last.
-    expect(HISTORY_HELD_NOTE.length).toBeGreaterThan(78);
-    expect(HISTORY_HELD_NOTE.indexOf('relavium status shows what to do.')).toBeLessThan(
-      HISTORY_HELD_NOTE.indexOf('The run is over'),
-    );
+    // The note is longer than the line, so the cut is real: what is drawn ends in the cut, and the cut took the explanation, which comes last.
+    expect(note?.endsWith('…'), 'the line was cut').toBe(true);
+    expect(note, 'the explanation is what the margin took').not.toContain('The run is over');
   });
 
   it('scrolls the detail with ↑ and ↓ and keeps the line it is on in view, however long the log', () => {
@@ -541,12 +542,67 @@ describe('the keys of the list', () => {
 
   it('reads the cost of the rows near the cursor only, and again for none it already has', () => {
     const r = rig({ total: 60 });
-    // Page 0 holds twenty rows, the cursor is on the first: ten rows below it have a cost, not all twenty.
-    expect(r.costFor).toHaveBeenCalledTimes(11);
-    for (let index = 0; index < 5; index += 1) r.press('', DOWN);
-    expect(r.costFor, 'five rows scrolled, five more costs').toHaveBeenCalledTimes(16);
+    // Page 0 holds twenty rows and the cursor is on the first: the rows within the reach have a cost, the last two of the page do not yet.
+    expect(r.costFor).toHaveBeenCalledTimes(HISTORY_COST_REACH + 1);
+    expect(HISTORY_COST_REACH + 1, 'the page is longer than the reach').toBeLessThan(20);
+    r.press('', DOWN);
+    expect(r.costFor, 'one row scrolled, one more cost').toHaveBeenCalledTimes(
+      HISTORY_COST_REACH + 2,
+    );
+    r.press('', DOWN);
+    expect(r.costFor, 'two rows scrolled, the whole page is read').toHaveBeenCalledTimes(20);
     r.press('', UP);
-    expect(r.costFor, 'a row that was read is not read again').toHaveBeenCalledTimes(16);
+    expect(r.costFor, 'a row that was read is not read again').toHaveBeenCalledTimes(20);
+  });
+
+  describe('a drawn row always has its cost', () => {
+    /** The run rows the list draws (not the strip, a heading, a marker or the line under the list). */
+    const drawnRuns = (r: ReturnType<typeof rig>, columns = 80, terminalRows = 24) =>
+      tabHostLines(r.state, { columns, terminalRows }).filter(
+        (line) =>
+          (line.kind === 'row' || line.kind === 'selected') && /\d{8} {2}\S/u.test(line.text),
+      );
+    const withoutCost = (r: ReturnType<typeof rig>) =>
+      drawnRuns(r).filter((line) => !line.text.includes('$0.0123'));
+
+    it('opening the tab, after End, after PgDn and PgUp, and at every step down a page, with and without a pinned section', () => {
+      for (const pinnedCount of [0, 12]) {
+        const pinned = rowsOf(
+          Array.from({ length: pinnedCount }, (_, index) => summary(500 + index, 'completed')),
+          new Set(
+            Array.from({ length: pinnedCount }, (_, index) => summary(500 + index, 'completed').id),
+          ),
+        );
+        const r = rig({ total: 100, pinned });
+        const where = `${String(pinnedCount)} pinned`;
+        expect(drawnRuns(r).length, `${where}: the list is drawn`).toBeGreaterThan(10);
+        expect(withoutCost(r), `${where}: opening the tab`).toEqual([]);
+        r.press('', { end: true });
+        expect(drawnRuns(r).length, `${where}: End draws the list`).toBeGreaterThan(10);
+        expect(withoutCost(r), `${where}: after End`).toEqual([]);
+        r.press('', { home: true });
+        r.press('', { pageDown: true });
+        expect(withoutCost(r), `${where}: after PgDn`).toEqual([]);
+        r.press('', { pageUp: true });
+        expect(withoutCost(r), `${where}: after PgUp`).toEqual([]);
+        r.press('', { home: true });
+        for (let step = 0; step < pinnedCount + 20; step += 1) {
+          r.press('', DOWN);
+          expect(withoutCost(r), `${where}: after ${String(step + 1)} ↓`).toEqual([]);
+        }
+      }
+    });
+
+    it('holds at a terminal of any height, because the list never draws more rows than the reach covers', () => {
+      const r = rig({ total: 100 });
+      for (const rows of [24, 40, 80]) {
+        expect(drawnRuns(r, 80, rows).length).toBeLessThanOrEqual(HISTORY_COST_REACH + 1);
+        expect(drawnRuns(r, 80, rows).length, `${String(rows)} rows`).toBeGreaterThan(10);
+      }
+      // The reach is derived from the room the tab host gives the body (the strip, its rule and the legend are the other three rows), so the
+      // two cannot drift apart: the tab host's budget is what this module's room is cut from.
+      expect(HISTORY_BODY_ROOM_MAX).toBe(TAB_HOST_ROWS - 3);
+    });
   });
 
   it('keeps at most 500 costs, the oldest read going first, however many rows were scrolled over', () => {
@@ -565,24 +621,83 @@ describe('the keys of the list', () => {
     );
   });
 
-  it('never throws out of a key for a cost that cannot be read for a reason that is not the run’s: that row says `unreadable`, the rows after it are still read, and no later key asks about it again', () => {
+  it('never throws out of a key for a cost that cannot be read for a reason that is not the run’s: that row says so without blaming the log, the rows after it are still read, and the next key tries it again', () => {
     const failing = summary(2, 'cancelled').id;
-    const r = rig({ total: 5, costThrows: new Set([failing]) });
+    const throws = new Set([failing]);
+    const r = rig({ total: 5, costThrows: throws });
     expect(r.text(), 'opening the tab did not fail').toContain('page 1 (last)');
     const asked = (): number => r.costFor.mock.calls.filter(([id]) => id === failing).length;
     expect(asked(), 'the run was asked about once, when the tab was entered').toBe(1);
     const rowOf = (index: number): string | undefined =>
       r.lines().find((line) => line.includes(String(index).padStart(8, '0')));
-    // The faulting run says so in its cost slot as well as in its state, and the two rows after it carry their cost: one run's fault
-    // does not leave the rest of the window without a figure.
-    expect(rowOf(2)).toMatch(/^ {2}\? unreadable 00000002 {2}deploy\s+3h ago {2}unreadable$/u);
+    // The faulting run keeps its own status (nothing is known against its log) and says in its cost slot that the cost was not read; the
+    // two rows after it carry their cost: one run's fault does not leave the rest of the window without a figure.
+    expect(rowOf(2)).toMatch(/^ {2}⊘ cancelled {2}00000002 {2}deploy\s+3h ago {2}not read$/u);
     expect(rowOf(3)).toContain('$0.0123');
     expect(rowOf(4)).toContain('$0.0123');
     expect(r.text(), 'no row is left reading `…`').not.toContain('…');
-    for (let key = 0; key < 4; key += 1) expect(() => r.press('', DOWN)).not.toThrow();
+    r.press('', DOWN);
+    r.press('', DOWN);
+    expect(r.cursor()).toBe(2);
+    expect(r.text(), 'the line under the list says what happened, and what to do').toContain(
+      HISTORY_COST_FAULT,
+    );
+    expect(r.text(), 'a fault of the moment is not the log’s verdict').not.toContain(
+      'event log could not be read',
+    );
+    for (let key = 0; key < 2; key += 1) expect(() => r.press('', DOWN)).not.toThrow();
     expect(r.cursor()).toBe(4);
-    expect(asked(), 'the run was not asked about again by any later key').toBe(1);
+    expect(asked(), 'every key asked about the run again').toBe(5);
+    expect(
+      r.costFor.mock.calls.filter(([id]) => id !== failing),
+      'and no other run was asked about twice',
+    ).toHaveLength(4);
     expect(r.text()).not.toContain('PRIVATE');
+    // The fault passes: the next key reads the cost, and the row shows it.
+    throws.delete(failing);
+    r.press('', { upArrow: true });
+    expect(rowOf(2)).toContain('$0.0123');
+    expect(r.text()).not.toContain('not read');
+  });
+
+  it('a letter with Caps Lock on is the same key: P, A and F act as p, a and f on the list, and P and N on the detail', () => {
+    const pins = {
+      pinWorkflow: vi.fn(() => 'pinned' as const),
+      unpinWorkflow: vi.fn(() => true),
+      pinRun: vi.fn(() => 'pinned' as const),
+      unpinRun: vi.fn(() => true),
+      unpinRow: vi.fn(() => true),
+    };
+    const fake = scripted({ total: 30, detail: { kind: 'ready', detail: detailRead() } });
+    const context = (): TabHostContext => ({
+      port: undefined,
+      history: fake.port,
+      pins,
+      now: 10_000,
+      canArm: true,
+    });
+    let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
+    const press = (input: string, key: ChatKey = {}): void => {
+      const step = foldTabHostKey(state, input, key, context());
+      if (step.kind !== 'close') state = step.state;
+    };
+    press('P');
+    expect(pins.pinRun, 'P pinned the run').toHaveBeenCalledWith(summary(0, 'completed').id);
+    press('A');
+    expect(fake.reads.at(-1), 'A widened the scope').toMatchObject({ scope: 'all', page: 0 });
+    press('F');
+    expect(fake.reads.at(-1), 'F cycled the filter').toMatchObject({ status: 'completed' });
+    press('', ENTER);
+    state = withHistoryLoad(state, summary(0, 'completed').id, {
+      kind: 'ready',
+      detail: detailRead(),
+    });
+    press('P');
+    expect(pins.pinRun, 'P on the detail pinned too').toHaveBeenCalledTimes(2);
+    press('N');
+    expect(state.history?.detail?.message, 'N on the detail looked for a failed node').toBe(
+      'No node of this run ended failed.',
+    );
   });
 
   it('draws `unreadable` in the cost slot of a run whose log cannot be read, never a bare dash', () => {
