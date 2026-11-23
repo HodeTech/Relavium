@@ -221,6 +221,8 @@ function rig(
     readonly consent?: boolean;
     /** Wraps the project's real catalog: a test changes what the catalog says between the list and the read of the picked file. */
     readonly catalog?: (real: LaunchCatalog) => LaunchCatalog;
+    /** Answers the host's `start` in place of the real host, so a test holds the run at the moment the host has it. */
+    readonly start?: (request: HostedStartRequest) => Promise<HostedLaunch>;
   } = {},
 ): Rig {
   const f = invocationFixture();
@@ -255,7 +257,7 @@ function rig(
   const realStart = host.start.bind(host);
   vi.spyOn(host, 'start').mockImplementation((request) => {
     startCalls.push({ request });
-    return realStart(request);
+    return over.start === undefined ? realStart(request) : over.start(request);
   });
   const states: LaunchState[] = [];
   const realCatalog = createProjectCatalog({
@@ -521,6 +523,119 @@ describe('a double submit starts one run', () => {
     keys(r).esc();
     expect(await first).toBe(LAUNCH_CANCELLED);
     expect(await second).toBe(LAUNCH_CANCELLED);
+  });
+});
+
+describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', () => {
+  /** How long a flow that should have settled may stay pending before the test calls it hung. */
+  const HUNG_MS = 1_000;
+  const hung = Symbol('the flow never settled');
+  const settledWithin = (flow: Promise<string>): Promise<string | symbol> =>
+    Promise.race([
+      flow,
+      new Promise<symbol>((resolve) => setTimeout(() => resolve(hung), HUNG_MS)),
+    ]);
+
+  it('the machine alone: a stop while starting closes the flow, wipes the held values and starts nothing more', () => {
+    const choice: LaunchChoice = { path: 'w.yaml', slug: 'w', label: 'w' };
+    let state: LaunchState = { kind: 'idle', turn: 0 };
+    const effects: string[] = [];
+    const feed = (event: Parameters<typeof reduceLaunch>[1]): void => {
+      const step = reduceLaunch(state, event);
+      state = step.state;
+      for (const effect of step.effects) effects.push(effect.kind);
+    };
+    feed({ kind: 'opened', choices: [choice] });
+    feed({ kind: 'picked', turn: state.turn, choice, fields: [] });
+    feed({ kind: 'confirmed', turn: state.turn, yes: true });
+    expect(state.kind).toBe('starting');
+    effects.length = 0;
+
+    feed({ kind: 'stop', notice: 'Left it.' });
+    expect(state).toMatchObject({ kind: 'closed', notice: 'Left it.' });
+    expect(effects, 'the values are wiped, then the flow closes; no second start').toEqual([
+      'forget',
+      'close',
+    ]);
+    // The host's answer arrives after the stop: the flow is closed, and it changes nothing.
+    effects.length = 0;
+    const closed = state;
+    feed({ kind: 'launched', turn: closed.turn - 1, notice: 'Started w as run r-1.' });
+    feed({ kind: 'stop' });
+    expect(state).toBe(closed);
+    expect(effects).toEqual([]);
+  });
+
+  it('a stop while the host has the start ends the flow with the notice, and the host`s late answer changes nothing', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    let release: (launch: HostedLaunch) => void = () => undefined;
+    const held = new Promise<HostedLaunch>((resolve) => {
+      release = resolve;
+    });
+    const r = rig({ start: () => held });
+    const k = keys(r);
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.enter();
+    await shows(r, 'select', 'Run ');
+    k.up(); // a deliberate move to Yes
+    k.enter();
+    // The answer reaches the machine a microtask later; the host is asked once and then holds the start.
+    await vi.waitFor(() => {
+      expect(r.startCalls, 'the host was asked once and holds the start').toHaveLength(1);
+    }, WAIT);
+    const session = r.launch.session();
+    expect(session?.state().kind).toBe('starting');
+
+    session?.dispatch({ kind: 'stop' });
+    expect(await settledWithin(opened)).toBe(LAUNCH_CANCELLED);
+    expect(r.states.map((state) => state.kind)).toEqual([
+      'picking',
+      'confirming',
+      'starting',
+      'closed',
+    ]);
+
+    release({ kind: 'refused', reason: 'busy', message: 'A run is already starting.' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      r.states.map((state) => state.kind),
+      'the late answer is ignored',
+    ).toEqual(['picking', 'confirming', 'starting', 'closed']);
+    expect(r.startCalls, 'and nothing started twice').toHaveLength(1);
+  });
+
+  it('an Enter and a Ctrl+C in one read: the flow is cancelled, the host is never asked, and /run does not hang', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.enter();
+    await shows(r, 'select', 'Run ');
+    k.up(); // a deliberate move to Yes
+    // One read, no yield between them: the Enter answers the card, and the Ctrl+C aborts the flow BEFORE the machine has seen the answer.
+    k.enter();
+    k.ctrlC();
+
+    expect(await settledWithin(opened)).toBe(LAUNCH_CANCELLED);
+    expect(
+      r.startCalls,
+      'the stop arrived before the host`s start: no run is started',
+    ).toHaveLength(0);
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    expect(r.states.map((state) => state.kind)).toEqual([
+      'picking',
+      'confirming',
+      'starting',
+      'closed',
+    ]);
+    // A second /run is not joined to a dead promise: the flow is over and a new one opens.
+    const again = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.esc();
+    expect(await settledWithin(again)).toBe(LAUNCH_CANCELLED);
   });
 });
 

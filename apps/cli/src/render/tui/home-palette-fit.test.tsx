@@ -234,7 +234,8 @@ describe.each([
     for (const char of 'agent') m.controller.handleKey(char, {});
     await settleFrames();
     const frame = m.frame();
-    expect(entriesOf(frame)).toEqual(['init', 'agents']);
+    // `/agents` starts with the query and leads; `/init` matches only by its description (it names "agent directories") and follows.
+    expect(entriesOf(frame)).toEqual(['agents', 'init']);
     expect(markersOf(frame)).toEqual([]);
     expect(frame).toContain('/agent');
   });

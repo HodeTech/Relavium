@@ -103,7 +103,12 @@ export type LaunchEvent =
   | { readonly kind: 'back'; readonly turn: number }
   | { readonly kind: 'confirmed'; readonly turn: number; readonly yes: boolean }
   | { readonly kind: 'launched'; readonly turn: number; readonly notice: string }
-  /** Leave the flow: `Ctrl+C`, a refusal, the Home closing. Ignored once the run is starting (it cannot be un-started). */
+  /**
+   * Leave the flow: `Ctrl+C`, a refusal, the Home closing, an aborted flow. In every state it closes the flow with the notice, `starting`
+   * included: a flow that found its start already aborted would otherwise never settle, and `/run` and `r` would join a dead promise. A
+   * stop that reaches `starting` BEFORE the driver called the host starts nothing; one that arrives after the host has the start closes
+   * the flow and wipes what is held, and the host's late answer is ignored (it has no handle to cancel; a started run is the run view's).
+   */
   | { readonly kind: 'stop'; readonly notice?: string | undefined };
 
 export type LaunchEffect =
@@ -287,10 +292,8 @@ export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep
       };
     }
     case 'stop':
-      // A run that is starting is not stopped by a key: the host has it, and cancelling a leg is the run view's.
-      return state.kind === 'starting'
-        ? IGNORED(state)
-        : closeWith(state, event.notice ?? LAUNCH_CANCELLED);
+      // `starting` is no exception: an ignored stop left `done` pending for good when the flow was aborted before the host was called.
+      return closeWith(state, event.notice ?? LAUNCH_CANCELLED);
     case 'picked': {
       if (state.kind !== 'picking' || event.turn !== state.turn) return IGNORED(state);
       const form: LaunchForm = {

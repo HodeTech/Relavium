@@ -1276,8 +1276,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
 
     props.controller.handleKey('/', {});
     type(props, 'clear');
-    // The filter also matches /cost's "clears held estimates" description; choose the Clear row.
-    props.controller.handleKey('', { downArrow: true });
+    // The filter also matches /cost's "clears held estimates" description, but the name that equals the query leads: Enter runs /clear.
     props.controller.handleKey('', ENTER);
     await vi.waitFor(
       () => expect(invocation.registry.activeOwners, 'NATIVE_HOME_FRESH_FORWARDING').toBe(6),
@@ -4208,7 +4207,6 @@ workflow:
           );
         } else if (surface === 'cleared') {
           type(props, '/clear');
-          props.controller.handleKey('', { downArrow: true });
           props.controller.handleKey('', ENTER);
           await vi.waitFor(
             () => {

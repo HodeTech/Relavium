@@ -57,18 +57,38 @@ export function reducePaletteKey(char: string, key: PaletteKey): PaletteKeyActio
   return { kind: 'none' };
 }
 
-/** Case-insensitive substring filter on a command's name OR description — the two fields the row renders — so
- *  what the user types matches what they see (the `label` is not shown, so it is not searched). */
+/**
+ * How well a command matches a (trimmed, lower-cased) query, best first, or `undefined` when it does not match. A name that IS the query
+ * comes before every other, so typing a command's whole name and pressing `Return` runs that command and not an earlier one whose
+ * description happens to hold the letters; then names that start with it, names that hold it, and last the descriptions.
+ */
+function matchRank(command: ReplCommand, q: string): number | undefined {
+  const name = command.name.toLowerCase();
+  if (name === q) return 0;
+  if (name.startsWith(q)) return 1;
+  if (name.includes(q)) return 2;
+  if (command.description.toLowerCase().includes(q)) return 3;
+  return undefined;
+}
+
+/**
+ * The commands that match the query, ranked: the name that equals it, the names that start with it, the names that contain it, then
+ * the descriptions that contain it, each group in the list's own order. Case-insensitive, on a command's name OR description — the two
+ * fields the row renders — so what the user types matches what they see (the `label` is not shown, so it is not searched). The ranking
+ * decides only the ORDER: the set of matches is exactly the name-or-description substring set, and the first entry is the highlighted one.
+ */
 export function filterPaletteCommands(
   commands: readonly ReplCommand[],
   query: string,
 ): readonly ReplCommand[] {
   const q = query.trim().toLowerCase();
   if (q.length === 0) return commands;
-  return commands.filter(
-    (command) =>
-      command.name.toLowerCase().includes(q) || command.description.toLowerCase().includes(q),
-  );
+  const groups: ReplCommand[][] = [[], [], [], []];
+  for (const command of commands) {
+    const rank = matchRank(command, q);
+    if (rank !== undefined) groups[rank]?.push(command);
+  }
+  return groups.flat();
 }
 
 /** Whether a keystroke should OPEN the palette: a literal `/` at an idle, EMPTY prompt (not a chord). Shared by
