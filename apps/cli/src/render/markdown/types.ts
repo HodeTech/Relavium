@@ -26,6 +26,11 @@ export interface MarkdownBlock {
   readonly info?: string;
   readonly rows?: readonly (readonly string[])[];
   readonly align?: readonly ('left' | 'right' | 'center')[];
+  /**
+   * A table over a fixed limit, kept as literal source (ADR-0143). Its wrapped lines start at their text, not at the
+   * space that broke them, because a table's spacing is not prose.
+   */
+  readonly tableSource?: boolean;
 }
 
 export interface MarkdownDisplayLine {

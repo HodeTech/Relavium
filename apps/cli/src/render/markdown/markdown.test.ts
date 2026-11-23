@@ -35,7 +35,12 @@ describe('markdown projection', () => {
       '│ a    │ x (https://x.test) │',
       '└──────┴────────────────────┘',
     ]);
-    expect(text(source, 12).join('')).toContain('https://x.');
+    // Records indent their values, so a link wrapped across rows is checked on its content, not its layout.
+    expect(
+      text(source, 12)
+        .map((row) => row.trimStart())
+        .join(''),
+    ).toContain('https://x.');
   });
   it('uses a literal fallback when a table exceeds row or column limits', () => {
     const header = '| h |\n| --- |';

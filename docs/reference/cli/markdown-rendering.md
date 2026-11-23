@@ -44,7 +44,7 @@ never expanded attachments.
 | `>` followed by optional space | Dim quote bar `│ `; nested bars up to the nesting limit |
 | Thematic break, at least three matching `-`, `*` or `_`, with optional spaces | A dim rule fitting the available columns |
 | Paragraph | Inline text; a soft source newline becomes a display space within the paragraph |
-| GFM pipe table | Bordered grid when the complete table fits; otherwise sanitized source |
+| GFM pipe table | Bordered grid when the complete table fits; otherwise a grid with each cell wrapped inside its column; labelled records only when even the column floors do not fit (see below) |
 
 A fence closes only on the same character, at least the opening length, with no
 following non-space text. An unfinished fence remains code through end-of-turn.
@@ -142,9 +142,43 @@ rather than discarding a cell.
 
 Use `┌┬┐`, `├┼┤`, `└┴┘`, `─` and `│` for the grid, one space of cell padding,
 and header emphasis. Colon alignment controls cell alignment. Measure the
-displayed inline cell text, including visible link targets. Hard cell breaks or
-a grid wider than the available columns cause literal source fallback; cells are
-not silently cropped or wrapped into an unreadable narrow grid.
+displayed inline cell text, including visible link targets. No cell is cropped.
+
+**Wrapped grid.** When the single-line grid is wider than the available columns,
+or the aligned cells need tab stops that cannot agree, the table keeps its grid
+with each cell wrapped inside its column
+([ADR-0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md)):
+
+- a column's floor is the smaller of its natural width and the larger of 8 and
+  its longest word, capped at 24; no column drops below its floor;
+- the excess above the floors is shared in proportion to how far each column sits
+  above its floor, so the widest columns give up the most and the grid fills the
+  width exactly;
+- a row is as tall as its tallest cell; cell text keeps its inline styling;
+- alignment applies to every wrapped line; the header row is bold and ruled off;
+- body rows are ruled apart only when a cell wraps;
+- a word wider than its column breaks inside the word.
+
+**Records.** Only when even the column floors do not fit the width does the
+table render as records:
+
+- a dim notice, `table shown as records: its grid does not fit this width`;
+- then, for each body row, a blank line and, for each column, the header as a
+  bold label line with its cell text on the lines below, indented two columns;
+- cell text keeps its inline styling and wraps to the width, so no cell is cropped;
+- an empty cell shows a dim `—`; a blank header shows a dim `column N`;
+- alignment is not drawn, and no gutter is added, so a record inside a quote
+  shows only the quote bar.
+
+**Literal fallback.** Sanitized source is shown with its markers intact. With
+color enabled it is word-wrapped to the width like prose, so it is not a
+verbatim, column-preserving copy. It applies to a table over a fixed limit, a
+table with a hard break inside a cell, a header-only table, and a width with no
+room for the grid frame or the record indent. A table kept literal starts each
+wrapped line at its text, not at the space that broke the line, because a
+table's spacing is not prose. With color disabled, every table keeps the
+color-off path of [Scope and source](#scope-and-source): records would drop the
+pipes that carry the structure without color.
 
 | Limit | Value | Overflow behavior |
 |---|---|---|
@@ -160,8 +194,11 @@ rows or truncate source to satisfy a parser cap. Once a streaming table crosses
 a cap, keep that table literal through its end. No later token can reactivate a
 grid and force repeated full-table layout. Layout work is linear in the admitted
 bounded table; there is no search over alternative column-width combinations.
-Alignment padding participates in tab-stop geometry. If aligned cells require
-incompatible tab-stop phases, or the compatible grid does not fit, render the
+Alignment padding participates in tab-stop geometry for a single-line grid. If
+aligned cells require incompatible tab-stop phases, or the compatible grid does
+not fit, the table becomes a wrapped grid (see [Tables](#tables-and-fixed-limits)
+above). The wrapped grid expands each tab from the start of its own cell, so tab
+stops do not align across its rows. The fixed limits above still render the
 entire table literally.
 
 ## Geometry

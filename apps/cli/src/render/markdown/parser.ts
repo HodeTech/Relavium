@@ -813,7 +813,7 @@ function parseWithState(
       }
       result.push(
         overflow
-          ? { kind: 'literal', source: raw.join('\n'), text: raw.join('\n') }
+          ? { kind: 'literal', source: raw.join('\n'), text: raw.join('\n'), tableSource: true }
           : { kind: 'table', source: raw.join('\n'), text: raw.join('\n'), rows, align: alignment },
       );
       continue;

@@ -28,6 +28,15 @@
 > defines exact limits, fallbacks and acceptance. The historical algorithm claims
 > below remain visible; this approved qualification governs implementation.
 
+> **Amended 2026-11-23 — see [ADR-0143](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md).**
+> The §Tables fallback "renders verbatim, as the sanitized source" was not what the code did: the source was
+> word-wrapped, which detached each pipe from its cell. A table that does not fit on one line now keeps its
+> grid, with each cell wrapped inside its column. Labelled records are the last resort, used only when even the
+> column floors do not fit (ADR-0141 first proposed records as the default; ADR-0143 supersedes that). The literal
+> fallback stays for the fixed limits, hard breaks, header-only tables and a width with no room for the frame, and
+> it is described as word-wrapped source. The parked follow-up in §Negative is closed by ADR-0143 for the width
+> case; a capped table stays literal. Colour-off rendering is unchanged.
+
 Assistant text reaches both chat renderers as plain text. Models answer in
 markdown, so the user reads `**`, backticks, `#` and fence lines instead of
 emphasis, code and structure. MVP-2 ("a readable chat") needs this fixed.
