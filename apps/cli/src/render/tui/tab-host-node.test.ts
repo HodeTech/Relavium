@@ -478,6 +478,27 @@ describe('the node order follows the frozen snapshot', () => {
     );
   });
 
+  it('never draws an amount of an unverified run without saying so: the header and a node row, at 80 columns and wider', async () => {
+    // The fixture log has no `cost:coverage_started`, so its usage is unverified (RUNDETAIL-1): a figure is drawn whole with its
+    // qualifier, or a row drops the figure; it is never drawn as a bare amount, and a width never cuts the qualifier off a figure.
+    const r = rig();
+    await r.openRun(FIXTURE_RUN_IDS.failed);
+    expect(r.state.history?.detail?.read?.model.header.costText).toContain('usage unverified');
+    const drawn = (columns: number): string[] =>
+      tabHostLines(r.state, { columns, terminalRows: 24 })
+        .map((line) => line.text)
+        .filter((line) => /\$\d/u.test(line));
+    for (const columns of [80, 100, 160]) {
+      const lines = drawn(columns);
+      expect(lines.length, `the header figure at ${String(columns)} columns`).toBeGreaterThan(0);
+      for (const line of lines) {
+        expect(line, `at ${String(columns)} columns`).toContain('usage unverified');
+      }
+    }
+    // Wide enough, a node row draws its own figure, with the qualifier beside it.
+    expect(drawn(160).filter((line) => /completed\s+build/u.test(line))).toHaveLength(1);
+  });
+
   it('is the same order the loaders were given: FIXTURE_NODES is the authored list', () => {
     expect(FIXTURE_NODES).toEqual(['plan', 'build', 'review', 'ship']);
   });

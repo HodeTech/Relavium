@@ -141,6 +141,7 @@ export {
   RunPinError,
   isRunPinError,
   MAX_RUN_PINS,
+  PIN_LIST_LIMIT,
   MAX_PIN_REF_LENGTH,
   MAX_PIN_PROJECT_ROOT_LENGTH,
   OVERSIZED_PREVIEW_CODE_POINTS,
@@ -149,6 +150,7 @@ export {
   type PinKind,
   type PinKey,
   type PinRecord,
+  type PinList,
   type PinResult,
 } from './run-pins.js';
 

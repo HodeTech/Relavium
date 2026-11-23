@@ -21,6 +21,12 @@ import { PIN_KINDS, runPins, type NewRunPinRow, type PinKind } from './schema.js
 
 /** The most pins the table holds, in total (a fifty-first is refused with `'full'`). */
 export const MAX_RUN_PINS = 50;
+/**
+ * The most pins one {@link RunPinStore.listPins} call returns. The write path holds the table to {@link MAX_RUN_PINS},
+ * but the read does not trust that: a second process, or an older version, may have written rows beyond the cap, and a
+ * list that renders every pin must stay a screenful whatever the table holds.
+ */
+export const PIN_LIST_LIMIT = 200;
 /** The longest `ref` (a run id or a workflow slug) the store accepts. */
 export const MAX_PIN_REF_LENGTH = 512;
 /** The longest `projectRoot` the store accepts. */
@@ -93,6 +99,14 @@ export function isRunPinError(value: unknown): value is RunPinError {
   return value instanceof Error && value.name === 'RunPinError' && 'code' in value;
 }
 
+/**
+ * What {@link RunPinStore.listPins} returns: the pins, as a plain array, plus whether more rows matched than
+ * {@link PIN_LIST_LIMIT}. `truncated` is a NON-ENUMERABLE property, so a list compared, spread or serialised as an
+ * array is exactly the array it was before the limit existed; read it by name (`pins.truncated`). A list made by
+ * `filter` or `map` is a new array and does not carry it.
+ */
+export type PinList = PinRecord[] & { readonly truncated: boolean };
+
 export interface RunPinStore {
   /**
    * Pin an item. `'already-pinned'` when the exact `(kind, projectRoot, ref)` is there — which also wins over
@@ -124,11 +138,12 @@ export interface RunPinStore {
    * The pins as stored, newest first (ties in a stable key order), optionally narrowed by kind and project (a
    * workflow root through {@link canonicalRoot}). Each carries its {@link PinRecord.rowid}. A `ref` or `projectRoot`
    * longer than its bound is never read whole: it comes back as a preview and the record is {@link PinRecord.oversized}.
+   * At most {@link PIN_LIST_LIMIT} pins come back (the newest); {@link PinList.truncated} says there were more.
    */
   readonly listPins: (filter?: {
     readonly kind?: PinKind;
     readonly projectRoot?: string;
-  }) => PinRecord[];
+  }) => PinList;
 }
 
 /**
@@ -264,6 +279,14 @@ function shownText(
   return { text: over ? previewOf(text) : text, over };
 }
 
+/** The pins as a {@link PinList}: the same array, with `truncated` attached non-enumerably (so it still equals a plain array). */
+function withTruncated(pins: PinRecord[], truncated: boolean): PinList {
+  const list = Object.assign(pins, { truncated });
+  // `Object.assign` makes the property enumerable; narrowing the attribute keeps the value and the type.
+  Object.defineProperty(list, 'truncated', { enumerable: false });
+  return list;
+}
+
 /** Wire a {@link RunPinStore} over a `@relavium/db` connection. */
 export function createRunPinStore(db: Db): RunPinStore {
   return {
@@ -345,8 +368,8 @@ export function createRunPinStore(db: Db): RunPinStore {
       );
     },
 
-    listPins: (filter) =>
-      db
+    listPins: (filter) => {
+      const rows = db
         .select({
           rowid: sql<number>`rowid`,
           kind: runPins.kind,
@@ -376,18 +399,22 @@ export function createRunPinStore(db: Db): RunPinStore {
           asc(runPins.projectRoot),
           asc(runPins.ref),
         )
-        .all()
-        .map((row): PinRecord => {
-          const ref = shownText(row.ref, row.refBytes, MAX_PIN_REF_LENGTH);
-          const root = shownText(row.projectRoot, row.rootBytes, MAX_PIN_PROJECT_ROOT_LENGTH);
-          return {
-            rowid: row.rowid,
-            kind: row.kind,
-            projectRoot: root.text,
-            ref: ref.text,
-            pinnedAt: row.pinnedAt,
-            oversized: ref.over || root.over,
-          };
-        }),
+        // One row past the limit tells "exactly the limit" from "more than the limit" without a second query.
+        .limit(PIN_LIST_LIMIT + 1)
+        .all();
+      const pins = rows.slice(0, PIN_LIST_LIMIT).map((row): PinRecord => {
+        const ref = shownText(row.ref, row.refBytes, MAX_PIN_REF_LENGTH);
+        const root = shownText(row.projectRoot, row.rootBytes, MAX_PIN_PROJECT_ROOT_LENGTH);
+        return {
+          rowid: row.rowid,
+          kind: row.kind,
+          projectRoot: root.text,
+          ref: ref.text,
+          pinnedAt: row.pinnedAt,
+          oversized: ref.over || root.over,
+        };
+      });
+      return withTruncated(pins, rows.length > PIN_LIST_LIMIT);
+    },
   };
 }

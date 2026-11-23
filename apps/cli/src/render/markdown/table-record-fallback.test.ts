@@ -307,3 +307,85 @@ describe('a table that fits as a grid', () => {
     expect(texts('| a | b |\n| --- | --- |\n| x | y |', 80)[0]).toBe('┌───┬───┐');
   });
 });
+
+/**
+ * The grid of text that is not ASCII (ADR-0143): glyphs that take two cells, marks and joiners that take none, and
+ * cells that read right to left. Every drawn row must be as wide as every other, whatever the cells hold.
+ */
+describe('a grid of non-ASCII text keeps its rows aligned and loses no glyph', () => {
+  const CASES: readonly (readonly [string, readonly (readonly string[])[]])[] = [
+    [
+      'CJK glyphs that take two cells',
+      [
+        ['名前', '説明'],
+        ['漢字テスト漢字テスト', 'こんにちは 世界 こんにちは 世界 こんにちは 世界'],
+        ['ab', '한국어 한국어 한국어 한국어'],
+      ],
+    ],
+    [
+      'combining marks, alone and stacked',
+      [
+        ['word', 'note'],
+        [
+          'e\u0301a\u0300\u0301e\u0301a\u0300\u0301e\u0301a\u0300\u0301 e\u0301',
+          'n\u0303o '.repeat(8).trim(),
+        ],
+        ['x', 'Z\u0308'],
+      ],
+    ],
+    [
+      'emoji ZWJ sequences, a flag with a variation selector and a skin tone',
+      [
+        ['a', 'b'],
+        [
+          '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}'.repeat(6),
+          '\u{1F3F3}\uFE0F\u200D\u{1F308} '.repeat(6).trim(),
+        ],
+        ['\u{1F469}\u{1F3FD}\u200D\u{1F4BB}', 'ok'],
+      ],
+    ],
+    [
+      'Hebrew and Arabic cells',
+      [
+        ['עברית', 'عربى'],
+        ['שלום עולם שלום עולם שלום עולם', 'مرحبا بالعالم مرحبا بالعالم مرحبا'],
+        ['a', 'ב'],
+      ],
+    ],
+  ];
+
+  const sourceOf = (cells: readonly (readonly string[])[]): string => {
+    const [header = [], ...body] = cells;
+    const line = (row: readonly string[]): string => `| ${row.join(' | ')} |`;
+    return [line(header), line(header.map(() => '---')), ...body.map(line)].join('\n');
+  };
+
+  it.each(CASES)('%s', (_name, cells) => {
+    const source = sourceOf(cells);
+    const expected = (cells[0] ?? []).map((_cell, column) =>
+      cells
+        .map((row) => row[column] ?? '')
+        .join('')
+        .replace(/\s+/gu, ''),
+    );
+    let drawn = 0;
+    let wrapped = 0;
+    for (let width = 6; width <= 90; width++) {
+      const lines = texts(source, width);
+      if (!lines[0]?.startsWith('┌')) continue; // the records and the literal table are not the grid under test
+      drawn++;
+      const where = `at width ${width}`;
+      // Every drawn row, border or content, is as wide as every other, and none is wider than the line.
+      expect(new Set(lines.map(displayWidth)), where).toEqual(new Set([displayWidth(lines[0])]));
+      expect(displayWidth(lines[0]), where).toBeLessThanOrEqual(width);
+      // No glyph of the source is lost or moved: each column reads back as its cells, in order.
+      expect(columnTexts(lines), where).toEqual(expected);
+      if (lines.filter((line) => line.startsWith('│')).length > cells.length) wrapped++;
+    }
+    // The sweep is not vacuous: the grid is drawn at some widths, and a cell wraps in it at some of them.
+    expect(drawn).toBeGreaterThan(0);
+    if (cells.some((row) => row.some((cell) => cell.includes(' ')))) {
+      expect(wrapped).toBeGreaterThan(0);
+    }
+  });
+});

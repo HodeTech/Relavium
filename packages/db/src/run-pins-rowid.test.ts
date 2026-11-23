@@ -13,6 +13,7 @@ import {
   MAX_PIN_REF_LENGTH,
   MAX_RUN_PINS,
   OVERSIZED_PREVIEW_CODE_POINTS,
+  PIN_LIST_LIMIT,
   type RunPinStore,
 } from './run-pins.js';
 
@@ -248,11 +249,11 @@ describe('the row handle of a pin', () => {
       }
       const listSource = sources.find((source) => /^select/iu.test(source));
       expect(listSource).toBeDefined();
-      // Run the very statement the store prepared and look at what it hands to JavaScript.
+      // Run the very statement the store prepared (its one parameter is the row limit) and look at what it hands to JavaScript.
       const rows = client.sqlite
         .prepare(listSource ?? '')
         .raw(true)
-        .all();
+        .all(PIN_LIST_LIMIT + 1);
       expect(rows).toHaveLength(2);
       for (const row of rows) {
         for (const cell of row as unknown[]) {

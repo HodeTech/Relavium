@@ -11,6 +11,7 @@ import {
   MAX_PIN_PROJECT_ROOT_LENGTH,
   MAX_PIN_REF_LENGTH,
   MAX_RUN_PINS,
+  PIN_LIST_LIMIT,
   type RunPinStore,
 } from './run-pins.js';
 import { runPins } from './schema.js';
@@ -210,6 +211,85 @@ describe('createRunPinStore', () => {
       'newest',
     ]);
     expect(store.listPins({ kind: 'run', projectRoot: '/p1' })).toEqual([]);
+  });
+
+  describe('a list is bounded whatever the table holds', () => {
+    /** Rows written OUTSIDE the store (a second process, an older version), so the write path's cap cannot hold them back. */
+    const writeBeyondTheCap = (
+      count: number,
+      kindOf: (index: number) => 'run' | 'workflow',
+    ): void => {
+      const insert = client.sqlite.prepare(
+        'INSERT INTO run_pins (kind, project_root, ref, pinned_at) VALUES (?, ?, ?, ?)',
+      );
+      client.sqlite.transaction(() => {
+        for (let index = 0; index < count; index++) {
+          const kind = kindOf(index);
+          insert.run(kind, kind === 'run' ? '' : '/p1', `ref-${index}`, T0 + index);
+        }
+      })();
+    };
+
+    it('returns the newest PIN_LIST_LIMIT pins of 250 stored rows and says it cut the list', () => {
+      writeBeyondTheCap(250, () => 'run');
+      const listed = store.listPins();
+      expect(PIN_LIST_LIMIT).toBe(200);
+      expect(listed).toHaveLength(PIN_LIST_LIMIT);
+      expect(listed.truncated).toBe(true);
+      // Newest first: ref-249 down to ref-50; the fifty oldest are the ones left out.
+      expect(listed[0]?.ref).toBe('ref-249');
+      expect(listed[PIN_LIST_LIMIT - 1]?.ref).toBe('ref-50');
+    });
+
+    it('bounds the rows in the statement itself, so a long table never leaves the database whole', () => {
+      writeBeyondTheCap(250, () => 'run');
+      const prepare = client.sqlite.prepare.bind(client.sqlite);
+      const sources: string[] = [];
+      const spy = vi.spyOn(client.sqlite, 'prepare').mockImplementation((source: string) => {
+        sources.push(source);
+        return prepare(source);
+      });
+      try {
+        store.listPins();
+      } finally {
+        spy.mockRestore();
+      }
+      const listSource = sources.find((source) => /^select/iu.test(source));
+      expect(listSource).toBeDefined();
+      // The statement carries its own LIMIT (one parameter), and run with the store's value the database hands back one
+      // row past the limit, never all 250.
+      expect(listSource).toMatch(/\blimit \?/iu);
+      const rows = client.sqlite.prepare(listSource ?? '').all(PIN_LIST_LIMIT + 1);
+      expect(rows).toHaveLength(PIN_LIST_LIMIT + 1);
+    });
+
+    it('applies the limit after the filter, to what matches', () => {
+      writeBeyondTheCap(250, (index) => (index % 2 === 0 ? 'run' : 'workflow'));
+      // 125 of each kind: both narrowed lists fit, so neither is cut; the unfiltered list is.
+      expect(store.listPins({ kind: 'run' })).toHaveLength(125);
+      expect(store.listPins({ kind: 'run' }).truncated).toBe(false);
+      expect(store.listPins({ kind: 'workflow', projectRoot: '/p1' })).toHaveLength(125);
+      expect(store.listPins().truncated).toBe(true);
+    });
+
+    it('does not call exactly PIN_LIST_LIMIT rows a truncation', () => {
+      writeBeyondTheCap(PIN_LIST_LIMIT, () => 'run');
+      const listed = store.listPins();
+      expect(listed).toHaveLength(PIN_LIST_LIMIT);
+      expect(listed.truncated).toBe(false);
+    });
+
+    it('leaves a list under the limit as the plain array it was, with truncated false', () => {
+      expect(store.listPins().truncated).toBe(false);
+      expect(store.listPins()).toEqual([]);
+      store.pinItem(runPin('run-1'));
+      const listed = store.listPins();
+      expect(listed.truncated).toBe(false);
+      // The flag is not an enumerable key: the list still equals, spreads and serialises as the array of its pins.
+      expect(Object.keys(listed)).toEqual(['0']);
+      expect(JSON.parse(JSON.stringify(listed))).toHaveLength(1);
+      expect(bare(listed)).toEqual([{ kind: 'run', projectRoot: '', ref: 'run-1', pinnedAt: T0 }]);
+    });
   });
 
   describe('validates what it is asked to store', () => {
