@@ -518,12 +518,34 @@ export interface RunCardProjectionInput {
 
 /** Host glyphs and card-drawing characters, none of which an author's text may carry (`HOST_GLYPH` of the ask-user tool, widened). */
 const HOST_GLYPHS = /[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu;
-/** An answer-chord token: `Ctrl+Y`, `control-n`, `^Y`. */
-const CHORD_TOKENS = /\b(?:ctrl|control)\s*[+-]\s*[a-z]\b|(?<![\w^])\^[a-z]\b/giu;
+/** Format characters (zero-width, bidi marks, joiners, the soft hyphen): they draw nothing, so a chord can hide behind them. */
+const FORMAT_CHARS = /\p{Cf}/gu;
+/**
+ * An answer-chord token, matched on the FOLDED text (see {@link foldAuthorText}), so the four forms read the way a
+ * person reads them:
+ * - `ctrl`/`control`, then `+` or any dash (`\p{Pd}`, U+2212), then one letter of any script: `Ctrl+Y`, `control-n`, and Ctrl+ with a Cyrillic letter that looks like Y;
+ * - `ctrl`/`control`, then only spaces, then y, n or one Cyrillic letter: `Ctrl Y`, and not `control a process`;
+ * - the control sign U+2303 (the Mac key legend), then one letter;
+ * - `^`, then one letter: `^Y` (not `100^2`, not `x^n`).
+ * The letter ends the token: a letter or digit after it makes it a word (`controlling`, `Ctrl+Yes`), not a chord.
+ */
+const CHORD_TOKENS =
+  /\b(?:ctrl|control)\s*[+\p{Pd}\u2212]\s*\p{L}(?![\p{L}\p{N}])|\b(?:ctrl|control)\s+(?:[yn]|(?=\p{L})[\u0400-\u04FF])(?![\p{L}\p{N}])|\u2303\s*\p{L}(?![\p{L}\p{N}])|(?<![\w^])\^\p{L}(?![\p{L}\p{N}])/giu;
 
-/** One line of author text, safe to put behind the gutter: untrusted-text floor, no host glyph, no answer chord. */
+/**
+ * The text as a person reads it, so that a chord cannot be spelled past the match: compatibility forms folded
+ * (fullwidth letters, the non-breaking hyphen, wide spaces) and the invisible format characters removed.
+ * Combining marks stay: removing them would damage real text in other scripts.
+ */
+function foldAuthorText(text: string): string {
+  return text.normalize('NFKC').replace(FORMAT_CHARS, '');
+}
+
+/** One line of author text, safe to put behind the gutter: untrusted-text floor, folded, no host glyph, no answer chord. */
 function authorLine(text: string): string {
-  return sanitizeUntrustedInline(text).replace(HOST_GLYPHS, ' ').replace(CHORD_TOKENS, '[chord]');
+  return foldAuthorText(sanitizeUntrustedInline(text))
+    .replace(HOST_GLYPHS, ' ')
+    .replace(CHORD_TOKENS, '[chord]');
 }
 
 /** The author's message as at most {@link RUN_CARD_MESSAGE_ROWS} rows of `width` columns, each a row of author text. */

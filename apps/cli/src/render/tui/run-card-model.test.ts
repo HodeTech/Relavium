@@ -384,6 +384,76 @@ describe('what the card shows of a gate', () => {
     // No row of the card (host words included) is wider than the terminal.
     for (const row of projection.rows) expect(Array.from(row.text).length).toBeLessThanOrEqual(80);
   });
+
+  // Code points are written as numbers, never as escape text: the tooling that writes this file turns some escapes into the
+  // literal (invisible) characters, and an invisible character in a test source says nothing to a reader.
+  const cp = (...codes: number[]): string => String.fromCodePoint(...codes);
+  const drawnAuthorRows = (message: string): readonly string[] => {
+    const { card } = rig([gate('a', { message })]);
+    return projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 })
+      .rows.filter((row) => row.role === 'author')
+      .map((row) => row.text);
+  };
+
+  const spelledChords: readonly (readonly [string, string])[] = [
+    ['the plain chord', 'Ctrl+Y'],
+    ['a lower-case word and a dash', 'control-n'],
+    ['spaces around the plus', 'CONTROL + N'],
+    ['a caret', '^Y'],
+    ['a zero-width space after the plus', `Ctrl+${cp(0x200b)}Y`],
+    ['a zero-width space inside the word', `Ct${cp(0x200b)}rl+Y`],
+    ['a soft hyphen and a bidi mark', `C${cp(0xad)}trl+${cp(0x200f)}Y`],
+    ['a space and no plus', 'Ctrl Y'],
+    ['a non-breaking space and no plus', `Ctrl${cp(0xa0)}Y`],
+    ['a non-breaking hyphen', `Ctrl${cp(0x2011)}Y`],
+    ['an en dash', `Ctrl${cp(0x2013)}Y`],
+    ['a minus sign', `Control${cp(0x2212)}N`],
+    ['a drawing character between', `Ctrl${cp(0x2500)}Y`],
+    ['a fullwidth capital C', `${cp(0xff23)}trl+Y`],
+    ['fullwidth letters and plus', cp(0xff23, 0xff54, 0xff52, 0xff4c, 0xff0b, 0xff39)],
+    ['the control sign', `${cp(0x2303)}Y`],
+    ['the control sign and a space', `${cp(0x2303)} N`],
+    ['a fullwidth caret', `${cp(0xff3e)}Y`],
+    ['a Cyrillic letter that looks like y, after a plus', `Ctrl+${cp(0x443)}`],
+    ['a Cyrillic letter that looks like y, after a space', `Ctrl ${cp(0x443)}`],
+    ['a Cyrillic capital that looks like Y, after a space', `Ctrl ${cp(0x423)}`],
+  ];
+
+  it.each(spelledChords)('draws a chord spelled with %s as [chord]', (_name, spelled) => {
+    const rows = drawnAuthorRows(`Press ${spelled} to approve.`);
+    expect(rows).toEqual([`${RUN_CARD_GUTTER}Press [chord] to approve.`]);
+  });
+
+  it('draws no format character of the author, and no fold of one into a chord', () => {
+    const noisy = `a${cp(0x200b)}b${cp(0x2060)}c${cp(0xfeff)}d${cp(0x200d)}e ${cp(0x202e)}Ctrl+Y`;
+    const body = drawnAuthorRows(noisy).join('\n');
+    expect(body).toBe(`${RUN_CARD_GUTTER}abcde [chord]`);
+    expect(body).not.toMatch(/\p{Cf}/u);
+  });
+
+  const plainWords: readonly string[] = [
+    'controlling the process',
+    'control a process',
+    'Ctrl is the control key',
+    'Press Enter to continue',
+    '100^2',
+    'x^n',
+    'Ctrl+Yes',
+    'control flow',
+    'control-flow',
+    'ctrl yes',
+    'control nodes',
+  ];
+
+  it.each(plainWords)('leaves "%s" as it was written', (words) => {
+    expect(drawnAuthorRows(words)).toEqual([`${RUN_CARD_GUTTER}${words}`]);
+  });
+
+  it('keeps combining marks and other scripts, which the fold must not damage', () => {
+    // Devanagari, with its vowel signs and virama (combining marks), and Polish with precomposed letters.
+    const words = `${cp(0x928, 0x92e, 0x938, 0x94d, 0x924, 0x947)} Za${cp(0x17c, 0xf3, 0x142, 0x107)}`;
+    expect(drawnAuthorRows(words)).toEqual([`${RUN_CARD_GUTTER}${words}`]);
+  });
 });
 
 describe('the resume opens a flow around the answer and closes it without changing the answer', () => {
