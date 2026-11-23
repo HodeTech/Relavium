@@ -383,6 +383,8 @@ export const MAX_RUN_TAIL_EVENTS = 1000;
 export const MAX_RUN_LEASE_IDS = 200;
 /** The most run ids one {@link RunHistoryReader.loadRunStateEventsForRuns} call accepts; more is refused, not truncated. */
 export const MAX_RUN_STATE_EVENT_BATCH_IDS = 200;
+/** The most run ids one {@link RunHistoryReader.loadRunSummariesByIds} call accepts; more is refused, not truncated. */
+export const MAX_RUN_SUMMARY_IDS = 200;
 /**
  * The largest stored result document (`output_json` or `error_json`) the detail reads hand back as text: 1 MiB of
  * UTF-8. The bound is applied inside the SELECT, so a larger document never reaches JavaScript.
@@ -534,6 +536,14 @@ export interface RunHistoryReader {
     readonly projectRoot?: string;
     readonly workflowId?: string;
   }) => RunSummaryRecord[];
+  /**
+   * The summaries of the runs with these ids, by primary key (the Home's pinned runs, ADR-0140 §5): a map from run id to
+   * its {@link RunSummaryRecord}, soft-deleted runs excluded. An id that names no run is ABSENT from the map, not an
+   * error, so a pin whose run is gone reads as a missing entry the caller can show and remove. At most
+   * {@link MAX_RUN_SUMMARY_IDS} ids; more is a {@link RunHistoryReadError} (`too_many_run_ids`), never a truncation,
+   * and an empty input issues no query. The statement selects summary columns only, like {@link listRunSummaries}.
+   */
+  loadRunSummariesByIds: (runIds: readonly string[]) => ReadonlyMap<string, RunSummaryRecord>;
   /**
    * One run with its output and error JSON as stored, each size-gated in SQL at {@link MAX_RUN_DETAIL_DOCUMENT_BYTES}
    * (soft-deleted excluded), or `undefined`. It never reads `input_json` or the frozen snapshot.
@@ -1853,6 +1863,24 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .limit(limit)
         .all()
         .map(fromRunSummaryRow);
+    },
+
+    loadRunSummariesByIds: (runIds) => {
+      if (runIds.length > MAX_RUN_SUMMARY_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_SUMMARY_IDS} run ids per summary lookup`,
+        );
+      }
+      if (runIds.length === 0) return new Map(); // no query for an empty set
+      const rows = db
+        .select(runSummaryColumns)
+        .from(runs)
+        .where(and(inArray(runs.id, [...runIds]), isNull(runs.deletedAt)))
+        .all();
+      return new Map(
+        rows.map((row): [string, RunSummaryRecord] => [row.id, fromRunSummaryRow(row)]),
+      );
     },
 
     loadRunDetail: (runId) => {

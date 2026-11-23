@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { classifyActiveRuns } from '../../history/active-model.js';
 import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
+import { buildHistoryRows } from '../../history/history-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type {
   PermissionsPort,
@@ -150,12 +151,10 @@ describe('TabHostView at 80×24', () => {
     expect(lines.join('\n')).toContain('more in the config');
   });
 
-  it('says what it shows on the placeholder, in a word as well as a glyph', () => {
-    for (const [tab, title] of [['history', 'History']] as const) {
-      const drawn = text(hostOn(tab));
-      expect(drawn).toContain(`▸ ${title}`);
-      expect(drawn).toContain(`${title} — available in the next increment.`);
-    }
+  it('says History cannot be read when nothing feeds it, in a word as well as a glyph', () => {
+    const drawn = text(hostOn('history'));
+    expect(drawn).toContain('▸ History');
+    expect(drawn).toContain('The run history could not be read.');
   });
 });
 
@@ -177,7 +176,7 @@ describe('TabHostView on the Defined tab', () => {
     ])
       expect(drawn, word).toContain(word);
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
-    expect(lines.at(-1)).toContain('↑/↓ select · [r] run · [x] export · Esc close');
+    expect(lines.at(-1)).toContain('↑/↓ select · [r] run · [x] export · [p] pin · Esc close');
   });
 
   it('draws the selected row in cyan, a quiet tail dimmed, and the key of an action in its own style', () => {
@@ -186,6 +185,89 @@ describe('TabHostView on the Defined tab', () => {
     expect(lineWith(drawn, 'alpha')).toContain(DIM);
     expect(lineWith(drawn, 'Tab'), 'the legend: the keys apart from the words').toContain(
       `${BOLD}[r]`,
+    );
+  });
+});
+
+/** The History tab over three finished runs (one pinned, one whose log is unreadable) and a pin whose run is gone. */
+const historyHost = (): TabHostState => {
+  const at = '2026-11-23T10:00:00.000Z';
+  const run = (id: string, status: 'completed' | 'failed' | 'cancelled') => ({
+    id,
+    workflowId: 'wf',
+    status,
+    executionMode: 'local' as const,
+    triggerType: 'manual',
+    startedAt: at,
+    completedAt: at,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostMicrocents: 0,
+    createdAt: at,
+    updatedAt: at,
+  });
+  const rows = buildHistoryRows({
+    runs: [
+      run('aaaaaaaa-0000', 'completed'),
+      run('bbbbbbbb-0000', 'failed'),
+      run('cccccccc-0000', 'cancelled'),
+    ],
+    nowMs: Date.parse(at) + 3_600_000,
+    pinnedRunIds: new Set(['aaaaaaaa-0000']),
+    workflowLabels: new Map([['wf', 'deploy']]),
+  });
+  return enterTab(freshTabMemory('history'), 'history', {
+    port: undefined,
+    now: 0,
+    history: {
+      read: () => ({
+        query: { scope: 'project', status: undefined, page: 0 },
+        pinned: [{ kind: 'missing', label: 'gone-run', pinRowid: 9 }],
+        rows: rows.map((row) => ({
+          kind: 'run' as const,
+          row,
+          ...(row.pinned ? { pinRowid: 1 } : {}),
+        })),
+        hasPrev: false,
+        hasNext: false,
+      }),
+      cost: (row) =>
+        row.status === 'failed' ? { kind: 'unreadable' } : { kind: 'text', text: '$0.0123' },
+      loadDetail: () => Promise.resolve({ kind: 'missing' }),
+    },
+  });
+};
+
+describe('TabHostView on the History tab', () => {
+  it('draws every row with a glyph and a word, in 23 rows, with no colour at all when colour is off', () => {
+    const styled = frame(historyHost(), false);
+    expect(styled).not.toMatch(ANY_COLOUR);
+    const lines = plain(styled).split('\n');
+    expect(lines.length).toBeLessThanOrEqual(23);
+    const drawn = lines.join('\n');
+    for (const word of [
+      '✓ completed',
+      '? unreadable',
+      '⊘ cancelled',
+      '? missing',
+      '★ pinned',
+      '$0.0123',
+      'Pinned (1)',
+      'this project · every finished run · page 1 (last)',
+    ])
+      expect(drawn, word).toContain(word);
+    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(lines.at(-1)).toBe(
+      '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc close',
+    );
+  });
+
+  it('draws the selected row in cyan, a quiet tail dimmed, and the key of an action in its own style', () => {
+    const drawn = frame(historyHost(), true);
+    expect(lineWith(drawn, '› ? missing')).toContain(CYAN);
+    expect(lineWith(drawn, '⊘ cancelled')).toContain(DIM);
+    expect(lineWith(drawn, '[p]'), 'the legend: the keys apart from the words').toContain(
+      `${BOLD}[p]`,
     );
   });
 });
@@ -362,9 +444,9 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
         ['Could not read the permissions.'],
       ],
       [
-        'a placeholder',
+        'an unreadable History tab',
         hostOn('history'),
-        ['▸ History', 'History — available in the next increment.'],
+        ['▸ History', 'The run history could not be read.'],
       ],
       [
         'the allowlist',
@@ -464,7 +546,7 @@ describe.each([
     await until(() => m.frame().includes('▸ Permissions'));
     m.harness.stdin.write(`${ESC}[D`); // ←
     await until(() => m.frame().includes('▸ History'));
-    expect(m.frame()).toContain('History — available in the next increment.');
+    expect(m.frame()).toContain('The run history could not be read.');
     m.harness.stdin.write('\t');
     await until(() => m.frame().includes('▸ Permissions'));
     m.harness.stdin.write(ESC);

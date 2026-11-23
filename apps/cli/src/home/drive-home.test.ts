@@ -50,7 +50,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
-import { OwnedTtyInput, OwnedTtyOutput } from '../test-support.js';
+import { OwnedTtyInput, OwnedTtyOutput, seedRun } from '../test-support.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -1745,6 +1745,53 @@ workflow:
         timeout: WAIT_MS,
       });
       props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+  });
+
+  describe('ADR-0140 §2, §5: the bare Home’s History tab is the Home’s own database, pins and outbox', () => {
+    const historyOf = (props: RootAppProps) => {
+      const screen = props.controller.getSnapshot().screen;
+      return screen?.kind === 'tab-host' ? screen.host.history : undefined;
+    };
+
+    it('lists this project’s finished runs, pins one under its full id into the Home’s database, and opens its detail through the real loader', async () => {
+      // The wired-but-dead field once more: a Home built without the History port would say the history cannot be read, and every
+      // controller test would still pass. This drives the REAL `driveHome` over a run seeded into the database it was handed.
+      const runId = await seedRun(client.db, {
+        slug: 'wf',
+        runId: '0a1b2c3d-0000-4000-8000-0000000000aa',
+        state: 'completed',
+        atMs: 1_750_000_000_000 - 60_000,
+      });
+      client.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(cwd, runId);
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      expect(props.controller.openScreen('tab-host', { tab: 'history' })).toBe(true);
+      const tab = historyOf(props);
+      expect(tab?.phase).toBe('ready');
+      expect(tab?.read?.rows.map((entry) => entry.kind === 'run' && entry.row.id)).toEqual([runId]);
+
+      props.controller.handleKey('p', {});
+      expect(createRunPinStore(client.db).listPins({ kind: 'run' })).toMatchObject([
+        { kind: 'run', projectRoot: '', ref: runId },
+      ]);
+      expect(historyOf(props)?.read?.pinned).toHaveLength(1);
+
+      props.controller.handleKey('', ENTER);
+      await vi.waitFor(() => expect(historyOf(props)?.detail?.phase).toBe('ready'), {
+        timeout: WAIT_MS,
+      });
+      expect(historyOf(props)?.detail?.read?.model.header.runId).toBe(runId);
+      expect(historyOf(props)?.detail?.read?.terminalHeld, 'the outbox is empty').toBe(false);
+
+      props.controller.handleKey('', { escape: true }); // back to the list
+      props.controller.handleKey('', { escape: true }); // the screen closes
       props.controller.handleKey('c', CTRL_C);
       props.controller.handleKey('c', CTRL_C);
       expect(await drivePromise).toBe(EXIT_CODES.success);

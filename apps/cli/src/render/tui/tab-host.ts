@@ -1,4 +1,5 @@
 import type { ActiveRead } from '../../history/active-source.js';
+import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
@@ -43,10 +44,26 @@ import {
   definedLegendItems,
   foldDefinedKey,
   openDefinedTab,
+  pinOnDefined,
   withDefinedMessage,
   type DefinedPort,
   type DefinedTabState,
 } from './tab-host-workflows.js';
+import {
+  HISTORY_UNREADABLE,
+  failHistoryDetail,
+  foldHistoryKey,
+  historyBody,
+  historyLegendItems,
+  historyMemoryOf,
+  openHistoryTab,
+  unreadableHistoryTab,
+  withHistoryDetail,
+  type HistoryMemory,
+  type HistoryPort,
+  type HistoryTabState,
+} from './tab-host-history.js';
+import type { PinPort } from './tab-host-pin.js';
 import { escapeReviewCharacter } from './tool-review-projection.js';
 
 /**
@@ -55,13 +72,15 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  * to draw; it owns no `useInput`, no React and no clock (the host passes the time in), so the key ladder and every sentence are testable
  * without a terminal, as the sheet's are. `tab-host-view.tsx` paints it and `home-controller.ts` owns the slot it sits in.
  *
- * Four tabs: History is a placeholder in this increment (it draws one line that says so); Permissions is the ADR-0137 sheet composed under
- * the tab strip (its body, its keys and its `Esc` ladder are the sheet's, and the repository's `[chat]` allowlist is added under the list as
- * read-only rows); Defined lists the project's workflows with their pins (`tab-host-workflows.ts`), where `r` and `x` ASK the host to run or
- * export a row; and Active lists the runs that are not finished (`tab-host-active.ts`), where `Enter` ASKS the host to reopen the hosted
- * run's view or to open a paused run's gate card. Nothing here writes: a withdrawal is carried out through the port the host holds, and a
- * run, an export or a card is a {@link TabHostStep} the host carries out with its own flow. The Active tab is fed from outside: entering it
- * shows the last read the host kept, and the host's poll hands each newer read in ({@link withActiveRead}).
+ * Four tabs: History lists the finished runs a page at a time and opens one run's detail (`tab-host-history.ts`), where `Enter` ASKS the host
+ * to load the detail; Permissions is the ADR-0137 sheet composed under the tab strip (its body, its keys and its `Esc` ladder are the sheet's,
+ * and the repository's `[chat]` allowlist is added under the list as read-only rows); Defined lists the project's workflows with their pins
+ * (`tab-host-workflows.ts`), where `r` and `x` ASK the host to run or export a row; and Active lists the runs that are not finished
+ * (`tab-host-active.ts`), where `Enter` ASKS the host to reopen the hosted run's view or to open a paused run's gate card. `p` on a Defined
+ * row or a History row toggles a pin through the {@link PinPort} the host holds (`tab-host-pin.ts`): a pin is a mark, so it is carried out
+ * here and answered with a state, and the rows are read again. Nothing else here writes: a withdrawal is carried out through the port the
+ * host holds, and a run, an export, a detail or a card is a {@link TabHostStep} the host carries out with its own flow. The Active tab is
+ * fed from outside: entering it shows the last read the host kept, and the host's poll hands each newer read in ({@link withActiveRead}).
  *
  * - **Keys.** `←` and `→` move between tabs (and stop at the ends), `Tab` and `Shift+Tab` cycle around them, and `Esc` closes the screen
  *   (on Permissions, once a withdrawal's question is dropped). `Ctrl+C` closes the screen from any tab and never withdraws. Everything
@@ -88,9 +107,6 @@ export const TABS: readonly TabDef[] = [
   { id: 'history', title: 'History' },
   { id: 'permissions', title: 'Permissions' },
 ];
-
-/** What a tab that is not built yet says, after its own name. */
-export const PLACEHOLDER_NOTE = 'available in the next increment';
 
 /** The rows the tab host may use: what the Home's frame allows at 80×24, less the prompt's line. */
 export const TAB_HOST_ROWS = 23;
@@ -120,7 +136,7 @@ export const TAB_HOST_LEGEND_ROWS_ITEMS: readonly LegendItem[] = [
   TAB_HOST_KEYS.close,
 ];
 
-/** What a tab remembers: where the cursor was, by tab. Permissions, Defined and Active have a cursor; History stays at the top. */
+/** What a tab remembers: where the cursor was, by tab. */
 export type TabPositions = Readonly<Record<TabId, number>>;
 
 /** What the host keeps of a tab host while a screen that came from it is in front: the tab it was on and each tab's position. */
@@ -129,6 +145,8 @@ export interface TabMemory {
   readonly positions: TabPositions;
   /** The run the Active tab's cursor was on, so the tab comes back to the run and not only to the row number. */
   readonly activeFocus?: string | undefined;
+  /** The History tab's scope, filter and the run its cursor was on, so the tab comes back to the run and not only to the row number. */
+  readonly history?: HistoryMemory | undefined;
 }
 
 const TOP: TabPositions = Object.freeze({ defined: 0, active: 0, history: 0, permissions: 0 });
@@ -147,6 +165,8 @@ export interface TabHostState {
   readonly defined?: DefinedTabState | undefined;
   /** The Active tab's list: the last read the host kept when the tab was entered, then every newer read; absent on any other tab. */
   readonly active?: ActiveTabState | undefined;
+  /** The History tab: its page, its pinned section and, once opened, a run's detail; absent on any other tab. */
+  readonly history?: HistoryTabState | undefined;
   /** Permissions or Defined was entered and its port could not be read: the tab says so instead of listing anything. */
   readonly unreadable: boolean;
 }
@@ -160,6 +180,10 @@ export interface TabEntry {
   readonly defined?: DefinedPort | undefined;
   /** What the Active tab starts from, or `undefined` when nothing feeds it (the tab then says it cannot be read): the host's last read. */
   readonly active?: ActiveEntry | undefined;
+  /** What the History tab reads (none ⇒ the tab says it cannot be read). */
+  readonly history?: HistoryPort | undefined;
+  /** What `p` pins and unpins through (none ⇒ `p` says pinning is unavailable). */
+  readonly pins?: PinPort | undefined;
   readonly now: number;
 }
 
@@ -179,6 +203,7 @@ function positionOf(state: TabHostState): number {
     state.sheet?.cursor ??
     state.defined?.cursor ??
     state.active?.cursor ??
+    state.history?.cursor ??
     state.positions[state.tab]
   );
 }
@@ -212,6 +237,27 @@ export function withActiveNote(host: TabHostState, text: string): TabHostState {
     : { ...host, active: withActiveMessage(host.active, text) };
 }
 
+/**
+ * `host` with a run's detail the host loaded, on the History tab; the same object when that tab is not in front or is not waiting for
+ * that run (a result that arrives after the person left the detail changes nothing).
+ */
+export function withHistoryLoad(
+  host: TabHostState,
+  runId: string,
+  load: RunDetailLoad,
+): TabHostState {
+  if (host.history === undefined) return host;
+  const history = withHistoryDetail(host.history, runId, load);
+  return history === host.history ? host : { ...host, history };
+}
+
+/** `host` after the load of a run's detail failed for a reason that is not about the run: the list again, with a sentence. */
+export function withHistoryLoadFailure(host: TabHostState, runId: string): TabHostState {
+  if (host.history === undefined) return host;
+  const history = failHistoryDetail(host.history, runId);
+  return history === host.history ? host : { ...host, history };
+}
+
 /** The state of the tab host as the memory of it: the tab it is on, and every tab's position, the current one's included. */
 export function tabHostMemory(state: TabHostState): TabMemory {
   const memory: TabMemory = {
@@ -219,7 +265,12 @@ export function tabHostMemory(state: TabHostState): TabMemory {
     positions: { ...state.positions, [state.tab]: positionOf(state) },
   };
   const focus = state.active?.focus;
-  return focus === undefined ? memory : { ...memory, activeFocus: focus };
+  const history = state.history === undefined ? undefined : historyMemoryOf(state.history);
+  return {
+    ...memory,
+    ...(focus === undefined ? {} : { activeFocus: focus }),
+    ...(history === undefined ? {} : { history }),
+  };
 }
 
 /**
@@ -229,8 +280,7 @@ export function tabHostMemory(state: TabHostState): TabMemory {
 export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHostState {
   if (tab === 'defined') return enterDefined(memory, entry);
   if (tab === 'active') return enterActive(memory, entry);
-  if (tab !== 'permissions')
-    return { tab, positions: memory.positions, sheet: undefined, unreadable: false };
+  if (tab === 'history') return enterHistory(memory, entry);
   const opened =
     entry.port === undefined
       ? undefined
@@ -264,6 +314,37 @@ function enterDefined(memory: TabMemory, entry: TabEntry): TabHostState {
   }
 }
 
+/**
+ * The History tab entered: its first page read now (nothing kept from a visit before), in the scope and filter it was left in. A port that
+ * is missing or cannot be read leaves the tab saying so.
+ */
+function enterHistory(memory: TabMemory, entry: TabEntry): TabHostState {
+  const unreadable: TabHostState = {
+    tab: 'history',
+    positions: memory.positions,
+    sheet: undefined,
+    history: unreadableHistoryTab(),
+    unreadable: false,
+  };
+  if (entry.history === undefined) return unreadable;
+  try {
+    return {
+      ...unreadable,
+      history: openHistoryTab(
+        entry.history,
+        memory.history ?? {
+          scope: 'project',
+          status: undefined,
+          focus: undefined,
+          cursor: memory.positions.history,
+        },
+      ),
+    };
+  } catch {
+    return unreadable;
+  }
+}
+
 /** The Active tab entered on the last read the host kept; a host with nothing to feed it leaves the tab saying it cannot be read. */
 function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
   return {
@@ -280,9 +361,10 @@ function enterActive(memory: TabMemory, entry: TabEntry): TabHostState {
 
 /**
  * What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), become another
- * state, ask the host to run or export one workflow of the Defined tab, or ask it to reopen the view of the run it hosts or to open the gate
- * card of a paused run of the Active tab, each carrying the state the tab is left in. The slug is a catalog entry's own, never a row's
- * label, and a run id is the one the read classified (the host reads the run again before it opens anything).
+ * state, ask the host to run or export one workflow of the Defined tab, ask it to reopen the view of the run it hosts or to open the gate
+ * card of a paused run of the Active tab, or ask it to load a run's detail on the History tab, each carrying the state the tab is left in.
+ * The slug is a catalog entry's own, never a row's label, and a run id is the one the read classified (the host reads the run again before
+ * it opens anything).
  */
 export type TabHostStep =
   | { readonly kind: 'close'; readonly note?: string }
@@ -290,7 +372,8 @@ export type TabHostStep =
   | { readonly kind: 'run'; readonly slug: string; readonly state: TabHostState }
   | { readonly kind: 'export'; readonly slug: string; readonly state: TabHostState }
   | { readonly kind: 'open-view'; readonly runId: string; readonly state: TabHostState }
-  | { readonly kind: 'open-gate'; readonly runId: string; readonly state: TabHostState };
+  | { readonly kind: 'open-gate'; readonly runId: string; readonly state: TabHostState }
+  | { readonly kind: 'open-detail'; readonly runId: string; readonly state: TabHostState };
 
 /** The tab a key moves to, or `undefined` for a key that moves none. `←`/`→` stop at the ends; `Tab` and `Shift+Tab` go around. */
 function movedTab(current: TabId, key: ChatKey): TabId | undefined {
@@ -329,8 +412,9 @@ function foldSheet(
 /**
  * Fold one keystroke into the open tab host. `Ctrl+C` closes from any state and never withdraws. A withdrawal's question owns the keyboard
  * until it is answered or dropped: every key goes to the sheet's ladder, a tab key included, so a key typed ahead moves nothing. Past that,
- * a tab key moves (and reads the tab it lands on again), `Esc` closes a tab that has no question to drop, on Permissions every other
- * key is the sheet's, and on Defined and Active it is the list's (which may ask for a run, an export, a view or a card).
+ * a tab key moves (and reads the tab it lands on again), `Esc` closes a tab that has no question to drop and no detail to go back from
+ * (a History detail takes its own `Esc`), on Permissions every other key is the sheet's, and on Defined, Active and History it is the
+ * list's (which may ask for a run, an export, a view, a card or a detail, or toggle a pin).
  */
 export function foldTabHostKey(
   state: TabHostState,
@@ -346,15 +430,35 @@ export function foldTabHostKey(
     if (to === state.tab) return { kind: 'state', state };
     return { kind: 'state', state: enterTab(tabHostMemory(state), to, context) };
   }
-  if (key.escape === true && sheet === undefined) return { kind: 'close' };
+  if (key.escape === true && sheet === undefined && state.history?.detail === undefined)
+    return { kind: 'close' };
   if (state.defined !== undefined) {
     const step = foldDefinedKey(state.defined, input, key);
+    // `p` is carried out here, through the pin port, and answered with a state: a pin is a mark and never a request to the host.
+    if (step.kind === 'pin')
+      return {
+        kind: 'state',
+        state: {
+          ...state,
+          defined: pinOnDefined(step.state, step.row, context.pins, context.defined),
+        },
+      };
     const next = step.state === state.defined ? state : { ...state, defined: step.state };
     return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
   }
   if (state.active !== undefined) {
     const step = foldActiveKey(state.active, key);
     const next = step.state === state.active ? state : { ...state, active: step.state };
+    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+  }
+  if (state.history !== undefined) {
+    // A history that was read has its port: a host that lost it leaves the keys inert rather than freeze the keyboard.
+    if (context.history === undefined) return { kind: 'state', state };
+    const step = foldHistoryKey(state.history, input, key, {
+      history: context.history,
+      pins: context.pins,
+    });
+    const next = step.state === state.history ? state : { ...state, history: step.state };
     return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
   }
   if (sheet === undefined) return { kind: 'state', state };
@@ -382,6 +486,12 @@ export function tabHostLegendItems(state: TabHostState): readonly LegendItem[] {
   if (state.active !== undefined)
     return activeLegendItems(
       state.active,
+      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
+      TAB_HOST_KEYS.close,
+    );
+  if (state.history !== undefined)
+    return historyLegendItems(
+      state.history,
       [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
       TAB_HOST_KEYS.close,
     );
@@ -494,17 +604,15 @@ function allowlistLines(list: RepoAllowlist | undefined, width: number): readonl
   ];
 }
 
-/** The lines of a tab that is not built yet or whose data could not be read. */
+/** The lines of a tab whose data could not be read. */
 function plainBody(state: TabHostState): readonly SheetLine[] {
-  if (state.unreadable)
-    return [
-      {
-        kind: 'failed',
-        text: state.tab === 'defined' ? DEFINED_UNREADABLE : PERMISSIONS_UNREADABLE,
-      },
-    ];
-  const title = TABS.find((tab) => tab.id === state.tab)?.title ?? '';
-  return [{ kind: 'text', text: `${title} — ${PLACEHOLDER_NOTE}.` }];
+  const text =
+    state.tab === 'defined'
+      ? DEFINED_UNREADABLE
+      : state.tab === 'history'
+        ? HISTORY_UNREADABLE
+        : PERMISSIONS_UNREADABLE;
+  return [{ kind: 'failed', text }];
 }
 
 /** The lines when the terminal is below the floor: why, and the way out. */
@@ -532,6 +640,8 @@ export function tabHostLines(state: TabHostState, geometry: SheetGeometry): read
     return [...head, ...definedBody(state.defined, width, budget - head.length - 1), foot];
   if (state.active !== undefined)
     return [...head, ...activeBody(state.active, width, budget - head.length - 1), foot];
+  if (state.history !== undefined)
+    return [...head, ...historyBody(state.history, width, budget - head.length - 1), foot];
   if (sheet === undefined) return [...head, ...plainBody(state), foot];
   // The sheet's own note and message row sit under its list; its legend is replaced by the tab host's, which names the tab keys too.
   const sheetFoot = permissionsSheetChrome(sheet, geometry).foot.slice(0, 2);

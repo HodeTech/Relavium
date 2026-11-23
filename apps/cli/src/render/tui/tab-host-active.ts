@@ -43,7 +43,7 @@ const GROUP_ORDER: Readonly<Record<ActiveGroup, number>> = {
 };
 
 const STALLED_GLYPH = '⚠';
-const HELD_GLYPH = '◇';
+export const HELD_GLYPH = '◇';
 
 /** The group a row is listed under. A held terminal outranks the rest; the hosted leg is always `running`. */
 export function activeGroupOf(row: ActiveRow): ActiveGroup {

@@ -330,18 +330,30 @@ describe('a crafted slug is inert', () => {
 });
 
 describe('the legend names exactly the keys the tab answers to', () => {
-  it('lists select, run and export with the tab keys and Esc last, and each does what it says', () => {
+  it('lists select, run, export and pin with the tab keys and Esc last, and each does what it says', () => {
     const r = rig(READY);
     const items = tabHostLegendItems(r.state);
-    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', '↑/↓', '[r]', '[x]', 'Esc']);
+    expect(items.map((item) => item.keys)).toEqual([
+      '←/→',
+      'Tab',
+      '↑/↓',
+      '[r]',
+      '[x]',
+      '[p]',
+      'Esc',
+    ]);
     expect(legend(items)).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ select · [r] run · [x] export · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · [r] run · [x] export · [p] pin · Esc close',
     );
     expect(DEFINED_KEYS.select.keys).toBe('↑/↓');
     expect(r.press('', DOWN).kind).toBe('state');
     expect(r.cursor()).toBe(1);
     expect(r.press('r').kind).toBe('run');
     expect(r.press('x').kind).toBe('export');
+    // `p` is answered inside the tab host (through its pin port, which `tab-host-pin.test.ts` drives): here there is none.
+    expect(r.press('p').kind).toBe('state');
+    expect(r.state.defined?.message).toBe('Pinning is unavailable in this session.');
+    expect(DEFINED_KEYS.pin.keys).toBe('[p]');
     expect(r.press('', ESC).kind).toBe('close');
   });
 

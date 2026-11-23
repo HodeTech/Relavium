@@ -9,6 +9,7 @@ import {
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
+import { PIN_KEY, PIN_UNAVAILABLE, toggleWorkflowPin, type PinPort } from './tab-host-pin.js';
 
 /**
  * The Defined tab of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -17,8 +18,10 @@ import {
  * entered and carries a `run` or `export` request out; this module only says which request a key makes, or why it makes none.
  *
  * - **Keys.** `↑`/`↓` move and stop at the ends. `r` asks to run the row's workflow and `x` to export it (the host opens the launch flow
- *   and the export card; neither does anything by itself). `Enter` is nothing yet: the row's detail is a later increment. Every other key
- *   is nothing. A key that follows a message drops it.
+ *   and the export card; neither does anything by itself). `p` pins the row's workflow, or unpins it (the tab host carries the toggle out
+ *   through its pin port and reads the list again, see {@link pinOnDefined}; pinned rows sort first, so the cursor follows the row to
+ *   its new place). `Enter` is nothing yet: the row's detail is a later increment. Every other key is nothing. A key that follows a
+ *   message drops it.
  * - **A row names its entry by index, not by its slug.** {@link DefinedRow.slug} is a label (a pin's ref comes from `history.db`, which
  *   accepts any string); the slug a request carries is what {@link DefinedRead.slugOf} returns for the row's `entryIndex`, which only a
  *   catalog row has. A pin whose workflow left the catalog, and a file that did not parse, make no request and say why in their note,
@@ -48,17 +51,22 @@ export interface DefinedTabState {
   readonly message?: string | undefined;
 }
 
-/** What a key does on the tab: become another state, or ask the host for a run or an export of one catalog workflow. */
+/**
+ * What a key does on the tab: become another state, ask the host for a run or an export of one catalog workflow, or ask the tab host to
+ * toggle the pin of a row (`pin`: it never leaves the tab host, which carries it out through its pin port and answers with a state).
+ */
 export type DefinedStep =
   | { readonly kind: 'state'; readonly state: DefinedTabState }
   | { readonly kind: 'run'; readonly slug: string; readonly state: DefinedTabState }
-  | { readonly kind: 'export'; readonly slug: string; readonly state: DefinedTabState };
+  | { readonly kind: 'export'; readonly slug: string; readonly state: DefinedTabState }
+  | { readonly kind: 'pin'; readonly row: DefinedRow; readonly state: DefinedTabState };
 
 /** The keys the Defined tab's legend names that are its own. The test presses every one of them. */
 export const DEFINED_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   run: { keys: '[r]', verb: 'run' },
   export: { keys: '[x]', verb: 'export' },
+  pin: PIN_KEY,
 } as const satisfies Readonly<Record<string, LegendItem>>;
 
 /** What the tab says when the project has no workflow to list. */
@@ -79,7 +87,7 @@ export function withDefinedMessage(state: DefinedTabState, message: string): Def
 }
 
 /** Why a row makes no request, in one sentence: its own note says what it is, and this says what it cannot do. */
-function refusal(verb: 'run' | 'export', row: DefinedRow): string {
+function refusal(verb: 'run' | 'export' | 'pin', row: DefinedRow): string {
   const why =
     row.state === 'not-in-catalog'
       ? 'it is not in the catalog'
@@ -118,9 +126,10 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
     );
     return to === state.cursor ? stay : { kind: 'state', state: { ...cleared, cursor: to } };
   }
-  if (input !== 'r' && input !== 'x') return stay;
+  if (input !== 'r' && input !== 'x' && input !== 'p') return stay;
   const row = rows[state.cursor];
   if (row === undefined) return stay;
+  if (input === 'p') return { kind: 'pin', row, state: cleared };
   const verb = input === 'r' ? 'run' : 'export';
   const request = requestSlug(verb, state, row);
   if ('message' in request)
@@ -128,6 +137,55 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
   return verb === 'run'
     ? { kind: 'run', slug: request.slug, state: cleared }
     : { kind: 'export', slug: request.slug, state: cleared };
+}
+
+/** The row's identity across a read: the catalog entry it names (by slug), else the pin's label. */
+function sameRow(
+  before: { readonly row: DefinedRow; readonly slug: string | undefined },
+  after: DefinedRead,
+  index: number,
+): boolean {
+  const candidate = after.model.rows[index];
+  if (candidate === undefined) return false;
+  if (before.slug !== undefined)
+    return candidate.entryIndex !== undefined && after.slugOf(candidate.entryIndex) === before.slug;
+  return candidate.state === 'not-in-catalog' && candidate.slug === before.row.slug;
+}
+
+/**
+ * `p` on a row: pin its workflow, or unpin it, through `pins`; then read the list again through `port` so the row's pin word is the
+ * store's, and keep the cursor on the row it was on (a pinned row sorts first, so its place changes). A row that is not a catalog
+ * workflow that parsed cannot be pinned (it can be unpinned); a refused pin (the cap) changes nothing and says why in the message row.
+ */
+export function pinOnDefined(
+  state: DefinedTabState,
+  row: DefinedRow,
+  pins: PinPort | undefined,
+  port: DefinedPort | undefined,
+): DefinedTabState {
+  if (pins === undefined) return withDefinedMessage(state, PIN_UNAVAILABLE);
+  const slug = row.entryIndex === undefined ? undefined : state.read.slugOf(row.entryIndex);
+  if (!row.pinned && (row.state !== 'ready' || slug === undefined))
+    return withDefinedMessage(state, refusal('pin', row));
+  const toggled = toggleWorkflowPin(pins, {
+    label: row.slug,
+    slug,
+    pinned: row.pinned,
+    rowid: row.pinRowid,
+  });
+  // The cap changed nothing, so there is nothing to read again.
+  if (toggled.outcome === 'full' || port === undefined)
+    return withDefinedMessage(state, toggled.message);
+  let read: DefinedRead;
+  try {
+    read = port.read();
+  } catch {
+    return withDefinedMessage(state, `${toggled.message} The list could not be read again.`);
+  }
+  const found = read.model.rows.findIndex((_, index) => sameRow({ row, slug }, read, index));
+  const last = read.model.rows.length - 1;
+  const cursor = found >= 0 ? found : Math.max(0, Math.min(state.cursor, last));
+  return { read, cursor, message: toggled.message };
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
@@ -220,5 +278,12 @@ export function definedLegendItems(
   closeItem: LegendItem,
 ): readonly LegendItem[] {
   if (state.read.model.rows.length === 0) return [...tabItems, closeItem];
-  return [...tabItems, DEFINED_KEYS.select, DEFINED_KEYS.run, DEFINED_KEYS.export, closeItem];
+  return [
+    ...tabItems,
+    DEFINED_KEYS.select,
+    DEFINED_KEYS.run,
+    DEFINED_KEYS.export,
+    DEFINED_KEYS.pin,
+    closeItem,
+  ];
 }

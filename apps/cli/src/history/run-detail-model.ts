@@ -722,6 +722,12 @@ export interface RunDetailInput {
   readonly workflowSlug?: string;
   /** Node id → engine node type from the frozen snapshot, for a skipped node (it has no step row). */
   readonly nodeTypes?: ReadonlyMap<string, string>;
+  /**
+   * The run's terminal event sits in the terminal outbox and never became durable (`relavium status` names it `terminalHeld`): the run
+   * row still says `running`, but the run is over. It is treated as FINISHED for every absence sentence, so nothing on the page says
+   * `in progress` for a run that is not in progress. The caller reads the outbox; this model reads nothing.
+   */
+  readonly terminalHeld?: boolean;
 }
 
 export interface NodeRow {
@@ -896,6 +902,7 @@ export function spanMs(
 function runTokens(
   run: RunDetailRecord,
   events: readonly RunEvent[],
+  finished: boolean,
 ): { readonly input: number; readonly output: number; readonly text: string } {
   const settledRows = events.filter(
     (event): event is CostAttemptSettledEvent => event.type === 'cost:attempt_settled',
@@ -907,13 +914,14 @@ function runTokens(
   const totals = { input: run.totalInputTokens, output: run.totalOutputTokens };
   const unrecorded = totals.input === 0 && totals.output === 0;
   if (!unrecorded) return { ...totals, text: formatTokens(totals) };
-  return { ...totals, text: isFinishedRun(run.status) ? NOT_RECORDED : IN_PROGRESS };
+  return { ...totals, text: finished ? NOT_RECORDED : IN_PROGRESS };
 }
 
 /** Build the run detail page's model. See the module note for the cost and attempt rules. */
 export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const { run, steps, events } = input;
-  const runFinished = isFinishedRun(run.status);
+  // A run whose terminal is held in the outbox is over, whatever its row says: it must never read as in progress.
+  const runFinished = isFinishedRun(run.status) || input.terminalHeld === true;
   const logs = indexNodeEvents(events);
   const facts = foldUsageFacts(events);
   const stepsByNode = groupSteps(steps);
@@ -971,7 +979,7 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const firstFailed = rows.find((row) => row.status === 'failed');
   const durationMs = spanMs(run.startedAt, run.completedAt);
   const error = readStoredError(run.errorJson, run.errorByteLength);
-  const { text: tokensText, ...tokens } = runTokens(run, events);
+  const { text: tokensText, ...tokens } = runTokens(run, events, runFinished);
 
   return {
     header: {

@@ -24,8 +24,8 @@ import {
   sheetEntries,
 } from './permissions-sheet.js';
 import { usableColumns, type SheetLine } from './sheet-frame.js';
+import { HISTORY_UNREADABLE } from './tab-host-history.js';
 import {
-  PLACEHOLDER_NOTE,
   TABS,
   TAB_HOST_KEYS,
   TAB_HOST_ROWS,
@@ -135,24 +135,18 @@ describe('the tab registry', () => {
     expect(TABS.map((tab) => tab.title)).toEqual(['Defined', 'Active', 'History', 'Permissions']);
   });
 
-  it('draws one line that says so on the placeholder (History), and reads no port for it', () => {
-    for (const tab of ['history'] as const) {
-      const r = rig(snapshotOf(2), tab);
-      const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map(
-        (line) => line.text,
-      );
-      const title = TABS.find((entry) => entry.id === tab)?.title ?? '';
-      expect(text, tab).toContain(`${title} — ${PLACEHOLDER_NOTE}.`);
-      expect(PLACEHOLDER_NOTE).toBe('available in the next increment');
-      expect(r.state.sheet, 'nothing to withdraw on a placeholder').toBeUndefined();
-      expect(r.loads, 'the port is the Permissions tab’s').not.toHaveBeenCalled();
-    }
+  it('says History cannot be read when nothing feeds it, and reads no port for it', () => {
+    const r = rig(snapshotOf(2), 'history');
+    const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map((line) => line.text);
+    expect(text).toContain(HISTORY_UNREADABLE);
+    expect(text.join('\n')).not.toContain('available in the next increment');
+    expect(r.state.sheet, 'nothing to withdraw on History').toBeUndefined();
+    expect(r.loads, 'the port is the Permissions tab’s').not.toHaveBeenCalled();
   });
 
-  it('Active is not a placeholder: with nothing to read it from it says it cannot be read, and reads no port', () => {
+  it('Active, with nothing to read it from, says it cannot be read, and reads no port', () => {
     const r = rig(snapshotOf(2), 'active');
     const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map((line) => line.text);
-    expect(text.join('\n')).not.toContain(PLACEHOLDER_NOTE);
     expect(text).toContain('The active runs could not be read.');
     expect(r.state.sheet).toBeUndefined();
     expect(r.loads).not.toHaveBeenCalled();
@@ -268,7 +262,11 @@ describe('every key the legend names, pressed', () => {
       () => rig(snapshotOf(3)),
       '←/→ tab,Tab cycle,↑/↓ select,[d / Del] withdraw,Esc close',
     ],
-    ['a placeholder', () => rig(snapshotOf(3), 'history'), '←/→ tab,Tab cycle,Esc close'],
+    [
+      'an unreadable History tab',
+      () => rig(snapshotOf(3), 'history'),
+      '←/→ tab,Tab cycle,Esc close',
+    ],
     ['Permissions with nothing to select', () => rig(snapshotOf(0)), '←/→ tab,Tab cycle,Esc close'],
     ['Permissions while a withdrawal waits', asked, '[Enter] withdraw,Esc keep'],
   ] as const)(
@@ -318,7 +316,7 @@ describe('moving between tabs', () => {
     expect(r.state.tab).toBe('active');
   });
 
-  it('leaves the other tabs alone: a key that is not theirs does nothing on a placeholder', () => {
+  it('leaves the other tabs alone: a key that is not theirs does nothing on an unreadable tab', () => {
     const r = rig(snapshotOf(3), 'active');
     const before = r.state;
     for (const press of [
@@ -333,7 +331,7 @@ describe('moving between tabs', () => {
 });
 
 describe('Esc and Ctrl+C (ADR-0140 §1)', () => {
-  it('Esc closes a placeholder and an unarmed Permissions tab; the Esc ladder of the sheet drops the question first', () => {
+  it('Esc closes an unreadable tab and an unarmed Permissions tab; the Esc ladder of the sheet drops the question first', () => {
     expect(rig(snapshotOf(1), 'defined').press('', ESC).kind).toBe('close');
     expect(rig().press('', ESC).kind).toBe('close');
     const r = rig();
@@ -434,7 +432,7 @@ describe('Backspace on the Permissions tab (the maintainer’s ruling for this i
     expect(sheetOf(r.state).armed, 'typed first').toBe(false);
   });
 
-  it('does nothing on a placeholder, where there is no list to withdraw from and no level to go back from', () => {
+  it('does nothing on an unreadable tab, where there is no list to withdraw from and no level to go back from', () => {
     const r = rig(snapshotOf(3), 'history');
     const step = r.press('', { backspace: true });
     expect(step.kind).toBe('state');
@@ -453,7 +451,7 @@ describe('what a tab remembers', () => {
     expect(r.state.tab).toBe('history');
     expect(r.state.sheet, 'nothing of the list is held while it is away').toBeUndefined();
     expect(r.state.positions.permissions, 'but where it stood is').toBe(2);
-    expect(r.loads, 'and nothing was read for a placeholder').toHaveBeenCalledTimes(1);
+    expect(r.loads, 'and nothing was read for an unreadable tab').toHaveBeenCalledTimes(1);
     r.press('', { rightArrow: true });
     expect(r.loads, 'entered again: read again').toHaveBeenCalledTimes(2);
     expect(sheetOf(r.state).cursor).toBe(2);
@@ -498,7 +496,7 @@ describe('what a tab remembers', () => {
 });
 
 describe('a paste', () => {
-  it('drops a waiting question and withdraws nothing, and is the same state when nothing was waiting on a placeholder', () => {
+  it('drops a waiting question and withdraws nothing, and is the same state when nothing was waiting on a tab with no sheet', () => {
     const r = rig();
     r.advance(SHEET_SETTLE_MS + 100);
     r.press('d');

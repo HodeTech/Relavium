@@ -146,6 +146,8 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createActiveReader } from '../history/active-source.js';
+import { createHistorySource } from '../history/history-source.js';
+import { createRunDetailLoader } from '../history/run-detail-source.js';
 import { createChangeProbe, dataVersionOf } from '../history/change-probe.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
@@ -157,6 +159,7 @@ import { RunHost } from './run-host.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
+import { createPinPort } from './pin-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
 import { runExportCard } from '../render/tui/export-card.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
@@ -1887,6 +1890,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // The Defined tab (ADR-0140 §2, MVP-8 step 4): the very catalog `/run` offers, and the project's workflow pins, read every time the
       // tab is entered. The pins are keyed by the project's real path; the project is found afresh, as the catalog's is.
       const definedPins = createRunPinStore(opened.db);
+      // The directory a workflow pin is keyed by, found afresh for every read and every toggle (a `/init` in this Home is seen at once).
+      const workflowPinRoot = (): string => {
+        let configDir: string | undefined;
+        try {
+          configDir = findProjectConfigDir(deps.global.cwd, homeDir);
+        } catch {
+          configDir = undefined; // no project resolves safely: the pins of the working directory, which hold none
+        }
+        return commandGrantRoot(deps.global.cwd, configDir);
+      };
       const defined = createDefinedPort({
         catalog: launchCatalog,
         // The latest run of each workflow in this project, as the runs recorded it (the working directory, as `status` reads them).
@@ -1896,19 +1909,25 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               .loadLatestRunPerWorkflowInProject(deps.global.cwd)
               .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
           ),
-        pins: () => {
-          let configDir: string | undefined;
-          try {
-            configDir = findProjectConfigDir(deps.global.cwd, homeDir);
-          } catch {
-            configDir = undefined; // no project resolves safely: the pins of the working directory, which hold none
-          }
-          return definedPins.listPins({
-            kind: 'workflow',
-            projectRoot: commandGrantRoot(deps.global.cwd, configDir),
-          });
-        },
+        pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
       });
+      // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
+      // its project root and slug, a run under its full id); nothing is written until the key is pressed.
+      const pins = createPinPort({ store: definedPins, workflowRoot: workflowPinRoot, now });
+      // The History tab (ADR-0140 §2, MVP-8 step 4): finished runs a page at a time over the Home's own connection, the pinned runs, and one
+      // run's detail with its end-held state read from the terminal outbox. Nothing is read until the tab is entered.
+      const history = {
+        ...createHistorySource({
+          reader: runReader,
+          listRunPins: () => definedPins.listPins({ kind: 'run' }),
+          projectRoot: deps.global.cwd,
+          now,
+        }),
+        loadDetail: createRunDetailLoader({
+          reader: runReader,
+          listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+        }),
+      };
       // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
       controller = createHomeController({
@@ -1916,6 +1935,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         chordHistory,
         launchRun: (slug) => runLaunch.open(slug),
         defined,
+        history,
+        pins,
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
         active: {

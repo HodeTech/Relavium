@@ -40,10 +40,14 @@ import {
   withActiveNote,
   withActiveRead,
   withDefinedNote,
+  withHistoryLoad,
+  withHistoryLoadFailure,
   type TabHostState,
   type TabId,
   type TabMemory,
 } from './tab-host.js';
+import type { HistoryPort } from './tab-host-history.js';
+import type { PinPort } from './tab-host-pin.js';
 import type { DefinedPort } from './tab-host-workflows.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
@@ -488,6 +492,17 @@ export interface HomeControllerDeps {
    * workflows are not available.
    */
   readonly defined?: DefinedPort | undefined;
+  /**
+   * The History tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2): the finished runs a page at a time, the pinned runs, each run's cost read lazily, and one run's detail. Read when the tab is
+   * entered and as its keys ask; absent ⇒ the tab says it cannot be read.
+   */
+  readonly history?: HistoryPort | undefined;
+  /**
+   * What `p` pins and unpins through, on the Defined and the History tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §5). Absent ⇒ `p` says pinning is unavailable.
+   */
+  readonly pins?: PinPort | undefined;
   /**
    * The Defined tab's export card: prepare the export of one catalog workflow, show where it would be written, and write it only on a
    * Yes. It resolves with the sentence the tab shows; it holds the native action while the card is open. Absent ⇒ `x` says export is
@@ -1101,6 +1116,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       port: deps.permissions,
       defined: deps.defined,
       active: activeEntry(),
+      history: deps.history,
+      pins: deps.pins,
       now: interruptNow(),
     });
     // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
@@ -1337,6 +1354,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       port: deps.permissions,
       defined: deps.defined,
       active: activeEntry(),
+      history: deps.history,
+      pins: deps.pins,
       canArm:
         terminal === undefined ||
         sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
@@ -1354,6 +1373,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
     else if (step.kind === 'open-view') openActiveView(step.runId);
     else if (step.kind === 'open-gate') openGateCard(step.runId, 'landing', 'tab-host');
+    // A request of the History tab: its detail waits on the load (the tab says so), which lands only if the person is still waiting for it.
+    else if (step.kind === 'open-detail') openHistoryDetail(step.runId);
   };
 
   // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
@@ -1753,6 +1774,40 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const openActiveView = (runId: string): void => {
     if (!openScreen('run-view', { runId, store: deps.runStore?.(runId), from: 'tab-host' }))
       noteOnActiveTab('The run view could not be opened now.');
+  };
+
+  /**
+   * `Enter` on a History row: the run's detail, loaded asynchronously (the terminal outbox is a file). The result is handed to the tab only
+   * if the tab host is still in front and still waiting for this run; a fault that is not about the run's rows leaves the list, with a
+   * sentence, instead of ending the Home.
+   */
+  const openHistoryDetail = (runId: string): void => {
+    const history = deps.history;
+    if (history === undefined) return;
+    const land = (change: (host: TabHostState) => TabHostState): void => {
+      const screen = state.screen;
+      if (exiting || screen?.kind !== 'tab-host') return;
+      const host = change(screen.host);
+      if (host === screen.host) return;
+      tabMemory = tabHostMemory(host);
+      set({ screen: { kind: 'tab-host', host } });
+    };
+    void history.loadDetail(runId).then(
+      (load) => {
+        try {
+          land((host) => withHistoryLoad(host, runId, load));
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      () => {
+        try {
+          land((host) => withHistoryLoadFailure(host, runId));
+        } catch (error) {
+          failHome(error);
+        }
+      },
+    );
   };
 
   const openResume = (selectedId?: string): void => {
