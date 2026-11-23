@@ -3,9 +3,15 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { RunDetailRecord, StepDetailRecord } from '@relavium/db';
+import type { RunEvent } from '@relavium/shared';
+
 import { classifyActiveRuns } from '../../history/active-model.js';
 import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
 import { buildHistoryRows } from '../../history/history-model.js';
+import { buildNodeDetailModel } from '../../history/node-detail-model.js';
+import { buildRunDetailModel } from '../../history/run-detail-model.js';
+import type { RunDetailRead } from '../../history/run-detail-source.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type {
   PermissionsPort,
@@ -17,6 +23,7 @@ import { RootApp } from './home-app.js';
 import { createHomeController } from './home-controller.js';
 import { initialPermissionsSheetState, type SheetMessage } from './permissions-sheet.js';
 import { enterTab, freshTabMemory, type TabHostState, type TabId } from './tab-host.js';
+import { openNodeTab } from './tab-host-node.js';
 import { TabHostView } from './tab-host-view.js';
 
 /**
@@ -337,6 +344,126 @@ describe('TabHostView on the Active tab', () => {
     expect(lineWith(drawn, 'gaterun1')).toContain(DIM);
     expect(lineWith(drawn, 'stallrun')).toContain(YELLOW);
     expect(lineWith(drawn, 'heldrun1')).toContain(YELLOW);
+  });
+});
+
+/** The History tab with the node page of a failed node open over its run's detail: an error, a masked output, a tool trace, a timeline. */
+const nodeHost = (): TabHostState => {
+  const at = '2026-11-23T10:00:00.000Z';
+  const base = { runId: 'cccccccc-0000', timestamp: at };
+  const run: RunDetailRecord = {
+    id: 'cccccccc-0000',
+    workflowId: 'wf',
+    status: 'failed',
+    executionMode: 'local',
+    triggerType: 'manual',
+    startedAt: at,
+    completedAt: at,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostMicrocents: 0,
+    createdAt: at,
+    updatedAt: at,
+    outputJson: null,
+    outputByteLength: null,
+    errorJson: null,
+    errorByteLength: null,
+  };
+  const detail: StepDetailRecord = {
+    nodeId: 'review',
+    nodeType: 'agent',
+    status: 'failed',
+    attemptNumber: 1,
+    durationMs: 1200,
+    costMicrocents: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    outputJson: JSON.stringify({ note: `key sk-ant-api03-${'A'.repeat(40)}` }),
+    outputByteLength: 1,
+    errorJson: JSON.stringify({ code: 'tool_failed', message: 'The review found a problem.' }),
+    errorByteLength: 1,
+  };
+  const events: RunEvent[] = [
+    { type: 'node:started', ...base, sequenceNumber: 1, nodeId: 'review', nodeType: 'agent' },
+    {
+      type: 'node:failed',
+      ...base,
+      sequenceNumber: 2,
+      nodeId: 'review',
+      error: { code: 'tool_failed', message: 'The review found a problem.', retryable: false },
+      toolActivity: [{ toolId: 'read_file', ok: true, resultRecorded: true, durationMs: 12 }],
+    },
+  ];
+  const model = buildRunDetailModel({ run, steps: [detail], events, workflowSlug: 'deploy' });
+  const row = model.rows[0];
+  if (row === undefined) throw new Error('the run has a node');
+  const read: RunDetailRead = {
+    runId: run.id,
+    status: 'failed',
+    model,
+    terminalHeld: false,
+    heldUnread: false,
+    events: [],
+    eventsComplete: true,
+    skippedRows: 0,
+  };
+  const node = openNodeTab(run.id, row, {
+    kind: 'ready',
+    detail: {
+      runId: run.id,
+      nodeId: 'review',
+      model: buildNodeDetailModel({ detail, attempts: [detail], events, runFinished: true }),
+      position: { index: 3, of: 4 },
+      authoredType: 'agent',
+      attemptNumbers: [1],
+      eventsComplete: true,
+    },
+  });
+  const list = historyHost();
+  if (list.history === undefined) throw new Error('the History tab was read');
+  return {
+    ...list,
+    history: { ...list.history, detail: { runId: run.id, phase: 'ready', read, cursor: 0, node } },
+  };
+};
+
+describe('TabHostView on the node page', () => {
+  it('draws the node with a glyph and a word, its order, error and masked output, in 23 rows, with no colour at all when colour is off', () => {
+    const styled = frame(nodeHost(), false);
+    expect(styled).not.toMatch(ANY_COLOUR);
+    const lines = plain(styled).split('\n');
+    expect(lines.length).toBeLessThanOrEqual(23);
+    expect(lines[0]).toContain('▸ History');
+    const drawn = lines.join('\n');
+    for (const word of [
+      '✗ failed  review',
+      'Order in the workflow: 3 of 4  ·  type agent',
+      'Error (attempt 1)',
+      'The review found a problem.',
+      'read_file',
+      'ok in 12ms',
+      'masked',
+    ])
+      expect(drawn, word).toContain(word);
+    expect(drawn).not.toContain('sk-ant-api03');
+    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected line').toBe(1);
+    expect(lines.at(-1)).toBe('←/→ tab · ↑/↓ scroll · [n] first failed · Esc back');
+  });
+
+  it('draws the heading bold, the error in red and the key of the action in its own style when colour is on', () => {
+    const drawn = frame(nodeHost(), true);
+    expect(lineWith(drawn, '✗ failed  review')).toContain(CYAN);
+    expect(lineWith(drawn, 'tool_failed')).toContain(RED);
+    expect(lineWith(drawn, '[n]'), 'the legend: the keys apart from the words').toContain(
+      `${BOLD}[n]`,
+    );
+  });
+
+  it('is the enlarge line below 80×24, and the page again when the terminal is back', () => {
+    expect(text(nodeHost(), 79, 24)).toContain('Enlarge the terminal');
+    expect(text(nodeHost(), 80, 23)).toContain('Enlarge the terminal');
+    expect(text(nodeHost(), 80, 24)).toContain('Order in the workflow');
   });
 });
 

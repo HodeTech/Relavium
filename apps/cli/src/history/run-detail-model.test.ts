@@ -11,6 +11,7 @@ import {
   NOT_RECORDED,
   NOT_RECORDED_FOR_ATTEMPT,
   NOT_RECORDED_OLDER_LOG,
+  NOT_YET_RUN,
   NO_RESULT_RECORDED,
   absenceText,
   boundedIdentifier,
@@ -734,7 +735,7 @@ describe('an absent figure says why it is absent', () => {
       ['stopped', true, DID_NOT_FINISH],
       ['running', false, IN_PROGRESS],
       ['pending', true, DID_NOT_RUN],
-      ['pending', false, IN_PROGRESS],
+      ['pending', false, NOT_YET_RUN],
       ['completed', true, NOT_RECORDED],
       ['completed', false, NOT_RECORDED],
       ['failed', true, NOT_RECORDED],
@@ -750,6 +751,7 @@ describe('an absent figure says why it is absent', () => {
     expect(DID_NOT_RUN).toBe('did not run');
     expect(DID_NOT_FINISH).toBe('did not finish');
     expect(IN_PROGRESS).toBe('in progress');
+    expect(NOT_YET_RUN).toBe('not yet run');
   });
 });
 
@@ -1128,6 +1130,45 @@ describe('execution order', () => {
       workflowNodeOrder: ['z', 'y'],
     });
     expect(model.rows.map((row) => row.nodeId)).toEqual(['w', 'z', 'y', 'x']);
+  });
+});
+
+describe('a node of the frozen workflow with no record', () => {
+  it('is listed as pending after the nodes that ran, in the authored order, and says `not yet run` while the run is going', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'running' }),
+      steps: [stepRow('b', { status: 'running' })],
+      events: [started(1, 'b')],
+      workflowNodeOrder: ['a', 'b', 'c', 'd'],
+      nodeTypes: new Map([
+        ['c', 'agent'],
+        ['d', 'transform'],
+      ]),
+    });
+    expect(model.rows.map((row) => row.nodeId)).toEqual(['b', 'a', 'c', 'd']);
+    expect(rowOf(model.rows, 'c')).toMatchObject({
+      status: 'pending',
+      glyph: '○',
+      nodeType: 'agent',
+      attemptCount: 0,
+      tokens: { source: 'none', text: NOT_YET_RUN },
+      cost: { source: 'none', text: NOT_YET_RUN },
+      toolActivity: { recorded: false, text: NOT_YET_RUN },
+    });
+  });
+
+  it('says `did not run` once the run has ended, and never drops a node the snapshot does not name', () => {
+    const model = buildRunDetailModel({
+      run: runRecord({ status: 'failed' }),
+      steps: [stepRow('a', { status: 'failed' }), stepRow('extra')],
+      events: [started(1, 'a'), started(2, 'extra')],
+      workflowNodeOrder: ['a', 'b'],
+    });
+    expect(model.rows.map((row) => row.nodeId)).toEqual(['a', 'extra', 'b']);
+    expect(rowOf(model.rows, 'b')).toMatchObject({
+      status: 'pending',
+      tokens: { source: 'none', text: DID_NOT_RUN },
+    });
   });
 });
 

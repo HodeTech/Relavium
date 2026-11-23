@@ -532,7 +532,12 @@ describe('the 80×24 budget', () => {
       kind: 'ready',
       detail: detailRead(),
     });
-    expect(legendLine()).toBe('←/→ tab · ↑/↓ scroll · Esc back');
+    expect(legendLine()).toBe(
+      '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back',
+    );
+    expect(displayWidth(legendLine()), 'the detail legend fits 80 columns').toBeLessThanOrEqual(
+      usableColumns(80),
+    );
   });
 
   it('draws the detail of a very long log in the same rows, and the enlarge line below the floor', () => {

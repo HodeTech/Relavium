@@ -4,6 +4,7 @@ import type { RunEvent, RunStatus } from '@relavium/shared';
 
 import { readPerRunOrDegrade } from './per-run-read.js';
 import { buildRunDetailModel, isFinishedRun, type RunDetailModel } from './run-detail-model.js';
+import { readSnapshotNodes } from './snapshot-nodes.js';
 
 /**
  * The read behind the History tab's run detail ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -19,6 +20,10 @@ import { buildRunDetailModel, isFinishedRun, type RunDetailModel } from './run-d
  *   as that and says so ({@link RunDetailRead.eventsComplete}), so the figures on the page are never presented as whole when they are not.
  * - **A run whose terminal is held is not in progress.** The terminal outbox is a file, read by {@link createRunDetailLoader}; a run that
  *   is not finished and has its end there is built as finished (`terminalHeld`, see the model), and the page says `held`.
+ * - **The node order is the workflow's.** The run's frozen snapshot, when the caller read it, gives the authored order and the type of
+ *   each node: the nodes that ran keep the order they ran in, and a node the workflow names that has no record at all is listed after them,
+ *   pending (see `RunDetailInput.workflowNodeOrder`). A snapshot that cannot be read leaves the table in the order the run ran, and says nothing
+ *   of the workflow.
  * - **Damage is per run.** A damaged row or a row of a newer type that the strict model cannot use ends in `unreadable` for THIS run (the
  *   per-run isolation of `readPerRunOrDegrade`); any other fault (a closed database) propagates.
  */
@@ -115,6 +120,8 @@ export interface ReadRunDetailInput {
   readonly terminalHeld: boolean;
   /** The outbox could not be read. */
   readonly heldUnread?: boolean;
+  /** The run's frozen workflow snapshot as stored (`runs.workflow_definition_snapshot`); absent when it was not read. */
+  readonly snapshotJson?: string | undefined;
   /** Test seams: the size of a page and the most pages read. */
   readonly eventPage?: number;
   readonly maxPages?: number;
@@ -146,11 +153,18 @@ export function readRunDetail(input: ReadRunDetailInput): RunDetailLoad {
   const finished = isFinishedRun(run.status);
   const terminalHeld = input.terminalHeld && !finished;
   const workflowSlug = reader.loadWorkflowSlugs([run.workflowId]).get(run.workflowId);
+  const nodes = readSnapshotNodes(input.snapshotJson);
   const model = buildRunDetailModel({
     run,
     steps,
     events: log.events,
     ...(workflowSlug === undefined ? {} : { workflowSlug }),
+    ...(nodes === undefined
+      ? {}
+      : {
+          workflowNodeOrder: nodes.map((node) => node.id),
+          nodeTypes: new Map(nodes.map((node): [string, string] => [node.id, node.type])),
+        }),
     terminalHeld,
   });
   return {
@@ -172,6 +186,11 @@ export interface RunDetailLoaderDeps {
   readonly reader: RunDetailReader;
   /** The events the terminal outbox holds (`createFileTerminalOutbox(...).list`). Rejects when the file cannot be read. */
   readonly listHeld: () => Promise<readonly { readonly runId?: string | undefined }[]>;
+  /**
+   * The run's frozen workflow snapshot text (`loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot`); `undefined` for a run with none.
+   * It may throw: a snapshot that cannot be read leaves the node order as the run ran, it never fails the page.
+   */
+  readonly loadSnapshot?: ((runId: string) => string | undefined) | undefined;
 }
 
 /**
@@ -190,6 +209,12 @@ export function createRunDetailLoader(
     } catch {
       heldUnread = true;
     }
-    return readRunDetail({ reader: deps.reader, runId, terminalHeld, heldUnread });
+    let snapshotJson: string | undefined;
+    try {
+      snapshotJson = deps.loadSnapshot?.(runId);
+    } catch {
+      snapshotJson = undefined;
+    }
+    return readRunDetail({ reader: deps.reader, runId, terminalHeld, heldUnread, snapshotJson });
   };
 }

@@ -14,7 +14,9 @@ import type {
   HistorySource,
 } from '../../history/history-source.js';
 import { formatDuration } from './format.js';
-import { scrubbedBounded, type NodeRow } from '../../history/run-detail-model.js';
+import { SKIPPED } from '../absence.js';
+import { scrubbedBounded, shortRunId, type NodeRow } from '../../history/run-detail-model.js';
+import type { NodeDetailLoad } from '../../history/node-detail-source.js';
 import type { DetailEvent, RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
 import type { LegendItem } from './legend.js';
@@ -29,12 +31,25 @@ import {
 } from './sheet-frame.js';
 import { HELD_GLYPH } from './tab-host-active.js';
 import {
+  NODE_FAULT,
+  NODE_KEYS,
+  NODE_NOT_A_NODE,
+  NODE_NOT_HERE,
+  foldNodeKey,
+  nodeBody,
+  nodeLegendItems,
+  openNodeTab,
+  type NodeLoader,
+  type NodeTabState,
+} from './tab-host-node.js';
+import {
   PIN_KEY,
   PIN_UNAVAILABLE,
   toggleRunPin,
   type PinPort,
   type PinToggle,
 } from './tab-host-pin.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The History tab of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -54,7 +69,10 @@ import {
  * - **The detail.** `Enter` asks the host to load the run (the terminal outbox is a file, so the load is asynchronous; the tab says
  *   `Reading the run…` until the host hands the result in, {@link withHistoryDetail}). The detail is a list of lines: the header, the
  *   node table, then the events. `↑`/`↓` move, `Esc` and `Backspace` go back to the list on the row it came from. A run whose end is
- *   held in the outbox says `held`, never `in progress`.
+ *   held in the outbox says `held`, never `in progress`. The table lists the nodes that ran in the order they ran, then the nodes of the run's
+ *   frozen workflow that have no record (`history/run-detail-source.ts`). `Enter` on a node row opens the node page (`tab-host-node.ts`, read
+ *   now through {@link HistoryPort.loadNode}); `n` puts the cursor on the first node whose LAST attempt failed; `p` pins or unpins the run by
+ *   the list's own toggle and reads the list again behind the detail; a sentence a key leaves is dropped by the next.
  * - **Every state has a glyph and a word.** `✓ completed`, `✗ failed`, `⊘ cancelled`, `◐ running`, `◇ held`, `? unreadable`,
  *   `? missing`, `★ pinned`; colour only repeats what the words say.
  * - **Every string from the history file is sanitized** (labels, ids, project roots, node ids, error text) before it is drawn.
@@ -64,6 +82,11 @@ import {
 export interface HistoryPort extends HistorySource {
   /** One run's detail, with its end-held state read from the outbox. Resolves; a fault that is not about the run's rows rejects. */
   readonly loadDetail: (runId: string) => Promise<RunDetailLoad>;
+  /**
+   * One node of a run, for the node page: synchronous (every read is SQLite on the Home's own connection), and absent in a session that cannot
+   * read one, which the page then says. A fault that is not about the node's rows throws; the page turns that into a sentence.
+   */
+  readonly loadNode?: NodeLoader | undefined;
 }
 
 /** What the tab needs beyond its own state to handle a key: the port, and the pin store when there is one. */
@@ -86,6 +109,10 @@ export interface HistoryDetailState {
   readonly phase: 'loading' | 'ready' | 'missing' | 'unreadable';
   readonly read?: RunDetailRead | undefined;
   readonly cursor: number;
+  /** One sentence the last key left on the detail; the next key drops it. */
+  readonly message?: string | undefined;
+  /** The node page open over this detail (`Enter` on a node row); `Esc` returns to the detail on the line it left. */
+  readonly node?: NodeTabState | undefined;
 }
 
 /** The History tab as it stands. */
@@ -119,6 +146,8 @@ export const HISTORY_KEYS = {
   narrow: { keys: '[a]', verb: 'here' },
   filter: { keys: '[f]', verb: 'filter' },
   scroll: { keys: '↑/↓', verb: 'scroll' },
+  /** On a run's detail: the first node whose last attempt failed. The node page's own `n` is {@link NODE_KEYS}. */
+  firstFailed: NODE_KEYS.firstFailed,
   back: { keys: 'Esc', verb: 'back' },
 } as const satisfies Readonly<Record<string, LegendItem>>;
 
@@ -130,6 +159,7 @@ export const HISTORY_DETAIL_UNREADABLE =
   'The event log of this run could not be read. relavium logs shows what is wrong with it.';
 export const HISTORY_DETAIL_FAULT = 'The run could not be loaded just now. Enter tries again.';
 export const HISTORY_REREAD_FAILED = 'The history could not be read again.';
+export const HISTORY_NO_FAILED_NODE = 'No node of this run ended failed.';
 export const HISTORY_MISSING_RUN =
   'That pinned run is not in the history any more. p removes the pin.';
 export const HISTORY_HELD_NOTE =
@@ -289,20 +319,106 @@ export function failHistoryDetail(state: HistoryTabState, runId: string): Histor
 
 /** How many lines the detail has: the head, then the events with their heading. */
 function detailLineCount(read: RunDetailRead): number {
-  return detailHead(read).length + (read.events.length > 0 ? 1 + read.events.length : 0);
+  return detailHead(read, false).length + (read.events.length > 0 ? 1 + read.events.length : 0);
+}
+
+/** The run is pinned, as the list the detail was opened from says (the list is read again after every pin). */
+function isRunPinned(read: HistoryRead | undefined, runId: string): boolean {
+  return entriesOf(read).some(
+    (entry) => entry.kind === 'run' && entry.row.id === runId && entry.row.pinned,
+  );
+}
+
+/** `state` with a sentence on the detail, which the next key drops. */
+function withDetailMessage(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  message: string,
+): HistoryTabState {
+  return { ...state, detail: { ...detail, message } };
+}
+
+/** The node row the detail's cursor is on; `undefined` on any other line. */
+function nodeRowAt(read: RunDetailRead, cursor: number): NodeRow | undefined {
+  const nodeId = detailHead(read, false)[cursor]?.nodeId;
+  return nodeId === undefined ? undefined : read.model.rows.find((row) => row.nodeId === nodeId);
+}
+
+/** `n` on the detail: the cursor on the first node whose LAST attempt failed (the model's `firstFailedNodeId`). */
+function jumpToFirstFailed(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  read: RunDetailRead,
+): HistoryTabState {
+  const nodeId = read.model.firstFailedNodeId;
+  const at =
+    nodeId === undefined ? -1 : detailHead(read, false).findIndex((line) => line.nodeId === nodeId);
+  if (at < 0) return withDetailMessage(state, detail, HISTORY_NO_FAILED_NODE);
+  return { ...state, detail: { ...detail, cursor: at } };
+}
+
+/** `Enter` on the detail: the node page over the node row the cursor is on, read now (the read is synchronous). */
+function openNode(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  read: RunDetailRead,
+  context: HistoryContext,
+): HistoryTabState {
+  const row = nodeRowAt(read, detail.cursor);
+  if (row === undefined) return withDetailMessage(state, detail, NODE_NOT_A_NODE);
+  const loadNode = context.history.loadNode;
+  if (loadNode === undefined) return withDetailMessage(state, detail, NODE_NOT_HERE);
+  let load: NodeDetailLoad;
+  try {
+    load = loadNode({ runId: detail.runId, nodeId: row.nodeId, terminalHeld: read.terminalHeld });
+  } catch {
+    return withDetailMessage(state, detail, NODE_FAULT);
+  }
+  return { ...state, detail: { ...detail, node: openNodeTab(detail.runId, row, load) } };
+}
+
+/** One key into the node page over the detail: the page's own, and `Esc` back to the detail on the line it left. */
+function foldNodeStep(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  node: NodeTabState,
+  input: string,
+  key: ChatKey,
+  context: HistoryContext,
+): HistoryStep {
+  const step = foldNodeKey(node, input, key, {
+    loadNode: context.history.loadNode,
+    terminalHeld: detail.read?.terminalHeld === true,
+  });
+  if (step.kind === 'back')
+    return { kind: 'state', state: { ...state, detail: { ...detail, node: undefined } } };
+  return step.state === node
+    ? { kind: 'state', state }
+    : { kind: 'state', state: { ...state, detail: { ...detail, node: step.state } } };
 }
 
 function foldDetailKey(
   state: HistoryTabState,
   detail: HistoryDetailState,
+  input: string,
   key: ChatKey,
+  context: HistoryContext,
 ): HistoryStep {
   const stay: HistoryStep = { kind: 'state', state };
   if (key.ctrl === true || key.meta === true) return stay;
+  if (detail.node !== undefined)
+    return foldNodeStep(state, detail, detail.node, input, key, context);
   if (key.escape === true || key.backspace === true)
     return { kind: 'state', state: { ...state, detail: undefined } };
-  if (detail.phase !== 'ready' || detail.read === undefined) return stay;
-  const last = detailLineCount(detail.read) - 1;
+  const read = detail.read;
+  if (detail.phase !== 'ready' || read === undefined) return stay;
+  const cleared: HistoryDetailState =
+    detail.message === undefined ? detail : { ...detail, message: undefined };
+  const held: HistoryTabState = cleared === detail ? state : { ...state, detail: cleared };
+  if (input === 'p') return { kind: 'state', state: pinDetail(held, cleared, context) };
+  if (input === 'n') return { kind: 'state', state: jumpToFirstFailed(held, cleared, read) };
+  if (key.return === true) return { kind: 'state', state: openNode(held, cleared, read, context) };
+  const last = detailLineCount(read) - 1;
   let to = detail.cursor;
   if (key.upArrow === true) to -= 1;
   else if (key.downArrow === true) to += 1;
@@ -310,11 +426,11 @@ function foldDetailKey(
   else if (key.pageDown === true) to += HISTORY_PAGE_STEP;
   else if (key.home === true) to = 0;
   else if (key.end === true) to = last;
-  else return stay;
+  else return { kind: 'state', state: held };
   to = clamp(to, last);
-  return to === detail.cursor
-    ? stay
-    : { kind: 'state', state: { ...state, detail: { ...detail, cursor: to } } };
+  return to === cleared.cursor
+    ? { kind: 'state', state: held }
+    : { kind: 'state', state: { ...state, detail: { ...cleared, cursor: to } } };
 }
 
 /**
@@ -372,6 +488,40 @@ function pinSelected(
   );
   return withHistoryMessage(
     again ?? state,
+    again === undefined ? `${toggled.message} ${HISTORY_REREAD_FAILED}` : toggled.message,
+  );
+}
+
+/**
+ * `p` on a run's detail: the same pin toggle as on its row, under the run's canonical key. The list the detail was opened from is read again, so
+ * its pinned section and its row's mark are the store's, and the cursor stays on the run.
+ */
+function pinDetail(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  context: HistoryContext,
+): HistoryTabState {
+  if (context.pins === undefined) return withDetailMessage(state, detail, PIN_UNAVAILABLE);
+  const list = state.read;
+  const toggled: PinToggle = toggleRunPin(context.pins, {
+    label: shortRunId(detail.runId),
+    runId: detail.runId,
+    pinned: isRunPinned(list, detail.runId),
+    rowid: undefined,
+  });
+  // The cap changed nothing, so there is nothing to read again.
+  if (toggled.outcome === 'full' || list === undefined)
+    return withDetailMessage(state, detail, toggled.message);
+  const again = reread(
+    state,
+    context.history,
+    { ...list.query },
+    [`row:${detail.runId}`, `pin:${detail.runId}`],
+    state.cursor,
+  );
+  return withDetailMessage(
+    again ?? state,
+    detail,
     again === undefined ? `${toggled.message} ${HISTORY_REREAD_FAILED}` : toggled.message,
   );
 }
@@ -464,7 +614,7 @@ export function foldHistoryKey(
   key: ChatKey,
   context: HistoryContext,
 ): HistoryStep {
-  if (state.detail !== undefined) return foldDetailKey(state, state.detail, key);
+  if (state.detail !== undefined) return foldDetailKey(state, state.detail, input, key, context);
   return foldListKey(state, input, key, context);
 }
 
@@ -636,6 +786,13 @@ interface DetailLine {
   readonly kind: SheetLineKind;
   readonly left: string;
   readonly right?: string;
+  /**
+   * What a row says after its label, most important first. The draw keeps as many of them as fit beside the label, so a long figure (a
+   * qualified cost) costs the row that figure and never the label it describes; a line with `right` set is drawn as it is.
+   */
+  readonly parts?: readonly string[];
+  /** The raw id of the node a line of the table stands for: what `Enter` opens and `n` looks for. Never drawn. */
+  readonly nodeId?: string;
 }
 
 const nodeAttempts = (row: NodeRow): string =>
@@ -643,17 +800,24 @@ const nodeAttempts = (row: NodeRow): string =>
 
 function nodeLine(row: NodeRow): DetailLine {
   const left = `  ${row.glyph} ${row.status.padEnd(WORD_WIDTH)} ${row.label}`;
-  const reason = row.skippedReason === undefined ? '' : `skipped: ${row.skippedReason}`;
-  const right = [
+  const reason = row.skippedReason === undefined ? '' : `${SKIPPED}: ${row.skippedReason}`;
+  const parts = [
     nodeAttempts(row),
     row.durationMs === undefined ? '' : formatDuration(row.durationMs),
     reason,
     row.tokens.text,
     row.cost.text,
-  ]
-    .filter((part) => part !== '')
-    .join('  ');
-  return { kind: 'row', left, right };
+  ].filter((part) => part !== '');
+  return { kind: 'row', left, parts, nodeId: row.nodeId };
+}
+
+/** The most of `parts` (in order, two spaces apart) that fits beside `left` in `width` columns; empty when not even the first does. */
+function fitParts(left: string, parts: readonly string[], width: number): string {
+  for (let count = parts.length; count > 0; count -= 1) {
+    const right = parts.slice(0, count).join('  ');
+    if (displayWidth(left) + 2 + displayWidth(right) <= width) return right;
+  }
+  return '';
 }
 
 /** The word and the glyph of the run in the header: `held` for a run whose end is in the outbox, else its status. */
@@ -663,12 +827,18 @@ function headerState(read: RunDetailRead): { glyph: string; word: string } {
     : { glyph: RUN_STATUS_GLYPH[read.status], word: read.status };
 }
 
-/** The detail's lines before the events: the header, its notes, the node table. Width-independent; the draw clips. */
-function detailHead(read: RunDetailRead): readonly DetailLine[] {
+/**
+ * The detail's lines before the events: the header, its notes, the node table. Width-independent; the draw clips. `pinned` only adds the
+ * `★ pinned` mark to the header, so the lines a key counts are the same whether or not the run is pinned.
+ */
+function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[] {
   const { header, rows, unattributedRow } = read.model;
   const { glyph, word } = headerState(read);
   const lines: DetailLine[] = [
-    { kind: 'heading', left: `${glyph} ${word}  ${header.workflow}  ${header.shortId}` },
+    {
+      kind: 'heading',
+      left: `${glyph} ${word}  ${header.workflow}  ${header.shortId}${pinned ? '  ★ pinned' : ''}`,
+    },
   ];
   const duration =
     header.durationMs !== undefined
@@ -714,14 +884,20 @@ function eventLine(event: DetailEvent): DetailLine {
   return { kind: 'row', left: `  #${String(event.seq)}  ${event.type}${node}` };
 }
 
-function detailBody(detail: HistoryDetailState, width: number, room: number): readonly SheetLine[] {
+function detailBody(
+  state: HistoryTabState,
+  detail: HistoryDetailState,
+  width: number,
+  room: number,
+): readonly SheetLine[] {
   if (detail.phase === 'loading') return [{ kind: 'text', text: HISTORY_LOADING }];
   if (detail.phase === 'missing')
     return [{ kind: 'notice', text: clipLine(HISTORY_DETAIL_MISSING, width) }];
   const read = detail.read;
   if (detail.phase === 'unreadable' || read === undefined)
     return [{ kind: 'failed', text: clipLine(HISTORY_DETAIL_UNREADABLE, width) }];
-  const head = detailHead(read);
+  if (detail.node !== undefined) return nodeBody(detail.node, width, room);
+  const head = detailHead(read, isRunPinned(state.read, detail.runId));
   const total = detailLineCount(read);
   const lineAt = (index: number): DetailLine => {
     const inHead = head[index];
@@ -741,17 +917,18 @@ function detailBody(detail: HistoryDetailState, width: number, room: number): re
     const line = lineAt(index);
     const selected = index === detail.cursor;
     const lead = selected ? POINTER : INDENT;
-    const text = flushRow(`${lead}${line.left}`, line.right ?? '', width);
-    lines.push({ kind: selected ? 'selected' : line.kind, text });
+    const left = `${lead}${line.left}`;
+    const right = line.parts === undefined ? (line.right ?? '') : fitParts(left, line.parts, width);
+    lines.push({ kind: selected ? 'selected' : line.kind, text: flushRow(left, right, width) });
   }
   if (start > 0 && lines.length > 0)
     lines[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
   if (end < total && lines.length > 0)
     lines[lines.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
-  const footer: SheetLine = {
-    kind: 'hint',
-    text: clipLine('Read-only: a run is never changed from here.', width),
-  };
+  const footer: SheetLine =
+    detail.message === undefined
+      ? { kind: 'hint', text: clipLine('Read-only: a run is never changed from here.', width) }
+      : { kind: 'notice', text: clipLine(detail.message, width) };
   return [...lines, footer];
 }
 
@@ -762,7 +939,7 @@ export function historyBody(
   room: number,
 ): readonly SheetLine[] {
   if (state.phase === 'unreadable') return [{ kind: 'failed', text: HISTORY_UNREADABLE }];
-  if (state.detail !== undefined) return detailBody(state.detail, width, room);
+  if (state.detail !== undefined) return detailBody(state, state.detail, width, room);
   return listBody(state, width, room);
 }
 
@@ -777,7 +954,19 @@ export function historyLegendItems(
 ): readonly LegendItem[] {
   const [tabItem] = tabItems;
   if (state.phase !== 'ready' || tabItem === undefined) return [...tabItems, closeItem];
-  if (state.detail !== undefined) return [tabItem, HISTORY_KEYS.scroll, HISTORY_KEYS.back];
+  if (state.detail?.node !== undefined) return nodeLegendItems(state.detail.node, tabItem);
+  // A detail that is still loading, missing or unreadable answers only to scrolling and the way back.
+  if (state.detail !== undefined && state.detail.phase !== 'ready')
+    return [tabItem, HISTORY_KEYS.scroll, HISTORY_KEYS.back];
+  if (state.detail !== undefined)
+    return [
+      tabItem,
+      HISTORY_KEYS.scroll,
+      HISTORY_KEYS.open,
+      HISTORY_KEYS.firstFailed,
+      HISTORY_KEYS.pin,
+      HISTORY_KEYS.back,
+    ];
   const scope = state.read?.query.scope === 'all' ? HISTORY_KEYS.narrow : HISTORY_KEYS.widen;
   if (state.read === undefined || state.read.pinned.length + state.read.rows.length === 0)
     return [tabItem, scope, HISTORY_KEYS.filter, closeItem];

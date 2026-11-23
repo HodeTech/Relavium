@@ -13,6 +13,20 @@ import {
   type UsageCoverage,
 } from '@relavium/shared';
 
+import {
+  DID_NOT_FINISH,
+  DID_NOT_RUN,
+  IN_PROGRESS,
+  NOT_RECORDED,
+  NOT_RECORDED_FOR_ATTEMPT,
+  NOT_RECORDED_OLDER_LOG,
+  NOT_YET_RUN,
+  NO_RESULT_RECORDED,
+  NO_TOOL_CALLS,
+  TOOL_OUTCOME_TEMPLATES,
+  toolFailedAfter,
+  toolOkIn,
+} from '../render/absence.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   formatCostShort,
@@ -48,7 +62,8 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  *
  * **An absent figure says why it is absent** ({@link absenceText}). A skipped row says `did not run` for its tokens,
  * cost and tool trace; a row left `stopped` (its last attempt has no terminal event and the run has finished) says
- * `did not finish`; a row still running in a run that has not finished says `in progress`. Only a completed or
+ * `did not finish`; a row still running in a run that has not finished says `in progress`; a node of the frozen workflow
+ * that has no record in such a run says `not yet run`. Only a completed or
  * failed row whose data is genuinely absent (an older log, or no settled row and no step figure) says
  * `not recorded` — anywhere else that sentence would read as data that was lost.
  *
@@ -60,46 +75,30 @@ import { UNVERIFIED_USAGE } from './usage-coverage.js';
  * it still counts toward the node's total and belongs to no attempt.
  */
 
+// The sentences themselves live in `render/absence.ts` (the one module the reference's "Words for what is absent" is compared with);
+// they are re-exported here so every importer of the model keeps its path.
+export {
+  DID_NOT_FINISH,
+  DID_NOT_RUN,
+  IN_PROGRESS,
+  NOT_RECORDED,
+  NOT_RECORDED_FOR_ATTEMPT,
+  NOT_RECORDED_OLDER_LOG,
+  NOT_YET_RUN,
+  NO_RESULT_RECORDED,
+};
+
 /**
- * What a completed or failed row says when a figure (tokens, cost, tool trace) is genuinely absent from what was
- * read — an older log, or no settled row and no step figure. Never `0`, never empty. A row that did not run, did
- * not finish or is still running says that instead ({@link absenceText}): `not recorded` there reads as lost data.
+ * Every sentence a row's figure can carry when it has nothing to show; see {@link absenceText}. `not recorded` is only for a completed or
+ * failed row whose data is genuinely absent (an older log, or no settled row and no step figure): anywhere else it would read as data that
+ * was lost. A row that did not run, did not finish, is not yet run or is still running says that instead.
  */
-export const NOT_RECORDED = 'not recorded';
-
-/** What a skipped row says for tokens, cost and tool trace: the node never ran, so there is nothing to record. */
-export const DID_NOT_RUN = 'did not run';
-
-/** What a row says when its last attempt has no terminal event and the run has finished (status `stopped`). */
-export const DID_NOT_FINISH = 'did not finish';
-
-/** What a row says while it is still running in a run that has not finished. */
-export const IN_PROGRESS = 'in progress';
-
-/** Every sentence a row's figure can carry when it has nothing to show; see {@link absenceText}. */
 export type AbsenceText =
   | typeof NOT_RECORDED
   | typeof DID_NOT_RUN
   | typeof DID_NOT_FINISH
-  | typeof IN_PROGRESS;
-
-/**
- * What a node's tool trace says when its terminal event carries no `toolActivity` field at all. Every node
- * terminal written since the field landed carries it (an empty array for a node that made no call), so absence
- * means the log was written by an older binary — never "no tool calls".
- */
-export const NOT_RECORDED_OLDER_LOG = 'not recorded (older log)';
-
-/**
- * What a tool-trace entry says when its call has no recorded result (`resultRecorded: false`). It states the fact and
- * no cause: a node that ended before the call was answered and a tool that threw (a fatal failure ends the node
- * with no `agent:tool_result`) look the same in the log, and the node's own error says why it failed. Only that
- * entry says it: a refusal is a recorded result.
- */
-export const NO_RESULT_RECORDED = 'no result recorded';
-
-/** What a node page's tool trace says for an attempt other than the one its terminal event closed. */
-export const NOT_RECORDED_FOR_ATTEMPT = 'not recorded for this attempt';
+  | typeof IN_PROGRESS
+  | typeof NOT_YET_RUN;
 
 /** A node's status as the table shows it. `stopped` is a step row left `running` under a finished run. */
 export type NodeRowStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'stopped';
@@ -130,15 +129,15 @@ export function isFinishedRun(status: RunStatus): boolean {
  * state: a skipped row `did not run`; a row `stopped` (its last attempt has no terminal event and the run has
  * finished) `did not finish`; a row still `running` in a run that has not finished `in progress`; and only a
  * completed or failed row, whose data is genuinely absent (an older log, or no settled row and no step figure),
- * says `not recorded`. A `pending` row has not started: `did not run` once the run has finished, `in progress`
- * (the run is) before. This never invents a figure; it only says why there is none.
+ * says `not recorded`. A `pending` row has not started: `did not run` once the run has finished, `not yet run`
+ * (its turn has not come) before. This never invents a figure; it only says why there is none.
  */
 export function absenceText(status: NodeRowStatus, runFinished: boolean): AbsenceText {
   switch (status) {
     case 'skipped':
       return DID_NOT_RUN;
     case 'pending':
-      return runFinished ? DID_NOT_RUN : IN_PROGRESS;
+      return runFinished ? DID_NOT_RUN : NOT_YET_RUN;
     case 'stopped':
       return DID_NOT_FINISH;
     case 'running':
@@ -539,11 +538,19 @@ function toolActivityRow(entry: ToolActivityEntry): ToolActivityRowView {
   }
   if (entry.ok) {
     const text =
-      entry.durationMs === undefined ? 'ok' : `ok in ${formatDuration(entry.durationMs)}`;
+      entry.durationMs === undefined
+        ? TOOL_OUTCOME_TEMPLATES.ok
+        : toolOkIn(formatDuration(entry.durationMs));
     return { toolId, ok: true, resultRecorded: true, ...duration, outcome: 'ok', text };
   }
   if (entry.durationMs === undefined) {
-    return { toolId, ok: false, resultRecorded: true, outcome: 'refused', text: 'refused' };
+    return {
+      toolId,
+      ok: false,
+      resultRecorded: true,
+      outcome: 'refused',
+      text: TOOL_OUTCOME_TEMPLATES.refused,
+    };
   }
   return {
     toolId,
@@ -551,7 +558,7 @@ function toolActivityRow(entry: ToolActivityEntry): ToolActivityRowView {
     resultRecorded: true,
     ...duration,
     outcome: 'failed',
-    text: `failed after ${formatDuration(entry.durationMs)}`,
+    text: toolFailedAfter(formatDuration(entry.durationMs)),
   };
 }
 
@@ -573,7 +580,7 @@ export function buildToolActivity(
     recorded: true,
     entries,
     truncated,
-    text: total === 0 ? 'no tool calls' : `${total} tool ${total === 1 ? 'call' : 'calls'}`,
+    text: total === 0 ? NO_TOOL_CALLS : `${total} tool ${total === 1 ? 'call' : 'calls'}`,
   };
 }
 
@@ -714,8 +721,11 @@ export interface RunDetailInput {
   /** The run's event log. Not required to be sorted. Pass the whole log: costs and coverage fold over it. */
   readonly events: readonly RunEvent[];
   /**
-   * The workflow's authored node order, when the caller read it from the frozen snapshot. It only orders nodes
-   * that have no event position (a log that was not read); it never adds a row for a node with no record.
+   * The workflow's authored node order, when the caller read it from the frozen snapshot. It orders the nodes that have no
+   * event position (a log that was not read), after the nodes that have one, which keep the order they ran in. A node it names
+   * that has no record at all (no step row and no event) is a `pending` row: it says `not yet run` while the run has not ended and
+   * `did not run` once it has, so a table never hides the part of the workflow a failure kept from running. A node the snapshot
+   * does not name is never dropped.
    */
   readonly workflowNodeOrder?: readonly string[];
   /** The workflow's slug when the caller resolved it; the header shows the workflow id otherwise. */
@@ -850,7 +860,8 @@ function groupSteps(steps: readonly StepSummaryRecord[]): Map<string, StepSummar
 
 /**
  * Node ids in execution order: by the first event each produced; a node with no event (its log was not read) is
- * placed after them by its authored position, then by its step-row position.
+ * placed after them by its authored position, then by its step-row position. A node only the authored order names is
+ * listed too, after those, in the authored order.
  */
 function executionOrder(input: {
   readonly stepsByNode: ReadonlyMap<string, readonly StepSummaryRecord[]>;
@@ -860,7 +871,7 @@ function executionOrder(input: {
   const { stepsByNode, logs, authored } = input;
   const stepPosition = new Map<string, number>();
   for (const nodeId of stepsByNode.keys()) stepPosition.set(nodeId, stepPosition.size);
-  const ids = new Set<string>([...stepsByNode.keys(), ...logs.keys()]);
+  const ids = new Set<string>([...stepsByNode.keys(), ...logs.keys(), ...(authored ?? [])]);
   const authoredPosition = (nodeId: string): number => {
     const index = authored?.indexOf(nodeId) ?? -1;
     return index < 0 ? Number.MAX_SAFE_INTEGER : index;

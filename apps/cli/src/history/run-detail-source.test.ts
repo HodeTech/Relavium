@@ -15,6 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { seedRun } from '../test-support.js';
+import { FIXTURE_RUN_IDS, FIXTURE_SNAPSHOT, seedFixtureRuns } from './node-run-fixture.js';
 import {
   RUN_DETAIL_MAX_PAGES,
   createRunDetailLoader,
@@ -214,5 +215,86 @@ describe('what a detail can come to', () => {
     expect(read.status).toBe('completed');
     expect(read.events.length).toBe(highestSeq('run-x') + 1);
     expect(read.model.header.runId).toBe('run-x');
+  });
+});
+
+describe('the node table follows the run`s frozen workflow', () => {
+  const noHeld = (): Promise<readonly { readonly runId?: string }[]> => Promise.resolve([]);
+  const rowsOf = (
+    load: RunDetailLoad,
+  ): { id: string; status: string; type?: string; text: string }[] =>
+    ready(load).model.rows.map((row) => ({
+      id: row.nodeId,
+      status: row.status,
+      ...(row.nodeType === undefined ? {} : { type: row.nodeType }),
+      text: row.tokens.text,
+    }));
+
+  it('lists a node of the workflow that has no record after the nodes that ran, pending, with its type from the snapshot', async () => {
+    await seedFixtureRuns(client.db);
+    const load = createRunDetailLoader({
+      reader,
+      listHeld: noHeld,
+      loadSnapshot: () => FIXTURE_SNAPSHOT,
+    });
+    const failed = rowsOf(await load(FIXTURE_RUN_IDS.failed));
+    expect(failed.map((row) => row.id)).toEqual(['plan', 'build', 'review', 'ship']);
+    expect(failed.at(-1)).toEqual({
+      id: 'ship',
+      status: 'pending',
+      type: 'transform',
+      text: 'did not run',
+    });
+    const running = rowsOf(await load(FIXTURE_RUN_IDS.running));
+    expect(running.at(-1)).toMatchObject({ id: 'ship', status: 'pending', text: 'not yet run' });
+  });
+
+  it('keeps the nodes that ran in the order they ran, not the order the workflow authored', async () => {
+    await seedFixtureRuns(client.db);
+    const load = createRunDetailLoader({
+      reader,
+      listHeld: noHeld,
+      loadSnapshot: () => FIXTURE_SNAPSHOT,
+    });
+    expect((await load(FIXTURE_RUN_IDS.reversed)).kind).toBe('ready');
+    expect(rowsOf(await load(FIXTURE_RUN_IDS.reversed)).map((row) => row.id)).toEqual([
+      'review',
+      'build',
+      'plan',
+      'ship',
+    ]);
+  });
+
+  it('says nothing of a workflow it cannot read: the table is the nodes the run recorded, and the page still opens', async () => {
+    await seedFixtureRuns(client.db);
+    for (const loadSnapshot of [
+      undefined,
+      () => 'not json',
+      () => {
+        throw new Error('the row is gone');
+      },
+    ]) {
+      const load = createRunDetailLoader({ reader, listHeld: noHeld, loadSnapshot });
+      expect(rowsOf(await load(FIXTURE_RUN_IDS.failed)).map((row) => row.id)).toEqual([
+        'plan',
+        'build',
+        'review',
+      ]);
+    }
+  });
+
+  it('shows an empty run as the workflow`s nodes, none of them run', async () => {
+    await seedFixtureRuns(client.db);
+    const load = createRunDetailLoader({
+      reader,
+      listHeld: noHeld,
+      loadSnapshot: () => FIXTURE_SNAPSHOT,
+    });
+    expect(rowsOf(await load(FIXTURE_RUN_IDS.empty)).map((row) => row.status)).toEqual([
+      'pending',
+      'pending',
+      'pending',
+      'pending',
+    ]);
   });
 });

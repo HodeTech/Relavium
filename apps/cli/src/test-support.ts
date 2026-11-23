@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { Socket } from 'node:net';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 
 import { createRunHistoryStore, type Db, type DbClient } from '@relavium/db';
 import { CapabilityFlagsSchema, type CapabilityFlags } from '@relavium/llm';
@@ -243,6 +245,86 @@ export async function seedRun(db: Db, opts: SeedRunOptions): Promise<string> {
     });
   }
   return opts.runId;
+}
+
+/** `T` without the envelope fields every event carries, distributed over the union so each variant keeps its own body. */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** One event of a seeded run as a test states it: its type and its body, with no run id, timestamp or sequence number. */
+export type SeedEvent = DistributiveOmit<RunEvent, 'runId' | 'timestamp' | 'sequenceNumber'>;
+
+export interface SeedSnapshotRunOptions {
+  readonly slug: string;
+  readonly runId: string;
+  /** The text stored as the run's frozen workflow snapshot (`runs.workflow_definition_snapshot`). */
+  readonly definitionJson: string;
+  /** Written after `run:started`, in order, through the real store (so the step rows are the ones the engine's own events fold into). */
+  readonly events: readonly SeedEvent[];
+  readonly atMs?: number;
+}
+
+/**
+ * Seed one run whose frozen snapshot and node events the test states: `run:started`, then `events` as given, each validated through
+ * `RunEventSchema` and persisted by the real store, so a malformed fixture fails at seed time and the `step_executions` rows are what
+ * the writer folds. For the tests of the run and node pages, which read both the snapshot and the rows.
+ */
+export async function seedSnapshotRun(db: Db, opts: SeedSnapshotRunOptions): Promise<string> {
+  const tsMs = opts.atMs ?? DEFAULT_TS_MS;
+  const timestamp = new Date(tsMs).toISOString();
+  const store = createRunHistoryStore(db, {
+    uuid: () => randomUUID(),
+    now: () => tsMs,
+    workflow: { slug: opts.slug, name: opts.slug, definitionJson: opts.definitionJson },
+  });
+  const workflowId = await store.resolveWorkflowId(opts.slug);
+  const bodies: readonly SeedEvent[] = [
+    { type: 'run:started', workflowId, inputs: {}, executionMode: 'local' },
+    ...opts.events,
+  ];
+  let sequenceNumber = 0;
+  for (const body of bodies) {
+    const event = RunEventSchema.parse({ ...body, runId: opts.runId, timestamp, sequenceNumber });
+    sequenceNumber += 1;
+    await store.persistEvent(event);
+  }
+  return opts.runId;
+}
+
+/** The words of the Home reference's "Words for what is absent" section: its sentence table and its tool outcome table. */
+export interface AbsenceReference {
+  readonly sentences: readonly string[];
+  readonly toolOutcomes: readonly string[];
+}
+
+const ABSENCE_HEADING = '## Words for what is absent';
+const OUTCOMES_HEADING = '### Tool outcomes';
+
+/** The first backticked cell of each table row of `lines`. */
+function firstCells(lines: readonly string[]): string[] {
+  return lines.flatMap((line) => {
+    const cell = /^\|\s*`([^`]+)`\s*\|/u.exec(line)?.[1];
+    return cell === undefined ? [] : [cell];
+  });
+}
+
+/**
+ * Read the two tables of the reference's "Words for what is absent" section out of `docs/reference/cli/home.md`, by their first column. The
+ * tests that compare the code's sentences with the reference read it through this one function, so the reference is what they check against.
+ */
+export function readAbsenceReference(): AbsenceReference {
+  const path = fileURLToPath(new URL('../../../docs/reference/cli/home.md', import.meta.url));
+  const lines = readFileSync(path, 'utf8').split('\n');
+  const from = lines.findIndex((line) => line.trimEnd() === ABSENCE_HEADING);
+  if (from < 0) throw new Error('the reference has no "Words for what is absent" section');
+  const rest = lines.slice(from + 1);
+  const end = rest.findIndex((line) => line.startsWith('## '));
+  const section = end < 0 ? rest : rest.slice(0, end);
+  const split = section.findIndex((line) => line.trimEnd() === OUTCOMES_HEADING);
+  if (split < 0) throw new Error('the reference section has no "Tool outcomes" table');
+  return {
+    sentences: firstCells(section.slice(0, split)),
+    toolOutcomes: firstCells(section.slice(split + 1)),
+  };
 }
 
 /**

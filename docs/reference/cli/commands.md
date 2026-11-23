@@ -317,6 +317,10 @@ For this detector probe only, a recognised bare template reference without a pat
 
 Replays a past run's persisted `run_events` in `seq` order (the same data the desktop run-detail drawer replays) — a terse line per event in human mode, with a completed run's outputs beneath its `run:completed` row, bounded and sanitized as [`run`](#relavium-run) prints them (MVP-A1). Under `--json` it emits each **raw [RunEvent](../contracts/sse-event-schema.md) as one NDJSON line** — the same `RunEvent` data `relavium run --json` streamed (this is the "raw RunEvent JSON" the run-detail replay consumes — no separate `--raw` flag). For a run paused at a gate, the `human_gate:paused` event surfaces the **`gateId`** to copy into `relavium gate <runId> --gate <gateId>`. An unknown `runId` is an invalid invocation (exit `2`).
 
+#### In the Home
+
+The Home's **History** tab ([home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23)) is the interactive counterpart of this command: it lists finished runs, opens one run as a detail (the header, the node table and the run's events) and one node as a page (its attempts, tool activity, error and output). It reads the same stored run through the same bounded, masked renderers (the output goes through the one masking seam the final summary above uses), also reads the run's frozen workflow snapshot (for the order and the type of a node), the pins and the terminal outbox, and changes nothing. It is not a second reader of the whole log: a page shortens a long value (40 lines and 4,000 code points of one output), says so, and names `relavium logs <runId> --json` for the full record. A run's `--json` stream and the plain output above are unchanged.
+
 #### `logs --failed` and `--follow`
 
 Two additive flags ([ADR-0140](../../decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §7, recorded here as [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks): every invocation without them is byte-identical to the one above, the usage and the exit codes are unchanged, and neither flag conflicts with the other.
@@ -694,7 +698,7 @@ relavium permissions revoke --all [--json]
 ```
 
 Look at, and take back, the commands this project's operator chose to **Remember** in the chat
-([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat opens a sheet of the same grants, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md)). `list`
+([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §2; the chat's command card offers *Remember*, `Ctrl+O` then Enter, and `/permissions` in the chat opens a sheet of the same grants, [ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md); on the Home it is the **Permissions tab** of the tab host, [home.md](home.md#the-tab-host-defined-active-history-and-permissions-mvp-8-step-4-2026-11-23)). `list`
 shows a number, the program's name (or `(unnamed program)`), the argument count and the date — **never the
 command**, which the store does not keep. `revoke <number>` withdraws one grant; `revoke --all` removes the
 whole file, for every project, removes the write-mark file beside it, deletes the digest key too, and needs no project root and no readable file. Both are local: they open no
@@ -705,17 +709,17 @@ canonical home.
 `revoke <number>` takes the number from the `list` just printed and has the caveat of any position: another process can change the
 file between the two. The chat's sheet withdraws by the grant's identity instead.
 
-**The bare form** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3, with the compatibility rows [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks for). `relavium permissions` with nothing after it opens the permissions sheet on a terminal, as `relavium chat resume` opens the session picker; everywhere else it is the group it was, and the descriptor, the discovery output and the two subcommands are unchanged.
+**The bare form** ([ADR-0137](../../decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §3, with the compatibility rows [ADR-0110](../../decisions/0110-cli-diagnostics-and-discovery-have-explicit-compatibility.md) asks for). `relavium permissions` with nothing after it opens the Home on its **Permissions tab** on a terminal (the tab host's tab, which composes the permissions sheet; until MVP-8 step 4 it opened the sheet docked under the Home), as `relavium chat resume` opens the session picker; everywhere else it is the group it was, and the descriptor, the discovery output and the two subcommands are unchanged.
 
 | Invocation | Behaviour | Exit |
 |---|---|---|
-| `relavium permissions` (optionally followed by one `--`), stdout **and** stdin a TTY, no `--json`, not CI | Opens the sheet (the project's remembered commands only, `Permissions · this project`); `Esc` or `Ctrl+C` closes it and the run ends. A store that cannot be read (no keychain, a corrupt or unreadable file) opens the sheet with its fixed sentence in place of the rows | `0` |
+| `relavium permissions` (optionally followed by one `--`), stdout **and** stdin a TTY, no `--json`, not CI | Opens the Home on the Permissions tab (the project's remembered commands only, with the repository's allowlist read-only under them); `Esc` (after dropping a waiting withdrawal question) or `Ctrl+C` closes the screen and the run ends. A store that cannot be read (no keychain, a corrupt or unreadable file) opens the sheet with its fixed sentence in place of the rows | `0` |
 | `relavium permissions`, stdout or stdin piped, or `--json`, or CI | The group's help **on stderr** (stdout empty); `--json` gives the structured `invalid_invocation` error on stderr instead, exactly as before | `2` |
 | `relavium permissions --help`, `permissions <unknown>`, `list …`, `revoke …`, and any form with more than one `--` or one before the word | Unchanged | unchanged |
 
 **It opens the whole Home**, not a smaller host (it reuses the terminal ownership, signals and restoration the Home already has), so it also opens the history database and runs the Home's start-up reconcile, which `list` and `revoke` never do, and it inherits the Home's own refusals: a working directory a chat cannot use as its workspace (a credential or secret-store directory such as `.relavium` itself), a configuration that cannot be loaded, an unusable history database. Those fail as the Home fails, with the Home's error and exit code; `relavium permissions list` from the same place still works. It does not start the first-run provider setup, which is not what the person came for. The Home's `/permissions` (typed after `/`, pasted, or reached from the palette) reads its own store afresh on every open, so a key replaced by another terminal's `revoke --all` is never listed as empty by a long-lived Home.
 
-The sheet is the one the chat opens (`/permissions`): [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet) owns its keys, rows and sentences. A withdrawal there is by the grant's identity, not by a number.
+The tab's list is the sheet the chat opens (`/permissions`): [command-permissions.md](command-permissions.md#in-the-chat-permissions-a-sheet) owns its keys, rows and sentences. A withdrawal there is by the grant's identity, not by a number.
 
 ### `relavium media prune-temporaries`
 

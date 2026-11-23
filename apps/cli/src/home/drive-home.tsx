@@ -28,6 +28,7 @@ import {
   createProviderStore,
   createRunHistoryReader,
   createRunPinStore,
+  loadRunSnapshot,
 } from '@relavium/db';
 import {
   RUN_LEASE_TTL_MS,
@@ -147,6 +148,7 @@ import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createActiveReader } from '../history/active-source.js';
 import { createHistorySource } from '../history/history-source.js';
+import { createNodeDetailLoader } from '../history/node-detail-source.js';
 import { createRunDetailLoader } from '../history/run-detail-source.js';
 import { createChangeProbe, dataVersionOf } from '../history/change-probe.js';
 import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
@@ -1915,7 +1917,11 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // its project root and slug, a run under its full id); nothing is written until the key is pressed.
       const pins = createPinPort({ store: definedPins, workflowRoot: workflowPinRoot, now });
       // The History tab (ADR-0140 §2, MVP-8 step 4): finished runs a page at a time over the Home's own connection, the pinned runs, and one
-      // run's detail with its end-held state read from the terminal outbox. Nothing is read until the tab is entered.
+      // run's detail with its end-held state read from the terminal outbox. Nothing is read until the tab is entered. A run's frozen
+      // workflow snapshot gives its detail the workflow's node order and the node page its place and type; it is read only for the run a
+      // detail or a node is opened on.
+      const frozenSnapshot = (runId: string): string | undefined =>
+        loadRunSnapshot(opened.db, runId)?.workflowDefinitionSnapshot;
       const history = {
         ...createHistorySource({
           reader: runReader,
@@ -1926,7 +1932,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         loadDetail: createRunDetailLoader({
           reader: runReader,
           listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+          loadSnapshot: frozenSnapshot,
         }),
+        loadNode: createNodeDetailLoader({ reader: runReader, loadSnapshot: frozenSnapshot }),
       };
       // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
       const exportPort = createExportPort({ global: deps.global, homeDir });
