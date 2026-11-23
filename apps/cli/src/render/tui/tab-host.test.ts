@@ -135,8 +135,8 @@ describe('the tab registry', () => {
     expect(TABS.map((tab) => tab.title)).toEqual(['Defined', 'Active', 'History', 'Permissions']);
   });
 
-  it('draws one line that says so on each of the two placeholders, and reads no port for them', () => {
-    for (const tab of ['active', 'history'] as const) {
+  it('draws one line that says so on the placeholder (History), and reads no port for it', () => {
+    for (const tab of ['history'] as const) {
       const r = rig(snapshotOf(2), tab);
       const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map(
         (line) => line.text,
@@ -147,6 +147,15 @@ describe('the tab registry', () => {
       expect(r.state.sheet, 'nothing to withdraw on a placeholder').toBeUndefined();
       expect(r.loads, 'the port is the Permissions tab’s').not.toHaveBeenCalled();
     }
+  });
+
+  it('Active is not a placeholder: with nothing to read it from it says it cannot be read, and reads no port', () => {
+    const r = rig(snapshotOf(2), 'active');
+    const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map((line) => line.text);
+    expect(text.join('\n')).not.toContain(PLACEHOLDER_NOTE);
+    expect(text).toContain('The active runs could not be read.');
+    expect(r.state.sheet).toBeUndefined();
+    expect(r.loads).not.toHaveBeenCalled();
   });
 });
 

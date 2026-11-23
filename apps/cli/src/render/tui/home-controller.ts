@@ -10,6 +10,9 @@ import {
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import { ConfigWriteRefusedError } from '../../config/write.js';
+import { createActivePoll, type ActivePoll } from '../../history/active-poll.js';
+import type { ActiveRead } from '../../history/active-source.js';
+import type { ChangeToken } from '../../history/change-probe.js';
 import {
   canControlEffort,
   foldEffortPickerKey,
@@ -33,6 +36,9 @@ import {
   foldTabHostKey,
   freshTabMemory,
   tabHostMemory,
+  withActiveFailure,
+  withActiveNote,
+  withActiveRead,
   withDefinedNote,
   type TabHostState,
   type TabId,
@@ -363,6 +369,20 @@ export interface TabHostScreen {
 export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen;
 
 /**
+ * What the Active tab reads and is told by ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §2): a change token to compare, one asynchronous read of the runs that are not finished, and whether the database is gone. `driveHome`
+ * wires the real ones over its own connection; nothing here writes.
+ */
+export interface HomeActivePort {
+  /** The change token now (`PRAGMA data_version` and the in-process generation). May throw for a closed database. */
+  readonly token: () => ChangeToken;
+  /** One read of the Active tab's runs. Called only while the tab is in front, when the token moved, and never twice at once. */
+  readonly read: () => Promise<ActiveRead>;
+  /** The database is closed: the poll reads nothing more. Asked before every read. */
+  readonly isClosed: () => boolean;
+}
+
+/**
  * What the Home needs to show and answer the gates of the runs parked in its project: the reads, the answer and the numbers the
  * card's chord guard runs on. `driveHome` wires the real ones (`readParkedRuns`, `readRunGates`, `createGateResumer` over the run host).
  */
@@ -474,6 +494,12 @@ export interface HomeControllerDeps {
    * unavailable.
    */
   readonly exportDefined?: ((slug: string) => Promise<string>) | undefined;
+  /**
+   * The Active tab's reads ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2). The Home polls them only while that tab is in front and no card or exit question is up, every 1.5 seconds and only when the
+   * change token moved. Absent ⇒ the tab says it cannot be read.
+   */
+  readonly active?: HomeActivePort | undefined;
   /**
    * The Home's workflow-run host, as far as leaving the Home needs it ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
    * §3, §6): `snapshot` says whether a leg is executing or cancelling, `cancel` requests the cooperative stop, and `close` is the Home's
@@ -679,6 +705,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let history: InputHistory = EMPTY_HISTORY;
   /** The terminal's size as the host last told it ({@link HomeController.setTerminalSize}); `undefined` until it has. */
   let terminal: { readonly columns: number; readonly rows: number } | undefined;
+  // The Active tab's poll (ADR-0140 §2): created the first time the tab is in front, started and cancelled by `syncActivePoll` as the
+  // screen changes, and cancelled with the Home's other timers when it ends. `lastActiveRead` is what a re-entered tab is shown at once.
+  let activePoll: ActivePoll | undefined;
+  let activePollRunning = false;
+  let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
   let exiting = false; // permanent stop seals deferred business results as well as database reads
   const isCurrentChat = (active: HomeChatSession): boolean =>
@@ -788,8 +819,78 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
     state = { ...state, ...patch, noticeRevision };
+    syncActivePoll();
     notify();
   };
+  // ---- The Active tab's poll (ADR-0140 §2) -----------------------------------------------------------------------------------
+  // It runs while, and only while, the tab host is in front on the Active tab: a gate card, a run view, the landing and the end of the
+  // Home all take the screen away, and `set` (the one place state changes) cancels the poll with it. It is read-only and holds no card.
+  function activeTabInFront(): boolean {
+    const screen = state.screen;
+    return (
+      !exiting &&
+      deps.active !== undefined &&
+      screen?.kind === 'tab-host' &&
+      screen.host.active !== undefined
+    );
+  }
+  /** No read while the exit question is up or the terminal is below the floor (the tab then shows only its one line). */
+  const activePollPaused = (): boolean =>
+    state.exitGuard !== undefined ||
+    (terminal !== undefined &&
+      !sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }));
+  const onActiveRead = (read: ActiveRead): void => {
+    lastActiveRead = read;
+    const screen = state.screen;
+    if (exiting || screen?.kind !== 'tab-host') return;
+    const host = withActiveRead(screen.host, read);
+    if (host === screen.host) return;
+    tabMemory = tabHostMemory(host);
+    set({ screen: { kind: 'tab-host', host } });
+  };
+  const onActiveFailure = (): void => {
+    const screen = state.screen;
+    if (exiting || screen?.kind !== 'tab-host') return;
+    const host = withActiveFailure(screen.host);
+    if (host !== screen.host) set({ screen: { kind: 'tab-host', host } });
+  };
+  function syncActivePoll(): void {
+    const port = deps.active;
+    if (port === undefined) return;
+    if (!activeTabInFront()) {
+      if (activePollRunning) {
+        activePollRunning = false;
+        activePoll?.cancel();
+      }
+      return;
+    }
+    if (activePollRunning) return;
+    activePollRunning = true;
+    // A timer or promise callback has no input handler around it to route a listener's failure, so it is routed here.
+    activePoll ??= createActivePoll<ActiveRead>({
+      schedule: (callback, delayMs) => schedule(callback, delayMs),
+      now: () => interruptNow(),
+      token: port.token,
+      read: port.read,
+      apply: (read) => {
+        try {
+          onActiveRead(read);
+        } catch (error) {
+          failHome(error);
+        }
+      },
+      paused: activePollPaused,
+      isClosed: port.isClosed,
+      onError: () => {
+        try {
+          onActiveFailure();
+        } catch (error) {
+          failHome(error);
+        }
+      },
+    });
+    activePoll.start();
+  }
 
   const exitHome = (): void => {
     if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
@@ -825,6 +926,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let cancelHostedPoll: (() => void) | undefined;
   let cancelExitGrace: (() => void) | undefined;
   const stopHostedTimers = (): void => {
+    activePollRunning = false;
+    activePoll?.cancel(); // the Active tab's poll is a timer too: the Home ending, or a signal, leaves nothing scheduled
     cancelHostedPoll?.();
     cancelHostedPoll = undefined;
     cancelExitGrace?.();
@@ -989,11 +1092,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let tabMemory: TabMemory = freshTabMemory();
   // A bare `relavium permissions` opens the tab host as the run's whole job: closing it ends the run (ADR-0137 §3, ADR-0140 §1).
   let tabHostIsTheCommand = false;
+  /** What entering the Active tab starts from: the last read this Home kept, or `undefined` when nothing feeds the tab. */
+  const activeEntry = (): { readonly last: ActiveRead | undefined } | undefined =>
+    deps.active === undefined ? undefined : { last: lastActiveRead };
   /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
   const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
     const host = enterTab(memory, memory.tab, {
       port: deps.permissions,
       defined: deps.defined,
+      active: activeEntry(),
       now: interruptNow(),
     });
     // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
@@ -1094,11 +1201,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * A card could not open. From the run view the reason is the view's own note row (the landing's notice is not on screen there), and from
    * the landing it is the landing's notice: either way it is where the person who pressed `Enter` is looking.
    */
-  const notParked = (runId: string, why: string, back: GateCardScreen['back']): void => {
+  const notParked = (
+    runId: string,
+    why: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin = 'landing',
+  ): void => {
     const text = `Run ${sanitizeInline(runId)} ${why}`;
     const screen = state.screen;
     if (back === 'run-view' && screen?.kind === 'run-view' && screen.runId === runId) {
       set({ screen: { ...screen, notices: noticesWith(text), note: text }, ...parkedPatch() });
+      return;
+    }
+    // Asked for from the Active tab: the tab's own message row is where the person who pressed `Enter` is looking.
+    if (from === 'tab-host' && screen?.kind === 'tab-host' && screen.host.active !== undefined) {
+      const host = withActiveNote(screen.host, text);
+      tabMemory = tabHostMemory(host);
+      set({ screen: { kind: 'tab-host', host }, ...parkedPatch() });
       return;
     }
     set({ notice: text, ...parkedPatch() });
@@ -1114,11 +1233,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     try {
       run = port.read(runId);
     } catch {
-      notParked(runId, 'could not be read. `relavium status` shows what it waits for.', back);
+      notParked(runId, 'could not be read. `relavium status` shows what it waits for.', back, from);
       return false;
     }
     if (run === undefined) {
-      notParked(runId, 'is not parked in this directory any more.', back);
+      notParked(runId, 'is not parked in this directory any more.', back, from);
       return false;
     }
     const gates = cardGatesOf(run);
@@ -1127,6 +1246,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         runId,
         `is parked with no gate to decide here. \`relavium status ${sanitizeInline(runId)}\` shows what it waits for.`,
         back,
+        from,
       );
       return false;
     }
@@ -1216,6 +1336,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const step = foldTabHostKey(screen.host, input, key, {
       port: deps.permissions,
       defined: deps.defined,
+      active: activeEntry(),
       canArm:
         terminal === undefined ||
         sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
@@ -1230,6 +1351,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
     if (step.kind === 'run') openDefinedRun(step.slug);
     else if (step.kind === 'export') openDefinedExport(step.slug);
+    // A request of the Active tab: the tab is left as the key left it (and remembered, so `Esc` comes back to the same run).
+    else if (step.kind === 'open-view') openActiveView(step.runId);
+    else if (step.kind === 'open-gate') openGateCard(step.runId, 'landing', 'tab-host');
   };
 
   // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
@@ -1608,6 +1732,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       const notice = await exportDefined(slug);
       if (!exiting) noteOnDefinedTab(notice);
     }, 'Export');
+  };
+
+  /** A sentence for the person who is looking at the Active tab: its message row, which the next key drops. */
+  const noteOnActiveTab = (text: string): void => {
+    const screen = state.screen;
+    if (screen?.kind !== 'tab-host' || screen.host.active === undefined) {
+      set({ notice: text });
+      return;
+    }
+    const host = withActiveNote(screen.host, text);
+    tabMemory = tabHostMemory(host);
+    set({ screen: { kind: 'tab-host', host } });
+  };
+
+  /**
+   * `Enter` on the run this Home hosts: its view, with `Esc` returning to the Active tab on the row it came from. The view is for the run
+   * the row named, never for whichever leg executes now, so a leg that ended since the read shows what it left.
+   */
+  const openActiveView = (runId: string): void => {
+    if (!openScreen('run-view', { runId, store: deps.runStore?.(runId), from: 'tab-host' }))
+      noteOnActiveTab('The run view could not be opened now.');
   };
 
   const openResume = (selectedId?: string): void => {

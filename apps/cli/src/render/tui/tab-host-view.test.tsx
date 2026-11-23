@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { classifyActiveRuns } from '../../history/active-model.js';
 import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type {
@@ -149,11 +150,8 @@ describe('TabHostView at 80×24', () => {
     expect(lines.join('\n')).toContain('more in the config');
   });
 
-  it('says what it shows on each placeholder, in a word as well as a glyph', () => {
-    for (const [tab, title] of [
-      ['active', 'Active'],
-      ['history', 'History'],
-    ] as const) {
+  it('says what it shows on the placeholder, in a word as well as a glyph', () => {
+    for (const [tab, title] of [['history', 'History']] as const) {
       const drawn = text(hostOn(tab));
       expect(drawn).toContain(`▸ ${title}`);
       expect(drawn).toContain(`${title} — available in the next increment.`);
@@ -189,6 +187,74 @@ describe('TabHostView on the Defined tab', () => {
     expect(lineWith(drawn, 'Tab'), 'the legend: the keys apart from the words').toContain(
       `${BOLD}[r]`,
     );
+  });
+});
+
+/** The Active tab over one run of each kind that has its own glyph: this Home's own, a paused gate, a stalled run and a held one. */
+const activeHost = (): TabHostState => {
+  const now = Date.parse('2026-11-23T12:00:00.000Z');
+  const base = {
+    workflowId: 'wf',
+    executionMode: 'local',
+    triggerType: 'manual',
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostMicrocents: 0,
+    projectRoot: '/work/here',
+    updatedAt: new Date(now - 1_000).toISOString(),
+  } as const;
+  const young = new Date(now - 5_000).toISOString();
+  const old = new Date(now - 300_000).toISOString();
+  const rows = classifyActiveRuns({
+    runs: [
+      { ...base, id: 'hostrun1', status: 'running', createdAt: young },
+      { ...base, id: 'gaterun1', status: 'paused', createdAt: young },
+      { ...base, id: 'stallrun', status: 'running', createdAt: old },
+      { ...base, id: 'heldrun1', status: 'running', createdAt: young },
+    ],
+    leases: new Map(),
+    hostedRunId: 'hostrun1',
+    currentProjectRoot: '/work/here',
+    outboxHeldRunIds: new Set(['heldrun1']),
+    nowMs: now,
+    leaseTtlMs: 60_000,
+    pendingGateCounts: new Map([['gaterun1', 1]]),
+  });
+  return enterTab(freshTabMemory('active'), 'active', {
+    port: undefined,
+    now: 0,
+    active: {
+      last: { rows, more: [{ status: 'paused', count: 3, atLeast: false }], heldUnread: false },
+    },
+  });
+};
+
+describe('TabHostView on the Active tab', () => {
+  it('draws every class with a glyph and a word, the "N more" row and the legend, in 23 rows, with no colour at all when colour is off', () => {
+    const styled = frame(activeHost(), false);
+    expect(styled).not.toMatch(ANY_COLOUR);
+    const drawn = plain(styled);
+    const lines = drawn.split('\n');
+    expect(lines.length).toBeLessThanOrEqual(23);
+    expect(lines[0]).toContain('▸ Active');
+    for (const word of [
+      '◐ running',
+      '⏸ paused',
+      '⚠ stalled',
+      '◇ held',
+      '… 3 more paused not listed',
+    ])
+      expect(drawn, word).toContain(word);
+    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(lines.at(-1)).toContain('↑/↓ select · Enter open · Esc close');
+  });
+
+  it('draws the selected row in cyan, a quiet reason dimmed, and the word of a stalled or held run in attention', () => {
+    const drawn = frame(activeHost(), true);
+    expect(lineWith(drawn, '› ')).toContain(CYAN);
+    expect(lineWith(drawn, 'gaterun1')).toContain(DIM);
+    expect(lineWith(drawn, 'stallrun')).toContain(YELLOW);
+    expect(lineWith(drawn, 'heldrun1')).toContain(YELLOW);
   });
 });
 

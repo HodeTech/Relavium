@@ -43,6 +43,25 @@ function scriptedFrames() {
 }
 
 describe('the run view feed', () => {
+  it('calls the Home’s event hook once per event, after the store folded it, and still for a sealed leg', () => {
+    const frames = scriptedFrames();
+    const seen: (string | undefined)[] = [];
+    const feed = createRunViewFeed({
+      color: () => false,
+      everyFrame: frames.everyFrame,
+      onEvent: () => {
+        seen.push(feed.storeFor('run-1')?.getSnapshot().state.nodes['a']?.status);
+      },
+    });
+    const renderer = feed.renderer({ runId: 'run-1' });
+    renderer.onEvent(nodeStarted('run-1'));
+    expect(seen, 'one call, and the store had already folded the event').toEqual(['running']);
+    renderer.onEvent(token('run-1', 2, 'x'));
+    renderer.seal?.();
+    renderer.onEvent(token('run-1', 3, 'y'));
+    expect(seen, 'a sealed leg still wrote: the hook runs for its events too').toHaveLength(3);
+  });
+
   it("folds a leg's events into the store the view reads, for that run only", () => {
     const frames = scriptedFrames();
     const feed = createRunViewFeed({ color: () => false, everyFrame: frames.everyFrame });

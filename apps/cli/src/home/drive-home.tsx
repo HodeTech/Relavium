@@ -29,7 +29,12 @@ import {
   createRunHistoryReader,
   createRunPinStore,
 } from '@relavium/db';
-import type { AgentSessionRecord, ReasoningEffort, RunStatus } from '@relavium/shared';
+import {
+  RUN_LEASE_TTL_MS,
+  type AgentSessionRecord,
+  type ReasoningEffort,
+  type RunStatus,
+} from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -140,6 +145,10 @@ import {
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
+import { createActiveReader } from '../history/active-source.js';
+import { createChangeProbe, dataVersionOf } from '../history/change-probe.js';
+import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
+import { terminalOutboxPath } from '../history/open.js';
 import { createRunViewFeed } from '../render/tui/run-view-feed.js';
 import { readParkedRuns } from '../render/tui/home-attention.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
@@ -683,7 +692,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     // prompt is the Home's native card on the one prompt flow (ADR-0139 §4): the only prompt a hosted leg can open, and
     // it answers only while the launch flow holds that flow open (with none open it refuses, which is the safe answer).
     // The live output of a hosted leg: the leg's one event reader folds into a run store, and the run view mounts `RunApp` over it.
-    const runFeed = createRunViewFeed({ color: () => deps.global.color });
+    // The Active tab's change token (ADR-0140 §2): `PRAGMA data_version` of this connection, which does not move for the leg's own writes,
+    // and an in-process generation the leg's event reader bumps for every event it sees, which does.
+    const changeProbe = createChangeProbe(dataVersionOf(opened.db));
+    const runFeed = createRunViewFeed({
+      color: () => deps.global.color,
+      onEvent: changeProbe.bump,
+    });
     const hostedRuns: RunHost = (runHost ??= new RunHost({
       invocation: deps.invocation,
       io: deps.io,
@@ -1901,6 +1916,20 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         chordHistory,
         launchRun: (slug) => runLaunch.open(slug),
         defined,
+        // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
+        // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
+        active: {
+          token: changeProbe.token,
+          read: createActiveReader({
+            reader: runReader,
+            projectRoot: deps.global.cwd,
+            hostedRunId: () => hostedRuns.snapshot().active?.runId,
+            listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+            now,
+            leaseTtlMs: RUN_LEASE_TTL_MS,
+          }),
+          isClosed: () => dbClosed,
+        },
         exportDefined: (slug) =>
           runExportCard(
             { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },

@@ -15,6 +15,9 @@ import { FRAME_MS } from './tui-constants.js';
  *   store is dropped. Nothing here grows with the number of runs.
  * - **A frame loop only while a leg runs.** The store coalesces token bursts to a frame tick; the tick is unreferenced, and `finalize`
  *   and `seal` stop it, so a finished or sealed leg holds no timer.
+ * - **One event hook for the Home's change token.** {@link RunViewFeedOptions.onEvent} is called once for every event the leg's reader
+ *   sees, sealed or not. It is how the Home's own writes reach the Active tab's poll: a leg writes through the Home's own connection,
+ *   and `PRAGMA data_version` does not move for that (`history/change-probe.ts`).
  */
 export interface RunViewFeed {
   /** The run host's `renderer` option: one reader sink per leg. */
@@ -28,6 +31,11 @@ export interface RunViewFeedOptions {
   readonly color: () => boolean;
   /** The frame loop's timer; a test injects its own. Default `setInterval` with an unreferenced handle. */
   readonly everyFrame?: ((tick: () => void) => () => void) | undefined;
+  /**
+   * Called once per event the leg's reader sees, after the store has folded it (and also when the leg is sealed, because a sealed leg
+   * still wrote). The Home bumps its change token here. It must not throw: a fault here would be a fault in the leg's reader.
+   */
+  readonly onEvent?: (() => void) | undefined;
 }
 
 function frameLoop(tick: () => void): () => void {
@@ -59,6 +67,7 @@ export function createRunViewFeed(options: RunViewFeedOptions): RunViewFeed {
       return {
         onEvent: (event) => {
           if (!sealed) store.apply(event);
+          options.onEvent?.();
         },
         seal: halt,
         finalize: () => {
