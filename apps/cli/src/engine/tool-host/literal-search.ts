@@ -20,13 +20,19 @@ export function literalFailureTable(needle: string): Int32Array {
   return table;
 }
 
+/** Anything that exposes UTF-16 code units by index: a string, or a counting wrapper in a test. */
+export interface CodeUnits {
+  readonly length: number;
+  charCodeAt(index: number): number;
+}
+
 /**
  * Calls `accept` with each start index of `needle` in `haystack`, in increasing order and including overlapping
  * occurrences, until `accept` returns `true`. `needle` must be nonempty and `failure` must be its table. Reads
  * each haystack unit once.
  */
 export function scanLiteral(
-  haystack: string,
+  haystack: CodeUnits,
   needle: string,
   failure: Int32Array,
   accept: (start: number) => boolean,

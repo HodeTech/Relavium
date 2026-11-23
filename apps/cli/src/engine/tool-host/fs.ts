@@ -1727,9 +1727,11 @@ const SCAN_ENTRIES = 10000;
 const SCAN_DIRS = 1000;
 const SCAN_DEPTH = 32;
 const SCAN_IGNORE_ANCESTORS = 32;
-// Files and bytes are hard ceilings for a whole call. A typical repository finishes well inside them, so a reached
-// ceiling means the search really was too large, not that the budget was spent on bookkeeping (ADR-0142).
+// Files and bytes are hard ceilings for a whole call. The entry cap (10,000, which counts directories too) binds before
+// the file cap, so the file cap is a backstop for search. find_files keeps its own 1,000-file ceiling (FIND_FILES): the
+// wider search ceiling must not widen find, which opens every candidate (ADR-0142).
 const SCAN_FILES = 10000;
+const FIND_FILES = 1000;
 const SCAN_BYTES = 64 * 1024 * 1024;
 const SCAN_FILE_BYTES = 1024 * 1024;
 const SCAN_MATCHES = 200;
@@ -2044,7 +2046,7 @@ async function discover(
           return 'stop';
         }
         if (!info.isFile()) return 'next';
-        if (stats.filesScanned >= SCAN_FILES) {
+        if (stats.filesScanned >= (find !== undefined ? FIND_FILES : SCAN_FILES)) {
           stop('files');
           return 'stop';
         }
@@ -2243,16 +2245,24 @@ function searchExcerpt(line: string, at: number): { content: string; omittedByte
 function foldPattern(text: string): string {
   return Array.from(text, (part) => part.toLowerCase()).join('');
 }
-/** The folded line and, per folded unit, the source span it came from, so a match maps back to the original text. */
+/**
+ * The folded line and, per folded unit, the source span it came from, so a match maps back to the original text.
+ * An absent map is the identity: ASCII folds one unit to one unit, so it needs no arrays (ADR-0142).
+ */
 interface FoldedLine {
   readonly text: string;
-  readonly starts: readonly number[];
-  readonly ends: readonly number[];
+  readonly starts?: readonly number[];
+  readonly ends?: readonly number[];
+}
+function isAsciiText(text: string): boolean {
+  for (let i = 0; i < text.length; i++) if (text.charCodeAt(i) > 0x7f) return false;
+  return true;
 }
 async function foldWithSpans(
   line: string,
   signal: AbortSignalLike | undefined,
 ): Promise<FoldedLine> {
+  if (isAsciiText(line)) return { text: line.toLowerCase() };
   const chunks: string[] = [];
   const starts: number[] = [];
   const ends: number[] = [];
@@ -2284,8 +2294,9 @@ function firstLiteralStart(
 ): number {
   let found = -1;
   scanLiteral(haystack, needle, failure, (at) => {
-    const start = folded === undefined ? at : folded.starts[at];
-    const end = folded === undefined ? at + needle.length : folded.ends[at + needle.length - 1];
+    const start = folded?.starts === undefined ? at : folded.starts[at];
+    const end =
+      folded?.ends === undefined ? at + needle.length : folded.ends[at + needle.length - 1];
     if (start === undefined || end === undefined) return false;
     if (wholeWord && (wordBefore(line, start) || wordAfter(line, end))) return false;
     found = start;

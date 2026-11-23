@@ -23,6 +23,17 @@ function kmpOccurrences(haystack: string, needle: string): number[] {
   return found;
 }
 
+/** Every string over {a, b} of length zero to `maxLength`, shortest first. */
+function allBinaryStrings(maxLength: number): string[] {
+  const out: string[] = [];
+  for (let length = 0; length <= maxLength; length++) {
+    for (let bits = 0; bits < 2 ** length; bits++) {
+      out.push(Array.from({ length }, (_, i) => ((bits >> i) & 1 ? 'b' : 'a')).join(''));
+    }
+  }
+  return out;
+}
+
 /** A small deterministic generator, so every run tests the same inputs. */
 function generator(seed: number): () => number {
   let state = seed >>> 0;
@@ -65,6 +76,41 @@ describe('scanLiteral', () => {
   it('finds nothing when the needle is longer than the haystack or the haystack is empty', () => {
     expect(kmpOccurrences('ab', 'abc')).toEqual([]);
     expect(kmpOccurrences('', 'a')).toEqual([]);
+  });
+
+  it('reads each haystack unit exactly once, so the cost does not depend on the pattern', () => {
+    // A pattern that defeats a naive search (a run of 'a' and a 'b' at the end, against a run of 'a') would make a
+    // quadratic scan read the haystack again at every start. The read count pins one pass, without timing anything.
+    const haystack = 'a'.repeat(2000);
+    const needle = `${'a'.repeat(999)}b`;
+    let reads = 0;
+    const counted = {
+      length: haystack.length,
+      charCodeAt: (index: number): number => {
+        reads++;
+        return haystack.charCodeAt(index);
+      },
+    };
+    scanLiteral(counted, needle, literalFailureTable(needle), () => false);
+    expect(reads).toBe(haystack.length);
+  });
+
+  it('agrees with the retired indexOf loop on every binary haystack up to length ten', () => {
+    // Exhaustive over {a, b}: periodic needles and overlapping occurrences are where a failure-table
+    // fallback goes wrong, and random inputs over a wider alphabet rarely produce them.
+    const mismatches: string[] = [];
+    for (const haystack of allBinaryStrings(10)) {
+      for (const needle of allBinaryStrings(6)) {
+        if (needle.length === 0) continue;
+        const expected = indexOfOccurrences(haystack, needle);
+        const actual = kmpOccurrences(haystack, needle);
+        if (JSON.stringify(actual) !== JSON.stringify(expected))
+          mismatches.push(
+            `${haystack} / ${needle}: ${JSON.stringify(actual)} vs ${JSON.stringify(expected)}`,
+          );
+      }
+    }
+    expect(mismatches.slice(0, 5)).toEqual([]);
   });
 
   it('agrees with the retired indexOf loop on seeded random inputs', () => {

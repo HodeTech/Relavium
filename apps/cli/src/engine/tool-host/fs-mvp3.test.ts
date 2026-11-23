@@ -512,6 +512,18 @@ it('checks insensitive whole-word boundaries and excerpt position against origin
   expect(result?.matches[0]?.content).toContain('Needle');
 });
 
+it('maps a folded match back to its source span after a character that folds to two units', async () => {
+  // U+0130 lowercases to two UTF-16 units, so every later folded offset is shifted. A match that is only found
+  // through the mapping must still be found, and a whole-word rule must judge the source characters (ADR-0142).
+  await writeFile(join(root, 'dotted'), 'İstanbul needle\nİİ needle\n');
+  const result = await capability().searchFiles?.('.', {
+    pattern: 'needle',
+    caseSensitive: false,
+    wholeWord: true,
+  });
+  expect(result?.matches.map((match) => match.line)).toEqual([1, 2]);
+});
+
 it('visits a thousand ordinary files with a realistic root ignore file', async () => {
   const rules = Array.from({ length: 50 }, (_, i) => `ignored-directory-${i}/`).join('\n');
   await writeFile(join(root, '.gitignore'), rules);
@@ -521,6 +533,20 @@ it('visits a thousand ordinary files with a realistic root ignore file', async (
   const result = await capability().findFiles?.('.', { glob: '*.nomatch' });
   expect(result?.stats.entriesVisited).toBe(1001);
   expect(result?.stats.incomplete).toBe(false);
+});
+
+it('keeps find_files at its own 1,000-file ceiling, even though the search ceiling is wider', async () => {
+  // find counts each matching candidate and opens it, even when it is a hard link that is then skipped. Only the
+  // file ceiling stops such a walk, so the search ceiling must not widen it (ADR-0142).
+  await writeFile(join(root, 'target.txt'), 'x');
+  await Promise.all(
+    Array.from({ length: 1000 }, (_, i) =>
+      link(join(root, 'target.txt'), join(root, `alias-${i}.txt`)),
+    ),
+  );
+  const result = await capability().findFiles?.('.', { glob: '*.txt' });
+  expect(result?.files).toEqual([]);
+  expect(result?.stats).toMatchObject({ incomplete: true, limit: 'files', filesScanned: 1000 });
 });
 
 it('reads a long adversarial line once, and rejects every non-word occurrence without a rescan', async () => {
@@ -536,7 +562,7 @@ it('reads a long adversarial line once, and rejects every non-word occurrence wi
 });
 
 it('scans several megabytes of ordinary text without reaching the work ceiling', async () => {
-  // Case-sensitive: one unit per UTF-16 unit read, so 4 MiB costs about 4 Mi units, far below the 16 Mi ceiling.
+  // Case-sensitive: one unit per UTF-16 unit read, so 4 MiB costs about 4 Mi units, far below the 64 Mi search ceiling.
   const chunk = `${'ordinary text line\n'.repeat(Math.floor((1024 * 1024) / 20))}`;
   await Promise.all(
     Array.from({ length: 4 }, (_, i) => writeFile(join(root, `part-${i}.txt`), chunk)),

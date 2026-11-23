@@ -146,9 +146,10 @@ An exhausted ancestor check reports the depth limit rather than a complete scan.
 |---|---|
 | Visited entries / directories / depth | 10,000 / 1,000 / 32 |
 | Additional admitted ancestor directories checked for ignore files | 32; up to two fixed-name presence probes per directory |
-| Candidate files / results | 1,000 / 200 |
-| Search bytes per file / call | 1 MiB / 16 MiB |
-| Conservative matcher work units | 16,777,216 |
+| Candidate files / results (search: files scanned; find: files opened) | search 10,000, find 1,000 / 200 |
+| Search bytes per file / call | 1 MiB / 64 MiB |
+| Literal search work units per call (`search_files`, ADR-0142) | 67,108,864 |
+| Conservative matcher work units (ignore and glob rules) | 16,777,216 |
 | Bytes / rules per root ignore file | 64 KiB / 256 |
 | UTF-8 bytes per search excerpt | 2,048 |
 | Ordinary directory entries | 200 by default; a host-selected limit cannot exceed 1,000 |
