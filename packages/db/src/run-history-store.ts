@@ -2,6 +2,7 @@ import {
   RelaviumError,
   AppendConflictError,
   CorruptRunEventError,
+  isCorruptRunEventError,
   LeaseFencedError,
   parseStoredRunEvent,
   RunAlreadyTerminalError,
@@ -246,6 +247,13 @@ export interface RunEventTail {
   readonly skipped: readonly SkippedRunEvent[];
 }
 
+/**
+ * One run's entry in a {@link RunHistoryReader.loadRunStateEventsForRuns} answer: its state-bearing events, or the
+ * mark that a stored row of THIS run could not be read. The mark carries no detail on purpose — it is the
+ * batched twin of the {@link CorruptRunEventError} the per-run read throws, and a listing names the run, not the row.
+ */
+export type RunStateEventsRead = { readonly events: RunEvent[] } | { readonly corrupt: true };
+
 /** The latest run for one workflow (joined by slug) — the `relavium list` last-run-status overlay. */
 export interface WorkflowRunSummary {
   readonly slug: string;
@@ -345,7 +353,7 @@ export type RunHistoryReadErrorCode =
   | 'invalid_limit'
   /** A keyset cursor (`before`, `afterSeq`) that is not a safe integer position. */
   | 'invalid_cursor'
-  /** More run ids than {@link MAX_RUN_LEASE_IDS} in one `IN` lookup. */
+  /** More run ids than the read's cap ({@link MAX_RUN_LEASE_IDS}, {@link MAX_RUN_STATE_EVENT_BATCH_IDS}) in one `IN` lookup. */
   | 'too_many_run_ids';
 
 /**
@@ -373,6 +381,8 @@ export const MAX_RUN_SUMMARY_PAGE = 200;
 export const MAX_RUN_TAIL_EVENTS = 1000;
 /** The most run ids one {@link RunHistoryReader.loadRunLeases} call accepts; more is refused, not truncated. */
 export const MAX_RUN_LEASE_IDS = 200;
+/** The most run ids one {@link RunHistoryReader.loadRunStateEventsForRuns} call accepts; more is refused, not truncated. */
+export const MAX_RUN_STATE_EVENT_BATCH_IDS = 200;
 /**
  * The largest stored result document (`output_json` or `error_json`) the detail reads hand back as text: 1 MiB of
  * UTF-8. The bound is applied inside the SELECT, so a larger document never reaches JavaScript.
@@ -481,6 +491,19 @@ export interface RunHistoryReader {
    *  detection consults. Every stored row is validated before genuine streaming events are excluded from
    *  the returned gate/checkpoint fold. NOT for `logs`/resume, which need every event. */
   loadRunStateEvents: (runId: string) => RunEvent[];
+  /**
+   * {@link loadRunStateEvents} for several runs in ONE statement — the listing surfaces' (`gate list`, `status`)
+   * answer to a read per run. Every requested id has exactly one entry, in request order with a repeated id
+   * collapsed: `{ events }` (empty for a run with no events) or `{ corrupt: true }`. A run whose stored row fails
+   * validation is marked corrupt and the others are unaffected, which is the per-run isolation the per-run read
+   * gave a caller that caught {@link CorruptRunEventError} around each call. Rows are validated before streaming
+   * events are excluded, exactly as in {@link loadRunStateEvents}, so the events of a healthy run are the
+   * same ones that read returns. Keyed by run id alone (no soft-delete re-check). Ids are bound parameters.
+   *
+   * @throws {RunHistoryReadError} `too_many_run_ids` for more than {@link MAX_RUN_STATE_EVENT_BATCH_IDS} ids (a
+   *   refusal, never a truncation); the caller chunks.
+   */
+  loadRunStateEventsForRuns: (runIds: readonly string[]) => ReadonlyMap<string, RunStateEventsRead>;
   /** Non-terminal runs (pending/running/paused), newest first — `relavium status` + `gate list` (all-runs). */
   listActiveRuns: () => RunRecord[];
   /** The latest run per workflow (joined by slug) — `relavium list`'s last-run-status overlay. */
@@ -716,6 +739,59 @@ function readEventLog(
     events.push(event);
   }
   return { events, skipped };
+}
+
+/**
+ * The batched twin of {@link readEventLog} with `streamingIncluded: false`: ONE statement for every requested run,
+ * ordered by `(run_id, seq)`, then split back into one entry per run.
+ *
+ * The split and the catch are the whole point. Rows of different runs interleave in no order but the sort, so the
+ * per-row `run_id` decides which run a row belongs to; and a row that fails validation condemns only ITS run
+ * (the per-run read threw for that run alone), so the catch sits around one row and the loop moves on. Every
+ * row still goes through {@link readStoredEventRow} BEFORE a streaming event is excluded, so a corrupted
+ * discriminator cannot hide a durable suspension here any more than in {@link readEventLog}.
+ *
+ * Only a {@link CorruptRunEventError} is absorbed; any other throw is a fault of the read itself and propagates.
+ */
+function readStateEventsForRuns(
+  db: Db,
+  runIds: readonly string[],
+): ReadonlyMap<string, RunStateEventsRead> {
+  const distinct = [...new Set(runIds)];
+  if (distinct.length === 0) return new Map();
+  const rows = db
+    .select({
+      runId: runEvents.runId,
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runEvents)
+    .where(inArray(runEvents.runId, distinct))
+    .orderBy(asc(runEvents.runId), asc(runEvents.seq))
+    .all();
+
+  const eventsByRun = new Map<string, RunEvent[]>(distinct.map((id) => [id, []]));
+  const corruptRuns = new Set<string>();
+  for (const row of rows) {
+    if (corruptRuns.has(row.runId)) continue;
+    const bucket = eventsByRun.get(row.runId);
+    if (bucket === undefined) continue; // unreachable: the statement only selects the requested ids
+    try {
+      const event = readStoredEventRow(row.runId, row);
+      if (event === undefined || STREAMING_EVENT_TYPES.has(event.type)) continue;
+      bucket.push(event);
+    } catch (cause) {
+      if (!isCorruptRunEventError(cause)) throw cause;
+      corruptRuns.add(row.runId);
+    }
+  }
+  return new Map(
+    distinct.map((id): [string, RunStateEventsRead] => [
+      id,
+      corruptRuns.has(id) ? { corrupt: true } : { events: eventsByRun.get(id) ?? [] },
+    ]),
+  );
 }
 
 /** The shared row parser for ordinary log reads and ordered interruption discovery. */
@@ -1684,6 +1760,16 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       // Its max `seq` is not the run's, and nothing seeds a sequence counter from this fold. A row
       // this binary cannot read also cannot describe a gate this binary knows how to render.
       readEventLog(db, runId, { streamingIncluded: false }).events,
+
+    loadRunStateEventsForRuns: (runIds) => {
+      if (runIds.length > MAX_RUN_STATE_EVENT_BATCH_IDS) {
+        throw new RunHistoryReadError(
+          'too_many_run_ids',
+          `at most ${MAX_RUN_STATE_EVENT_BATCH_IDS} run ids per state-event batch`,
+        );
+      }
+      return readStateEventsForRuns(db, runIds);
+    },
 
     listActiveRuns: () =>
       db
