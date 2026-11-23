@@ -181,6 +181,16 @@ function Section(
 }
 
 /**
+ * What the hint bar says `Enter` does on the focused parked row: a row with a gate opens it, a media park asks whether to continue the
+ * run here, and a run with nothing to answer says why (the bar must not promise a gate where there is none).
+ */
+function parkedHintCue(kind: ParkedRunKind | undefined): string {
+  if (kind === 'none') return 'Enter says why';
+  if (kind === 'media') return 'Enter continue it';
+  return 'Enter open the gate';
+}
+
+/**
  * The context-aware hint bar of the Home (2.5.C S6): the second `Ctrl+C` while the first is armed, the session picker's keys while one
  * is open, at an empty prompt the `/` palette beside the start-a-chat affordance, and once composing the submit hint.
  */
@@ -199,7 +209,7 @@ function homeHint(state: {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
   if (state.focusedRole === 'parked')
     // The same words as the row's own cue: a row that has no gate to decide says why on `Enter`, and the bar must not promise a gate.
-    return `↑/↓ select · ${state.parkedFocusKind === 'none' ? 'Enter says why' : 'Enter open the gate'} · Esc return to prompt · Ctrl+C twice to exit`;
+    return `↑/↓ select · ${parkedHintCue(state.parkedFocusKind)} · Esc return to prompt · Ctrl+C twice to exit`;
   if (state.focusedRole === 'session')
     return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
   // A failed or recent run opens its detail (the run this Home hosts opens its view): read-only either way.

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { seedRun } from '../test-support.js';
 import {
+  isMediaOnlyPark,
   readProjectRunGates,
   readRunGates,
   RUN_GATES_CHUNK,
@@ -56,6 +57,60 @@ async function park(
   await seedRun(client.db, { slug: 'wf', runId, state: 'paused', atMs, gates });
   inProject(runId, root);
 }
+
+describe('the media-only park', () => {
+  it('reads the nodes whose media jobs are in flight, and the run is a media-only park only with no gate of either kind', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-media', state: 'paused', atMs: T0 });
+    inProject('run-media', HERE);
+    await park('run-gate', HERE, [{ gateId: 'g1', gateType: 'approval' }], T0 + 1);
+    await seedRun(client.db, {
+      slug: 'wf',
+      runId: 'run-budget',
+      state: 'paused',
+      atMs: T0 + 2,
+      budgetGateId: 'b1',
+    });
+    inProject('run-budget', HERE);
+    const byId = new Map(readProjectRunGates(reader, HERE).runs.map((run) => [run.runId, run]));
+    const media = byId.get('run-media');
+    expect(media?.pendingMediaJobNodeIds).toEqual(['g']);
+    expect(media?.gates).toEqual([]);
+    expect(media !== undefined && isMediaOnlyPark(media)).toBe(true);
+    expect(byId.get('run-gate')?.pendingMediaJobNodeIds).toEqual([]);
+    expect(byId.get('run-budget')?.pendingMediaJobNodeIds).toEqual([]);
+    for (const id of ['run-gate', 'run-budget']) {
+      const run = byId.get(id);
+      expect(run !== undefined && isMediaOnlyPark(run), id).toBe(false);
+    }
+    // The one-run read the question makes when it opens says the same.
+    const one = readRunGates(reader, HERE, 'run-media');
+    expect(one !== undefined && isMediaOnlyPark(one)).toBe(true);
+  });
+
+  it('is not a media-only park when a gate is open beside the job, when the log is unreadable, or when no job is in flight', () => {
+    const base = { gates: [], budgetGates: [], degraded: false } as const;
+    expect(isMediaOnlyPark({ ...base, pendingMediaJobNodeIds: ['n'] })).toBe(true);
+    expect(isMediaOnlyPark({ ...base, pendingMediaJobNodeIds: [] })).toBe(false);
+    expect(isMediaOnlyPark({ ...base })).toBe(false);
+    expect(isMediaOnlyPark({ ...base, degraded: true, pendingMediaJobNodeIds: ['n'] })).toBe(false);
+    const gate = {
+      runId: 'r',
+      gateId: 'g',
+      nodeId: 'n',
+      gateType: 'approval',
+      message: 'm',
+      accepts: ['approved'],
+    } as const;
+    expect(isMediaOnlyPark({ ...base, gates: [gate], pendingMediaJobNodeIds: ['n'] })).toBe(false);
+    expect(
+      isMediaOnlyPark({
+        ...base,
+        budgetGates: [{ gateId: 'b', nodeId: 'n', allowance: { kind: 'legacy' } }],
+        pendingMediaJobNodeIds: ['n'],
+      }),
+    ).toBe(false);
+  });
+});
 
 describe('only this project`s runs', () => {
   it('returns the gates of the runs parked here, each with its id, type and the decisions it accepts', async () => {

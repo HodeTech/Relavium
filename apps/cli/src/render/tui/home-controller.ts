@@ -79,7 +79,7 @@ import type {
   RunHost,
   RunHostSnapshot,
 } from '../../home/run-host.js';
-import { cardGatesOf, type RunGates } from '../../home/run-gates.js';
+import { cardGatesOf, isMediaOnlyPark, type RunGates } from '../../home/run-gates.js';
 import type { RunNotices } from '../../home/run-notices.js';
 import type { InvocationWorkOwner } from '../../process/invocation-work-owner.js';
 import {
@@ -629,6 +629,13 @@ export interface HomeControllerDeps {
   readonly runStore?: ((runId: string) => RunStore | undefined) | undefined;
   /** The gate and budget cards of this project's parked runs; absent ⇒ no Attention rows and no card. */
   readonly gateCards?: HomeGateCardsPort | undefined;
+  /**
+   * `Enter` on a parked run that waits on media jobs and nothing else ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
+   * §3, the 2026-11-23 amendment note): ask, on the native prompt channel, whether to continue the run here (a Yes/No whose default is No), and
+   * on a Yes start the run host's media resume. It resolves with the sentence the Home shows, or `undefined` when nothing happened (a No,
+   * `Esc`); it holds the native action for as long as the question is open. Absent ⇒ such a run says it cannot be continued here.
+   */
+  readonly continueMedia?: ((runId: string) => Promise<string | undefined>) | undefined;
   /** How long a confirmed exit waits for the run to settle before it abandons it (default {@link HOSTED_RUN_EXIT_GRACE_MS}). */
   readonly exitGraceMs?: number;
   /**
@@ -1459,12 +1466,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     const gates = cardGatesOf(run);
     if (gates.length === 0) {
-      notParked(
-        runId,
-        `No gate to decide here: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
-        back,
-        from,
-      );
+      // A run parked on media jobs alone has nothing to decide, and something to continue: it is asked about, never opened as a card.
+      if (isMediaOnlyPark(run)) askToContinueMedia(run.runId, back, from);
+      else
+        notParked(
+          runId,
+          `No gate to decide here: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+          back,
+          from,
+        );
       return false;
     }
     const card = createRunCard({
@@ -1954,6 +1964,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice, ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
       if (launchStartedRun(before)) openRunView();
     }, 'Run workflow');
+  };
+
+  /**
+   * `Enter` on a run parked on media jobs alone, from a strip row, the Active tab or the run view of a leg that ended parked
+   * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3, the 2026-11-23 amendment note): the native
+   * question whether to continue it here. It is a question, never an action: a No or `Esc` leaves the run parked and says nothing, and only
+   * a Yes asks the host for the media resume. The sentence the question resolves with (a leg that started, or the host's own refusal, such
+   * as another leg already executing) is shown where the person who pressed `Enter` is looking ({@link notParked}), and a leg that started
+   * is shown at once, as `/run` shows one ({@link launchStartedRun}); `Esc` then returns to where the key was pressed.
+   *
+   * A run this Home executes right now is never offered: its leg has parked but not finished stopping, so there is nothing to continue and
+   * its view is the answer. With no port wired the run says so instead of a dead end.
+   */
+  const askToContinueMedia = (
+    runId: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin,
+  ): void => {
+    const ask = deps.continueMedia;
+    if (ask === undefined) {
+      notParked(
+        runId,
+        `Continuing a run is unavailable in this session: \`relavium status\` shows what it waits for (run ${sanitizeInline(runId)}).`,
+        back,
+        from,
+      );
+      return;
+    }
+    if (deps.hostedRuns?.snapshot().active?.runId === runId) {
+      if (back === 'run-view' || !openRunView(from))
+        notParked(runId, `This Home is still running run ${sanitizeInline(runId)}.`, back, from);
+      return;
+    }
+    openNativeAction(async () => {
+      const before = deps.hostedRuns?.snapshot();
+      const notice = await ask(runId);
+      if (exiting) return;
+      if (notice !== undefined) notParked(runId, notice, back, from);
+      if (launchStartedRun(before)) openRunView(from);
+    }, 'Continue run');
   };
 
   /**

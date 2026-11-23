@@ -13,6 +13,7 @@
  */
 
 import {
+  isMediaOnlyPark,
   readProjectRunGates,
   type ProjectRunGates,
   type RunGatesReader,
@@ -23,8 +24,18 @@ import { displayWidth, sliceDisplayColumns } from './viewport.js';
 /** The most parked runs the Home keeps rows for. */
 export const PARKED_RUNS_MAX = 8;
 
-/** What a parked run waits on: one gate's type, a budget gate, several gates, or nothing a card can show (a media park). */
-export type ParkedRunKind = 'approval' | 'input' | 'review' | 'budget' | 'several' | 'none';
+/**
+ * What a parked run waits on: one gate's type, a budget gate, several gates, media jobs and nothing else (`Enter` asks whether to continue
+ * it here), or nothing a card can show or a continue can answer (`none`: the log names no gate and no job in flight).
+ */
+export type ParkedRunKind =
+  | 'approval'
+  | 'input'
+  | 'review'
+  | 'budget'
+  | 'several'
+  | 'media'
+  | 'none';
 
 export interface ParkedRunRow {
   readonly runId: string;
@@ -35,7 +46,7 @@ export interface ParkedRunRow {
 
 function kindOf(run: ProjectRunGates['runs'][number]): ParkedRunKind {
   const open = run.gates.length + run.budgetGates.length;
-  if (open === 0) return 'none';
+  if (open === 0) return isMediaOnlyPark(run) ? 'media' : 'none';
   if (open > 1) return 'several';
   return run.gates[0]?.gateType ?? 'budget';
 }
@@ -62,6 +73,20 @@ export function readParkedRuns(
   return parkedRunRows(readProjectRunGates(reader, projectRoot, { maxRuns: PARKED_RUNS_MAX }));
 }
 
+/**
+ * What `Enter` does on the focused row of each kind, in the row's own words: a gate or a budget gate opens its card, a media park asks
+ * whether to continue the run here (nothing is continued without a Yes), and a run with nothing to answer says why.
+ */
+const FOCUSED_CUE: Readonly<Record<ParkedRunKind, string>> = {
+  approval: 'Enter opens',
+  input: 'Enter opens',
+  review: 'Enter opens',
+  budget: 'Enter opens',
+  several: 'Enter opens',
+  media: 'Enter asks to continue',
+  none: 'Enter says why',
+};
+
 function wordsFor(row: ParkedRunRow): string {
   switch (row.kind) {
     case 'approval':
@@ -71,6 +96,8 @@ function wordsFor(row: ParkedRunRow): string {
       return `${row.kind} gate`;
     case 'several':
       return `${String(row.gates)} open gates`;
+    case 'media':
+      return 'waiting for media';
     case 'none':
       return 'parked, no gate to decide';
   }
@@ -98,7 +125,7 @@ export function parkedRunLabel(
   focused: boolean,
   maxColumns = Number.POSITIVE_INFINITY,
 ): string {
-  const key = focused ? (row.kind === 'none' ? 'Enter says why' : 'Enter opens') : '↓ selects';
+  const key = focused ? FOCUSED_CUE[row.kind] : '↓ selects';
   const id = sanitizeInline(row.runId);
   const tail = `  ·  ${wordsFor(row)}  ·  ${key}`;
   const full = `‖ ${id}${tail}`;

@@ -161,6 +161,70 @@ describe('the active classes', () => {
     });
   });
 
+  it('a media park whose log shows a job in flight is actionable: `Enter` continues it (asking first), and it keeps what it waits for', () => {
+    const row = only(
+      classify([run('r9a', { status: 'paused' })], {
+        pendingGateCounts: new Map([['r9a', 0]]),
+        pendingMediaJobCounts: new Map([['r9a', 2]]),
+      }),
+    );
+    expect(row).toMatchObject({
+      class: 'other-paused-media',
+      actionable: true,
+      enter: 'continue-media',
+      reason: 'waiting for a media job',
+    });
+  });
+
+  it('a media park is read-only without a count above zero: unknown, zero or absent never offers a continue the engine would refuse', () => {
+    const gates = new Map([['r9b', 0]]);
+    for (const media of [
+      undefined,
+      new Map<string, number>(),
+      new Map([['r9b', 0]]),
+      new Map([['x', 3]]),
+    ]) {
+      const row = only(
+        classify([run('r9b', { status: 'paused' })], {
+          pendingGateCounts: gates,
+          ...(media === undefined ? {} : { pendingMediaJobCounts: media }),
+        }),
+      );
+      expect(row).toMatchObject({
+        class: 'other-paused-media',
+        actionable: false,
+        enter: 'inspect',
+      });
+    }
+  });
+
+  it('a run with a gate is never a media continue, whatever its media count says; the hosted run and another project`s run never are either', () => {
+    const counts = {
+      pendingGateCounts: new Map([
+        ['gate', 1],
+        ['mine', 0],
+        ['far', 0],
+      ]),
+      pendingMediaJobCounts: new Map([
+        ['gate', 1],
+        ['mine', 1],
+        ['far', 1],
+      ]),
+    };
+    const rows = classify(
+      [
+        run('gate', { status: 'paused' }),
+        run('mine', { status: 'paused' }),
+        run('far', { status: 'paused', projectRoot: '/work/other' }),
+      ],
+      { ...counts, hostedRunId: 'mine' },
+    );
+    const byId = new Map(rows.map((row) => [row.runId, row]));
+    expect(byId.get('gate')).toMatchObject({ class: 'other-paused-here', enter: 'open-gate-card' });
+    expect(byId.get('mine')).toMatchObject({ class: 'hosted', enter: 'reopen-view' });
+    expect(byId.get('far')).toMatchObject({ class: 'other-paused-elsewhere', actionable: false });
+  });
+
   it('paused-gate-unknown: without the gate facts a paused run here is NOT actionable (no guessing)', () => {
     const row = only(classify([run('r10', { status: 'paused' })]));
     expect(row).toMatchObject({

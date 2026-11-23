@@ -65,6 +65,18 @@ export interface HostedResumeRequest {
   readonly secrets?: HostedSecretPort | undefined;
 }
 
+/**
+ * Continue a run that is parked on media jobs and nothing else ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
+ * §3): the next leg, on a fresh engine, through the same resume core and with no gate and no decision, because there are none to give.
+ * It is a request of the same single-flight path as {@link HostedResumeRequest}: one leg at a time, the same owner, lease and teardown.
+ */
+export interface HostedMediaResumeRequest {
+  readonly runId: string;
+  readonly kind: 'media';
+  /** Asked for the masked slots of a run that carries secrets (the engine needs them to continue); absent means the host supplies none. */
+  readonly secrets?: HostedSecretPort | undefined;
+}
+
 /** Why a request was turned away before it cost anything. */
 export type HostedRefusal =
   /** A leg is preparing or executing; a second is never queued. */
@@ -421,10 +433,11 @@ export class RunHost {
   }
 
   /**
-   * Answer a parked run on a fresh engine. A run recorded for another directory is refused before anything is
-   * registered or built: the Home never re-anchors its workspace.
+   * Answer a parked run on a fresh engine, or continue one that waits on media jobs only (the same leg, the same single flight, owner,
+   * lease and teardown). A run recorded for another directory is refused before anything is registered or built: the Home never
+   * re-anchors its workspace.
    */
-  resume(request: HostedResumeRequest): Promise<HostedLaunch> {
+  resume(request: HostedResumeRequest | HostedMediaResumeRequest): Promise<HostedLaunch> {
     const turnedAway = this.#admission();
     if (turnedAway !== undefined) return turnedAway;
     const otherProject = this.#otherProjectRefusal(request.runId);
@@ -851,25 +864,31 @@ export class RunHost {
     };
   }
 
-  async #acquireResume(request: HostedResumeRequest, context: LegContext): Promise<Acquisition> {
+  async #acquireResume(
+    request: HostedResumeRequest | HostedMediaResumeRequest,
+    context: LegContext,
+  ): Promise<Acquisition> {
     const { lifetime, resources, io } = context;
     const host = loadResolvedConfig({
       cwd: this.#projectRoot,
       configPath: this.#global.configPath,
       ...(this.#homeDir === undefined ? {} : { home: this.#homeDir }),
     });
+    // The Home may offer a secret port for every answer, because it cannot know what the run holds: it is asked only for a run
+    // whose record carries a masked slot, and a run with none is resumed as the shell resumes it, with nothing to re-supply.
+    const secretStdin =
+      request.secrets !== undefined &&
+      carriesMaskedSlots(loadRunSnapshot(this.#db, request.runId)?.inputJson ?? '');
     const resumed = await resumeRun(
-      {
-        runId: request.runId,
-        gate: request.gate,
-        // The Home may offer a secret port for every answer, because it cannot know what the run holds: it is asked only for a run
-        // whose record carries a masked slot, and a run with none is resumed as the shell resumes it, with nothing to re-supply.
-        secretStdin:
-          request.secrets !== undefined &&
-          carriesMaskedSlots(loadRunSnapshot(this.#db, request.runId)?.inputJson ?? ''),
-        kind: request.kind,
-        decision: request.decision,
-      },
+      request.kind === 'media'
+        ? { runId: request.runId, secretStdin, kind: 'media' }
+        : {
+            runId: request.runId,
+            gate: request.gate,
+            secretStdin,
+            kind: request.kind,
+            decision: request.decision,
+          },
       { io, global: { cwd: this.#projectRoot }, ...this.#services },
       { config: host.config, homeDir: host.homeDir },
       {

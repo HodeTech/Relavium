@@ -160,6 +160,7 @@ import { readParkedRuns } from '../render/tui/home-attention.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
 import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
+import { runMediaContinue } from './media-continue.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { resolveHomeChatAgent, type HomeAgentRequest } from './agent-start.js';
@@ -2060,6 +2061,13 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
           resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
         },
+        // A run parked on media jobs alone has no gate to answer: `Enter` on it asks whether to continue it here (default No), and a Yes is the
+        // run host's media resume, on the same prompt channel and the same single flight as a gate answer (ADR-0139 §3, the 2026-11-23 note).
+        continueMedia: (runId) =>
+          runMediaContinue(
+            { host: hostedRuns, flow: promptFlow, assertAdmitting: assertHomeAdmitting },
+            runId,
+          ),
         // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): the Permissions tab of the tab host. The project's remembered commands,
         // over the very store a chat and `relavium permissions` read, and the repository's `[chat]` allowlist as a chat started now would
         // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the tab is entered,

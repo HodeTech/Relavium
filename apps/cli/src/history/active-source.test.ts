@@ -27,6 +27,7 @@ import {
   createActiveReader,
   readActive,
   readActiveGateCounts,
+  readActiveParkCounts,
   type ActiveSourceReader,
 } from './active-source.js';
 
@@ -238,9 +239,11 @@ describe('a paused run’s gates', () => {
       class: 'other-paused-here',
       actionable: true,
     });
+    // A media park whose log shows a job in flight can be continued (ADR-0139 §3, the 2026-11-23 amendment note): `Enter` asks first.
     expect(rowOf(rows, 'run-media')).toMatchObject({
       class: 'other-paused-media',
-      actionable: false,
+      actionable: true,
+      enter: 'continue-media',
       reason: 'waiting for a media job',
     });
   });
@@ -319,6 +322,44 @@ describe('a paused run’s gates', () => {
     const counts = readActiveGateCounts(reader, HERE, paused);
     expect(counts?.get('run-good')).toBe(2);
     expect(counts?.has('run-bad'), 'a damaged log has no count, and so no zero').toBe(false);
+  });
+
+  it('counts the media jobs in flight beside the gates, and a damaged log has neither (never a zero that reads as a media park)', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-media', state: 'paused', atMs: T0 });
+    await seedRun(client.db, {
+      slug: 'wf',
+      runId: 'run-gate',
+      state: 'paused',
+      atMs: T0 + 1,
+      gate: { gateId: 'g1', gateType: 'approval' },
+    });
+    await seedRun(client.db, {
+      slug: 'wf',
+      runId: 'run-bad',
+      state: 'paused',
+      atMs: T0 + 2,
+      gate: { gateId: 'g2', gateType: 'approval' },
+    });
+    for (const id of ['run-media', 'run-gate', 'run-bad']) inProject(id, HERE);
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-0000000000f3',
+        runId: 'run-bad',
+        seq: 900,
+        eventType: 'node:started',
+        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
+        ts: 0,
+      })
+      .run();
+    const paused = reader.listRunSummaries({ limit: 10, status: 'paused' });
+    const counts = readActiveParkCounts(reader, HERE, paused);
+    expect(counts?.media.get('run-media')).toBe(1);
+    expect(counts?.gates.get('run-media')).toBe(0);
+    expect(counts?.media.get('run-gate')).toBe(0);
+    expect(counts?.gates.get('run-gate')).toBe(1);
+    expect(counts?.media.has('run-bad')).toBe(false);
+    expect(counts?.gates.has('run-bad')).toBe(false);
   });
 });
 

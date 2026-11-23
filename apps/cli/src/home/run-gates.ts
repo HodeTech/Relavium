@@ -3,7 +3,7 @@ import type { RunHistoryReader } from '@relavium/db';
 import type { GateDecision, HumanGatePausedEvent, RunEvent } from '@relavium/shared';
 
 import type { BudgetPromptContext } from '../gate/budget.js';
-import { pendingGateDisplays, type PendingBudgetGate } from '../gate/pending.js';
+import { pendingParkDisplays, type PendingBudgetGate } from '../gate/pending.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /**
@@ -98,8 +98,29 @@ export interface RunGates {
   readonly gates: readonly RunGate[];
   /** Its open budget gates (the budget card's, not the human gate card's). */
   readonly budgetGates: readonly PendingBudgetGate[];
+  /**
+   * The nodes whose async media jobs are still in flight, from the same fold of the log. A run with this and no gate is the media-only park:
+   * the Home continues it with no decision ({@link isMediaOnlyPark}). Absent reads as none (a stand-in for a read that was not made).
+   */
+  readonly pendingMediaJobNodeIds?: readonly string[];
   /** The run's event log could not be read: `gates` is a stand-in, not an answer. */
   readonly degraded: boolean;
+}
+
+/**
+ * Whether `run` waits on media jobs and on nothing a person can decide: a readable log, no human gate, no budget gate and at least one job
+ * in flight. The one test of "the media-only park" for the Home's rows, its question and the Active tab, so they cannot disagree on it
+ * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3).
+ */
+export function isMediaOnlyPark(
+  run: Pick<RunGates, 'gates' | 'budgetGates' | 'pendingMediaJobNodeIds' | 'degraded'>,
+): boolean {
+  return (
+    !run.degraded &&
+    run.gates.length === 0 &&
+    run.budgetGates.length === 0 &&
+    (run.pendingMediaJobNodeIds?.length ?? 0) > 0
+  );
 }
 
 export interface ProjectRunGates {
@@ -132,10 +153,16 @@ export function gatesOfRun(
   run: { readonly id: string; readonly workflowId: string },
 ): RunGates {
   const read = readPerRunOrDegrade<Omit<RunGates, 'degraded'>>(
-    { runId: run.id, workflowId: run.workflowId, gates: [], budgetGates: [] },
+    {
+      runId: run.id,
+      workflowId: run.workflowId,
+      gates: [],
+      budgetGates: [],
+      pendingMediaJobNodeIds: [],
+    },
     () => {
       const events = reader.loadRunStateEvents(run.id);
-      const pending = pendingGateDisplays(events);
+      const pending = pendingParkDisplays(events);
       const actions = timeoutActions(events);
       return {
         runId: run.id,
@@ -154,6 +181,7 @@ export function gatesOfRun(
           };
         }),
         budgetGates: pending.pendingBudgetGates,
+        pendingMediaJobNodeIds: pending.pendingMediaJobNodeIds,
       };
     },
   );

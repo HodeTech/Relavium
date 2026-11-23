@@ -153,16 +153,40 @@ function formatResumeInvocation(
   return `${commandBase} ${flag}`;
 }
 
-/** What a host asks `resumeRun` to resume: the run, the gate it names, and the decision it already holds. */
-export interface ResumeRunRequest {
+/** What every request to `resumeRun` carries: the run, and whether the host will supply its `secret` inputs. */
+interface ResumeRunRequestBase {
   readonly runId: string;
-  /** Which pending gate to resolve (required only when more than one is pending). */
-  readonly gate?: string | undefined;
   /** Whether the host will supply the run's `secret` inputs; a secret-bearing run refuses without it. */
   readonly secretStdin?: boolean | undefined;
+}
+
+/** Answer a parked gate: the run, the gate it names, and the decision the host already holds. */
+export interface ResumeGateRunRequest extends ResumeRunRequestBase {
+  /** Which pending gate to resolve (required only when more than one is pending). */
+  readonly gate?: string | undefined;
   readonly kind: 'human' | 'budget';
   readonly decision: GateDecision;
 }
+
+/**
+ * Continue a run that is parked on media jobs and on nothing else
+ * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §3): no gate, no decision and no budget
+ * approval, because there is none to give. It re-attaches the jobs the log recorded; it submits nothing again.
+ */
+export interface ResumeMediaRunRequest extends ResumeRunRequestBase {
+  readonly kind: 'media';
+}
+
+/** What a host asks `resumeRun` to resume. */
+export type ResumeRunRequest = ResumeGateRunRequest | ResumeMediaRunRequest;
+
+/** The fixed refusals of a media continue; each is the whole message and carries nothing the log holds. */
+export const MEDIA_RESUME_REFUSALS = Object.freeze({
+  notParked: 'The run is not parked.',
+  pendingGate:
+    'The run is waiting for a decision, not only for media jobs: answer its gate or its budget gate.',
+  noMediaJobs: 'The run is not waiting for media jobs.',
+});
 
 /** The injectable services a resume uses. Every member is the one `GateCommandDeps` already carries. */
 export interface ResumeRunDeps {
@@ -246,7 +270,9 @@ export async function resumeRun(
 ): Promise<ResumeRunResult> {
   const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
   const { config, homeDir } = host;
-  const { runId, kind, decision } = request;
+  const { runId } = request;
+  // A gate answer carries its decision; a media continue carries none, and is the only request that names no gate.
+  const gateRequest = request.kind === 'media' ? undefined : request;
   lifetime.checkpoint();
   const opened = acquireNativeResource((captureClose) => ports.openDb(captureClose), {
     assertAdmitting: () => lifetime.checkpoint(),
@@ -290,9 +316,11 @@ export async function resumeRun(
   // racing process could have advanced between the snapshot read and now (and which the engine would then
   // surface as a closed-handle resume → a misleading exit 1).
   const selection =
-    kind === 'budget'
-      ? selectBudgetGate(checkpoint, request.gate)
-      : selectGate(checkpoint, checkpoint.runStatus, request.gate);
+    gateRequest === undefined
+      ? selectMediaPark(checkpoint)
+      : gateRequest.kind === 'budget'
+        ? selectBudgetGate(checkpoint, gateRequest.gate)
+        : selectGate(checkpoint, checkpoint.runStatus, gateRequest.gate);
   if (selection.kind === 'invalid') {
     throw new CliError('invalid_invocation', selection.message);
   }
@@ -301,28 +329,39 @@ export async function resumeRun(
     return { kind: 'settled', message: selection.message };
   }
 
-  if (kind === 'budget') {
-    const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-    assertBudgetDecision(gate?.allowance, decision);
-  } else {
-    const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-    assertDecisionFitsGateType(workflow, gate?.nodeId, decision);
+  // From here on a request either decides one gate (`answer` is set) or continues the media park (it is not): everything below that is
+  // about a gate, a decision or a budget approval is asked of `answer` alone, so a media continue passes none of it and adds none of it.
+  const answer =
+    gateRequest === undefined || selection.kind !== 'resume'
+      ? undefined
+      : { request: gateRequest, gateId: selection.gateId };
+  if (answer !== undefined) {
+    const { request: given, gateId } = answer;
+    const pending = checkpoint.pendingGates.find((entry) => entry.gateId === gateId);
+    if (given.kind === 'budget') assertBudgetDecision(pending?.allowance, given.decision);
+    else assertDecisionFitsGateType(workflow, pending?.nodeId, given.decision);
+    // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
+    // A match grants nothing; the later full preparation reads a fresh price snapshot again.
+    if (given.kind === 'budget' && given.decision.decision === 'approved') {
+      if (
+        pending?.allowance?.kind === 'frozen' &&
+        !budgetAllowancePricesMatch(pending.allowance.quote, readBudgetPricingOverlay(opened.db))
+      )
+        throw new CliError(
+          'invalid_invocation',
+          'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
+        );
+    }
   }
-  // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
-  // A match grants nothing; the later full preparation reads a fresh price snapshot again.
-  if (kind === 'budget' && decision.decision === 'approved') {
-    const gate = checkpoint.pendingGates.find((entry) => entry.gateId === selection.gateId);
-    if (
-      gate?.allowance?.kind === 'frozen' &&
-      !budgetAllowancePricesMatch(gate.allowance.quote, readBudgetPricingOverlay(opened.db))
-    )
-      throw new CliError(
-        'invalid_invocation',
-        'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
-      );
-  }
-  const commandBase = resumeCommandBase(kind, runId, selection.gateId);
-  const resumeInvocation = formatResumeInvocation(commandBase, kind, decision);
+  // A media continue has no shell command to copy: the shell never continues a media park (a product decision, not this core's).
+  const resumeInvocation =
+    answer === undefined
+      ? undefined
+      : formatResumeInvocation(
+          resumeCommandBase(answer.request.kind, runId, answer.gateId),
+          answer.request.kind,
+          answer.request.decision,
+        );
   const inputs = await resolveSecretInputs(
     parseInputs(snapshot.inputJson, runId),
     request,
@@ -330,10 +369,11 @@ export async function resumeRun(
     resumeInvocation,
   );
   lifetime.checkpoint();
-  const keys =
-    kind === 'budget' && decision.decision === 'rejected'
-      ? undefined
-      : deps.resolveKeys?.(opened.db);
+  // A budget rejection is fatal and dispatches no agent: it needs no provider key and no tool server. A media continue DOES dispatch
+  // (it polls the job's provider and runs what follows), so it resolves exactly what a gate answer resolves.
+  const rejectsBudget =
+    answer?.request.kind === 'budget' && answer.request.decision.decision === 'rejected';
+  const keys = rejectsBudget ? undefined : deps.resolveKeys?.(opened.db);
   lifetime.checkpoint();
   const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
   // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
@@ -355,7 +395,7 @@ export async function resumeRun(
   assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
   let mcpRuntime: WorkflowMcpRuntime | undefined;
   // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
-  if (workflowDeclaresMcp(workflow) && !(kind === 'budget' && decision.decision === 'rejected')) {
+  if (workflowDeclaresMcp(workflow) && !rejectsBudget) {
     mcpRuntime = await resources.connectMcp(() =>
       connectWorkflowMcp(workflow, {
         ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
@@ -477,8 +517,8 @@ export async function resumeRun(
     eventConsumption: 'iterated',
     workflow,
     inputs,
-    gateId: selection.gateId,
-    decision,
+    // A media continue names neither: the engine then re-attaches the parked jobs and refuses a run that also waits on a gate.
+    ...(answer === undefined ? {} : { gateId: answer.gateId, decision: answer.request.decision }),
   });
   lifetime.adoptHandle(handle);
   return { kind: 'resumed', engine, handle, db: opened.db, mediaCasRoot: wiring.media.casRoot };
@@ -534,6 +574,31 @@ export function selectGate(
     kind: 'invalid',
     message: `more than one gate is pending — pass --gate <gateId>:${pendingList(pending)}`,
   };
+}
+
+/** What a media continue resolved to: the park to continue, or a disposition that ends the request. */
+type MediaSelection =
+  | Exclude<GateSelection, { readonly kind: 'resume' }>
+  | { readonly kind: 'media' };
+
+/**
+ * Whether `checkpoint` is a media-only park a continue may re-attach: a run that already ended is the same clean no-op a doubled decision
+ * is; anything else must be PARKED, with no gate or budget gate open (those need a decision no continue carries) and at least one media
+ * job in flight. It reads the checkpoint this process folded BEFORE it holds the lease, so it is a refusal that costs nothing and not a
+ * guarantee: the engine reads the checkpoint again under the lease and checks the same facts (`run_not_paused`,
+ * `pending_gate_requires_decision`).
+ */
+export function selectMediaPark(checkpoint: CheckpointState): MediaSelection {
+  if (TERMINAL_STATUSES.has(checkpoint.runStatus)) {
+    return { kind: 'idempotent', message: `run ${checkpoint.runStatus}; nothing to resume` };
+  }
+  if (checkpoint.runStatus !== 'paused')
+    return { kind: 'invalid', message: MEDIA_RESUME_REFUSALS.notParked };
+  if (checkpoint.pendingGates.length > 0)
+    return { kind: 'invalid', message: MEDIA_RESUME_REFUSALS.pendingGate };
+  if (checkpoint.pendingMediaJobs.length === 0)
+    return { kind: 'invalid', message: MEDIA_RESUME_REFUSALS.noMediaJobs };
+  return { kind: 'media' };
 }
 
 function pendingList(pending: readonly { readonly gateId: string }[]): string {

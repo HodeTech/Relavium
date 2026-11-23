@@ -21,8 +21,9 @@ import {
  *   without colour: `◐ running`, `○ pending`, `⏸ paused`, `⚠ stalled`, `◇ held`. The leg this Home runs is in `running` and says so; a
  *   paused run says what it waits for (a gate here, a media job, another project, or `gate state not read`, which a damaged log gets and
  *   never "media job").
- * - **Two kinds of row act.** `Enter` on the leg this Home hosts asks the host to reopen its view; `Enter` on a run paused at a gate in THIS
- *   project asks it to open the gate card. Every other row is read-only: `Enter` says why, and nothing here cancels, retries or edits a run.
+ * - **Three kinds of row act.** `Enter` on the leg this Home hosts asks the host to reopen its view; `Enter` on a run paused at a gate in THIS
+ *   project asks it to open the gate card; `Enter` on a run paused only on media jobs in THIS project asks it to ask whether to continue
+ *   the run here. Every other row is read-only: `Enter` says why, and nothing here cancels, retries or edits a run.
  *   A step carries the run id of the row the model classified; the host re-reads the run before it opens anything, so a stale or crafted id
  *   opens no card.
  * - **The cursor follows the run, not the row number.** The list is read again while the tab is in front, so the focused run is kept by
@@ -178,7 +179,9 @@ function explain(row: ActiveRow): string {
         ? `No live owner: ${STALLED_REASON}. Read-only.`
         : 'Running in another process: read-only. There is no cross-process cancel.';
     case 'other-paused-media':
-      return 'Waiting for a media job: there is nothing to decide here.';
+      return row.actionable
+        ? 'Waiting for a media job. Enter asks whether to continue it here.'
+        : 'Waiting for a media job: there is nothing to decide here.';
     case 'paused-gate-unknown':
       return 'Its gate state could not be read. relavium status shows what it waits for.';
     case 'other-paused-elsewhere':
@@ -212,7 +215,9 @@ export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
   const row = state.rows[state.cursor];
   if (row === undefined) return stay;
   if (row.enter === 'reopen-view') return { kind: 'open-view', runId: row.runId, state: cleared };
-  if (row.enter === 'open-gate-card')
+  // A media park that can be continued is opened by the same request as a gate park: the host re-reads the run when it opens, and it
+  // is the host that tells a gate card from the question a media park gets (it asks, and nothing is continued without a Yes).
+  if (row.enter === 'open-gate-card' || row.enter === 'continue-media')
     return { kind: 'open-gate', runId: row.runId, state: cleared };
   return { kind: 'state', state: { ...cleared, message: readOnlyMessage(row) } };
 }

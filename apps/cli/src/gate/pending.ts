@@ -88,8 +88,23 @@ export function pendingGateDisplays(events: readonly RunEvent[]): {
   pendingGates: PendingGate[];
   pendingBudgetGates: PendingBudgetGate[];
 } {
+  const { pendingGates, pendingBudgetGates } = pendingParkDisplays(events);
+  return { pendingGates, pendingBudgetGates };
+}
+
+/**
+ * What a paused run waits on, in one fold of its log: its open human gates, its open budget gates and the nodes whose async media jobs are
+ * still in flight (the same `pendingMediaJobs` the engine's media-only resume checks). The same read-only projection as
+ * {@link pendingGateDisplays}, which it extends with the media half: it names a node id and nothing else of a job, and it authorizes nothing.
+ */
+export function pendingParkDisplays(events: readonly RunEvent[]): {
+  pendingGates: PendingGate[];
+  pendingBudgetGates: PendingBudgetGate[];
+  pendingMediaJobNodeIds: string[];
+} {
   const checkpoint = reconstructCheckpointState(events);
-  if (checkpoint === undefined) return { pendingGates: [], pendingBudgetGates: [] };
+  if (checkpoint === undefined)
+    return { pendingGates: [], pendingBudgetGates: [], pendingMediaJobNodeIds: [] };
   return {
     pendingGates: humanGateDisplays(events, checkpoint),
     pendingBudgetGates: checkpoint.pendingGates
@@ -100,6 +115,7 @@ export function pendingGateDisplays(events: readonly RunEvent[]): {
         allowance: budgetPromptContext(gate.allowance),
         ...(gate.expiresAt === undefined ? {} : { expiresAt: gate.expiresAt }),
       })),
+    pendingMediaJobNodeIds: checkpoint.pendingMediaJobs.map((job) => job.nodeId),
   };
 }
 

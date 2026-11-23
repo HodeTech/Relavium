@@ -14,7 +14,7 @@ import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detai
  * | `hosted` | the leg this Home executes | yes: reopen its view |
  * | `other-running` | another process's `pending` or `running` run | no: read-only, no cross-process cancel |
  * | `other-paused-here` | a run paused at a gate, started in THIS project | yes: open the gate card |
- * | `other-paused-media` | a run paused only on a media job, in this project | no |
+ * | `other-paused-media` | a run paused only on a media job, in this project | yes when its jobs are known to be in flight: `Enter` asks whether to continue it here; else no |
  * | `paused-gate-unknown` | paused in this project, and the caller did not say whether it holds a gate | no |
  * | `other-paused-elsewhere` | a paused run started in another project | no: ADR-0139 §7 |
  * | `held` | a run whose terminal event sits in the outbox | no |
@@ -26,8 +26,10 @@ import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detai
  * of this project; a run absent from that map is `paused-gate-unknown` and is NOT actionable, so a media park is
  * never offered a gate card it cannot answer. MUST BE RESOLVED IN MVP-8 STEP 4 (the Active tab): the tab's reader
  * has to read the pending gates of every paused run in THIS project (per-run isolated, as `readPerRunOrDegrade`
- * does) and fill that map; until it does, no paused row is actionable. ADR-0139 §3 also leaves open whether a media
- * park can be continued with no decision; if step 2 lands that, `other-paused-media` becomes actionable here.
+ * does) and fill that map; until it does, no paused row is actionable. A media park CAN be continued with no decision
+ * (ADR-0139 §3, the 2026-11-23 amendment note): the caller also passes `pendingMediaJobCounts` (run id to the number of media
+ * jobs its log has in flight), and a gate-less paused run with a count above zero is actionable. A run absent from that map,
+ * or counted zero, stays read-only: the tab never offers a continue it cannot tell the engine will accept.
  *
  * Precedence, so a run is in exactly one class: `held`/`hosted` are decided by the run's id; then the status
  * decides. A run that is `hosted` stays `hosted` even if its terminal is also held (the view is where the held
@@ -44,10 +46,13 @@ export type ActiveClass =
   | 'other-paused-elsewhere'
   | 'held';
 
-/** What `Enter` does on a row. Nothing here cancels, retries or edits a run. */
-export type ActiveEnter = 'reopen-view' | 'open-gate-card' | 'inspect';
+/** What `Enter` does on a row. Nothing here cancels, retries or edits a run; `continue-media` asks first (a Yes/No whose default is No). */
+export type ActiveEnter = 'reopen-view' | 'open-gate-card' | 'continue-media' | 'inspect';
 
 export const STALLED_REASON = 'settled by the next start';
+
+/** What a gate-less paused run waits for: said on the row, and the reason a read-only one gives. */
+const MEDIA_PARK_REASON = 'waiting for a media job';
 
 export interface ActiveRow {
   readonly runId: string;
@@ -58,10 +63,10 @@ export interface ActiveRow {
   readonly status: RunStatus;
   readonly glyph: string;
   readonly class: ActiveClass;
-  /** `true` only for the two classes whose `Enter` acts on the run. */
+  /** `true` only for the classes whose `Enter` acts on the run: the hosted leg, a gate park, and a media park that can be continued. */
   readonly actionable: boolean;
   readonly enter: ActiveEnter;
-  /** Why a read-only row is read-only; absent for an actionable row. */
+  /** Why a read-only row is read-only; absent for an actionable row, except the media park, which keeps what it waits for. */
   readonly reason?: string;
   /**
    * A `running` run, not hosted here, that is older than one TTL and whose lease is missing or expired by more than
@@ -88,6 +93,8 @@ export interface ClassifyActiveInput {
   readonly leaseTtlMs: number;
   /** Run id to the pending gate count of its `run:paused` (see the module note). Absent entries are unknown. */
   readonly pendingGateCounts?: ReadonlyMap<string, number>;
+  /** Run id to the number of media jobs its log has in flight (see the module note). Absent entries are unknown, and unknown is read-only. */
+  readonly pendingMediaJobCounts?: ReadonlyMap<string, number>;
   /** Workflow id to slug (`loadWorkflowSlugs`). */
   readonly workflowLabels?: ReadonlyMap<string, string>;
 }
@@ -130,7 +137,18 @@ function verdictFor(run: RunSummaryRecord, input: ClassifyActiveInput): Verdict 
   }
   const gates = input.pendingGateCounts?.get(run.id);
   if (gates === undefined) return READ_ONLY('paused-gate-unknown', 'gate state not read');
-  if (gates === 0) return READ_ONLY('other-paused-media', 'waiting for a media job');
+  if (gates === 0) {
+    const media = input.pendingMediaJobCounts?.get(run.id) ?? 0;
+    if (media > 0) {
+      return {
+        class: 'other-paused-media',
+        actionable: true,
+        enter: 'continue-media',
+        reason: MEDIA_PARK_REASON,
+      };
+    }
+    return READ_ONLY('other-paused-media', MEDIA_PARK_REASON);
+  }
   return { class: 'other-paused-here', actionable: true, enter: 'open-gate-card' };
 }
 

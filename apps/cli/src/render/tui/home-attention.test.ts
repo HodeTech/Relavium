@@ -67,7 +67,7 @@ describe('one row per paused run of this project', () => {
     ]);
   });
 
-  it('is one row for a run with several open gates, a budget row for a budget park, and a row that says there is no gate for a media park', async () => {
+  it('is one row for a run with several open gates, a budget row for a budget park, and a `media` row for a park on media jobs alone', async () => {
     await park(
       'run-many',
       HERE,
@@ -89,7 +89,7 @@ describe('one row per paused run of this project', () => {
     inProject('run-media', HERE);
     const rows = readParkedRuns(reader, HERE);
     expect(rows.map((row) => [row.runId, row.kind, row.gates])).toEqual([
-      ['run-media', 'none', 0],
+      ['run-media', 'media', 0],
       ['run-budget', 'budget', 1],
       ['run-many', 'several', 2],
     ]);
@@ -239,6 +239,18 @@ describe('the label', () => {
     expect(label).toContain('no gate to decide');
     expect(label).toContain('Enter says why');
     expect(label).not.toContain('Enter opens');
+  });
+
+  it('a run parked on media jobs alone says it waits for media, and its key says it asks before it continues', () => {
+    const focused = parkedRunLabel(row({ kind: 'media', gates: 0 }), true);
+    expect(focused).toBe('‖ run-0001  ·  waiting for media  ·  Enter asks to continue');
+    expect(focused, 'not the words of a run that has nothing to answer').not.toContain('no gate');
+    expect(focused).not.toContain('Enter says why');
+    expect(focused).not.toContain('Enter opens');
+    // Not focused: it says how to reach it, as every row does, and offers no Enter.
+    expect(parkedRunLabel(row({ kind: 'media', gates: 0 }), false)).toBe(
+      '‖ run-0001  ·  waiting for media  ·  ↓ selects',
+    );
   });
 
   it('cleans an id that carries a control sequence or a newline', () => {

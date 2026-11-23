@@ -543,6 +543,23 @@ workflow:
 `,
 );
 
+/** A human gate and nothing else that can park: the run a media-only resume must refuse (HOSTLIFE-1). */
+const GATE_ONLY = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-gate-only
+  inputs:
+    - { name: topic, type: string }
+  nodes:
+    - { id: in, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: out, type: output }
+  edges:
+    - { from: in, to: g }
+    - { from: g, to: out }
+`,
+);
+
 /** Two independent async-media submissions: a parked job is slot-free but its priced admission must stay live. */
 const BUDGETED_ASYNC_MEDIA_PARALLEL = parseWorkflow(
   `schema_version: '1.0'
@@ -1995,6 +2012,48 @@ workflow:
     // double-attach the same jobId). armedCount()===0 pins both the #mediaJobTimers and #runTimeoutDisarm
     // disarm legs of abandon() (H2).
     expect(host2.armedCount()).toBe(0);
+  });
+
+  it('HOSTLIFE-1 guard: a media-only resume (no gate, no decision) of a run parked ONLY on a human gate is refused (run_not_paused), gives its lease back, and leaves the gate answerable', async () => {
+    // The Home offers "continue it here" for a run that waits on media jobs and nothing else, and the CLI core builds that request with
+    // neither a gate nor a decision. The engine, not the CLI, is what must refuse the same request for a run that waits on a PERSON: a
+    // no-decision resume of a gate park would otherwise re-park it silently, with the gate still unresolved and a lease held for nothing.
+    const store = new InMemoryRunStore();
+    const host1 = createInMemoryHost({ store });
+    const engine1 = buildEngine(host1, () => undefined);
+    const { events: events1, gateId } = await drive(
+      engine1.start({ workflow: GATE_ONLY, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    expect(gateId).toBeDefined();
+    expect(events1.some((e) => e.type === 'media_job:submitted')).toBe(false); // gate park only
+    const runId = events1[0]?.runId ?? '';
+
+    const host2 = createInMemoryHost({ store });
+    const engine2 = buildEngine(host2, () => undefined);
+    await expect(
+      engine2.resumeFromCheckpoint({ runId, workflow: GATE_ONLY, inputs: INPUTS }),
+    ).rejects.toMatchObject({ code: 'run_not_paused' });
+    expect(host2.armedCount()).toBe(0);
+    // The refusal took a fence before it read the checkpoint and must have given it back: a leaked claim would refuse the answer below.
+    expect(await host2.runLeases.read(runId)).toBeUndefined();
+
+    // The gate was not touched by the refused request: a decision still resumes the run, from a third process.
+    const host3 = createInMemoryHost({ store });
+    const engine3 = buildEngine(host3, () => undefined);
+    const answered = await drive(
+      await engine3.resumeFromCheckpoint({
+        runId,
+        workflow: GATE_ONLY,
+        inputs: INPUTS,
+        gateId: gateId ?? '',
+        decision: { decision: 'approved', decidedBy: 'human' },
+      }),
+      host3,
+    );
+    expect(answered.events[0]?.type).toBe('human_gate:resumed');
+    expect(answered.events.at(-1)?.type).toBe('run:completed');
   });
 
   it('async media job: a resume past the deadline short-circuits to a retryable timeout, never re-polls (ADR-0045 §3)', async () => {

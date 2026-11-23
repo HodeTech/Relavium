@@ -54,6 +54,9 @@ const THERE = '/work/there';
 const NOW = Date.parse('2026-11-23T12:00:00.000Z');
 const TTL = 60_000;
 
+/** The Home's question for a media park, as the controller is handed it. */
+type MediaQuestion = (runId: string) => Promise<string | undefined>;
+
 const UP: ChatKey = { upArrow: true };
 const DOWN: ChatKey = { downArrow: true };
 const ENTER: ChatKey = { return: true };
@@ -295,6 +298,39 @@ describe('what a key does', () => {
     expect(r.press('', ENTER)).toMatchObject({ kind: 'open-gate', runId: IDS.gate });
   });
 
+  describe('a media park whose log shows a job in flight', () => {
+    const continuable = (): ActiveRow[] =>
+      classify([run(IDS.media, 'paused')], {
+        pendingGateCounts: new Map([[IDS.media, 0]]),
+        pendingMediaJobCounts: new Map([[IDS.media, 1]]),
+      });
+
+    it('Enter asks for the same open request as a gate park (the host re-reads the run and asks the question), with that run`s id', () => {
+      const r = rig(read(continuable()));
+      expect(focusedId(r.state)).toBe(IDS.media);
+      expect(r.press('', ENTER)).toMatchObject({ kind: 'open-gate', runId: IDS.media });
+      expect(active(r.state).message, 'no read-only message: it acts').toBeUndefined();
+    });
+
+    it('says under the list that Enter asks whether to continue it, and keeps the row`s own words', () => {
+      const drawn = textOf(rig(read(continuable())).state);
+      expect(drawn.join('\n')).toContain('Enter asks whether to continue it here');
+      expect(lineWith(drawn, IDS.media)).toContain('waiting for a media job');
+      expect(drawn.join('\n')).not.toContain('nothing to decide here');
+    });
+
+    it('is read-only again with a count of zero: the tab never offers a continue it cannot tell the engine will accept', () => {
+      const rows = classify([run(IDS.media, 'paused')], {
+        pendingGateCounts: new Map([[IDS.media, 0]]),
+        pendingMediaJobCounts: new Map([[IDS.media, 0]]),
+      });
+      const r = rig(read(rows));
+      expect(r.press('', ENTER).kind).toBe('state');
+      expect(active(r.state).message ?? '').toMatch(/^Read-only: /u);
+      expect(textOf(r.state).join('\n')).toContain('nothing to decide here');
+    });
+  });
+
   it.each([IDS.other, IDS.pending, IDS.media, IDS.unknown, IDS.elsewhere, IDS.stalled, IDS.held])(
     'Enter on %s opens nothing: it says the row is read-only, and why',
     (id) => {
@@ -509,6 +545,10 @@ interface Options {
   readonly withActive?: boolean;
   readonly parked?: (runId: string) => RunGates | undefined;
   readonly readFails?: boolean;
+  /** The Home's question for a media park (`runMediaContinue`): absent means the Home has none wired. */
+  readonly continueMedia?: (runId: string) => Promise<string | undefined>;
+  /** What the run host says now (default: no leg). */
+  readonly host?: () => RunHostSnapshot;
 }
 
 /** A Home with a scripted poll, a scripted clock and scripted timers: nothing sleeps and no operator home is read. */
@@ -538,10 +578,11 @@ function mount(options: Options = {}) {
     homeStore: { read: () => EMPTY },
     ...(options.withActive === false ? {} : { active }),
     hostedRuns: {
-      snapshot: (): RunHostSnapshot => IDLE,
+      snapshot: options.host ?? ((): RunHostSnapshot => IDLE),
       cancel: () => true,
       close: () => Promise.resolve(),
     },
+    ...(options.continueMedia === undefined ? {} : { continueMedia: options.continueMedia }),
     gateCards: {
       list: () => [],
       read: options.parked ?? ((runId: string) => (runId === IDS.gate ? GATE_RUN : undefined)),
@@ -762,6 +803,120 @@ describe('a paused row opens its gate card, and Esc returns to the tab on the sa
     moveTo(home, IDS.gate);
     home.controller.handleKey('', ENTER);
     expect(activeOf(home.controller)?.message).toContain('No gate to decide here: ');
+  });
+});
+
+describe('a media park opens a question, not a card, and Esc returns to the tab on the same row', () => {
+  const MEDIA_RUN: RunGates = {
+    runId: IDS.media,
+    workflowId: 'wf',
+    gates: [],
+    budgetGates: [],
+    pendingMediaJobNodeIds: ['paint'],
+    degraded: false,
+  };
+  const rows = classify([run(IDS.media, 'paused')], {
+    pendingGateCounts: new Map([[IDS.media, 0]]),
+    pendingMediaJobCounts: new Map([[IDS.media, 1]]),
+  });
+  const parked = (runId: string): RunGates | undefined =>
+    runId === IDS.media ? MEDIA_RUN : undefined;
+  const RUNNING: RunHostSnapshot = {
+    launching: false,
+    active: { leg: 'resume', runId: IDS.media, cancelling: false },
+    last: undefined,
+  };
+
+  it('Enter asks about THAT run once and opens no gate card; a No (or Esc) says nothing and changes nothing', async () => {
+    const ask = vi.fn<MediaQuestion>(() => Promise.resolve(undefined));
+    const home = mount({ current: read(rows), parked, continueMedia: ask });
+    await openActive(home);
+    const before = activeOf(home.controller);
+    home.controller.handleKey('', ENTER);
+    await flush();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(IDS.media);
+    const screen = home.controller.getSnapshot().screen;
+    expect(screen?.kind, 'no gate card: it is a question').toBe('tab-host');
+    expect(activeOf(home.controller)?.message, 'a No says nothing').toBeUndefined();
+    expect(home.controller.getSnapshot().notice).toBeUndefined();
+    expect(activeOf(home.controller)?.cursor).toBe(before?.cursor);
+    expect(home.controller.getSnapshot().nativeActionBusy, 'the keyboard is given back').toBe(
+      false,
+    );
+  });
+
+  it('a Yes that started the leg puts its run view in front, from the tab, and Esc comes back to the same row', async () => {
+    let started = false;
+    const ask = vi.fn<MediaQuestion>(() => {
+      started = true;
+      return Promise.resolve(`Continuing run ${IDS.media}. It runs in the background.`);
+    });
+    const home = mount({
+      current: read(rows),
+      parked,
+      continueMedia: ask,
+      host: () => (started ? RUNNING : IDLE),
+    });
+    await openActive(home);
+    home.controller.handleKey('', ENTER);
+    await flush();
+    const screen = home.controller.getSnapshot().screen;
+    expect(screen).toMatchObject({ kind: 'run-view', runId: IDS.media, from: 'tab-host' });
+    home.controller.handleKey('', ESC);
+    expect(home.controller.getSnapshot().screen?.kind).toBe('tab-host');
+    expect(activeOf(home.controller)?.focus).toBe(IDS.media);
+  });
+
+  it('a refusal (another leg is executing) is the tab`s message row, and no view opens', async () => {
+    const busy = 'A run is already executing: other-run.';
+    const home = mount({
+      current: read(rows),
+      parked,
+      continueMedia: () => Promise.resolve(busy),
+      host: () => ({ ...IDLE, active: { leg: 'start', runId: 'other-run', cancelling: false } }),
+    });
+    await openActive(home);
+    home.controller.handleKey('', ENTER);
+    await flush();
+    expect(home.controller.getSnapshot().screen?.kind).toBe('tab-host');
+    expect(activeOf(home.controller)?.message).toBe(busy);
+  });
+
+  it('with no question wired the run says so on the tab, in words that are not the dead end', async () => {
+    const home = mount({ current: read(rows), parked });
+    await openActive(home);
+    home.controller.handleKey('', ENTER);
+    expect(activeOf(home.controller)?.message).toContain('Continuing a run is unavailable');
+    expect(activeOf(home.controller)?.message).not.toContain('No gate to decide here');
+  });
+
+  it('a run that is read with no gate and no job in flight keeps the dead end`s words, and asks nothing', async () => {
+    const ask = vi.fn<MediaQuestion>(() => Promise.resolve(undefined));
+    const home = mount({
+      current: read(rows),
+      parked: (runId) =>
+        runId === IDS.media ? { ...MEDIA_RUN, pendingMediaJobNodeIds: [] } : undefined,
+      continueMedia: ask,
+    });
+    await openActive(home);
+    home.controller.handleKey('', ENTER);
+    expect(ask).not.toHaveBeenCalled();
+    expect(activeOf(home.controller)?.message).toContain('No gate to decide here: ');
+  });
+
+  it('a run the log shows with a gate beside its job is the gate card`s, never the question', async () => {
+    const ask = vi.fn<MediaQuestion>(() => Promise.resolve(undefined));
+    const home = mount({
+      current: read(rows),
+      parked: (runId) =>
+        runId === IDS.media ? { ...GATE_RUN, runId, pendingMediaJobNodeIds: ['paint'] } : undefined,
+      continueMedia: ask,
+    });
+    await openActive(home);
+    home.controller.handleKey('', ENTER);
+    expect(ask).not.toHaveBeenCalled();
+    expect(home.controller.getSnapshot().screen?.kind).toBe('gate-card');
   });
 });
 
