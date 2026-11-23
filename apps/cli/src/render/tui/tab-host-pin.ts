@@ -47,9 +47,22 @@ export const PIN_LIMIT_WORDS = '50';
 /** What the tab says when it has no store to pin through. */
 export const PIN_UNAVAILABLE = 'Pinning is unavailable in this session.';
 
-/** The reason for a refusal at the cap. */
-export function pinFullMessage(label: string): string {
-  return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} pins is the limit. Unpin one first.`;
+/**
+ * What the store holds, for a refusal at the cap: the store caps the pins in TOTAL (runs and every project's workflows), so the tab lists
+ * only some of them and the person needs the whole count to see why a pin was refused.
+ */
+export interface PinsStored {
+  /** Every pin the store holds. */
+  readonly total: number;
+  /** The ones this project's list does not hold: other projects' workflow pins and run pins. */
+  readonly elsewhere: number;
+}
+
+/** The reason for a refusal at the cap; with the store's counts when the caller has them. */
+export function pinFullMessage(label: string, stored?: PinsStored): string {
+  if (stored === undefined)
+    return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} pins is the limit. Unpin one first.`;
+  return `Cannot pin ${label}: ${PIN_LIMIT_WORDS} is the limit; ${String(stored.total)} stored, ${String(stored.elsewhere)} in other projects or runs.`;
 }
 
 /** What a toggle that threw says: content-free, because the cause may quote a stored value. */

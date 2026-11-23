@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { seedRun } from '../test-support.js';
 import { FIXTURE_RUN_IDS, FIXTURE_SNAPSHOT, seedFixtureRuns } from './node-run-fixture.js';
 import {
+  RUN_DETAIL_EVENT_PAGE,
   RUN_DETAIL_MAX_PAGES,
   createRunDetailLoader,
   pageRunEvents,
@@ -130,6 +131,15 @@ describe('the log is read page by page, with the cursor on scannedThroughSeq', (
   });
 });
 
+describe('the read is bounded by two numbers the reference and the page both name', () => {
+  it('reads at most 20 pages of 1,000 events, so a log longer than 20,000 events is read as far as that and flagged', () => {
+    // The literals, not the constants: raising either bound is a decision about the page's cost, and it fails here until it is made.
+    expect(RUN_DETAIL_MAX_PAGES).toBe(20);
+    expect(RUN_DETAIL_EVENT_PAGE).toBe(1000);
+    expect(RUN_DETAIL_MAX_PAGES * RUN_DETAIL_EVENT_PAGE).toBe(20_000);
+  });
+});
+
 describe('a run whose terminal is held in the outbox is not in progress', () => {
   /** A run the engine never closed: its row says `running`, and no total was written to it. */
   async function seedLiveRun(runId: string): Promise<void> {
@@ -173,6 +183,9 @@ describe('a run whose terminal is held in the outbox is not in progress', () => 
     });
     expect(ready(await held('run-live')).terminalHeld).toBe(true);
     expect(ready(await held('run-done')).terminalHeld).toBe(false);
+    // An unfinished run the outbox does not name is not held, however many other runs it does hold: the outbox is asked about THIS run.
+    await seedLiveRun('run-live-elsewhere');
+    expect(ready(await held('run-live-elsewhere')).terminalHeld).toBe(false);
 
     const unreadable = createRunDetailLoader({
       reader,

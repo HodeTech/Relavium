@@ -99,11 +99,15 @@ describe('loadRunSummariesByIds (the pinned runs of the History tab)', () => {
 
   it('accepts exactly the cap and refuses one id more, as a typed error and not a truncation', () => {
     seedRun('run-a');
-    const ids = Array.from({ length: MAX_RUN_SUMMARY_IDS }, (_, index) => `run-${String(index)}`);
+    // The literals are the claim: the cap is 200 and 201 is refused, whatever the constant is changed to.
+    expect(MAX_RUN_SUMMARY_IDS).toBe(200);
+    const ids = Array.from({ length: 200 }, (_, index) => `run-${String(index)}`);
     expect(reader.loadRunSummariesByIds(ids).size).toBe(0);
     let caught: unknown;
     try {
-      reader.loadRunSummariesByIds([...ids, 'run-a']);
+      const over = [...ids, 'run-a'];
+      expect(over).toHaveLength(201);
+      reader.loadRunSummariesByIds(over);
     } catch (cause) {
       caught = cause;
     }

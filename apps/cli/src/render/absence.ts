@@ -6,7 +6,7 @@
  * **One home.** The reference lists them in [the Home's "Words for what is absent"](../../../../docs/reference/cli/home.md#words-for-what-is-absent),
  * and this module is the only place the code spells them: the run detail's model (`history/run-detail-model.ts`), the node page's model
  * (`history/node-detail-model.ts`) and the tab host's lines (`render/tui/tab-host-history.ts`, `render/tui/tab-host-node.ts`) import these
- * constants and write no sentence of their own. `absence.test.ts` reads the reference and compares it with {@link ABSENCE_SENTENCES} and
+ * constants and write no sentence of their own (the reference's table has fifteen rows, one for each). `absence.test.ts` reads the reference and compares it with {@link ABSENCE_SENTENCES} and
  * {@link TOOL_OUTCOME_TEMPLATES} in both directions, so a sentence changed in one place and not the other fails a test.
  *
  * A sentence says what is known and no cause beyond it: `not recorded` is for a node that finished and whose figure was never written, and
@@ -37,6 +37,10 @@ export const NO_OUTPUT = 'no output';
 export const EMPTY_OUTPUT = '(empty)';
 /** The word of a node the run passed over; its reason follows it, and every figure of the node says {@link DID_NOT_RUN}. */
 export const SKIPPED = 'skipped';
+/** The error of a run whose stored error carries a code and no message: the run detail's error line says so instead of leaving it blank. */
+export const NO_MESSAGE_RECORDED = 'no message recorded';
+/** A run whose detail has no node to list: no attempt row, and no node named by its frozen workflow. */
+export const NO_NODE_RECORDED = 'no node was recorded';
 /** A node page whose record could not be read (the attempt row is gone, or the run's log is damaged): nothing is guessed in its place. */
 export const UNAVAILABLE = 'unavailable';
 
@@ -55,6 +59,8 @@ export const ABSENCE_SENTENCES = {
   emptyOutput: EMPTY_OUTPUT,
   skipped: SKIPPED,
   unavailable: UNAVAILABLE,
+  noMessageRecorded: NO_MESSAGE_RECORDED,
+  noNodeRecorded: NO_NODE_RECORDED,
 } as const;
 
 /** The placeholder a tool outcome template carries where the measured duration goes. */

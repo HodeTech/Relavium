@@ -126,7 +126,8 @@ function timeoutActions(events: readonly RunEvent[]): ReadonlyMap<string, RunGat
   return byGate;
 }
 
-function gatesOfRun(
+/** One parked run's gates, read from its own log in one isolated read (a damaged log degrades this run only). */
+export function gatesOfRun(
   reader: Pick<RunGatesReader, 'loadRunStateEvents'>,
   run: { readonly id: string; readonly workflowId: string },
 ): RunGates {

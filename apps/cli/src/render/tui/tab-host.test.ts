@@ -594,7 +594,7 @@ describe('what is drawn', () => {
       { columns: 40, terminalRows: 10 },
     ]) {
       expect(textOf(tabHostLines(rig().state, geometry))).toEqual([
-        'Enlarge the terminal to use this screen — Esc closes.',
+        'Enlarge the terminal — Esc steps back, or closes at the list.',
         'Esc close',
       ]);
     }
@@ -633,6 +633,20 @@ describe('the repository’s allowlist, read-only under the list', () => {
     expect(lines).toContain('  command npm test');
     expect(lines).toContain('  pattern git *');
     expect(lines.some((line) => line.includes('more in the config'))).toBe(false);
+  });
+
+  it('masks an entry that is shaped like a key, command and pattern alike: the repository’s file can hold a pasted token', () => {
+    const secret = `sk-ant-api03-${'K'.repeat(40)}`;
+    const text = draw({
+      ok: true,
+      commands: [`deploy --token ${secret}`],
+      globs: [`curl -H "x-api-key: ${secret}" *`],
+      omitted: 0,
+    }).join('\n');
+    expect(text).not.toContain('sk-ant-api03');
+    expect(text).not.toContain('KKKKKKKK');
+    expect(text).toContain('  command deploy --token ');
+    expect(text).toContain('[REDACTED]');
   });
 
   it('says nothing is listed for an empty allowlist, and says so for one that could not be read', () => {

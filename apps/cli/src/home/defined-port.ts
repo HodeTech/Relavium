@@ -3,7 +3,11 @@ import { lstatSync } from 'node:fs';
 import type { RunStatus } from '@relavium/shared';
 
 import { commitExport, prepareExport, type ExportPlan } from '../commands/export.js';
-import { buildDefinedModel, type DefinedPin } from '../history/defined-model.js';
+import {
+  buildDefinedModel,
+  type DefinedOtherPin,
+  type DefinedPin,
+} from '../history/defined-model.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
@@ -28,6 +32,12 @@ export interface DefinedPortDeps {
   readonly catalog: Pick<LaunchCatalog, 'list'>;
   /** The project's workflow pins, newest first (`listPins({ kind: 'workflow', projectRoot })`). May throw. */
   readonly pins: () => readonly DefinedPin[];
+  /**
+   * EVERY pin the store holds, of either kind and any project (`listPins()`): the store caps the pins in total, so the tab lists the
+   * workflow pins of other projects as rows it can remove, and names the stored total when a pin is refused at the cap. Absent ⇒ the tab
+   * knows only this project's pins. May throw.
+   */
+  readonly allPins?: (() => readonly (DefinedPin & { readonly projectRoot: string })[]) | undefined;
   /** The status of each workflow's latest run in this project, by slug (`loadLatestRunPerWorkflowInProject`). May throw. Absent ⇒ none is shown. */
   readonly lastRuns?: (() => ReadonlyMap<string, RunStatus>) | undefined;
 }
@@ -39,13 +49,30 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
       const entries = deps.catalog.list();
       const pins = deps.pins();
       const lastRuns = deps.lastRuns?.();
+      const all = deps.allPins?.();
+      // A workflow pin of this project is already listed; any other workflow pin belongs to another project (or to one that is gone).
+      const mine = new Set(pins.map((pin) => pin.rowid));
+      const otherPins: readonly DefinedOtherPin[] =
+        all?.filter((pin) => pin.kind === 'workflow' && !mine.has(pin.rowid)) ?? [];
       const model = buildDefinedModel({
         entries,
         pins,
+        otherPins,
         ...(lastRuns === undefined ? {} : { lastRuns }),
       });
       // The entries are held by the read, so a row's index names the entry that was listed and not whatever sits there later.
-      return { model, slugOf: (entryIndex) => entries[entryIndex]?.slug };
+      return {
+        model,
+        slugOf: (entryIndex) => entries[entryIndex]?.slug,
+        ...(all === undefined
+          ? {}
+          : {
+              stored: {
+                total: all.length,
+                elsewhere: all.length - pins.length,
+              },
+            }),
+      };
     },
   };
 }

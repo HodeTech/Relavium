@@ -226,7 +226,7 @@ describe('every class of run is drawn with a glyph and a word', () => {
         expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(geometry.columns));
     }
     const small = textOf(rig().state, { columns: 60, terminalRows: 20 });
-    expect(small[0]).toBe('Enlarge the terminal to use this screen — Esc closes.');
+    expect(small[0]).toBe('Enlarge the terminal — Esc steps back, or closes at the list.');
     expect(small.join('\n')).not.toContain(IDS.hosted);
     expect(ROWS).toBe(TAB_HOST_ROWS);
   });

@@ -57,6 +57,7 @@ import {
 import type { HistoryPort } from './tab-host-history.js';
 import {
   NODE_FAULT,
+  NODE_LOG_PARTIAL,
   NODE_NOT_A_NODE,
   NODE_NOT_HERE,
   NODE_NO_ATTEMPT,
@@ -229,6 +230,25 @@ function rig(options: RigOptions = {}) {
 const includesLine = (lines: readonly string[], needle: string): boolean =>
   lines.some((line) => line.includes(needle));
 
+/**
+ * The figures a page line says, one by one: the line cut at its separators (two spaces, ` · `, `: `), the word a figure follows (`Tokens`,
+ * `cost`, `took`) and the glyph a heading starts with taken off. A sentence is then compared with a whole figure, not found inside a longer
+ * one (`not recorded` is a part of `not recorded (older log)`, and a substring check would let either stand for the other).
+ */
+function figuresOf(lines: readonly string[]): string[] {
+  return lines.flatMap((line) =>
+    line
+      .split(/ {2,}|\s·\s|: /u)
+      .map((part) =>
+        part
+          .trim()
+          .replace(/^(Tokens|cost|took) /u, '')
+          .replace(/^[^\p{L}\p{N}\s(]\s/u, ''),
+      )
+      .filter((part) => part !== ''),
+  );
+}
+
 describe('what the node page shows', () => {
   it('shows the node`s order and type from the frozen workflow, what was authored beside what ran, every attempt, its tools and its output', async () => {
     const r = rig();
@@ -259,7 +279,9 @@ describe('what the node page shows', () => {
       for (const line of lines)
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(usableColumns(80));
       expect(lines.at(-1)?.kind).toBe('legend');
-      expect(lines.at(-1)?.text).toBe('←/→ tab · ↑/↓ scroll · [n] first failed · Esc back');
+      expect(lines.at(-1)?.text).toBe(
+        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
+      );
       expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
       r.press('', DOWN);
     }
@@ -323,7 +345,7 @@ describe('what the node page shows', () => {
     expect(r.selected()).toContain('review');
     r.press('', ENTER);
     expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · ↑/↓ scroll · [n] first failed · Esc back',
+      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
     );
     r.press('n');
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
@@ -338,7 +360,7 @@ describe('what the node page shows', () => {
     await r.openNode(FIXTURE_RUN_IDS.failed, 'build');
     expect(r.page()).toContain('? unavailable  build');
     expect(r.text()).toContain(ABSENCE_SENTENCES.unavailable);
-    expect(legend(tabHostLegendItems(r.state))).toBe('←/→ tab · ↑/↓ scroll · Esc back');
+    expect(legend(tabHostLegendItems(r.state))).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · Esc back');
     r.press('n');
     expect(r.node()?.message).toBe(NODE_NO_ATTEMPT);
   });
@@ -705,6 +727,20 @@ describe('every absence sentence is the one the reference lists', () => {
       await r.openNode(FIXTURE_RUN_IDS.failed, 'build');
       return r.page();
     },
+    // The two the run's detail says (the header's error line and the empty node table), drawn on the detail's own page.
+    [ABSENCE_SENTENCES.noMessageRecorded]: async () => {
+      client.sqlite
+        .prepare('UPDATE runs SET error_json = ? WHERE id = ?')
+        .run(JSON.stringify({ code: 'tool_failed' }), FIXTURE_RUN_IDS.failed);
+      const r = rig();
+      await r.openRun(FIXTURE_RUN_IDS.failed);
+      return r.lines().map((line) => line.text);
+    },
+    [ABSENCE_SENTENCES.noNodeRecorded]: async () => {
+      const r = rig({ snapshot: () => undefined });
+      await r.openRun(FIXTURE_RUN_IDS.empty);
+      return r.lines().map((line) => line.text);
+    },
   };
 
   it('has a page for every sentence the reference lists, and lists every sentence a page can say', () => {
@@ -717,7 +753,7 @@ describe('every absence sentence is the one the reference lists', () => {
     async (sentence, scenario) => {
       const lines = await scenario();
       expect(readAbsenceReference().sentences).toContain(sentence);
-      expect(includesLine(lines, sentence), `${sentence} in ${JSON.stringify(lines)}`).toBe(true);
+      expect(figuresOf(lines), `${sentence} in ${JSON.stringify(lines)}`).toContain(sentence);
     },
   );
 
@@ -734,6 +770,77 @@ describe('every absence sentence is the one the reference lists', () => {
       template.replace('<duration>', template.startsWith('ok') ? '12ms' : '340ms'),
     );
     expect(outcomes.sort()).toEqual(spelled.sort());
+  });
+});
+
+describe('what an output was cut or masked by is said where a narrow terminal still shows it', () => {
+  const SECRET = `sk-ant-api03-${'B'.repeat(40)}`;
+
+  /** The reversed run's `plan` node with an output that holds a secret and runs past the 40-line bound, opened on the page. */
+  async function openLongMaskedOutput() {
+    const r = rig();
+    // The secret comes last: the scrubber reads a line break after a key as a continuation and would mask the lines after it too.
+    const lines = [
+      ...Array.from({ length: 100 }, (_, index) => `line-${String(index + 1)}`),
+      `held ${SECRET}`,
+    ];
+    client.sqlite
+      .prepare("UPDATE step_executions SET output_json = ? WHERE run_id = ? AND node_id = 'plan'")
+      .run(JSON.stringify(lines.join('\n')), FIXTURE_RUN_IDS.reversed);
+    await r.openNode(FIXTURE_RUN_IDS.reversed, 'plan');
+    return r;
+  }
+
+  it('at 80 columns a masked and shortened output shows both words, on a row of its own under the heading', async () => {
+    const r = await openLongMaskedOutput();
+    const lines = r.node()?.lines ?? [];
+    const heading = lines.findIndex(
+      (line) => line.kind === 'heading' && line.left.startsWith('Output'),
+    );
+    expect(heading).toBeGreaterThan(0);
+    expect(lines[heading]?.right, 'the heading carries no notes of its own').toBeUndefined();
+    expect(lines[heading + 1]).toMatchObject({ kind: 'notice' });
+    // Put the cursor on the notice, so the 80-column window draws it.
+    for (let index = 0; index < heading + 1; index += 1) r.press('', DOWN);
+    const drawn = r.lines().map((line) => line.text);
+    expect(drawn.some((line) => line.includes('masked · shortened'))).toBe(true);
+    for (const line of drawn) expect(displayWidth(line)).toBeLessThanOrEqual(usableColumns(80));
+    expect(r.text()).not.toContain('sk-ant-api03');
+  });
+
+  it('says only `masked` when only that happened, and nothing when neither did', async () => {
+    const masked = rig();
+    client.sqlite
+      .prepare("UPDATE step_executions SET output_json = ? WHERE run_id = ? AND node_id = 'plan'")
+      .run(JSON.stringify(`held ${SECRET}`), FIXTURE_RUN_IDS.reversed);
+    await masked.openNode(FIXTURE_RUN_IDS.reversed, 'plan');
+    expect(masked.page().filter((line) => line.trim() === 'masked')).toHaveLength(1);
+    expect(masked.page().join('\n')).not.toContain('shortened');
+    const plain = rig();
+    client.sqlite
+      .prepare("UPDATE step_executions SET output_json = ? WHERE run_id = ? AND node_id = 'plan'")
+      .run(JSON.stringify('plain'), FIXTURE_RUN_IDS.reversed);
+    await plain.openNode(FIXTURE_RUN_IDS.reversed, 'plan');
+    expect(plain.page().join('\n')).not.toMatch(/masked|shortened/u);
+  });
+
+  it('draws the notice a log longer than the pages read leaves, and none for a log that was read whole', async () => {
+    const partial = createNodeDetailLoader({
+      reader,
+      loadSnapshot: () => FIXTURE_SNAPSHOT,
+      eventPage: 1,
+      maxPages: 1,
+    });
+    const cut = rig({ loadNode: partial });
+    await cut.openNode(FIXTURE_RUN_IDS.failed, 'build');
+    expect(cut.page()).toContain(NODE_LOG_PARTIAL);
+    // It is a line of the page near its top, so the first screen draws it.
+    expect(
+      cut.lines().some((line) => line.kind === 'notice' && line.text.includes(NODE_LOG_PARTIAL)),
+    ).toBe(true);
+    const whole = rig();
+    await whole.openNode(FIXTURE_RUN_IDS.failed, 'build');
+    expect(whole.page()).not.toContain(NODE_LOG_PARTIAL);
   });
 });
 
@@ -797,7 +904,7 @@ describe('no value reaches a line raw', () => {
       detail,
       attempts: [attempt],
       events: [started, terminal],
-      // The authored names are the workflow's identifiers, which are never scrubbed (they are not model output): only their controls go.
+      // The authored agent is the workflow's identifier (only its controls go); the authored model is scrubbed as a stored one is.
       authored: { agentSlug: `agent ${controls}`, model: `model ${controls}` },
       runFinished: true,
     });
@@ -848,8 +955,6 @@ describe('no value reaches a line raw', () => {
   it('never shows a secret shape from a stored output, error or trace on the page a person opens', async () => {
     const r = rig();
     await r.openNode(FIXTURE_RUN_IDS.reversed, 'plan');
-    const node = r.node();
-    expect(node).toBeDefined();
     const raw = `{"note":"${SECRET}","${SECRET}":"v","x-api-key":"abc"}`;
     client.sqlite
       .prepare("UPDATE step_executions SET output_json = ? WHERE run_id = ? AND node_id = 'plan'")

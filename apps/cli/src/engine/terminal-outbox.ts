@@ -26,7 +26,7 @@
  * cannot read: its callers (the engine's drain, `status`) catch that, and an empty answer would be a lie.
  */
 
-import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { RunEventSchema, type RunEvent, type TerminalOutbox } from '@relavium/shared';
@@ -99,6 +99,20 @@ function readEntries(path: string): Map<string, RunEvent> {
     }
   }
   return held;
+}
+
+/**
+ * The stamp of the outbox file at `path`: its size and modification time, or `absent` for a file that is not there. A poll compares two
+ * stamps to know the file did not change and does not parse it again. Every write here APPENDS (a put adds a line, a removal adds a
+ * tombstone), so a change always changes the size. `undefined` when the file cannot be looked at (the caller then reads it whole).
+ */
+export function terminalOutboxStamp(path: string): string | undefined {
+  try {
+    const stat = statSync(path);
+    return `${String(stat.size)}:${String(stat.mtimeMs)}`;
+  } catch (error) {
+    return errnoCode(error) === 'ENOENT' ? 'absent' : undefined;
+  }
 }
 
 /**

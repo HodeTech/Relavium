@@ -16,6 +16,9 @@ import { scrubbedBounded } from './run-detail-model.js';
  * - **A pin whose slug is no longer in the catalog stays**, as a row marked "not in catalog": the file was renamed,
  *   moved or deleted, and a pin that vanished from the list with it could never be removed. Its pin row id is the
  *   handle that removes it.
+ * - **A pin of another project stays too**, as a row marked "other project" after this project's pins: the store caps pins
+ *   in total, across every project, so a pin this tab did not list would hold one of the fifty slots with no way to remove
+ *   it from here. It can be neither run nor exported, and `p` on its row removes it by its row id.
  * - **Bounded**: at most {@link DEFINED_ROWS_MAX} rows, pinned rows first so a cut never takes a pin, with the rest
  *   counted as "N more".
  * - **A ref is text and nothing else.** It comes from `history.db`, which accepts any string, so it is a label to
@@ -29,6 +32,9 @@ export const DEFINED_ROWS_MAX = 200;
 /** What a pin whose workflow is not in the catalog says. */
 export const NOT_IN_CATALOG = 'not in catalog';
 
+/** What a pin of another project (or of a project that is gone) says. */
+export const OTHER_PROJECT = 'pinned in another project';
+
 /** The longest catalog file path or error a row shows, in code points. */
 const MAX_DETAIL_CHARS = 256;
 
@@ -37,9 +43,9 @@ export type DefinedPinWord = 'pinned' | 'unpinned';
 
 /**
  * `ready`: a catalog entry that parsed. `invalid`: a catalog file that did not (shown, never hidden). `not-in-catalog`:
- * a pin whose slug no entry carries.
+ * a pin whose slug no entry carries. `other-project`: a workflow pin keyed by a project this Home is not in.
  */
-export type DefinedRowState = 'ready' | 'invalid' | 'not-in-catalog';
+export type DefinedRowState = 'ready' | 'invalid' | 'not-in-catalog' | 'other-project';
 
 /** The catalog fields the tab reads. A {@link CatalogEntry} satisfies it. */
 export type DefinedEntry = Pick<
@@ -57,6 +63,11 @@ export interface DefinedPin {
   /** The store's row id, the handle `unpinByRow` removes the pin by. */
   readonly rowid: number;
   readonly oversized: boolean;
+}
+
+/** A workflow pin of another project: a {@link DefinedPin} with the project it is keyed by (a preview when `oversized`). */
+export interface DefinedOtherPin extends DefinedPin {
+  readonly projectRoot: string;
 }
 
 export interface DefinedRow {
@@ -77,8 +88,10 @@ export interface DefinedRow {
   readonly lastRunGlyph?: string;
   /** The catalog file the entry was read from, as `discoverCatalog` returned it; absent on a `not-in-catalog` row. */
   readonly path?: string;
-  /** Why the row is not plain: the parse error of an `invalid` row, {@link NOT_IN_CATALOG} for a pin with no entry. */
+  /** Why the row is not plain: the parse error of an `invalid` row, {@link NOT_IN_CATALOG} for a pin with no entry, {@link OTHER_PROJECT}. */
   readonly note?: string;
+  /** The project an `other-project` row's pin is keyed by, sanitized and bounded; absent on every other row. */
+  readonly projectRoot?: string;
   readonly pinned: boolean;
   readonly pinWord: DefinedPinWord;
   /** The pin's row id: the way to remove the pin, present exactly when the row is pinned. */
@@ -106,6 +119,8 @@ export interface DefinedModelInput {
    * per ref is expected (the store's key allows no more under one root); a pin of another kind is ignored.
    */
   readonly pins: readonly DefinedPin[];
+  /** The store's workflow pins keyed by another project, newest first: listed after this project's pins, removable by their row. */
+  readonly otherPins?: readonly DefinedOtherPin[];
   /** Workflow slug to the status of its latest run in this project. */
   readonly lastRuns?: ReadonlyMap<string, RunStatus>;
 }
@@ -173,9 +188,20 @@ function missingRow(
   };
 }
 
+function otherProjectRow(pin: DefinedOtherPin): DefinedRow {
+  return {
+    state: 'other-project',
+    slug: pin.oversized ? `${scrubbedBounded(pin.ref)}…` : scrubbedBounded(pin.ref),
+    note: OTHER_PROJECT,
+    projectRoot: scrubbedBounded(pin.projectRoot, MAX_DETAIL_CHARS),
+    ...pinPart(pin),
+    ...(pin.oversized ? { pinOversized: true } : {}),
+  };
+}
+
 /**
- * The Defined tab: the catalog's rows with their pins, a row for each pin the catalog no longer carries, pinned first,
- * bounded at {@link DEFINED_ROWS_MAX}.
+ * The Defined tab: the catalog's rows with their pins, a row for each pin the catalog no longer carries and for each pin of
+ * another project, pinned first, bounded at {@link DEFINED_ROWS_MAX}.
  */
 export function buildDefinedModel(input: DefinedModelInput): DefinedModel {
   const pins = input.pins.filter((pin) => pin.kind === 'workflow');
@@ -185,12 +211,15 @@ export function buildDefinedModel(input: DefinedModelInput): DefinedModel {
     if (!pin.oversized && !pinIndexBySlug.has(pin.ref)) pinIndexBySlug.set(pin.ref, index);
   });
   const slugs = new Set(input.entries.map((entry) => entry.slug));
+  const otherPins = (input.otherPins ?? []).filter((pin) => pin.kind === 'workflow');
+  // This project's pins rank first, then the other projects' (a pin never falls behind an unpinned row), then the unpinned catalog rows.
+  const unpinnedBase = pins.length + otherPins.length;
 
   const ranked: Ranked[] = [];
   input.entries.forEach((entry, index) => {
     const pinIndex = pinIndexBySlug.get(entry.slug);
     ranked.push({
-      rank: pinIndex ?? pins.length + index,
+      rank: pinIndex ?? unpinnedBase + index,
       row: catalogRow(
         entry,
         index,
@@ -203,6 +232,9 @@ export function buildDefinedModel(input: DefinedModelInput): DefinedModel {
     // A pin the catalog carries is already on its entry's row.
     if (!pin.oversized && slugs.has(pin.ref)) return;
     ranked.push({ rank: index, row: missingRow(pin, input.lastRuns) });
+  });
+  otherPins.forEach((pin, index) => {
+    ranked.push({ rank: pins.length + index, row: otherProjectRow(pin) });
   });
   ranked.sort((a, b) => a.rank - b.rank);
 

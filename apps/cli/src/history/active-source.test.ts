@@ -322,6 +322,115 @@ describe('a paused run’s gates', () => {
   });
 });
 
+describe('a paused run’s gate count is kept per run, so a tick does not read every log again', () => {
+  const pausedRuns = (count: number): RunSummaryRecord[] =>
+    Array.from({ length: count }, (_, index) => summary('par', index, 'paused'));
+  const readerOver = (runs: readonly RunSummaryRecord[]) => {
+    const scriptedRead = scripted(runs);
+    return {
+      ...scriptedRead,
+      read: createActiveReader({
+        reader: scriptedRead.read,
+        projectRoot: HERE,
+        hostedRunId: () => undefined,
+        listHeld: () => Promise.resolve([]),
+        now: () => NOW,
+        leaseTtlMs: TTL,
+      }),
+    };
+  };
+
+  it('reads each paused run’s log once, and an unchanged run is not read again at the next tick', async () => {
+    const { read, stateReads } = readerOver(pausedRuns(3));
+    await read();
+    expect(stateReads).toHaveLength(3);
+    await read();
+    await read();
+    expect(stateReads, 'three more ticks, no row moved: no log was read').toHaveLength(3);
+  });
+
+  it('reads again only the run whose row moved', async () => {
+    const runs = pausedRuns(3);
+    const { read, stateReads } = readerOver(runs);
+    await read();
+    const moved = runs[1];
+    if (moved === undefined) throw new Error('no run');
+    runs[1] = { ...moved, updatedAt: new Date(T0 + 5).toISOString() };
+    await read();
+    expect(stateReads.slice(3), 'only the moved run').toEqual([moved.id]);
+    await read();
+    expect(stateReads, 'and it is kept again under its new key').toHaveLength(4);
+  });
+
+  it('a run whose gate was answered leaves the paused rows, and its kept count is not shown for it', async () => {
+    await seedRun(client.db, {
+      slug: 'wf',
+      runId: 'run-gate',
+      state: 'paused',
+      atMs: T0,
+      gate: { gateId: 'g1', gateType: 'approval' },
+    });
+    inProject('run-gate', HERE);
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => Promise.resolve([]),
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    expect(rowOf((await read()).rows, 'run-gate')).toMatchObject({ actionable: true });
+    // The gate is answered: the run is running again, so it leaves the paused page and the kept count with it.
+    client.sqlite
+      .prepare("UPDATE runs SET status = 'running', updated_at = ? WHERE id = ?")
+      .run(T0 + 9, 'run-gate');
+    expect(rowOf((await read()).rows, 'run-gate').class).not.toBe('other-paused-here');
+  });
+
+  it('reads an entry again once it is older than a lease TTL, because two events in one millisecond leave the row as it was', async () => {
+    const scriptedRead = scripted(pausedRuns(2));
+    let now = NOW;
+    const read = createActiveReader({
+      reader: scriptedRead.read,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => Promise.resolve([]),
+      now: () => now,
+      leaseTtlMs: TTL,
+    });
+    await read();
+    now += TTL - 1;
+    await read();
+    expect(scriptedRead.stateReads, 'still inside the TTL').toHaveLength(2);
+    now += 1;
+    await read();
+    expect(scriptedRead.stateReads, 'a TTL later every entry is read again').toHaveLength(4);
+  });
+
+  it('drops the entry of a run that is no longer listed, so it is read when it comes back', async () => {
+    const runs = pausedRuns(2);
+    const { read, stateReads } = readerOver(runs);
+    await read();
+    const gone = runs.pop();
+    await read();
+    expect(stateReads).toHaveLength(2);
+    if (gone === undefined) throw new Error('no run');
+    runs.push(gone);
+    await read();
+    expect(stateReads.slice(2), 'the returning run is read, the kept one is not').toEqual([
+      gone.id,
+    ]);
+  });
+
+  it('keeps nothing when the caller passes no cache: every read is whole', () => {
+    const scriptedRead = scripted(pausedRuns(2));
+    const paused = pausedRuns(2);
+    readActiveGateCounts(scriptedRead.read, HERE, paused);
+    readActiveGateCounts(scriptedRead.read, HERE, paused);
+    expect(scriptedRead.stateReads).toHaveLength(4);
+  });
+});
+
 describe('what a run is', () => {
   it('names the leg this Home hosts, a run whose end is held, and a run nobody owns any more', async () => {
     await seedRun(client.db, {
@@ -427,6 +536,95 @@ describe('the asynchronous read', () => {
     await read();
     expect(hosted).toHaveBeenCalledTimes(2);
     expect(now).toHaveBeenCalledTimes(2);
+  });
+
+  it('parses the outbox again only when its stamp moved, and a held set that changed is picked up', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-a', state: 'running', atMs: NOW });
+    await seedRun(client.db, { slug: 'wf', runId: 'run-b', state: 'running', atMs: NOW - 1 });
+    let held: { runId: string }[] = [{ runId: 'run-a' }];
+    let stamp: string | undefined = '10:1';
+    const listHeld = vi.fn(() => Promise.resolve(held));
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld,
+      outboxStamp: () => stamp,
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    expect(rowOf((await read()).rows, 'run-a').class).toBe('held');
+    await read();
+    await read();
+    expect(listHeld, 'an unchanged file is parsed once').toHaveBeenCalledTimes(1);
+    held = [{ runId: 'run-a' }, { runId: 'run-b' }];
+    stamp = '40:2';
+    const moved = await read();
+    expect(listHeld).toHaveBeenCalledTimes(2);
+    expect(rowOf(moved.rows, 'run-b').class, 'the new held id is picked up').toBe('held');
+    stamp = undefined;
+    await read();
+    await read();
+    expect(listHeld, 'no stamp, no keeping').toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps nothing of an outbox it could not read, and lists it again at the next read', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-a', state: 'running', atMs: NOW });
+    let fail = true;
+    const listHeld = vi.fn(() =>
+      fail ? Promise.reject(new Error('EACCES')) : Promise.resolve([{ runId: 'run-a' }]),
+    );
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld,
+      outboxStamp: () => '10:1',
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    expect((await read()).heldUnread).toBe(true);
+    fail = false;
+    const again = await read();
+    expect(again.heldUnread).toBe(false);
+    expect(rowOf(again.rows, 'run-a').class).toBe('held');
+  });
+
+  it('a stamp that throws is no stamp: the outbox is listed', async () => {
+    const listHeld = vi.fn(() => Promise.resolve([]));
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld,
+      outboxStamp: () => {
+        throw new Error('EPERM');
+      },
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    await read();
+    await read();
+    expect(listHeld).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not read the database when it closed while the outbox was being read', async () => {
+    let closed = false;
+    const listRunSummaries = vi.fn(reader.listRunSummaries);
+    const read = createActiveReader({
+      reader: { ...reader, listRunSummaries },
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => {
+        closed = true;
+        return Promise.resolve([]);
+      },
+      isClosed: () => closed,
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    await expect(read()).rejects.toThrow('closed');
+    expect(listRunSummaries).not.toHaveBeenCalled();
   });
 
   it('is a read, not a write: it runs over a reader that can only read', async () => {

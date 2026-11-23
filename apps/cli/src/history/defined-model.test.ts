@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFINED_ROWS_MAX,
   NOT_IN_CATALOG,
+  OTHER_PROJECT,
   buildDefinedModel,
   type DefinedEntry,
   type DefinedPin,
@@ -176,6 +177,41 @@ describe('buildDefinedModel', () => {
       expect(gone).not.toHaveProperty('path');
       expect(gone).not.toHaveProperty('entryIndex');
       expect(gone).not.toHaveProperty('nodeCount');
+    });
+  });
+
+  describe('a pin of another project', () => {
+    it('is a row of its own after this project’s pins and before the unpinned rows, with its project as text and its row as the handle', () => {
+      const model = buildDefinedModel({
+        entries: [entry('alpha'), entry('beta')],
+        pins: [pin('beta', 5)],
+        otherPins: [
+          { ...pin('elsewhere', 9), projectRoot: `/work/${ESC}[31mother${RLO}` },
+          { ...pin('beta', 10), projectRoot: '/work/second' },
+        ],
+      });
+      expect(model.rows.map((row) => [row.slug, row.state])).toEqual([
+        ['beta', 'ready'],
+        ['elsewhere', 'other-project'],
+        ['beta', 'other-project'],
+        ['alpha', 'ready'],
+      ]);
+      const [, other] = model.rows;
+      if (other === undefined) throw new Error('no other-project row');
+      expect(other).toMatchObject({ note: OTHER_PROJECT, pinned: true, pinRowid: 9 });
+      expect(other).not.toHaveProperty('entryIndex');
+      expect(other).not.toHaveProperty('path');
+      expect(stringsOf(other).join('')).not.toMatch(UNSAFE);
+      expect(other.projectRoot).toContain('/work/');
+    });
+
+    it('is never counted as a pin of the catalog entry that shares its slug', () => {
+      const model = buildDefinedModel({
+        entries: [entry('beta')],
+        pins: [],
+        otherPins: [{ ...pin('beta', 10), projectRoot: '/work/second' }],
+      });
+      expect(model.rows.find((row) => row.state === 'ready')).toMatchObject({ pinned: false });
     });
   });
 

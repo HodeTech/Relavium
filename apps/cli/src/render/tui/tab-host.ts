@@ -1,3 +1,5 @@
+import { scrubSecrets } from '@relavium/llm/scrub-secrets';
+
 import type { ActiveRead } from '../../history/active-source.js';
 import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
@@ -542,9 +544,12 @@ function legendLine(items: readonly LegendItem[], width: number): SheetLine {
   return { kind: 'legend', text, spans: clampSpans(legendSpans(items), text.length) };
 }
 
-/** What an entry of the allowlist is drawn as: every control, invisible and `<` character shown as the card shows it. */
+/**
+ * What an entry of the allowlist is drawn as: its secret shapes masked by the shared scrubber, read WHOLE (as the command card masks a
+ * command: the repository's file can hold a pasted token), then every control, invisible and `<` character shown as the card shows it.
+ */
 function escapedEntry(text: string): string {
-  return [...text].map((char) => escapeReviewCharacter(char, false)).join('');
+  return [...scrubSecrets(text)].map((char) => escapeReviewCharacter(char, false)).join('');
 }
 
 /** `count` and its noun: `1 command`, `2 commands`. */
@@ -615,11 +620,17 @@ function plainBody(state: TabHostState): readonly SheetLine[] {
   return [{ kind: 'failed', text }];
 }
 
+/**
+ * What the screen says below the floor. `Esc` there is the screen's own key (the Home delivers only `Esc` and `Ctrl+C` below 80×24): it
+ * steps back one level on a run's detail and on a node page, and closes the screen only from a tab's list.
+ */
+export const TAB_HOST_TOO_SMALL = 'Enlarge the terminal — Esc steps back, or closes at the list.';
+
 /** The lines when the terminal is below the floor: why, and the way out. */
 function tooSmallLines(): readonly SheetLine[] {
   const items: readonly LegendItem[] = [TAB_HOST_KEYS.close];
   return [
-    { kind: 'text', text: 'Enlarge the terminal to use this screen — Esc closes.' },
+    { kind: 'text', text: TAB_HOST_TOO_SMALL },
     { kind: 'legend', text: legend(items), spans: legendSpans(items) },
   ];
 }

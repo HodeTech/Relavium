@@ -277,7 +277,8 @@ export function writeAuthoredFile(
 /**
  * Locate an authored file by its in-file `id` across BOTH catalogs (the `relavium export <id>` resolution).
  * Returns the matched kind + the absolute path. A missing id is a clean exit-2 fault; an id that names BOTH a
- * workflow and an agent is ambiguous (exit 2) — disambiguate by renaming one. Only VALID catalog entries match
+ * workflow and an agent is ambiguous (exit 2), and so is an id that two valid files of one kind declare (the error names both
+ * paths) — disambiguate by renaming one. Only VALID catalog entries match
  * (an unparseable file's slug is a filename FALLBACK, never a real id).
  */
 export function resolveById(opts: {
@@ -292,12 +293,20 @@ export function resolveById(opts: {
 } {
   const matches: { kind: AuthoredKind; path: string }[] = [];
   for (const kind of ['workflow', 'agent'] as const) {
-    const entry = discoverCatalog({
+    const found = discoverCatalog({
       projectConfigDir: opts.projectConfigDir,
       cwd: opts.cwd,
       kind: KIND_DIR[kind],
       ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
-    }).find((e) => e.valid && e.slug === opts.id);
+    }).filter((e) => e.valid && e.slug === opts.id);
+    const [entry, other] = found;
+    // Two valid files of one kind that declare one id: which of them `<id>` means is not for this resolution to guess.
+    if (entry !== undefined && other !== undefined) {
+      throw new CliError(
+        'invalid_invocation',
+        `'${opts.id}' is declared by two ${kind} files (${entry.path} and ${other.path}) — rename one to disambiguate.`,
+      );
+    }
     if (entry !== undefined) {
       matches.push({ kind, path: resolve(opts.cwd, entry.path) });
     }

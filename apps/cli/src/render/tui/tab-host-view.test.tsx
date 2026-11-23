@@ -22,7 +22,13 @@ import { bracketed, settleFrames } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import { createHomeController } from './home-controller.js';
 import { initialPermissionsSheetState, type SheetMessage } from './permissions-sheet.js';
-import { enterTab, freshTabMemory, type TabHostState, type TabId } from './tab-host.js';
+import {
+  enterTab,
+  freshTabMemory,
+  withDefinedNote,
+  type TabHostState,
+  type TabId,
+} from './tab-host.js';
 import { openNodeTab } from './tab-host-node.js';
 import { TabHostView } from './tab-host-view.js';
 
@@ -162,6 +168,24 @@ describe('TabHostView at 80×24', () => {
     const drawn = text(hostOn('history'));
     expect(drawn).toContain('▸ History');
     expect(drawn).toContain('The run history could not be read.');
+  });
+});
+
+describe('TabHostView sanitizes at draw time', () => {
+  it('draws no raw escape: a message row a tab handed in unsanitized reaches the terminal without its control sequence', () => {
+    const noted = withDefinedNote(definedHost(), `before${ESC}[2Jafter${String.fromCharCode(7)}`);
+    expect(noted.defined?.message, 'the model really holds the raw text').toContain(ESC);
+    // `plain` takes off the view's own style codes (`ESC[…m`): an escape left after it is the message's.
+    const drawn = plain(frame(noted, false));
+    expect(drawn).not.toContain(ESC);
+    expect(drawn).not.toContain(String.fromCharCode(7));
+    expect(drawn).toContain('beforeafter');
+  });
+
+  it('leaves a line it has nothing to remove from exactly as the model drew it', () => {
+    const drawn = text(definedHost());
+    expect(drawn).toContain('› beta');
+    expect(drawn).toContain('★ pinned');
   });
 });
 
@@ -448,7 +472,7 @@ describe('TabHostView on the node page', () => {
       expect(drawn, word).toContain(word);
     expect(drawn).not.toContain('sk-ant-api03');
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected line').toBe(1);
-    expect(lines.at(-1)).toBe('←/→ tab · ↑/↓ scroll · [n] first failed · Esc back');
+    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back');
   });
 
   it('draws the heading bold, the error in red and the key of the action in its own style when colour is on', () => {
@@ -476,7 +500,7 @@ describe('TabHostView below the minimum', () => {
     'at %i×%i it says to enlarge, names the way out, and draws nothing of the screen',
     (columns, rows) => {
       expect(text(hostOn('permissions'), columns, rows).split('\n')).toEqual([
-        'Enlarge the terminal to use this screen — Esc closes.',
+        'Enlarge the terminal — Esc steps back, or closes at the list.',
         'Esc close',
       ]);
     },
@@ -697,7 +721,7 @@ describe.each([
     const m = mountTabHost({ alternateScreen, size: { cols: 70, rows: 20 } });
     await until(() => m.frame().includes('Enlarge the terminal'));
     expect(m.frame().split('\n')).toEqual([
-      'Enlarge the terminal to use this screen — Esc closes.',
+      'Enlarge the terminal — Esc steps back, or closes at the list.',
       'Esc close',
     ]);
     m.harness.stdin.write(`${ESC}[D`);

@@ -33,8 +33,10 @@ import {
   type TabHostState,
   type TabHostStep,
 } from './tab-host.js';
+import { HISTORY_COST_CACHE_MAX } from '../../history/history-source.js';
 import {
   HISTORY_HELD_NOTE,
+  HISTORY_HELD_UNREAD,
   HISTORY_KEYS,
   HISTORY_LOADING,
   HISTORY_UNREADABLE,
@@ -85,6 +87,8 @@ interface Script {
   readonly pinned?: readonly HistoryEntry[];
   /** Run ids whose cost reads as unreadable. */
   readonly unreadable?: ReadonlySet<string>;
+  /** Run ids whose cost read throws (a fault that is not about the run: the source degrades a damaged log itself). */
+  readonly costThrows?: ReadonlySet<string>;
   readonly detail?: RunDetailLoad;
 }
 
@@ -95,6 +99,7 @@ function scripted(script: Script = {}) {
   );
   const reads: HistoryQuery[] = [];
   const costFor = vi.fn((id: string, finished: boolean): HistoryCost => {
+    if (script.costThrows?.has(id) === true) throw new Error('PRIVATE-FAULT');
     if (!finished) return { kind: 'not-final' };
     return script.unreadable?.has(id) === true
       ? { kind: 'unreadable' }
@@ -124,7 +129,11 @@ function scripted(script: Script = {}) {
 }
 
 function detailRead(
-  over: { readonly held?: boolean; readonly events?: number } = {},
+  over: {
+    readonly held?: boolean;
+    readonly events?: number;
+    readonly workflow?: string;
+  } = {},
 ): RunDetailRead {
   const at = new Date(T0).toISOString();
   const status: RunStatus = over.held === true ? 'running' : 'completed';
@@ -155,7 +164,7 @@ function detailRead(
     run,
     steps,
     events: [],
-    workflowSlug: 'deploy',
+    workflowSlug: over.workflow ?? 'deploy',
     terminalHeld: over.held === true,
   });
   return {
@@ -392,6 +401,80 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
   });
 });
 
+describe('the run detail says what it could not read, and keeps what identifies the run', () => {
+  /** The detail of run 0 opened over the list and handed `read`. */
+  const opened = (read: RunDetailRead, script: Script = {}) => {
+    const r = rig({ total: 3, ...script });
+    r.press('', ENTER);
+    r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: 'ready', detail: read });
+    return r;
+  };
+
+  it('draws a notice for an outbox it could not read, for a log longer than the pages read, and for rows a newer version wrote', () => {
+    const r = opened({ ...detailRead(), heldUnread: true, eventsComplete: false, skippedRows: 2 });
+    const text = r.text();
+    expect(text).toContain(HISTORY_HELD_UNREAD);
+    expect(text).toContain('Only the first 3 events were read: the figures may be partial.');
+    expect(text).toContain('2 rows were written by a newer version and skipped.');
+    expect(text, 'the events heading says the count is a floor').toContain('Events (3+)');
+    expect(r.lines().filter((line) => line.includes('Only the first'))).toHaveLength(1);
+    // Each is a notice line, not a plain one.
+    const kinds = tabHostLines(r.state, { columns: 80, terminalRows: 24 })
+      .filter((line) => /Outbox unreadable|Only the first|newer version/u.test(line.text))
+      .map((line) => line.kind);
+    expect(kinds).toEqual(['notice', 'notice', 'notice']);
+  });
+
+  it('says `1 row was` for one skipped row, and draws none of the three notices for a log read whole', () => {
+    const one = opened({ ...detailRead(), skippedRows: 1 });
+    expect(one.text()).toContain('1 row was written by a newer version and skipped.');
+    const clean = opened(detailRead()).text();
+    expect(clean).not.toContain('Outbox unreadable');
+    expect(clean).not.toContain('Only the first');
+    expect(clean).not.toContain('newer version');
+  });
+
+  it('cuts the workflow’s name first at 78 columns: the short id and the pin mark stay on the heading', () => {
+    const run = summary(0, 'completed');
+    const pinned = rowsOf([run], new Set([run.id]));
+    const long = `release-${'pipeline-'.repeat(12)}end`;
+    const r = opened(detailRead({ workflow: long }), { pinned });
+    const heading = r.lines().find((line) => line.includes('✓ completed'));
+    if (heading === undefined) throw new Error('the heading was drawn');
+    expect(displayWidth(heading)).toBeLessThanOrEqual(usableColumns(80));
+    expect(heading, 'the name was cut, with a mark').toContain('…');
+    expect(heading.endsWith('00000000  ★ pinned')).toBe(true);
+    expect(heading).toContain('✓ completed  release-');
+  });
+
+  it('names the keys that work: a detail that is loading, missing or unreadable has nothing to scroll', () => {
+    for (const phase of ['loading', 'missing', 'unreadable'] as const) {
+      const r = rig({ total: 2 });
+      r.press('', ENTER);
+      if (phase !== 'loading')
+        r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: phase });
+      const items = legend(tabHostLegendItems(r.state));
+      expect(items, phase).toBe('←/→ tab · Tab cycle · Esc back');
+      expect(items).not.toContain('scroll');
+    }
+  });
+
+  it('names Tab where the legend still fits the floor, and leaves it out of the two that would not', () => {
+    const r = rig({ total: 3 });
+    expect(legend(tabHostLegendItems(r.state)), 'the list is full').not.toContain('Tab cycle');
+    const empty = rig({ total: 0 });
+    expect(legend(tabHostLegendItems(empty.state))).toContain('Tab cycle');
+    const detail = opened(detailRead());
+    expect(legend(tabHostLegendItems(detail.state)), 'the detail is full').not.toContain(
+      'Tab cycle',
+    );
+    for (const state of [r.state, empty.state, detail.state])
+      expect(displayWidth(legend(tabHostLegendItems(state)))).toBeLessThanOrEqual(
+        usableColumns(80),
+      );
+  });
+});
+
 describe('the keys of the list', () => {
   it('↓ at the end of a page reads the next one with the cursor on its first row, ↑ at the top the one before with the cursor at its end', () => {
     const r = rig({ total: 45 });
@@ -446,6 +529,37 @@ describe('the keys of the list', () => {
     expect(r.costFor, 'a row that was read is not read again').toHaveBeenCalledTimes(16);
   });
 
+  it('keeps at most 500 costs, the oldest read going first, however many rows were scrolled over', () => {
+    const r = rig({ total: 600 });
+    for (let index = 0; index < 599; index += 1) r.press('', DOWN);
+    expect(r.state.history?.read?.query.page, 'the walk reached the last page').toBe(29);
+    expect(r.state.history?.costs.size, '600 rows were read, 500 are kept').toBe(
+      HISTORY_COST_CACHE_MAX,
+    );
+    expect(
+      r.state.history?.costs.has(summary(0, 'completed').id),
+      'the first rows read went first',
+    ).toBe(false);
+    expect(r.state.history?.costs.has(summary(599, 'completed').id), 'the newest read stays').toBe(
+      true,
+    );
+  });
+
+  it('never throws out of a key for a cost that cannot be read for a reason that is not the run’s: the row draws `…` and the next key asks again', () => {
+    const failing = summary(2, 'cancelled').id;
+    const r = rig({ total: 5, costThrows: new Set([failing]) });
+    expect(r.text(), 'opening the tab did not fail').toContain('page 1 (last)');
+    expect(r.lines().filter((line) => line.includes('…')).length).toBeGreaterThan(0);
+    const asked = r.costFor.mock.calls.filter(([id]) => id === failing).length;
+    expect(() => r.press('', DOWN)).not.toThrow();
+    expect(r.cursor()).toBe(1);
+    expect(
+      r.costFor.mock.calls.filter(([id]) => id === failing).length,
+      'the run was asked about again',
+    ).toBeGreaterThan(asked);
+    expect(r.text()).not.toContain('PRIVATE');
+  });
+
   it('keeps the cursor on the run it was on across a read, and remembers the position while the screen lives', () => {
     const r = rig({ total: 30 });
     r.press('f');
@@ -481,7 +595,7 @@ describe('the keys of the list', () => {
       ...r.state,
       history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0 } },
     };
-    expect(legend(tabHostLegendItems(inDetail))).toBe('←/→ tab · ↑/↓ scroll · Esc back');
+    expect(legend(tabHostLegendItems(inDetail))).toBe('←/→ tab · Tab cycle · Esc back');
   });
 
   it('a chord or a meta key moves nothing, and an unnamed key is nothing', () => {

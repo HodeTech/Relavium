@@ -1,4 +1,5 @@
 import {
+  MAX_RUN_STATE_EVENT_BATCH_IDS,
   createClient,
   createRunHistoryReader,
   runMigrations,
@@ -13,6 +14,11 @@ import { seedRun } from '../test-support.js';
 import { batchedStateEvents, STATE_EVENT_BATCH_RUNS } from './batched-state-events.js';
 
 describe('batchedStateEvents — the batch saves reads and never changes an answer', () => {
+  it('chunks at exactly the size the store accepts, 200: a store bound raised or lowered fails here until the chunk follows it', () => {
+    expect(STATE_EVENT_BATCH_RUNS).toBe(200);
+    expect(STATE_EVENT_BATCH_RUNS).toBe(MAX_RUN_STATE_EVENT_BATCH_IDS);
+  });
+
   it('reads in chunks the store accepts: 450 ids are three calls of 200, 200 and 50', () => {
     const loadRunStateEventsForRuns = vi.fn((ids: readonly string[]) => {
       return new Map(ids.map((id): [string, RunStateEventsRead] => [id, { events: [] }]));

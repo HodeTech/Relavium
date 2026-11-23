@@ -75,6 +75,7 @@ function rig(
   const defined = createDefinedPort({
     catalog: { list },
     pins: () => workflowPins(),
+    allPins: () => store.listPins(),
   });
   const reads = vi.fn(defined.read);
   const pins = 'pins' in over ? over.pins : pinPort();
@@ -165,7 +166,7 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     r.press('', DOWN);
     r.press('p');
     expect(r.message()).toBe(
-      `Cannot pin beta: ${String(MAX_RUN_PINS)} pins is the limit. Unpin one first.`,
+      `Cannot pin beta: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS)} in other projects or runs.`,
     );
     expect(store.listPins()).toHaveLength(MAX_RUN_PINS);
     expect(workflowPins()).toEqual([]);
@@ -179,6 +180,64 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     // The next key drops the message, as every message is dropped.
     r.press('', DOWN);
     expect(r.message()).toBeUndefined();
+  });
+
+  it('at the cap names what the store holds, lists the pins of other projects as rows, and p on such a row removes it so the pin then fits', () => {
+    // One stale pin of this project, twenty pinned in another project, and runs for the rest: fifty in all, three listed by a list of this
+    // project's own pins alone.
+    store.pinItem({ kind: 'workflow', projectRoot: ROOT, ref: 'gone', at: 1 });
+    for (let index = 0; index < 20; index += 1)
+      store.pinItem({
+        kind: 'workflow',
+        projectRoot: '/work/other',
+        ref: `w${String(index)}`,
+        at: 2 + index,
+      });
+    for (let index = 0; index < MAX_RUN_PINS - 21; index += 1)
+      store.pinItem({ kind: 'run', projectRoot: '', ref: `r${String(index)}`, at: 100 + index });
+    expect(store.listPins()).toHaveLength(MAX_RUN_PINS);
+    const r = rig('defined', { entries });
+    const rows = r.state.defined?.read.model.rows ?? [];
+    expect(rows.filter((row) => row.state === 'other-project')).toHaveLength(20);
+    expect(rows.filter((row) => row.state === 'not-in-catalog')).toHaveLength(1);
+    expect(r.state.defined?.read.stored).toEqual({
+      total: MAX_RUN_PINS,
+      elsewhere: MAX_RUN_PINS - 1,
+    });
+    expect(r.text()).toContain('? other project');
+    // A row that belongs to another project can be neither run nor exported, and says so.
+    r.press('', DOWN);
+    expect(r.state.defined?.read.model.rows[r.state.defined.cursor]).toMatchObject({
+      state: 'other-project',
+      pinned: true,
+    });
+    r.press('r');
+    expect(r.message()).toBe('Cannot run w19: pinned in another project.');
+    // At the cap a pin is refused, and the sentence names the stored total and what is not this project's.
+    for (let index = 0; index < 20; index += 1) r.press('', DOWN);
+    expect(r.state.defined?.read.model.rows[r.state.defined.cursor]).toMatchObject({
+      slug: 'alpha',
+    });
+    r.press('p');
+    expect(r.message()).toBe(
+      `Cannot pin alpha: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS - 1)} in other projects or runs.`,
+    );
+    // `p` on the other project's row removes it by its row id, and the freed slot takes the pin.
+    for (let index = 0; index < 20; index += 1) r.press('', { upArrow: true });
+    const before = store.listPins().length;
+    r.press('p');
+    expect(store.listPins()).toHaveLength(before - 1);
+    expect(r.message()).toBe('Unpinned w19.');
+    expect(
+      store.listPins({ kind: 'workflow', projectRoot: '/work/other' }).map((pin) => pin.ref),
+    ).not.toContain('w19');
+    // The row left the list, so `alpha` is one row nearer.
+    for (let index = 0; index < 19; index += 1) r.press('', DOWN);
+    expect(r.state.defined?.read.model.rows[r.state.defined.cursor]).toMatchObject({
+      slug: 'alpha',
+    });
+    r.press('p');
+    expect(r.message()).toBe('Pinned alpha.');
   });
 
   it('removes a pin whose workflow left the catalog by its row', () => {

@@ -9,7 +9,14 @@ import {
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
-import { PIN_KEY, PIN_UNAVAILABLE, toggleWorkflowPin, type PinPort } from './tab-host-pin.js';
+import {
+  PIN_KEY,
+  PIN_UNAVAILABLE,
+  pinFullMessage,
+  toggleWorkflowPin,
+  type PinPort,
+  type PinsStored,
+} from './tab-host-pin.js';
 
 /**
  * The Defined tab of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -17,6 +24,9 @@ import { PIN_KEY, PIN_UNAVAILABLE, toggleWorkflowPin, type PinPort } from './tab
  * drawn into: it holds no port call, no clock and no React. The host reads the catalog and the pins (a {@link DefinedPort}) when the tab is
  * entered and carries a `run` or `export` request out; this module only says which request a key makes, or why it makes none.
  *
+ * - **A pin of another project is a row.** The store caps the pins in total, so a workflow pin keyed by another project (or by one that is
+ *   gone) is listed after this project's pins, marked `? other project`; it can be neither run nor exported, and `p` removes it by its row.
+ *   A pin refused at the cap names how many pins the store holds and how many of them are elsewhere.
  * - **Keys.** `↑`/`↓` move and stop at the ends. `r` asks to run the row's workflow and `x` to export it (the host opens the launch flow
  *   and the export card; neither does anything by itself). `p` pins the row's workflow, or unpins it (the tab host carries the toggle out
  *   through its pin port and reads the list again, see {@link pinOnDefined}; pinned rows sort first, so the cursor follows the row to
@@ -35,6 +45,11 @@ export interface DefinedRead {
   readonly model: DefinedModel;
   /** The slug of the catalog entry a row's `entryIndex` names, or `undefined` when no entry sits at that index. */
   readonly slugOf: (entryIndex: number) => string | undefined;
+  /**
+   * What the pin store holds in total, read with the rows: the store caps pins across every project and both kinds, and the tab lists
+   * only workflow pins, so a pin refused at the cap names these counts. Absent when the read does not know them.
+   */
+  readonly stored?: PinsStored | undefined;
 }
 
 /** The Defined tab's read, behind a port so the tab is testable without a project or a database. May throw: the tab then says it cannot list. */
@@ -149,7 +164,7 @@ function sameRow(
   if (candidate === undefined) return false;
   if (before.slug !== undefined)
     return candidate.entryIndex !== undefined && after.slugOf(candidate.entryIndex) === before.slug;
-  return candidate.state === 'not-in-catalog' && candidate.slug === before.row.slug;
+  return candidate.state === before.row.state && candidate.slug === before.row.slug;
 }
 
 /**
@@ -173,9 +188,10 @@ export function pinOnDefined(
     pinned: row.pinned,
     rowid: row.pinRowid,
   });
-  // The cap changed nothing, so there is nothing to read again.
-  if (toggled.outcome === 'full' || port === undefined)
-    return withDefinedMessage(state, toggled.message);
+  // The cap changed nothing, so there is nothing to read again; the reason names what the store holds, which this list does not all show.
+  if (toggled.outcome === 'full')
+    return withDefinedMessage(state, pinFullMessage(row.slug, state.read.stored));
+  if (port === undefined) return withDefinedMessage(state, toggled.message);
   let read: DefinedRead;
   try {
     read = port.read();
@@ -200,6 +216,7 @@ const nodes = (count: number): string => `${String(count)} ${count === 1 ? 'node
 function stateWords(row: DefinedRow): string {
   if (row.state === 'invalid') return '✗ invalid';
   if (row.state === 'not-in-catalog') return '? not in catalog';
+  if (row.state === 'other-project') return '? other project';
   return row.nodeCount === undefined ? '' : nodes(row.nodeCount);
 }
 
@@ -228,6 +245,14 @@ function rowLine(row: DefinedRow, selected: boolean, width: number): SheetLine {
 /** What the selected row says about itself, under the list: its file, or why it can be neither run nor exported (its note). */
 function detailLine(row: DefinedRow, width: number): SheetLine {
   if (row.state === 'ready') return { kind: 'text', text: clipLine(row.path ?? '', width) };
+  if (row.state === 'other-project')
+    return {
+      kind: 'text',
+      text: clipLine(
+        `Pinned in ${row.projectRoot ?? 'another project'}; p removes the pin.`,
+        width,
+      ),
+    };
   const why = row.state === 'not-in-catalog' ? 'not in catalog' : (row.note ?? 'could not be read');
   // What the row cannot do comes first, so a long parse error is the part that is cut.
   return { kind: 'text', text: clipLine(`Cannot run or export: ${why}`, width) };

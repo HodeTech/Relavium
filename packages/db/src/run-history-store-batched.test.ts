@@ -16,12 +16,12 @@ describe('loadRunStateEventsForRuns — the bound and the shape', () => {
     const ids = (count: number): string[] =>
       Array.from({ length: count }, (_, i) => `run-${String(i)}`);
 
-    expect(() => reader.loadRunStateEventsForRuns(ids(MAX_RUN_STATE_EVENT_BATCH_IDS + 1))).toThrow(
-      RunHistoryReadError,
-    );
+    // The literals are the claim: the bound is 200 and 201 is refused, whatever the constant is changed to.
+    expect(MAX_RUN_STATE_EVENT_BATCH_IDS).toBe(200);
+    expect(() => reader.loadRunStateEventsForRuns(ids(201))).toThrow(RunHistoryReadError);
 
-    const answer = reader.loadRunStateEventsForRuns(ids(MAX_RUN_STATE_EVENT_BATCH_IDS));
-    expect(answer.size).toBe(MAX_RUN_STATE_EVENT_BATCH_IDS);
+    const answer = reader.loadRunStateEventsForRuns(ids(200));
+    expect(answer.size).toBe(200);
     // A run with no events is a healthy empty answer, not a corrupt one.
     expect(answer.get('run-0')).toEqual({ events: [] });
 

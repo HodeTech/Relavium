@@ -180,13 +180,26 @@ export function createHistorySource(deps: HistorySourceDeps): HistorySource {
     };
   }
 
-  /** Remember where page `page + 1` starts, and drop the cursors past it when the walk changed. */
+  /** Drop every kept page that lies past `page`: its cursor came from a walk that no longer holds. */
+  function dropPagesAfter(page: number): void {
+    for (const index of [...pages.keys()]) if (index > page) pages.delete(index);
+  }
+
+  /**
+   * Remember where page `page + 1` starts. When the cursor changed or the list ended here, the cursors past it are dropped AND so are the
+   * pages kept past it: a page read again after its eviction can have a different boundary, and the pages after it were read with the old one
+   * (a stale next page would skip or repeat rows).
+   */
   function recordNext(page: number, next: Cursor | undefined): void {
     if (next === undefined) {
       cursors.length = page + 1;
+      dropPagesAfter(page);
       return;
     }
-    if (!sameCursor(cursors[page + 1], next)) cursors = [...cursors.slice(0, page + 1), next];
+    if (!sameCursor(cursors[page + 1], next)) {
+      cursors = [...cursors.slice(0, page + 1), next];
+      dropPagesAfter(page);
+    }
   }
 
   /** Keep the three pages nearest `current`; the farthest goes first, the later one on a tie. */

@@ -53,6 +53,17 @@ describe('bump', () => {
   });
 });
 
+describe('the hosted run', () => {
+  it('is part of the token: a leg that starts or ends is a change, and the same hosted run is not', () => {
+    const base = createChangeProbe(() => 3).token();
+    const hosted = { ...base, hostedRunId: 'run-1' };
+    expect(tokensEqual(hosted, { ...base, hostedRunId: 'run-1' })).toBe(true);
+    expect(tokensEqual(base, hosted), 'a leg started').toBe(false);
+    expect(tokensEqual(hosted, { ...base, hostedRunId: 'run-2' }), 'another run').toBe(false);
+    expect(tokensEqual(hosted, base), 'the leg ended').toBe(false);
+  });
+});
+
 describe('PRAGMA data_version, over two connections to one file', () => {
   let dir: string;
   let mine: DbClient;

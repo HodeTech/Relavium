@@ -608,6 +608,64 @@ describe('buildNodeDetailModel', () => {
     expect(model.outputPreview?.text).toBe('partial\noutput');
   });
 
+  it('masks an authored model that is shaped like a key, as it masks a stored one', () => {
+    const secret = `sk-ant-api03-${'M'.repeat(40)}`;
+    const model = buildNodeDetailModel({
+      detail: stepDetail(),
+      attempts: [],
+      events: [],
+      authored: { agentSlug: 'writer', model: `custom/${secret}` },
+    });
+    expect(model.authored.model).toBeDefined();
+    expect(model.authored.model).not.toContain('sk-ant-api03');
+    expect(JSON.stringify(model.authored)).not.toContain(secret);
+    expect(model.authored.agent).toBe('writer');
+  });
+
+  it('masks the value of an output whose node id labels a credential, whole, as the final summary does for the output of that name', () => {
+    for (const value of ['opaqueMEMBER', 12_345, true, null]) {
+      const model = buildNodeDetailModel({
+        detail: stepDetail({ nodeId: 'x-api-key', outputJson: JSON.stringify(value) }),
+        attempts: [],
+        events: [],
+      });
+      const summary = formatRunOutputs({ 'x-api-key': value }, '')[1] ?? '';
+      expect(model.outputPreview, String(value)).toMatchObject({ masked: true, truncated: false });
+      expect(model.outputPreview?.text).not.toContain('opaqueMEMBER');
+      // The page shows exactly what the summary shows after `x-api-key: `.
+      expect(summary).toBe(`  x-api-key: ${model.outputPreview?.text ?? ''}`);
+    }
+    // A node whose id labels nothing keeps its value, and an object under a credential-named id is walked member by member.
+    const plain = buildNodeDetailModel({
+      detail: stepDetail({ nodeId: 'writer', outputJson: JSON.stringify('opaqueMEMBER') }),
+      attempts: [],
+      events: [],
+    });
+    expect(plain.outputPreview).toMatchObject({ text: 'opaqueMEMBER', masked: false });
+    const object = buildNodeDetailModel({
+      detail: stepDetail({
+        nodeId: 'x-api-key',
+        outputJson: JSON.stringify({ title: 'plain text' }),
+      }),
+      attempts: [],
+      events: [],
+    });
+    expect(object.outputPreview?.text).toContain('"title": "plain text"');
+  });
+
+  it('masks an over-long value under a credential-named node id whole, and does not call it cut', () => {
+    const model = buildNodeDetailModel({
+      detail: stepDetail({ nodeId: 'x-api-key', outputJson: JSON.stringify('o'.repeat(9_000)) }),
+      attempts: [],
+      events: [],
+    });
+    expect(model.outputPreview).toMatchObject({
+      text: '[REDACTED]',
+      truncated: false,
+      masked: true,
+    });
+  });
+
   it('says only the size of an output or an error the read refused (null text with a byte length)', () => {
     // The detail read size-gates each document in SQL: an over-bound one arrives as null text and its byte length.
     const model = buildNodeDetailModel({

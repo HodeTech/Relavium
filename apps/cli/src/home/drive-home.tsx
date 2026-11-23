@@ -151,7 +151,7 @@ import { createHistorySource } from '../history/history-source.js';
 import { createNodeDetailLoader } from '../history/node-detail-source.js';
 import { createRunDetailLoader } from '../history/run-detail-source.js';
 import { createChangeProbe, dataVersionOf } from '../history/change-probe.js';
-import { createFileTerminalOutbox } from '../engine/terminal-outbox.js';
+import { createFileTerminalOutbox, terminalOutboxStamp } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createRunViewFeed } from '../render/tui/run-view-feed.js';
 import { readParkedRuns } from '../render/tui/home-attention.js';
@@ -1912,6 +1912,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
               .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
           ),
         pins: () => definedPins.listPins({ kind: 'workflow', projectRoot: workflowPinRoot() }),
+        // Every pin the store holds, so the tab lists the workflow pins of other projects and names the stored total at the cap.
+        allPins: () => definedPins.listPins(),
       });
       // `p` on a Defined row or a History row: the pin store behind the tab host's toggle. The keys are the store's (a workflow under
       // its project root and slug, a run under its full id); nothing is written until the key is pressed.
@@ -1948,12 +1950,18 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // The Active tab (ADR-0140 §2): the runs that are not finished, this project's paused ones read for their gates, polled read-only
         // while the tab is in front. The terminal outbox is the file `status` reads; the database is read on the Home's own connection.
         active: {
-          token: changeProbe.token,
+          // The token adds the hosted run's id to the probe's pair: a leg that starts or ends changes what the tab labels `hosted`.
+          token: () => ({
+            ...changeProbe.token(),
+            hostedRunId: hostedRuns.snapshot().active?.runId,
+          }),
           read: createActiveReader({
             reader: runReader,
             projectRoot: deps.global.cwd,
             hostedRunId: () => hostedRuns.snapshot().active?.runId,
             listHeld: () => createFileTerminalOutbox(terminalOutboxPath(homeDir)).list(),
+            outboxStamp: () => terminalOutboxStamp(terminalOutboxPath(homeDir)),
+            isClosed: () => dbClosed,
             now,
             leaseTtlMs: RUN_LEASE_TTL_MS,
           }),

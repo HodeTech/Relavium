@@ -179,10 +179,11 @@ function outputLines(model: NodeDetailModel): readonly NodeLine[] {
     preview.truncated ? 'shortened: relavium logs <run> --json holds the whole record' : '',
   ].filter((note) => note !== '');
   const empty: NodeLine = { kind: 'text', left: `${INDENT}${EMPTY_OUTPUT}` };
-  return [
-    notes.length === 0 ? heading : { ...heading, right: notes.join(' · ') },
-    ...(preview.text === '' ? [empty] : textRows(preview.text, INDENT)),
-  ];
+  // The notes are a row of their own under the heading, not its right-hand side: the heading's room is what a narrow terminal drops first,
+  // and `masked` and `shortened` are what the person most needs to read beside an output.
+  const noted: readonly NodeLine[] =
+    notes.length === 0 ? [] : [{ kind: 'notice', left: `${INDENT}${notes.join(' · ')}` }];
+  return [heading, ...noted, ...(preview.text === '' ? [empty] : textRows(preview.text, INDENT))];
 }
 
 function errorLines(model: NodeDetailModel): readonly NodeLine[] {

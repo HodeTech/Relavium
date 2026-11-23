@@ -42,15 +42,18 @@ system_prompt: Summarize the input.
 describe('the node count of a catalog entry', () => {
   let project: string;
   let configDir: string;
+  let home: string;
 
   beforeEach(() => {
     project = mkdtempSync(join(tmpdir(), 'relavium-catalog-nodecount-'));
+    home = mkdtempSync(join(tmpdir(), 'relavium-catalog-nodecount-home-'));
     configDir = join(project, '.relavium');
     mkdirSync(configDir);
   });
 
   afterEach(() => {
     rmSync(project, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   function write(kind: 'workflows' | 'agents', name: string, body: string): void {
@@ -60,7 +63,7 @@ describe('the node count of a catalog entry', () => {
   }
 
   function entries(kind: 'workflows' | 'agents'): CatalogEntry[] {
-    return discoverCatalog({ projectConfigDir: configDir, cwd: project, kind });
+    return discoverCatalog({ projectConfigDir: configDir, cwd: project, kind, homeDir: home });
   }
 
   it('is the number of nodes the workflow declares, for each workflow in the catalog', () => {

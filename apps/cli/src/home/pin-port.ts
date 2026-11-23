@@ -34,6 +34,10 @@ export function createPinPort(deps: PinPortDeps): PinPort {
     pinRun: (runId) =>
       deps.store.pinItem({ kind: 'run', projectRoot: '', ref: runId, at: deps.now() }),
     unpinRun: (runId) => deps.store.unpinItem({ kind: 'run', projectRoot: '', ref: runId }),
+    // A row id is good for the listing it came from, no longer: SQLite hands the number of a deleted last row to the next insert, and
+    // `VACUUM` may renumber the table, so another process's write between the list and this call can make it name a different pin
+    // (`unpinByRow` removes what the number names NOW). It is the only handle a pin whose key cannot be spelled has, and the window is
+    // one list read to one key press; the register records it (deferred-tasks.md, "MVP-8 step 4 review").
     unpinRow: (rowid) => deps.store.unpinByRow(rowid),
   };
 }

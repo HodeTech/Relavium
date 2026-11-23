@@ -37,6 +37,7 @@ import {
   launchFields,
   LAUNCH_CANCELLED,
   LAUNCH_NO_WORKFLOWS,
+  launchAmbiguous,
   launchNotOffered,
   reduceLaunch,
   type LaunchChoice,
@@ -578,6 +579,31 @@ describe('open(slug) starts the form for one workflow (the Defined tab’s r)', 
     expect(notice.includes(String.fromCharCode(0x1b)), 'no escape byte').toBe(false);
     expect(notice.includes(String.fromCharCode(0x202e)), 'no bidi override').toBe(false);
     expect(r.snapshots).toEqual([]);
+  });
+});
+
+describe('two files that declare one workflow id', () => {
+  it('make `r` on that id refuse with both paths named, and begin no flow; another id still starts', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('happy-copy.relavium.yaml', HAPPY);
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const notice = await r.launch.open('host-happy');
+    // The two paths come in the order the directory listed them, which is the file system's: the sentence is compared in either order.
+    const first = join('.relavium', 'workflows', 'happy-copy.relavium.yaml');
+    const second = join('.relavium', 'workflows', 'happy.relavium.yaml');
+    expect([
+      launchAmbiguous('host-happy', first, second),
+      launchAmbiguous('host-happy', second, first),
+    ]).toContain(notice);
+    expect(notice).toContain('declared by two workflow files');
+    expect(r.snapshots, 'no prompt was drawn for either file').toEqual([]);
+    expect(r.startCalls).toHaveLength(0);
+    // An id only one file declares is not ambiguous.
+    const opened = r.launch.open('no-inputs');
+    await shows(r, 'select', 'Run no-inputs');
+    keys(r).enter();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 });
 

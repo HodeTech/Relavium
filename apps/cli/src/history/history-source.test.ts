@@ -150,6 +150,34 @@ describe('paging: a keyset cursor over a view of twenty', () => {
     expect(idsOf(third.rows)).toEqual(['run-004', 'run-003', 'run-002', 'run-001', 'run-000']);
   });
 
+  it('drops the pages past a page whose boundary moved, so a page 0 re-read after its eviction never leaves a stale next page', async () => {
+    await seedMany(65, 10);
+    const source = sourceOver();
+    for (const page of [0, 1, 2, 3]) readPage(source, page);
+    expect(listCalls).toHaveBeenCalledTimes(4);
+    // Three newer runs arrive while page 0 is out of memory (the walk to page 3 evicted it): page 0 now ends three rows earlier.
+    for (const id of ['run-new-0', 'run-new-1', 'run-new-2']) {
+      await seedRun(client.db, { slug: 'wf', runId: id, state: 'completed', atMs: T0 + 10_000 });
+      inProject(id, HERE);
+    }
+    const first = readPage(source, 0);
+    expect(listCalls, 'page 0 was evicted: it is fetched again').toHaveBeenCalledTimes(5);
+    expect(idsOf(first.rows).slice(0, 3)).toEqual(['run-new-2', 'run-new-1', 'run-new-0']);
+    // Pages 1 and 2 were read with the OLD boundary: they are fetched again with the new cursor, not served from memory.
+    const second = readPage(source, 1);
+    const third = readPage(source, 2);
+    const fourth = readPage(source, 3);
+    expect(listCalls.mock.calls.length, 'pages 1, 2 and 3 are fetched again').toBe(8);
+    const all = [first, second, third, fourth].flatMap((read) => idsOf(read.rows));
+    expect(new Set(all).size, 'no row twice').toBe(68);
+    expect(all, 'no row skipped, in order').toEqual([
+      'run-new-2',
+      'run-new-1',
+      'run-new-0',
+      ...Array.from({ length: 65 }, (_, index) => `run-${String(64 - index).padStart(3, '0')}`),
+    ]);
+  });
+
   it('clamps a page past the walk to the last page it reached, and starts the walk again for a new scope or status', async () => {
     await seedMany(30, 10);
     const source = sourceOver();

@@ -27,6 +27,8 @@ export interface ExportCommandArgs {
 export interface ExportCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** The operator home the path rules read. The program passes none (the process's own); a test hands it a temporary one. */
+  readonly homeDir?: string | undefined;
 }
 
 /**

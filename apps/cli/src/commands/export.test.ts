@@ -151,6 +151,22 @@ describe('exportCommand (2.J)', () => {
     }
   });
 
+  it('rejects an id that two valid workflow files declare, naming both paths, and exports neither', () => {
+    writeFileSync(join(cwd, '.relavium', 'workflows', 'code-review-copy.relavium.yaml'), WORKFLOW);
+    const { d } = deps();
+    try {
+      exportCommand({ id: 'code-review', force: false }, d);
+      expect.unreachable('an ambiguous id must throw');
+    } catch (err) {
+      if (!isCliError(err)) throw err;
+      expect(err.code).toBe('invalid_invocation');
+      expect(err.message).toContain('declared by two workflow files');
+      expect(err.message).toContain('code-review.relavium.yaml');
+      expect(err.message).toContain('code-review-copy.relavium.yaml');
+    }
+    expect(existsSync(join(cwd, 'code-review.relavium.yaml'))).toBe(false);
+  });
+
   it('refuses to overwrite an existing target without --force, then overwrites WITH it', () => {
     const target = join(cwd, 'reviewer.agent.yaml');
     writeFileSync(target, 'pre-existing\n');

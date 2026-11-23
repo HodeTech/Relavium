@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createFileTerminalOutbox } from './terminal-outbox.js';
+import { createFileTerminalOutbox, terminalOutboxStamp } from './terminal-outbox.js';
 
 /**
  * The file-backed outbox had NO test when it landed, and it is the half the maintainer specifically chose
@@ -205,5 +205,23 @@ describe('createFileTerminalOutbox', () => {
     expect(readFileSync(path, 'utf8')).not.toContain(String.fromCharCode(0x9b));
     const held = await outbox.list();
     expect(held[0]?.type === 'run:completed' ? held[0].outputs : undefined).toEqual(hostile);
+  });
+
+  it('stamps the file by size and mtime, so a poll can tell an unchanged outbox from one that was appended to', async () => {
+    expect(terminalOutboxStamp(path), 'an absent file has a stamp of its own').toBe('absent');
+    const outbox = createFileTerminalOutbox(path);
+    await outbox.put(terminal('r1'));
+    const first = terminalOutboxStamp(path);
+    expect(first).toMatch(/^\d+:/);
+    expect(terminalOutboxStamp(path), 'the same file is the same stamp').toBe(first);
+    await outbox.remove('r1');
+    expect(terminalOutboxStamp(path), 'a tombstone appends, so the size moves').not.toBe(first);
+  });
+
+  it('has no stamp for a file it cannot look at, which is a reason to read it whole', () => {
+    // A path whose parent is a regular file: stat fails with ENOTDIR, not ENOENT.
+    const file = join(dir, 'plain');
+    writeFileSync(file, 'x');
+    expect(terminalOutboxStamp(join(file, 'inside'))).toBeUndefined();
   });
 });

@@ -5,7 +5,7 @@
  * the command BEFORE the split and are the oracle: the same stdout, the same stderr (what the dispatcher prints for a refusal, through
  * `toUserFacing`), the same exit code and the same file bytes for every path, a refusal included.
  *
- * Every project here is a temporary directory; nothing reads or writes an operator home.
+ * Every project here is a temporary directory and the operator home is another one, handed in; nothing reads or writes the real one.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -44,8 +44,10 @@ interface Observed {
 }
 
 let cwd = '';
+let home = '';
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'relavium-export-bytes-'));
+  home = mkdtempSync(join(tmpdir(), 'relavium-export-bytes-home-'));
   mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
   mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
   writeFileSync(join(cwd, '.relavium', 'workflows', 'code-review.relavium.yaml'), WORKFLOW);
@@ -53,6 +55,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 function observe(
@@ -68,7 +71,7 @@ function observe(
     verbosity: 'normal',
   };
   try {
-    const exitCode = exportCommand(args, { io, global });
+    const exitCode = exportCommand(args, { io, global, homeDir: home });
     return { exitCode, stdout: out(), stderr: err() };
   } catch (cause) {
     // The dispatcher prints a refusal as its user-facing message on stderr and exits with its code.

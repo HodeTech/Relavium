@@ -1,7 +1,13 @@
 import type { StepDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
 
-import { maskText, maskThenCut, maskedAsMember, type MaskedCut } from '../render/output-masking.js';
+import {
+  MEMBER_MASK,
+  maskText,
+  maskThenCut,
+  maskedAsMember,
+  type MaskedCut,
+} from '../render/output-masking.js';
 import { stripTerminalControls } from '../render/sanitize.js';
 import { formatCostUsd, formatDuration } from '../render/tui/format.js';
 import {
@@ -50,7 +56,8 @@ import {
  * walked. The emitted text is scrubbed once more as a whole, and terminal controls are stripped. Every one of
  * those masks is the seam's (`render/output-masking.ts`), the same functions the final summary masks through, so the
  * page and the summary cannot disagree about what a value is (a test masks a seeded set through both); the walk
- * and its bounds are this page's own. The engine already masked secrets at the write boundary (ADR-0050).
+ * and its bounds are this page's own. The summary also reads the NAME of an output (the node's id) and masks a primitive
+ * value whole when it labels a credential; the page is given the node's id and reads it the same way. The engine already masked secrets at the write boundary (ADR-0050).
  *
  * **Tokens follow the cost, and carry no cached count.** A node's tokens are the sum of the `inputTokens` and
  * `outputTokens` of its `cost:attempt_settled` rows (the same rows that give its cost), else the step row's tokens
@@ -247,9 +254,10 @@ function oversizedOutputPreview(bytes: number): OutputPreview {
  * A node's stored `output_json` as the bounded, masked preview. A string value is shown as itself (it is the
  * common case and keeps its own line breaks); anything else is shown as indented JSON, written only as far as
  * the bound can show. A document above {@link MAX_STORED_OUTPUT_BYTES} is not parsed at all, and an unreadable
- * one yields a fixed sentence, never a throw.
+ * one yields a fixed sentence, never a throw. With `nodeId`, a top-level primitive value is also read by the final summary's own
+ * rule: when the node's id labels a credential (`x-api-key`), the value is masked whole, however long it is.
  */
-export function buildOutputPreview(outputJson: string): OutputPreview {
+export function buildOutputPreview(outputJson: string, nodeId?: string): OutputPreview {
   const size = Buffer.byteLength(outputJson, 'utf8');
   if (size > MAX_STORED_OUTPUT_BYTES) return oversizedOutputPreview(size);
   let masked = false;
@@ -260,7 +268,12 @@ export function buildOutputPreview(outputJson: string): OutputPreview {
   let dropped = false;
   try {
     const value: unknown = JSON.parse(outputJson);
-    if (typeof value === 'string') {
+    // The summary's rule for an output whose NAME labels a credential: a primitive value is masked whole. A string is shown as the mask
+    // itself, any other primitive as the JSON string of it (the form the summary prints).
+    const named = nodeId === undefined ? value : maskedAsMember(nodeId, value, onMask);
+    if (named !== value) {
+      shown = typeof value === 'string' ? MEMBER_MASK : JSON.stringify(MEMBER_MASK);
+    } else if (typeof value === 'string') {
       const leaf = scrubLeaf(value, onMask);
       shown = leaf.text;
       dropped = leaf.cut;
@@ -433,7 +446,7 @@ function timelineRow(draft: TimelineDraft): TimelineRowView {
  * text with no byte length is an attempt that recorded no output, which has no preview.
  */
 function storedOutputPreview(detail: StepDetailRecord): OutputPreview | undefined {
-  if (detail.outputJson !== null) return buildOutputPreview(detail.outputJson);
+  if (detail.outputJson !== null) return buildOutputPreview(detail.outputJson, detail.nodeId);
   return detail.outputByteLength === null
     ? undefined
     : oversizedOutputPreview(detail.outputByteLength);
@@ -535,7 +548,7 @@ export function buildNodeDetailModel(input: NodeDetailInput): NodeDetailModel {
         : { agent: boundedIdentifier(input.authored.agentSlug) }),
       ...(input.authored?.model === undefined
         ? {}
-        : { model: boundedIdentifier(input.authored.model) }),
+        : { model: scrubbedBounded(input.authored.model) }),
     },
     ...(error === undefined ? {} : { error }),
     ...(outputPreview === undefined ? {} : { outputPreview }),

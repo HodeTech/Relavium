@@ -134,6 +134,14 @@ export function launchNotOffered(slug: string): string {
   return `Not started. ${bounded(slug, LABEL_LIMIT)} is not a valid workflow of this project.`;
 }
 
+/**
+ * What `open(slug)` says when two valid files of the project declare that workflow id: no flow is begun, because which of the two a
+ * `slug` means is not for this flow to guess (the export refuses a clash the same way). The two paths are the catalog's own.
+ */
+export function launchAmbiguous(slug: string, first: string, second: string): string {
+  return `Not started. ${bounded(slug, LABEL_LIMIT)} is declared by two workflow files, ${bounded(first, REASON_LIMIT)} and ${bounded(second, REASON_LIMIT)}. Rename one.`;
+}
+
 const IGNORED = (state: LaunchState): LaunchStep => ({ state, effects: [] });
 
 function withValue(
@@ -578,9 +586,13 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
     const { choices, skipped } = offeredWorkflows(entries);
     if (choices.length === 0)
       return skipped === undefined ? LAUNCH_NO_WORKFLOWS : `${LAUNCH_NO_WORKFLOWS} ${skipped}`;
-    // A slug that names no offered workflow starts no flow at all: nothing is begun, asked or loaded for it.
-    if (slug !== undefined && !choices.some((choice) => choice.slug === slug))
-      return launchNotOffered(slug);
+    // A slug that names no offered workflow starts no flow at all: nothing is begun, asked or loaded for it. Two files that declare it
+    // are refused too, naming both: the first of them is not the one the person meant.
+    if (slug !== undefined) {
+      const [first, second] = choices.filter((choice) => choice.slug === slug);
+      if (first === undefined) return launchNotOffered(slug);
+      if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
+    }
 
     const signal = flow.begin();
     const hold = createSecretHold();

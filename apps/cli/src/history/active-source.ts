@@ -1,7 +1,7 @@
 import type { RunHistoryReader, RunLeaseSummary, RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { readProjectRunGates, type RunGatesReader } from '../home/run-gates.js';
+import { gatesOfRun, type RunGatesReader } from '../home/run-gates.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
 
 /**
@@ -15,12 +15,15 @@ import { classifyActiveRuns, type ActiveRow } from './active-model.js';
  *   "N more" and not just "more": the count is exact up to a page and `N+` past it.
  * - **Leases in chunks of {@link ACTIVE_LEASE_CHUNK}.** `loadRunLeases` refuses a longer id list, so the rows read are asked about in
  *   chunks, and a run with no lease is simply absent from the answer.
- * - **Gates through `readProjectRunGates`, per run.** A paused run of THIS project is read for its pending human and budget gates, one
+ * - **Gates through `gatesOfRun`, per run, kept per run.** A paused run of THIS project is read for its pending human and budget gates, one
  *   isolated read each: a run whose log cannot be read is NOT counted (it would read as zero gates, and a run with no gate reads as "waiting
  *   for a media job", which is a false thing to say about a damaged log). It is left out of the counts, so the model labels it `gate state
- *   not read` and offers it no card.
+ *   not read` and offers it no card. The count is kept per run id under a key of the run's own row (its status and `updated_at`, which every
+ *   gate event moves), so a poll tick re-reads only the runs whose row moved, never every paused run's whole log; an entry older than one
+ *   lease TTL is read again (two events in one millisecond leave the row as it was), and an entry for a run no longer listed is dropped.
  * - **A held terminal is read by the caller.** The outbox is a file read, so it is asynchronous and lives in {@link createActiveReader};
- *   {@link readActive} takes the ids it found.
+ *   {@link readActive} takes the ids it found. The reader keeps the held ids under the outbox file's stamp (size and mtime), so an unchanged
+ *   file is not parsed again at every tick.
  */
 
 /** The most runs kept for one status; the rest are counted, not listed. */
@@ -58,8 +61,21 @@ export interface ActiveRead {
 export type ActiveSourceReader = RunGatesReader &
   Pick<RunHistoryReader, 'loadRunLeases' | 'loadWorkflowSlugs'>;
 
+/** What was read of one paused run's gates, and under which key of its row. `count` is `undefined` for a log that could not be read. */
+interface GateCountEntry {
+  readonly key: string;
+  readonly count: number | undefined;
+  /** Epoch milliseconds of the read: an entry is trusted for at most one lease TTL. */
+  readonly at: number;
+}
+
+/** The gate counts kept by run id between reads of one reader. */
+export type GateCountCache = Map<string, GateCountEntry>;
+
 export interface ActiveSourceInput {
   readonly reader: ActiveSourceReader;
+  /** The gate counts kept between reads; a caller that reads once passes none. */
+  readonly gateCache?: GateCountCache | undefined;
   /** The directory the Home is in: a paused run is actionable only here (ADR-0139 §7). */
   readonly projectRoot: string;
   /** The run this Home's executing leg hosts, when one executes. */
@@ -111,21 +127,51 @@ function readLeases(
   return leases;
 }
 
+/** The key a run's row gives its gate count: a gate event moves `updated_at` and the status, and nothing else makes the log change. */
+const gateKeyOf = (run: RunSummaryRecord): string => `${run.status}|${run.updatedAt}`;
+
 /**
  * The pending gate count of each paused run of this project whose log could be read. A run whose log could not be read is absent, which
- * the model reads as "gate state not read": counting it as zero would call a damaged log "waiting for a media job".
+ * the model reads as "gate state not read": counting it as zero would call a damaged log "waiting for a media job". With a `cache`, a run
+ * whose key has not moved (and whose entry is younger than `maxAgeMs`) is not read again.
  */
 export function readActiveGateCounts(
   reader: ActiveSourceReader,
   projectRoot: string,
   paused: readonly RunSummaryRecord[],
+  options: {
+    readonly cache?: GateCountCache | undefined;
+    readonly nowMs?: number;
+    readonly maxAgeMs?: number;
+  } = {},
 ): Map<string, number> | undefined {
-  if (!paused.some((run) => run.projectRoot === projectRoot)) return undefined;
+  const here = paused
+    .filter((run) => run.projectRoot === projectRoot)
+    .slice(0, ACTIVE_STATUS_LIMIT);
+  const { cache } = options;
+  if (here.length === 0) {
+    cache?.clear();
+    return undefined;
+  }
+  const nowMs = options.nowMs ?? 0;
+  const maxAgeMs = options.maxAgeMs ?? 0;
   const counts = new Map<string, number>();
-  const read = readProjectRunGates(reader, projectRoot, { maxRuns: ACTIVE_STATUS_LIMIT });
-  for (const run of read.runs) {
-    if (run.degraded) continue;
-    counts.set(run.runId, run.gates.length + run.budgetGates.length);
+  for (const run of here) {
+    const key = gateKeyOf(run);
+    const kept = cache?.get(run.id);
+    let count: number | undefined;
+    if (kept !== undefined && kept.key === key && nowMs - kept.at < maxAgeMs) {
+      count = kept.count;
+    } else {
+      const read = gatesOfRun(reader, run);
+      count = read.degraded ? undefined : read.gates.length + read.budgetGates.length;
+      cache?.set(run.id, { key, count, at: nowMs });
+    }
+    if (count !== undefined) counts.set(run.id, count);
+  }
+  if (cache !== undefined) {
+    const listed = new Set(here.map((run) => run.id));
+    for (const runId of [...cache.keys()]) if (!listed.has(runId)) cache.delete(runId);
   }
   return counts;
 }
@@ -148,7 +194,11 @@ export function readActive(input: ActiveSourceInput): ActiveRead {
   const runs = byStatus.flatMap((entry) => entry.rows);
   const paused = byStatus.find((entry) => entry.status === 'paused')?.rows ?? [];
   const more = byStatus.flatMap((entry) => (entry.more === undefined ? [] : [entry.more]));
-  const pendingGateCounts = readActiveGateCounts(reader, input.projectRoot, paused);
+  const pendingGateCounts = readActiveGateCounts(reader, input.projectRoot, paused, {
+    cache: input.gateCache,
+    nowMs: input.nowMs,
+    maxAgeMs: input.leaseTtlMs,
+  });
   const rows = classifyActiveRuns({
     runs,
     leases: readLeases(
@@ -173,6 +223,13 @@ export interface ActiveReaderDeps {
   readonly hostedRunId: () => string | undefined;
   /** The events the terminal outbox holds (`createFileTerminalOutbox(...).list`). Rejects when the file cannot be read. */
   readonly listHeld: () => Promise<readonly { readonly runId?: string | undefined }[]>;
+  /**
+   * The outbox file's stamp (its size and mtime, `terminalOutboxStamp`), or `undefined` when it cannot be taken. A stamp equal to the one the
+   * held ids were read under means the file did not change, and the file is not parsed again. Without it every read lists the file.
+   */
+  readonly outboxStamp?: (() => string | undefined) | undefined;
+  /** The database is closed: asked once more after the outbox is read, so a read that was started open does not touch a closed database. */
+  readonly isClosed?: (() => boolean) | undefined;
   /** Epoch milliseconds. */
   readonly now: () => number;
   readonly leaseTtlMs: number;
@@ -184,17 +241,36 @@ export interface ActiveReaderDeps {
  * as `status` degrades: it never fails the tab.
  */
 export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
+  const gateCache: GateCountCache = new Map();
+  let kept: { readonly stamp: string; readonly ids: ReadonlySet<string> } | undefined;
+  const stampNow = (): string | undefined => {
+    try {
+      return deps.outboxStamp?.();
+    } catch {
+      return undefined;
+    }
+  };
   return async () => {
     let heldRunIds: ReadonlySet<string> = new Set();
     let heldUnread = false;
-    try {
-      const events = await deps.listHeld();
-      heldRunIds = new Set(
-        events.map((event) => event.runId).filter((id): id is string => id !== undefined),
-      );
-    } catch {
-      heldUnread = true;
+    // The stamp is taken BEFORE the file is read: a file that changes in between is read again at the next tick, never trusted stale.
+    const stamp = stampNow();
+    if (stamp !== undefined && kept?.stamp === stamp) {
+      heldRunIds = kept.ids;
+    } else {
+      kept = undefined;
+      try {
+        const events = await deps.listHeld();
+        heldRunIds = new Set(
+          events.map((event) => event.runId).filter((id): id is string => id !== undefined),
+        );
+        if (stamp !== undefined) kept = { stamp, ids: heldRunIds };
+      } catch {
+        heldUnread = true;
+      }
     }
+    // The poll asked `isClosed` before it started this read, and the outbox was awaited since: a database closed meanwhile is not read.
+    if (deps.isClosed?.() === true) throw new Error('the history database is closed');
     return readActive({
       reader: deps.reader,
       projectRoot: deps.projectRoot,
@@ -203,6 +279,7 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
       heldUnread,
       nowMs: deps.now(),
       leaseTtlMs: deps.leaseTtlMs,
+      gateCache,
     });
   };
 }

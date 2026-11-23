@@ -226,9 +226,6 @@ describe('the preview masks through the seam', () => {
 });
 
 describe('a 1 MiB output costs a bound, not its size (the work is counted, not the time)', () => {
-  /** A generous guard against a hang only: the claims below are the counts, which do not move with the load on the machine. */
-  const HANG_GUARD_MS = 10_000;
-
   beforeEach(() => {
     vi.mocked(scrubModule.scrubSecrets).mockClear();
   });
@@ -249,9 +246,7 @@ describe('a 1 MiB output costs a bound, not its size (the work is counted, not t
   it('hands the scrubber a bounded number of strings for 200,000 short leaves, however many the document holds', () => {
     const document = JSON.stringify(Array.from({ length: 200_000 }, () => 'ab'));
     fits(document);
-    const started = performance.now();
     const preview = buildOutputPreview(document);
-    expect(performance.now() - started).toBeLessThan(HANG_GUARD_MS);
     expect(preview).toMatchObject({ truncated: true, lines: OUTPUT_PREVIEW_MAX_LINES });
     const { calls, chars } = scrubWork();
     expect(calls).toBeLessThanOrEqual(CALL_BOUND);
@@ -285,9 +280,7 @@ describe('a 1 MiB output costs a bound, not its size (the work is counted, not t
     const key = 'k'.repeat(MAX_STORED_OUTPUT_BYTES - 20);
     const document = JSON.stringify({ [key]: 1 });
     expect(Buffer.byteLength(document)).toBeLessThanOrEqual(MAX_STORED_OUTPUT_BYTES);
-    const started = performance.now();
     const preview = buildOutputPreview(document);
-    expect(performance.now() - started).toBeLessThan(HANG_GUARD_MS);
     // The key is read whole and shown cut to 256 code points with its marker; the document itself fits the bounds.
     expect(preview.text).toBe(`{\n  "${'k'.repeat(MAX_KEY_SCRUB_CHARS)}…": 1\n}`);
     const { calls, chars } = scrubWork();
@@ -300,14 +293,17 @@ describe('a 1 MiB output costs a bound, not its size (the work is counted, not t
 // ---- The differential: the page and the summary mask the same values ----------------------------------------------------------
 
 /** What the final summary shows for one output, read back from its lines (the key `out`, no indent). */
-function summaryShows(value: unknown): { text: string; masked: boolean; truncated: boolean } {
-  const lines = formatRunOutputs({ out: value }, '');
+function summaryShows(
+  value: unknown,
+  key = 'out',
+): { text: string; masked: boolean; truncated: boolean } {
+  const lines = formatRunOutputs({ [key]: value }, '');
   const note = lines.at(-1)?.startsWith('  (outputs ') === true ? lines.pop() : undefined;
   const rest = lines.slice(1);
   const masked = note?.includes('masked') === true;
   const first = rest[0] ?? '';
-  if (first.startsWith('  out: ')) {
-    return { text: first.slice('  out: '.length), masked, truncated: false };
+  if (first.startsWith(`  ${key}: `)) {
+    return { text: first.slice(`  ${key}: `.length), masked, truncated: false };
   }
   const rows = rest.slice(1);
   const truncated = rows.at(-1) === '    …';
@@ -463,6 +459,23 @@ describe('the preview and the final summary mask the same values (the differenti
       'a bare number': 'same',
       'an empty string': 'same',
     });
+  });
+
+  it('masks the value of an output whose NAME labels a credential on both surfaces: the page is given the node id the summary reads as the output key', () => {
+    for (const name of CREDENTIAL_NAMES) {
+      for (const value of ['opaqueMEMBER', 12_345, false, null]) {
+        const preview = buildOutputPreview(JSON.stringify(value), name);
+        const summary = summaryShows(value, name);
+        expect([name, value, preview.text.includes('opaqueMEMBER')]).toEqual([name, value, false]);
+        expect([name, value, summary.text.includes('opaqueMEMBER')]).toEqual([name, value, false]);
+        expect([name, value, preview.masked, summary.masked]).toEqual([name, value, true, true]);
+        expect([name, value, preview.text]).toEqual([name, value, summary.text]);
+      }
+    }
+    // An output name that labels nothing leaves the value alone on both.
+    expect(buildOutputPreview(JSON.stringify('plain'), 'title').text).toBe(
+      summaryShows('plain', 'title').text,
+    );
   });
 
   it('shows a header-named key’s value masked on both surfaces, and the query-named key’s too', () => {

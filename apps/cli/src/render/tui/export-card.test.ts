@@ -361,6 +361,22 @@ describe('a refusal is shown in the card, and writes nothing', () => {
     expect(r.ui.getSnapshot().active).toBe(false);
   });
 
+  it('refuses an id two workflow files declare, before the card asks, naming both files', async () => {
+    writeFileSync(join(root, '.relavium', 'workflows', 'code-review-copy.relavium.yaml'), WORKFLOW);
+    const before = tree(root);
+    const r = rig();
+    await vi.waitFor(() => expect(r.ui.getSnapshot().kind).toBe('select'), { timeout: WAIT_MS });
+    const card = r.ui.getSnapshot();
+    expect(card.message).toContain("Cannot export 'code-review':");
+    expect(card.message).toContain('declared by two workflow files');
+    expect(card.message).toContain('code-review.relavium.yaml');
+    expect(card.message).toContain('code-review-copy.relavium.yaml');
+    r.ui.input('', { ...none, return: true });
+    await r.result;
+    expect(r.commits, 'nothing to commit').not.toHaveBeenCalled();
+    expect(tree(root)).toEqual(before);
+  });
+
   it('Esc closes the refusal too, and says the same', async () => {
     writeFileSync(target(), 'pre-existing\n');
     const r = rig();

@@ -19,6 +19,11 @@ export interface ChangeToken {
   readonly dataVersion: number;
   /** The in-process generation now: it moves when {@link ChangeProbe.bump} is called. */
   readonly generation: number;
+  /**
+   * The run this Home's executing leg hosts now, when the caller adds it: the leg's start and end are not events a log holds, and the
+   * Active tab labels the hosted run, so a leg that starts or ends is a change of its own.
+   */
+  readonly hostedRunId?: string | undefined;
 }
 
 export interface ChangeProbe {
@@ -34,7 +39,8 @@ export function tokensEqual(a: ChangeToken | undefined, b: ChangeToken | undefin
     a !== undefined &&
     b !== undefined &&
     a.dataVersion === b.dataVersion &&
-    a.generation === b.generation
+    a.generation === b.generation &&
+    a.hostedRunId === b.hostedRunId
   );
 }
 

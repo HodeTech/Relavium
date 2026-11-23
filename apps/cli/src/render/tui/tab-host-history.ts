@@ -5,25 +5,27 @@ import {
   nextStatusFilter,
   type HistoryRow,
 } from '../../history/history-model.js';
-import type {
-  HistoryCost,
-  HistoryEntry,
-  HistoryQuery,
-  HistoryRead,
-  HistoryScope,
-  HistorySource,
+import {
+  HISTORY_COST_CACHE_MAX,
+  type HistoryCost,
+  type HistoryEntry,
+  type HistoryQuery,
+  type HistoryRead,
+  type HistoryScope,
+  type HistorySource,
 } from '../../history/history-source.js';
 import { formatDuration } from './format.js';
-import { SKIPPED } from '../absence.js';
+import { NOT_RECORDED, NO_MESSAGE_RECORDED, NO_NODE_RECORDED, SKIPPED } from '../absence.js';
 import { scrubbedBounded, shortRunId, type NodeRow } from '../../history/run-detail-model.js';
 import type { NodeDetailLoad } from '../../history/node-detail-source.js';
 import type { DetailEvent, RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import { legend, type LegendItem } from './legend.js';
 import {
   clampSpans,
   clipLine,
   flushRow,
+  usableColumns,
   windowBody,
   type SheetLine,
   type SheetLineKind,
@@ -171,6 +173,8 @@ export const HISTORY_HELD_UNREAD =
 export const HISTORY_COST_REACH = 10;
 /** How far `PgUp` and `PgDn` move. */
 export const HISTORY_PAGE_STEP = 8;
+/** The terminal width the legend must fit: the Home's 80-column floor. */
+const LEGEND_FLOOR_COLUMNS = 80;
 /** The widest the cost column is drawn inside a row; the whole text is on the line under the list. */
 const COST_COLUMN = 18;
 
@@ -216,7 +220,10 @@ export function unreadableHistoryTab(): HistoryTabState {
 
 /**
  * The costs of the rows within {@link HISTORY_COST_REACH} of `cursor`, added to `known` (through the source, which keeps each fold). The
- * same map when every one of them is already known, so a key that scrolls over rows already read costs nothing.
+ * same map when every one of them is already known, so a key that scrolls over rows already read costs nothing. The map keeps at most
+ * {@link HISTORY_COST_CACHE_MAX} runs (the oldest read goes first, the source's own bound), so a long scroll does not grow it without end.
+ * A read that fails for a reason that is not about the run (the source degrades a damaged log itself) stops the reads of this key: the rows
+ * left without a cost draw `…`, and the next key asks again, so a key never throws out of the tab.
  */
 function costsAround(
   known: ReadonlyMap<string, HistoryCost>,
@@ -232,8 +239,18 @@ function costsAround(
     const entry = entries[index];
     if (entry?.kind !== 'run' || known.has(entry.row.id) || costs?.has(entry.row.id) === true)
       continue;
+    let cost: HistoryCost;
+    try {
+      cost = port.cost(entry.row);
+    } catch {
+      break;
+    }
     costs ??= new Map(known);
-    costs.set(entry.row.id, port.cost(entry.row));
+    costs.set(entry.row.id, cost);
+    if (costs.size > HISTORY_COST_CACHE_MAX) {
+      const oldest = costs.keys().next();
+      if (oldest.done !== true) costs.delete(oldest.value);
+    }
   }
   return costs ?? known;
 }
@@ -834,10 +851,13 @@ function headerState(read: RunDetailRead): { glyph: string; word: string } {
 function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[] {
   const { header, rows, unattributedRow } = read.model;
   const { glyph, word } = headerState(read);
+  // The workflow's name is the part of the heading a narrow terminal cuts: the short id and the pin mark are flushed right and keep their
+  // columns (`flushRow` clips the label first), so a run stays identifiable and its pin stays visible at 78 columns.
   const lines: DetailLine[] = [
     {
       kind: 'heading',
-      left: `${glyph} ${word}  ${header.workflow}  ${header.shortId}${pinned ? '  ★ pinned' : ''}`,
+      left: `${glyph} ${word}  ${header.workflow}`,
+      right: `${header.shortId}${pinned ? '  ★ pinned' : ''}`,
     },
   ];
   const duration =
@@ -848,7 +868,7 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
         : 'not finished';
   lines.push({
     kind: 'text',
-    left: `Started ${header.startedAt ?? 'not recorded'}  ·  took ${duration}`,
+    left: `Started ${header.startedAt ?? NOT_RECORDED}  ·  took ${duration}`,
   });
   lines.push({ kind: 'text', left: `Tokens ${header.tokensText}  ·  cost ${header.costText}` });
   if (header.error !== undefined) {
@@ -856,7 +876,7 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
     const where = nodeId === undefined ? '' : ` (node ${nodeId})`;
     lines.push({
       kind: 'failed',
-      left: `${code === undefined ? 'Error' : `Error ${code}`}: ${message ?? 'no message recorded'}${where}`,
+      left: `${code === undefined ? 'Error' : `Error ${code}`}: ${message ?? NO_MESSAGE_RECORDED}${where}`,
     });
   }
   if (read.terminalHeld) lines.push({ kind: 'notice', left: HISTORY_HELD_NOTE });
@@ -872,7 +892,7 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
       left: `${String(read.skippedRows)} ${read.skippedRows === 1 ? 'row was' : 'rows were'} written by a newer version and skipped.`,
     });
   lines.push({ kind: 'heading', left: `Nodes (${String(rows.length)})` });
-  if (rows.length === 0) lines.push({ kind: 'text', left: '  no node was recorded' });
+  if (rows.length === 0) lines.push({ kind: 'text', left: `  ${NO_NODE_RECORDED}` });
   for (const row of rows) lines.push(nodeLine(row));
   if (unattributedRow !== undefined)
     lines.push({ kind: 'row', left: `    ${unattributedRow.label}`, right: unattributedRow.text });
@@ -945,38 +965,48 @@ export function historyBody(
 
 /**
  * The legend's items: the detail's, or the list's (the tab host's tab item first, the way out last). A tab that could not be read names
- * the tab keys the other tabs without a list name.
+ * the tab keys the other tabs without a list name. `Tab` (cycle) is named wherever the legend still fits the 80-column floor with it, so a
+ * long legend (the list's, the detail's) keeps its own keys instead.
  */
 export function historyLegendItems(
   state: HistoryTabState,
   tabItems: readonly LegendItem[],
   closeItem: LegendItem,
 ): readonly LegendItem[] {
-  const [tabItem] = tabItems;
+  const [tabItem, cycleItem] = tabItems;
   if (state.phase !== 'ready' || tabItem === undefined) return [...tabItems, closeItem];
-  if (state.detail?.node !== undefined) return nodeLegendItems(state.detail.node, tabItem);
-  // A detail that is still loading, missing or unreadable answers only to scrolling and the way back.
-  if (state.detail !== undefined && state.detail.phase !== 'ready')
-    return [tabItem, HISTORY_KEYS.scroll, HISTORY_KEYS.back];
+  /** `rest` after the tab item, with the cycle item between them when the whole fits the floor. */
+  const named = (...rest: readonly LegendItem[]): readonly LegendItem[] => {
+    const plain: readonly LegendItem[] = [tabItem, ...rest];
+    if (cycleItem === undefined) return plain;
+    const withCycle: readonly LegendItem[] = [tabItem, cycleItem, ...rest];
+    return displayWidth(legend(withCycle)) <= usableColumns(LEGEND_FLOOR_COLUMNS)
+      ? withCycle
+      : plain;
+  };
+  if (state.detail?.node !== undefined) {
+    const [, ...rest] = nodeLegendItems(state.detail.node, tabItem);
+    return named(...rest);
+  }
+  // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
+  if (state.detail !== undefined && state.detail.phase !== 'ready') return named(HISTORY_KEYS.back);
   if (state.detail !== undefined)
-    return [
-      tabItem,
+    return named(
       HISTORY_KEYS.scroll,
       HISTORY_KEYS.open,
       HISTORY_KEYS.firstFailed,
       HISTORY_KEYS.pin,
       HISTORY_KEYS.back,
-    ];
+    );
   const scope = state.read?.query.scope === 'all' ? HISTORY_KEYS.narrow : HISTORY_KEYS.widen;
   if (state.read === undefined || state.read.pinned.length + state.read.rows.length === 0)
-    return [tabItem, scope, HISTORY_KEYS.filter, closeItem];
-  return [
-    tabItem,
+    return named(scope, HISTORY_KEYS.filter, closeItem);
+  return named(
     HISTORY_KEYS.select,
     HISTORY_KEYS.open,
     HISTORY_KEYS.pin,
     scope,
     HISTORY_KEYS.filter,
     closeItem,
-  ];
+  );
 }

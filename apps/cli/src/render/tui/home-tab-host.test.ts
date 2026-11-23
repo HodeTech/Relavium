@@ -10,6 +10,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { buildDefinedModel } from '../../history/defined-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunGates } from '../../home/run-gates.js';
 import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
@@ -102,6 +103,8 @@ interface Options {
   readonly port?: PermissionsPort | undefined;
   readonly withPort?: boolean;
   readonly gateCards?: boolean;
+  /** A Defined tab behind `/workflows`: an empty project. */
+  readonly withDefined?: boolean;
   readonly startChat?: () => Promise<HomeChatSession>;
 }
 
@@ -127,6 +130,16 @@ function mount(options: Options = {}) {
       cancel,
       close: () => Promise.resolve(),
     },
+    ...(options.withDefined === true
+      ? {
+          defined: {
+            read: () => ({
+              model: buildDefinedModel({ entries: [], pins: [] }),
+              slugOf: (): string | undefined => undefined,
+            }),
+          },
+        }
+      : {}),
     ...(options.gateCards === true
       ? {
           gateCards: {
@@ -296,6 +309,51 @@ describe('a bare `relavium permissions` is the tab host as the run’s whole job
     expect(controller.getSnapshot().screen).toBeUndefined();
     expect(onExit).not.toHaveBeenCalled();
     expect(cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe('the command is over once its screen is gone, however it went', () => {
+  /** `relavium permissions`, then a run view of the parked run reached from it, and (with `card`) the gate card opened on that view. */
+  const commandThenView = (card: boolean): Home => {
+    const home = mount({ host: PARKED, gateCards: true, withDefined: true });
+    home.controller.openPermissionsAsCommand();
+    expect(hostOf(home.controller)?.tab).toBe('permissions');
+    expect(home.controller.openScreen('run-view', { runId: RUN, from: 'tab-host' })).toBe(true);
+    if (card) {
+      home.controller.handleKey('', ENTER);
+      expect(home.controller.getSnapshot().screen?.kind).toBe('gate-card');
+    }
+    return home;
+  };
+
+  it.each([
+    ['a gate card’s Ctrl+C', true],
+    ['the run view’s own close', false],
+  ] as const)(
+    '%s closes the screen and keeps the Home open; an Esc on a tab host opened later with /workflows closes that screen only',
+    async (_label, card) => {
+      const { controller, onExit } = commandThenView(card);
+      ctrl(controller, 'c');
+      expect(controller.getSnapshot().screen, 'the screen is gone').toBeUndefined();
+      expect(onExit, 'and the Home is still open').not.toHaveBeenCalled();
+      type(controller, '/workflows');
+      controller.handleKey('', ENTER);
+      await flush();
+      expect(hostOf(controller)?.tab).toBe('defined');
+      controller.handleKey('', ESC);
+      expect(controller.getSnapshot().screen, 'Esc closed the tab host').toBeUndefined();
+      expect(onExit, 'an ordinary tab host ends nothing').not.toHaveBeenCalled();
+    },
+  );
+
+  it('still ends the Home when the command’s own tab host is closed after a card or a view that came back to it with Esc', () => {
+    const { controller, onExit } = commandThenView(true);
+    controller.handleKey('', ESC);
+    expect(controller.getSnapshot().screen?.kind).toBe('run-view');
+    controller.handleKey('', ESC);
+    expect(controller.getSnapshot().screen?.kind).toBe('tab-host');
+    controller.handleKey('', ESC);
+    expect(onExit, 'the command’s own screen is the command’s whole job').toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1161,6 +1161,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (screen === undefined) return;
     if (screen.kind === 'gate-card') screen.card.dispose();
     tabMemory = freshTabMemory(); // the tab host's life ends with the screen (ADR-0140 §1)
+    // A bare `relavium permissions` is the tab host as the command's whole job: once the screen is gone by any way out (`leaveTabHost`
+    // has read the flag before it calls this), a card's `Ctrl+C` or a run view's close included, the command is over, and a tab host
+    // opened later is an ordinary one. A flag left set made an `Esc` on a later `/workflows` leave the Home.
+    tabHostIsTheCommand = false;
     disarmInterrupt();
     // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
     set({ screen: undefined, ...parkedPatch() });

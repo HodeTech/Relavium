@@ -28,6 +28,14 @@ describe('the absence sentences are the ones the reference lists', () => {
     expect(sorted(reference.sentences)).toEqual(sorted(Object.values(ABSENCE_SENTENCES)));
   });
 
+  it('has fifteen sentences, in the module and in the reference, each of them spelled by the run pages through the module only', () => {
+    expect(Object.keys(ABSENCE_SENTENCES)).toHaveLength(15);
+    expect(readAbsenceReference().sentences).toHaveLength(15);
+    // The two the run detail used to spell for itself.
+    expect(ABSENCE_SENTENCES.noMessageRecorded).toBe('no message recorded');
+    expect(ABSENCE_SENTENCES.noNodeRecorded).toBe('no node was recorded');
+  });
+
   it('says each sentence once: no two situations share a word, in the module or in the reference', () => {
     const reference = readAbsenceReference();
     expect(new Set(reference.sentences).size).toBe(reference.sentences.length);
