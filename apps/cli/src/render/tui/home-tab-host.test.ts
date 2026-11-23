@@ -378,6 +378,31 @@ describe('the command is over once its screen is gone, however it went', () => {
     controller.handleKey('', ESC);
     expect(onExit, 'the command’s own screen is the command’s whole job').toHaveBeenCalledTimes(1);
   });
+
+  it('a permissions file that cannot be read on the way back from a view says so on the Home: the command does not end silently', () => {
+    let broken = false;
+    const snapshot = snapshotOf(3);
+    const port: PermissionsPort = {
+      surface: 'project',
+      load: () => {
+        if (broken) throw new Error('boom');
+        return snapshot;
+      },
+      withdraw: () => ({ tone: 'done', text: 'x' }),
+    };
+    const { controller, onExit } = mount({ port, host: PARKED, withDefined: true });
+    controller.openPermissionsAsCommand();
+    expect(hostOf(controller)?.tab).toBe('permissions');
+    expect(controller.openScreen('run-view', { runId: RUN, from: 'tab-host' })).toBe(true);
+    broken = true;
+    controller.handleKey('', ESC);
+    expect(controller.getSnapshot().screen, 'the tab host cannot come back').toBeUndefined();
+    expect(
+      onExit,
+      'the Home stays open with the reason, so the reason can be read',
+    ).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().notice).toBe('Could not read the permissions.');
+  });
 });
 
 describe('the tab host owns the keyboard', () => {

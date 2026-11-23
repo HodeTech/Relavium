@@ -1834,7 +1834,7 @@ workflow:
       props.controller.handleKey('', { downArrow: true }); // `alpha`
       props.controller.handleKey('r', {});
       await vi.waitFor(
-        () => expect(definedOf(props)?.message).toMatch(/declared by .* now, not by/u),
+        () => expect(definedOf(props)?.message).toMatch(/is now in alpha-moved, not alpha\./u),
         {
           timeout: WAIT_MS,
         },

@@ -67,7 +67,7 @@ const YAML_SUFFIXES = [
 ] as const;
 
 /** Strip the longest known YAML suffix to get the catalog id fallback (`code-review.relavium.yaml` → `code-review`). */
-function fileStem(name: string): string {
+export function fileStem(name: string): string {
   for (const suffix of YAML_SUFFIXES) {
     if (name.endsWith(suffix)) {
       return name.slice(0, -suffix.length);

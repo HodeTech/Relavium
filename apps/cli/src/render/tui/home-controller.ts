@@ -1141,7 +1141,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const reopenTabHost = (): void => {
     const screen = tabHostScreen(tabMemory);
     if (screen === undefined) {
-      closeScreen();
+      // The permissions cannot be read on the way back: the tab host is gone, and the reason is said where the person is looking. As
+      // `leaveTabHost` does for a fault with a note, a bare command then keeps the Home open with the note instead of ending silently.
+      leaveTabHost(PERMISSIONS_UNREADABLE);
       return;
     }
     putScreen(screen, parkedPatch());

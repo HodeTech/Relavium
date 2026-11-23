@@ -602,12 +602,18 @@ function foldListKey(
   const read = state.read;
   const cleared: HistoryTabState =
     state.message === undefined ? state : { ...state, message: undefined };
-  const stay: HistoryStep = { kind: 'state', state: cleared };
-  if (read === undefined || key.ctrl === true || key.meta === true) return stay;
+  const plain: HistoryStep = { kind: 'state', state: cleared };
+  if (read === undefined || key.ctrl === true || key.meta === true) return plain;
   const count = read.pinned.length + read.rows.length;
+  // A key that moves nothing still asks again for a cost that could not be read: the fault line says "press a key to retry", and a
+  // one-row list has no move to make. A window whose costs are known reads nothing here.
+  const stay = (): HistoryStep => ({
+    kind: 'state',
+    state: { ...cleared, costs: costsAround(cleared.costs, read, context.history, state.cursor) },
+  });
   const move = (to: number): HistoryStep =>
     to === state.cursor
-      ? stay
+      ? stay()
       : {
           kind: 'state',
           state: {
@@ -644,7 +650,7 @@ function foldListKey(
   if (key.end === true) return move(clamp(count - 1, count - 1));
   if (key.return === true) {
     const entry = entriesOf(read)[state.cursor];
-    if (entry === undefined) return stay;
+    if (entry === undefined) return stay();
     if (entry.kind === 'missing')
       return { kind: 'state', state: withHistoryMessage(cleared, HISTORY_MISSING_RUN) };
     const detail: HistoryDetailState = { runId: entry.row.id, phase: 'loading', cursor: 0 };
@@ -672,7 +678,7 @@ function foldListKey(
       state: again ?? withHistoryMessage(cleared, HISTORY_REREAD_FAILED),
     };
   }
-  return stay;
+  return stay();
 }
 
 /** Fold one key (already past the tab host's own tab keys, and its `Esc` when the list is in front) into the tab. */
@@ -1008,7 +1014,7 @@ function detailBody(
     lines[lines.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
   const footer: SheetLine =
     detail.message === undefined
-      ? { kind: 'hint', text: clipLine('Read-only: a run is never changed from here.', width) }
+      ? { kind: 'hint', text: clipLine('No run is changed here; p only marks one.', width) }
       : { kind: 'notice', text: clipLine(detail.message, width) };
   return [...lines, footer];
 }

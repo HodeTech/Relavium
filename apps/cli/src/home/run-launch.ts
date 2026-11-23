@@ -1,3 +1,5 @@
+import { basename } from 'node:path';
+
 import {
   parseWorkflow,
   resolveAndValidateWorkflowInputs,
@@ -10,7 +12,7 @@ import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-prompt-channel.js';
-import { discoverCatalog, type CatalogEntry } from '../workflows/catalog.js';
+import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
 import type { HostedLaunch, HostedSecretPort, RunHost } from './run-host.js';
 
@@ -135,21 +137,29 @@ export function launchNotOffered(slug: string): string {
 }
 
 /**
+ * The name a file is known by in a refusal: its file name without the workflow suffix. A path is longer than the message row (a row is
+ * 78 columns), so a message that carried paths showed none of them; two file names, with the remedy before them, fit.
+ */
+function fileName(path: string): string {
+  return fileStem(basename(path));
+}
+
+/**
  * What `open(slug, path)` says when the file that holds `slug` now is not the one the list showed: a file that changed its id since the list
- * was read, or a second file that took the slug, would otherwise be confirmed and run under a path the person never saw. No flow is begun.
- * The remedy comes first and the two paths last: the message row clips what does not fit, and a clip must take a path, never the remedy.
+ * was read, or a second file that took the slug, would otherwise be confirmed and run under a file the person never saw. No flow is begun.
+ * The remedy comes first, then the two file names.
  */
 export function launchMoved(slug: string, listed: string, now: string): string {
-  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is declared by ${bounded(now, REASON_LIMIT)} now, not by ${bounded(listed, REASON_LIMIT)} as listed.`;
+  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is now in ${bounded(fileName(now), REASON_LIMIT)}, not ${bounded(fileName(listed), REASON_LIMIT)}.`;
 }
 
 /**
  * What `open(slug)` says when two valid files of the project declare that workflow id: no flow is begun, because which of the two a
- * `slug` means is not for this flow to guess (the export refuses a clash the same way). The remedy comes first and the two paths (the
- * catalog's own) last, so a clip takes a path and never the remedy.
+ * `slug` means is not for this flow to guess (the export refuses a clash the same way). The remedy comes first, then the two file names
+ * (the catalog's own paths are not shown; see {@link fileName}).
  */
 export function launchAmbiguous(slug: string, first: string, second: string): string {
-  return `Not started. Rename one of the two files: ${bounded(slug, LABEL_LIMIT)} is declared by two workflow files, ${bounded(first, REASON_LIMIT)} and ${bounded(second, REASON_LIMIT)}.`;
+  return `Not started. Rename one of ${bounded(fileName(first), REASON_LIMIT)} or ${bounded(fileName(second), REASON_LIMIT)}: both declare ${bounded(slug, LABEL_LIMIT)}.`;
 }
 
 /**

@@ -254,7 +254,7 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     expect(r.message()).toBe('Pinned alpha.');
   });
 
-  it('puts the cursor on the pin it removed by that pin’s row id, never on another row with the same name', () => {
+  it('removes the pin under the cursor by its row id, and the cursor stays at its index when the second of two same-name pins goes (the row that moves in is not the same name; removing the first is a residual in the register)', () => {
     // Two other projects pin a workflow of the same name. The cursor is on the second; `p` removes it. A cursor that followed the NAME would
     // jump to the first project's pin, and the next `p` would remove a pin the person never looked at.
     store.pinItem({ kind: 'workflow', projectRoot: '/work/other-a', ref: 'deploy', at: 1 });

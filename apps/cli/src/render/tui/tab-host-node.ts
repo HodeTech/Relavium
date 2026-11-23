@@ -61,7 +61,7 @@ export const NODE_NO_FAILED = 'No attempt of this node failed.';
 export const NODE_NO_ATTEMPT = 'This node has no attempt to show.';
 export const NODE_RETRIED_OK =
   'This node was retried and then ended well: no attempt of it is left failed.';
-export const NODE_READ_ONLY = 'Read-only: a node is never changed from here.';
+export const NODE_CHANGES_NO_RUN = 'No run is changed here; p only marks it.';
 export const NODE_NOT_A_NODE = 'Enter opens a node: move to one of the node rows.';
 export const NODE_LOG_PARTIAL =
   'Only the first events of the run were read: the figures here may be partial.';
@@ -448,7 +448,7 @@ export function nodeBody(state: NodeTabState, width: number, room: number): read
     shown[shown.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
   const footer: SheetLine =
     state.message === undefined
-      ? { kind: 'hint', text: clipLine(NODE_READ_ONLY, width) }
+      ? { kind: 'hint', text: clipLine(NODE_CHANGES_NO_RUN, width) }
       : { kind: 'notice', text: clipLine(sanitizeInline(state.message), width) };
   return [...shown, footer];
 }

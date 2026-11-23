@@ -319,7 +319,9 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(text).toContain('✓ completed  build');
     expect(text).toContain('Events (3)');
     expect(text).toContain('#0  node:started build');
-    expect(text, 'a run is read-only').toContain('Read-only');
+    expect(text, 'no run is changed here, and p says that it only marks one').toContain(
+      'No run is changed here; p only marks one.',
+    );
   });
 
   it('puts a result for another run, or one that arrives after the person left, nowhere', () => {
@@ -658,6 +660,24 @@ describe('the keys of the list', () => {
     r.press('', { upArrow: true });
     expect(rowOf(2)).toContain('$0.0123');
     expect(r.text()).not.toContain('not read');
+  });
+
+  it('a key that moves nothing asks again for a cost that could not be read: on a one-row list, ↑ and ↓ are such keys, and the one that succeeds shows the cost', () => {
+    const only = summary(0, 'completed').id;
+    const throws = new Set([only]);
+    const r = rig({ total: 1, costThrows: throws });
+    const asked = (): number => r.costFor.mock.calls.filter(([id]) => id === only).length;
+    expect(asked(), 'asked once, when the tab was entered').toBe(1);
+    expect(r.text(), 'the fault line says how to retry').toContain(HISTORY_COST_FAULT);
+    r.press('', UP);
+    expect(r.cursor()).toBe(0);
+    expect(asked(), 'a key that moved nothing asked again').toBe(2);
+    expect(r.text()).toContain(HISTORY_COST_FAULT);
+    throws.delete(only);
+    r.press('', DOWN);
+    expect(asked()).toBe(3);
+    expect(r.text(), 'the cost shows once the read succeeds').toContain('$0.0123');
+    expect(r.text()).not.toContain(HISTORY_COST_FAULT);
   });
 
   it('a letter with Caps Lock on is the same key: P, A and F act as p, a and f on the list, and P and N on the detail', () => {

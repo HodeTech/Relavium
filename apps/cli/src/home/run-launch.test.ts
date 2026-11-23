@@ -613,7 +613,7 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     const notice = await r.launch.open('no-inputs', listed);
     expect(notice).toBe(launchMoved('no-inputs', listed, now));
     expect(notice).toMatch(
-      /^Not started\. Open the list again: no-inputs is declared by .*none-moved.* now, not by /u,
+      /^Not started\. Open the list again: no-inputs is now in none-moved, not none\.$/u,
     );
     expect(r.snapshots, 'no prompt was ever published').toEqual([]);
     expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
@@ -700,7 +700,7 @@ describe('the file that is read for the pick must still declare the id it was li
 });
 
 describe('two files that declare one workflow id', () => {
-  it('make `r` on that id refuse with both paths named, and begin no flow; another id still starts', async () => {
+  it('make `r` on that id refuse with both file names named, in 78 columns, and begin no flow; another id still starts', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     writeWorkflow('happy-copy.relavium.yaml', HAPPY);
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
@@ -713,7 +713,10 @@ describe('two files that declare one workflow id', () => {
       launchAmbiguous('host-happy', first, second),
       launchAmbiguous('host-happy', second, first),
     ]).toContain(notice);
-    expect(notice).toContain('declared by two workflow files');
+    expect(notice).toMatch(
+      /^Not started\. Rename one of happy(-copy)? or happy(-copy)?: both declare host-happy\.$/u,
+    );
+    expect(notice.length, 'the row shows all of it').toBeLessThanOrEqual(78);
     expect(r.snapshots, 'no prompt was drawn for either file').toEqual([]);
     expect(r.startCalls).toHaveLength(0);
     // An id only one file declares is not ambiguous.

@@ -271,7 +271,7 @@ describe('↑ and ↓ move the cursor and stop at the ends', () => {
   });
 });
 
-describe('a refused launch keeps its remedy on the message row at 80 columns, however long the paths are', () => {
+describe('a refused launch names its files on the message row at 80 columns, however long the directories are', () => {
   const first = `.relavium/workflows/${'a-deep-directory/'.repeat(4)}first.relavium.yaml`;
   const second = `.relavium/workflows/${'another-directory/'.repeat(4)}second.relavium.yaml`;
 
@@ -279,29 +279,46 @@ describe('a refused launch keeps its remedy on the message row at 80 columns, ho
     [
       'a file that moved',
       launchMoved('nightly', first, second),
-      'Not started. Open the list again: ',
+      'Not started. Open the list again: nightly is now in second, not first.',
     ],
     [
       'two files with one id',
       launchAmbiguous('nightly', first, second),
-      'Not started. Rename one of the two files: ',
+      'Not started. Rename one of first or second: both declare nightly.',
     ],
+  ])(
+    '%s: the whole sentence is on the row, and the directories are not',
+    (_what, message, expected) => {
+      const r = rig(READY);
+      const noted = withDefinedNote(r.state, message);
+      const row = tabHostLines(noted, { columns: 80, terminalRows: 24 })
+        .map((line) => line.text)
+        .find((line) => line.startsWith('Not started.'));
+      expect(row, 'the message is drawn, whole').toBe(expected);
+      expect(displayWidth(row ?? '')).toBeLessThanOrEqual(78);
+    },
+  );
+
+  it.each([
     [
       'a file whose id changed',
       launchChanged('nightly', 'a-new-id'.repeat(9)),
       'Not started. Open the list again: ',
     ],
-  ])('%s: the row starts with what to do, and a clip takes a path', (_what, message, lead) => {
-    const r = rig(READY);
-    const noted = withDefinedNote(r.state, message);
-    const row = tabHostLines(noted, { columns: 80, terminalRows: 24 })
-      .map((line) => line.text)
-      .find((line) => line.startsWith('Not started.'));
-    expect(row, 'the message is drawn').toBeDefined();
-    expect(row?.startsWith(lead), 'what to do comes first').toBe(true);
-    expect(displayWidth(row ?? '')).toBeLessThanOrEqual(78);
-    expect(row?.endsWith('…'), 'the sentence is longer than the row: the cut is real').toBe(true);
-  });
+  ])(
+    '%s: the row starts with what to do, and a clip takes the id, not the remedy',
+    (_what, message, lead) => {
+      const r = rig(READY);
+      const noted = withDefinedNote(r.state, message);
+      const row = tabHostLines(noted, { columns: 80, terminalRows: 24 })
+        .map((line) => line.text)
+        .find((line) => line.startsWith('Not started.'));
+      expect(row, 'the message is drawn').toBeDefined();
+      expect(row?.startsWith(lead), 'what to do comes first').toBe(true);
+      expect(displayWidth(row ?? '')).toBeLessThanOrEqual(78);
+      expect(row?.endsWith('…'), 'the sentence is longer than the row: the cut is real').toBe(true);
+    },
+  );
 });
 
 describe('r runs the row’s workflow through the launch flow', () => {

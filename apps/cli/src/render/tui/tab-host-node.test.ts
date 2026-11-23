@@ -351,6 +351,9 @@ describe('what the node page shows', () => {
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
     r.press('', DOWN);
     expect(r.node()?.cursor).toBe(1);
+    // Caps Lock on is the same key: the message was cleared by the move, so only the N press can put it back.
+    r.press('N');
+    expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
     r.press('', ESC);
     expect(r.node()).toBeUndefined();
   });

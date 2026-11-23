@@ -192,8 +192,9 @@ function sameRow(
 
 /**
  * `p` on a row: pin its workflow, or unpin it, through `pins`; then read the list again through `port` so the row's pin word is the
- * store's, and keep the cursor on the row it was on (a pinned row sorts first, so its place changes; a row that is gone leaves the cursor
- * at its index, never on another row of the same name). A row that is not a catalog
+ * store's, and keep the cursor on the row it was on (a pinned row sorts first, so its place changes). A row that is gone leaves the cursor
+ * at its index, which can hold another row of the same name (another project's pin beside it): a second `p` then removes that one. The
+ * register owns this residual. A row that is not a catalog
  * workflow that parsed cannot be pinned (it can be unpinned); a refused pin (the cap) changes nothing and says why in the message row.
  */
 export function pinOnDefined(
