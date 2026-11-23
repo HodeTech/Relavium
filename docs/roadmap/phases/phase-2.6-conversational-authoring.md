@@ -6298,3 +6298,39 @@ Several concurrent legs, a detached child process, a warm engine across answers 
 
 **Closed (2026-11-22).** Step 2 is closed on `49c64940`. Step 3 (the Home hosts a run) is next.
 
+### MVP-8 step 3 implementation record (2026-11-23)
+
+**What step 3 delivers** (the Home hosts a workflow run; [ADR-0139](../../decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §§1–6 and the step-3 row of the plan above):
+
+- **The shared epilogue and the hosted lifetime** (`bcfc0109`, `868e6fdf`). `finishLeg` is the one leg epilogue for `run` and `gate`, with the three leg rules kept apart by an explicit parameter. `HostedRunLifetime` is the Home's `RunLifetime` for one leg: it registers its owner before any work, claims no signal custody and no job control, and classifies a leg's failure by its own cause.
+- **The run host** (`ed9c33a2`). `RunHost` is the Home's single-flight leg manager: one leg at a time, one `RunResources` per leg, the Home's database injected with a no-op close, a refusal for another project's run before any owner or engine, the blank-secret refusal in the port, the consent gate with no pre-approved digest, and a teardown that cancels, joins, departs, closes the MCP clients, retires the owner, and only then lets the Home close its database.
+- **The native cards** (`87ec1d06`, `6bd4b27a`, `de5faea6`, `880bbd08`). Chord-only cards with the approval card's guards (dwell, quiet gap, typeahead, lockout, and a measured frame). The MCP consent card says "on this machine". `/run` opens a picker, a masked launch form and a Yes/No confirmation that defaults to No. The human-gate card answers Ctrl+Y or Ctrl+N, with a cursor over several gates; the budget card shows only the structured frozen allowance, and an unpriced quote offers abort only. A resumed leg checks the project root, the decision fit, the masked secrets and the consent again, in that order.
+- **The screen slot and the run view** (`badf18a9`, `fba3ab97`). The Home's `screen` slot has the `run-view` and card kinds. The ADR-0139 §5 ladder: the first Ctrl+C arms, the second cancels, Esc leaves the leg running, and cancelling arms nothing. The exit guard is the one exit chokepoint (`requestExit`): with a leg executing, Ctrl+Y cancels and exits after at most thirteen seconds (ten of grace, three of settle), and Esc, Ctrl+C and Ctrl+N stay. The ▶ strip row and the Attention rows show what is running or parked.
+- **Lifecycle corrections after review** (`c1c465cb`, `bd9d0919`, `9cc0d040`, `93c0ef36`). One chord history across every Home card, so a key held from one card cannot answer the next. A bounded exit, and an abandoned leg that keeps the shared database open. The post-exit line on stderr, at most two lines. A single safety rank table, read by the shell and the Home alike.
+
+**Review and proof.**
+
+- **Round one** (four sonnet reviewers and an opus sitting). The opus sitting failed on one medium: a key held on the gate card could answer the MCP consent card on auto-repeat, so the cards shared no lockout. Fixed in `c1c465cb` with one history, and the lifecycle findings were fixed with it: a bounded exit, the post-exit line, the cues and the tests the review named.
+- **Round two** (four sonnet reviewers). The owned path still closed the database under an abandoned leg, which the first fix had only handled on the unowned path. The loading echo never counted as painted, so its Ctrl+Y was refused silently. Runbook row 25 described a refusal the code does not make. All fixed in `bd9d0919`.
+- **Round three** (four sonnet reviewers and an opus sitting, PASS: no critical, high or medium). Two mediums, both fixed in `9cc0d040`: the runbook's steps could not be performed as written, and the owned-path abandon line had no test.
+- **Round four** (three sonnet reviewers and an opus sitting, PASS). The code reviewers found no blocker or high. The documents and the register carried mediums: the Home's exit cells in `home.md` and `commands.md` did not name the exit guard, the step-3 triggers that named step 3 could not fire, and the shell kept a copy of the rank table. All fixed in `93c0ef36`.
+- **The gate ran seven times before it passed on `91effdbb`.** Its failures were of three kinds, each corrected where it was found. Four were test-count pins that new step-3 tests moved (the usage-coverage cohort, two causal-control pins for `chat.test.ts`, and the provenance copy of that count), updated deliberately with the reason in the README. One was a heavy test's five-second default, exceeded under load, given its own timeout. Most of the rest were parallel mutation lanes timing out while another project's processes held the machine at a load average of 13 to 44; each such lane passed when run alone, and the final run passed on a settled machine (load 5.85) with every step green, coverage included, in 36 minutes.
+
+**Maintainer decisions and ADR notes this step leaves open** (none is changed in an accepted ADR here; each needs a dated note or a superseding ADR):
+
+- **A human gate's Ctrl+N is held to the lockout.** ADR-0115 says a rejection is never delayed; the chord guard holds a human gate's rejection to the same layers as an approval, because that rejection continues the run (ADR-0139 §4's table). The code is the stricter reading. Decide: amend ADR-0115 for human gates, or change the guard.
+- **An abandoned leg leaves the shared database open.** ADR-0139 §6 says the database closes last, after the leg joins. Past the grace and the three-second settle bound, the Home abandons the leg and keeps the database open, because closing it under a writing leg is worse than an unclosed file that the lease expires and the next start settles. Decide: record this as a dated note to §6.
+- **A resumed leg re-runs the MCP consent check.** ADR-0139 §4 says a resumed leg "asks nothing new". The code asks again for a server this machine holds no grant for, which is the ADR-0084 reading. Decide: a dated note to §4.
+- **The consent row says "for this run".** The code writes a per-machine grant, and the card says "on this machine". Decide: a dated note to §4's table.
+- **The input gate's text field is not built.** An input gate offers Ctrl+N only, as the step's brief directed. Decide: a later increment, or a note that the field moves out of MVP-8.
+- **The exit wording.** ADR-0139 §6 says "up to ten seconds"; the card and `home.md` say about thirteen, the ten-second grace plus the three-second settle. Decide: a dated note to §6.
+
+**Open obligations carried forward** (each entry is in the [step-3 register section](../deferred-tasks.md#mvp-8-step-3-review-2026-11-23)):
+
+- The Windows interactive evidence rows 1 to 25 are written and not run by hand (rows 1–16 were owed before this step; 17–25 are new).
+- Step 4's node page owns the absence vocabulary, and the `p` pin key of the browsers (ADR-0140 §5) is step 4's.
+- The shell's `/workflows` and `relavium list` are the catalog's only other readers; the cap is shared.
+- The stale-card entries of step 2 are re-triggered to concrete conditions, not closed.
+
+**Closed (2026-11-23).** Step 3 is closed on `91effdbb`, its full local gate green. Step 4 (the browsers) is next.
+
