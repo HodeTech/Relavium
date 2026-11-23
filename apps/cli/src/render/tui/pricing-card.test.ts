@@ -18,6 +18,8 @@ import {
   type ModelCatalogStore,
 } from '@relavium/db';
 import type { ModelCatalogEntry } from '@relavium/llm';
+import { randomUUID } from 'node:crypto';
+
 import type { Key } from 'ink';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -32,6 +34,7 @@ import {
   PRICING_CLOSE_LABEL,
   PRICING_DENY_LABEL,
   PRICING_EDIT_LABEL,
+  PRICING_MODEL_ID_FAULTS,
   PRICING_NOT_RECORDED,
   PRICING_OTHER_MODEL,
   PRICING_SET_ALLOW_LABEL,
@@ -654,6 +657,33 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(catalog.listAll()).toHaveLength(0);
     expect(r.snap().active, 'the flow is ended').toBe(false);
   });
+
+  it("a second provider's price that appears while the card is open is refused at Yes, in the shell's words, and nothing is written", async () => {
+    const r = rig();
+    await atCard(r);
+    // A `models pricing acme-custom-1 --provider deepseek` from another terminal, while the card is open.
+    const deepseekId = createProviderStore(client.db, { uuid: () => randomUUID(), now: () => 1 })
+      .list()
+      .find((provider) => provider.name === 'deepseek')?.id;
+    if (deepseekId === undefined) throw new Error('deepseek is not registered');
+    catalog.upsert({
+      providerId: deepseekId,
+      modelId: 'acme-custom-1',
+      source: 'user',
+      inputCostPerMtokMicrocents: 100_000_000,
+      outputCostPerMtokMicrocents: 200_000_000,
+    });
+    r.ui.input('y', ctrl);
+    const notice = await r.result;
+    expect(notice).toMatch(
+      /^Not recorded\. 'acme-custom-1' is already user-priced under 'deepseek'\./u,
+    );
+    expect(r.commits).toHaveBeenCalledTimes(1);
+    const rows = rowsFor('acme-custom-1');
+    expect(rows, 'the commit wrote no row of its own').toHaveLength(1);
+    expect(rows[0]?.providerId).toBe(deepseekId);
+    expect(r.snap().active, 'the flow is ended').toBe(false);
+  });
 });
 
 describe('a refusal is a sentence, with a way to change the prices or to close', () => {
@@ -789,9 +819,65 @@ describe('a model the list does not show', () => {
   it('refuses in the prompt an id it cannot show faithfully, and an empty one', () => {
     expect(pricingModelIdIssue('')).toBe('Type a model id.');
     expect(pricingModelIdIssue('   ')).toBe('Type a model id.');
-    expect(pricingModelIdIssue('x'.repeat(201))).toContain('at most 200');
-    expect(pricingModelIdIssue('a‮b')).toContain('cannot be shown safely');
+    expect(pricingModelIdIssue('x'.repeat(201))).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
+    expect(pricingModelIdIssue('x'.repeat(81))).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
+    expect(pricingModelIdIssue('x'.repeat(80))).toBeUndefined();
+    expect(pricingModelIdIssue(`a${String.fromCodePoint(0x202e)}b`)).toContain(
+      'cannot be shown safely',
+    );
     expect(pricingModelIdIssue('gpt-5.5')).toBeUndefined();
+    // Spaces around a typed id are dropped before it is judged: it is the id inside them that is recorded.
+    expect(pricingModelIdIssue('  gpt-5.5  ')).toBeUndefined();
+  });
+
+  it('the prompt refuses an invisible character in a typed id, and the id it would have recorded is never asked about', async () => {
+    const r = rig();
+    await r.until('select', 'what do you want to do');
+    r.choose(PRICING_ACTION_SET);
+    await r.until('select', 'Which model');
+    r.choose(PRICING_OTHER_MODEL);
+    await r.until('text', 'Model id');
+    // Built from code points: a literal zero-width space would be invisible in this very file.
+    // (U+FEFF is not here: `trim()` drops it from the typed text, so what is recorded is the id without it, which the card shows.)
+    for (const code of [0x200b, 0x2060, 0x200e, 0x00ad, 0xe0041]) {
+      r.type(`gpt-5${String.fromCodePoint(code)}`);
+      await vi.waitFor(() => expect(r.snap().error).toBe(PRICING_MODEL_ID_FAULTS.invisible), {
+        timeout: WAIT_MS,
+        interval: 5,
+      });
+      expect(r.snap().kind, 'the prompt stays open').toBe('text');
+      // Clear the line (the host's backspace removes one code point).
+      for (let i = 0; i < 6; i += 1) r.ui.input('', { ...none, backspace: true });
+    }
+    r.escape();
+    await r.until('select', 'Which model');
+    r.escape();
+    await r.until('select', 'what do you want to do');
+    r.escape();
+    expect(await r.result).toBe(PRICING_NOT_RECORDED);
+    expect(catalog.listAll()).toHaveLength(0);
+  });
+
+  it("a decoy the catalog lists is refused when it is picked, in the card's place, and writes nothing", async () => {
+    const listed = `gpt-5.5${String.fromCodePoint(0x200b)}`;
+    const r = rig([entry('gpt-5.5', { pricingSource: 'catalog' }), entry(listed)]);
+    await r.until('select', 'what do you want to do');
+    r.choose(PRICING_ACTION_SET);
+    await r.until('select', 'Which model');
+    // The two ids read the same in the list; the second is the decoy, and is the one picked.
+    expect(r.snap().options.map((option) => option.label)).toHaveLength(3);
+    const options = r.snap().options;
+    r.ui.input('', { ...none, downArrow: true });
+    expect(r.snap().selected).toBe(1);
+    expect(options[1]?.label.replaceAll(String.fromCodePoint(0x200b), '')).toBe('gpt-5.5');
+    r.ui.input('', enter);
+    await r.fill({ input: '3', output: '9' });
+    await r.until('select', 'Not recorded.');
+    expect(r.snap().message).toContain(PRICING_MODEL_ID_FAULTS.invisible);
+    r.choose(PRICING_CLOSE_LABEL);
+    expect(await r.result).toBe(`Not recorded. ${PRICING_MODEL_ID_FAULTS.invisible}`);
+    expect(r.commits).not.toHaveBeenCalled();
+    expect(catalog.listAll(), 'the decoy was not written as a row of its own').toHaveLength(0);
   });
 });
 

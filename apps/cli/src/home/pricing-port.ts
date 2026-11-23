@@ -24,13 +24,15 @@ import {
 } from '../commands/pricing-fields.js';
 import { isCliError } from '../process/errors.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
-import type {
-  PricingAttempt,
-  PricingOffer,
-  PricingPort,
-  PricingPrepared,
-  PricingTarget,
-  PricingValues,
+import {
+  PRICING_MODEL_ID_FAULTS,
+  pricingModelIdFault,
+  type PricingAttempt,
+  type PricingOffer,
+  type PricingPort,
+  type PricingPrepared,
+  type PricingTarget,
+  type PricingValues,
 } from '../render/tui/pricing-card.js';
 
 /**
@@ -156,7 +158,13 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
   const commitOf = (plan: PricingPlan) => (): PricingAttempt => {
     let sentence: string;
     try {
-      const outcome = commitPricing(plan, { catalog });
+      // The re-check of the cross-provider rule and the write are one IMMEDIATE transaction: a `models pricing` from a shell while the
+      // card was open cannot slip a second provider's price in between them.
+      const outcome = commitPricing(plan, {
+        catalog,
+        providers,
+        atomically: (work) => deps.db.transaction(work, { behavior: 'immediate' }),
+      });
       sentence =
         plan.kind === 'set'
           ? pricingSetSentence(plan)
@@ -179,15 +187,12 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
       })),
     providers: () => providers.list().map((provider) => provider.name),
     prepare: (target, values): PricingPrepared => {
-      // The card states the model id it records. An id the terminal cannot show as it is (a control byte, a bidi override) would be
-      // recorded as one thing and shown as another, so it is refused here, before anything is asked.
-      if (sanitizeUntrustedInline(target.modelId) !== target.modelId) {
-        return {
-          ok: false,
-          reason:
-            'This model id has characters that cannot be shown safely, so it cannot be priced from here. Use relavium models pricing.',
-        };
-      }
+      // The card states the model id it records, and says it exactly: an id the card cannot show as it is stored (a control byte, a
+      // bidirectional override, a zero-width or other invisible character, a space at either end, more than it can fit) would be
+      // recorded as one thing and shown as another, so it is refused here, before anything is asked. This is the boundary: it holds for
+      // a hand-typed id and for one the catalog lists.
+      const fault = pricingModelIdFault(target.modelId);
+      if (fault !== undefined) return { ok: false, reason: PRICING_MODEL_ID_FAULTS[fault] };
       let plan: PricingPlan;
       try {
         plan = preparePricing(argsOf(target, values), { catalog, providers }, 'label');

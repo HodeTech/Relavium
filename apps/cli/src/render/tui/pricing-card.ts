@@ -120,7 +120,7 @@ const MODEL_COLUMNS = 80;
 const DETAIL_COLUMNS = 160;
 const REASON_COLUMNS = 240;
 const HINT_COLUMNS = 80;
-/** The longest model id the form takes by hand, in code units. */
+/** The most code units of a model id the form takes, by hand or from a list. */
 export const PRICING_MODEL_ID_LIMIT = 200;
 const OTHER_VALUE = 'other';
 
@@ -178,15 +178,52 @@ export function pricingFieldMessage(field: PricingField, model: string): string 
   return `${field.label} for '${clipLine(model, MODEL_COLUMNS)}', ${field.unitWords}. Empty: not set.${together}`;
 }
 
-/** What the form says about a model id typed by hand, or none when it is acceptable. */
-export function pricingModelIdIssue(value: string): string | undefined {
-  const id = value.trim();
-  if (id === '') return 'Type a model id.';
-  if (id.length > PRICING_MODEL_ID_LIMIT)
-    return `A model id is at most ${String(PRICING_MODEL_ID_LIMIT)} characters.`;
-  if (sanitizeUntrustedInline(id) !== id)
-    return 'This id has characters that cannot be shown safely, so it cannot be priced from here.';
+/**
+ * Invisible and formatting characters (Unicode `Cf`, and the default-ignorable code points: zero-width space and joiners, the word
+ * joiner, the byte-order mark, the soft hyphen, the tag characters, variation selectors). The terminal draws none of them, so `gpt-5`
+ * and `gpt-5` + U+200B are two model ids that look the same: a card that showed one would record the other.
+ */
+const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+
+/** Why the card cannot state a model id as it is stored. */
+export type PricingModelIdFault = 'empty' | 'padded' | 'invisible' | 'too-long' | 'unsafe';
+
+/**
+ * Whether the card can show `id` exactly as it would be stored, or why it cannot. It is the form's own rule: the card says which model
+ * it records, so an id the card cannot say faithfully is refused (the shell, which prints nothing it vouches for, still takes it).
+ *
+ * - `padded`: a space at either end is invisible inside the card's quotes, so `gpt-5` and `gpt-5 ` would read the same.
+ * - `invisible`: a format or default-ignorable character (see {@link INVISIBLE_CHARACTER}).
+ * - `too-long`: more than {@link PRICING_MODEL_ID_LIMIT} code units, or more columns than the card gives the id
+ *   ({@link MODEL_COLUMNS}). The card shows the id in full or not at all: it never cuts it short with an ellipsis.
+ * - `unsafe`: the sanitizer would change it (a control byte, a bidirectional override, a key-shaped string).
+ */
+export function pricingModelIdFault(id: string): PricingModelIdFault | undefined {
+  if (id === '') return 'empty';
+  // Invisible first: `trim()` also strips U+FEFF, which is a format character before it is padding.
+  if (INVISIBLE_CHARACTER.test(id)) return 'invisible';
+  if (id !== id.trim()) return 'padded';
+  if (id.length > PRICING_MODEL_ID_LIMIT || clipLine(id, MODEL_COLUMNS) !== id) return 'too-long';
+  if (sanitizeUntrustedInline(id) !== id) return 'unsafe';
   return undefined;
+}
+
+/** The fixed sentence for each fault: it never quotes the id (the id is the thing that cannot be shown). */
+export const PRICING_MODEL_ID_FAULTS: Readonly<Record<PricingModelIdFault, string>> = {
+  empty: 'Type a model id.',
+  padded:
+    'This model id starts or ends with a space, so the card cannot show it as it is stored, and it cannot be priced from here. Use relavium models pricing.',
+  invisible:
+    'This model id has invisible or formatting characters, so it cannot be shown safely, and it cannot be priced from here. Use relavium models pricing.',
+  'too-long': `This model id is longer than the ${String(MODEL_COLUMNS)} columns the card can show in full, so it cannot be priced from here. Use relavium models pricing.`,
+  unsafe:
+    'This model id has characters that cannot be shown safely, so it cannot be priced from here. Use relavium models pricing.',
+};
+
+/** What the form says about a model id typed by hand (spaces around it are dropped first), or none when it is acceptable. */
+export function pricingModelIdIssue(value: string): string | undefined {
+  const fault = pricingModelIdFault(value.trim());
+  return fault === undefined ? undefined : PRICING_MODEL_ID_FAULTS[fault];
 }
 
 export interface PricingCardDeps {

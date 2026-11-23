@@ -18,7 +18,11 @@ import {
   type ProviderStore,
 } from '@relavium/db';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildModelsPricingArgs, type CommandInput } from '../commands/dispatch.js';
 import {
@@ -37,7 +41,11 @@ import {
 } from '../commands/pricing-fields.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
-import type { PricingPort, PricingPrepared } from '../render/tui/pricing-card.js';
+import {
+  PRICING_MODEL_ID_FAULTS,
+  type PricingPort,
+  type PricingPrepared,
+} from '../render/tui/pricing-card.js';
 import { captureIo } from '../test-support.js';
 import { PRICING_WRITE_FAULT, createPricingPort } from './pricing-port.js';
 
@@ -472,7 +480,7 @@ describe('the shell prints what prepare and commit decided, byte for byte', () =
     const seeded = catalog.listAll().length;
     const plan = preparePricing(args, { catalog, providers });
     expect(catalog.listAll(), 'prepare itself wrote nothing').toHaveLength(seeded);
-    const outcome = commitPricing(plan, { catalog });
+    const outcome = commitPricing(plan, { catalog, providers });
     const stepsCode = writePricingResult(plan, outcome, { io: viaSteps.io, global: global(json) });
 
     expect(viaSteps.out()).toBe(viaCommand.out());
@@ -488,7 +496,7 @@ describe('the shell prints what prepare and commit decided, byte for byte', () =
     );
     expect(set.kind).toBe('set');
     expect(catalog.listAll()).toHaveLength(0);
-    commitPricing(set, { catalog });
+    commitPricing(set, { catalog, providers });
     const clear = preparePricing(
       { model: 'acme-custom-1', provider: 'openai', clear: true },
       { catalog, providers },
@@ -591,7 +599,7 @@ describe('a write the database refuses is a fixed sentence', () => {
 describe('the id on the card is the id that is stored', () => {
   it.each([
     ['an escape sequence', 'acme\u001b[31m-1'],
-    ['a bidirectional override', 'acme‮-1'],
+    ['a bidirectional override', `acme${String.fromCodePoint(0x202e)}-1`],
     ['a newline', 'acme\n-1'],
   ])('refuses a model id with %s before anything is asked', (_name, modelId) => {
     const reason = refused(modelId, { input: '3', output: '9' });
@@ -600,6 +608,260 @@ describe('the id on the card is the id that is stored', () => {
     const cleared = port.prepare({ modelId, provider: 'openai' }, { action: 'clear' });
     expect(cleared.ok).toBe(false);
     expect(cleared.ok ? '' : cleared.reason).toContain('cannot be shown safely');
+  });
+
+  /**
+   * Characters the terminal does not draw (Unicode `Cf` and the default-ignorable code points), written as code points and never as
+   * literal characters: a literal one is invisible in the very file that is meant to prove it is refused.
+   */
+  const INVISIBLE: ReadonlyArray<readonly [string, number]> = [
+    ['a zero-width space (U+200B)', 0x200b],
+    ['a zero-width non-joiner (U+200C)', 0x200c],
+    ['a zero-width joiner (U+200D)', 0x200d],
+    ['a word joiner (U+2060)', 0x2060],
+    ['a byte-order mark (U+FEFF)', 0xfeff],
+    ['a soft hyphen (U+00AD)', 0x00ad],
+    ['a combining grapheme joiner (U+034F)', 0x034f],
+    ['a variation selector (U+FE0F)', 0xfe0f],
+    ['a tag character (U+E0041)', 0xe0041],
+    ['a left-to-right mark (U+200E)', 0x200e],
+    ['an invisible separator (U+2063)', 0x2063],
+  ];
+
+  it('the invisible characters are built from code points, not typed: the fixtures read back as what they say', () => {
+    for (const [name, code] of INVISIBLE) {
+      const decoy = `gpt-5${String.fromCodePoint(code)}`;
+      expect(decoy.codePointAt(decoy.length - (code > 0xffff ? 2 : 1)), name).toBe(code);
+      expect(decoy.length, name).toBe(5 + (code > 0xffff ? 2 : 1));
+      expect(/^[\u0021-\u007e]+$/u.test(decoy), `${name} is not printable ASCII`).toBe(false);
+    }
+  });
+
+  it.each(INVISIBLE)(
+    'refuses a model id with %s, with a fixed sentence, and writes nothing — a decoy is never another row',
+    (_name, code) => {
+      const decoy = `gpt-5${String.fromCodePoint(code)}`;
+      const inMiddle = `gpt${String.fromCodePoint(code)}-5`;
+      for (const modelId of [decoy, inMiddle]) {
+        const reason = refused(modelId, { input: '3', output: '9' });
+        expect(reason).toBe(PRICING_MODEL_ID_FAULTS.invisible);
+        expect(reason, 'the sentence quotes no id').not.toContain('gpt');
+        const cleared = port.prepare({ modelId, provider: 'openai' }, { action: 'clear' });
+        expect(cleared).toEqual({ ok: false, reason: PRICING_MODEL_ID_FAULTS.invisible });
+      }
+      expect(catalog.listAll(), 'nothing was written').toHaveLength(0);
+    },
+  );
+
+  it('a catalog-listed id carrying one is refused the same way as one typed by hand', () => {
+    const listed = `gpt-5.5${String.fromCodePoint(0x200b)}`;
+    entries = [entry('gpt-5.5', { pricingSource: 'catalog' }), entry(listed)];
+    const choices = port.models();
+    expect(choices.map((choice) => choice.modelId)).toEqual(['gpt-5.5', listed]);
+    // The person picks the decoy from the list: the target is the listed id as it is.
+    const picked = choices[1];
+    if (picked === undefined) throw new Error('the decoy is not offered');
+    const result = port.prepare(
+      { modelId: picked.modelId, provider: picked.provider },
+      { action: 'set', prices: { input: '3', output: '9' } },
+    );
+    expect(result).toEqual({ ok: false, reason: PRICING_MODEL_ID_FAULTS.invisible });
+    // The real id, which looks the same, is the one that can be priced.
+    expect(
+      port.prepare(
+        { modelId: 'gpt-5.5', provider: 'openai' },
+        { action: 'set', prices: { input: '3', output: '9' } },
+      ).ok,
+    ).toBe(true);
+    expect(catalog.listAll()).toHaveLength(0);
+  });
+
+  it("refuses an id with a space at either end: inside the card's quotes it reads as the id without it", () => {
+    for (const modelId of [' gpt-5', 'gpt-5 ', '\tgpt-5']) {
+      expect(refused(modelId, { input: '3', output: '9' }), JSON.stringify(modelId)).toBe(
+        PRICING_MODEL_ID_FAULTS.padded,
+      );
+    }
+    expect(catalog.listAll()).toHaveLength(0);
+  });
+
+  it('shows an id in full or not at all: eighty columns are priced, the eighty-first is refused', () => {
+    const at = 'm'.repeat(80);
+    expect(
+      port.prepare(
+        { modelId: at, provider: 'openai' },
+        { action: 'set', prices: { input: '3', output: '9' } },
+      ).ok,
+    ).toBe(true);
+    const over = 'm'.repeat(81);
+    expect(refused(over, { input: '3', output: '9' })).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
+    // Wide characters take two columns each: forty fit, forty-one do not.
+    const wide = String.fromCodePoint(0x4e2d);
+    expect(
+      port.prepare(
+        { modelId: wide.repeat(40), provider: 'openai' },
+        { action: 'set', prices: { input: '3', output: '9' } },
+      ).ok,
+    ).toBe(true);
+    expect(refused(wide.repeat(41), { input: '3', output: '9' })).toBe(
+      PRICING_MODEL_ID_FAULTS['too-long'],
+    );
+    expect(PRICING_MODEL_ID_FAULTS['too-long']).toContain('80 columns');
+  });
+
+  it('enforces the 200-code-unit bound too: a string of combining marks is narrow and long', () => {
+    // One column wide, three hundred code units long: only the length bound can refuse it.
+    const narrow = `a${String.fromCodePoint(0x301).repeat(300)}`;
+    expect(narrow.length).toBe(301);
+    expect(refused(narrow, { input: '3', output: '9' })).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
+    const edge = `a${String.fromCodePoint(0x301).repeat(199)}`;
+    expect(edge.length).toBe(200);
+    expect(
+      port.prepare(
+        { modelId: edge, provider: 'openai' },
+        { action: 'set', prices: { input: '3', output: '9' } },
+      ).ok,
+    ).toBe(true);
+    expect(catalog.listAll()).toHaveLength(0);
+  });
+});
+
+describe('the commit checks the one rule another process can break while the card is open', () => {
+  /** The deepseek registry row's id, for a price a shell writes in the meantime. */
+  const deepseekId = (): string => providers.list().find((p) => p.name === 'deepseek')?.id ?? '';
+
+  it("a second provider's price for the same model, written between prepare and commit, makes the commit refuse and write nothing", () => {
+    const result = prepared('acme-custom-1', { input: '3', output: '9' });
+    // A `models pricing acme-custom-1 --provider deepseek` from another terminal, while the card is open.
+    expect(shellRefusal('acme-custom-1', { input: '1', output: '2' }, 'deepseek')).toBeUndefined();
+    expect(rowsFor('acme-custom-1')).toHaveLength(1);
+
+    const attempt = result.commit();
+    expect(attempt.ok).toBe(false);
+    expect(attempt.ok ? '' : attempt.reason).toContain(
+      "'acme-custom-1' is already user-priced under 'deepseek'",
+    );
+    const rows = rowsFor('acme-custom-1');
+    expect(rows, 'the commit wrote nothing').toHaveLength(1);
+    expect(rows[0]?.providerId).toBe(deepseekId());
+    expect(rows[0]?.inputCostPerMtokMicrocents, 'the other price is untouched').toBe(100_000_000);
+  });
+
+  it("the refusal is the shell's own sentence, byte for byte", () => {
+    const result = prepared('acme-custom-1', { input: '3', output: '9' });
+    shellRefusal('acme-custom-1', { input: '1', output: '2' }, 'deepseek');
+    const attempt = result.commit();
+    const shell = shellRefusal('acme-custom-1', { input: '3', output: '9' });
+    expect(shell).toContain('is already user-priced under');
+    expect(attempt).toEqual({ ok: false, reason: shell });
+  });
+
+  it('commitPricing itself throws the typed refusal, and a plain commit with no conflict still writes', () => {
+    const plan = preparePricing(
+      { model: 'acme-custom-1', provider: 'openai', inputUsdPerMtok: 3, outputUsdPerMtok: 9 },
+      { catalog, providers },
+    );
+    shellRefusal('acme-custom-1', { input: '1', output: '2' }, 'deepseek');
+    let refusal: unknown;
+    try {
+      commitPricing(plan, { catalog, providers });
+    } catch (cause) {
+      refusal = cause;
+    }
+    expect(isCliError(refusal)).toBe(true);
+    expect(isCliError(refusal) ? refusal.code : '').toBe('invalid_invocation');
+    expect(rowsFor('acme-custom-1')).toHaveLength(1);
+
+    const fine = preparePricing(
+      { model: 'other-model', provider: 'openai', inputUsdPerMtok: 3, outputUsdPerMtok: 9 },
+      { catalog, providers },
+    );
+    expect(commitPricing(fine, { catalog, providers })).toEqual({ kind: 'set' });
+    expect(rowsFor('other-model')).toHaveLength(1);
+  });
+
+  it('a CLEAR is not blocked by a price under another provider: it removes only its own', () => {
+    prepared('gpt-5.5', { input: '3', output: '9' }).commit();
+    const result = port.prepare(OPENAI('gpt-5.5'), { action: 'clear' });
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.commit().ok).toBe(true);
+    expect(rowsFor('gpt-5.5')).toHaveLength(0);
+  });
+
+  it("the port opens the IMMEDIATE transaction around the re-check and the store's own write", () => {
+    // The store opens a transaction of its own around its write. The port opens one more, IMMEDIATE, around the re-check and that
+    // call: two transactions are opened for one commit, the outermost IMMEDIATE. Without the port's, there is one.
+    const spy = vi.spyOn(client.db, 'transaction');
+    const result = prepared('acme-custom-1', { input: '3', output: '9' });
+    expect(spy).not.toHaveBeenCalled();
+    result.commit();
+    const configs = spy.mock.calls.map((call) => call[1]);
+    spy.mockRestore();
+    expect(configs, "the port's transaction, then the store's inside it").toHaveLength(2);
+    expect(configs[0]).toEqual({ behavior: 'immediate' });
+  });
+
+  describe('nothing can write between the re-check and the write (two connections to one file)', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = mkdtempSync(join(tmpdir(), 'relavium-pricing-commit-'));
+    });
+    afterEach(() => {
+      rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('a second connection cannot write while the commit holds its transaction, so the re-checked state is the written state', () => {
+      const file = join(dir, 'history.db');
+      const a = createClient(file);
+      runMigrations(a.db);
+      const b = createClient(file);
+      b.sqlite.pragma('busy_timeout = 0');
+      try {
+        let n = 0;
+        const storeDeps = {
+          uuid: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`,
+          now: () => 1_700_000_000_000,
+        };
+        const aProviders = createProviderStore(a.db, storeDeps);
+        aProviders.upsert({
+          name: 'openai',
+          displayName: 'OpenAI',
+          baseUrl: 'https://api.openai.com/v1',
+        });
+        const aCatalog = createModelCatalogStore(a.db, storeDeps);
+        const plan = preparePricing(
+          { model: 'acme-custom-1', provider: 'openai', inputUsdPerMtok: 3, outputUsdPerMtok: 9 },
+          { catalog: aCatalog, providers: aProviders },
+        );
+        // The re-check's own read is where "another process" tries to get in: right after the state was read, before the write.
+        let blocked: string | undefined;
+        const spied = {
+          ...aCatalog,
+          listAll: () => {
+            const rows = aCatalog.listAll();
+            try {
+              b.sqlite.exec('CREATE TABLE probe_from_b (x INTEGER)');
+            } catch (cause) {
+              blocked = cause instanceof Error ? cause.message : String(cause);
+            }
+            return rows;
+          },
+        };
+        commitPricing(plan, {
+          catalog: spied,
+          providers: aProviders,
+          atomically: (work) => a.db.transaction(work, { behavior: 'immediate' }),
+        });
+        expect(
+          blocked,
+          'a write from the other connection was refused while the commit held its transaction',
+        ).toMatch(/locked|busy/iu);
+        expect(aCatalog.listAll()).toHaveLength(1);
+      } finally {
+        a.sqlite.close();
+        b.sqlite.close();
+      }
+    });
   });
 });
 

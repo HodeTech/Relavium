@@ -729,6 +729,8 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
         global: ctx.global,
         catalog: createModelCatalogStore(db, storeDeps),
         providers: createProviderStore(db, storeDeps),
+        // The commit's re-check and its write are one IMMEDIATE transaction: nothing can write between them.
+        atomically: (work) => db.transaction(work, { behavior: 'immediate' }),
       }),
     );
   } finally {

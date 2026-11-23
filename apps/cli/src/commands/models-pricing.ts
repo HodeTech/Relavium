@@ -73,6 +73,12 @@ export interface ModelsPricingCommandDeps {
   readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'listAll' | 'clearUserPricing'>;
   /** The provider registry — resolves the `<slug>` → its internal `llm_providers` UUID (the catalog FK). */
   readonly providers: Pick<ProviderStore, 'list'>;
+  /**
+   * Runs {@link commitPricing}'s re-check and its write as ONE unit, in an IMMEDIATE transaction (`db.transaction(work, { behavior:
+   * 'immediate' })`), so nothing can write between the re-check and the write. Absent ⇒ the work simply runs (a test with no
+   * database; the output is the same).
+   */
+  readonly atomically?: <T>(work: () => T) => T;
 }
 
 /** What {@link preparePricing} reads. It writes nothing, so it takes no store method that does. */
@@ -81,9 +87,15 @@ export interface PreparePricingDeps {
   readonly providers: Pick<ProviderStore, 'list'>;
 }
 
-/** What {@link commitPricing} writes through: the one write of the command. */
+/**
+ * What {@link commitPricing} writes through: the one write of the command, and the reads of the one rule it checks again (the
+ * cross-provider duplicate), which another process can break between the prepare and the commit.
+ */
 export interface CommitPricingDeps {
-  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'clearUserPricing'>;
+  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'clearUserPricing' | 'listAll'>;
+  readonly providers: Pick<ProviderStore, 'list'>;
+  /** See {@link ModelsPricingCommandDeps.atomically}. */
+  readonly atomically?: <T>(work: () => T) => T;
 }
 
 /** One price a SET states: the field, the USD as it was typed, and the integer micro-cents that will be stored. */
@@ -209,7 +221,7 @@ function prepareSet(
   const issue = pairingIssue((id) => args[pricingField(id).arg] !== undefined);
   if (issue !== undefined) throw new CliError('invalid_invocation', pairingSentence(issue, naming));
 
-  assertNotUserPricedElsewhere(args, deps, providerId);
+  assertNotUserPricedElsewhere(args.model, deps, providerId);
   assertCatalogAnchor(args);
 
   // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row). Every price is optional on
@@ -278,19 +290,19 @@ function prepareSet(
  * Reject fail-loud rather than silently overwrite; nothing is written.
  */
 function assertNotUserPricedElsewhere(
-  args: SetPricingArgs,
+  model: string,
   deps: PreparePricingDeps,
   providerId: string,
 ): void {
   const dup = deps.catalog
     .listAll()
-    .find((m) => m.source === 'user' && m.modelId === args.model && m.providerId !== providerId);
+    .find((m) => m.source === 'user' && m.modelId === model && m.providerId !== providerId);
   if (dup === undefined) return;
   const otherProvider =
     deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
   throw new CliError(
     'invalid_invocation',
-    `'${args.model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
+    `'${model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
   );
 }
 
@@ -313,14 +325,22 @@ function assertCatalogAnchor(args: SetPricingArgs): void {
 
 /**
  * The single write of the command, and exactly what the plan describes: a SET upserts the plan's row; a CLEAR retires the operator's
- * row. It decides nothing (every refusal is the prepare's), so a plan that was shown is the plan that is written.
+ * row. It decides nothing new: every refusal is the prepare's, except that the one rule another process can break between the prepare
+ * and the commit is checked AGAIN here. A card stays open for as long as a person reads it, and a `models pricing` run from a shell in
+ * that time can price the same model under another provider; the overlay keys by model id, so writing the plan then would leave two
+ * prices for one id and the cap would apply an arbitrary one. The re-check and the write are one unit (`deps.atomically`), so nothing
+ * can slip in between them; a refusal is the shell's own typed refusal and writes nothing.
  */
 export function commitPricing(plan: PricingPlan, deps: CommitPricingDeps): PricingOutcome {
-  if (plan.kind === 'clear') {
-    return { kind: 'clear', cleared: deps.catalog.clearUserPricing(plan.model, plan.providerId) };
-  }
-  deps.catalog.upsert(plan.upsert);
-  return { kind: 'set' };
+  const unit = deps.atomically ?? (<T>(work: () => T): T => work());
+  return unit((): PricingOutcome => {
+    if (plan.kind === 'clear') {
+      return { kind: 'clear', cleared: deps.catalog.clearUserPricing(plan.model, plan.providerId) };
+    }
+    assertNotUserPricedElsewhere(plan.model, deps, plan.providerId);
+    deps.catalog.upsert(plan.upsert);
+    return { kind: 'set' };
+  });
 }
 
 // ── what the commands say ──────────────────────────────────────────────────────────────────────────────────────────────────
