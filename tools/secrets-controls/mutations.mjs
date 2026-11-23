@@ -1876,10 +1876,10 @@ export const mutations = [
   control(
     'startup-doctor-config-observation',
     'apps/cli/src/chat/doctor-host.ts',
-    '      if (inputs.readConfig !== undefined) {\n' +
-      '        inputs.readConfig();\n' +
-      '        return;\n' +
-      '      }\n',
+    '        if (inputs.readConfig !== undefined) {\n' +
+      '          inputs.readConfig();\n' +
+      '          return;\n' +
+      '        }\n',
     '',
     ['apps/cli/src/commands/chat-starting-mode.test.ts', 'apps/cli/src/home/starting-mode.test.ts'],
     34,
