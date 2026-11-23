@@ -332,12 +332,39 @@ export function slugExists(opts: {
   cwd: string;
   kind: AuthoredKind;
   slug: string;
+  /** The operator home the catalog's path rules read; default is the process's own. A caller that is handed one (the Home) passes it on. */
+  homeDir?: string;
 }): boolean {
   return discoverCatalog({
     projectConfigDir: opts.projectConfigDir,
     cwd: opts.cwd,
     kind: KIND_DIR[opts.kind],
+    ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
   }).some((e) => e.valid && e.slug === opts.slug);
+}
+
+/**
+ * The refusal {@link assertSlugAvailable} raises for an id the project already has. It is a {@link CliError} in every respect (the code,
+ * the exit code, the words, the name), and a subclass only so a caller that must word the remedy for itself, the Home's import card,
+ * can tell the clash that `--force` answers from the one it cannot without reading the sentence.
+ */
+export class SlugClashError extends CliError {
+  /** `same-kind`: the id is already this kind's, and `--force` replaces that file. `other-kind`: it is the other kind's, and nothing replaces it. */
+  readonly clash: 'same-kind' | 'other-kind';
+  readonly kind: AuthoredKind;
+  readonly slug: string;
+
+  constructor(
+    clash: 'same-kind' | 'other-kind',
+    kind: AuthoredKind,
+    slug: string,
+    message: string,
+  ) {
+    super('invalid_invocation', message);
+    this.clash = clash;
+    this.kind = kind;
+    this.slug = slug;
+  }
 }
 
 /**
@@ -354,18 +381,25 @@ export function assertSlugAvailable(opts: {
   kind: AuthoredKind;
   slug: string;
   force: boolean;
+  /** The operator home the catalog's path rules read; default is the process's own. */
+  homeDir?: string;
 }): void {
-  const { projectConfigDir, cwd, kind, slug, force } = opts;
+  const { projectConfigDir, cwd, kind, slug, force, homeDir } = opts;
+  const home = homeDir === undefined ? {} : { homeDir };
   const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
-  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug })) {
-    throw new CliError(
-      'invalid_invocation',
+  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug, ...home })) {
+    throw new SlugClashError(
+      'other-kind',
+      kind,
+      slug,
       `'${slug}' already exists as a ${otherKind} in this project — an id must be unique across agents and workflows; rename one.`,
     );
   }
-  if (!force && slugExists({ projectConfigDir, cwd, kind, slug })) {
-    throw new CliError(
-      'invalid_invocation',
+  if (!force && slugExists({ projectConfigDir, cwd, kind, slug, ...home })) {
+    throw new SlugClashError(
+      'same-kind',
+      kind,
+      slug,
       `${kind} '${slug}' already exists in this project — pass --force to overwrite.`,
     );
   }

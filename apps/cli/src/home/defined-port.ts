@@ -87,7 +87,8 @@ export interface ExportPortDeps {
 /** The longest reason a refusal shows, in code units: a CliError's message can quote a path. */
 const REASON_LIMIT = 240;
 
-function reasonOf(cause: unknown): string | undefined {
+/** The sentence for a refusal the command itself raised (a `CliError`), bounded and sanitized; none for any other fault. Shared with the import card's port. */
+export function reasonOf(cause: unknown): string | undefined {
   if (!isCliError(cause)) return undefined;
   const text = sanitizeUntrustedInline(cause.message);
   return text.length <= REASON_LIMIT ? text : `${text.slice(0, REASON_LIMIT - 1)}…`;
@@ -119,8 +120,8 @@ const WRITE_FAULT_REASONS: ReadonlyMap<string, string> = new Map([
   ['EIO', 'The file could not be written: the write failed (I/O error).'],
 ]);
 
-/** The fixed sentence for a write that failed with one of the file system's own refusals; none for any other fault (a bug ends the Home). */
-function writeFaultReasonOf(cause: unknown): string | undefined {
+/** The fixed sentence for a write that failed with one of the file system's own refusals; none for any other fault (a bug ends the Home). Shared with the import card's port. */
+export function writeFaultReasonOf(cause: unknown): string | undefined {
   if (typeof cause !== 'object' || cause === null || !('code' in cause)) return undefined;
   const code: unknown = cause.code;
   return typeof code === 'string' ? WRITE_FAULT_REASONS.get(code) : undefined;

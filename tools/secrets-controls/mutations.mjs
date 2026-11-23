@@ -900,7 +900,7 @@ export const mutations = [
   control(
     'snapshot-import-warning',
     'apps/cli/src/commands/import.ts',
-    '  warnSnapshotLiterals(parsed.definition, deps.io);\n',
+    '  warnSnapshotLiterals(parsed.definition, {\n    writeErr: (text) => {\n      warnings.push(text);\n    },\n  });\n',
     '',
     ['apps/cli/src/commands/import.test.ts'],
     11,

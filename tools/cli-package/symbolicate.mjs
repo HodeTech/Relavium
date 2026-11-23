@@ -53,7 +53,7 @@ export const ANCHORS = Object.freeze([
     within: 'detectAndParse',
     call: 'parseAsWorkflow',
   },
-  { source: 'apps/cli/src/commands/import.ts', within: 'importCommand', call: 'detectAndParse' },
+  { source: 'apps/cli/src/commands/import.ts', within: 'prepareImport', call: 'detectAndParse' },
 ]);
 
 const PRELOAD = fileURLToPath(new URL('./frame-capture.mjs', import.meta.url));
