@@ -2,6 +2,7 @@ import type { ManagerSkippedTool } from '@relavium/mcp';
 import { globalArtifactsNotice } from '../authoring/global-artifacts.js';
 import type { McpServerRef } from '@relavium/shared';
 
+import { faultForTranscript } from '../config/config-error-text.js';
 import { loadResolvedConfig } from '../config/load.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
@@ -52,14 +53,20 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
       store.get(DOCTOR_KEYCHAIN_PROBE);
     },
     config: () => {
-      if (inputs.readConfig !== undefined) {
-        inputs.readConfig();
-        return;
+      try {
+        if (inputs.readConfig !== undefined) {
+          inputs.readConfig();
+          return;
+        }
+        loadResolvedConfig({
+          cwd: inputs.cwd,
+          ...(inputs.configPath === undefined ? {} : { configPath: inputs.configPath }),
+        });
+      } catch (err) {
+        // The report is drawn into the transcript: a broken config file is named from the project or `~`, never by its absolute path
+        // (RUNCORE-3).
+        throw faultForTranscript(err, { cwd: inputs.cwd, homeDir: inputs.operatorHomeDir });
       }
-      loadResolvedConfig({
-        cwd: inputs.cwd,
-        ...(inputs.configPath === undefined ? {} : { configPath: inputs.configPath }),
-      });
     },
     // The wired host capability arms (2.5.A: fs + process). Arm PRESENCE is independent of the fs-scope tier, so
     // the report is faithful with the safe `sandboxed` default — no dependency on the live session's tier.

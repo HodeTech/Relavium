@@ -1,11 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ProviderResolver } from '../engine/providers.js';
 import type { KeychainStore } from '../secrets/keychain.js';
+import { checkConfig } from './doctor.js';
 import { assembleDoctorProbes } from './doctor-host.js';
 
 const resolver: ProviderResolver = {
@@ -33,6 +34,32 @@ describe('assembleDoctorProbes', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  it('names a broken config file from `~` or the project in the report, never by its absolute path (RUNCORE-3)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'relavium-doctor-config-'));
+    try {
+      const workspace = join(root, 'workspace');
+      const home = join(root, 'home');
+      mkdirSync(workspace);
+      mkdirSync(join(home, '.relavium'), { recursive: true });
+      const configPath = join(home, '.relavium', 'config.toml');
+      writeFileSync(configPath, 'not = [valid');
+      const probes = assembleDoctorProbes({
+        cwd: workspace,
+        configPath,
+        operatorHomeDir: home,
+        resolver,
+      });
+      const check = checkConfig(probes.config);
+      expect(check.status).toBe('fail');
+      expect(check.detail.startsWith(`~${sep}.relavium${sep}config.toml: is not valid TOML`)).toBe(
+        true,
+      );
+      expect(check.detail).not.toContain(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('builds every probe as a CLOSURE — no keychain read / config load / connect at construction', () => {
     const keychain: KeychainStore = {
       get: vi.fn(() => null),

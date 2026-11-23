@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
@@ -122,9 +122,10 @@ function blockWorkflowsDir(cwd: string): void {
 }
 
 /** A headless driver that feeds a fixed line list through the command core (no TTY / ink). */
-function linesDriver(lines: readonly string[]): ChatDriver {
+function linesDriver(lines: readonly string[], afterStart?: () => void): ChatDriver {
   return async (ctx) => {
     ctx.startSession();
+    afterStart?.(); // what the operator does between the session going live and the first command
     await ctx.onActivated?.(() => !ctx.shouldStop()); // a real driver activates after wiring its subscription
     for (const line of lines) {
       await ctx.processLine(line);
@@ -1090,6 +1091,50 @@ describe('chatCommand', () => {
       'could not list workflows: invalid_invocation',
     );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+  });
+
+  describe('a config file that breaks mid-session is named without its absolute path (RUNCORE-3)', () => {
+    const breakGlobalConfig = (): void => {
+      mkdirSync(join(home, '.relavium'), { recursive: true });
+      writeFileSync(join(home, '.relavium', 'config.toml'), 'not = [valid');
+    };
+    const breakProjectConfig = (): void => {
+      mkdirSync(join(cwd, '.relavium'), { recursive: true });
+      writeFileSync(join(cwd, '.relavium', 'project.toml'), 'not = [valid');
+    };
+
+    it.each([
+      ['global', breakGlobalConfig, `~${sep}.relavium${sep}config.toml: is not valid TOML`],
+      ['project', breakProjectConfig, `.relavium${sep}project.toml: is not valid TOML`],
+    ])(
+      '/workflows with a broken %s config says which file, from `~` or the project, and the session survives',
+      async (_layer, breakConfig, named) => {
+        mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+        const { d, err, store, sessionId } = deps([], [textTurn('hi')]);
+        await chatCommand(
+          { agent: undefined },
+          { ...d, drive: linesDriver(['/workflows', 'hello', '/exit'], breakConfig) },
+        );
+        expect(err()).toContain(`could not list workflows: ${named}`);
+        expect(err(), 'neither the home nor the project root rides the transcript').not.toContain(
+          home,
+        );
+        expect(err()).not.toContain(cwd);
+        expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
+      },
+    );
+
+    it('/export with a broken config says which file, from `~`, and not where it lives', async () => {
+      const { d, err } = deps([], [textTurn('hi')]);
+      await chatCommand(
+        { agent: undefined },
+        { ...d, drive: linesDriver(['hello', '/export', '/exit'], breakGlobalConfig) },
+      );
+      expect(err()).toContain(
+        `export failed: ~${sep}.relavium${sep}config.toml: is not valid TOML`,
+      );
+      expect(err()).not.toContain(home);
+    });
   });
 
   it('/permissions on a headless chat says remembered commands are not available, never ends the session, and takes no argument (ADR-0137 §2)', async () => {

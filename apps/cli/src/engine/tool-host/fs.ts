@@ -1806,6 +1806,8 @@ async function discover(
     bytesScanned: number;
     skippedBinary: number;
     skippedOversize: number;
+    skippedHardLink: number;
+    skippedVanished: number;
     unreadable: number;
     incomplete: boolean;
     limit?: FsScanLimit;
@@ -1815,12 +1817,30 @@ async function discover(
     bytesScanned: 0,
     skippedBinary: 0,
     skippedOversize: 0,
+    skippedHardLink: 0,
+    skippedVanished: 0,
     unreadable: 0,
     incomplete: false,
   };
   const stop = (limit: FsScanLimit): void => {
     stats.incomplete = true;
     stats.limit ??= limit;
+  };
+  /**
+   * Counts a candidate the jail refused to open as the file that was listed, and says whether it was one. A hard-linked file is refused
+   * by the alias guard; a file that is a directory or a special file by the time it is opened was replaced after it was listed, so it
+   * counts with the ones that vanished (MISC-2). Each is a file inside the searched scope that was never read, and `incomplete` says so.
+   */
+  const skippedFileKind = (read: JailedRead): boolean => {
+    if (read.kind === 'aliased') {
+      stats.skippedHardLink++;
+      return true;
+    }
+    if (read.kind === 'special' || read.kind === 'directory') {
+      stats.skippedVanished++;
+      return true;
+    }
+    return false;
   };
   const sourceBudget = { remaining: SCAN_BYTES };
   const bodies: string[] = [];
@@ -2015,7 +2035,11 @@ async function discover(
         // An entry that vanished between the directory read and this lstat is skipped (as `listOne` does), never
         // fatal: a concurrent unlink must not fail the whole discovery call. Only ENOENT is tolerated.
         const identity = await identityIfPresent(lstat(candidate, { bigint: true }));
-        if (identity === undefined) return 'next';
+        if (identity === undefined) {
+          // Counted only when the walk would have visited it: a directory, or a file the glob matched (MISC-2).
+          if (entry.isDirectory() || match === 'matched') stats.skippedVanished++;
+          return 'next';
+        }
         stage.assertIdentity(identity);
         function queueDirectory(): 'next' | 'stop' {
           if (depth >= SCAN_DEPTH) {
@@ -2037,7 +2061,10 @@ async function discover(
         assertFsPolicyPath(config.pathPolicy, candidate, real);
         // The same vanish window, between the realpath above and the identity pin: skipped, never fatal.
         const realIdentity = await identityIfPresent(stat(real, { bigint: true }));
-        if (realIdentity === undefined) return 'next';
+        if (realIdentity === undefined) {
+          stats.skippedVanished++;
+          return 'next';
+        }
         stage.assertIdentity(realIdentity);
         const info = await stat(real).catch(() => undefined);
         if (info === undefined) {
@@ -2074,12 +2101,7 @@ async function discover(
             stats.incomplete = true;
             return 'stop';
           }
-          if (
-            checked.kind === 'aliased' ||
-            checked.kind === 'special' ||
-            checked.kind === 'directory'
-          )
-            return 'next';
+          if (skippedFileKind(checked)) return 'next';
           files.push({
             path: display,
             sizeBytes: fileInfo.size,
@@ -2133,6 +2155,7 @@ async function discover(
             return 'next';
           }
           if (result.kind === 'oversize') stats.skippedOversize++;
+          if (skippedFileKind(result)) return 'next';
           if (result.kind !== 'file') return 'next';
           let text: string;
           try {
@@ -2217,6 +2240,11 @@ async function discover(
   }
   await walkDirectories();
   throwIfAborted(signal);
+  // A file inside the scope that the walk reached and did not read is not an absence, whatever the walk's own ceilings said. The walk's
+  // own `incomplete` stops it, so this is set only now: one oversized or hard-linked file must not end the search of the rest. Binary
+  // and invalid UTF-8 files stay out of this: the tool searches UTF-8 text (its description, built-in-tools.md), and counts the others.
+  if (stats.skippedOversize + stats.skippedHardLink + stats.skippedVanished > 0)
+    stats.incomplete = true;
   if (find !== undefined) {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     return {

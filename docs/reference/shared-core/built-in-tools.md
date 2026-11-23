@@ -71,7 +71,9 @@ Older and authored conversations retain their frozen grants; the
   casing or a model-supplied regular expression. Results identify usable paths,
   one-based line numbers and bounded line excerpts. Omitted/skipped counts and
   incomplete traversal are explicit; an unknown unvisited count is labelled
-  unknown, never invented as exact.
+  unknown, never invented as exact. A file in scope that the walk reached and did
+  not read (oversized, hard-linked, vanished) makes the result incomplete, so "no
+  match" is never said of a file that was not searched (MISC-2; stats below).
 - `find_files` takes a scoped directory and glob. Sort the admitted scanned set
   by descending mtime with relative-path order as a deterministic tie-break.
   A capped walk is labelled incomplete; it cannot claim the newest files in
@@ -124,8 +126,23 @@ case folding. Word boundaries are tested on the original source.
 
 Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
 returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
-contain visited entries, scanned files/bytes, binary/oversize skips, unreadable
-count, `incomplete` and optional limiting category. Search byte accounting charges
+contain visited entries, scanned files/bytes, the files skipped without being
+read by cause (`skippedBinary`, `skippedOversize`, `skippedHardLink`,
+`skippedVanished`), unreadable count, `incomplete` and optional limiting
+category. `incomplete` is true when a ceiling stopped the walk (`limit` names
+it) or when a file inside the scope was reached and not read: over the 1 MiB
+per-file search ceiling (`skippedOversize`), refused by the jail's hard-link
+guard (`skippedHardLink`), gone or no longer the listed regular file when it was
+read (`skippedVanished`), or unreadable. A skip alone sets no `limit` and does
+not stop the walk, so the rest is still searched. Binary and invalid UTF-8 files
+are the one skip that leaves `incomplete` false: the tool searches UTF-8 text,
+so they lie outside what a result claims, and `skippedBinary` still counts them
+(a literal inside a non-UTF-8 file is not found, and the count says that such
+files were passed over). Files hidden by an ignore rule or refused as
+confidential are likewise outside the claim, as they always were.
+`skippedHardLink` and `skippedVanished` are optional in the contract: a host
+that does not report them omits them. `find_files` counts the same skips, since
+a hard-linked file is left out of its list. Search byte accounting charges
 actual source reads, including skipped binary/invalid UTF-8 candidates; every
 descriptor read observes the remaining aggregate budget. Capped traversal does not
 invent an unvisited total or global-newest claim. Each clipped line states its

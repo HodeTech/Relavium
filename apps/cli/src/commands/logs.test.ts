@@ -24,6 +24,7 @@ import { captureIo, forgeRunStatus, parseNdjson, seedRun } from '../test-support
 import {
   FOLLOW_LIVENESS_INTERVAL_MS,
   FOLLOW_POLL_INTERVAL_MS,
+  FOLLOW_RESUME_GRACE_MS,
   logsCommand,
   logsFollowCommand,
   readHistory,
@@ -1380,6 +1381,104 @@ describe('logs --failed and --follow (ADR-0140 §7)', () => {
       await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
       expect(waits).toHaveLength(3);
       expect(err()).toBe(noOwnerNote('f1'));
+    });
+
+    describe('a process that slept does not judge the owner (HISTORY-1)', () => {
+      /** The laptop slept for five minutes: far more than the TTL, and more than the old rule's ~100 s allowance. */
+      const SLEEP_MS = 300_000;
+
+      it('does not end on a lease that only looks expired because this process slept, and ends on the closing event the owner then writes', async () => {
+        await seedOldRun('f1');
+        setLease('f1', T0 + RUN_LEASE_TTL_MS / 2); // live when the follow began
+        const clock = fakeClock(T0);
+        const { io, out, err } = captureIo();
+        const { sleep, waits } = scriptedSleep([
+          () => clock.advance(SLEEP_MS), // the machine slept: the lease is now five minutes stale
+          () => {
+            // The owner woke with the follow and beat once: its lease is live again.
+            setLease('f1', clock.now() + RUN_LEASE_TTL_MS);
+            clock.advance(FOLLOW_LIVENESS_INTERVAL_MS);
+          },
+          () => appender('f1', 3)(COMPLETED),
+        ]);
+        await expect(
+          logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now })),
+        ).resolves.toBe(EXIT_CODES.success);
+        expect(waits).toHaveLength(3);
+        expect(err()).toBe('');
+        expect(err()).not.toContain('no running process');
+        expect(out()).toContain('[3] run:completed — completed');
+      });
+
+      it.each([
+        ['a check one millisecond short of the window is held back', FOLLOW_RESUME_GRACE_MS - 1],
+        [
+          "a check exactly at the window's end is not",
+          FOLLOW_RESUME_GRACE_MS - FOLLOW_LIVENESS_INTERVAL_MS,
+        ],
+      ])(
+        'holds a no-owner verdict back for one heartbeat after the gap, reads the lease again, and ends on it only when it is still gone (%s)',
+        async (_name, secondAdvanceMs) => {
+          await seedOldRun('f1');
+          setLease('f1', T0 + RUN_LEASE_TTL_MS / 2);
+          const clock = fakeClock(T0);
+          const { io, err } = captureIo();
+          const { sleep, waits } = scriptedSleep([
+            () => clock.advance(SLEEP_MS), // the tick that finds the gap: the window runs from here
+            () => clock.advance(secondAdvanceMs), // the lease is still stale, and the window is not over: held back
+            // A full liveness interval later the next check is due. In the first case it lands one interval
+            // after the window ended, in the second exactly on its end: the lease is still gone, and it ends.
+            () => clock.advance(FOLLOW_LIVENESS_INTERVAL_MS),
+          ]);
+          await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
+          expect(waits).toHaveLength(3);
+          expect(err()).toBe(noOwnerNote('f1'));
+        },
+      );
+
+      it('takes a gap of exactly one TTL for no sleep, and one millisecond more for one', async () => {
+        await seedOldRun('f1');
+        setLease('f1', 0); // long expired at either clock: only the gap rule decides
+        const exact = captureIo();
+        const clockExact = fakeClock(T0);
+        const atTtl = scriptedSleep([() => clockExact.advance(RUN_LEASE_TTL_MS)]);
+        await logsFollowCommand(
+          { runId: 'f1' },
+          deps(exact.io, false, { sleep: atTtl.sleep, now: clockExact.now }),
+        );
+        expect(atTtl.waits).toHaveLength(1);
+        expect(exact.err()).toBe(noOwnerNote('f1'));
+
+        const over = captureIo();
+        const clockOver = fakeClock(T0);
+        const pastTtl = scriptedSleep([
+          () => clockOver.advance(RUN_LEASE_TTL_MS + 1),
+          () => clockOver.advance(FOLLOW_RESUME_GRACE_MS),
+        ]);
+        await logsFollowCommand(
+          { runId: 'f1' },
+          deps(over.io, false, { sleep: pastTtl.sleep, now: clockOver.now }),
+        );
+        expect(pastTtl.waits).toHaveLength(2);
+        expect(over.err()).toBe(noOwnerNote('f1'));
+      });
+
+      it('does not hold back the end of a run whose row is gone: that is not about the clock', async () => {
+        await seedOldRun('f1');
+        const clock = fakeClock(T0);
+        const { io, err } = captureIo();
+        const { sleep, waits } = scriptedSleep([
+          () => {
+            client.sqlite.prepare('DELETE FROM runs WHERE id = ?').run('f1');
+            clock.advance(SLEEP_MS);
+          },
+        ]);
+        await logsFollowCommand({ runId: 'f1' }, deps(io, false, { sleep, now: clock.now }));
+        expect(waits).toHaveLength(1);
+        expect(err()).toBe(
+          'note: run f1 is no longer in the history, so there is nothing more to follow.\n',
+        );
+      });
     });
 
     it('ends, with its own note, when the run row is gone', async () => {

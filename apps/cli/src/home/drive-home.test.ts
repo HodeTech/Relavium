@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
@@ -1677,6 +1677,32 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('a chat that cannot start because the config broke mid-session says which file, from `~`, and not where it lives (RUNCORE-3)', async () => {
+    const configFile = join(testHomeDir, '.relavium', 'config.toml');
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), {
+      global: { ...global, configPath: configFile },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    // The operator breaks the global config while the Home is open; the next chat cannot read it.
+    mkdirSync(join(testHomeDir, '.relavium'), { recursive: true });
+    writeFileSync(configFile, 'not = [valid');
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit => startChat => the config read throws a ConfigError
+    await flush();
+
+    const banner = props.controller.getSnapshot().errorText ?? '';
+    expect(banner.startsWith(`~${sep}.relavium${sep}config.toml: is not valid TOML`)).toBe(true);
+    expect(banner, 'the operator home is not in the banner').not.toContain(testHomeDir);
+
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
     expect(await drivePromise).toBe(EXIT_CODES.success);

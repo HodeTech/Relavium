@@ -113,6 +113,7 @@ import {
   type BuiltResumedChatSession,
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
+import { faultForTranscript } from '../config/config-error-text.js';
 import { loadResolvedConfig, resolveHomeDir, type LoadedConfig } from '../config/load.js';
 import { findProjectConfigDir } from '../config/paths.js';
 import {
@@ -1900,6 +1901,16 @@ export function createChatLineHandler(
       cwd: deps.global.cwd,
       configPath: deps.global.configPath,
     });
+  /**
+   * A fault as this handler's output may draw it (RUNCORE-3): a broken config file is named from the project or `~`, never by its
+   * absolute path, which would ride the transcript (a screen share, a screenshot, a pasted log). The fault itself, which the work owner
+   * and the shell's own stderr message still receive, is unchanged.
+   */
+  const faultToShow = (fault: unknown): unknown =>
+    faultForTranscript(fault, {
+      cwd: deps.global.cwd,
+      homeDir: wiring.startingModes?.homeDir ?? built.operatorHomeDir,
+    });
   const workOwner = built.workOwner;
   store.setMemoryPolicy(built.session.memoryPolicy);
   if (Object.hasOwn(built, 'contextWindowTokens'))
@@ -2020,12 +2031,13 @@ export function createChatLineHandler(
       } catch (err) {
         workOwner?.failure(err);
         if (noticesStopped()) return;
+        const shown = faultToShow(err);
         const message =
           workOwner === undefined
-            ? err instanceof Error
-              ? err.message
-              : String(err)
-            : toUserFacing(err).message;
+            ? shown instanceof Error
+              ? shown.message
+              : String(shown)
+            : toUserFacing(shown).message;
         emitOutput(`export failed: ${message}`);
       }
     },
@@ -2053,11 +2065,12 @@ export function createChatLineHandler(
         // A catalog fault says why in its own words (the cap: "too many workflow files …"), as the Home's picker and `relavium list` do, so a
         // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
         // absolute path stays on the error's `cause`, never in the message.
+        const shown = faultToShow(err);
         const reason =
-          err instanceof CliError
-            ? err.message === ''
-              ? err.code
-              : sanitizeUntrustedInline(err.message)
+          shown instanceof CliError
+            ? shown.message === ''
+              ? shown.code
+              : sanitizeUntrustedInline(shown.message)
             : 'unexpected error';
         emitOutput(`could not list workflows: ${reason}`);
       }

@@ -71,6 +71,7 @@ import { createStartingModeRuntime, startingModeConfigObserver } from '../chat/s
 import { runModeSettings } from '../chat/mode-settings.js';
 import { activateStartingModeHint } from '../chat/starting-mode-hint.js';
 import { admitFsInvocation, admitChatFsPolicy } from '../engine/tool-host/fs-admission.js';
+import { faultForTranscript } from '../config/config-error-text.js';
 import { ConfigError } from '../config/errors.js';
 import {
   ConfigWriteRefusedError,
@@ -2083,7 +2084,12 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         ),
         // The controller asks for an agent of the project by its catalog path and the definition the page showed; a `/clear` carries its own
         // bound agent (`clear`).
-        startChat: (agent) => startChat(undefined, agent),
+        // The controller draws a failed build's message in the Home's banner: a broken config file is named from the project or `~`,
+        // never by its absolute path (RUNCORE-3).
+        startChat: (agent) =>
+          startChat(undefined, agent).catch((cause: unknown) => {
+            throw faultForTranscript(cause, { cwd: deps.global.cwd, homeDir });
+          }),
         reseatChat,
         resumeChat,
         pickSession: () =>

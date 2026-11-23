@@ -150,7 +150,22 @@ export interface FsScanStats {
   readonly bytesScanned: number;
   readonly skippedBinary: number;
   readonly skippedOversize: number;
+  /**
+   * Regular files in scope that the jail refused because another name links to the same data. Never read, so a match in one is not
+   * reported: any is why `incomplete` is true. Absent from a host that does not report it.
+   */
+  readonly skippedHardLink?: number;
+  /**
+   * Entries that were listed and gone, or no longer the listed regular file, by the time they were read. Any is why `incomplete` is
+   * true. Absent from a host that does not report it.
+   */
+  readonly skippedVanished?: number;
   readonly unreadable: number;
+  /**
+   * True when the result is a partial answer: a ceiling stopped the walk (`limit` names it), or a file in scope was skipped without
+   * being read (`skippedOversize`, `skippedHardLink`, `skippedVanished` or `unreadable`). Binary and non-UTF-8 files are outside the
+   * search's text and only counted in `skippedBinary`. A skip-only partial result has no `limit`.
+   */
   readonly incomplete: boolean;
   readonly limit?: FsScanLimit;
 }

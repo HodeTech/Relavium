@@ -7,7 +7,7 @@ import {
   type RunRecord,
   type SkippedRunEvent,
 } from '@relavium/db';
-import { RUN_LEASE_TTL_MS, type RunEvent } from '@relavium/shared';
+import { RUN_LEASE_HEARTBEAT_MS, RUN_LEASE_TTL_MS, type RunEvent } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -43,6 +43,16 @@ export const FOLLOW_POLL_INTERVAL_MS = 500;
  * dead owner never writes the terminal event the follow waits for.
  */
 export const FOLLOW_LIVENESS_INTERVAL_MS = 1000;
+
+/**
+ * How long `--follow` holds back a no-owner verdict after its own loop was suspended: one lease heartbeat, counted
+ * on the injected clock from the tick that found the gap. A gap between two of its ticks longer than a lease TTL
+ * (a laptop that slept, a VM that was paused, a wall clock that jumped) is evidence about the clock, not about the
+ * owner, whose own timers were suspended with it: a lease that looks long expired may be renewed by the owner's
+ * first beat after the wake, and one beat is how long that takes at most. The lease is read again at every check
+ * in that window, and the follow ends on the verdict only if it still says the lease is gone when the window ends.
+ */
+export const FOLLOW_RESUME_GRACE_MS = RUN_LEASE_HEARTBEAT_MS;
 
 /** How many skipped-row sequence numbers the ADR-0074 §5 note names before it elides — same bound-the-diagnostic
  *  reasoning as the fixed native background-diagnostic bound: the COUNT is the signal, the numbers are the lead. */
@@ -102,7 +112,13 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
  * stderr note and exit `0` (see {@link followOwnerVerdict}), but only after one more read of the log: the owner
  * commits its closing event and releases its lease in that order, and the lease check can land between the two.
  * If that read returns anything, the verdict is not acted on: the events are printed and the follow goes on, to
- * judge again at its next check. A run with a live lease keeps being followed. Framework-free.
+ * judge again at its next check. A run with a live lease keeps being followed.
+ *
+ * **A suspended process does not judge the owner (HISTORY-1).** When more than one `RUN_LEASE_TTL_MS` passed between
+ * two of the loop's own ticks, the machine slept or the clock jumped, and the owner's heartbeat was suspended with
+ * the follow: the lease then looks long expired although the owner is alive and about to renew it. A no-owner verdict
+ * is held back for {@link FOLLOW_RESUME_GRACE_MS} from that tick, and the lease is read again at each check in the
+ * window; only a lease that is still gone after it ends the follow. Framework-free.
  */
 export async function logsFollowCommand(
   args: LogsCommandArgs,
@@ -118,6 +134,10 @@ export async function logsFollowCommand(
 
     const now = deps.now ?? Date.now;
     let lastLivenessCheckMs = now();
+    /** When the loop last ran its empty-poll tick (see {@link FOLLOW_RESUME_GRACE_MS}); a gap since it is judged below. */
+    let lastTickMs = lastLivenessCheckMs;
+    /** A no-owner verdict is held back until the injected clock reaches this: set when a gap over one TTL is seen. */
+    let resumeGraceUntilMs = Number.NEGATIVE_INFINITY;
     let cursor = history.scannedThroughSeq;
     let state = history.events.reduce(observeFollow, QUIET_RUN);
     /** One read after the cursor, printed through the same filter and writer; the events it returned. */
@@ -148,9 +168,18 @@ export async function logsFollowCommand(
       // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
       // not on every poll, whether anyone is still going to write to it.
       const checkedAtMs = now();
+      // More than a lease TTL since the last tick means this loop (and the owner with it) was suspended, so what the
+      // lease says now is not yet evidence about the owner: hold a no-owner verdict back for one heartbeat.
+      if (checkedAtMs - lastTickMs > RUN_LEASE_TTL_MS) {
+        resumeGraceUntilMs = checkedAtMs + FOLLOW_RESUME_GRACE_MS;
+      }
+      lastTickMs = checkedAtMs;
       if (checkedAtMs - lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
         lastLivenessCheckMs = checkedAtMs;
-        const verdict = followOwnerVerdict(reader, run.id, checkedAtMs);
+        const read = followOwnerVerdict(reader, run.id, checkedAtMs);
+        // The lease is read again at each check in the window; only a read that still says it is gone, after the
+        // window, ends the follow. A run row that is gone is not about the clock, and is never held back.
+        const verdict = read === 'no-owner' && checkedAtMs < resumeGraceUntilMs ? undefined : read;
         if (verdict !== undefined) {
           // The owner may have committed its closing event and released its lease between the read above and the
           // lease check, so a verdict alone must not end the follow before that event is shown: read once more,
