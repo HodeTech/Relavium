@@ -1,8 +1,10 @@
 /**
  * A typed `/word` on the landing, and the `/help` sheet it opens
  * ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) §3, MVP-8 step 5),
- * through the real Home controller: a registry word is answered and never starts a chat, a word the registry does not know is said to be
- * unknown, a first message that merely starts with a slash is still a message, and the sheet owns every key while it is open. The pure
+ * through the real Home controller: a line that starts with a slash is a command line and is always answered, never a message (the chat reads
+ * every such line as a slash command, so a chat started for it could only say `unknown command`): a registry word is answered whatever
+ * follows it, a word the registry does not know is said to be unknown, a line that is not a word is said to be unknown as the chat says it,
+ * and the sheet owns every key while it is open. The pure
  * model of the sheet is `help-sheet.test.ts`; what is drawn is `home-help-sheet-app.test.tsx`. The run host, the ports and the timers are
  * scripted: no engine is built and no operator home is read.
  */
@@ -211,15 +213,17 @@ describe('Enter on a palette query that matches nothing, at the landing', () => 
     for (const home of [help, cost, stranger]) expect(home.startChat).not.toHaveBeenCalled();
   });
 
-  it('a palette query that is a sentence goes on to the chat: it is neither answered as its first word nor dropped', () => {
+  it('a palette query that is a sentence is answered as its first word is: it opens no sheet and starts no chat', () => {
     const home = mount();
     typed(home, '/help me');
-    expect(home.startChat).toHaveBeenCalledOnce();
-    expect(home.controller.getSnapshot().notice).toBeUndefined();
+    expect(home.startChat).not.toHaveBeenCalled();
+    expect(home.controller.getSnapshot().notice).toBe('/help accepts no arguments.');
     expect(home.controller.getSnapshot().screen).toBeUndefined();
+    expect(home.controller.getSnapshot().palette).toBeUndefined();
+    expect(home.controller.getSnapshot().input.text).toBe('');
   });
 
-  it('still runs the command a query does match, and a first word that is not a lower-case word goes on to the chat, not dropped', () => {
+  it('still runs the command a query does match, and a first word that is not a lower-case word is said to be unknown, not sent', () => {
     const exit = mount();
     typed(exit, '/exit');
     expect(exit.onExit).toHaveBeenCalledOnce();
@@ -228,9 +232,13 @@ describe('Enter on a palette query that matches nothing, at the landing', () => 
     typed(odd, '/Zzzz');
     const snapshot = odd.controller.getSnapshot();
     expect(snapshot.palette).toBeUndefined();
-    expect(snapshot.notice).toBeUndefined();
+    expect(snapshot.notice).toBe('Unknown command: /Zzzz. /help lists the commands.');
     expect(snapshot.screen).toBeUndefined();
-    expect(odd.startChat, 'the words typed are sent, not lost').toHaveBeenCalledOnce();
+    expect(snapshot.mode).toBe('home');
+    expect(
+      odd.startChat,
+      'a line that starts with a slash is never a message',
+    ).not.toHaveBeenCalled();
   });
 
   it('leaves the palette’s own Esc alone: nothing is answered', () => {
@@ -272,32 +280,89 @@ describe('a word the registry does not know', () => {
     expect(home.startChat).not.toHaveBeenCalled();
   });
 
-  it.each(['/Users/x/file.txt', '/etc/passwd', '/Users', '/a/b'])(
-    'a first message that only starts with a slash (%s) still starts a chat',
+  it.each([
+    '/Users/x/file.txt',
+    '/etc/passwd',
+    '/Users',
+    '/Zzzz',
+    '/a/b',
+    '/Users/x/notes.md please read',
+  ])(
+    'a line that starts with a slash and is not a word (%s) is said to be unknown as the chat says it, and starts no chat',
     (line) => {
       const home = mount();
       pasted(home, line);
-      expect(home.startChat).toHaveBeenCalledOnce();
-      expect(home.controller.getSnapshot().mode).toBe('loading');
-      expect(home.controller.getSnapshot().notice).toBeUndefined();
+      const snapshot = home.controller.getSnapshot();
+      expect(snapshot.notice).toBe(`Unknown command: ${line}. /help lists the commands.`);
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text).toBe('');
+      expect(
+        home.startChat,
+        'the chat would read it as a command, not send it',
+      ).not.toHaveBeenCalled();
     },
   );
 
   it.each([
-    '/tmp has junk, please clean it',
-    '/cost is high, can you check?',
-    '/help me understand this',
-    '/exit now',
-    '/export x.yaml',
+    // A registry word is answered whatever follows it: a Home word is told it takes no arguments, a chat's word where it works.
+    ['/cost is high, can you check?', WORKS_IN_A_CHAT('/cost')],
+    ['/export x.yaml', WORKS_IN_A_CHAT('/export')],
+    ['/help me understand this', '/help accepts no arguments.'],
+    ['/exit now', '/exit accepts no arguments here. Start a chat to use them.'],
+    ['/doctor why is this slow', '/doctor accepts no arguments here. Start a chat to use them.'],
+    // A lower-case word the registry does not know names the word, and not the sentence after it.
+    ['/tmp has junk, please clean it', 'Unknown command: /tmp. /help lists the commands.'],
+    ['/nosuchword and then some text', 'Unknown command: /nosuchword. /help lists the commands.'],
+    // A near miss keeps its suggestion, with text after it as well.
+    ['/inti the project please', 'Unknown command. Did you mean /init?'],
   ])(
-    'a first message that opens with a slash word and goes on as a sentence (%s) starts a chat and is not swallowed',
-    (line) => {
+    'a line that opens with a slash word and goes on as text (%s) is answered by its first word, and starts no chat',
+    (line, notice) => {
       const home = mount();
       pasted(home, line);
-      expect(home.startChat).toHaveBeenCalledOnce();
-      expect(home.controller.getSnapshot().notice).toBeUndefined();
+      const snapshot = home.controller.getSnapshot();
+      expect(snapshot.notice).toBe(notice);
+      expect(snapshot.screen, 'no sheet opens for a line with text after the word').toBeUndefined();
+      expect(snapshot.mode).toBe('home');
+      expect(snapshot.input.text).toBe('');
+      expect(
+        home.startChat,
+        'a line that starts with a slash is never a message',
+      ).not.toHaveBeenCalled();
+      expect(home.onExit).not.toHaveBeenCalled();
     },
   );
+
+  it('shows a line that is not a word as the chat does: printable ASCII only, and at most 64 characters', () => {
+    const control = mount();
+    pasted(control, '/Users/x\u001b[31mred');
+    expect(control.controller.getSnapshot().notice).toBe(
+      'Unknown command: /Users/x?[31mred. /help lists the commands.',
+    );
+
+    const multiline = mount();
+    pasted(multiline, '/Users/x\nsecond line é');
+    expect(multiline.controller.getSnapshot().notice).toBe(
+      'Unknown command: /Users/x?second line ?. /help lists the commands.',
+    );
+
+    const long = mount();
+    pasted(long, `/Users/${'x'.repeat(100)}`);
+    const notice = long.controller.getSnapshot().notice ?? '';
+    expect(notice).toBe(`Unknown command: /Users/${'x'.repeat(57)}. /help lists the commands.`);
+    for (const home of [control, multiline, long])
+      expect(home.startChat, 'none of them is sent').not.toHaveBeenCalled();
+  });
+
+  it('a line that does not start with a slash is a message, whatever it holds', () => {
+    for (const line of ['please clean /tmp', 'hello', ' text with /help inside']) {
+      const home = mount();
+      pasted(home, line);
+      expect(home.startChat, line).toHaveBeenCalledOnce();
+      expect(home.controller.getSnapshot().mode, line).toBe('loading');
+      expect(home.controller.getSnapshot().notice, line).toBeUndefined();
+    }
+  });
 
   it('a bare slash word that matches nothing is answered at the landing, and is not sent', () => {
     const home = mount();

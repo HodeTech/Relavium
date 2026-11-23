@@ -510,6 +510,87 @@ describe('how the view is reached', () => {
     expect(controller.getSnapshot().notice).toBe('Not started.');
   });
 
+  describe('a /run that started no run opens no view, however it ended, while another run executes or starts', () => {
+    // The launch flow ends in a notice: the view is for the run it STARTED, told by the leg it left behind, as `r` on a Defined row tells it.
+    // A view of ANOTHER run that is executing would hide the notice and is not what `/run` asked for.
+    const scenarios: readonly {
+      readonly name: string;
+      readonly initial: RunHostSnapshot;
+      /** What the host holds by the time the flow answers. */
+      readonly after: RunHostSnapshot | undefined;
+      readonly notice: string;
+    }[] = [
+      {
+        name: 'cancelled while a leg executes',
+        initial: running(),
+        after: undefined,
+        notice: 'Run cancelled.',
+      },
+      {
+        name: 'refused because a leg already executes',
+        initial: running(),
+        after: undefined,
+        notice: `A run is already executing: ${RUN}.`,
+      },
+      {
+        name: 'refused while a resume leg is still acquiring its run, which has its id by the time the flow answers',
+        initial: {
+          launching: true,
+          active: { leg: 'resume', runId: undefined, cancelling: false },
+          last: undefined,
+        },
+        after: running(OTHER),
+        notice: 'A run is already starting.',
+      },
+      {
+        name: 'cancelled after the leg that executed settled',
+        initial: running(),
+        after: IDLE,
+        notice: 'Run cancelled.',
+      },
+    ];
+
+    it.each(scenarios)(
+      '$name: the notice stays on the landing and no view opens',
+      async ({ initial, after, notice }) => {
+        const { controller, set } = mount({
+          initial,
+          launchRun: () => {
+            if (after !== undefined) set(after);
+            return Promise.resolve(notice);
+          },
+          runStore: () => createRunStore(false),
+        });
+        controller.handlePaste('/run');
+        controller.handleKey('', ENTER);
+        await flush();
+        const snapshot = controller.getSnapshot();
+        expect(snapshot.screen, 'no view of another run').toBeUndefined();
+        expect(snapshot.notice).toBe(notice);
+        expect(snapshot.nativeActionBusy).toBe(false);
+        expect(snapshot.mode).toBe('home');
+      },
+    );
+
+    it('a /run that starts a run opens that run’s view, not the view of the leg that executed before', async () => {
+      const store = createRunStore(false);
+      const { controller, set } = mount({
+        initial: running(),
+        launchRun: () => {
+          set(running(OTHER)); // the leg that executed settled while the form was open, and this launch started another
+          return Promise.resolve(`Started w as run ${OTHER}. It runs in the background.`);
+        },
+        runStore: (runId) => (runId === OTHER ? store : undefined),
+      });
+      controller.handlePaste('/run');
+      controller.handleKey('', ENTER);
+      await flush();
+      const screen = controller.getSnapshot().screen;
+      expect(screen).toMatchObject({ kind: 'run-view', runId: OTHER, from: 'landing' });
+      expect(screen?.store).toBe(store);
+    });
+  });
+
   it('comes back on Enter at the empty prompt while a leg executes, and not otherwise', () => {
     const live = mount();
     live.controller.handleKey('', ENTER);

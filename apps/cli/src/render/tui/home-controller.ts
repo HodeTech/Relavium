@@ -711,11 +711,19 @@ interface StripRead {
 const NO_NOTICES: readonly string[] = Object.freeze([]);
 const NO_PARKED: readonly ParkedRunRow[] = Object.freeze([]);
 /**
- * What a slash word is, for the landing (ADR-0140 §3): `/` and lower-case letters and hyphens, as the commands are named. A first message
- * that merely starts with a slash (`/Users/x/file.txt`) is not a word, so it still starts a chat; one that is a word is answered at the
- * landing and never sent.
+ * What a slash word is, for the landing (ADR-0140 §3): `/` and lower-case letters and hyphens, as the commands are named. An unknown one
+ * is named in the notice as it is; any other line that starts with a slash (`/Users/x/file.txt`, `/Zzzz`) is answered too, and is shown by
+ * {@link shownLine} instead.
  */
 const LANDING_WORD = /^\/[a-z][a-z-]*$/u;
+/** The longest a typed line is shown in a notice that names it: the chat's own bound (`unknown command '...'`). */
+const SHOWN_LINE_MAX = 64;
+/**
+ * `line` as a notice may name it, as the chat names a line it does not know: every character outside printable ASCII is a `?`, so a crafted
+ * line cannot smuggle a terminal control sequence into the landing, and no more than {@link SHOWN_LINE_MAX} characters are kept.
+ */
+const shownLine = (line: string): string =>
+  line.replace(/[^\x20-\x7e]/gu, '?').slice(0, SHOWN_LINE_MAX);
 
 /** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
 function readParkedRows(
@@ -1889,6 +1897,27 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Project initialization');
   };
 
+  /**
+   * Whether the launch that has just returned STARTED a run, told by the leg it left behind; `before` is the host's snapshot taken before the
+   * launch began. The run this Home hosts is another one than it was before, and the host was not already starting one then: a leg that is
+   * still acquiring its run (a resume) has no run id yet, so the id it gets while this launch is refused would read as a run THIS launch
+   * started. A refusal (another leg already executes or starts) or a cancel leaves that other leg as it was, and its view is not what the
+   * launch asked for. `/run` and `r` on a Defined row both ask here, so the two cannot drift.
+   */
+  const launchStartedRun = (before: RunHostSnapshot | undefined): boolean => {
+    const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
+    return (
+      before?.launching !== true &&
+      hostedAfter !== undefined &&
+      hostedAfter !== before?.active?.runId
+    );
+  };
+
+  /**
+   * `/run`: the launch flow. A run that started is shown at once (`Esc` leaves it running and `Enter` on the empty prompt comes back); a
+   * launch that was refused or left opens no view, and its notice stays on the landing, where the person who typed it is looking: the view of
+   * ANOTHER run that executes at the time is not what `/run` asked for ({@link launchStartedRun}).
+   */
   const openRunLaunch = (): void => {
     const launch = deps.launchRun;
     if (launch === undefined) {
@@ -1896,10 +1925,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     openNativeAction(async () => {
+      const before = deps.hostedRuns?.snapshot();
       const notice = await launch();
       if (exiting) return;
       set({ notice, ...parkedPatch() }); // a launch that was refused at a gate, or a run it just parked, changes the rows
-      openRunView(); // a run that started is shown at once; `Esc` leaves it running and `Enter` on the empty prompt comes back
+      if (launchStartedRun(before)) openRunView();
     }, 'Run workflow');
   };
 
@@ -1919,10 +1949,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /**
    * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
    * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
-   * refused or left says so on the tab. A run STARTED is told by the leg it left behind: the run this Home hosts is another one than it was
-   * before the flow began, and the host was not already starting one then: a leg that is still acquiring its run (a resume) has no run id
-   * yet, so the id it gets while this launch is refused would read as a run THIS launch started. A refusal (another leg already executes
-   * or starts) leaves that other leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
+   * refused or left says so on the tab. A run STARTED is told by {@link launchStartedRun}, as `/run` tells it: a refusal leaves another
+   * leg as it was, and its view is not what `r` asked for, so the refusal is shown on the tab instead.
    */
   const openDefinedRun = (slug: string, path: string): void => {
     const launch = deps.launchRun;
@@ -1932,14 +1960,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     openNativeAction(async () => {
       const before = deps.hostedRuns?.snapshot();
-      const hostedBefore = before?.active?.runId;
       const notice = await launch(slug, path);
       if (exiting) return;
       set({ notice, ...parkedPatch() });
-      const hostedAfter = deps.hostedRuns?.snapshot().active?.runId;
-      const started =
-        before?.launching !== true && hostedAfter !== undefined && hostedAfter !== hostedBefore;
-      if (!started || !openRunView('tab-host')) noteOnDefinedTab(notice);
+      if (!launchStartedRun(before) || !openRunView('tab-host')) noteOnDefinedTab(notice);
     }, 'Run workflow');
   };
 
@@ -2146,25 +2170,22 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
   /**
-   * The slash word that opens `text`, answered when it is one: a registry word at the landing ({@link answerLandingWord}), or a word the
-   * registry does not know (a near miss gets its suggestion, and at the landing any other lower-case word is said to be unknown, so a
-   * `/word` typed there never starts a chat; a path such as `/Users/x/file.txt` is not a word and is still a first message). In a chat only
-   * the suggestion is local: the chat's own dispatch answers the rest. The suggestion never invokes the command it names.
+   * A line that starts with a slash, answered at the landing (ADR-0140 §3): such a line is a command line and is NEVER a message, because a
+   * chat reads every line that starts with `/` as a slash command (its unknown ones are answered `unknown command`, never sent to the model),
+   * so a chat started for it would only answer that. What the first word is decides the notice: a registry word is answered by
+   * {@link answerLandingWord} whatever follows it (a Home word with text after it is told it takes none, a chat's word is told it works in a
+   * chat); a near miss of a command gets its suggestion, which never invokes the command it names; any other lower-case word is said to be
+   * unknown, by itself; and any other line (a path such as `/Users/x/file.txt`, an upper-case word) is said to be unknown as the chat says
+   * it, shown by {@link shownLine}. A line that does not start with a slash is a message, and `false`. In a chat only the suggestion is
+   * local: the chat's own dispatch answers the rest.
    */
   const answerTypedWord = (text: string): boolean => {
     const word = text.split(/\s/u, 1)[0] ?? '';
     if (!word.startsWith('/')) return false;
     const token = word.slice(0, 65); // the word as it is shown: a longer one is cut, and still answered
     const landing = state.session === undefined;
-    // A command line is the word and nothing after it but flags. Free text after the word is a sentence (`/tmp has junk`, `/cost is
-    // high`): it is a first message, so it starts a chat and is never swallowed as a command.
-    const commandLine = text
-      .slice(word.length)
-      .trim()
-      .split(/\s+/u)
-      .every((part) => part === '' || part.startsWith('-'));
     if (REPL_COMMANDS_BY_NAME.has(token.slice(1))) {
-      if (!landing || !commandLine) return false; // a chat's own command, or a sentence: the dispatch or the chat takes it
+      if (!landing) return false; // a chat's own command: the dispatch takes it
       answerLandingWord(token, text.length > token.length);
       return true;
     }
@@ -2174,16 +2195,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         (command) => `/${command.name}`,
       ),
     );
-    if (nearest !== undefined && (!landing || commandLine)) {
+    if (nearest !== undefined) {
       const notice = `Unknown command. Did you mean ${nearest}?`;
       set({ input: emptyEditor(), notice });
       state.session?.store.note(notice);
       return true;
     }
-    if (!landing || !commandLine || !LANDING_WORD.test(token)) return false;
+    if (!landing) return false;
     set({
       input: emptyEditor(),
-      notice: `Unknown command: ${token}. /help lists the commands.`,
+      notice: `Unknown command: ${LANDING_WORD.test(token) ? token : shownLine(text)}. /help lists the commands.`,
     });
     return true;
   };
@@ -2908,16 +2929,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (step.kind === 'run') {
       set({ palette: undefined });
-      // `Enter` on a query that matches nothing, at the landing: the person typed a word of their own (`/help`, `/cost`, a misspelling), and
-      // it is answered as the same word typed or pasted is (ADR-0140 §3). A query that is a sentence (`/help me`) is a first message, as a
-      // pasted line is: it goes on to the chat, so nothing the person typed is dropped.
-      if (step.command === undefined && active === undefined && palette.query.trim().length > 0) {
-        const typed = `/${palette.query.trim()}`;
-        if (!answerTypedWord(typed)) {
-          set({ input: editorFromText(typed) });
-          submit();
-        }
-      }
+      // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling, a
+      // sentence), and it is answered as the same line typed or pasted is (ADR-0140 §3). It starts with a slash, so it is a command line and
+      // is always answered: it never starts a chat.
+      if (step.command === undefined && active === undefined && palette.query.trim().length > 0)
+        answerTypedWord(`/${palette.query.trim()}`);
       if (step.command !== undefined) {
         if (step.command.name === 'providers') {
           openProviderSetup();

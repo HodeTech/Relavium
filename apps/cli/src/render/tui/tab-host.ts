@@ -118,7 +118,10 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  * - **Entering a tab reads it again.** Permissions and Defined are read from their ports every time the tab is entered, never from what
  *   was shown the last time, and a tab entered again starts as a new sheet does: the settle time counts again and nothing typed before counts.
  *   Active is the one tab whose read is asynchronous: it is entered on the last read the host kept, and the host reads again at once.
- * - **Each tab remembers its position** while the screen lives ({@link TabMemory}); the host drops it with the screen.
+ * - **Each tab remembers its position** while the screen lives ({@link TabMemory}): the cursor of every tab, the History tab's scope, status
+ *   filter and the run its cursor was on, and the run the Active tab's cursor was on. What one tab remembered is carried by the state of the
+ *   tab that is in front ({@link TabHostState.kept}), so that moving to another tab and back finds each tab as it was left; the host drops
+ *   all of it with the screen.
  * - **Drawn in at most {@link TAB_HOST_ROWS} rows** at any terminal height, and below 80×24 as one line that says to enlarge.
  */
 
@@ -192,6 +195,13 @@ export interface TabMemory {
   readonly history?: HistoryMemory | undefined;
 }
 
+/**
+ * What the tab that is in front carries of the tabs that are not: the part of the memory that is not a cursor position (a cursor is in
+ * {@link TabHostState.positions}, which every tab's state carries whole). Without it the memory built from the tab in front would hold only
+ * that tab's own scope, filter and focus, and every move to another tab would forget the History tab's.
+ */
+export type TabKept = Pick<TabMemory, 'activeFocus' | 'history'>;
+
 const TOP: TabPositions = Object.freeze({
   defined: 0,
   active: 0,
@@ -223,6 +233,11 @@ export interface TabHostState {
   readonly sessions?: SessionsTabState | undefined;
   /** Permissions, Defined, agents or sessions was entered and its port could not be read: the tab says so instead of listing anything. */
   readonly unreadable: boolean;
+  /**
+   * What the tabs that were in front before this one remembered beyond their cursors (the History tab's scope, filter and focus, the
+   * Active tab's focus), carried so that the memory of this state is every tab's and not only the front one's ({@link tabHostMemory}).
+   */
+  readonly kept?: TabKept | undefined;
 }
 
 /**
@@ -325,14 +340,20 @@ export function withHistoryLoadFailure(host: TabHostState, runId: string): TabHo
   return history === host.history ? host : { ...host, history };
 }
 
-/** The state of the tab host as the memory of it: the tab it is on, and every tab's position, the current one's included. */
+/**
+ * The state of the tab host as the memory of it: the tab it is on, every tab's position (the current one's included), and what the tabs
+ * remember beyond a position. The tab in front is the freshest word on itself; a tab that is not in front, or whose own state holds nothing
+ * to remember (a History tab that could not be read, an Active tab with no row), keeps what it remembered before ({@link TabHostState.kept}).
+ */
 export function tabHostMemory(state: TabHostState): TabMemory {
   const memory: TabMemory = {
     tab: state.tab,
     positions: { ...state.positions, [state.tab]: positionOf(state) },
   };
-  const focus = state.active?.focus;
-  const history = state.history === undefined ? undefined : historyMemoryOf(state.history);
+  const focus = state.active?.focus ?? state.kept?.activeFocus;
+  const history =
+    (state.history === undefined ? undefined : historyMemoryOf(state.history)) ??
+    state.kept?.history;
   return {
     ...memory,
     ...(focus === undefined ? {} : { activeFocus: focus }),
@@ -345,6 +366,17 @@ export function tabHostMemory(state: TabHostState): TabMemory {
  * (clamped to the rows there are now); a port that cannot be read leaves `unreadable` set and no sheet.
  */
 export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHostState {
+  return keeping(enterOn(memory, tab, entry), memory);
+}
+
+/** `host` carrying what `memory` holds beyond a cursor, for the tabs that are not in front; the same object when it holds none. */
+function keeping(host: TabHostState, memory: TabMemory): TabHostState {
+  const { activeFocus, history } = memory;
+  if (activeFocus === undefined && history === undefined) return host;
+  return { ...host, kept: { activeFocus, history } };
+}
+
+function enterOn(memory: TabMemory, tab: TabId, entry: TabEntry): TabHostState {
   if (tab === 'defined') return enterDefined(memory, entry);
   if (tab === 'active') return enterActive(memory, entry);
   if (tab === 'history') return enterHistory(memory, entry);
@@ -476,8 +508,8 @@ export function enterHistoryAtDetail(
     },
     entry,
   );
-  if (entry.history === undefined || host.history === undefined) return host;
-  return { ...host, history: withHistoryDetailLoading(host.history, runId) };
+  if (entry.history === undefined || host.history === undefined) return keeping(host, memory);
+  return keeping({ ...host, history: withHistoryDetailLoading(host.history, runId) }, memory);
 }
 
 /** The Active tab entered on the last read the host kept; a host with nothing to feed it leaves the tab saying it cannot be read. */
