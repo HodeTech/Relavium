@@ -52,8 +52,9 @@ import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
 import type { PermissionsSheetState } from './permissions-sheet.js';
-import { PermissionsSheetView } from './permissions-sheet-view.js';
+import { PermissionsSheetView, SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
+import { helpSheetLines } from './help-sheet.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
@@ -1003,6 +1004,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {!prompt.active && state.screen?.kind === 'tab-host' && (
         <TabHostView state={state.screen.host} color={color} columns={size.cols} rows={size.rows} />
+      )}
+      {!prompt.active && state.screen?.kind === 'help' && (
+        <SheetLinesView
+          lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
+          color={color}
+        />
       )}
       {!prompt.active && state.screen === undefined && (
         <HomeView

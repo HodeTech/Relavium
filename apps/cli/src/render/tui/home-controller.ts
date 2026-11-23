@@ -5,7 +5,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import {
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
-  REPL_COMMANDS,
+  REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
@@ -20,6 +20,7 @@ import {
   type EffortPickerState,
 } from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
+import { HOME_HELP_COMMANDS } from './help-sheet.js';
 import {
   disarmPermissionsSheet,
   sheetCanArm,
@@ -298,8 +299,8 @@ export interface HomeControllerState {
 }
 
 /**
- * What a screen of the slot is told when it opens. `run-view` (MVP-8 step 3) and `tab-host` (step 4) are the kinds so far; the landing's
- * `/help` sheet (step 5) adds its own, each with its own props, and the opener and the readers switch on `kind`.
+ * What a screen of the slot is told when it opens. `run-view` (MVP-8 step 3), `tab-host` (step 4) and `help` (step 5, the landing's
+ * `/help` sheet, which is told nothing) are the kinds so far; each has its own props, and the opener and the readers switch on `kind`.
  */
 export interface RunViewProps {
   /** The run the view shows: the run host's snapshot is read for exactly this run, never for whichever one executes. */
@@ -369,8 +370,21 @@ export interface TabHostScreen {
   readonly notices?: undefined;
 }
 
+/**
+ * The landing's `/help` sheet ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §3): the commands the Home answers to and the keys of the landing, drawn by `help-sheet.ts`. It has nothing to remember, so the kind
+ * carries nothing; `Esc` and `Ctrl+C` close it, every other key does nothing and a paste is dropped.
+ */
+export interface HelpScreen {
+  readonly kind: 'help';
+  /** A sheet has no run, no live output and no notice ring: all three read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly runId?: undefined;
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
 /** The slot's contents. */
-export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen;
+export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen | HelpScreen;
 
 /**
  * What the Active tab reads and is told by ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -591,6 +605,7 @@ export interface HomeController {
   readonly openScreen: {
     (kind: 'run-view', props: RunViewProps): boolean;
     (kind: 'tab-host', props: TabHostProps): boolean;
+    (kind: 'help'): boolean;
   };
   /**
    * Close the screen, if one is open, and drop the interrupt state it armed and what the tab host remembers of its tabs: the one reset
@@ -616,6 +631,12 @@ export interface HomeController {
 
 const NO_NOTICES: readonly string[] = Object.freeze([]);
 const NO_PARKED: readonly ParkedRunRow[] = Object.freeze([]);
+/**
+ * What a slash word is, for the landing (ADR-0140 §3): `/` and lower-case letters and hyphens, as the commands are named. A first message
+ * that merely starts with a slash (`/Users/x/file.txt`) is not a word, so it still starts a chat; one that is a word is answered at the
+ * landing and never sent.
+ */
+const LANDING_WORD = /^\/[a-z][a-z-]*$/u;
 
 /** The project's parked runs from the port, or `previous` when there is no port or the read failed (a strip must not break on it). */
 function readParkedRows(
@@ -1148,9 +1169,24 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     putScreen(screen, parkedPatch());
   };
+  /** The landing's `/help` sheet (ADR-0140 §3): it opens from the landing only, like the browsers, and tells the screen nothing. */
+  const openHelp = (): boolean => {
+    // A screen already in the slot is never replaced by the help sheet: a gate card would lose its dispose.
+    if (state.screen !== undefined || !slotAdmits() || state.submitBusy || state.nativeActionBusy)
+      return false;
+    tabMemory = freshTabMemory(); // nothing a tab host remembered is kept for a screen that cannot come back to it
+    putScreen({ kind: 'help' });
+    return true;
+  };
   function openScreen(kind: 'run-view', props: RunViewProps): boolean;
   function openScreen(kind: 'tab-host', props: TabHostProps): boolean;
-  function openScreen(kind: 'run-view' | 'tab-host', props: RunViewProps | TabHostProps): boolean {
+  function openScreen(kind: 'help'): boolean;
+  function openScreen(
+    kind: 'run-view' | 'tab-host' | 'help',
+    props?: RunViewProps | TabHostProps,
+  ): boolean {
+    if (kind === 'help') return openHelp();
+    if (props === undefined) return false;
     if (kind === 'tab-host') return 'tab' in props && openTabHost(props.tab);
     if (!('runId' in props) || !slotAdmits()) return false;
     const from = props.from ?? 'landing';
@@ -1349,6 +1385,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'tab-host':
         routeTabHostKey(screen, input, key);
+        return;
+      case 'help':
+        // The sheet owns every key and answers to `Esc` alone (`Ctrl+C` is the interrupt keymap's, before this): every other key does nothing.
+        if (key.escape === true) closeScreen();
         return;
     }
   };
@@ -1907,6 +1947,73 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Session resume');
   };
 
+  /**
+   * A registry word typed at the landing (ADR-0140 §3): answered here, never sent to the model. `/help` opens the sheet; a word of the
+   * bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments); any other registry word is a
+   * chat's, and the notice says so. The line is cleared first, as every other command's is.
+   */
+  const answerLandingWord = (word: string, withArguments: boolean): void => {
+    set({ input: emptyEditor() });
+    const name = word.slice(1);
+    if (name === 'help') {
+      if (withArguments) set({ notice: '/help accepts no arguments.' });
+      else openScreen('help');
+      return;
+    }
+    const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
+    if (command === undefined) {
+      set({
+        notice: `${word} works in a chat. Start one, then type it. /help lists the commands.`,
+      });
+    } else if (withArguments) {
+      set({ notice: `${word} accepts no arguments here. Start a chat to use them.` });
+    } else {
+      void Promise.resolve(command.run(homeReplCtx, [])).catch(() => undefined);
+    }
+  };
+  /**
+   * The slash word that opens `text`, answered when it is one: a registry word at the landing ({@link answerLandingWord}), or a word the
+   * registry does not know (a near miss gets its suggestion, and at the landing any other lower-case word is said to be unknown, so a
+   * `/word` typed there never starts a chat; a path such as `/Users/x/file.txt` is not a word and is still a first message). In a chat only
+   * the suggestion is local: the chat's own dispatch answers the rest. The suggestion never invokes the command it names.
+   */
+  const answerTypedWord = (text: string): boolean => {
+    const word = text.split(/\s/u, 1)[0] ?? '';
+    if (!word.startsWith('/')) return false;
+    const token = word.slice(0, 65); // the word as it is shown: a longer one is cut, and still answered
+    const landing = state.session === undefined;
+    // A command line is the word and nothing after it but flags. Free text after the word is a sentence (`/tmp has junk`, `/cost is
+    // high`): it is a first message, so it starts a chat and is never swallowed as a command.
+    const commandLine = text
+      .slice(word.length)
+      .trim()
+      .split(/\s+/u)
+      .every((part) => part === '' || part.startsWith('-'));
+    if (REPL_COMMANDS_BY_NAME.has(token.slice(1))) {
+      if (!landing || !commandLine) return false; // a chat's own command, or a sentence: the dispatch or the chat takes it
+      answerLandingWord(token, text.length > token.length);
+      return true;
+    }
+    const nearest = nearestCommandName(
+      token,
+      (landing ? HOME_HELP_COMMANDS : HOME_CHAT_PALETTE_COMMANDS).map(
+        (command) => `/${command.name}`,
+      ),
+    );
+    if (nearest !== undefined && (!landing || commandLine)) {
+      const notice = `Unknown command. Did you mean ${nearest}?`;
+      set({ input: emptyEditor(), notice });
+      state.session?.store.note(notice);
+      return true;
+    }
+    if (!landing || !commandLine || !LANDING_WORD.test(token)) return false;
+    set({
+      input: emptyEditor(),
+      notice: `Unknown command: ${token}. /help lists the commands.`,
+    });
+    return true;
+  };
+
   const managementCommand = (text: string): boolean => {
     if (state.session === undefined && /^\/mode(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
@@ -1975,24 +2082,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       state.session?.store.note('Use /providers to connect or manage provider keys.');
       return true;
     }
-    // Preserve exact chat commands and their existing argument handling. Fuzzy
-    // guidance is local to Home and never invokes the suggested action.
-    const token = text.slice(0, 65).split(/\s/u, 1)[0] ?? '';
-    if (token.startsWith('/') && !REPL_COMMANDS.some((command) => `/${command.name}` === token)) {
-      const commands =
-        state.session === undefined ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS;
-      const nearest = nearestCommandName(
-        token,
-        commands.map((command) => `/${command.name}`),
-      );
-      if (nearest !== undefined) {
-        const notice = `Unknown command. Did you mean ${nearest}?`;
-        set({ input: emptyEditor(), notice });
-        state.session?.store.note(notice);
-        return true;
-      }
-    }
-    return false;
+    return answerTypedWord(text);
   };
 
   const submit = (): void => {
@@ -2573,6 +2663,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (step.kind === 'run') {
       set({ palette: undefined });
+      // `Enter` on a query that matches nothing, at the landing: the person typed a word of their own (`/help`, `/cost`, a misspelling), and
+      // it is answered as the same word typed or pasted is (ADR-0140 §3). A query that is a sentence (`/help me`) is a first message, as a
+      // pasted line is: it goes on to the chat, so nothing the person typed is dropped.
+      if (step.command === undefined && active === undefined && palette.query.trim().length > 0) {
+        const typed = `/${palette.query.trim()}`;
+        if (!answerTypedWord(typed)) {
+          set({ input: editorFromText(typed) });
+          submit();
+        }
+      }
       if (step.command !== undefined) {
         if (step.command.name === 'providers') {
           openProviderSetup();
@@ -2985,6 +3085,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (screen.kind === 'gate-card') {
       // `Ctrl+C` on a card closes the card AND the view it was opened from (ADR-0139 §5): it never answers, and it arms nothing (a card
       // is not a run to cancel). `Esc` is the one step back, to the view.
+      showInterruptHint(false);
+      closeScreen();
+      return;
+    }
+    if (screen.kind === 'help') {
+      // The sheet is not a run: `Ctrl+C` closes it, arms nothing and cancels nothing, even with a leg executing behind it.
       showInterruptHint(false);
       closeScreen();
       return;
