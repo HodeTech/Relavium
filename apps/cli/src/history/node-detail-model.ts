@@ -1,8 +1,7 @@
 import type { StepDetailRecord, StepSummaryRecord } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
-import { scrubSecrets } from '@relavium/llm/scrub-secrets';
 
-import { maskedAsMember } from '../render/run-outputs.js';
+import { maskText, maskThenCut, maskedAsMember, type MaskedCut } from '../render/output-masking.js';
 import { stripTerminalControls } from '../render/sanitize.js';
 import { formatCostUsd, formatDuration } from '../render/tui/format.js';
 import {
@@ -48,9 +47,10 @@ import {
  * of a secret that the scrubber no longer recognizes; the document's own size gate is what bounds the scrub. One
  * field's text never joins its neighbour's. Every object member is also read by the final summary's own rule
  * (`maskedAsMember`): a member whose NAME labels a credential has its value masked whole before the value is
- * walked. The emitted text is scrubbed once more as a whole, and terminal controls are stripped. That is the
- * final summary's masking, not its whole renderer; the engine already masked secrets at the write boundary
- * (ADR-0050).
+ * walked. The emitted text is scrubbed once more as a whole, and terminal controls are stripped. Every one of
+ * those masks is the seam's (`render/output-masking.ts`), the same functions the final summary masks through, so the
+ * page and the summary cannot disagree about what a value is (a test masks a seeded set through both); the walk
+ * and its bounds are this page's own. The engine already masked secrets at the write boundary (ADR-0050).
  *
  * **Tokens follow the cost, and carry no cached count.** A node's tokens are the sum of the `inputTokens` and
  * `outputTokens` of its `cost:attempt_settled` rows (the same rows that give its cost), else the step row's tokens
@@ -130,29 +130,18 @@ export interface OutputPreview extends BoundedText {
   readonly masked: boolean;
 }
 
-/** A scrubbed string leaf, and whether it was cut to {@link MAX_LEAF_SCRUB_CHARS}. */
-interface ScrubbedLeaf {
-  readonly text: string;
-  readonly cut: boolean;
-}
-
 /**
- * A string leaf, scrubbed on its own WHOLE and only then cut to {@link MAX_LEAF_SCRUB_CHARS}. A cut made first can
- * split a secret (a URL's userinfo, say), and the prefix left in the shown text is no longer a shape the scrubber
- * recognizes. `onMask` fires when the scrubber changed it.
+ * A string leaf, masked on its own WHOLE and only then cut to {@link MAX_LEAF_SCRUB_CHARS} (the seam's
+ * {@link maskThenCut}). A cut made first can split a secret (a URL's userinfo, say), and the prefix left in the shown
+ * text is no longer a shape the scrubber recognizes. `onMask` fires when the scrubber changed it.
  */
-function scrubLeaf(value: string, onMask: () => void): ScrubbedLeaf {
-  const out = scrubSecrets(value);
-  if (out !== value) onMask();
-  return out.length > MAX_LEAF_SCRUB_CHARS
-    ? { text: out.slice(0, MAX_LEAF_SCRUB_CHARS), cut: true }
-    : { text: out, cut: false };
+function scrubLeaf(value: string, onMask: () => void): MaskedCut {
+  return maskThenCut(value, MAX_LEAF_SCRUB_CHARS, onMask);
 }
 
 /** An object key, scrubbed on its own WHOLE, then cut to {@link MAX_KEY_SCRUB_CHARS} code points and ended with `…` if it was cut. */
 function scrubKey(key: string, onMask: () => void): string {
-  const out = scrubSecrets(key);
-  if (out !== key) onMask();
+  const out = maskText(key, onMask);
   const clipped = clipCodePoints(out, MAX_KEY_SCRUB_CHARS);
   return clipped.truncated ? `${clipped.text}…` : clipped.text;
 }
@@ -284,8 +273,7 @@ export function buildOutputPreview(outputJson: string): OutputPreview {
   } catch {
     return { ...boundText('[the stored output could not be read]'), masked: false };
   }
-  const whole = scrubSecrets(shown);
-  if (whole !== shown) masked = true;
+  const whole = maskText(shown, onMask);
   const bounded = boundText(stripTerminalControls(whole));
   // A walk that stopped early cut the document even if masking left the emitted text under the bound.
   return { ...bounded, truncated: bounded.truncated || dropped, masked };

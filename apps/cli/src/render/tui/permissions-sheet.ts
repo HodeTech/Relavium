@@ -540,24 +540,89 @@ function rowsIn(lines: readonly BodyLine[]): number {
 }
 
 /**
- * The sheet's lines, top to bottom, for a terminal of this size. The budget is the card's ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
- * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain. The rule that carries the
- * title, the note, the message row and the legend are always drawn (the floor of 80×24 leaves room for all of them and at least eight body
- * lines) and the selected row is always visible; the body gets the rest, up to {@link SHEET_WINDOW} lines. Every line is clipped to the width.
- *
- * When body lines are hidden, the first or last body line is a marker that counts the ROWS it stands in for, the one under the marker
- * included, and only where a row is hidden; a heading is never left alone at the bottom of the window above a marker, and a window never
- * starts in the middle of a sentence.
+ * How many body lines a sheet drawn in a terminal of this size has room for. The budget is the card's ([ADR-0129](../../../../../docs/decisions/0129-the-approval-card-is-docked-bounded-and-says-only-what-matters.md)
+ * §2): at most three fifths of the terminal, and never so many that fewer than eight transcript rows remain; the rule that carries the
+ * title, the note, the message row and the legend always take their rows (the floor of 80×24 leaves room for all of them and at least eight
+ * body lines), and the body gets the rest, up to {@link SHEET_WINDOW} lines. A screen that frames the body in a chrome of its own passes the
+ * room its own chrome leaves instead.
+ */
+export function sheetBodyHeight(geometry: SheetGeometry): number {
+  return Math.min(SHEET_WINDOW, cardRowBudget(geometry.terminalRows) - FIXED_ROWS - NOTE_ROWS);
+}
+
+/**
+ * The sheet's lines, top to bottom, for a terminal of this size: the chrome's head, the body, the chrome's foot (and, below the floor, the
+ * one-line "enlarge" frame instead of all three). Nothing is drawn here that {@link permissionsSheetChrome} and
+ * {@link permissionsSheetBody} do not draw, so a screen that composes the body in a frame of its own (the Home's Permissions tab,
+ * ADR-0140 §3) shows the same rows, cursor and markers the chat's docked sheet shows.
  */
 export function permissionsSheetLines(
   state: PermissionsSheetState,
   geometry: SheetGeometry,
 ): readonly SheetLine[] {
   if (!sheetCanArm(geometry)) return tooSmallLines(state);
-  const width = usableColumns(geometry.columns);
-  const room = cardRowBudget(geometry.terminalRows);
+  const chrome = permissionsSheetChrome(state, geometry);
+  return [
+    ...chrome.head,
+    ...permissionsSheetBody(state, chrome.bodyWidth, chrome.bodyHeight),
+    ...chrome.foot,
+  ];
+}
+
+/** What surrounds the sheet's body: the rule above it, and the note, the message row and the legend below it, with the room that is left for the body. */
+export interface PermissionsSheetChrome {
+  /** The rule that opens the sheet and carries its title. */
+  readonly head: readonly SheetLine[];
+  /** The note on what a grant is worth, the message row (the question, the last answer, or the hint on the selected row) and the legend. */
+  readonly foot: readonly SheetLine[];
+  /** The columns every line is clipped to. */
+  readonly bodyWidth: number;
+  /** The body lines the frame leaves room for ({@link sheetBodyHeight}). */
+  readonly bodyHeight: number;
+}
+
+/**
+ * The frame of the sheet for a terminal of this size, at or above the floor ({@link sheetCanArm}); below it the sheet draws
+ * {@link permissionsSheetLines}' one-line "enlarge" frame and no body. Every line is clipped to the width.
+ */
+export function permissionsSheetChrome(
+  state: PermissionsSheetState,
+  geometry: SheetGeometry,
+): PermissionsSheetChrome {
+  const bodyWidth = usableColumns(geometry.columns);
+  const items = legendItems(state);
+  const legendText = clipLine(legend(items), bodyWidth);
+  return {
+    head: [ruleLine(state, bodyWidth)],
+    foot: [
+      { kind: 'note', text: clipLine(sheetNote(state), bodyWidth) },
+      messageLine(state, bodyWidth),
+      {
+        kind: 'legend',
+        text: legendText,
+        spans: clampSpans(legendSpans(items), legendText.length),
+      },
+    ],
+    bodyWidth,
+    bodyHeight: sheetBodyHeight(geometry),
+  };
+}
+
+/**
+ * The sheet's body: the headings, the rows and the empty or failure text of each section, `height` lines of them at most, each clipped to
+ * `width` columns, with no frame around them. The selected row is always visible.
+ *
+ * When body lines are hidden, the first or last body line is a marker that counts the ROWS it stands in for, the one under the marker
+ * included, and only where a row is hidden; a heading is never left alone at the bottom of the window above a marker, and a window never
+ * starts in the middle of a sentence. A window that had to be shorter is padded with blank lines, so the body keeps its height as the
+ * cursor moves.
+ */
+export function permissionsSheetBody(
+  state: PermissionsSheetState,
+  width: number,
+  height: number,
+): readonly SheetLine[] {
   const all = bodyLines(state, width);
-  const height = Math.min(SHEET_WINDOW, room - FIXED_ROWS - NOTE_ROWS);
   const cursorLine = Math.max(
     0,
     all.findIndex((line) => line.entry === state.cursor),
@@ -616,19 +681,7 @@ export function permissionsSheetLines(
     };
   // A windowed list keeps one height: a window that had to be shorter is padded below, so the sheet does not change size under the cursor.
   while (all.length > height && body.length < height) body.push({ kind: 'text', text: '' });
-  const items = legendItems(state);
-  const legendText = clipLine(legend(items), width);
-  return [
-    ruleLine(state, width),
-    ...body,
-    { kind: 'note', text: clipLine(sheetNote(state), width) },
-    messageLine(state, width),
-    {
-      kind: 'legend',
-      text: legendText,
-      spans: clampSpans(legendSpans(items), legendText.length),
-    },
-  ];
+  return body;
 }
 
 /** The legend's items: the armed question's, or the idle list's, or the empty list's. */
