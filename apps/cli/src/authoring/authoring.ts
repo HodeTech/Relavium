@@ -1,4 +1,13 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import {
@@ -208,34 +217,92 @@ export function buildAuthored(spec: CreateSpec): ParsedAuthored {
 }
 
 /**
- * Read a YAML file as UTF-8 for authoring, with the SAME regular-file + size guards the catalog scan uses (a
- * crafted symlink to a FIFO/char-device would otherwise block `readFileSync` indefinitely). A missing /
- * unreadable file, a non-regular-file target, or one over the source cap is a typed, exit-2 {@link CliError}
- * whose message is path-free of the absolute path (never echo a raw fs error — error-handling.md).
+ * Read a YAML file as UTF-8 for authoring, with the SAME regular-file + size guards the catalog scan uses. The file is opened ONCE, by
+ * path, with `O_NONBLOCK` (a FIFO swapped in for the file cannot hold the open, nor, being refused below, the read), and every later
+ * question (is it a regular file, how big) and the read itself are asked of the DESCRIPTOR, in bounded chunks, never by path again: a
+ * `stat` then a `readFileSync` by path would let a same-directory owner rename a FIFO over the file between them, and the read would
+ * block with no deadline. Symlinks are followed, as they always were. A missing / unreadable file, a non-regular-file target, or one over
+ * the source cap is a typed, exit-2 {@link CliError} whose message is path-free of the absolute path (never echo a raw fs error —
+ * error-handling.md).
  */
 export function readAuthoredFile(path: string, displayPath: string): string {
-  let stats: ReturnType<typeof statSync>;
+  let fd: number;
   try {
-    stats = statSync(path);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   } catch (err) {
     if (errnoCode(err) === 'ENOENT') {
       throw new CliError('invalid_invocation', `no file at ${displayPath}`);
     }
-    throw new CliError('invalid_invocation', `could not read ${displayPath}`);
-  }
-  if (!stats.isFile()) {
-    throw new CliError('invalid_invocation', `${displayPath} is not a regular file`);
-  }
-  // The parser's cap is a CHARACTER count; stat.size is BYTES (≤ 4 bytes/UTF-8 char), so `chars * 4` is a byte
-  // ceiling that never false-rejects a within-limit file while bailing before slurping a huge file into memory.
-  if (stats.size > MAX_SOURCE_CHARS * 4) {
-    throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    throw unopenedReason(path, displayPath);
   }
   try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    let stats: ReturnType<typeof fstatSync>;
+    try {
+      stats = fstatSync(fd);
+    } catch {
+      throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    }
+    if (!stats.isFile()) {
+      throw new CliError('invalid_invocation', `${displayPath} is not a regular file`);
+    }
+    // The parser's cap is a CHARACTER count; stat.size is BYTES (≤ 4 bytes/UTF-8 char), so `chars * 4` is a byte
+    // ceiling that never false-rejects a within-limit file while bailing before slurping a huge file into memory.
+    if (stats.size > MAX_SOURCE_CHARS * 4) {
+      throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+    let text: string | undefined;
+    try {
+      text = readBounded(fd, MAX_SOURCE_CHARS * 4);
+    } catch {
+      throw new CliError('invalid_invocation', `could not read ${displayPath}`);
+    }
+    // A file that grew past the ceiling after its size was read is refused as one that was over it.
+    if (text === undefined) {
+      throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+    return text;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // A read-only descriptor that fails to close has nothing left to lose.
+    }
   }
+}
+
+/** The descriptor's bytes as UTF-8, read in bounded chunks; `undefined` as soon as more than `ceiling` bytes are there. */
+function readBounded(fd: number, ceiling: number): string | undefined {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const buffer = Buffer.alloc(Math.min(64 * 1024, ceiling + 1 - total));
+    const count = readSync(fd, buffer, 0, buffer.length, null);
+    if (count === 0) break;
+    total += count;
+    if (total > ceiling) return undefined;
+    chunks.push(buffer.subarray(0, count));
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+}
+
+/**
+ * The sentence for a file that could not be opened. Only the WORDS are chosen by path (a `stat` never blocks): a directory or a device
+ * that cannot be opened for want of permission is still "not a regular file", and a file over the ceiling still "exceeds the size limit",
+ * as before the file was read through a descriptor. What is read is never chosen by path.
+ */
+function unopenedReason(path: string, displayPath: string): CliError {
+  try {
+    const stats = statSync(path);
+    if (!stats.isFile()) {
+      return new CliError('invalid_invocation', `${displayPath} is not a regular file`);
+    }
+    if (stats.size > MAX_SOURCE_CHARS * 4) {
+      return new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
+    }
+  } catch {
+    // The open's own refusal stands.
+  }
+  return new CliError('invalid_invocation', `could not read ${displayPath}`);
 }
 
 /**

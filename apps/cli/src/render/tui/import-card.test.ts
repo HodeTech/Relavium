@@ -592,6 +592,20 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
 
+  it('an id that appeared under another name between the card and the answer is refused, and the card writes nothing', async () => {
+    const r = rig();
+    await r.cardUp();
+    mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
+    writeFileSync(join(root, '.relavium', 'agents', 'renamed.agent.yaml'), AGENT);
+    r.ui.input('y', ctrl);
+    expect(await r.result).toBe(
+      `Not imported. agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`,
+    );
+    expect(r.commits).toHaveBeenCalledTimes(1);
+    expect(existsSync(target())).toBe(false);
+    expect(readdirSync(join(root, '.relavium', 'agents'))).toEqual(['renamed.agent.yaml']);
+  });
+
   it('a directory that appeared between the card and the answer is refused, with no --force offered for it', async () => {
     const r = rig();
     await r.cardUp();

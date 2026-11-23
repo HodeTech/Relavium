@@ -1,7 +1,11 @@
 import { lstatSync } from 'node:fs';
 import { join, sep } from 'node:path';
 
-import { SlugClashError } from '../authoring/authoring.js';
+import {
+  SlugClashError,
+  assertSlugAvailable,
+  resolveProjectConfigDir,
+} from '../authoring/authoring.js';
 import { commitImport, prepareImport, type ImportPlan } from '../commands/import.js';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 import { isCliError } from '../process/errors.js';
@@ -75,6 +79,12 @@ function takenReason(destination: string, occupant: 'file' | 'other'): string {
     : `${destination} already exists and is not a regular file, and this card never overwrites. Move it aside, then import again.`;
 }
 
+/** The refusal for an id the project already has, as the card words it, or none for any other fault. The prepare and the commit share it. */
+function clashReason(cause: unknown): string | undefined {
+  if (!(cause instanceof SlugClashError) || cause.clash !== 'same-kind') return undefined;
+  return `${cause.kind} '${sanitizeUntrustedInline(cause.slug)}' already exists in this project, and this card never overwrites. ${REPLACE_WITH_SHELL}`;
+}
+
 /** The `errno` code a CliError wraps (the write's EEXIST is wrapped by `writeAuthoredFile`), or none. */
 function wrappedErrno(cause: unknown): string | undefined {
   const inner: unknown = isCliError(cause) ? cause.cause : undefined;
@@ -83,16 +93,28 @@ function wrappedErrno(cause: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
-function commitOf(plan: ImportPlan, home: string): () => ImportAttempt {
+function commitOf(plan: ImportPlan, deps: ImportPortDeps): () => ImportAttempt {
   const destination = sanitizeUntrustedInline(plan.targetDisplay);
   return () => {
     try {
       // The destination's rules, asked again now: the card stayed open for as long as a person took, and a link put in one of the
       // destination's directories since would send the write into home or global configuration. The shell's check-to-write gap is
       // microseconds; this one is not, so it is closed here the way the shell's is, by looking again right before the write.
-      assertProjectArtifactPath(plan.target, home);
+      assertProjectArtifactPath(plan.target, deps.homeDir);
+      // The id's rule, asked again now for the same reason: a file that declares the same id under another name can have appeared while
+      // the card was open, and `wx` only protects the one name. Refused in the very words the prepare used.
+      assertSlugAvailable({
+        projectConfigDir: resolveProjectConfigDir(deps.global.cwd, deps.homeDir),
+        cwd: deps.global.cwd,
+        kind: plan.kind,
+        slug: plan.slug,
+        force: false,
+        homeDir: deps.homeDir,
+      });
       commitImport(plan);
     } catch (cause) {
+      const clash = clashReason(cause);
+      if (clash !== undefined) return { ok: false, reason: clash };
       // Something took the place between the card and the answer: `wx` kept it, and the card says so in its own words, not `--force`'s.
       if (wrappedErrno(cause) === 'EEXIST') {
         const occupant = occupantOf(plan.target);
@@ -131,11 +153,8 @@ export function createImportPort(deps: ImportPortDeps): ImportPort {
           { global: deps.global, homeDir: deps.homeDir },
         );
       } catch (cause) {
-        if (cause instanceof SlugClashError && cause.clash === 'same-kind')
-          return {
-            ok: false,
-            reason: `${cause.kind} '${sanitizeUntrustedInline(cause.slug)}' already exists in this project, and this card never overwrites. ${REPLACE_WITH_SHELL}`,
-          };
+        const clash = clashReason(cause);
+        if (clash !== undefined) return { ok: false, reason: clash };
         const reason = reasonOf(cause);
         if (reason === undefined) throw cause;
         return { ok: false, reason };
@@ -154,7 +173,7 @@ export function createImportPort(deps: ImportPortDeps): ImportPort {
           // The command's own sentences (composed here, not read from the file), one row each: the trailing newline is the stream's.
           warnings: plan.warnings.map((warning) => sanitizeInline(warning.trimEnd())),
         },
-        commit: commitOf(plan, deps.homeDir),
+        commit: commitOf(plan, deps),
       };
     },
   };

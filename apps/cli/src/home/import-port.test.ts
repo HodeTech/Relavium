@@ -340,6 +340,35 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     expect(readFileSync(target(), 'utf8')).toBe('someone else wrote this\n');
   });
 
+  it('an id that appeared since under another name is refused at the write, in the words the prepare used, and nothing is written', () => {
+    const result = prepared('incoming.agent.yaml');
+    mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
+    // Another valid file declares the same id; the name `wx` guards is free, so only the id's rule can refuse.
+    writeFileSync(join(root, '.relavium', 'agents', 'renamed.agent.yaml'), AGENT);
+    const before = tree(root);
+    const sentence = `agent 'reviewer' already exists in this project, and this card never overwrites. ${REPLACE}`;
+    expect(result.commit()).toEqual({ ok: false, reason: sentence });
+    expect(existsSync(target()), 'the destination was not created').toBe(false);
+    expect(tree(root)).toEqual(before);
+    // The prepare says the very same thing about that project now.
+    expect(refused('incoming.agent.yaml')).toBe(sentence);
+  });
+
+  it('the other kind’s id that appeared since is refused at the write in the command’s words, and nothing is written', () => {
+    const result = prepared('incoming.agent.yaml');
+    mkdirSync(join(root, '.relavium', 'workflows'), { recursive: true });
+    writeFileSync(join(root, '.relavium', 'workflows', 'reviewer.relavium.yaml'), WORKFLOW);
+    const before = tree(root);
+    const attempt = result.commit();
+    expect(attempt).toEqual({
+      ok: false,
+      reason:
+        "'reviewer' already exists as a workflow in this project — an id must be unique across agents and workflows; rename one.",
+    });
+    expect(existsSync(target())).toBe(false);
+    expect(tree(root)).toEqual(before);
+  });
+
   it('a directory that appeared since is kept, with no --force suggested', () => {
     const result = prepared('incoming.agent.yaml');
     mkdirSync(target(), { recursive: true });
