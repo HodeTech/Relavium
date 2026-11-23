@@ -1,7 +1,8 @@
 /**
  * Literal matching for `search_files`, linear in the text it reads (ADR-0142).
  *
- * Knuth–Morris–Pratt: one pass over the haystack, a failure table built once per pattern. Every occurrence is
+ * Knuth–Morris–Pratt: one pass over the haystack, a failure table built once per file (the pattern's table; the
+ * search runs per file, and the lines of a file never rebuild it). Every occurrence is
  * reported in order, overlaps included, so a rejected whole-word match resumes from the next position without
  * rereading text. The native `indexOf` retry loop it replaces has a cost that depends on the pattern's length
  * as well as the text's, which the work budget could only bound by over-charging; this one needs no such bound.

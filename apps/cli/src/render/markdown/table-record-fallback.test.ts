@@ -241,6 +241,19 @@ describe('records are the fallback when even the floors do not fit', () => {
     expect(notice?.spans.every((span) => span.dim === true)).toBe(true);
   });
 
+  it('draws a header-only table as a grid when it fits, and keeps it literal only when it does not', () => {
+    expect(texts('| a |\n| --- |', 80)).toEqual(['┌───┐', '│ a │', '├───┤', '└───┘']);
+    const wide = texts(`| ${'h'.repeat(200)} |\n| --- |`, 40);
+    expect(wide.join('')).toContain('|');
+    expect(wide.some((line) => line.includes('┌'))).toBe(false);
+  });
+
+  it('draws a literal table by the geometry rule, which replaces a glyph wider than the line with a question mark', () => {
+    // At a width of one column no grid, no record and no literal line can hold a double-width glyph (ADR-0143 decision 6).
+    expect(texts('| a |\n| --- |\n| 漢 |', 1).join('')).toContain('?');
+    expect(texts('| a |\n| --- |\n| 漢 |', 2).join('')).toContain('漢');
+  });
+
   it('stays literal when only a header is too wide, because there is no record to draw', () => {
     const lines = texts(`| ${'h'.repeat(200)} |\n| --- |`, 40);
     expect(lines.some((line) => line.includes(NOTICE))).toBe(false);

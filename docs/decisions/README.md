@@ -185,8 +185,8 @@ flowchart TD
 | 0139 | [A workflow run is hosted inside the Home, one executing leg at a time, under the Home's own owners](0139-a-workflow-run-is-hosted-inside-the-home.md) | Accepted | 2026-11-22 |
 | 0140 | [The Home's management browsers read the durable run record, drill from a run to a node, and a few additive fields complete that record](0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md) | Accepted | 2026-11-22 |
 | 0141 | [A table too wide for its grid renders as records, not as its source](0141-a-table-too-wide-for-its-grid-renders-as-records.md) | Superseded by 0143 | 2026-11-23 |
-| 0142 | [A literal search is linear in the text it reads, and its work budget charges what it reads](0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md) | Proposed | 2026-11-23 |
-| 0143 | [A wide table keeps its grid, with each cell wrapped inside its column; records are the last resort](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md) | Proposed | 2026-11-23 |
+| 0142 | [A literal search is linear in the text it reads, and its work budget charges what it reads](0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md) | Accepted | 2026-11-23 |
+| 0143 | [A wide table keeps its grid, with each cell wrapped inside its column; records are the last resort](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md) | Accepted | 2026-11-23 |
 
 ## Creating a new ADR
 

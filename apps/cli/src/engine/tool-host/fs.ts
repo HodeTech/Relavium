@@ -2155,10 +2155,17 @@ async function discover(
             for (let i = 0; i < lines.length; i++) {
               throwIfAborted(signal);
               const line = lines[i] ?? '';
+              // The cheapest a line can cost is its own length and the loop's unit. A line that cannot fit even at that
+              // price is not folded: the ceiling is a hard limit, so the work it names is not done first (ADR-0142).
+              if (searchWork + line.length + 1 > SCAN_SEARCH_WORK) {
+                stop('work');
+                break;
+              }
               const folded = insensitive ? await foldWithSpans(line, signal) : undefined;
               const haystack = folded?.text ?? line;
               // Charge the units each line is read in: the fold reads the line once, the matcher reads the haystack once,
-              // and one unit covers the loop. Linear in the text, so the budget bounds real work (ADR-0142).
+              // and one unit covers the loop. Linear in the text, so the budget bounds real work (ADR-0142). The charge is
+              // a lower bound of the reads: the ASCII test and the whole-word test read a little more, a constant factor.
               searchWork += (folded === undefined ? 0 : line.length) + haystack.length + 1;
               if (searchWork > SCAN_SEARCH_WORK) {
                 stop('work');

@@ -149,8 +149,9 @@ or the aligned cells need tab stops that cannot agree, the table keeps its grid
 with each cell wrapped inside its column
 ([ADR-0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md)):
 
-- a column's floor is the smaller of its natural width and the larger of 8 and
-  its longest word, capped at 24; no column drops below its floor;
+- a column's floor is the largest of 8, its longest word (capped at 24) and its
+  widest grapheme cluster, and never more than its natural width; no column
+  drops below its floor;
 - the excess above the floors is shared in proportion to how far each column sits
   above its floor, so the widest columns give up the most and the grid fills the
   width exactly;
@@ -168,15 +169,26 @@ table render as records:
 - cell text keeps its inline styling and wraps to the width, so no cell is cropped;
 - an empty cell shows a dim `—`; a blank header shows a dim `column N`;
 - alignment is not drawn, and no gutter is added, so a record inside a quote
-  shows only the quote bar.
+  shows only the quote bar;
+- every record repeats every label, so when the repeated labels alone would
+  exceed four times the length of the table's source, the table stays literal
+  instead; a label whose widest grapheme does not fit the width, or a value whose
+  widest grapheme does not fit the width less the two-column indent, keeps it
+  literal too.
 
 **Literal fallback.** Sanitized source is shown with its markers intact. With
 color enabled it is word-wrapped to the width like prose, so it is not a
 verbatim, column-preserving copy. It applies to a table over a fixed limit, a
-table with a hard break inside a cell, a header-only table, and a width with no
-too narrow for any record value (two columns or fewer). A table kept literal starts each
-wrapped line at its text, not at the space that broke the line, because a
-table's spacing is not prose. With color disabled, every table keeps the
+table with a hard break inside a cell, a header-only table that does not fit its
+grid, and a width at which not even one record value fits (two columns or fewer,
+or a label or value whose widest grapheme cannot fit its line). A header-only
+table that fits is drawn as a grid. A table kept literal starts each wrapped line
+at its text, not at the space that broke the line, because a table's spacing is
+not prose. A grid or a record never replaces a grapheme with `?`; a literal table
+is drawn by the general [geometry](#geometry) rule, which does, at a width below
+that grapheme's own. Inside a quote, a table kept literal for a fixed limit is
+drawn with the quote bar and its inner source, and one that falls back for width
+is drawn as its quoted source. With color disabled, every table keeps the
 color-off path of [Scope and source](#scope-and-source): records would drop the
 pipes that carry the structure without color.
 
@@ -192,7 +204,13 @@ pipes that carry the structure without color.
 Limits bound interpretation work, not source retention. Do not omit overflow
 rows or truncate source to satisfy a parser cap. Once a streaming table crosses
 a cap, keep that table literal through its end. No later token can reactivate a
-grid and force repeated full-table layout. Layout work is linear in the admitted
+grid and force repeated full-table layout. While such a table is still arriving,
+it is laid out as the finished literal table is, so the transcript does not
+reflow when the stream ends. That holds for a table outside a container; inside
+a quote the pending lines are wrapped to the full width with their raw `>` marks, and are re-wrapped inside the quote
+bar when the table finishes. A table
+that ends as a grid is first literal and then a grid: its column widths depend on
+every row. Layout work is linear in the admitted
 bounded table; there is no search over alternative column-width combinations.
 Alignment padding participates in tab-stop geometry for a single-line grid. If
 aligned cells require incompatible tab-stop phases, or the compatible grid does
