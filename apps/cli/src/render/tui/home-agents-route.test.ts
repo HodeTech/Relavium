@@ -369,6 +369,25 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     expect(after.mode).toBe('home');
   });
 
+  it('a resume that fails says so on the landing and frees the keyboard, never the cause', async () => {
+    const { controller } = onSessions({
+      resume: () => Promise.reject(new Error('PRIVATE_FAULT_TEXT')),
+    });
+    controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () => expect(controller.getSnapshot().notice).toBe('Session resume could not be completed.'),
+      { timeout: WAIT_MS },
+    );
+    const after = controller.getSnapshot();
+    expect(after.nativeActionBusy, 'the keyboard is the prompt’s again').toBe(false);
+    expect(after.screen, 'the screen left with the Enter').toBeUndefined();
+    expect(after.mode).toBe('home');
+    expect(JSON.stringify(after)).not.toContain('PRIVATE_FAULT_TEXT');
+    // The keyboard really is free: a key reaches the prompt.
+    controller.handleKey('x', {});
+    expect(controller.getSnapshot().input.text).toBe('x');
+  });
+
   it('says so on the tab, and leaves the tab open, when this Home cannot resume at all', () => {
     const { controller, resumeChat } = onSessions({ resume: 'none' });
     controller.handleKey('', ENTER);
@@ -381,7 +400,7 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
   });
 
-  it('does nothing while another native action holds the keyboard', async () => {
+  it('a second Enter while the resume is in flight reaches nothing: the keyboard is the resume’s, and no second resume starts', async () => {
     let finish: (result: ResumeResult) => void = () => undefined;
     const { controller, resumeChat } = onSessions({
       resume: () =>
@@ -391,7 +410,8 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     });
     controller.handleKey('', ENTER);
     expect(controller.getSnapshot().nativeActionBusy).toBe(true);
-    // The resume is still going: a second Enter reaches nothing (the keyboard is the flow's), and no second resume starts.
+    // The resume is still going: `handleKey` drops every key while a native action holds the keyboard (this proves that, not a guard of
+    // the Sessions route, which has none: its only caller is that very key path).
     controller.handleKey('', ENTER);
     expect(resumeChat).toHaveBeenCalledTimes(1);
     finish(undefined);

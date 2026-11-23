@@ -580,6 +580,95 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     },
   );
 
+  it('wires the /agents strip to the Home’s own project and the /resume picker’s own list: the same working directory, the same conversations', async () => {
+    // An agent file in the project the Home is in, before the Home opens.
+    mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'agents', 'reviewer.agent.yaml'),
+      'id: reviewer\nname: Code Reviewer\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: You review code.\n',
+    );
+    let props: RootAppProps | undefined;
+    const store = createSessionStore(client.db);
+    const { deps } = makeDeps(
+      (value) => {
+        props = value;
+      },
+      { openSessionStore: () => ({ store, db: client.db, close: closeSpy }) },
+    );
+    const running = driveHome(deps);
+    await vi.waitFor(() => expect(props).toBeDefined(), { timeout: WAIT_MS });
+    if (props === undefined) throw new Error('Home did not mount');
+    const home = props;
+    // A real conversation of this directory, then one of another directory that is the newest of all.
+    type(home, 'hello');
+    home.controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () => {
+        expect(home.controller.getSnapshot().mode).toBe('chat');
+        expect(home.controller.getSnapshot().submitBusy).toBe(false);
+      },
+      { timeout: WAIT_MS },
+    );
+    const first = home.controller.getSnapshot().session;
+    if (first === undefined) throw new Error('missing first chat');
+    await first.processLine('/cancel');
+    type(home, '/cancel');
+    home.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(home.controller.getSnapshot().mode).toBe('home'), {
+      timeout: WAIT_MS,
+    });
+    const record = store.loadFull(first.sessionId)?.session;
+    if (record === undefined) throw new Error('missing durable record');
+    store.createSession({
+      ...record,
+      id: 'elsewhere-session',
+      context: { ...record.context, workingDir: '/elsewhere' },
+      updatedAt: '2099-01-01T00:00:00.000Z',
+    });
+
+    // What the /resume picker offers first.
+    type(home, '/resume');
+    home.controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(home.nativePrompt?.getSnapshot().kind).toBe('picker'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(
+      () => expect(home.nativePrompt?.getSnapshot().options.length).toBeGreaterThan(0),
+      {
+        timeout: WAIT_MS,
+      },
+    );
+    const offered = (home.nativePrompt?.getSnapshot().options ?? []).map((option) => option.value);
+    home.nativePrompt?.input('', { ...NATIVE_RETURN, return: false, escape: true });
+    await vi.waitFor(() => expect(home.controller.getSnapshot().nativeActionBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    expect(
+      offered,
+      'the picker offers this directory’s conversation and not the other one',
+    ).toEqual([first.sessionId]);
+
+    // What the /agents strip lists: the agent of the project, and the picker's conversations.
+    type(home, '/agents');
+    home.controller.handleKey('', ENTER);
+    const screen = home.controller.getSnapshot().screen;
+    const defined = screen?.kind === 'tab-host' ? screen.host.agents : undefined;
+    expect(defined?.read.model.rows.map((row) => [row.slug, row.state])).toEqual([
+      ['reviewer', 'ready'],
+    ]);
+    home.controller.handleKey('', { rightArrow: true });
+    const next = home.controller.getSnapshot().screen;
+    const sessions = next?.kind === 'tab-host' ? next.host.sessions : undefined;
+    expect(
+      sessions?.read.rows.map((row) => row.id),
+      'the Sessions tab lists what the picker offers, in the same working directory',
+    ).toEqual(offered);
+    home.controller.handleKey('', { escape: true });
+    home.controller.handleKey('c', { ctrl: true });
+    home.controller.handleKey('c', { ctrl: true }); // two presses leave: the first arms (ADR-0115 §1)
+    expect(await running).toBe(0);
+  });
+
   it.each([false, true])(
     'observes actual passive Home view faults before bus recovery (fault=%s)',
     async (faulted) => {
