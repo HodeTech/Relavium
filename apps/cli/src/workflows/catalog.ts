@@ -86,11 +86,22 @@ export function fileStem(name: string): string {
 export const MAX_CATALOG_FILES = 500;
 
 /**
+ * The most bytes of file text ONE catalog scan reads, 16 MiB. {@link MAX_CATALOG_FILES} bounds how many files a scan opens and the
+ * per-file ceiling bounds each of them, but 500 files of up to 8 MiB each is 4 GiB of reads and parses on the UI thread of the Home (and
+ * of every command that walks the catalog), so the scan itself is bounded too. The bytes are the files' sizes as they are admitted, in
+ * the order the scan reads them (sorted by file name): the first file that would take the total past the budget is refused UNREAD, and so
+ * is every file after it, each as a `valid: false` entry that says why. A skipped file is listed, never dropped, for the reason the file
+ * cap refuses a directory instead of listing a prefix: what a listing does not show cannot be told apart from what is not there.
+ */
+export const MAX_CATALOG_SCAN_BYTES = 16 * 1024 * 1024;
+
+/**
  * Scan `<projectConfigDir>/<kind>/` (non-recursive) for `*.yaml`/`*.yml` files, parse each, and return the
  * catalog entries sorted by slug. A missing directory yields `[]` (no catalog of that kind); an unreadable
  * directory is a real fault (exit 2); a directory of more than {@link MAX_CATALOG_FILES} files is refused
  * (`invalid_invocation`, "too many workflow files") before any of them is opened. A per-file read/parse failure
- * becomes a `valid: false` entry, not a throw, so one broken file never breaks the whole listing.
+ * becomes a `valid: false` entry, not a throw, so one broken file never breaks the whole listing; so does every file past the scan's
+ * {@link MAX_CATALOG_SCAN_BYTES} budget.
  */
 export function discoverCatalog(opts: {
   readonly projectConfigDir: string;
@@ -101,7 +112,7 @@ export function discoverCatalog(opts: {
   const scan = scanCatalogDirectory(opts);
   if (scan === undefined) return []; // no workflows/ (or agents/) directory — an empty catalog, not an error
   const entries = scan.names.map((name) =>
-    readEntry(join(scan.dir, name), opts.cwd, opts.kind, scan.root, opts.homeDir),
+    readEntry(join(scan.dir, name), opts.cwd, opts.kind, scan.root, scan.budget, opts.homeDir),
   );
   return entries.sort((a, b) => byCodeUnit(a.slug, b.slug));
 }
@@ -116,9 +127,9 @@ export interface AgentCatalogItem {
  * {@link discoverCatalog} for the agents catalog, keeping each valid file's parsed definition beside its entry (a read the Home's
  * agent browser needs: the entry carries only the slug and the name). It is the SAME hardened read, not a second one: the same
  * directory scan (containment, the file cap, the extension filter) and the same per-file read (admitted project artifact, within the
- * catalog root, a regular file, a size ceiling, an exact-identity open) through {@link readCatalogText}, then the strict core
- * {@link parseAgent}. A file that fails any step is a `valid: false` entry with no definition, never a throw, and the entries sort by
- * slug exactly as {@link discoverCatalog} sorts them.
+ * catalog root, a regular file, a size ceiling, an exact-identity open, the scan's byte budget) through {@link readCatalogText}, then the
+ * strict core {@link parseAgent}. A file that fails any step is a `valid: false` entry with no definition, never a throw, and the
+ * entries sort by slug exactly as {@link discoverCatalog} sorts them.
  */
 export function discoverAgentDefinitions(opts: {
   readonly projectConfigDir: string;
@@ -128,21 +139,54 @@ export function discoverAgentDefinitions(opts: {
   const scan = scanCatalogDirectory({ ...opts, kind: 'agents' });
   if (scan === undefined) return [];
   const items = scan.names.map((name) =>
-    readAgentItem(join(scan.dir, name), opts.cwd, scan.root, opts.homeDir),
+    readAgentItem(join(scan.dir, name), opts.cwd, scan.root, scan.budget, opts.homeDir),
   );
   return items.sort((a, b) => byCodeUnit(a.entry.slug, b.entry.slug));
 }
 
-/** The catalog directory a scan read: its path, its real root, and the candidate file names (not yet opened). */
+/**
+ * The catalog directory a scan read: its path, its real root, the candidate file names (not yet opened, sorted by code unit so the
+ * scan reads them in one order wherever the filesystem lists them) and the byte budget every file of THIS scan is charged to.
+ */
 interface CatalogScan {
   readonly dir: string;
   readonly root: string;
   readonly names: readonly string[];
+  readonly budget: ScanBudget;
+}
+
+/** What one scan may still read, kept per scan (never across scans) and handed to every file read of it. */
+interface ScanBudget {
+  /** Charge `bytes` to the scan; `false` (and `false` for every later charge) when they would take it past {@link MAX_CATALOG_SCAN_BYTES}. */
+  readonly charge: (bytes: number) => boolean;
+  /** `true` once a charge was refused: every later file is skipped without being touched. */
+  readonly spent: () => boolean;
+  /** The reason a skipped file carries: fixed text, no authored content, naming the directory to thin out. */
+  readonly reason: string;
+}
+
+function newScanBudget(kind: CatalogKind): ScanBudget {
+  let used = 0;
+  let spent = false;
+  return {
+    charge: (bytes) => {
+      if (spent || used + bytes > MAX_CATALOG_SCAN_BYTES) {
+        spent = true;
+        return false;
+      }
+      used += bytes;
+      return true;
+    },
+    spent: () => spent,
+    reason: `skipped: the catalog is larger than ${String(MAX_CATALOG_SCAN_BYTES / (1024 * 1024))} MiB; move some files out of .relavium/${kind}/`,
+  };
 }
 
 /**
  * The directory half of a catalog read, shared by {@link discoverCatalog} and {@link discoverAgentDefinitions}: contain the directory,
- * list its YAML files, refuse a directory over {@link MAX_CATALOG_FILES}. `undefined` when the directory does not exist.
+ * list its YAML files in code-unit order, refuse a directory over {@link MAX_CATALOG_FILES}, and start the scan's byte budget
+ * ({@link MAX_CATALOG_SCAN_BYTES}): the one place every kind and both discovery functions pass through. `undefined` when the directory
+ * does not exist.
  */
 function scanCatalogDirectory(opts: {
   readonly projectConfigDir: string;
@@ -179,7 +223,9 @@ function scanCatalogDirectory(opts: {
       `too many ${opts.kind === 'workflows' ? 'workflow' : 'agent'} files in the catalog (more than ${String(MAX_CATALOG_FILES)}); move some out of .relavium/${opts.kind}/ to list them.`,
     );
   }
-  return { dir, root, names };
+  // The order the budget is spent in: a directory listing is in whatever order the filesystem keeps, which must not decide which files
+  // are read and which are skipped. Sorted only after the count is known to be within the ceiling, so a runaway directory is refused, not sorted.
+  return { dir, root, names: [...names].sort(byCodeUnit), budget: newScanBudget(opts.kind) };
 }
 
 /**
@@ -236,11 +282,23 @@ function refused(path: string, rel: string, reason: string): CatalogText {
 
 /**
  * The file half of a catalog read, shared by every kind and by {@link discoverAgentDefinitions}: admit the path (a project
- * artifact, inside the catalog root), require a regular file under the size ceiling, open its canonical target by exact identity
- * and read it in bounded chunks. Any fault is a refusal carrying a short, path-free reason, never a throw.
+ * artifact, inside the catalog root), require a regular file under the size ceiling, charge its size to the scan's byte budget, open its
+ * canonical target by exact identity and read it in bounded chunks. Any fault is a refusal carrying a short, path-free reason, never a
+ * throw.
+ *
+ * **The scan's byte budget is accounted HERE** ({@link ScanBudget}): every kind and both discovery functions read through this function,
+ * so none can skip it. Once a file has crossed the budget every later file is refused before it is even resolved; the file that crosses
+ * it is refused before it is opened, so it is never partly read.
  */
-function readCatalogText(path: string, cwd: string, root: string, homeDir?: string): CatalogText {
+function readCatalogText(
+  path: string,
+  cwd: string,
+  root: string,
+  budget: ScanBudget,
+  homeDir?: string,
+): CatalogText {
   const rel = sourceLabel(cwd, path);
+  if (budget.spent()) return refused(path, rel, budget.reason);
   let yaml: string;
   try {
     const canonical = realpathSync.native(path);
@@ -265,6 +323,8 @@ function readCatalogText(path: string, cwd: string, root: string, homeDir?: stri
     if (stats.size > BigInt(MAX_SOURCE_CHARS * 4)) {
       return refused(path, rel, 'exceeds the size limit');
     }
+    // The file will be read: charge it. A file the checks above refused cost nothing, so only bytes that are really read count.
+    if (!budget.charge(Number(stats.size))) return refused(path, rel, budget.reason);
     // Contained aliases are allowed; open their canonical target without following a newly planted final link.
     const fd = openSync(
       canonical,
@@ -288,6 +348,10 @@ function readCatalogText(path: string, cwd: string, root: string, homeDir?: stri
         if (total > maxBytes) return refused(path, rel, 'exceeds the size limit');
         chunks.push(buffer.subarray(0, count));
       }
+      // A file that grew after its `stat` was charged for its old size: the bytes read beyond it are charged now, so the budget follows
+      // what was really read. (Past the budget the file is refused, as a file that did not fit is.)
+      const grown = total - Number(stats.size);
+      if (grown > 0 && !budget.charge(grown)) return refused(path, rel, budget.reason);
       yaml = Buffer.concat(chunks, total).toString('utf8');
     } finally {
       closeSync(fd);
@@ -311,10 +375,11 @@ function readEntry(
   cwd: string,
   kind: CatalogKind,
   root: string,
+  budget: ScanBudget,
   homeDir?: string,
 ): CatalogEntry {
-  if (kind === 'agents') return readAgentItem(path, cwd, root, homeDir).entry;
-  const text = readCatalogText(path, cwd, root, homeDir);
+  if (kind === 'agents') return readAgentItem(path, cwd, root, budget, homeDir).entry;
+  const text = readCatalogText(path, cwd, root, budget, homeDir);
   if (!text.ok) return text.entry;
   try {
     const def = parseWorkflow(text.yaml, { source: text.rel });
@@ -336,9 +401,10 @@ function readAgentItem(
   path: string,
   cwd: string,
   root: string,
+  budget: ScanBudget,
   homeDir?: string,
 ): AgentCatalogItem {
-  const text = readCatalogText(path, cwd, root, homeDir);
+  const text = readCatalogText(path, cwd, root, budget, homeDir);
   if (!text.ok) return { entry: text.entry, agent: undefined };
   try {
     const agent = parseAgent(text.yaml, { source: text.rel });
@@ -348,6 +414,43 @@ function readAgentItem(
     };
   } catch (err) {
     return { entry: invalidEntry(path, text.rel, parseReason(err)), agent: undefined };
+  }
+}
+
+/** What {@link readAgentFile} says: the parsed definition, or which of the two ways the file was not taken (never a path, never a message). */
+export type AgentFileRead =
+  | { readonly kind: 'read'; readonly agent: AgentDefinition }
+  /** The hardened read did not admit the file: gone, outside the catalog (a link out of the project), not a regular file, too large, unreadable. */
+  | { readonly kind: 'refused' }
+  /** The file was read, and it does not parse as an agent. */
+  | { readonly kind: 'invalid' };
+
+/**
+ * The hardened read of ONE agent file the catalog listed, for a caller that binds what it reads (the Home's `c` on an agent's page). It is
+ * {@link discoverAgentDefinitions}' own per-file read, not another: the same {@link readCatalogText} (admitted project artifact, inside
+ * the catalog root, a regular file, a size ceiling, an open by canonical path with no final-link following and no blocking, an exact
+ * device and inode identity) and then the same strict {@link parseAgent}, so a file swapped for a link out of the project, or for a FIFO,
+ * is refused here as it is in a listing. `path` is the file's ABSOLUTE path, and the text it reads is the only read: the caller binds the
+ * definition this returns and never reads the file again.
+ */
+export function readAgentFile(opts: {
+  readonly path: string;
+  readonly cwd: string;
+  readonly projectConfigDir: string;
+  readonly homeDir?: string;
+}): AgentFileRead {
+  let root: string;
+  try {
+    root = realpathSync.native(opts.projectConfigDir);
+  } catch {
+    return { kind: 'refused' };
+  }
+  const text = readCatalogText(opts.path, opts.cwd, root, newScanBudget('agents'), opts.homeDir);
+  if (!text.ok) return { kind: 'refused' };
+  try {
+    return { kind: 'read', agent: parseAgent(text.yaml, { source: text.rel }) };
+  } catch {
+    return { kind: 'invalid' };
   }
 }
 

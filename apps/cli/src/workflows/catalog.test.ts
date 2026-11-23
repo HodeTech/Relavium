@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
-import { MAX_CATALOG_FILES, discoverCatalog } from './catalog.js';
+import { MAX_CATALOG_FILES, MAX_CATALOG_SCAN_BYTES, discoverCatalog } from './catalog.js';
 
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
@@ -234,6 +234,157 @@ describe('discoverCatalog', () => {
       expect(
         discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }),
       ).toEqual([]);
+    });
+  });
+
+  describe('the byte budget of one scan', () => {
+    // Under the parser's own character cap (MAX_SOURCE_CHARS), so a padded file is still a VALID workflow and "read normally" shows.
+    const FILE_BYTES = 1_900_000;
+    const SKIPPED =
+      'skipped: the catalog is larger than 16 MiB; move some files out of .relavium/workflows/';
+
+    /** A valid workflow whose first line is one long comment, so the file is exactly `bytes` long: one `Buffer.alloc`, no loop. */
+    function paddedWorkflow(id: string, bytes: number): Buffer {
+      const body = Buffer.from(VALID_WORKFLOW.replace('id: hello', `id: ${id}`));
+      const head = Buffer.from('# ');
+      return Buffer.concat([
+        head,
+        Buffer.alloc(bytes - head.length - body.length - 1, 'x'),
+        Buffer.from('\n'),
+        body,
+      ]);
+    }
+    function writeBytes(name: string, body: Buffer): void {
+      mkdirSync(join(configDir, 'workflows'), { recursive: true });
+      writeFileSync(join(configDir, 'workflows', name), body);
+    }
+    const scan = () =>
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+
+    it('is 16 MiB, the number the skipped files name', () => {
+      expect(MAX_CATALOG_SCAN_BYTES).toBe(16 * 1024 * 1024);
+    });
+
+    it('reads the files that fit and refuses the one that crosses the budget, and every file after it, unread', () => {
+      // Twelve files in name order: eight fit (15.2 MB), the ninth crosses 16 MiB, the tenth is as big, the eleventh is tiny and would
+      // fit in what is left, and the last is a link out of the project that the read would refuse for another reason. All of them are
+      // skipped: once the budget is spent, every later file is, and none is even looked at.
+      for (let n = 0; n < 10; n += 1) {
+        writeBytes(
+          `wf-${String(n).padStart(2, '0')}.relavium.yaml`,
+          paddedWorkflow(`wf-${String(n).padStart(2, '0')}`, FILE_BYTES),
+        );
+      }
+      writeBytes(
+        'wf-10.relavium.yaml',
+        Buffer.from(VALID_WORKFLOW.replace('id: hello', 'id: wf-10')),
+      );
+      writeFileSync(join(proj, 'outside.yaml'), VALID_WORKFLOW);
+      symlinkSync(
+        join(proj, 'outside.yaml'),
+        join(configDir, 'workflows', 'wf-11.relavium.yaml'),
+        'file',
+      );
+
+      const entries = scan();
+      expect(entries.map((e) => [e.slug, e.valid])).toEqual([
+        ...Array.from({ length: 8 }, (_, n) => [`wf-0${String(n)}`, true]),
+        ['wf-08', false],
+        ['wf-09', false],
+        ['wf-10', false],
+        ['wf-11', false],
+      ]);
+      expect(entries.slice(0, 8).every((e) => e.nodeCount === 2 && e.error === undefined)).toBe(
+        true,
+      );
+      expect(entries.slice(8).map((e) => e.error)).toEqual([SKIPPED, SKIPPED, SKIPPED, SKIPPED]);
+      expect(entries[8]?.path).toBe(join('.relavium', 'workflows', 'wf-08.relavium.yaml'));
+      // Refused, not partly read: only the eight files that fit were ever opened.
+      const opened = vi
+        .mocked(openSync)
+        .mock.calls.filter(([path]) => String(path).includes('wf-'));
+      expect(opened).toHaveLength(8);
+    });
+
+    it('spends the budget in file-name order, whatever order the directory lists the names in', async () => {
+      const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+      for (let n = 0; n < 10; n += 1) {
+        const id = `wf-${String(n).padStart(2, '0')}`;
+        writeBytes(`${id}.relavium.yaml`, paddedWorkflow(id, FILE_BYTES));
+      }
+      const inNameOrder = scan();
+      // The directory now lists its names last-first; the first eight BY NAME are still the ones read.
+      vi.mocked(readdirSync).mockImplementationOnce((dir, options) =>
+        native.readdirSync(dir, options).reverse(),
+      );
+      expect(scan()).toEqual(inNameOrder);
+      expect(inNameOrder.filter((e) => e.valid).map((e) => e.slug)).toEqual(
+        Array.from({ length: 8 }, (_, n) => `wf-0${String(n)}`),
+      );
+    });
+
+    it('gives the same answer on a second read of the same directory', () => {
+      for (let n = 0; n < 10; n += 1) {
+        writeBytes(
+          `wf-${String(n).padStart(2, '0')}.relavium.yaml`,
+          paddedWorkflow(`wf-${String(n).padStart(2, '0')}`, FILE_BYTES),
+        );
+      }
+      const first = scan();
+      expect(first.filter((e) => e.valid)).toHaveLength(8);
+      expect(scan()).toEqual(first);
+    });
+
+    it('takes a total of exactly the budget, and refuses a file that would take it one byte past', () => {
+      // Eight files of 2 MiB (the parser cap is also 2 Mi characters, so these are valid) are exactly 16 MiB: all read.
+      for (let n = 0; n < 8; n += 1) {
+        writeBytes(
+          `wf-${String(n)}.relavium.yaml`,
+          paddedWorkflow(`wf-${String(n)}`, MAX_SOURCE_CHARS),
+        );
+      }
+      expect(scan().every((e) => e.valid)).toBe(true);
+      // One more byte of anything after them does not fit.
+      writeBytes(
+        'wf-9.relavium.yaml',
+        Buffer.from(VALID_WORKFLOW.replace('id: hello', 'id: wf-9')),
+      );
+      const entries = scan();
+      expect(entries.filter((e) => e.valid)).toHaveLength(8);
+      expect(entries.find((e) => e.slug === 'wf-9')?.error).toBe(SKIPPED);
+    });
+
+    it('does not carry a spent budget into the next scan', () => {
+      for (let n = 0; n < 10; n += 1) {
+        writeBytes(`wf-${String(n)}.relavium.yaml`, paddedWorkflow(`wf-${String(n)}`, FILE_BYTES));
+      }
+      expect(scan().filter((e) => !e.valid)).toHaveLength(2);
+      rmSync(join(configDir, 'workflows'), { recursive: true });
+      writeBytes('small.relavium.yaml', Buffer.from(VALID_WORKFLOW));
+      expect(scan().map((e) => [e.slug, e.valid])).toEqual([['hello', true]]);
+    });
+
+    it('applies to the agents catalog and names its directory', () => {
+      mkdirSync(join(configDir, 'agents'), { recursive: true });
+      for (let n = 0; n < 10; n += 1) {
+        const body = Buffer.from(VALID_AGENT.replace('id: summarizer', `id: ag-${String(n)}`));
+        const head = Buffer.from('# ');
+        writeFileSync(
+          join(configDir, 'agents', `ag-${String(n)}.agent.yaml`),
+          Buffer.concat([
+            head,
+            Buffer.alloc(FILE_BYTES - head.length - body.length - 1, 'x'),
+            Buffer.from('\n'),
+            body,
+          ]),
+        );
+      }
+      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+      expect(entries.filter((e) => e.valid)).toHaveLength(8);
+      expect(entries.filter((e) => !e.valid).map((e) => e.error)).toEqual([
+        SKIPPED.replace('/workflows/', '/agents/'),
+        SKIPPED.replace('/workflows/', '/agents/'),
+      ]);
     });
   });
 

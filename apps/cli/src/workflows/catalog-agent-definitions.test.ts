@@ -4,7 +4,12 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { MAX_CATALOG_FILES, discoverAgentDefinitions, discoverCatalog } from './catalog.js';
+import {
+  MAX_CATALOG_FILES,
+  MAX_CATALOG_SCAN_BYTES,
+  discoverAgentDefinitions,
+  discoverCatalog,
+} from './catalog.js';
 
 /**
  * `discoverAgentDefinitions` (MVP-8 step 5): the agents catalog with each valid file's parsed definition kept beside its entry, for
@@ -38,8 +43,8 @@ describe('discoverAgentDefinitions', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  const write = (name: string, body: string): void =>
-    writeFileSync(join(configDir, 'agents', name), body, 'utf8');
+  const write = (name: string, body: string | Buffer): void =>
+    writeFileSync(join(configDir, 'agents', name), body);
   const opts = () => ({ projectConfigDir: configDir, cwd: proj, homeDir: home });
 
   it('keeps the parsed definition of a valid agent beside its entry, and none for a file that did not parse', () => {
@@ -109,5 +114,51 @@ describe('discoverAgentDefinitions', () => {
   it('refuses a directory of too many files, as the catalog does', () => {
     for (let n = 0; n <= MAX_CATALOG_FILES; n++) write(`a-${String(n).padStart(4, '0')}.yaml`, '');
     expect(() => discoverAgentDefinitions(opts())).toThrow(/too many agent files/);
+  });
+
+  describe('the byte budget of one scan', () => {
+    // Under the parser's own character cap, so a padded file is still a VALID agent and "read normally" shows.
+    const FILE_BYTES = 1_900_000;
+    const SKIPPED =
+      'skipped: the catalog is larger than 16 MiB; move some files out of .relavium/agents/';
+
+    /** A valid agent whose first line is one long comment, so the file is exactly `bytes` long: one `Buffer.alloc`, no loop. */
+    function paddedAgent(id: string, bytes: number): Buffer {
+      const body = Buffer.from(VALID_AGENT.replace('id: summarizer', `id: ${id}`));
+      const head = Buffer.from('# ');
+      return Buffer.concat([
+        head,
+        Buffer.alloc(bytes - head.length - body.length - 1, 'x'),
+        Buffer.from('\n'),
+        body,
+      ]);
+    }
+
+    it('is 16 MiB', () => {
+      expect(MAX_CATALOG_SCAN_BYTES).toBe(16 * 1024 * 1024);
+    });
+
+    it('keeps the definitions of the files that fit, and skips the one that crosses the budget and all after it', () => {
+      // Ten files in name order, then a tiny one that would fit in what is left: eight fit (15.2 MB), the ninth crosses 16 MiB.
+      for (let n = 0; n < 10; n += 1) {
+        const id = `ag-${String(n).padStart(2, '0')}`;
+        write(`${id}.agent.yaml`, paddedAgent(id, FILE_BYTES));
+      }
+      write('ag-10.agent.yaml', VALID_AGENT.replace('id: summarizer', 'id: ag-10'));
+
+      const items = discoverAgentDefinitions(opts());
+      expect(items.map((item) => [item.entry.slug, item.entry.valid, item.agent?.id])).toEqual([
+        ...Array.from({ length: 8 }, (_, n) => [`ag-0${String(n)}`, true, `ag-0${String(n)}`]),
+        ['ag-08', false, undefined],
+        ['ag-09', false, undefined],
+        ['ag-10', false, undefined],
+      ]);
+      expect(items.slice(8).map((item) => item.entry.error)).toEqual([SKIPPED, SKIPPED, SKIPPED]);
+      // The same scan as the catalog's, file for file, and the same answer on a second read.
+      expect(items.map((item) => item.entry)).toEqual(
+        discoverCatalog({ ...opts(), kind: 'agents' }),
+      );
+      expect(discoverAgentDefinitions(opts())).toEqual(items);
+    });
   });
 });
