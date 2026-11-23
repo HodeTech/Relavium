@@ -184,7 +184,7 @@ time (each waits for the staging inventory instead of failing) and made CI run o
 [merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18) lists what is still owed. MVP-4
 (command permissions, the interrupt keymap, turn limits, the `/permissions` sheet and the Home entry points; ADR-0115, 0118, 0136, 0137 and 0138) is complete and on `main`
 through [PR #101](https://github.com/HodeTech/Relavium/pull/101), merged on 2026-11-21 (its
-[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) lists what is still owed); the Home as the hub (MVP-8) is next. The
+[merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) lists what is still owed); the Home as the hub (MVP-8) is in progress on `development`. The
 published npm version remains `0.1.1`.
 
 Status changes quickly, so this README intentionally stays high-level. The canonical source

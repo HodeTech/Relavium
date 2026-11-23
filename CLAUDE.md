@@ -89,7 +89,7 @@ after it, and the phase record's [PR #101 review corrections](docs/roadmap/phase
 fixed, refuted, deferred and what needs a human (the [implementation record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress).
 The final head `9e77ff04` passed all 30 CI checks, and SonarCloud's gate went OK after one reliability bug and 15 small findings were fixed; the maintainer merged, and the
 [PR #101 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) records the evidence and what is still owed (above all the Windows
-runbook rows 1–16 on real terminals). **MVP-8 (the Home as hub) is next.** npm still serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
+runbook rows 1–16 on real terminals). **MVP-8 (the Home as hub) is in progress on `development`: steps 1 to 4 are closed and step 5 is under way.** npm still serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

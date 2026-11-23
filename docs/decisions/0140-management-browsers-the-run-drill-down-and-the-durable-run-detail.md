@@ -184,3 +184,9 @@ The round-3 note says three read plans are pinned in `run-history-reads.test.ts`
 - **§1, one tab host.** `/agents` has its own two-tab strip, **Defined │ Sessions**, on the same `tab-host` screen kind with its own tab set. The strip of `/workflows` and `/permissions` is unchanged. The rule that the slot takes no field for a chat's docked sheet stands; this note adds no field.
 - **§3, the bound-agent view.** `/agent` is the chat's docked sheet on the chat's existing sheet mechanism, as §3 already says. The maintainer chose the sheet over a transcript notice on 2026-11-23; the Home controller gains no field for it.
 - **§3, typed words (pending the maintainer's confirmation).** A line that is one `/word`, with at most flags after it, is answered at the landing and never starts a chat. A line where text follows the word (`/tmp has junk`, `/cost is high`) is a first message and starts a chat, so no typed text is dropped. This reads "a typed `/word` never starts a chat" as the command line, not as a sentence that begins with one.
+
+### Amendment note — 2026-11-23 (MVP-8 steps 4 and 5, as built)
+
+- **§1, the layout.** The tab host is one flat strip, `Defined │ Active │ History │ Permissions`, not the two levels of top tabs and sub-tabs with a breadcrumb that the figure shows. `←` and `→` move between the tabs and stop at the ends; `Tab` and `Shift+Tab` go around. There is no breadcrumb row: the heading of a drill-down and the legend carry the position.
+- **§1, the body.** At 80×24 the body holds twenty rows (the screen is 23 rows: the tab strip, a rule and the legend take three), not eight.
+- **§3.** The `/agents` strip and the typed-word rule are the maintainer's decisions of the note above.

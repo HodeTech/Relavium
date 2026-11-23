@@ -42,7 +42,7 @@ commit's identical tree passed it); and one acceptance-tool test timed out in th
 PR #100 (`1e71f652`, merged 2026-11-18) then put the native adapter's first increment on `main` (concurrent processes on one operator home wait for the allocation claim, ADR-0135),
 with CI once per commit and a coverage run narrowed to `packages/`; a separate security sitting on its Linux parent-snapshot change is still owed
 ([merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-100-merge-checkpoint-2026-11-18)).
-MVP-4 is complete and on `main` through PR #101 (`0a599a36`, merged 2026-11-21; ADR-0115, ADR-0118 and ADR-0136 accepted 2026-11-19, ADR-0137 2026-11-20, ADR-0138 2026-11-21); MVP-8 is next. CLAUDE.md carries the full summary.
+MVP-4 is complete and on `main` through PR #101 (`0a599a36`, merged 2026-11-21; ADR-0115, ADR-0118 and ADR-0136 accepted 2026-11-19, ADR-0137 2026-11-20, ADR-0138 2026-11-21); MVP-8 is in progress on `development` (steps 1 to 4 closed). CLAUDE.md carries the full summary.
 The Home is the interactive product (ADR-0122). The interim release guard blocks npm publication until the pre-1.0 release ADR (D59) is
 Accepted; the acceptance bar is tiered (D64), with security-touching increments keeping a full review round and
 a separate security sitting. CLAUDE.md carries the full summary.

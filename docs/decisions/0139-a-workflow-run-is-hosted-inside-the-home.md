@@ -140,3 +140,14 @@ This amends [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) §1
 - **Code** (MVP-8 steps 2 and 3; [the plan](../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-8-pre-flight-review-and-plan-2026-11-22)): the extraction of §1; the stale-gate-card fix in the engine's lease path with a two-engine SQLite test and a duplicate-sequence refusal in the in-memory store; a two-process gate-resolve test that closes the TOCTOU entry; `HostedRunLifetime`; the native cards; the run view; the controller's single screen slot and exit guard; the keymap rows with their table test.
 - **References:** a section "Running a workflow in the Home" in [home.md](../reference/cli/home.md) (the canonical home of this contract), and the two keymap rows it changes by name: `Ctrl+C` (two presses while a leg executes) and `Ctrl+D` (a confirmation card while a leg executes), which [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md) §1 and the Home's keymap table state today; the run rows of the exit, signal and owner tables in [commands.md](../reference/cli/commands.md#exit-codes) (cross-linked, not copied); the interrupt table in [chat-session.md](../reference/cli/chat-session.md); an accessibility paragraph in [accessibility.md](../reference/cli/accessibility.md); new rows 17 and up in the [Windows interrupt-evidence runbook](../runbooks/windows-interrupt-evidence.md) (a hosted run's keys; collected with the owed rows 1 to 16).
 - **Notes** on the ADRs named under *Amends* are written on acceptance, dated 2026-11-22, each pointing here.
+
+### Amendment note — 2026-11-23 (MVP-8 step 3, as built; each point awaits the maintainer's ruling)
+
+The code differs from the text of this ADR in six places. This note records what is built, not a decision; the maintainer rules on each, by a superseding note or by a change of the code.
+
+- **§4 and [ADR-0115](0115-one-interrupt-keymap-for-the-interactive-cli.md).** A human gate's `Ctrl+N` is held to the card's lockout like an approval, because that rejection continues the run. ADR-0115 says a rejection is never delayed.
+- **§6, the database.** A leg that is abandoned past the ten-second grace and the three-second settle bound leaves the shared database open instead of closing it last: closing it under a writing leg is worse than an unclosed file, which the lease expires and the next start settles.
+- **§4, resume.** A resumed leg runs the MCP consent check again for a server this machine holds no grant for (the [ADR-0084](0084-consent-before-a-local-mcp-spawn.md) reading). The text says a resumed leg asks nothing new.
+- **§4, the consent row.** The grant is per machine and the card says "on this machine". The text says "for this run".
+- **§4, the input gate.** The text field is not built; an input gate offers `Ctrl+N` only.
+- **§6, the exit wording.** The card and the reference say about thirteen seconds (ten of grace and three of settle). The text says up to ten.
