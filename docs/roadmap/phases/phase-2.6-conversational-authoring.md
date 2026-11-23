@@ -396,6 +396,12 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
   agent; additional languages load on demand). The
   markdown-to-ink component maps rendered nodes to ink's `<Text>` / `<Box>` primitives under the
   existing `stripTerminalControls` sanitization floor.
+
+  > **Decided differently, 2026-11-23.** Syntax highlighting is an in-house lexical scanner with no dependency,
+  > per the maintainer's D50 ruling and [ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md)
+  > (Accepted). The `ink-syntax-highlight`, `highlight.js` and `cli-highlight` text above is the plan as it stood
+  > and is kept as history; a catalog entry for them is not wanted. The reference is
+  > [markdown-rendering.md](../../reference/cli/markdown-rendering.md#syntax-highlighting).
 - **Advanced `@`-injection**: glob / directory expansion respecting ignore files (the ADR-0061 follow-up;
   the in-house matcher from the 2.5 close is the substrate).
 - **`/rewind` + `/fork`** at conversation level: rewind truncates to a chosen prior message and continues
@@ -428,7 +434,7 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
 
 **Acceptance:** each affordance works in chat and the in-Home chat; `--json`/plain surfaces reject or
 ignore them exactly as the ADR-0049 contract requires; the message queue and rewind have reducer-level
-tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering architecture.
+tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering architecture (*decided 2026-11-23: no dependency, [ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md)*).
 
 ### 2.6.F — Platform floor + the full-screen TUI foundation — ✅ **Done (PR #74, 2026-07-11)**
 
@@ -5365,7 +5371,7 @@ flowchart LR
 | 9 | [ADR-0120](../../decisions/0120-the-toolbelt-grows-and-a-tool-call-shows-what-it-does.md) (part 1) | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057); `ask_user` mid-turn pause is a separate later ADR | **Accepted**; MVP-3 slice independently implemented/reviewed on `development`, 2026-11-12 ([checkpoint](#mvp-3-development-implementation-checkpoint-2026-11-12)). Later toolbelt slices retain their milestones. | 2.6.M |
 | 9b | [ADR-0116](../../decisions/0116-the-built-in-chat-agent-can-edit-and-the-starting-mode-is-configurable.md) | Built-in chat editing/search grant and configurable starting mode (D62, amends ADR-0057) | **Accepted**; MVP-3 filesystem grant/startup-mode slice independently implemented/reviewed on `development`, 2026-11-12 ([Step 3](#mvp-3-step-3-acceptance-2026-11-12)); command permissions remain MVP-4. | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
-| 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* | 2.6.E |
+| 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts *Split 2026-11-04 for the MVP: part 1 is an in-house markdown/code-block renderer with no dependency (MVP-2); the highlighter decision follows the MVP.* **Part 2 decided 2026-11-23: an in-house scanner with no dependency, [ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md), Accepted.** | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |
 | 13 | *(new)* | On-the-fly **generation + parallel orchestration security** (the generation-as-codegen threat model, schema-valid≠safe, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent) — **mandatory security review is the ship-gate** | Drafted when 2.6.O starts | 2.6.O |
 | 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the recorded deferral of dynamic `invoke_workflow`) | Drafted when 2.6.P starts | 2.6.P |
@@ -5400,7 +5406,7 @@ flowchart LR
 | Authored YAML smuggles secrets | The `parseWorkflow` secret-taint gate + the write-surface security review |
 | Browser complexity balloons | Hard cap at the three-level drill-down; keystroke filters, no query DSL; tabs + deep-links instead of six commands; the desktop canvas stays the rich escape hatch |
 | i18n churn destabilizes strings | Data ≠ code catalog; CI key-parity + dead-string lint land **with** the first locale, not after |
-| Syntax highlighting bundle size (highlight.js is large untrimmed) | Tree-shake to the built-in agent's curated default set; lazy-load the rest on first use; the `ink-syntax-highlight` ADR gates the cost decision |
+| Syntax highlighting bundle size (highlight.js is large untrimmed) | Tree-shake to the built-in agent's curated default set; lazy-load the rest on first use; the `ink-syntax-highlight` ADR gates the cost decision. *Closed 2026-11-23: no dependency, so no bundle growth beyond the scanner's own source ([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md)).* |
 | ADR load stalls the phase | ADRs are drafted per-workstream as Proposed when the workstream starts (the 2.5 pattern), not all up front |
 | Competitor-copy erodes Relavium's posture | Patterns are stolen, postures are not: keychain-only secrets, fail-closed approval, YAML-first artifacts, and the ADR-0049 machine contract are non-negotiable filters on every borrowed idea |
 

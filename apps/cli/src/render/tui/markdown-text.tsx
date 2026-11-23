@@ -2,6 +2,7 @@ import { Text } from 'ink';
 import type { ComponentProps, ReactElement } from 'react';
 
 import type { MarkdownSpan } from '../markdown/types.js';
+import { syntaxStyle } from './syntax-palette.js';
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -12,7 +13,9 @@ function semanticProps(span: MarkdownSpan, color: boolean): Partial<ComponentPro
     ...(span.emphasis ? { italic: true } : {}),
     ...(span.strike ? { strikethrough: true } : {}),
     ...(span.dim || span.quote ? { dimColor: true } : {}),
-    ...(span.code ? { color: 'cyan' } : {}),
+    // A highlighted code block draws its classes (ADR-0144); other code, inline or fenced, keeps the one code colour.
+    ...(span.code && span.token === undefined ? { color: 'cyan' } : {}),
+    ...(span.token === undefined ? {} : syntaxStyle(span.token)),
     ...(span.linkURL !== undefined ? { underline: true } : {}),
   };
 }

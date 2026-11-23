@@ -75,6 +75,10 @@ default.
 
 - **Color is never required for meaning.** `NO_COLOR` / `--no-color` degrade to a legible,
   color-free rendering; status is carried by text, not color alone.
+- **Syntax colour is decoration.** A highlighted code block ([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md))
+  only classes text that is already shown, so `NO_COLOR` / `--no-color` draw the source unchanged. It uses five named ANSI
+  colours, bold and dim, so the terminal's own theme sets the shades; a comment is dim, and a diff line also carries its
+  `+` or `-`. The class list and the colours are in [markdown-rendering.md](markdown-rendering.md#syntax-highlighting).
 - **Keyboard-only.** Core navigation needs no mouse — **PgUp/PgDn** page the transcript,
   **Ctrl+Home/Ctrl+End** jump to the top/tail, and **auto-follow** re-pins to the newest output.
   Mouse-wheel scrolling is an optional convenience, not a requirement.

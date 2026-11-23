@@ -1,5 +1,6 @@
 import { sanitizeInline } from '../sanitize.js';
 import { displayWidth } from '../tui/viewport.js';
+import { highlightCode } from './highlight/index.js';
 import { parseInline } from './inline.js';
 import type { MarkdownBlock, MarkdownDisplayLine, MarkdownSpan } from './types.js';
 
@@ -16,8 +17,19 @@ function sameStyle(left: MarkdownSpan, right: MarkdownSpan): boolean {
     left.heading === right.heading &&
     Boolean(left.quote) === Boolean(right.quote) &&
     Boolean(left.dim) === Boolean(right.dim) &&
-    left.linkURL === right.linkURL
+    left.linkURL === right.linkURL &&
+    left.token === right.token
   );
+}
+
+/**
+ * A fenced block's text as spans. A block whose info string names a supported language is classed by the highlighter
+ * (ADR-0144), which only splits the text; any other block stays one plain code span, as it always was.
+ */
+function codeSpans(block: MarkdownBlock): MarkdownSpan[] {
+  const segments = highlightCode(block.text, block.highlightInfo ?? block.info);
+  if (!segments) return [{ text: block.text, code: true }];
+  return segments.map((segment) => ({ text: segment.text, code: true, token: segment.token }));
 }
 
 /** Merge only adjacent equal styles; text and grapheme ownership stay unchanged. */
@@ -529,7 +541,7 @@ export function layoutMarkdown(
       appendRows(
         result,
         wrap(
-          [{ text: block.text, code: true }],
+          codeSpans(block),
           columns,
           block.info && block.continuation ? block.continuation + '│ ' : prefix,
           block.continuation ? block.continuation + '│ ' : prefix,

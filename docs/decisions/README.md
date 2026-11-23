@@ -187,6 +187,7 @@ flowchart TD
 | 0141 | [A table too wide for its grid renders as records, not as its source](0141-a-table-too-wide-for-its-grid-renders-as-records.md) | Superseded by 0143 | 2026-11-23 |
 | 0142 | [A literal search is linear in the text it reads, and its work budget charges what it reads](0142-a-literal-search-is-linear-and-its-work-budget-charges-what-it-reads.md) | Accepted | 2026-11-23 |
 | 0143 | [A wide table keeps its grid, with each cell wrapped inside its column; records are the last resort](0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md) | Accepted | 2026-11-23 |
+| 0144 | [Fenced code is highlighted by an in-house lexical scanner](0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md) | Accepted | 2026-11-23 |
 
 ## Creating a new ADR
 

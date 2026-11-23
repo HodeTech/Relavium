@@ -550,7 +550,7 @@ release (Wave 4b → MVP-10). After the MVP, a wave takes up whatever of its ite
 
 **Remaining product lanes after v0.2.1 (phase 2.6, ordered):** sub-agents and the rest of orchestration
 (2.6.N → 2.6.O/2.6.P, Waves 6–7); `/rewind`/`/fork` and persisted input history (2.6.E); `todo` and `ask_user`
-(2.6.M, ADR row 9 part 2; **`ask_user` moved up to MVP-3d** — [ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md), implemented, awaiting acceptance); syntax highlighting (ADR row 11 part 2); settings, themes and `en`+`tr` (2.6.L,
+(2.6.M, ADR row 9 part 2; **`ask_user` moved up to MVP-3d** — [ADR-0132](../decisions/0132-the-model-can-ask-the-user-a-structured-question.md), implemented, awaiting acceptance); syntax highlighting (ADR row 11 part 2: **implemented 2026-11-23 on `development`** as an in-house scanner, [ADR-0144](../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md) Accepted; a setting and a palette chosen by the terminal's background remain); settings, themes and `en`+`tr` (2.6.L,
 Wave 5a/5b); onboarding v2's account stub (2.6.J); history retention and delete (D33, Wave 4b); scope-line items
 only after a phase amendment and an ADR.
 

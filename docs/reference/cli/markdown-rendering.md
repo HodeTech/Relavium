@@ -1,9 +1,9 @@
 # CLI assistant markdown rendering
 
 - **Status**: Implemented and independently accepted on development
-- **Date**: 2026-11-10
+- **Date**: 2026-11-10 (amended 2026-11-23, see the note below)
 - **Surface**: Interactive CLI, full-screen and inline, standalone and in-Home chat
-- **Related**: [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md), [chat-session.md](chat-session.md), [accessibility.md](accessibility.md), [MVP-2 proposal](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09)
+- **Related**: [ADR-0114](../../decisions/0114-in-house-markdown-rendering-for-the-chat-transcript.md), [ADR-0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md), [ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md), [chat-session.md](chat-session.md), [accessibility.md](accessibility.md), [MVP-2 proposal](../../roadmap/phases/phase-2.6-conversational-authoring.md#mvp-2-preflight-and-execution-proposal--2026-11-09)
 
 This is the exact display contract for MVP-2a. Implementation is accepted on
 `development` at `b636be5f` after clean cumulative reviews and a separate parser
@@ -11,6 +11,13 @@ security sitting; see the [step acceptance record](../../roadmap/phases/phase-2.
 All four MVP-2 steps are implemented and step-reviewed. The
 [checkpoint record](../../roadmap/phases/phase-2.6-conversational-authoring.md#step-4-acceptance-2026-11-10)
 owns combined validation and maintainer review; publication remains a later release decision.
+
+**Amended 2026-11-23.** Two parts of this contract came after the MVP-2a acceptance above and carry their own
+decisions: the wrapped grid and records for a table that does not fit
+([ADR-0143](../../decisions/0143-a-wide-table-keeps-its-grid-and-records-are-the-last-resort.md), Accepted
+2026-11-23), and [syntax highlighting](#syntax-highlighting)
+([ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md), Accepted
+2026-11-23). The acceptance record above covers the rest.
 
 ## Scope and source
 
@@ -37,7 +44,7 @@ never expanded attachments.
 | Source | Display with color enabled |
 |---|---|
 | ATX heading, one to six `#` followed by space | Heading text, bold; omit the opening marker and optional space-separated closing markers |
-| Backtick or tilde fence of at least three characters | Code text verbatim with a dim `│ ` gutter; nonempty info string shown as a dim label |
+| Backtick or tilde fence of at least three characters | Code text verbatim with a dim `│ ` gutter; nonempty info string shown as a dim label; a block whose info string names a [supported language](#syntax-highlighting) is coloured by token class |
 | `-`, `+`, `*` followed by space | Bullet `• `, with a hanging continuation indent |
 | Decimal digits followed by `.` or `)` and space | Preserve the written ordinal with a hanging continuation indent |
 | Nested list indentation | Preserve relative indentation, up to the nesting limit |
@@ -48,8 +55,10 @@ never expanded attachments.
 
 A fence closes only on the same character, at least the opening length, with no
 following non-space text. An unfinished fence remains code through end-of-turn.
-Code bodies get no inline processing or syntax highlighting. An info string is
-sanitized as an inline value and never changes the parser or executes anything.
+Code bodies get no inline processing. [Syntax highlighting](#syntax-highlighting)
+classes the text of a block whose info string names a supported language and
+changes nothing else. An info string is sanitized as an inline value and never
+changes the parser or executes anything.
 
 Setext headings, indented code, HTML, reference definitions/links, footnotes and
 lazy continuation render literally. Unsupported structures must not cause
@@ -219,6 +228,105 @@ above). The wrapped grid expands each tab from the start of its own cell, so tab
 stops do not align across its rows. The fixed limits above still render the
 entire table literally.
 
+## Syntax highlighting
+
+[ADR-0144](../../decisions/0144-fenced-code-is-highlighted-by-an-in-house-lexical-scanner.md) owns the reasoning. This section is the contract.
+
+A fenced block whose info string names a supported language is split into runs, and each run has one token class.
+The scan is lexical: it reads characters, not a grammar, and it never edits, drops, repeats or reorders one. The runs,
+joined, are exactly the block's text, so rows, wrapping, tab stops, the gutter, copy, edit and scrollback are the same
+with and without it. Highlighting changes only the style of a run. It runs on text that is already sanitized and adds
+no terminal sink.
+
+### Languages
+
+The language is named by the **first word** of the info string, matched case-insensitively. A leading `{`, `.` or
+blanks and a leading `language-` are skipped, and the word ends at the first character that is not a letter, a digit,
+`_`, `+`, `#` or `-`, so `ts title="a.ts"`, `{.ts}`, `typescript{1,3}`, `language-ts` and `ts:src/a.ts` all name
+TypeScript. There is no sniffing of the content. A block with no info string, or with one that is not listed, is not
+highlighted and keeps the single code colour (cyan) it has always had.
+
+| Family | Info strings | What it reads |
+|---|---|---|
+| `typescript` | `typescript`, `ts`, `tsx`, `mts`, `cts` | Keywords, types, numbers, strings, template literals with their `${…}` holes, regular-expression literals, comments, decorators, call sites |
+| `javascript` | `javascript`, `js`, `jsx`, `mjs`, `cjs`, `node`, `nodejs` | The same, without the TypeScript-only keywords |
+| `json` | `json`, `jsonc`, `json5`, `jsonl` | Keys against values, numbers, `true`, `false`, `null`, comments |
+| `python` | `python`, `py`, `python3`, `py3` | Keywords, triple-quoted and prefixed strings, decorators, builtin types, comments |
+| `shell` | `bash`, `sh`, `shell`, `zsh`, `ksh`, `dash` | Command names, options, strings, `$` expansions, assignments (also after `export`), keywords, comments; in a session transcript (the first line starts with `$ `) only the prompt lines |
+| `yaml` | `yaml`, `yml` | Keys, scalars, comments, anchors, tags, flow collections and block scalars |
+| `toml` | `toml` | Tables, keys (also in inline tables), strings (also multiline), numbers, dates, comments, multi-line arrays |
+| `ini` | `ini`, `cfg`, `properties`, `env`, `dotenv` | Sections, keys, `export`, values, `#` and `;` comments (a `#` right after the `=` is part of the value) |
+| `diff` | `diff`, `patch`, `udiff` | Added and removed lines, hunk headers, file headers |
+| `sql` | `sql`, `psql`, `mysql`, `postgres`, `postgresql`, `sqlite`, `pgsql`, `plpgsql`, `tsql` | Keywords in any case, types, strings, quoted identifiers, numbers, comments, calls |
+| `go` | `go`, `golang` | Keywords, types, raw strings, runes, comments |
+| `rust` | `rust`, `rs` | Keywords, types, lifetimes and char literals, raw strings, attributes, macros, comments |
+| `java` | `java` | Keywords, types, annotations, text blocks, comments |
+| `c` | `c`, `h` | Keywords, types, preprocessor directives and include paths, digit separators, comments |
+| `cpp` | `cpp`, `c++`, `cc`, `cxx`, `hpp`, `hh`, `hxx`, `cplusplus` | The same, with the C++ keywords |
+| `csharp` | `csharp`, `cs`, `c#` | Keywords, types, methods and constructors, verbatim and raw strings, preprocessor directives, comments |
+| `markup` | `html`, `htm`, `xml`, `svg`, `xhtml`, `plist`, `xsd`, `rss` | Tags, attributes, values, comments, declarations |
+| `css` | `css` | At-rules, property names, colours, numbers with units, `!important`, comments |
+| `dockerfile` | `dockerfile`, `docker`, `containerfile` | Instructions (in capitals), strings, comments |
+
+### Classes and colours
+
+Colour is by class, in one place (`syntax-palette.ts`), and only five named ANSI colours, bold and dim are used. The
+terminal's own palette chooses the shade, so a light and a dark theme need no detection. Blue and the bright shades
+are not used, because blue has the weakest contrast on a dark theme and the bright shades on a light one. A comment is
+dim and not grey, because some themes draw grey as their background. Code in a highlighted block that has no class of
+its own (identifiers, punctuation, whitespace) is drawn in the default colour.
+
+| Class | Colour | Used for |
+|---|---|---|
+| `text` | default | Identifiers, punctuation, whitespace |
+| `keyword` | magenta | Reserved words, shell and SQL keywords, tag names |
+| `string` | green | String and character literals, include paths, block scalars |
+| `number` | yellow | Numbers, dates, colours in CSS |
+| `constant` | yellow | `true`, `false`, `null` and the like |
+| `comment` | dim | Comments |
+| `type` | cyan | Builtin and capitalised type names, lifetimes, table headers |
+| `function` | bold | A name followed by `(`, a shell command name |
+| `property` | cyan | Keys, options (`--flag`), attributes, CSS properties |
+| `variable` | cyan | Shell variables and assignments |
+| `meta` | yellow | Decorators, annotations, directives, anchors and tags, diff file headers |
+| `inserted` | green | A line added in a diff |
+| `deleted` | red | A line removed in a diff |
+| `hunk` | cyan | The `@@ … @@` part of a diff hunk header |
+
+### Limits and fallbacks
+
+- A block over 65,536 UTF-16 units, or with a line over 4,096, is not highlighted, as a whole. So is a block whose
+  scanner fails: every scanner counts its steps against a budget of eight per character plus 256, and exceeding it is
+  a failure of the scanner, not of the input. A partly coloured block would read as broken; a plain one reads as it
+  always did.
+- Every scanner is a single pass, and every lookahead (the search for a closing delimiter, or for the end of a line) goes
+  through one remembered search for each delimiter, so asking again past a search that found nothing reads nothing. The
+  work counter counts every step and every character such a search reads. It stays at most four per character on every
+  input tested, and the block is not highlighted past eight per character plus 256. Tests prove the bound by counting,
+  not by time: four times the text must cost no more than about four times the work, which a repeated failing search
+  (a quadratic scan) would break.
+- The scanners are approximate, and a misread changes a colour and nothing else. Known cases:
+  - JavaScript and TypeScript: a regular-expression literal after a `)` or `]` (read as division); an apostrophe or `//`
+    in JSX text between tags (read as a string or comment up to the end of its line); a word that is a keyword in one
+    place and a name in another (`type`, `of`, `from`); a template literal nested more than 32 deep.
+  - Shell: a heredoc body, a `case` pattern with `|`, and the first word of an output line in a block that has no `$ `
+    prompt.
+  - Go: capitalised user types are plain (only builtin types are classed). Python: `match` and `case`. Dockerfile: the
+    digits of an image tag. A call to a generic function (`f<T>(x)`) is not bold.
+  - YAML: a plain scalar that spans lines, whose continuation can be read as a key.
+- With colour disabled the source keeps its markers and no span is drawn.
+
+### Streaming
+
+The scanner is a pure function of the block's text. A block that fits the live window is coloured while it streams as
+the finished block is. The live tail lays out at most 4,000 characters of an open fence, and the window keeps the
+fence's language even when it has to leave the label out, so a long block is coloured too. The part of a block before
+that window is not scanned: a construct that opened there (a block comment, a template literal) is read as code until
+the turn ends and the whole text is laid out. At that moment only colours change: no character and no row does. An
+unfinished multiline construct (a block comment, a template literal, a triple-quoted or raw string) colours the rest of
+the block until it closes; an unfinished single-line string ends at its line. The live tail and the finished layout
+have the same rows, with and without a language.
+
 ## Geometry
 
 Expand tabs to the next eight-cell stop on each logical display line before
@@ -311,6 +419,12 @@ Cold-wrap evidence uses actual assistant entries with markdown, wide/combining
 characters, tables and long tokens, including a 500-entry restore. Keep the
 existing cold-wrap guard and report measured results without claiming an
 unmeasured maximum-size archive is fast.
+
+Highlighting is covered by `highlight/*.test.ts` (each language's classes, the run collector, and the invariants on
+random, prefix and adversarial text), `highlight-layout.test.ts` (spans through wrapping, quotes and lists, the limits, and
+the live tail against the finished layout), `syntax-palette.test.ts` and `markdown-text-highlight.test.tsx` (the palette and
+the SGR sequences of a real ink frame, colour on and off), and `highlight-reference.test.ts`, which compares the two
+tables above with the code in both directions.
 
 MVP-2a also needs the scoped security sitting on parser bounds, target display and
 sanitize order. Headless package/Windows smoke proves machine compatibility;
