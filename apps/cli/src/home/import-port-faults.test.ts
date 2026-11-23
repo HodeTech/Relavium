@@ -161,6 +161,7 @@ describe('whatever a plan holds is shown sanitized, whoever composed it', () => 
     source: `in${ESC}[2Jput.yaml`,
     target: '/p/.relavium/agents/x.agent.yaml',
     targetDisplay: `.relavium/agents/x${ESC}[31m.agent.yaml`,
+    projectConfigDir: '/p/.relavium',
     content: 'id: x\n',
     bytes: 6,
     force: false,

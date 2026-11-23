@@ -231,6 +231,29 @@ describe('prepare reads and validates through the command’s own first half, an
   });
 });
 
+describe.skipIf(process.platform === 'win32')(
+  'a catalog directory that is a link: the card shows where the file really goes',
+  () => {
+    it('a link that stays inside the project: the `to` row is the real directory, and the write lands there', () => {
+      mkdirSync(join(root, '.relavium', 'shared'), { recursive: true });
+      symlinkSync(join(root, '.relavium', 'shared'), join(root, '.relavium', 'agents'));
+      const result = prepared('incoming.agent.yaml');
+      expect(result.offer.destination).toBe('.relavium/shared/reviewer.agent.yaml');
+      expect(result.commit()).toEqual({
+        ok: true,
+        written: "Imported agent 'reviewer' to .relavium/shared/reviewer.agent.yaml.",
+      });
+      expect(readdirSync(join(root, '.relavium', 'shared'))).toEqual(['reviewer.agent.yaml']);
+    });
+
+    it('a link that leaves the project is refused before the card asks (here by the id check, which scans the directory first), and nothing is written there', () => {
+      symlinkSync(outside, join(root, '.relavium', 'agents'));
+      expect(refused('incoming.agent.yaml')).toBe('could not read the agents catalog directory.');
+      expect(readdirSync(outside)).toEqual([]);
+    });
+  },
+);
+
 describe('the card never overwrites: whatever holds the place is a refusal before it asks', () => {
   it('an id the project already has names the shell command that replaces it', () => {
     mkdirSync(join(root, '.relavium', 'agents'), { recursive: true });
@@ -411,6 +434,21 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
       expect(readdirSync(join(home, '.relavium', 'agents')), 'nothing was written there').toEqual(
         [],
       );
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'a link put in the destination’s directory since the card was drawn, out of the project, is refused at the write in fixed words, and nothing is written there',
+    () => {
+      const result = prepared('incoming.agent.yaml');
+      // The card is open for as long as a person takes; meanwhile the project's `agents` becomes a link to a directory elsewhere.
+      symlinkSync(outside, join(root, '.relavium', 'agents'));
+      const attempt = result.commit();
+      expect(attempt).toEqual({
+        ok: false,
+        reason: 'The target directory is a link that leaves the project: .relavium/agents.',
+      });
+      expect(readdirSync(outside), 'nothing was written through the link').toEqual([]);
     },
   );
 

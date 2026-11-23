@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import {
   AgentParseError,
@@ -23,7 +23,9 @@ import {
 } from '@relavium/core';
 import { SCHEMA_VERSION } from '@relavium/shared';
 
+import { canonicalProjectPath } from '../config/paths.js';
 import { resolveProjectDirectory } from '../config/project-directory.js';
+import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
 import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
 
@@ -66,6 +68,57 @@ export function authoredFileName(kind: AuthoredKind, slug: string): string {
 /** The canonical catalog path for an authored doc: `<projectConfigDir>/<workflows|agents>/<slug>.<suffix>`. */
 export function catalogPath(projectConfigDir: string, kind: AuthoredKind, slug: string): string {
   return join(projectConfigDir, KIND_DIR[kind], authoredFileName(kind, slug));
+}
+
+/**
+ * Where a catalog file may really be written: the directory it goes into, resolved through every link, must lie inside the project's own
+ * configuration directory, resolved the same way (the root the catalog scan holds a listing to). `assertProjectArtifactPath` keeps a write
+ * out of the operator's home and global configuration, and says nothing about the rest of the disk, so a `.relavium/workflows` that is a
+ * link to a directory elsewhere would otherwise take the file there. A link that stays inside the project is allowed, and the returned
+ * target is where it leads, so what is shown and what is written are one path.
+ *
+ * Returns the target with its directory replaced by the real one, still spelled from `projectConfigDir` (so a project reached through a
+ * link of its own keeps its own spelling). `displayDirectory` is the directory as the person sees it (cwd-relative): the sentence names
+ * it and never the absolute path. A path that cannot be resolved (a link that points at nothing, a loop, an unreadable component) is
+ * refused too: an unresolved link is never evidence that the write stays inside.
+ */
+export function confineToProjectConfig(
+  projectConfigDir: string,
+  target: string,
+  displayDirectory: string,
+): string {
+  const root = canonicalProjectPath(projectConfigDir);
+  const directory = canonicalProjectPath(dirname(target));
+  if (root === undefined || directory === undefined) {
+    throw new CliError(
+      'invalid_invocation',
+      'The target directory could not be resolved safely. Check directory access and symbolic links, then retry.',
+    );
+  }
+  if (!isWithinFsRoot(root, directory)) {
+    throw new CliError(
+      'invalid_invocation',
+      `The target directory is a link that leaves the project: ${displayDirectory}.`,
+    );
+  }
+  return join(projectConfigDir, relative(root, directory), basename(target));
+}
+
+/**
+ * {@link confineToProjectConfig} for a catalog file the way a command names it: the real target, and the cwd-relative path to show for
+ * it (the one the command prints and the Home's card draws). With no link in the way both are what they always were.
+ */
+export function confineCatalogTarget(opts: {
+  readonly projectConfigDir: string;
+  readonly cwd: string;
+  readonly target: string;
+}): { readonly target: string; readonly targetDisplay: string } {
+  const target = confineToProjectConfig(
+    opts.projectConfigDir,
+    opts.target,
+    dirname(relative(opts.cwd, opts.target)),
+  );
+  return { target, targetDisplay: relative(opts.cwd, target) };
 }
 
 /** Re-serialize canonical YAML, preserving authored literals and placeholders; this is not secret redaction. */

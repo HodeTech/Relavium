@@ -102,3 +102,13 @@ Considered alternatives:
   `<<` merge keys, `%YAML 1.1`, `!!`-tagged Dates/binaries. Accepted: these add cross-surface
   non-determinism or a DoS surface for no authoring benefit; authored Relavium files are small and
   hand-written, and a rejected file fails fast with a typed, field-named error.
+
+### Amendment note — 2026-11-23
+
+The `uniqueKeys: true` option named in the hardened profile above is partly historical. Since commit
+`d0f69bef`, the duplicate-key check for a source of more than 2048 characters is a linear, per-map
+`Set` comparator in `packages/core/src/yaml-decode.ts`: the library's own `uniqueKeys` check compares every key
+with every earlier one, which let a file of tens of thousands of distinct keys freeze the process. The library's
+own check remains for a shorter source. The outcome, the error code and the position of every error are unchanged: a
+341,547-document differential run against the previous profile found 0 differences. The decision itself, the
+parser, its pinned options and its dependency status, is not changed.

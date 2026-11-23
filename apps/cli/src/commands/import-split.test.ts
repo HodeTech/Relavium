@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -43,18 +44,22 @@ workflow:
     - { from: s, to: o }
 `;
 const AGENT_PATH = '.relavium/agents/reviewer.agent.yaml';
+const AGENT_DIRECTORY = '.relavium/agents';
 
 let cwd = '';
 let home = '';
+let outside = '';
 beforeEach(() => {
   cwd = mkdtempSync(join(tmpdir(), 'relavium-import-split-'));
   home = mkdtempSync(join(tmpdir(), 'relavium-import-split-home-'));
+  outside = mkdtempSync(join(tmpdir(), 'relavium-import-split-outside-'));
   mkdirSync(join(cwd, '.relavium'), { recursive: true });
   writeFileSync(join(cwd, 'incoming.agent.yaml'), AGENT);
 });
 afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
   rmSync(home, { recursive: true, force: true });
+  rmSync(outside, { recursive: true, force: true });
 });
 
 const global = (): GlobalOptions => ({
@@ -89,6 +94,7 @@ describe('prepareImport writes and prints nothing, and says what commitImport wi
       source: 'incoming.agent.yaml',
       target: join(cwd, AGENT_PATH),
       targetDisplay: AGENT_PATH,
+      projectConfigDir: join(cwd, '.relavium'),
       content: AGENT_CANONICAL,
       bytes: Buffer.byteLength(AGENT_CANONICAL, 'utf8'),
       force: false,
@@ -212,6 +218,61 @@ describe('commitImport writes exactly the plan, once, and never replaces without
     expect(readFileSync(target(), 'utf8')).toBe(AGENT_CANONICAL);
   });
 });
+
+describe.skipIf(process.platform === 'win32')(
+  'a catalog directory that is a link: the plan shows where the file really goes, and a link out of the project is refused',
+  () => {
+    const LEAVES = `The target directory is a link that leaves the project: ${AGENT_DIRECTORY}.`;
+    const prepare = (force = false) =>
+      prepareImport({ path: 'incoming.agent.yaml', force }, { global: global(), homeDir: home });
+
+    it('a link that stays inside the project is followed: the plan names the real directory, and the write lands in it', () => {
+      mkdirSync(join(cwd, '.relavium', 'shared'), { recursive: true });
+      symlinkSync(join(cwd, '.relavium', 'shared'), join(cwd, '.relavium', 'agents'));
+      const plan = prepare();
+      expect(plan.targetDisplay).toBe('.relavium/shared/reviewer.agent.yaml');
+      expect(plan.target).toBe(join(cwd, '.relavium', 'shared', 'reviewer.agent.yaml'));
+      commitImport(plan);
+      expect(readFileSync(join(cwd, '.relavium', 'shared', 'reviewer.agent.yaml'), 'utf8')).toBe(
+        AGENT_CANONICAL,
+      );
+    });
+
+    it('a link that leaves the project is refused by the prepare, in fixed words that name the directory and not the absolute path', () => {
+      symlinkSync(outside, join(cwd, '.relavium', 'agents'));
+      let caught: unknown;
+      try {
+        prepare(true);
+      } catch (cause) {
+        caught = cause;
+      }
+      expect(isCliError(caught)).toBe(true);
+      if (!isCliError(caught)) return;
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.exitCode).toBe(2);
+      expect(caught.message).toBe(LEAVES);
+      expect(caught.message).not.toContain(outside);
+      expect(readdirSync(outside), 'nothing was written through the link').toEqual([]);
+    });
+
+    it('a link put in after the plan was made is refused by the commit, which writes nothing', () => {
+      const planned = prepare();
+      mkdirSync(join(cwd, '.relavium'), { recursive: true });
+      symlinkSync(outside, join(cwd, '.relavium', 'agents'));
+      expect(() => commitImport(planned)).toThrow(LEAVES);
+      expect(readdirSync(outside), 'nothing was written through the link').toEqual([]);
+    });
+
+    it('a link that points at nothing is refused by the commit too: an unresolved link is no evidence that the write stays inside', () => {
+      const planned = prepare();
+      symlinkSync(join(outside, 'missing'), join(cwd, '.relavium', 'agents'));
+      expect(() => commitImport(planned)).toThrow(
+        'The target directory could not be resolved safely. Check directory access and symbolic links, then retry.',
+      );
+      expect(readdirSync(outside)).toEqual([]);
+    });
+  },
+);
 
 describe('importCommand prints the collected notices only after the write', () => {
   it('the file exists when the first notice is written, and the output line follows it', () => {

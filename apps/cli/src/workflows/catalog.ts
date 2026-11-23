@@ -428,7 +428,7 @@ export type AgentFileRead =
 /**
  * The hardened read of ONE agent file the catalog listed, for a caller that binds what it reads (the Home's `c` on an agent's page). It is
  * {@link discoverAgentDefinitions}' own per-file read, not another: the same {@link readCatalogText} (admitted project artifact, inside
- * the catalog root, a regular file, a size ceiling, an open by canonical path with no final-link following and no blocking, an exact
+ * the `agents/` directory's real path, a regular file, a size ceiling, an open by canonical path with no final-link following and no blocking, an exact
  * device and inode identity) and then the same strict {@link parseAgent}, so a file swapped for a link out of the project, or for a FIFO,
  * is refused here as it is in a listing. `path` is the file's ABSOLUTE path, and the text it reads is the only read: the caller binds the
  * definition this returns and never reads the file again.
@@ -439,9 +439,14 @@ export function readAgentFile(opts: {
   readonly projectConfigDir: string;
   readonly homeDir?: string;
 }): AgentFileRead {
+  // The root is the AGENTS directory's real path, not the project configuration directory's: a file elsewhere under `.relavium/` (the
+  // workflows, a note, a copy) is not an agent the catalog listed, and a directory `agents` that is itself a link out of the project must
+  // not move the root with it, so it has to be within the configuration directory too (the scan's own rule, `scanCatalogDirectory`).
   let root: string;
   try {
-    root = realpathSync.native(opts.projectConfigDir);
+    const configRoot = realpathSync.native(opts.projectConfigDir);
+    root = realpathSync.native(join(opts.projectConfigDir, 'agents'));
+    if (!isWithinFsRoot(configRoot, root)) return { kind: 'refused' };
   } catch {
     return { kind: 'refused' };
   }

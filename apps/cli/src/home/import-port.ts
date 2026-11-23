@@ -6,7 +6,12 @@ import {
   assertSlugAvailable,
   resolveProjectConfigDir,
 } from '../authoring/authoring.js';
-import { commitImport, prepareImport, type ImportPlan } from '../commands/import.js';
+import {
+  assertImportTargetConfined,
+  commitImport,
+  prepareImport,
+  type ImportPlan,
+} from '../commands/import.js';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -101,6 +106,8 @@ function commitOf(plan: ImportPlan, deps: ImportPortDeps): () => ImportAttempt {
       // destination's directories since would send the write into home or global configuration. The shell's check-to-write gap is
       // microseconds; this one is not, so it is closed here the way the shell's is, by looking again right before the write.
       assertProjectArtifactPath(plan.target, deps.homeDir);
+      // And a link that leaves the project is no better a destination than one into home: the same look, right after the first.
+      assertImportTargetConfined(plan);
       // The id's rule, asked again now for the same reason: a file that declares the same id under another name can have appeared while
       // the card was open, and `wx` only protects the one name. Refused in the very words the prepare used.
       assertSlugAvailable({

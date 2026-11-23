@@ -1,10 +1,10 @@
-import { relative } from 'node:path';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   assertSlugAvailable,
   buildAuthored,
   catalogPath,
+  confineCatalogTarget,
   resolveProjectConfigDir,
   serializeAuthored,
   writeAuthoredFile,
@@ -97,9 +97,14 @@ export async function createCommand(
     force: args.force,
   });
 
-  const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
-  const targetDisplay = relative(cwd, target);
-  assertProjectArtifactPath(target);
+  const catalogTarget = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
+  assertProjectArtifactPath(catalogTarget);
+  // A catalog directory that is a link out of the project would take the file with it: the write goes where the link leads, shown as such.
+  const { target, targetDisplay } = confineCatalogTarget({
+    projectConfigDir,
+    cwd,
+    target: catalogTarget,
+  });
   writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
   warnSnapshotLiterals(parsed.definition, deps.io);
   deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${targetDisplay}\n`);

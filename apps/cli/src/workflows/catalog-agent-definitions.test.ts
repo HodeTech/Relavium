@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -9,6 +9,7 @@ import {
   MAX_CATALOG_SCAN_BYTES,
   discoverAgentDefinitions,
   discoverCatalog,
+  readAgentFile,
 } from './catalog.js';
 
 /**
@@ -160,5 +161,106 @@ describe('discoverAgentDefinitions', () => {
       );
       expect(discoverAgentDefinitions(opts())).toEqual(items);
     });
+  });
+});
+
+/**
+ * `readAgentFile`: the hardened read of ONE agent file for the Home's `c`. Its root is the `agents/` directory's real path (not the
+ * configuration directory's): a valid agent definition that lives anywhere else under `.relavium/` is not one the agents catalog
+ * lists, so it is not one a chat may be started from either. Every file in these tests is the SAME valid definition, so what differs
+ * between a read and a refusal is where the file is.
+ */
+describe('readAgentFile', () => {
+  let proj: string;
+  let home: string;
+  let outside: string;
+  let configDir: string;
+
+  beforeEach(() => {
+    proj = mkdtempSync(join(tmpdir(), 'relavium-read-agent-'));
+    home = mkdtempSync(join(tmpdir(), 'relavium-read-agent-home-'));
+    outside = mkdtempSync(join(tmpdir(), 'relavium-read-agent-outside-'));
+    configDir = join(proj, '.relavium');
+    mkdirSync(join(configDir, 'agents'), { recursive: true });
+  });
+  afterEach(() => {
+    for (const dir of [proj, home, outside]) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const read = (path: string) =>
+    readAgentFile({ path, cwd: proj, projectConfigDir: configDir, homeDir: home });
+  const place = (...segments: string[]): string => {
+    const path = join(configDir, ...segments);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, VALID_AGENT);
+    return path;
+  };
+
+  it('reads a valid agent in agents/, and returns the definition it parsed', () => {
+    const result = read(place('agents', 'summarizer.agent.yaml'));
+    expect(result.kind).toBe('read');
+    if (result.kind !== 'read') return;
+    expect(result.agent.id).toBe('summarizer');
+  });
+
+  it.each([
+    ['the configuration directory itself', ['summarizer.agent.yaml']],
+    ['workflows/', ['workflows', 'summarizer.agent.yaml']],
+    ['a directory of its own under .relavium/', ['notes', 'summarizer.agent.yaml']],
+  ] as const)('refuses a valid agent placed in %s: it is not under agents/', (_name, segments) => {
+    const path = place(...segments);
+    // Placed in agents/ the very same file reads, so only where it lives is what refuses it.
+    expect(read(place('agents', 'summarizer.agent.yaml')).kind).toBe('read');
+    expect(read(path)).toEqual({ kind: 'refused' });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses an alias in agents/ that leads to a valid agent elsewhere in .relavium/, though the listing admits it',
+    () => {
+      const real = place('shared', 'summarizer.agent.yaml');
+      const alias = join(configDir, 'agents', 'alias.agent.yaml');
+      symlinkSync(real, alias);
+      expect(read(alias)).toEqual({ kind: 'refused' });
+      expect(read(real)).toEqual({ kind: 'refused' });
+      // The listing's root is the whole configuration directory, so it still lists the alias: the stricter read is the bind's.
+      expect(
+        discoverAgentDefinitions({ projectConfigDir: configDir, cwd: proj, homeDir: home })[0]
+          ?.entry.valid,
+      ).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'admits an alias in agents/ that stays in agents/',
+    () => {
+      const real = place('agents', 'real.agent.yaml');
+      const alias = join(configDir, 'agents', 'alias.agent.yaml');
+      symlinkSync(real, alias);
+      expect(read(alias).kind).toBe('read');
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'refuses everything when agents/ is itself a link out of the project: the root does not move with the link',
+    () => {
+      rmSync(join(configDir, 'agents'), { recursive: true });
+      writeFileSync(join(outside, 'summarizer.agent.yaml'), VALID_AGENT);
+      symlinkSync(outside, join(configDir, 'agents'));
+      expect(read(join(configDir, 'agents', 'summarizer.agent.yaml'))).toEqual({
+        kind: 'refused',
+      });
+    },
+  );
+
+  it('refuses a file when there is no agents/ directory at all', () => {
+    const path = place('workflows', 'summarizer.agent.yaml');
+    rmSync(join(configDir, 'agents'), { recursive: true });
+    expect(read(path)).toEqual({ kind: 'refused' });
+  });
+
+  it('reports a file in agents/ that does not parse as invalid, not as refused', () => {
+    const path = join(configDir, 'agents', 'broken.agent.yaml');
+    writeFileSync(path, 'id: Not_Kebab\nmodel: m\n');
+    expect(read(path)).toEqual({ kind: 'invalid' });
   });
 });

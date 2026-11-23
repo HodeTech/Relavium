@@ -1,9 +1,11 @@
-import { basename, relative, resolve } from 'node:path';
+import { basename, dirname, relative, resolve } from 'node:path';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
 import {
   assertSlugAvailable,
   catalogPath,
+  confineCatalogTarget,
+  confineToProjectConfig,
   detectAndParse,
   readAuthoredFile,
   resolveProjectConfigDir,
@@ -46,9 +48,14 @@ export interface ImportPlan {
   readonly slug: string;
   /** The source as the command names it in its own words: relative to the working directory. */
   readonly source: string;
-  /** The absolute destination. The human-facing {@link ImportPlan.targetDisplay} is the cwd-relative one. */
+  /**
+   * The absolute destination, with its directory resolved through any link that stays inside the project (a link that leaves it is
+   * refused). The human-facing {@link ImportPlan.targetDisplay} is the cwd-relative one of this same path.
+   */
   readonly target: string;
   readonly targetDisplay: string;
+  /** The project configuration directory the destination was confined to; {@link commitImport} confines it to this again, right before the write. */
+  readonly projectConfigDir: string;
   /** The canonical re-serialization, as it will be written (UTF-8). */
   readonly content: string;
   /** The bytes {@link ImportPlan.content} takes on disk. */
@@ -90,9 +97,14 @@ export function prepareImport(args: ImportCommandArgs, deps: ImportPrepareDeps):
     ...(home === undefined ? {} : { homeDir: home }),
   });
 
-  const target = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
-  const targetDisplay = relative(cwd, target);
-  assertProjectArtifactPath(target, home);
+  const catalogTarget = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
+  assertProjectArtifactPath(catalogTarget, home);
+  // After the rule about global state, so a link into it keeps that sentence: this one is for a link that leaves the project elsewhere.
+  const { target, targetDisplay } = confineCatalogTarget({
+    projectConfigDir,
+    cwd,
+    target: catalogTarget,
+  });
   const content = serializeAuthored(parsed);
   const warnings: string[] = [];
   warnSnapshotLiterals(parsed.definition, {
@@ -106,6 +118,7 @@ export function prepareImport(args: ImportCommandArgs, deps: ImportPrepareDeps):
     source,
     target,
     targetDisplay,
+    projectConfigDir,
     content,
     bytes: Buffer.byteLength(content, 'utf8'),
     force: args.force,
@@ -114,10 +127,21 @@ export function prepareImport(args: ImportCommandArgs, deps: ImportPrepareDeps):
 }
 
 /**
+ * Refuse a plan whose destination directory now leads out of the project, as {@link prepareImport} refuses one that does. The plan was
+ * confined when it was made; a link put in one of its directories since (the Home's card stays open for as long as a person takes) is
+ * caught here. {@link commitImport} asks it right before the write, and the Home asks it earlier, where it re-checks the destination.
+ */
+export function assertImportTargetConfined(plan: ImportPlan): void {
+  confineToProjectConfig(plan.projectConfigDir, plan.target, dirname(plan.targetDisplay));
+}
+
+/**
  * The second half: write the plan. Without `force` an existing target is a clean exit-2 {@link CliError} (`wx`, so no check-then-write
- * window), and a target that is not a file is one too ({@link writeAuthoredFile}).
+ * window), and a target that is not a file is one too ({@link writeAuthoredFile}). A destination directory that is a link out of the
+ * project is refused first ({@link assertImportTargetConfined}).
  */
 export function commitImport(plan: ImportPlan): void {
+  assertImportTargetConfined(plan);
   writeAuthoredFile(plan.target, plan.targetDisplay, plan.content, plan.force);
 }
 
