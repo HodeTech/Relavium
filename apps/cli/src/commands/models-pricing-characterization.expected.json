@@ -1,0 +1,1154 @@
+{
+  "set input and output": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set input and output --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"acme-custom-1\",\"provider\":\"openai\",\"source\":\"user\",\"inputCostPerMtokMicrocents\":300000000,\"outputCostPerMtokMicrocents\":900000000,\"overriddenCatalogPrice\":null}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set a fractional price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $0.15/Mtok, output $0.6/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 15000000,
+        "output": 60000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set a zero price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $0/Mtok, output $0/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set cached input with the pair": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok, cached $0.03/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 3000000,
+        "cachedStated": true,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set cached input alone": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 50000000,
+        "cachedStated": true,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set cached input alone --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-4\",\"provider\":\"openai\",\"source\":\"user\",\"cachedInputCostPerMtokMicrocents\":50000000,\"overriddenCatalogPrice\":{\"inputCostPerMtokMicrocents\":3000000000,\"outputCostPerMtokMicrocents\":6000000000,\"cachedInputCostPerMtokMicrocents\":3000000000}}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 50000000,
+        "cachedStated": true,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set cached input to zero": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": true,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set an image price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set an image price --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-4\",\"provider\":\"openai\",\"source\":\"user\",\"mediaImageCostMicrocents\":4000000}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set an audio price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": 100000,
+        "video": null
+      }
+    ]
+  },
+  "set a video price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): video $0.5/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": null,
+        "video": 50000000
+      }
+    ]
+  },
+  "set a zero media price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": 0,
+        "video": null
+      }
+    ]
+  },
+  "set cached input and an image price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): cached $0.5/Mtok, image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 50000000,
+        "cachedStated": true,
+        "tokenRatesStated": false,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "set every field": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok, cached $1/Mtok, image $0.04/image, audio $0.001/s, video $0.5/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 100000000,
+        "cachedStated": true,
+        "tokenRatesStated": true,
+        "image": 4000000,
+        "audio": 100000,
+        "video": 50000000
+      }
+    ]
+  },
+  "set every field --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"acme-custom-1\",\"provider\":\"openai\",\"source\":\"user\",\"inputCostPerMtokMicrocents\":300000000,\"outputCostPerMtokMicrocents\":900000000,\"cachedInputCostPerMtokMicrocents\":100000000,\"mediaImageCostMicrocents\":4000000,\"mediaAudioCostMicrocents\":100000,\"mediaVideoCostMicrocents\":50000000,\"overriddenCatalogPrice\":null}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 100000000,
+        "cachedStated": true,
+        "tokenRatesStated": true,
+        "image": 4000000,
+        "audio": 100000,
+        "video": 50000000
+      }
+    ]
+  },
+  "override a catalog price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-5.5 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n  Overrides the catalog price for this model: input $5/Mtok, output $30/Mtok. Yours wins. Run `relavium models pricing 'gpt-5.5' --clear` to go back to the catalog's.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-5.5",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "override a catalog price --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-5.5\",\"provider\":\"openai\",\"source\":\"user\",\"inputCostPerMtokMicrocents\":300000000,\"outputCostPerMtokMicrocents\":900000000,\"overriddenCatalogPrice\":{\"inputCostPerMtokMicrocents\":500000000,\"outputCostPerMtokMicrocents\":3000000000,\"cachedInputCostPerMtokMicrocents\":50000000}}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-5.5",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "a media-only price on a catalog model overrides no token price --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-5.5\",\"provider\":\"openai\",\"source\":\"user\",\"mediaImageCostMicrocents\":4000000}\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-5.5",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-5.5",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "re-price keeps the stored cached and media rates": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $4/Mtok, output $12/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 400000000,
+        "output": 1200000000,
+        "cached": 3000000,
+        "cachedStated": true,
+        "tokenRatesStated": true,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "a media-only re-price keeps the stated token rates": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): audio $0.001/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": 100000,
+        "video": null
+      }
+    ]
+  },
+  "re-price keeps a discovered display name and limits": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $1/Mtok, output $2/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "Acme Custom (discovered)",
+        "contextWindowTokens": 32000,
+        "maxOutputTokens": 4000,
+        "input": 100000000,
+        "output": 200000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "the token ceiling is accepted": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $100000/Mtok, output $100000/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 10000000000000,
+        "output": 10000000000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "the cached ceiling is accepted": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): cached $100000/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 10000000000000,
+        "cachedStated": true,
+        "tokenRatesStated": false,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "the media ceiling is accepted": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for gpt-4 (openai): image $1000/image, audio $1000/s, video $1000/s. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "gpt-4",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "gpt-4",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 0,
+        "output": 0,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": false,
+        "image": 100000000000,
+        "audio": 100000000000,
+        "video": 100000000000
+      }
+    ]
+  },
+  "clear an override of a catalog model": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Cleared the user price for gpt-5.5 (openai). It falls back to the catalog: input $5/Mtok, output $30/Mtok.\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear an override of a catalog model --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-5.5\",\"provider\":\"openai\",\"cleared\":true,\"source\":\"catalog\"}\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear an override of a model the catalog does not price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Cleared the user price for acme-custom-1 (openai). The catalog does not price this model, so its cost cap will not apply until you price it again.\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear an override of a model the catalog does not price --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"acme-custom-1\",\"provider\":\"openai\",\"cleared\":true,\"source\":null}\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear a model with no override": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "gpt-5.5 (openai) has no user price to clear — nothing changed.\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear a model with no override --json": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "{\"model\":\"gpt-5.5\",\"provider\":\"openai\",\"cleared\":false,\"source\":\"catalog\"}\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear twice says nothing changed": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "gpt-5.5 (openai) has no user price to clear — nothing changed.\n",
+    "stderr": "",
+    "rows": []
+  },
+  "clear under an unregistered provider": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "unknown provider 'anthropic' — register it first (e.g. `relavium provider add anthropic` or `relavium provider set-key anthropic`)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --input is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --input. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --output is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --output. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --cached is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --cached. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --image is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --image. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --audio is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --audio. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "clear with --video is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--clear removes the price; it takes no --video. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input without output": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing required option --output USD_PER_MTOK (or price only --cached / --image / --audio / --video)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "output without input": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing required option --input USD_PER_MTOK (or price only --cached / --image / --audio / --video)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input and an image without output": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input and --output must be given together (or omit both and price only media rates)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "output and a cached price without input": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input and --output must be given together (or omit both and price only media rates)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input without output --json": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing required option --output USD_PER_MTOK (or price only --cached / --image / --audio / --video)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "no price at all": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing required option --input USD_PER_MTOK (or price only --cached / --image / --audio / --video)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input ($100000.01/Mtok) is implausibly large — the maximum is $100000/Mtok"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "output above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--output ($1000000/Mtok) is implausibly large — the maximum is $100000/Mtok"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "cached above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--cached ($100001/Mtok) is implausibly large — the maximum is $100000/Mtok"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "image above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--image ($1000.01) is implausibly large — the maximum is $1000 per unit"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "audio above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--audio ($5000) is implausibly large — the maximum is $1000 per unit"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "video above its ceiling": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--video ($1001) is implausibly large — the maximum is $1000 per unit"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input below zero": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input must be a finite, non-negative number of USD per million tokens"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "cached below zero": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--cached must be a finite, non-negative number of USD per million tokens"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "image below zero": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--image must be a finite, non-negative number of USD per billed unit"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input must be a finite number of USD per million tokens."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "output that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--output must be a finite number of USD per million tokens."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "cached that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--cached must be a finite number of USD per million tokens."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "image that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--image must be a finite number of USD per billed unit (per image, or per second)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "audio that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--audio must be a finite number of USD per billed unit (per image, or per second)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "video that is not a number": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--video must be a finite number of USD per billed unit (per image, or per second)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input that is empty": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input must be a finite number of USD per million tokens."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "input that is infinite": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--input must be a finite number of USD per million tokens."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a rejected price writes nothing even beside a good one": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--cached must be a finite, non-negative number of USD per million tokens"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a rejected media price writes nothing even beside a good pair": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "--image ($5000) is implausibly large — the maximum is $1000 per unit"
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "an unknown model with a token price is priced": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for brand-new-model (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "brand-new-model",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "brand-new-model",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "an unknown model with a media price alone is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "'brand-new-model' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied. Re-run with --input USD_PER_MTOK --output USD_PER_MTOK as well. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "an unknown model with a cached price alone is refused": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "'brand-new-model' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied. Re-run with --input USD_PER_MTOK --output USD_PER_MTOK as well. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "an unknown model that already stated token rates takes a media price": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for brand-new-model (openai): image $0.04/image. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "brand-new-model",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "brand-new-model",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": 4000000,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "an unregistered provider": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "unknown provider 'anthropic' — register it first (e.g. `relavium provider add anthropic` or `relavium provider set-key anthropic`)."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a provider the catalog does not anchor the model to": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "'claude-opus-4-8' is anthropic's model, not openai's — the catalog anchors a model id to one provider, and a price under the wrong one would never be applied. Re-run with `--provider anthropic`. Nothing written."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a model id with a control byte is echoed without it": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme\u001b[31m-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme\u001b[31m-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "a missing --provider": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing required option --provider <slug>."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a missing model": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "missing argument <model>."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": []
+  },
+  "a model already priced under another provider": {
+    "exit": 2,
+    "refusal": {
+      "code": "invalid_invocation",
+      "message": "'shared-id' is already user-priced under 'deepseek'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under 'deepseek') or use a distinct model id."
+    },
+    "stdout": "",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "shared-id",
+        "provider": "deepseek",
+        "source": "user",
+        "displayName": "shared-id",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 300000000,
+        "output": 900000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  },
+  "re-pricing the same model under the same provider is an update": {
+    "exit": 0,
+    "refusal": null,
+    "stdout": "Set user pricing for acme-custom-1 (openai): input $4/Mtok, output $12/Mtok. It applies to your next run/chat and survives `relavium models refresh`.\n",
+    "stderr": "",
+    "rows": [
+      {
+        "model": "acme-custom-1",
+        "provider": "openai",
+        "source": "user",
+        "displayName": "acme-custom-1",
+        "contextWindowTokens": null,
+        "maxOutputTokens": null,
+        "input": 400000000,
+        "output": 1200000000,
+        "cached": 0,
+        "cachedStated": false,
+        "tokenRatesStated": true,
+        "image": null,
+        "audio": null,
+        "video": null
+      }
+    ]
+  }
+}

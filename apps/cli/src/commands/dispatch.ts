@@ -66,6 +66,13 @@ import { logsCommand, logsFollowCommand } from './logs.js';
 import { modelsCommand, type ModelsCommandArgs } from './models.js';
 import { modelsPricingCommand, type ModelsPricingCommandArgs } from './models-pricing.js';
 import {
+  PRICING_FIELDS,
+  pairingIssue,
+  pairingSentence,
+  priceArgsFromText,
+  type PricingFieldId,
+} from './pricing-fields.js';
+import {
   runProviderCommand,
   type ProviderCommandArgs,
   type ProviderCommandDeps,
@@ -248,51 +255,30 @@ export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs 
   };
 }
 
-/** Parse one USD/Mtok option string → a finite number (invocation-level: shape only; the command core owns the
- *  non-negative + ceiling domain rules). The raw value is NEVER echoed (a defensive no-terminal-injection habit). */
-function parseUsdPerMtok(raw: string, flag: string): number {
-  const trimmed = raw.trim();
-  const value = Number(trimmed);
-  if (trimmed === '' || !Number.isFinite(value)) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} must be a finite number of USD per million tokens.`,
-    );
-  }
-  return value;
-}
-
 /**
  * `--clear` retires the WHOLE override row, so accepting a price alongside it would silently discard half
- * the invocation. Every price flag is refused, media included — extracted from
- * {@link buildModelsPricingArgs}, whose branch count is what Sonar flags.
+ * the invocation. Every price flag is refused, media included — the list is the field table's, so a price added to
+ * the table is refused here without anyone remembering to.
  */
 function assertClearTakesNoPrice(input: CommandInput): void {
-  for (const flag of ['input', 'output', 'cached', 'image', 'audio', 'video'] as const) {
-    if (optString(input.options[flag]) !== undefined) {
+  for (const field of PRICING_FIELDS) {
+    if (optString(input.options[field.id]) !== undefined) {
       throw new CliError(
         'invalid_invocation',
-        `--clear removes the price; it takes no --${flag}. Nothing written.`,
+        `--clear removes the price; it takes no ${field.flag}. Nothing written.`,
       );
     }
   }
 }
 
-/** Parse one USD-per-billed-unit option string → a finite number ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md)
- *  §4). Shape only, like its per-Mtok sibling; the command core owns the non-negative + ceiling rules. It is a
- *  separate function purely so the error sentence names the right DENOMINATOR — a user told "USD per million
- *  tokens" while pricing one image would reasonably enter a millionth of the number they meant. The arithmetic
- *  is identical to `parseUsdPerMtok`'s; only the sentence differs. */
-function parseUsdPerUnit(raw: string, flag: string): number {
-  const trimmed = raw.trim();
-  const value = Number(trimmed);
-  if (trimmed === '' || !Number.isFinite(value)) {
-    throw new CliError(
-      'invalid_invocation',
-      `${flag} must be a finite number of USD per billed unit (per image, or per second).`,
-    );
+/** The price options an invocation carries, read by the field table: a field is present only when its flag was given. */
+function rawPriceOptions(input: CommandInput): Partial<Record<PricingFieldId, string>> {
+  const raw: Partial<Record<PricingFieldId, string>> = {};
+  for (const field of PRICING_FIELDS) {
+    const text = optString(input.options[field.id]);
+    if (text !== undefined) raw[field.id] = text;
   }
-  return value;
+  return raw;
 }
 
 export function buildModelsPricingArgs(input: CommandInput): ModelsPricingCommandArgs {
@@ -308,12 +294,10 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
     assertClearTakesNoPrice(input);
     return { model: reqPositional(input, 0, 'model'), provider, clear: true };
   }
-  const rawInput = optString(input.options['input']);
-  const rawOutput = optString(input.options['output']);
-  const rawCached = optString(input.options['cached']);
-  const rawImage = optString(input.options['image']);
-  const rawAudio = optString(input.options['audio']);
-  const rawVideo = optString(input.options['video']);
+  const raw = rawPriceOptions(input);
+  // The pairing rule (`pricing-fields.ts`; the command core applies it too, so no other caller can skip it). Applied here first so
+  // an invocation that states no price, or half a pair, fails before its other flags are read — in the order it always has.
+  //
   // A MEDIA-ONLY invocation is legitimate, and making it legitimate is part of `CR-55`
   // ([ADR-0089](../../../../docs/decisions/0089-media-correctness-four-boundaries.md) §4(c)). A strict-cap
   // refusal points the user here to add an image rate to a model the CATALOG already prices for tokens. If
@@ -321,50 +305,16 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   // may not know into a `source='user'` row that then OUTRANKS the catalog for tokens too — so the honest-looking
   // `--input 0 --output 0` would bill every token on that model at nothing, permanently, and silently reopen the
   // very cap they were trying to satisfy. The store's upsert-omission rule preserves an absent column, so
-  // omitting them here leaves the catalog's token pricing exactly where it was.
-  const hasMedia = rawImage !== undefined || rawAudio !== undefined || rawVideo !== undefined;
-  // `--cached` alone is a legitimate partial re-price, for exactly the reason media-only is: the store's
-  // upsert PRESERVES a column the caller omits, so setting a cache rate leaves the token rates where they
-  // were. It was rejected here while the command core and the docs both treated it as legal — a contract
-  // that disagreed with itself, and one more flag a user had to restate to change an unrelated number.
-  const hasNonTokenPrice = hasMedia || rawCached !== undefined;
-  if (rawInput === undefined && !hasNonTokenPrice) {
-    throw new CliError(
-      'invalid_invocation',
-      'missing required option --input USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
-    );
-  }
-  if (rawOutput === undefined && !hasNonTokenPrice) {
-    throw new CliError(
-      'invalid_invocation',
-      'missing required option --output USD_PER_MTOK (or price only --cached / --image / --audio / --video).',
-    );
-  }
-  // Stating ONE token rate without the other is still an error: they are a pair, and a half-stated pair would
-  // write a `0` the reader cannot tell from an instruction.
-  if ((rawInput === undefined) !== (rawOutput === undefined)) {
-    throw new CliError(
-      'invalid_invocation',
-      '--input and --output must be given together (or omit both and price only media rates).',
-    );
-  }
+  // omitting them here leaves the catalog's token pricing exactly where it was. `--cached` alone is a legitimate
+  // partial re-price for the same reason.
+  const issue = pairingIssue((id) => raw[id] !== undefined);
+  if (issue !== undefined) throw new CliError('invalid_invocation', pairingSentence(issue));
   return {
     model: reqPositional(input, 0, 'model'),
     provider,
-    // Per BILLED UNIT for the media three, per Mtok for the token pair — `parseUsdPerUnit` exists so the two
-    // denominators cannot be confused at the parse boundary either.
-    ...(rawInput === undefined || rawOutput === undefined
-      ? {}
-      : {
-          inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
-          outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
-        }),
-    ...(rawCached === undefined
-      ? {}
-      : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),
-    ...(rawImage === undefined ? {} : { imageUsdPerCount: parseUsdPerUnit(rawImage, '--image') }),
-    ...(rawAudio === undefined ? {} : { audioUsdPerSecond: parseUsdPerUnit(rawAudio, '--audio') }),
-    ...(rawVideo === undefined ? {} : { videoUsdPerSecond: parseUsdPerUnit(rawVideo, '--video') }),
+    // Per BILLED UNIT for the media three, per Mtok for the token three — the field table's unit decides the sentence a bad
+    // value gets, so the two denominators cannot be confused at the parse boundary either.
+    ...priceArgsFromText(raw),
   };
 }
 
