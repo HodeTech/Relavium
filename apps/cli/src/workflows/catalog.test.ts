@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
-import { discoverCatalog } from './catalog.js';
+import { MAX_CATALOG_FILES, discoverCatalog } from './catalog.js';
 
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
@@ -176,6 +176,60 @@ describe('discoverCatalog', () => {
     // symbol reference, never a resolved value (there is none at parse time). `parseReason` only echoes a
     // typed WorkflowParseError/AgentParseError message, so no arbitrary error text reaches the entry.
     expect(leaky?.error).toContain('inputs.api_key');
+  });
+
+  describe('the size of one catalog directory', () => {
+    function writeMany(count: number): void {
+      for (let n = 0; n < count; n += 1) {
+        const id = `wf-${String(n).padStart(4, '0')}`;
+        write('workflows', `${id}.relavium.yaml`, VALID_WORKFLOW.replace('id: hello', `id: ${id}`));
+      }
+    }
+
+    it('lists a directory of exactly the cap, every file of it', () => {
+      writeMany(MAX_CATALOG_FILES);
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        kind: 'workflows',
+      });
+      expect(entries).toHaveLength(MAX_CATALOG_FILES);
+      expect(entries.every((entry) => entry.valid)).toBe(true);
+    });
+
+    it('refuses a directory one file over the cap with "too many workflow files", before opening any of them', () => {
+      writeMany(MAX_CATALOG_FILES + 1);
+      vi.mocked(openSync).mockClear();
+      let caught: unknown;
+      try {
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+      } catch (error) {
+        caught = error;
+      }
+      expect(isCliError(caught), 'a refusal the surfaces already show as output').toBe(true);
+      if (!isCliError(caught)) return;
+      expect(caught.code).toBe('invalid_invocation');
+      expect(caught.message).toContain('too many workflow files');
+      expect(caught.message).toContain(String(MAX_CATALOG_FILES));
+      expect(
+        openSync,
+        'no file was opened: the bound is checked on the names',
+      ).not.toHaveBeenCalled();
+    });
+
+    it('says "agent" for the agents catalog, and counts only the YAML files of the directory', () => {
+      for (let n = 0; n < MAX_CATALOG_FILES + 1; n += 1)
+        write('agents', `a-${String(n).padStart(4, '0')}.agent.yaml`, VALID_AGENT);
+      expect(() =>
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' }),
+      ).toThrow(/too many agent files/);
+      // A directory full of other files is not a big catalog.
+      for (let n = 0; n < MAX_CATALOG_FILES + 1; n += 1)
+        write('workflows', `n-${String(n)}.txt`, 'x');
+      expect(
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }),
+      ).toEqual([]);
+    });
   });
 
   it('ignores non-YAML files', () => {

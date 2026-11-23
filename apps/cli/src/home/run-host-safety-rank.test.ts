@@ -3,8 +3,10 @@
  * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6).
  *
  * `RunHost` keeps the leg that carried the MOST serious fact, in the registry's own order (8, then 7, 5, 6), and a later, lesser leg never
- * replaces it: the Home's exit line and its exit code name the worst thing that happened, not the last. The order lives in one private
- * function (`safetyRank`), so it is pinned here through what the host reports, over real legs on a real run core.
+ * replaces it: the Home's exit line and its exit code name the worst thing that happened, not the last. The order is ONE table
+ * (`safetyRank` in `process/exit-observations.ts`: the registry, the host and the hosted legs all read it), pinned there by its own test and
+ * here through what the host reports, over real legs on a real run core. A TIE keeps the FIRST leg: a later leg of the same rank never
+ * replaces the one the exit line already names.
  *
  * Every leg is a scripted handle on a real engine object; every home is a temporary directory handed to the host.
  */
@@ -173,6 +175,13 @@ describe('the Home keeps the most serious safety fact across legs', () => {
     },
     { name: '6 then 5 keeps 5', sequence: [6, 5], kept: 'run-2', exit: 5 },
     { name: '6 then an ordinary leg keeps 6', sequence: [6, undefined], kept: 'run-1', exit: 6 },
+    {
+      name: '7 then 7 keeps the FIRST 7 (a tie never moves the kept leg)',
+      sequence: [7, 7],
+      kept: 'run-1',
+      exit: 7,
+    },
+    { name: '8 then 8 keeps the FIRST 8', sequence: [8, 8], kept: 'run-1', exit: 8 },
   ] satisfies readonly {
     readonly name: string;
     readonly sequence: readonly Safety[];

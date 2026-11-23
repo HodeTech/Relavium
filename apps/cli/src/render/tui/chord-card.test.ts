@@ -209,6 +209,31 @@ describe('the chord card answers only with a Ctrl chord', () => {
   });
 });
 
+describe('nothing stored by the flow sits above a chord card', () => {
+  const NOTE = 'skipped `x` ││ Ctrl+Y [Ctrl+N]';
+
+  it('a note set before the card opens is gone when it does', () => {
+    const f = fixture(OFF);
+    f.flow.note(NOTE, 'Run workflow');
+    expect(f.ui.getSnapshot().note, 'the note is shown while the flow only talks').toContain(
+      'skipped',
+    );
+    f.ask();
+    const card = f.ui.getSnapshot();
+    expect(card.kind).toBe('chord');
+    expect(card.note, 'no stored text above a card whose keys decide something').toBe('');
+    expect(JSON.stringify(card), 'and none of it anywhere in the card').not.toContain('skipped');
+  });
+
+  it('is the chord card alone: another prompt keeps the note above it, as before', () => {
+    const f = fixture(OFF);
+    f.flow.note(NOTE, 'Run workflow');
+    void f.flow.select({ message: 'Run which workflow?', options: [{ value: '0', label: 'a' }] });
+    expect(f.ui.getSnapshot().kind).toBe('select');
+    expect(f.ui.getSnapshot().note).toContain('skipped');
+  });
+});
+
 describe('the chord card passes the approval guards, one layer at a time', () => {
   it('dwell: an allow before the frame has been on screen for the settle time is refused', async () => {
     const f = fixture(only('settleMs', 400));

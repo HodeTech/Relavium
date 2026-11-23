@@ -284,6 +284,9 @@ describe('driveHome prints the line once the screen is restored', () => {
     const exited = new Promise<void>((resolve) => {
       acknowledgeExit = resolve;
     });
+    // The Home's one signal handler (what a kill reaches) and the process exits it asked for.
+    let onSignal: ((signo: number) => void) | undefined;
+    const exitCodes: number[] = [];
     const deps: HomeDeps = {
       homeDir: operatorHome,
       outputStoreFactory: () => Promise.resolve(undefined),
@@ -316,7 +319,10 @@ describe('driveHome prints the line once the screen is restored', () => {
       },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
-      subscribeSignals: () => () => undefined,
+      subscribeSignals: (handler) => {
+        onSignal = handler;
+        return () => undefined;
+      },
       subscribeProcessExit: () => () => undefined,
       jobControlLifecycle: INERT_JOB_CONTROL,
       onboardingTerminalLifecycle: INERT_ONBOARDING_TERMINAL,
@@ -324,7 +330,9 @@ describe('driveHome prints the line once the screen is restored', () => {
         // The unowned Home writes its restoration piece by piece; the mouse reporting going off is the last of them.
         if (sequence.includes(DISABLE_MOUSE)) order.push('screen restored');
       },
-      exit: () => undefined,
+      exit: (code) => {
+        exitCodes.push(code);
+      },
       onboardingPrompter: {
         intro: () => undefined,
         outro: () => undefined,
@@ -345,7 +353,18 @@ describe('driveHome prints the line once the screen is restored', () => {
       props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms
       return running;
     };
-    return { leave, order, out, streams, closeSpy };
+    /**
+     * Deliver an external signal to the Home, as the process would, once the Home is mounted; resolves when the Home asked the process to
+     * exit with the conventional `128 + signo`.
+     */
+    const signal = async (signo: number): Promise<void> => {
+      await vi.waitFor(() => expect(onSignal, 'the Home subscribed to signals').toBeDefined(), {
+        timeout: WAIT_MS,
+      });
+      onSignal?.(signo);
+      await vi.waitFor(() => expect(exitCodes).toEqual([128 + signo]), { timeout: WAIT_MS });
+    };
+    return { leave, signal, order, out, streams, closeSpy };
   }
 
   function idleHost(): RunHost {
@@ -400,6 +419,7 @@ describe('driveHome prints the line once the screen is restored', () => {
     ]);
     expect(home.order, 'the screen was restored').toContain('screen restored');
     expect(home.order, 'the line was printed').toContain('line');
+    expect(home.order, 'the mount was torn down').toContain('unmount');
     expect(
       home.order.filter((step) => step === 'line'),
       'one line, and no other write of text',
@@ -462,5 +482,26 @@ describe('driveHome prints the line once the screen is restored', () => {
       home.closeSpy,
       'the abandoned leg may still be writing: the handle is left to the process`s exit',
     ).not.toHaveBeenCalled();
+  });
+
+  it('an external signal closes the shared database, and leaves it open under a leg the host had abandoned', async () => {
+    const settled = mountHome(idleHost());
+    await settled.signal(15);
+    expect(
+      settled.closeSpy,
+      'the usual signal exit closes the connection once',
+    ).toHaveBeenCalledOnce();
+    await settled.leave();
+
+    const run = idleHost();
+    vi.spyOn(run, 'abandoned', 'get').mockReturnValue(true);
+    const home = mountHome(run);
+    await home.signal(15);
+    expect(
+      home.closeSpy,
+      'the abandoned leg may still be writing: the signal path leaves the handle to the exit that follows it',
+    ).not.toHaveBeenCalled();
+    await home.leave();
+    expect(home.closeSpy, 'and the clean exit after it leaves it too').not.toHaveBeenCalled();
   });
 });

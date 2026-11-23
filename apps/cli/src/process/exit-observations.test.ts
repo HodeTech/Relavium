@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   ExitObservations,
+  safetyRank,
   type OrdinaryExit,
   type WorkflowSafetyExit,
 } from './exit-observations.js';
@@ -15,6 +16,29 @@ function permutations<T>(values: readonly T[]): T[][] {
 
 const safetyPriority: readonly WorkflowSafetyExit[] = [8, 7, 5, 6];
 const ordinaryOutcomes: readonly OrdinaryExit[] = [0, 1, 2, 3, 4, 6];
+
+describe('safetyRank, the one order of the workflow safety facts', () => {
+  it('ranks 8 above 7 above 5 above 6, strictly, and a missing fact below every one', () => {
+    const ranks = safetyPriority.map((fact) => safetyRank(fact));
+    expect(ranks, 'strictly descending in the registry`s order').toEqual(
+      [...ranks].sort((a, b) => b - a),
+    );
+    expect(new Set(ranks).size, 'no two facts tie').toBe(safetyPriority.length);
+    expect(safetyRank(undefined)).toBeLessThan(Math.min(...ranks));
+  });
+
+  it('is the order the registry keeps: whichever arrives, the higher rank is what exitCode reports', () => {
+    for (const first of safetyPriority) {
+      for (const second of safetyPriority) {
+        const facts = new ExitObservations();
+        facts.observeWorkflowSafety(first);
+        facts.observeWorkflowSafety(second);
+        const kept = safetyRank(first) >= safetyRank(second) ? first : second;
+        expect(facts.exitCode()).toBe(kept);
+      }
+    }
+  });
+});
 
 describe('ExitObservations actual-fact priority', () => {
   for (let offset = 0; offset < safetyPriority.length; offset++) {

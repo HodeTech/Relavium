@@ -12,6 +12,7 @@ import type { StdioConsentGate } from '../engine/mcp-servers.js';
 import { sweepHostMediaBestEffort } from '../engine/media-gc.js';
 import { terminalOutboxPath, type OpenedHistory } from '../history/open.js';
 import { CliError, isCliError, toUserFacing } from '../process/errors.js';
+import { safetyRank } from '../process/exit-observations.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -242,22 +243,6 @@ class HostedRunView implements RunTerminalView {
   }
   runViewOperation<T>(factory: () => T | Promise<T>): Promise<T> {
     return Promise.resolve().then(factory);
-  }
-}
-
-/** The registry's order of the workflow safety facts (its sticky priority: 8, then 7, 5, 6); no fact ranks below every one. */
-function safetyRank(safety: HostedRunTerminal['safety']): number {
-  switch (safety) {
-    case 8:
-      return 4;
-    case 7:
-      return 3;
-    case 5:
-      return 2;
-    case 6:
-      return 1;
-    default:
-      return 0;
   }
 }
 

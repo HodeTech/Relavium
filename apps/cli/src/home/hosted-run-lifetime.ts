@@ -2,7 +2,7 @@ import { EngineStateError, type RunHandle, type WorkflowEngine } from '@relavium
 
 import type { EffectNoticeOwner } from '../engine/effect-retention.js';
 import { toUserFacing } from '../process/errors.js';
-import type { WorkflowSafetyExit } from '../process/exit-observations.js';
+import { safetyRank, type WorkflowSafetyExit } from '../process/exit-observations.js';
 import type { CliInvocation } from '../process/invocation.js';
 import type { OwnerFailureCode, OwnerRetirement } from '../process/invocation-registry.js';
 import { ownNotification } from '../process/owned-notification.js';
@@ -182,8 +182,7 @@ export class HostedRunLifetime implements RunLifetime {
   }
   publish(safety: WorkflowSafetyExit | undefined, hostSafe: boolean): void {
     this.invocation.registry.observations.observeWorkflowSafety(safety);
-    const rank: Readonly<Record<WorkflowSafetyExit, number>> = { 8: 4, 7: 3, 5: 2, 6: 1 };
-    if (safety !== undefined && (this.#safety === undefined || rank[safety] > rank[this.#safety]))
+    if (safety !== undefined && safetyRank(safety) > safetyRank(this.#safety))
       this.#safety = safety;
     this.#hostSafe ||= hostSafe;
   }

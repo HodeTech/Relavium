@@ -71,10 +71,19 @@ function fileStem(name: string): string {
 }
 
 /**
+ * The most `*.yaml`/`*.yml` files one catalog directory may hold. Every file costs a stat, an open, a bounded read and a full parse, and
+ * the picker, `relavium list`, `/export` and the authoring commands all walk the whole catalog, so a directory of tens of thousands of
+ * files (a runaway generator, a mistaken `cp -r`) would stall each of them. A catalog that large is refused with a message that says so,
+ * rather than silently listing a prefix that hides the rest (a file the listing does not show cannot be told apart from one that is not there).
+ */
+export const MAX_CATALOG_FILES = 500;
+
+/**
  * Scan `<projectConfigDir>/<kind>/` (non-recursive) for `*.yaml`/`*.yml` files, parse each, and return the
  * catalog entries sorted by slug. A missing directory yields `[]` (no catalog of that kind); an unreadable
- * directory is a real fault (exit 2). A per-file read/parse failure becomes a `valid: false` entry, not a throw,
- * so one broken file never breaks the whole listing.
+ * directory is a real fault (exit 2); a directory of more than {@link MAX_CATALOG_FILES} files is refused
+ * (`invalid_invocation`, "too many workflow files") before any of them is opened. A per-file read/parse failure
+ * becomes a `valid: false` entry, not a throw, so one broken file never breaks the whole listing.
  */
 export function discoverCatalog(opts: {
   readonly projectConfigDir: string;
@@ -105,6 +114,13 @@ export function discoverCatalog(opts: {
     });
   }
 
+  if (names.length > MAX_CATALOG_FILES) {
+    // Thrown HERE, outside the `try` above: that one files every failure as "could not read the catalog directory".
+    throw new CliError(
+      'invalid_invocation',
+      `too many ${opts.kind === 'workflows' ? 'workflow' : 'agent'} files in the catalog (more than ${String(MAX_CATALOG_FILES)}); move some out of .relavium/${opts.kind}/ to list them.`,
+    );
+  }
   const entries = names.map((name) =>
     readEntry(join(dir, name), opts.cwd, opts.kind, root, opts.homeDir),
   );

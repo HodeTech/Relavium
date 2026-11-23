@@ -14,6 +14,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { settleFrames, waitFor } from './harness-util.js';
+import { EXIT_GUARD_GLYPH } from './home-projection.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
 afterEach(cleanup);
@@ -78,6 +79,29 @@ describe('the exit-guard card through RootApp', () => {
     expect(onExit).not.toHaveBeenCalled();
   });
 
+  it('the title row has a glyph and the words, so the card reads without colour as the other cards do', async () => {
+    const { controller, harness } = mount();
+    await settleFrames();
+    harness.stdin.write(CTRL_D);
+    await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    const lines = (harness.lastFrame() ?? '').split('\n');
+    const title = lines.find((line) => line.includes('A workflow run is executing'));
+    expect(title?.trim(), 'a glyph, then the words, on one row').toBe(
+      `${EXIT_GUARD_GLYPH.warning} A workflow run is executing: run-0001.`,
+    );
+    await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
+    harness.stdin.write(CTRL_Y);
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
+    expect(
+      (harness.lastFrame() ?? '')
+        .split('\n')
+        .find((line) => line.includes('Stopping the run…'))
+        ?.trim(),
+      'the waiting card has its glyph too',
+    ).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
+  });
+
   it('Ctrl+N closes it and the Home is back: the prompt hint returns', async () => {
     const { controller, harness, cancel } = mount();
     await settleFrames();
@@ -131,6 +155,38 @@ describe('the exit-guard card through RootApp', () => {
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('below the 80×24 minimum the loading echo says to resize, with the card drawn in the same degrade as on the landing', async () => {
+    const { controller, harness } = mount({ size: { cols: 60, rows: 20 } });
+    await settleFrames();
+    controller.handleKey('h', {});
+    controller.handleKey('', { return: true });
+    await waitFor(() => controller.getSnapshot().mode === 'loading');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Starting chat…'));
+    expect(harness.lastFrame(), 'the resize line, before any card is open').toContain(
+      'Terminal too small (60×20) — resize to at least 80×24.',
+    );
+    harness.stdin.write(CTRL_C);
+    await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    const frame = harness.lastFrame() ?? '';
+    expect(frame, 'the card and the line that explains why Ctrl+Y answers nothing').toContain(
+      'Terminal too small (60×20) — resize to at least 80×24.',
+    );
+    expect(frame.indexOf('Terminal too small'), 'the line comes before the card').toBeLessThan(
+      frame.indexOf('A workflow run is executing'),
+    );
+  });
+
+  it('at 80×24 or more the loading echo has no resize line', async () => {
+    const { controller, harness } = mount({ size: { cols: 80, rows: 24 } });
+    await settleFrames();
+    controller.handleKey('h', {});
+    controller.handleKey('', { return: true });
+    await waitFor(() => controller.getSnapshot().mode === 'loading');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('Starting chat…'));
+    expect(harness.lastFrame()).not.toContain('Terminal too small');
   });
 
   it('below the 80×24 minimum the card is drawn, Ctrl+N and Esc still reach it, and Ctrl+Y answers nothing', async () => {

@@ -17,6 +17,14 @@ const SAFETY_RANK: Readonly<Record<WorkflowSafetyExit, number>> = Object.freeze(
   6: 1,
 });
 
+/**
+ * The ONE order of the workflow safety facts (8, then 7, 5, 6), as a number a caller compares: the registry's sticky priority, and every
+ * surface that keeps "the worst fact so far" (the Home's run host and its hosted legs) read it from here. No fact ranks below every one.
+ */
+export function safetyRank(safety: WorkflowSafetyExit | undefined): number {
+  return safety === undefined ? 0 : SAFETY_RANK[safety];
+}
+
 /** Finite sticky invocation facts, not a history of completed owners or raw failures. */
 export class ExitObservations {
   #safety: WorkflowSafetyExit | undefined;

@@ -23,7 +23,12 @@ import {
   unreadableRunLabel,
   type ExitGuardPhase,
 } from './home-projection.js';
-import { parkedRunLabel, type ParkedRunRow } from './home-attention.js';
+import {
+  PARKED_ROW_INDENT_COLUMNS,
+  parkedRunLabel,
+  type ParkedRunKind,
+  type ParkedRunRow,
+} from './home-attention.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
@@ -166,13 +171,15 @@ function homeHint(state: {
   readonly emptyDraft: boolean;
   readonly hasRecentSessions: boolean;
   readonly hasParkedRuns: boolean;
-  readonly parkedFocused: boolean;
+  /** What the focused parked row is (`↓` moved onto it), or `undefined` when none is: `Enter` opens its gate, or says why it cannot. */
+  readonly parkedFocusKind: ParkedRunKind | undefined;
   /** A leg is executing and has a run `Enter` shows (the `▶` row says so too). */
   readonly runCanBeShown: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
-  if (state.parkedFocused)
-    return '↑/↓ select · Enter open the gate · Esc return to prompt · Ctrl+C twice to exit';
+  if (state.parkedFocusKind !== undefined)
+    // The same words as the row's own cue: a row that has no gate to decide says why on `Enter`, and the bar must not promise a gate.
+    return `↑/↓ select · ${state.parkedFocusKind === 'none' ? 'Enter says why' : 'Enter open the gate'} · Esc return to prompt · Ctrl+C twice to exit`;
   if (state.resuming)
     return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
   if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
@@ -198,6 +205,11 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const exitGuard = props.exitGuard;
   const parked = props.parkedRuns ?? NO_PARKED;
   const parkedIds = new Set(parked.map((row) => row.runId));
+  const focusedParked = parked.find((row) => row.runId === props.parkedFocus);
+  const runCanBeShown = hostedRunCanBeShown(props.hostedRun);
+  // `Enter` at the empty prompt shows a live run, or opens the gate of a focused parked row, BEFORE it sets a provider up: while either
+  // is on offer the keyless line's own `Enter` would promise what the key does not do, so the line waits until neither is.
+  const keylessLine = props.keyless === true && !runCanBeShown && focusedParked === undefined;
   // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
   const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
@@ -245,7 +257,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     editor,
     cols,
     rows,
-    keyless: props.keyless === true,
+    keyless: keylessLine,
     errorText,
     showBanner: props.showBanner,
     isEmpty,
@@ -259,9 +271,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     0,
     rows -
       (showBanner ? 4 : 1) -
-      (guardRows === undefined
-        ? promptHeight + 2 + (props.keyless === true ? 1 : 0)
-        : guardRows + 1) -
+      (guardRows === undefined ? promptHeight + 2 + (keylessLine ? 1 : 0) : guardRows + 1) -
       runRows -
       (errorText === undefined ? 0 : 2) -
       (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) -
@@ -283,7 +293,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
   const parkedRows: StripRow[] = takeAttention(parked.slice(parkedStart)).map((row) => ({
     key: `parked:${row.runId}`,
-    line: `${row.runId === props.parkedFocus ? '> ' : '  '}${parkedRunLabel(row, row.runId === props.parkedFocus)}`,
+    line: `${row.runId === props.parkedFocus ? '> ' : '  '}${parkedRunLabel(row, row.runId === props.parkedFocus, cols - PARKED_ROW_INDENT_COLUMNS)}`,
   }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
   const gateRows = takeAttention(
@@ -470,7 +480,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
       {paletteOpen !== true && exitGuard === undefined && (
         <Box marginTop={1} flexDirection="column">
-          {props.keyless === true && (
+          {keylessLine && (
             <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
               Connect a provider to start chatting — Enter to set up or /providers.
             </Text>
@@ -486,8 +496,8 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               emptyDraft: editor.text.length === 0,
               hasRecentSessions: snapshot.recentSessions.length > 0,
               hasParkedRuns: parked.length > 0,
-              parkedFocused: props.parkedFocus !== undefined,
-              runCanBeShown: hostedRunCanBeShown(props.hostedRun),
+              parkedFocusKind: focusedParked?.kind,
+              runCanBeShown,
             })}
           </Text>
         </Box>

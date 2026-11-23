@@ -184,9 +184,17 @@ export function hostedRunCanBeShown(snapshot: RunHostSnapshot | undefined): bool
 export type ExitGuardPhase = 'confirm' | 'stopping';
 
 /**
- * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). Each
- * line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y` stops the run and leaves and the
- * other three keys stay; once the person confirmed, the card only says that the run is stopping and for how long the Home waits.
+ * The glyph of the exit-guard card's title row, each already the glyph of the same state elsewhere in the Home (the run view's `cancelling`
+ * and the strip's `⚠`), so the card reads without colour as the other cards do (ADR-0122 §7.2): a warning while the run is still going,
+ * the stop square once the person confirmed, and the quiet ring once there is nothing left to stop.
+ */
+export const EXIT_GUARD_GLYPH = { warning: '⚠', stopping: '■', ended: '○' } as const;
+
+/**
+ * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The title
+ * row is a glyph and a few words; each line is short enough for 80 columns and says what the keys do in words. While it asks, `Ctrl+Y`
+ * stops the run and leaves and the other three keys stay; once the person confirmed, the card only says that the run is stopping and for
+ * how long the Home waits.
  */
 export function exitGuardLines(
   phase: ExitGuardPhase,
@@ -198,18 +206,21 @@ export function exitGuardLines(
   const id = active?.runId === undefined ? undefined : sanitizeInline(active.runId);
   if (phase === 'stopping')
     return [
-      'Stopping the run…',
+      `${EXIT_GUARD_GLYPH.stopping} Stopping the run…`,
       `The Home leaves as soon as it has stopped, within about ${boundSeconds} s.`,
     ];
   if (!hostedRunIsLive(snapshot))
-    return ['The run has ended.', 'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay'];
+    return [
+      `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
+      'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay',
+    ];
   if (active?.cancelling === true)
     return [
-      `The run is stopping${id === undefined ? '' : `: ${id}`}.`,
+      `${EXIT_GUARD_GLYPH.warning} The run is stopping${id === undefined ? '' : `: ${id}`}.`,
       `Ctrl+Y leave when it has stopped (about ${boundSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
     ];
   return [
-    `A workflow run is executing${id === undefined ? '' : `: ${id}`}.`,
+    `${EXIT_GUARD_GLYPH.warning} A workflow run is executing${id === undefined ? '' : `: ${id}`}.`,
     'Leaving stops it, and a stopped run cannot be resumed.',
     'Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay',
   ];

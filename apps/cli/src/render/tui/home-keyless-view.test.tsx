@@ -1,5 +1,6 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { HomeView } from './home-view.js';
 
 describe('keyless Home view', () => {
@@ -138,5 +139,163 @@ describe('the Home hint bar', () => {
     expect(frameOf({})).toContain(
       '/ for commands · type a message to start a chat · Ctrl+C twice to exit',
     );
+  });
+});
+
+/** The keyless line promises `Enter` sets a provider up; while `Enter` does something else first, it must not be on screen. */
+describe('the keyless line and the other things Enter does first', () => {
+  const RUNNING_HOST: RunHostSnapshot = {
+    launching: false,
+    active: { leg: 'start', runId: 'run-0001', cancelling: false },
+    last: undefined,
+  };
+  const IDLE_HOST: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
+  const PARKED = [{ runId: 'run-0002', kind: 'approval' as const, gates: 1 }];
+  const frameOf = (over: {
+    hostedRun?: RunHostSnapshot;
+    parkedFocus?: string;
+    keyless?: boolean;
+  }): string => {
+    const view = render(
+      <HomeView
+        snapshot={{
+          attention: { gates: [], failedRuns: [] },
+          recentSessions: [],
+          recentRuns: [],
+          recentAgents: [],
+          unreadableRunIds: [],
+          isEmpty: false,
+        }}
+        editor={{ text: '', cursor: 0 }}
+        nowMs={0}
+        cols={100}
+        rows={30}
+        color={false}
+        keyless={over.keyless ?? true}
+        hostedRun={over.hostedRun}
+        parkedRuns={PARKED}
+        parkedFocus={over.parkedFocus}
+      />,
+    );
+    const frame = view.lastFrame() ?? '';
+    view.unmount();
+    return frame;
+  };
+
+  it('is shown with nothing else on offer for Enter', () => {
+    expect(frameOf({})).toContain('Enter to set up');
+  });
+
+  it('is not shown while a live run is in the view: Enter shows the run first', () => {
+    const frame = frameOf({ hostedRun: RUNNING_HOST });
+    expect(frame).toContain('Enter shows it');
+    expect(frame).not.toContain('Enter to set up');
+    expect(frame).not.toContain('Connect a provider');
+  });
+
+  it('is not shown while a parked run is focused: Enter opens its gate first', () => {
+    const frame = frameOf({ parkedFocus: 'run-0002' });
+    expect(frame).toContain('Enter open the gate');
+    expect(frame).not.toContain('Enter to set up');
+  });
+
+  it('is back once the run has ended and the focus has left the row', () => {
+    expect(frameOf({ hostedRun: IDLE_HOST })).toContain('Enter to set up');
+  });
+});
+
+/** The hint bar names what the focused parked row's Enter does, and promises a gate only when there is one. */
+describe('the hint bar on a focused parked row', () => {
+  const frameFor = (kind: 'approval' | 'none'): string => {
+    const view = render(
+      <HomeView
+        snapshot={{
+          attention: { gates: [], failedRuns: [] },
+          recentSessions: [],
+          recentRuns: [],
+          recentAgents: [],
+          unreadableRunIds: [],
+          isEmpty: false,
+        }}
+        editor={{ text: '', cursor: 0 }}
+        nowMs={0}
+        cols={80}
+        rows={24}
+        color={false}
+        parkedRuns={[{ runId: 'run-0002', kind, gates: kind === 'none' ? 0 : 1 }]}
+        parkedFocus="run-0002"
+      />,
+    );
+    const frame = view.lastFrame() ?? '';
+    view.unmount();
+    return frame;
+  };
+
+  it('says the gate opens when the focused row has one', () => {
+    const bar = frameFor('approval')
+      .split('\n')
+      .find((line) => line.includes('↑/↓ select'));
+    expect(bar).toContain('Enter open the gate');
+  });
+
+  it('says what Enter does when the focused row has no gate to decide: it says why', () => {
+    const frame = frameFor('none');
+    const bar = frame.split('\n').find((line) => line.includes('↑/↓ select'));
+    expect(bar).toContain('Enter says why');
+    expect(bar).not.toContain('open the gate');
+  });
+});
+
+/** The Attention row at the minimum width: the key it names is the part that must never be cut off. */
+describe('the focused parked row at 80 columns', () => {
+  const UUID = '0b8f3a52-9d41-4c6e-8a07-5e2d1c9b7f64';
+  const rowLine = (kind: 'approval' | 'none' | 'several', cols: number): string => {
+    const view = render(
+      <HomeView
+        snapshot={{
+          attention: { gates: [], failedRuns: [] },
+          recentSessions: [],
+          recentRuns: [],
+          recentAgents: [],
+          unreadableRunIds: [],
+          isEmpty: false,
+        }}
+        editor={{ text: '', cursor: 0 }}
+        nowMs={0}
+        cols={cols}
+        rows={24}
+        color={false}
+        parkedRuns={[{ runId: UUID, kind, gates: kind === 'none' ? 0 : 3 }]}
+        parkedFocus={UUID}
+      />,
+    );
+    const frame = view.lastFrame() ?? '';
+    view.unmount();
+    const line = frame.split('\n').find((candidate) => candidate.includes('‖'));
+    if (line === undefined) throw new Error(`no parked row in:\n${frame}`);
+    return line;
+  };
+
+  it.each([
+    ['none', 'Enter says why'],
+    ['approval', 'Enter opens'],
+    ['several', 'Enter opens'],
+  ] as const)('a %s row with a 36-character id shows its whole cue (%s)', (kind, cue) => {
+    const line = rowLine(kind, 80);
+    expect(line.trimEnd().endsWith(cue), line).toBe(true);
+    expect(line.length, 'inside the 80 columns').toBeLessThanOrEqual(80);
+  });
+
+  it('a row with no gate to decide is the one that overflows: its id gives up columns, the words and the key do not', () => {
+    const line = rowLine('none', 80);
+    expect(line, 'the id was shortened').toContain('…');
+    expect(line, 'and still starts with the run it names').toContain(UUID.slice(0, 8));
+    expect(line).toContain('parked, no gate to decide');
+  });
+
+  it('keeps the whole id when the row fits', () => {
+    const line = rowLine('approval', 120);
+    expect(line).toContain(UUID);
+    expect(line).not.toContain('…');
   });
 });

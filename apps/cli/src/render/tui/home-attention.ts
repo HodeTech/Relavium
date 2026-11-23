@@ -18,6 +18,7 @@ import {
   type RunGatesReader,
 } from '../../home/run-gates.js';
 import { sanitizeInline } from '../sanitize.js';
+import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
 /** The most parked runs the Home keeps rows for. */
 export const PARKED_RUNS_MAX = 8;
@@ -76,10 +77,33 @@ function wordsFor(row: ParkedRunRow): string {
 }
 
 /**
+ * The columns the Attention list spends before a row's own label: the list's two-column margin and the two-column focus marker
+ * (`> `). The view hands {@link parkedRunLabel} what is left of the terminal after them.
+ */
+export const PARKED_ROW_INDENT_COLUMNS = 4;
+
+/** The ellipsis a run id ends with when the row had to give it up some columns. */
+const ID_ELLIPSIS = '…';
+
+/**
  * The strip line of a parked run: a glyph, the run id, the kind of gate and the key that opens its card. `focused` is the row the
  * person has moved onto (`↓`): only that row can be opened, so only it names `Enter`; the others say how to reach them.
+ *
+ * `maxColumns` is the room the row has (the terminal's width less its indent). The words and the key are what the row is FOR, and the
+ * id is what they are about and what the run view and the card say in full, so when the row would not fit it is the id that gives way:
+ * it keeps its first columns and ends with an ellipsis, and the key is never the part that is cut off.
  */
-export function parkedRunLabel(row: ParkedRunRow, focused: boolean): string {
+export function parkedRunLabel(
+  row: ParkedRunRow,
+  focused: boolean,
+  maxColumns = Number.POSITIVE_INFINITY,
+): string {
   const key = focused ? (row.kind === 'none' ? 'Enter says why' : 'Enter opens') : '↓ selects';
-  return `‖ ${sanitizeInline(row.runId)}  ·  ${wordsFor(row)}  ·  ${key}`;
+  const id = sanitizeInline(row.runId);
+  const tail = `  ·  ${wordsFor(row)}  ·  ${key}`;
+  const full = `‖ ${id}${tail}`;
+  if (displayWidth(full) <= maxColumns) return full;
+  const room = maxColumns - displayWidth('‖ ') - displayWidth(tail) - displayWidth(ID_ELLIPSIS);
+  // Never an id of nothing: a row that cannot fit even one column of it still names the run by where it starts.
+  return `‖ ${sliceDisplayColumns(id, 0, Math.max(1, room))}${ID_ELLIPSIS}${tail}`;
 }

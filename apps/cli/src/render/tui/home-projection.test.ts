@@ -4,6 +4,7 @@ import type { HomeGateRow, HomeRunRow, HomeSessionRow } from '../../home/home-st
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import {
   agentLabel,
+  EXIT_GUARD_GLYPH,
   exitGuardLines,
   expiryLabel,
   gateExpired,
@@ -304,7 +305,7 @@ describe('the run row of the strip (ADR-0139 §3)', () => {
 describe('the exit-guard card text (ADR-0139 §6)', () => {
   it('says what leaving does and what each key does, in words, within 80 columns', () => {
     const lines = exitGuardLines('confirm', running(false), 10);
-    expect(lines[0]).toBe(`A workflow run is executing: ${RUN_ID}.`);
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} A workflow run is executing: ${RUN_ID}.`);
     expect(lines.join('\n')).toContain('a stopped run cannot be resumed');
     expect(lines.at(-1)).toBe('Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
@@ -312,18 +313,20 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
 
   it('says the run is already stopping, and names the wait', () => {
     const lines = exitGuardLines('confirm', running(true), 13);
-    expect(lines[0]).toBe(`The run is stopping: ${RUN_ID}.`);
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} The run is stopping: ${RUN_ID}.`);
     expect(lines[1]).toContain('(about 13 s)');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
   it('says the run has ended when it ended while the card was up', () => {
-    expect(exitGuardLines('confirm', IDLE, 10)[0]).toBe('The run has ended.');
+    expect(exitGuardLines('confirm', IDLE, 10)[0]).toBe(
+      `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
+    );
   });
 
   it('says it is stopping once the person confirmed, and for how long the Home waits', () => {
     const lines = exitGuardLines('stopping', running(true), 13);
-    expect(lines[0]).toBe('Stopping the run…');
+    expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.stopping} Stopping the run…`);
     expect(lines[1]).toContain('within about 13 s');
   });
 });

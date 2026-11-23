@@ -39,7 +39,12 @@ import { ExitGuardCard, HomeView } from './home-view.js';
 import { RunScreenView } from './run-screen-view.js';
 import { RunCardView } from './run-card-view.js';
 import { createGateCardFrame } from './gate-card-frame.js';
-import { homeFitsTerminal, homeIsEmpty, hostedRunLabel } from './home-projection.js';
+import {
+  homeFitsTerminal,
+  homeIsEmpty,
+  hostedRunLabel,
+  tooSmallMessage,
+} from './home-projection.js';
 import { layoutHomeNotice } from './home-notice.js';
 import { layoutColumns } from './layout-columns.js';
 import type { ReverseSearchState } from './input-history.js';
@@ -929,6 +934,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           {'> '}
           {sanitizeInline(state.pendingMessage)}
         </Text>
+        {!homeFitsTerminal(size.cols, size.rows) && (
+          // The landing says so below 80×24 and so does its echo: a card drawn in the degrade, and a `Ctrl+Y` that answers nothing
+          // there, are explained by the one line that says what to do about it.
+          <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+            {tooSmallMessage(size.cols, size.rows)}
+          </Text>
+        )}
         {state.exitGuard === undefined ? (
           <Text {...dimProps(color)} wrap="truncate-end">
             Starting chat… · Ctrl+C to exit

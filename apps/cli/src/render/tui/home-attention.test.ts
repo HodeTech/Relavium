@@ -246,4 +246,29 @@ describe('the label', () => {
     expect(label).not.toContain('\u001b');
     expect(label).not.toContain('\n');
   });
+
+  describe('when the row has less room than it needs', () => {
+    const UUID = '0b8f3a52-9d41-4c6e-8a07-5e2d1c9b7f64';
+    const none = row({ runId: UUID, kind: 'none', gates: 0 });
+
+    it('is unchanged when it fits, to the column', () => {
+      const full = parkedRunLabel(none, true);
+      expect(parkedRunLabel(none, true, full.length)).toBe(full);
+      expect(full).toContain(UUID);
+    });
+
+    it('gives the id the missing columns, ends it with an ellipsis, and keeps the words and the key', () => {
+      const full = parkedRunLabel(none, true);
+      const label = parkedRunLabel(none, true, full.length - 1);
+      expect(label.length, 'exactly the room it was given').toBe(full.length - 1);
+      expect(label.startsWith(`‖ ${UUID.slice(0, 20)}`)).toBe(true);
+      expect(label).toContain('…  ·  parked, no gate to decide  ·  Enter says why');
+    });
+
+    it('keeps at least one column of the id however little room there is, and never cuts the key', () => {
+      const label = parkedRunLabel(none, true, 10);
+      expect(label.startsWith('‖ 0…')).toBe(true);
+      expect(label.endsWith('Enter says why')).toBe(true);
+    });
+  });
 });

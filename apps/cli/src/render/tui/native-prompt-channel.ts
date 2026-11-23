@@ -269,6 +269,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     );
     publish({
       ...snapshot,
+      // A chord card is a decision about what the text on it says, and nothing the flow stored earlier may sit above it: a note (the
+      // skipped workflow files a launch lists, say) carries text the card's author did not write and the person cannot tell from the card.
+      ...(kind === 'chord' ? { note: '' } : {}),
       kind,
       message: sanitizeInline(message),
       options: options.map((option) => ({

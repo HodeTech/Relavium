@@ -1627,7 +1627,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           // exitProcess MUST always run — guard the db close so a (effectively non-throwing) close fault can never
           // strand the process without exiting.
           try {
-            closeDb();
+            // A hosted leg the host gave up on may still be writing to the shared database: as at the clean exit below, the handle is
+            // left to the process's exit, which follows at once (ADR-0139 §6).
+            if (runHost?.abandoned !== true) closeDb();
           } finally {
             exitProcess(128 + signo); // conventional 128+signo: 130 (SIGINT) / 143 (SIGTERM)
           }
@@ -2155,10 +2157,14 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         // surface closes that connection only after every one of these has settled (ADR-0139 §6).
         runHost?.close() ?? Promise.resolve(),
       ];
-      await Promise.all(closing);
+      // Every cleanup is awaited whether or not a sibling failed: `Promise.all` would reject at the first failure and could skip the
+      // retention below while the run host's own close is still running.
+      const closed = await Promise.allSettled(closing);
       // A leg the host gave up on may still be writing to the shared connection, which the surface's database tail would close under it:
       // keep the handle open for the process's exit, which the leg's armed finite-exit bound brings (ADR-0139 §6), as the unowned path does.
       if (runHost?.abandoned === true) ownership.retainStore();
+      // Every cleanup has settled by now, so this only reports the first failure, once the retention above is decided.
+      if (closed.some((result) => result.status === 'rejected')) await Promise.all(closing);
       if (ownership.surface.invocation.registry.budget.remainingMs() !== 0) {
         let restored = false;
         try {

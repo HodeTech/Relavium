@@ -149,7 +149,7 @@ describe('the ▶ row', () => {
     expect(row?.length).toBeLessThanOrEqual(80);
   });
 
-  it('keeps the whole Home inside 80×24 with the row, a full strip, a long notice and a keyless banner: the prompt is still there', () => {
+  it('keeps the whole Home inside 80×24 with the row, a full strip, a long notice and a keyless Home: the prompt is still there, and the setup line waits (Enter shows the run first)', () => {
     const frame = frameOf({
       snapshot: FULL,
       hostedRun: running(),
@@ -160,7 +160,9 @@ describe('the ▶ row', () => {
     // (The harness draws on a 100-column stream, so a long session title is not the line to measure: the run row and the card are.)
     for (const line of [...runRows(frame)]) expect(line.length, line).toBeLessThanOrEqual(80);
     expect(frame).toContain('▶');
-    expect(frame).toContain('Connect a provider');
+    // `Enter` at the empty prompt shows the run before it sets a provider up, so the setup line is not drawn beside `Enter shows it`.
+    expect(frame).not.toContain('Connect a provider');
+    expect(frame).toContain('Enter shows it');
     expect(frame).toContain('Ctrl+C twice to exit');
   });
 
