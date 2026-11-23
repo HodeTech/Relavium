@@ -137,11 +137,14 @@ export function launchNotOffered(slug: string): string {
 }
 
 /**
- * The name a file is known by in a refusal: its file name without the workflow suffix. A path is longer than the message row (a row is
- * 78 columns), so a message that carried paths showed none of them; two file names, with the remedy before them, fit.
+ * The names two files are known by in a refusal: their file names, without the workflow suffix when that leaves two different stems. A
+ * path is longer than the message row (78 columns), so a message that carried paths showed none of them. The suffix stays when the two
+ * stems are equal (`deploy.yaml` and `deploy.relavium.yaml` would otherwise both read `deploy`, and no remedy could tell them apart).
  */
-function fileName(path: string): string {
-  return fileStem(basename(path));
+function fileNames(first: string, second: string): readonly [string, string] {
+  const a = basename(first);
+  const b = basename(second);
+  return fileStem(a) === fileStem(b) ? [a, b] : [fileStem(a), fileStem(b)];
 }
 
 /**
@@ -150,7 +153,8 @@ function fileName(path: string): string {
  * The remedy comes first, then the two file names.
  */
 export function launchMoved(slug: string, listed: string, now: string): string {
-  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is now in ${bounded(fileName(now), REASON_LIMIT)}, not ${bounded(fileName(listed), REASON_LIMIT)}.`;
+  const [nowName, listedName] = fileNames(now, listed);
+  return `Not started. Open the list again: ${bounded(slug, LABEL_LIMIT)} is now in ${bounded(nowName, REASON_LIMIT)}, not ${bounded(listedName, REASON_LIMIT)}.`;
 }
 
 /**
@@ -159,7 +163,8 @@ export function launchMoved(slug: string, listed: string, now: string): string {
  * (the catalog's own paths are not shown; see {@link fileName}).
  */
 export function launchAmbiguous(slug: string, first: string, second: string): string {
-  return `Not started. Rename one of ${bounded(fileName(first), REASON_LIMIT)} or ${bounded(fileName(second), REASON_LIMIT)}: both declare ${bounded(slug, LABEL_LIMIT)}.`;
+  const [firstName, secondName] = fileNames(first, second);
+  return `Not started. Rename one of ${bounded(firstName, REASON_LIMIT)} or ${bounded(secondName, REASON_LIMIT)}: both declare ${bounded(slug, LABEL_LIMIT)}.`;
 }
 
 /**

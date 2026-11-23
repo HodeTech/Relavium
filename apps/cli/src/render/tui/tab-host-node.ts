@@ -61,7 +61,8 @@ export const NODE_NO_FAILED = 'No attempt of this node failed.';
 export const NODE_NO_ATTEMPT = 'This node has no attempt to show.';
 export const NODE_RETRIED_OK =
   'This node was retried and then ended well: no attempt of it is left failed.';
-export const NODE_CHANGES_NO_RUN = 'No run is changed here; p only marks it.';
+/** The node page has no `p`: its footer says that nothing here changes a run. The run detail's hint is the one that says `p` marks one. */
+export const NODE_CHANGES_NO_RUN = 'No run is changed here.';
 export const NODE_NOT_A_NODE = 'Enter opens a node: move to one of the node rows.';
 export const NODE_LOG_PARTIAL =
   'Only the first events of the run were read: the figures here may be partial.';

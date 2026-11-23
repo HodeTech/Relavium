@@ -56,7 +56,7 @@ import { displayWidth } from './viewport.js';
 
 /**
  * The History tab of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §2, MVP-8 step 4): finished runs as a paged list, and one run's detail as a read-only list of its steps and events. PURE, like
+ * §2, MVP-8 step 4): finished runs as a paged list, and one run's detail as a list of its steps and events. PURE, like
  * `tab-host.ts` it is drawn into: it holds no clock and no React, and it reads only through the {@link HistoryPort} it is handed. The
  * source (`history/history-source.ts`) owns the paging rules (a page of twenty, a fetch of at most 200, three pages kept); this module
  * says what a key does and which lines to draw.

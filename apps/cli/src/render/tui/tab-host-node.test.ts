@@ -354,6 +354,10 @@ describe('what the node page shows', () => {
     // Caps Lock on is the same key: the message was cleared by the move, so only the N press can put it back.
     r.press('N');
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
+    // The node page has no `p`: p answers nothing (no pin message), and the footer it leaves, which is the hint once no message is set, says so.
+    r.press('p');
+    expect(r.node()?.message, 'p answers nothing on the node page').toBeUndefined();
+    expect(r.text()).toContain('No run is changed here.');
     r.press('', ESC);
     expect(r.node()).toBeUndefined();
   });

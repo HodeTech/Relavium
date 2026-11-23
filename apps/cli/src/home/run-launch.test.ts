@@ -605,7 +605,7 @@ describe('open(slug, path) refuses a slug whose file is not the one the row was 
     expect(await opened).toBe(LAUNCH_CANCELLED);
   });
 
-  it('a file that moved: the slug is in another file now, so it refuses with both paths and begins no flow', async () => {
+  it('a file that moved: the slug is in another file now, so it refuses with both file names and begins no flow', async () => {
     // The row was listed from `none.relavium.yaml`; by the time `r` is pressed that file is gone and the slug is declared elsewhere.
     const now = join('.relavium', 'workflows', 'none-moved.relavium.yaml');
     writeWorkflow('none-moved.relavium.yaml', NO_INPUTS);
@@ -700,6 +700,29 @@ describe('the file that is read for the pick must still declare the id it was li
 });
 
 describe('two files that declare one workflow id', () => {
+  it('two files that differ only by suffix keep their suffixes in the refusal, so the two names differ', async () => {
+    writeWorkflow('happy.yaml', HAPPY);
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const notice = await r.launch.open('host-happy');
+    expect([
+      'Not started. Rename one of happy.yaml or happy.relavium.yaml: both declare host-happy.',
+      'Not started. Rename one of happy.relavium.yaml or happy.yaml: both declare host-happy.',
+    ]).toContain(notice);
+    expect(r.startCalls).toHaveLength(0);
+  });
+
+  it('a file that moved to a name with the same stem is named with its suffix, both ways round', () => {
+    const listed = join('.relavium', 'workflows', 'deploy.yaml');
+    const now = join('.relavium', 'workflows', 'deploy.relavium.yaml');
+    expect(launchMoved('nightly', listed, now)).toBe(
+      'Not started. Open the list again: nightly is now in deploy.relavium.yaml, not deploy.yaml.',
+    );
+    expect(launchMoved('nightly', now, listed)).toBe(
+      'Not started. Open the list again: nightly is now in deploy.yaml, not deploy.relavium.yaml.',
+    );
+  });
+
   it('make `r` on that id refuse with both file names named, in 78 columns, and begin no flow; another id still starts', async () => {
     writeWorkflow('happy.relavium.yaml', HAPPY);
     writeWorkflow('happy-copy.relavium.yaml', HAPPY);
@@ -713,9 +736,10 @@ describe('two files that declare one workflow id', () => {
       launchAmbiguous('host-happy', first, second),
       launchAmbiguous('host-happy', second, first),
     ]).toContain(notice);
-    expect(notice).toMatch(
-      /^Not started\. Rename one of happy(-copy)? or happy(-copy)?: both declare host-happy\.$/u,
-    );
+    expect([
+      'Not started. Rename one of happy-copy or happy: both declare host-happy.',
+      'Not started. Rename one of happy or happy-copy: both declare host-happy.',
+    ]).toContain(notice);
     expect(notice.length, 'the row shows all of it').toBeLessThanOrEqual(78);
     expect(r.snapshots, 'no prompt was drawn for either file').toEqual([]);
     expect(r.startCalls).toHaveLength(0);
