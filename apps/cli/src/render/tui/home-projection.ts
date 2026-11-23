@@ -109,7 +109,10 @@ export function sessionLabel(row: HomeSessionRow, nowMs: number): string {
     .join(SEP);
 }
 
-/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost. */
+/** What the strip says after the cost of a run recorded for another project: it lists runs of every directory, and such a run opens read-only. */
+export const OTHER_PROJECT_MARK = 'other project';
+
+/** A run row → workflow (or short id) · status · when (status-appropriate anchor) · cost [· other project]. */
 export function runLabel(row: HomeRunRow, nowMs: number): string {
   const name = row.workflowSlug ?? shortId(row.runId);
   const anchor = row.status === 'running' ? row.startedAt : (row.completedAt ?? row.startedAt);
@@ -118,6 +121,7 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     row.status,
     relativeTime(anchor ?? row.createdAt, nowMs),
     formatCostShort(row.totalCostMicrocents, row.usageCoverage, row.unpricedCalls),
+    ...(row.project === undefined ? [] : [OTHER_PROJECT_MARK]),
   ]
     .filter((s) => s.trim().length > 0)
     .join(SEP);

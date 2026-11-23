@@ -686,6 +686,9 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const homeStore = createHomeStore({
       sessions: opened.store,
       runs: runReader,
+      // A run of another project is marked `other project` in the strip (the same project root the Defined and History tabs use).
+      projectRoot: deps.global.cwd,
+      homeDir: deps.homeDir,
     });
 
     // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the

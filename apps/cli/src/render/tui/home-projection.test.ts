@@ -176,6 +176,18 @@ describe('row labels', () => {
     );
   });
 
+  it('runLabel: a run recorded for another project says so after its cost, and a run of this one does not', () => {
+    const paused = runRow({ status: 'paused', startedAt: ago(1 * HR), completedAt: undefined });
+    expect(runLabel(paused, NOW), 'same project (or none recorded): no marker').toBe(
+      'deploy  ·  paused  ·  1h ago  ·  free',
+    );
+    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).toBe(
+      'deploy  ·  paused  ·  1h ago  ·  free  ·  other project',
+    );
+    // The marker is a fixed phrase: the other project's root is data and never reaches the line.
+    expect(runLabel({ ...paused, project: '~/code/other-app' }, NOW)).not.toContain('other-app');
+  });
+
   it('runLabel: a RUNNING run anchors on startedAt (not completedAt/createdAt)', () => {
     const run = runRow({ status: 'running', startedAt: ago(10 * MIN), completedAt: undefined });
     expect(runLabel(run, NOW)).toBe('deploy  ·  running  ·  10m ago  ·  free');

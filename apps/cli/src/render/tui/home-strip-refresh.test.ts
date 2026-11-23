@@ -116,9 +116,11 @@ function rig(options: RigOptions) {
   let now = 0;
   let nextTimer = 1;
   const timers = new Map<number, { at: number; run: () => void }>();
+  let readsFail = false;
   const read = vi.fn(() => {
     if (options.commitDuringFirstRead === true && read.mock.calls.length === 1)
       token.generation += 1;
+    if (readsFail) throw new Error('database is locked');
     return current;
   });
   const list = vi.fn((): readonly ParkedRunRow[] => parked);
@@ -226,6 +228,10 @@ function rig(options: RigOptions) {
     close: (): void => {
       closed = true;
     },
+    /** Every read of the strip throws from now on (or stops throwing). */
+    failReads: (fails: boolean): void => {
+      readsFail = fails;
+    },
     pending: (): number => timers.size,
   };
 }
@@ -305,7 +311,12 @@ describe('the idle tick reads the strip only when the change token moved', () =>
     await r.advance(STRIP_REFRESH_MS);
     expect(
       r.read,
-      'the failed read was not applied, so the next tick reads again',
+      'the failed read backs the next attempt off: twice the interval',
+    ).toHaveBeenCalledTimes(2);
+    await r.advance(STRIP_REFRESH_MS);
+    expect(
+      r.read,
+      'the failed read was not applied, so the attempt after the wait reads again, token or not',
     ).toHaveBeenCalledTimes(3);
   });
 
@@ -760,5 +771,189 @@ describe('Enter does what the row says', () => {
     press(r.controller, ENTER);
     expect(r.controller.getSnapshot().screen).toBeUndefined();
     expect(r.controller.getSnapshot().notice).toContain('run history is not available');
+  });
+});
+
+describe('a strip whose reads keep failing is read less and less often', () => {
+  /** Move to `ms` after the last mark, in two steps: nothing reads one millisecond before, and exactly one read lands at `ms`. */
+  const nextReadAt = async (r: Rig, ms: number, reads: number): Promise<number> => {
+    await r.advance(ms - 1);
+    expect(r.read, `no read before ${String(ms)} ms have passed`).toHaveBeenCalledTimes(reads);
+    await r.advance(1);
+    expect(r.read, `one read at ${String(ms)} ms`).toHaveBeenCalledTimes(reads + 1);
+    return reads + 1;
+  };
+
+  it('waits twice as long after each failed read: 5, 10, 20, 40 and then 60 s at most', async () => {
+    const r = rig({ snapshot: strip([], ['s1']) });
+    r.failReads(true);
+    r.moveToken();
+    let reads = r.read.mock.calls.length;
+    for (const seconds of [5, 10, 20, 40, 60, 60, 60]) {
+      reads = await nextReadAt(r, seconds * 1000, reads);
+    }
+    expect(r.pending(), 'one timer is armed, and no second one was left behind').toBe(1);
+  });
+
+  it('is back at one interval after a read that was applied', async () => {
+    const r = rig({ snapshot: strip([], ['s1']) });
+    r.failReads(true);
+    r.moveToken();
+    let reads = r.read.mock.calls.length;
+    for (const seconds of [5, 10, 20]) reads = await nextReadAt(r, seconds * 1000, reads);
+    r.failReads(false);
+    const healed = strip([], ['s1', 's2']);
+    r.show(healed);
+    reads = await nextReadAt(r, 40_000, reads);
+    expect(r.controller.getSnapshot().snapshot, 'the read that worked is shown').toBe(healed);
+
+    // The wait is one interval again (not the 80 s the failures called for), so a change is read one interval later.
+    const next = strip([], ['s1', 's2', 's3']);
+    r.show(next);
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS - 1);
+    expect(r.read).toHaveBeenCalledTimes(reads);
+    await r.advance(1);
+    expect(r.read, 'read one interval after the one that worked').toHaveBeenCalledTimes(reads + 1);
+    expect(r.controller.getSnapshot().snapshot).toBe(next);
+  });
+
+  it('starts again at the first retry when the change token moved since the last attempt', async () => {
+    const r = rig({ snapshot: strip([], ['s1']) });
+    r.failReads(true);
+    r.moveToken();
+    let reads = r.read.mock.calls.length;
+    for (const seconds of [5, 10, 20]) reads = await nextReadAt(r, seconds * 1000, reads);
+    // The next attempt is 40 s away. Something wrote meanwhile: that attempt fails again, and its retry is the first one's, not the 60 s.
+    r.moveToken();
+    reads = await nextReadAt(r, 40_000, reads);
+    reads = await nextReadAt(r, 10_000, reads);
+    reads = await nextReadAt(r, 20_000, reads);
+  });
+
+  it('leaves no timer behind when the Home ends in the middle of a wait', async () => {
+    const r = rig({ snapshot: strip([], ['s1']) });
+    r.failReads(true);
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS); // the first failure: the next attempt is 10 s away
+    expect(r.pending()).toBe(1);
+    r.controller.handleKey('d', { ctrl: true });
+    expect(r.onExit).toHaveBeenCalledTimes(1);
+    expect(r.pending()).toBe(0);
+    await r.advance(STRIP_REFRESH_MS * 6);
+    expect(r.read).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a failed read of the parked rows is a failed read of the strip', () => {
+  it('keeps the rows it has, and reads again after the wait without the token moving, so the rows that were missed appear', async () => {
+    const before: ParkedRunRow = { runId: 'p1', kind: 'approval', gates: 1 };
+    const raised: ParkedRunRow = { runId: 'p2', kind: 'approval', gates: 1 };
+    const r = rig({ snapshot: strip([], ['s1']), parked: [before] });
+    expect(r.controller.getSnapshot().parkedRuns).toEqual([before]);
+
+    r.show(strip([], ['s1']), [before, raised]);
+    r.list.mockImplementationOnce(() => {
+      throw new Error('database is locked');
+    });
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS);
+    expect(r.list, 'the tick asked for the parked rows').toHaveBeenCalledTimes(2);
+    expect(
+      r.controller.getSnapshot().parkedRuns,
+      'the rows the strip had stay: they are not replaced by an empty list',
+    ).toEqual([before]);
+
+    // The failed read was not applied: after the doubled wait the strip reads again with no new commit, and the rows appear.
+    await r.advance(STRIP_REFRESH_MS * 2 - 1);
+    expect(r.list).toHaveBeenCalledTimes(2);
+    await r.advance(1);
+    expect(r.list).toHaveBeenCalledTimes(3);
+    expect(r.controller.getSnapshot().parkedRuns).toEqual([before, raised]);
+
+    await r.advance(STRIP_REFRESH_MS * 4);
+    expect(
+      r.list,
+      'and once it was applied, an unchanged token reads nothing more',
+    ).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('the Enter after a refresh dropped the focused row is not the empty prompt’s', () => {
+  const hosted: RunHostSnapshot = {
+    launching: false,
+    active: { leg: 'start', runId: 'hosted-run', cancelling: false },
+    last: undefined,
+  };
+  /** A focus on a session that then vanishes on a tick, with a run executing: the empty prompt's `Enter` would open its view. */
+  async function dropped() {
+    const r = rig({ snapshot: strip([], ['s1']), hosted });
+    press(r.controller, DOWN);
+    expect(focusOf(r)).toEqual({ kind: 'session', id: 's1' });
+    r.show(strip([], []));
+    r.moveToken();
+    await r.advance(STRIP_REFRESH_MS);
+    expect(focusOf(r), 'the focus went with its row').toBeUndefined();
+    return r;
+  }
+
+  it('is ignored once, with no notice, and the next one is the prompt’s own', async () => {
+    const r = await dropped();
+    press(r.controller, ENTER);
+    await settle();
+    expect(r.controller.getSnapshot().screen, 'no run view opened').toBeUndefined();
+    expect(r.resumeChat).not.toHaveBeenCalled();
+    expect(r.controller.getSnapshot().notice, 'and nothing is said').toBeUndefined();
+
+    press(r.controller, ENTER);
+    expect(r.controller.getSnapshot().screen).toMatchObject({
+      kind: 'run-view',
+      runId: 'hosted-run',
+    });
+  });
+
+  it('ends with any other key: the Enter after one is the prompt’s own', async () => {
+    const r = await dropped();
+    r.controller.handleKey('x', {});
+    r.controller.handleKey('', { backspace: true });
+    expect(r.controller.getSnapshot().input.text).toBe('');
+    press(r.controller, ENTER);
+    expect(r.controller.getSnapshot().screen).toMatchObject({ kind: 'run-view' });
+  });
+
+  it('is not set by a focus the person left (Esc), nor by a refresh that kept the row', async () => {
+    const r = rig({ snapshot: strip([], ['s1']), hosted });
+    press(r.controller, DOWN);
+    press(r.controller, ESC);
+    press(r.controller, ENTER);
+    expect(
+      r.controller.getSnapshot().screen,
+      'the first Enter after an Esc is the prompt’s',
+    ).toMatchObject({
+      kind: 'run-view',
+    });
+
+    const kept = rig({ snapshot: strip([], ['s1']), hosted });
+    press(kept.controller, DOWN);
+    kept.show(strip([], ['s1', 's2']));
+    kept.moveToken();
+    await kept.advance(STRIP_REFRESH_MS);
+    expect(focusOf(kept)).toEqual({ kind: 'session', id: 's1' });
+    press(kept.controller, ESC);
+    press(kept.controller, ENTER);
+    expect(kept.controller.getSnapshot().screen).toMatchObject({ kind: 'run-view' });
+  });
+});
+
+describe('a resume the person cancelled says so', () => {
+  it('on a strip session whose resume returns nothing, the landing shows the fixed notice', async () => {
+    const r = rig({ snapshot: strip([], ['s1']) });
+    press(r.controller, DOWN);
+    press(r.controller, ENTER);
+    await settle();
+    expect(r.resumeChat).toHaveBeenCalledWith('s1');
+    expect(r.controller.getSnapshot().notice).toBe('Resume cancelled.');
+    expect(r.controller.getSnapshot().mode).toBe('home');
+    expect(r.controller.getSnapshot().nativeActionBusy).toBe(false);
   });
 });

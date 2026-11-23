@@ -110,6 +110,22 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
   });
 });
 
+describe('a run recorded for another project says so on its Continue row', () => {
+  const snapshot = (project: string | undefined): HomeSnapshot => ({
+    ...SMALL,
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [],
+    recentRuns: [{ ...runRow('p1', 'paused'), ...(project === undefined ? {} : { project }) }],
+  });
+
+  it('draws `other project` after the cost for a run of another project, and nothing for this one', () => {
+    const other = draw(snapshot('~/code/other-app'), [], undefined);
+    expect(other).toMatch(/wf-p1 {2}· {2}paused .*· {2}other project/u);
+    expect(other).not.toContain('other-app');
+    expect(draw(snapshot(undefined), [], undefined)).not.toContain('other project');
+  });
+});
+
 describe('the focused row is always one of the rows drawn, at 80×24, with a full strip', () => {
   const parked: ParkedRunRow[] = indexes(8).map((n) => ({
     runId: `run-p${String(n)}`,

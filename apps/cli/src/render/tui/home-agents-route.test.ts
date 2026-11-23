@@ -390,6 +390,20 @@ describe('Enter on a session of the Sessions tab resumes it in place', () => {
     expect(after.mode).toBe('home');
   });
 
+  it('a resume the person cancelled (it returns nothing) says so on the landing, with no screen left open', async () => {
+    const { controller, resumeChat } = onSessions({ resume: () => Promise.resolve(undefined) });
+    controller.handleKey('', ENTER);
+    await vi.waitFor(() => expect(controller.getSnapshot().nativeActionBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    await flush();
+    expect(resumeChat).toHaveBeenCalledWith('sess-bbb');
+    const after = controller.getSnapshot();
+    expect(after.notice).toBe('Resume cancelled.');
+    expect(after.screen).toBeUndefined();
+    expect(after.mode).toBe('home');
+  });
+
   it('a resume that fails says so on the landing and frees the keyboard, never the cause', async () => {
     const { controller } = onSessions({
       resume: () => Promise.reject(new Error('PRIVATE_FAULT_TEXT')),

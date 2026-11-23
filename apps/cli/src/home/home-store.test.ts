@@ -7,14 +7,16 @@ import {
   createRunHistoryReader,
   createRunHistoryStore,
   createSessionStore,
+  MAX_RUN_SUMMARY_IDS,
   runEvents,
   runMigrations,
+  runs,
   workflows,
   type DbClient,
 } from '@relavium/db';
 import { SessionContextSchema, type AgentSessionRecord } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { formatCostShort } from '../render/tui/format.js';
 import { seedRun } from '../test-support.js';
@@ -22,6 +24,7 @@ import {
   buildHomeSnapshot,
   createHomeStore,
   DEFAULT_HOME_LIMIT,
+  PROJECT_LABEL_MAX_CHARS,
   type HomeStoreDeps,
 } from './home-store.js';
 
@@ -472,6 +475,113 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     // …and NOT the fresh-install welcome: a Home whose only content is a damaged run must not answer "you
     // have nothing", which is this finding in its most misleading form.
     expect(snapshot.isEmpty).toBe(false);
+  });
+
+  describe('the run rows of another project say so', () => {
+    const HERE = '/home/alice/code/here';
+    const HOME = '/home/alice';
+    /** Record `root` as the project `runId` was started in (a column the seeding helper does not set). */
+    const recordProject = (runId: string, root: string | null): void => {
+      client.db.update(runs).set({ projectRoot: root }).where(eq(runs.id, runId)).run();
+    };
+    /** The real reader with its summaries read counted: what `buildHomeSnapshot` asks of it, and how many ids at a time. */
+    const spiedSummaries = () => {
+      const reader = createRunHistoryReader(client.db);
+      const load = vi.fn(reader.loadRunSummariesByIds);
+      return { load, runs: { ...reader, loadRunSummariesByIds: load } };
+    };
+    const projectOf = (snapshot: ReturnType<typeof buildHomeSnapshot>, runId: string) =>
+      [...snapshot.recentRuns, ...snapshot.attention.failedRuns].find((run) => run.runId === runId)
+        ?.project;
+
+    it('marks a run recorded for another project with its root, `~`-shortened under the home directory', async () => {
+      await seedRun(client.db, { slug: 'wf', runId: 'mine', state: 'completed', atMs: T0 });
+      await seedRun(client.db, { slug: 'wf', runId: 'other', state: 'completed', atMs: T0 + 1 });
+      await seedRun(client.db, { slug: 'wf', runId: 'failed', state: 'failed', atMs: T0 + 2 });
+      recordProject('mine', HERE);
+      recordProject('other', `${HOME}/code/other-app`);
+      recordProject('failed', `${HOME}/code/third`);
+
+      const snapshot = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
+
+      expect(projectOf(snapshot, 'mine'), 'this Home’s own project is not marked').toBeUndefined();
+      expect(projectOf(snapshot, 'other')).toBe('~/code/other-app');
+      expect(projectOf(snapshot, 'failed'), 'a failed run of another project too').toBe(
+        '~/code/third',
+      );
+    });
+
+    it('never shows an absolute path: outside the home directory only the last two segments stay, and a long root is bounded', async () => {
+      await seedRun(client.db, { slug: 'wf', runId: 'srv', state: 'completed', atMs: T0 });
+      await seedRun(client.db, { slug: 'wf', runId: 'long', state: 'completed', atMs: T0 + 1 });
+      await seedRun(client.db, { slug: 'wf', runId: 'nohome', state: 'completed', atMs: T0 + 2 });
+      recordProject('srv', '/srv/apps/shop');
+      recordProject('long', `${HOME}/${'x'.repeat(500)}`);
+      recordProject('nohome', `${HOME}/code/other-app`);
+
+      const snapshot = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
+      expect(projectOf(snapshot, 'srv')).toBe('…/apps/shop');
+      const long = projectOf(snapshot, 'long') ?? '';
+      expect(long.startsWith('~/xxx')).toBe(true);
+      expect(long.length, 'bounded, with an ellipsis for the cut').toBeLessThanOrEqual(
+        PROJECT_LABEL_MAX_CHARS + 1,
+      );
+      expect(long.endsWith('…')).toBe(true);
+
+      // Told no home directory, a root under it is still never shown whole.
+      const unknownHome = buildHomeSnapshot({ ...deps, projectRoot: HERE });
+      expect(projectOf(unknownHome, 'nohome')).toBe('…/code/other-app');
+    });
+
+    it('marks nothing for a run that recorded no project, and nothing at all when the Home was not told its own', async () => {
+      await seedRun(client.db, { slug: 'wf', runId: 'legacy', state: 'completed', atMs: T0 });
+      await seedRun(client.db, { slug: 'wf', runId: 'other', state: 'completed', atMs: T0 + 1 });
+      recordProject('legacy', null);
+      recordProject('other', '/elsewhere/app');
+
+      const told = buildHomeSnapshot({ ...deps, projectRoot: HERE, homeDir: HOME });
+      expect(projectOf(told, 'legacy'), 'unknown is not "another project"').toBeUndefined();
+      expect(projectOf(told, 'other')).toBe('…/elsewhere/app');
+
+      const spied = spiedSummaries();
+      const untold = buildHomeSnapshot({ ...deps, runs: spied.runs });
+      expect(projectOf(untold, 'other')).toBeUndefined();
+      expect(spied.load, 'and nothing extra is read').not.toHaveBeenCalled();
+    });
+
+    it('reads the projects in batches the reader accepts, so a long list is never refused', async () => {
+      const total = 130;
+      for (let n = 0; n < total; n += 1) {
+        await seedRun(client.db, {
+          slug: 'wf',
+          runId: `f${String(n).padStart(3, '0')}`,
+          state: 'failed',
+          atMs: T0 + n,
+        });
+        recordProject(`f${String(n).padStart(3, '0')}`, '/elsewhere/app');
+      }
+      for (let n = 0; n < total; n += 1) {
+        await seedRun(client.db, {
+          slug: 'wf',
+          runId: `c${String(n).padStart(3, '0')}`,
+          state: 'completed',
+          atMs: T0 + total + n,
+        });
+        recordProject(`c${String(n).padStart(3, '0')}`, '/elsewhere/app');
+      }
+      const spied = spiedSummaries();
+      const snapshot = buildHomeSnapshot({
+        ...deps,
+        runs: spied.runs,
+        projectRoot: HERE,
+        limit: total,
+      });
+      const sizes = spied.load.mock.calls.map(([ids]) => ids.length);
+      expect(sizes.length, 'more than one batch').toBeGreaterThan(1);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(MAX_RUN_SUMMARY_IDS);
+      expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(2 * total);
+      expect(snapshot.recentRuns.every((run) => run.project === '…/elsewhere/app')).toBe(true);
+    });
   });
 });
 

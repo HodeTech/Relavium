@@ -160,6 +160,7 @@ import {
 } from './tui-constants.js';
 import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
 import { stripRefreshPaused } from './strip-pause.js';
+import { createStripBackoff } from './strip-backoff.js';
 import {
   focusFor,
   resolveFocus,
@@ -726,6 +727,9 @@ export interface HomeController {
 const RUN_HISTORY_UNAVAILABLE =
   'The run history is not available here. `relavium status` shows where a run stands.';
 
+/** What the landing says when a session resume ends because the person cancelled one of its interactive steps. */
+const RESUME_CANCELLED = 'Resume cancelled.';
+
 /** What `Enter` says on a focused row the strip no longer lists: nothing was opened. */
 const STRIP_ROW_GONE = 'That row is no longer on the strip. Nothing was opened.';
 
@@ -766,6 +770,18 @@ function readParkedRows(
   } catch {
     return previous;
   }
+}
+
+/**
+ * The strip tick's read of the parked runs: the port's rows, or `previous` with no port. UNLIKE {@link readParkedRows} a failed read
+ * throws, so the tick's read fails as a whole: the rows already drawn stay (nothing is applied, and nothing empty replaces them), the
+ * poll does not count the read as applied (the next attempt reads again without a token move), and the strip's backoff slows the retries.
+ */
+function readParkedRowsOrThrow(
+  port: HomeGateCardsPort | undefined,
+  previous: readonly ParkedRunRow[],
+): readonly ParkedRunRow[] {
+  return port === undefined ? previous : port.list();
 }
 
 /**
@@ -872,6 +888,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let activePoll: ActivePoll | undefined;
   // The strip's idle refresh (ADR-0140 §6): one poll for the life of the Home, created below once everything it asks about exists.
   let stripPoll: ActivePoll | undefined;
+  // Set when a refresh drops the focused strip row because the row is gone: the first `Enter` after it is ignored once (the person's
+  // `Enter` was meant for that row), and any other key ends it. It is a flag of the landing's key handling, not something a screen draws.
+  let focusJustDropped = false;
   let activePollRunning = false;
   let lastActiveRead: ActiveRead | undefined;
   let cancelFired = false;
@@ -991,7 +1010,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         stripRows(state.parkedRuns, state.snapshot),
         state.stripFocus,
       );
-      if (stripFocus !== state.stripFocus) state = { ...state, stripFocus };
+      if (stripFocus !== state.stripFocus) {
+        // A refresh took the focused row off the strip: an `Enter` the person aimed at it must not fall through to the empty prompt's own
+        // (the run view, or provider setup when keyless), so the first `Enter` after the drop is ignored once (`focusJustDropped`).
+        if (stripFocus === undefined && state.stripFocus !== undefined) focusJustDropped = true;
+        state = { ...state, stripFocus };
+      }
     }
     syncActivePoll();
     notify();
@@ -2177,7 +2201,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       }
       const result = await resume(id);
-      if (result === undefined) return;
+      if (result === undefined) {
+        // The person cancelled an interactive step of the restore (the retry question, `Esc` while it restored): the landing says so
+        // instead of coming back as if nothing had been asked.
+        if (!exiting) {
+          set({ notice: RESUME_CANCELLED });
+          old?.store.note(RESUME_CANCELLED);
+        }
+        return;
+      }
       if ('notice' in result) {
         if (!exiting) {
           set({ notice: result.notice });
@@ -3703,12 +3735,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return false;
   };
 
-  const handleHomeKey = (input: string, key: HomeKey & ChatKey): void => {
+  const handleHomeKey = (input: string, key: HomeKey & ChatKey, focusDropped: boolean): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
       requestExit();
       return;
     }
+    // The `Enter` that follows a refresh dropping the focused row was meant for that row, not for the empty prompt (which would show the
+    // run view, or open provider setup when keyless): it is ignored once, with no notice, and the next one is the prompt's own.
+    if (focusDropped && key.return === true && state.stripFocus === undefined) return;
     const action = reduceHomeKey(input, key);
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
     if (state.stripFocus !== undefined) {
@@ -3752,6 +3787,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
   // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
   const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+    // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
+    const focusDropped = focusJustDropped;
+    focusJustDropped = false;
     // The exit-guard card (ADR-0139 §6) owns every key while it is open, `Ctrl+C` included: there it is a cancel, not the keymap's.
     if (state.exitGuard !== undefined) {
       routeExitGuardKey(state.exitGuard, input, key);
@@ -3793,7 +3831,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       handleChatKey(state.session, input, key);
       return;
     }
-    handleHomeKey(input, key);
+    handleHomeKey(input, key, focusDropped);
   };
 
   // ---- The strip's idle refresh (ADR-0140 §6) --------------------------------------------------------------------------------
@@ -3828,18 +3866,26 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
   const strip = deps.strip;
   if (strip !== undefined) {
+    // The strip's own schedule (not the generic poll's, which the Active tab shares): while its reads keep failing the next attempt waits
+    // twice as long (5, 10, 20, 40, then 60 s at most), and it is one interval again after a read that was applied or a token that moved.
+    const backoff = createStripBackoff(
+      (callback, delayMs) => schedule(callback, delayMs),
+      stripSeed,
+    );
     stripPoll = createActivePoll<StripRead>({
-      schedule: (callback, delayMs) => schedule(callback, delayMs),
+      schedule: backoff.schedule,
       now: () => interruptNow(),
-      token: strip.token,
+      token: () => backoff.observe(strip.token()),
       // Both reads of the strip are SQLite on the Home's own connection, taken in one synchronous stretch: the rows of one read describe
-      // one moment, and the poll applies them in the same turn, so a card cannot open between the read and its paint.
+      // one moment, and the poll applies them in the same turn, so a card cannot open between the read and its paint. A parked-rows read
+      // that throws fails the whole read (`readParkedRowsOrThrow`): it is never counted as applied with the old rows under it.
       read: () =>
         Promise.resolve({
           snapshot: deps.homeStore.read(),
-          parked: readParkedRows(deps.gateCards, state.parkedRuns),
+          parked: readParkedRowsOrThrow(deps.gateCards, state.parkedRuns),
         }),
       apply: (read) => {
+        backoff.succeeded();
         // A timer or promise callback has no input handler around it to route a listener's failure, so it is routed here.
         try {
           applyStripRead(read);
@@ -3849,7 +3895,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       },
       paused: stripPollPaused,
       isClosed: strip.isClosed,
-      onError: () => undefined, // a failed read keeps the rows the strip has; the next tick reads again
+      // A failed read keeps the rows the strip has, and the next attempt comes later each time.
+      onError: backoff.failed,
       intervalMs: STRIP_REFRESH_MS,
       // Nothing about the strip depends on the clock alone, so a token that has not moved is never a reason to read.
       maxAgeMs: Number.POSITIVE_INFINITY,
@@ -3913,6 +3960,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
       disarmInterrupt(); // a paste is a key too: it ends the armed state (ADR-0115 §1)
+      focusJustDropped = false; // and the one ignored `Enter` after a dropped focus
       if (state.exitGuard !== undefined) return; // the exit-guard card answers to keys only, never to a paste
       if (state.screen !== undefined) {
         // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
