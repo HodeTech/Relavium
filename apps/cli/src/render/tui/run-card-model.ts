@@ -188,6 +188,15 @@ function sameGates(a: readonly RunCardGate[], b: readonly RunCardGate[]): boolea
   );
 }
 
+/**
+ * What the card says once an answer started a leg. The run continues in the background only when this was the last open gate: with
+ * others still waiting, the card says how many, and not that the run is on its way.
+ */
+function answeredNotice(stillOpen: number): string {
+  if (stillOpen === 0) return 'Answered. The run continues in the background.';
+  return `1 of ${String(stillOpen + 1)} gates answered; ${String(stillOpen)} still ${stillOpen === 1 ? 'waits' : 'wait'}.`;
+}
+
 const SEND_FAILED: HostedLaunch = Object.freeze({
   kind: 'refused',
   reason: 'rejected',
@@ -252,11 +261,7 @@ export function createRunCard(deps: RunCardDeps): RunCard {
       });
       return;
     }
-    publish({
-      ...base,
-      phase: 'answered',
-      notice: 'Answered. The run continues in the background.',
-    });
+    publish({ ...base, phase: 'answered', notice: answeredNotice(gates.length) });
   };
 
   const send = (gate: RunCardGate, decision: GateDecision): void => {
@@ -518,27 +523,84 @@ export interface RunCardProjectionInput {
 
 /** Host glyphs and card-drawing characters, none of which an author's text may carry (`HOST_GLYPH` of the ask-user tool, widened). */
 const HOST_GLYPHS = /[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu;
-/** Format characters (zero-width, bidi marks, joiners, the soft hyphen): they draw nothing, so a chord can hide behind them. */
-const FORMAT_CHARS = /\p{Cf}/gu;
+/**
+ * Code points that draw nothing, so a chord can hide behind them: the format characters (zero-width, bidi marks, joiners, the soft
+ * hyphen) and every other default-ignorable one (variation selectors, the combining grapheme joiner, the Hangul fillers, the
+ * Mongolian free variation selectors, the tag characters). An emoji variation selector goes with them, so an emoji in an author's
+ * message may draw in its text form: the card accepts that.
+ */
+const INVISIBLE_CHARS = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+
+/**
+ * The letters of `ctrl` and `control`, each with the Cyrillic and Greek letters that read as it (capital and small). They are
+ * spelled into the chord word below and nowhere else, so ordinary Cyrillic or Greek prose is never rewritten or matched: only a word
+ * whose every letter is the Latin letter or one of these can be a chord's word. Every letter here survives the NFKC fold (the text
+ * is matched after it): one that folds into another letter is drawn as that letter and needs no entry.
+ */
+const CHORD_WORD_LOOKALIKES: Readonly<Record<'c' | 't' | 'r' | 'l' | 'o' | 'n', string>> = {
+  // Cyrillic Es (the Greek lunate sigmas fold to Σ and ς before the match, and are drawn as those)
+  c: '\u0421\u0441',
+  // Cyrillic Te, Greek Tau
+  t: '\u0422\u0442\u03A4\u03C4',
+  // Cyrillic Ghe, Greek Rho
+  r: '\u0413\u0433\u03A1\u03C1',
+  // Cyrillic palochka and Ukrainian I, Greek capital Iota
+  l: '\u04C0\u04CF\u0406\u0399',
+  // Cyrillic O, Greek Omicron
+  o: '\u041E\u043E\u039F\u03BF',
+  // Cyrillic Pe, Greek Eta
+  n: '\u043F\u03B7',
+};
+
+type ChordLetter = keyof typeof CHORD_WORD_LOOKALIKES;
+
+/** The chord word's letters in order, each as the Latin letter or one of its lookalikes. */
+function spell(...letters: readonly ChordLetter[]): string {
+  return letters.map((letter) => `[${letter}${CHORD_WORD_LOOKALIKES[letter]}]`).join('');
+}
+
+/** `ctrl` or `control`. */
+const CHORD_WORD = `(?:${spell('c', 't', 'r', 'l')}|${spell('c', 'o', 'n', 't', 'r', 'o', 'l')})`;
+
+/** A plus, any dash or the minus sign: the forms of a chord a person writes, so spaces may stand around them (`Ctrl + Y`). */
+const CHORD_JOINER = '[+\\p{Pd}\\u2212]';
+/**
+ * A middle dot, a full stop, `/`, `:`, `_` or U+02C6: they end sentences and join words in ordinary prose (`control. I will`,
+ * `control: a plan`), so no space may stand on either side of them (`Ctrl.Y`, not `Ctrl. Y`).
+ */
+const CHORD_PUNCTUATION = '[\\u00B7./:_\\u02C6]';
+/** The letter that ends a token: a letter or digit after it makes the token a word (`controlling`, `Ctrl+Yes`), not a chord. */
+const CHORD_END = '(?![\\p{L}\\p{N}])';
+
 /**
  * An answer-chord token, matched on the FOLDED text (see {@link foldAuthorText}), so the four forms read the way a
  * person reads them:
- * - `ctrl`/`control`, then `+` or any dash (`\p{Pd}`, U+2212), then one letter of any script: `Ctrl+Y`, `control-n`, and Ctrl+ with a Cyrillic letter that looks like Y;
- * - `ctrl`/`control`, then only spaces, then y, n or one Cyrillic letter: `Ctrl Y`, and not `control a process`;
+ * - `ctrl`/`control` ({@link CHORD_WORD}: a lookalike letter of Cyrillic or Greek counts as the Latin one), then {@link CHORD_JOINER}
+ *   (spaces allowed around it) or {@link CHORD_PUNCTUATION} (none allowed), then one letter of any script: `Ctrl+Y`, `control-n`,
+ *   `Ctrl.Y`, `Ctrl·Y`, and Ctrl+ with a Cyrillic letter that looks like Y;
+ * - `ctrl`/`control`, then only spaces, then y, n or one Cyrillic or Greek letter: `Ctrl Y`, and not `control a process`;
  * - the control sign U+2303 (the Mac key legend), then one letter;
  * - `^`, then one letter: `^Y` (not `100^2`, not `x^n`).
- * The letter ends the token: a letter or digit after it makes it a word (`controlling`, `Ctrl+Yes`), not a chord.
+ * The word starts where no ASCII word character stands before it (`(?<!\w)`, because a lookalike letter is not one, so `\b` would not
+ * see it start).
  */
-const CHORD_TOKENS =
-  /\b(?:ctrl|control)\s*[+\p{Pd}\u2212]\s*\p{L}(?![\p{L}\p{N}])|\b(?:ctrl|control)\s+(?:[yn]|(?=\p{L})[\u0400-\u04FF])(?![\p{L}\p{N}])|\u2303\s*\p{L}(?![\p{L}\p{N}])|(?<![\w^])\^\p{L}(?![\p{L}\p{N}])/giu;
+const CHORD_TOKENS = new RegExp(
+  [
+    `(?<!\\w)${CHORD_WORD}(?:\\s*${CHORD_JOINER}\\s*|${CHORD_PUNCTUATION})\\p{L}${CHORD_END}`,
+    `(?<!\\w)${CHORD_WORD}\\s+(?:[yn]|(?=\\p{L})[\\u0370-\\u03FF\\u0400-\\u04FF])${CHORD_END}`,
+    `\\u2303\\s*\\p{L}${CHORD_END}`,
+    `(?<![\\w^])\\^\\p{L}${CHORD_END}`,
+  ].join('|'),
+  'giu',
+);
 
 /**
  * The text as a person reads it, so that a chord cannot be spelled past the match: compatibility forms folded
- * (fullwidth letters, the non-breaking hyphen, wide spaces) and the invisible format characters removed.
+ * (fullwidth letters, the non-breaking hyphen, wide spaces) and the invisible code points removed.
  * Combining marks stay: removing them would damage real text in other scripts.
  */
 function foldAuthorText(text: string): string {
-  return text.normalize('NFKC').replace(FORMAT_CHARS, '');
+  return text.normalize('NFKC').replace(INVISIBLE_CHARS, '');
 }
 
 /** One line of author text, safe to put behind the gutter: untrusted-text floor, folded, no host glyph, no answer chord. */
@@ -599,8 +661,11 @@ function policyWords(gate: RunGate): string {
   return 'No timeout policy was recorded for it.';
 }
 
-/** The keys the open card offers, in the legend's grammar. Only what the gate accepts, and only host text. */
-function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined): string {
+/**
+ * The keys the open card offers, in the legend's grammar. Only what the gate accepts, and only host text; below the terminal minimum
+ * (`fits` is false) only the way out, because no other key is live there.
+ */
+function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined, fits: boolean): string {
   switch (snapshot.phase) {
     case 'answering':
       return 'Answering… · Esc leaves the view';
@@ -609,6 +674,8 @@ function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined): stri
     case 'empty':
       return 'Esc closes';
     case 'open': {
+      // Below the minimum the Home delivers no answer key and no cursor key (only its way out is live), so the line offers none.
+      if (!fits) return 'Esc leaves it pending';
       const parts: string[] = [];
       if (snapshot.gates.length > 1) parts.push('↑/↓ choose a gate');
       // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
@@ -788,7 +855,7 @@ export function projectRunCard(
   const appearance = RUN_CARD_APPEARANCE[state];
   const overdue = state === 'overdue';
   const width = Math.max(1, Math.floor(input.columns) - 2);
-  const keys: RunCardRow = { role: 'keys', text: clipLine(keysFor(snapshot, gate), width) };
+  const keys: RunCardRow = { role: 'keys', text: clipLine(keysFor(snapshot, gate, fits), width) };
   if (!fits) {
     return {
       fits,

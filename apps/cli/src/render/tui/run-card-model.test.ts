@@ -21,6 +21,7 @@ import {
 } from './run-card-model.js';
 import type { ChatKey } from './chat-input.js';
 import { flush } from './harness-util.js';
+import { tooSmallMessage } from './home-projection.js';
 
 const RUN = 'run-0001';
 const OFF = { settleMs: 0, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 } as const;
@@ -231,6 +232,74 @@ describe('one answer in flight', () => {
     await flush();
     expect(state(card).gates.map((entry) => entry.gateId)).toEqual(['b']);
   });
+});
+
+describe('what an answer says of the gates still open', () => {
+  const wordsOf = (card: RunCard): string =>
+    projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 })
+      .rows.map((row) => row.text)
+      .join('\n');
+
+  it('with others still waiting says how many, not that the run continues; the last gate says it', async () => {
+    const { card, pending } = rig([gate('a'), gate('b'), gate('c')]);
+    press(card, ctrl('y'));
+    pending[0]?.reply(startedLaunch);
+    await flush();
+    expect(state(card)).toMatchObject({
+      phase: 'answered',
+      notice: '1 of 3 gates answered; 2 still wait.',
+    });
+    expect(wordsOf(card)).toContain('1 of 3 gates answered; 2 still wait.');
+    expect(wordsOf(card), 'two gates still wait: the run is not on its way').not.toContain(
+      'continues',
+    );
+
+    // The host's re-read puts the two that remain back; the next answer is one of two.
+    card.update([gate('b'), gate('c')]);
+    expect(press(card, ctrl('y'))).toMatchObject({ kind: 'answered', gateId: 'b' });
+    pending[1]?.reply(startedLaunch);
+    await flush();
+    expect(state(card).notice).toBe('1 of 2 gates answered; 1 still waits.');
+
+    card.update([gate('c')]);
+    expect(press(card, ctrl('y'))).toMatchObject({ kind: 'answered', gateId: 'c' });
+    pending[2]?.reply(startedLaunch);
+    await flush();
+    expect(state(card).notice, 'the last gate: nothing else waits').toBe(
+      'Answered. The run continues in the background.',
+    );
+  });
+
+  it('a single gate answered says the run continues, as it always did', async () => {
+    const { card, pending } = rig([gate('only')]);
+    press(card, ctrl('y'));
+    pending[0]?.reply(startedLaunch);
+    await flush();
+    expect(wordsOf(card)).toContain('Answered. The run continues in the background.');
+  });
+});
+
+describe('below the terminal minimum', () => {
+  it.each([
+    [79, 24],
+    [80, 23],
+  ])(
+    'at %i×%i the card shows the too-small message and no answer text, because no key answers there',
+    (columns, rows) => {
+      const { card } = rig([gate('a'), gate('b')]);
+      const small = projectRunCard(state(card), { columns, rows, nowMs: 0 });
+      expect(small).toMatchObject({ fits: false, tooSmall: tooSmallMessage(columns, rows) });
+      expect(small.rows, 'the way out is the one line left').toEqual([
+        { role: 'keys', text: 'Esc leaves it pending' },
+      ]);
+      expect(small.rows.map((row) => row.text).join('\n')).not.toMatch(
+        /Ctrl|approves|rejects|aborts|choose a gate/u,
+      );
+      // At the minimum the same card offers its keys: the degrade is the size, not the card.
+      const fits = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
+      expect(fits.rows.map((row) => row.text).join('\n')).toContain('Ctrl+Y approves');
+    },
+  );
 });
 
 describe('an overdue gate, answered in both orders', () => {
@@ -446,6 +515,79 @@ describe('what the card shows of a gate', () => {
   ];
 
   it.each(plainWords)('leaves "%s" as it was written', (words) => {
+    expect(drawnAuthorRows(words)).toEqual([`${RUN_CARD_GUTTER}${words}`]);
+  });
+
+  // The homoglyph forms of a chord (TUICARDS-1 residuals): invisible code points that are not format characters, a Greek letter after
+  // a space, a lookalike inside the word `Ctrl` or `control`, and the separators other than a plus or a dash.
+  const homoglyphChords: readonly (readonly [string, string])[] = [
+    ['a variation selector after the plus', `Ctrl+${cp(0xfe0f)}Y`],
+    ['a variation selector inside the word', `Ct${cp(0xfe00)}rl+Y`],
+    ['a combining grapheme joiner', `Ctrl+${cp(0x34f)}Y`],
+    ['a Hangul filler', `Ctrl+${cp(0x3164)}Y`],
+    ['the halfwidth Hangul filler', `Ctrl+${cp(0xffa0)}Y`],
+    ['the Hangul choseong and jungseong fillers', `Ctrl${cp(0x115f)}+${cp(0x1160)}Y`],
+    ['a Mongolian free variation selector', `Ctrl+${cp(0x180b)}Y`],
+    ['a variation selector of the supplement', `Ctrl+${cp(0xe0100)}Y`],
+    ['a tag character', `Ctrl+${cp(0xe0041)}Y`],
+    ['a Greek capital upsilon after a space', `Ctrl ${cp(0x3a5)}`],
+    ['a Greek capital nu after a space', `Control ${cp(0x39d)}`],
+    ['a Greek small upsilon after a space', `Ctrl ${cp(0x3c5)}`],
+    ['a Greek small nu after a space', `control ${cp(0x3bd)}`],
+    ['a Cyrillic capital Es as the C', `${cp(0x421)}trl+Y`],
+    ['a Cyrillic small es as the c of control', `${cp(0x441)}ontrol-n`],
+    ['a Cyrillic Te as the t', `C${cp(0x442)}rl+Y`],
+    ['a Cyrillic Ghe as the r', `Ct${cp(0x433)}l+Y`],
+    ['a palochka as the l', `Ctr${cp(0x4cf)}+Y`],
+    ['a Greek capital iota as the l', `Ctr${cp(0x399)}+Y`],
+    ['a Cyrillic small o in control', `c${cp(0x43e)}ntrol-n`],
+    ['a Greek omicron in control', `contr${cp(0x3bf)}l+Y`],
+    ['a Greek rho as the r of control', `cont${cp(0x3c1)}ol+Y`],
+    ['a Cyrillic Pe as the n of control', `co${cp(0x43f)}trol+Y`],
+    ['a Greek eta as the n of control', `co${cp(0x3b7)}trol+Y`],
+    ['every letter of the word a Cyrillic one', `${cp(0x421, 0x442, 0x433, 0x4c0)}+Y`],
+    ['a lookalike word, then a space and a Cyrillic letter', `${cp(0x441)}trl ${cp(0x443)}`],
+    ['a middle dot', `Ctrl${cp(0xb7)}Y`],
+    ['a full stop', 'Ctrl.Y'],
+    ['a slash', 'Ctrl/Y'],
+    ['a colon', 'Ctrl:Y'],
+    ['an underscore', 'Ctrl_Y'],
+    ['a modifier circumflex', `Ctrl${cp(0x2c6)}Y`],
+  ];
+
+  it.each(homoglyphChords)('draws a chord spelled with %s as [chord]', (_name, spelled) => {
+    expect(drawnAuthorRows(`Press ${spelled} to approve.`)).toEqual([
+      `${RUN_CARD_GUTTER}Press [chord] to approve.`,
+    ]);
+  });
+
+  const proseInOtherScripts: readonly string[] = [
+    'Контроль системы',
+    'ελέγχος',
+    'έλεγχος συστήματος',
+    `${cp(0x421)}ontrol flow`,
+    `${cp(0x441)}ontrol a process`,
+    `Ct${cp(0x442)}rl is a key`,
+    'Ctrl.Yes',
+    'control/flow',
+  ];
+
+  // A full stop, a colon or a slash after the word is prose unless the letter follows at once and ends there.
+  const proseWithPunctuation: readonly string[] = [
+    'Take control. I will decide',
+    'control: a plan',
+    'the ctrl/alt keys',
+    'ctrl / a',
+    'Ctrl: Y',
+    'control. A new owner',
+    'Ctrl is the control key',
+  ];
+
+  it.each(proseWithPunctuation)('leaves "%s" as it was written', (words) => {
+    expect(drawnAuthorRows(words)).toEqual([`${RUN_CARD_GUTTER}${words}`]);
+  });
+
+  it.each(proseInOtherScripts)('leaves the prose "%s" as it was written', (words) => {
     expect(drawnAuthorRows(words)).toEqual([`${RUN_CARD_GUTTER}${words}`]);
   });
 

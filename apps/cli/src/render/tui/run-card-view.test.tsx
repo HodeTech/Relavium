@@ -166,7 +166,10 @@ describe('below the minimum', () => {
         new RegExp(`^Terminal too small \\(${String(columns)}×${String(rows)}\\)`, 'u'),
       );
       expect(lines).toHaveLength(2);
-      expect(lines[1], 'the key line, cut to the width').toMatch(/^Ctrl\+Y approves/u);
+      expect(lines[1], 'the way out, cut to the width: no key answers here').toMatch(
+        /^Esc leaves it pending/u,
+      );
+      expect(lastFrame()).not.toContain('Ctrl+Y');
       expect(Array.from(lines[1] ?? '').length).toBeLessThanOrEqual(columns);
       expect(lastFrame()).not.toContain('PRIVATE-MESSAGE');
     },
