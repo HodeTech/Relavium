@@ -25,6 +25,16 @@ import {
   type SheetLine,
   type SheetSpan,
 } from './sheet-frame.js';
+import {
+  DEFINED_UNREADABLE,
+  definedBody,
+  definedLegendItems,
+  foldDefinedKey,
+  openDefinedTab,
+  withDefinedMessage,
+  type DefinedPort,
+  type DefinedTabState,
+} from './tab-host-workflows.js';
 import { escapeReviewCharacter } from './tool-review-projection.js';
 
 /**
@@ -33,17 +43,18 @@ import { escapeReviewCharacter } from './tool-review-projection.js';
  * to draw; it owns no `useInput`, no React and no clock (the host passes the time in), so the key ladder and every sentence are testable
  * without a terminal, as the sheet's are. `tab-host-view.tsx` paints it and `home-controller.ts` owns the slot it sits in.
  *
- * Four tabs: Defined, Active and History are placeholders in this increment (they draw one line that says so) and Permissions is the real
- * one, the ADR-0137 sheet composed under the tab strip: its body, its keys and its `Esc` ladder are the sheet's, and the repository's
- * `[chat]` allowlist is added under the list as read-only rows. Nothing here writes: a withdrawal is carried out through the port the host
- * holds, and the answer comes back through the sheet's own reload.
+ * Four tabs: Active and History are placeholders in this increment (they draw one line that says so); Permissions is the ADR-0137 sheet
+ * composed under the tab strip (its body, its keys and its `Esc` ladder are the sheet's, and the repository's `[chat]` allowlist is added
+ * under the list as read-only rows); and Defined lists the project's workflows with their pins (`tab-host-workflows.ts`), where `r` and `x`
+ * ASK the host to run or export a row. Nothing here writes: a withdrawal is carried out through the port the host holds, and a run or an
+ * export is a {@link TabHostStep} the host carries out with its own native prompt flow.
  *
  * - **Keys.** `←` and `→` move between tabs (and stop at the ends), `Tab` and `Shift+Tab` cycle around them, and `Esc` closes the screen
  *   (on Permissions, once a withdrawal's question is dropped). `Ctrl+C` closes the screen from any tab and never withdraws. Everything
  *   else on Permissions is the sheet's, `Backspace` included: there it is a withdraw key and not a way back (the maintainer's ruling for
  *   this increment), so the ADR's "Backspace goes back" is not applied on that tab.
- * - **Entering a tab reads it again.** Permissions is read from its port every time the tab is entered, never from what was shown the
- *   last time, and a tab entered again starts as a new sheet does: the settle time counts again and nothing typed before counts.
+ * - **Entering a tab reads it again.** Permissions and Defined are read from their ports every time the tab is entered, never from what
+ *   was shown the last time, and a tab entered again starts as a new sheet does: the settle time counts again and nothing typed before counts.
  * - **Each tab remembers its position** while the screen lives ({@link TabMemory}); the host drops it with the screen.
  * - **Drawn in at most {@link TAB_HOST_ROWS} rows** at any terminal height, and below 80×24 as one line that says to enlarge.
  */
@@ -94,7 +105,7 @@ export const TAB_HOST_LEGEND_ROWS_ITEMS: readonly LegendItem[] = [
   TAB_HOST_KEYS.close,
 ];
 
-/** What a tab remembers: where the cursor was, by tab. Only Permissions has a cursor so far; the rest stay at the top. */
+/** What a tab remembers: where the cursor was, by tab. Permissions and Defined have a cursor; the rest stay at the top. */
 export type TabPositions = Readonly<Record<TabId, number>>;
 
 /** What the host keeps of a tab host while a screen that came from it is in front: the tab it was on and each tab's position. */
@@ -115,13 +126,19 @@ export interface TabHostState {
   readonly positions: TabPositions;
   /** The Permissions tab's sheet, read when the tab was entered; `undefined` on any other tab and when Permissions could not be read. */
   readonly sheet: PermissionsSheetState | undefined;
-  /** Permissions was entered and its port could not be read: the tab says so instead of listing anything. */
+  /** The Defined tab's list, read when the tab was entered; absent on any other tab and when Defined could not be read. */
+  readonly defined?: DefinedTabState | undefined;
+  /** Permissions or Defined was entered and its port could not be read: the tab says so instead of listing anything. */
   readonly unreadable: boolean;
 }
 
-/** What entering a tab needs: the port to read Permissions from (none ⇒ the tab says it is unreadable) and the monotonic clock. */
+/**
+ * What entering a tab needs: the port to read Permissions from and the one to read Defined from (none ⇒ that tab says it is unreadable),
+ * and the monotonic clock.
+ */
 export interface TabEntry {
   readonly port: PermissionsPort | undefined;
+  readonly defined?: DefinedPort | undefined;
   readonly now: number;
 }
 
@@ -130,9 +147,16 @@ export interface TabHostContext extends TabEntry {
   readonly canArm: boolean;
 }
 
-/** Where a cursor stands now: the sheet's while it is open, else what was remembered. */
+/** Where a cursor stands now: the sheet's or the list's while it is open, else what was remembered. */
 function positionOf(state: TabHostState): number {
-  return state.sheet?.cursor ?? state.positions[state.tab];
+  return state.sheet?.cursor ?? state.defined?.cursor ?? state.positions[state.tab];
+}
+
+/** `host` with a sentence on the Defined tab, which the next key drops; the same object when that tab is not the one in front. */
+export function withDefinedNote(host: TabHostState, text: string): TabHostState {
+  return host.defined === undefined
+    ? host
+    : { ...host, defined: withDefinedMessage(host.defined, text) };
 }
 
 /** The state of the tab host as the memory of it: the tab it is on, and every tab's position, the current one's included. */
@@ -145,6 +169,7 @@ export function tabHostMemory(state: TabHostState): TabMemory {
  * (clamped to the rows there are now); a port that cannot be read leaves `unreadable` set and no sheet.
  */
 export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHostState {
+  if (tab === 'defined') return enterDefined(memory, entry);
   if (tab !== 'permissions')
     return { tab, positions: memory.positions, sheet: undefined, unreadable: false };
   const opened =
@@ -158,10 +183,38 @@ export function enterTab(memory: TabMemory, tab: TabId, entry: TabEntry): TabHos
   return { tab, positions: memory.positions, sheet: { ...opened, cursor }, unreadable: false };
 }
 
-/** What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), or become another state. */
+/** The Defined tab entered: its port read now, the cursor where it was last. A port that is missing or cannot be read leaves `unreadable` set. */
+function enterDefined(memory: TabMemory, entry: TabEntry): TabHostState {
+  const unreadable: TabHostState = {
+    tab: 'defined',
+    positions: memory.positions,
+    sheet: undefined,
+    unreadable: true,
+  };
+  if (entry.defined === undefined) return unreadable;
+  try {
+    return {
+      tab: 'defined',
+      positions: memory.positions,
+      sheet: undefined,
+      defined: openDefinedTab(entry.defined.read(), memory.positions.defined),
+      unreadable: false,
+    };
+  } catch {
+    return unreadable;
+  }
+}
+
+/**
+ * What a keystroke does to the open tab host: close the screen (with a sentence for the host when it closed on a fault), become another
+ * state, or ask the host to run or export one workflow of the Defined tab, carrying the state the tab is left in. The slug is a catalog
+ * entry's own, never a row's label.
+ */
 export type TabHostStep =
   | { readonly kind: 'close'; readonly note?: string }
-  | { readonly kind: 'state'; readonly state: TabHostState };
+  | { readonly kind: 'state'; readonly state: TabHostState }
+  | { readonly kind: 'run'; readonly slug: string; readonly state: TabHostState }
+  | { readonly kind: 'export'; readonly slug: string; readonly state: TabHostState };
 
 /** The tab a key moves to, or `undefined` for a key that moves none. `←`/`→` stop at the ends; `Tab` and `Shift+Tab` go around. */
 function movedTab(current: TabId, key: ChatKey): TabId | undefined {
@@ -200,8 +253,8 @@ function foldSheet(
 /**
  * Fold one keystroke into the open tab host. `Ctrl+C` closes from any state and never withdraws. A withdrawal's question owns the keyboard
  * until it is answered or dropped: every key goes to the sheet's ladder, a tab key included, so a key typed ahead moves nothing. Past that,
- * a tab key moves (and reads the tab it lands on again), `Esc` closes a tab that has no question to drop, and on Permissions every other
- * key is the sheet's.
+ * a tab key moves (and reads the tab it lands on again), `Esc` closes a tab that has no question to drop, on Permissions every other
+ * key is the sheet's, and on Defined it is the list's (which may ask for a run or an export).
  */
 export function foldTabHostKey(
   state: TabHostState,
@@ -217,8 +270,13 @@ export function foldTabHostKey(
     if (to === state.tab) return { kind: 'state', state };
     return { kind: 'state', state: enterTab(tabHostMemory(state), to, context) };
   }
-  if (sheet === undefined)
-    return key.escape === true ? { kind: 'close' } : { kind: 'state', state };
+  if (key.escape === true && sheet === undefined) return { kind: 'close' };
+  if (state.defined !== undefined) {
+    const step = foldDefinedKey(state.defined, input, key);
+    const next = step.state === state.defined ? state : { ...state, defined: step.state };
+    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+  }
+  if (sheet === undefined) return { kind: 'state', state };
   return foldSheet(state, sheet, input, key, context);
 }
 
@@ -234,6 +292,12 @@ export function disarmTabHost(state: TabHostState): TabHostState {
 /** The legend's items: the withdrawal question's while one is up, else the tab's. */
 export function tabHostLegendItems(state: TabHostState): readonly LegendItem[] {
   const sheet = state.sheet;
+  if (state.defined !== undefined)
+    return definedLegendItems(
+      state.defined,
+      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
+      TAB_HOST_KEYS.close,
+    );
   if (sheet === undefined) return TAB_HOST_LEGEND_PLAIN_ITEMS;
   if (sheet.armed) return SHEET_LEGEND_ARMED_ITEMS;
   return sheetEntries(sheet.snapshot).length > 0
@@ -345,7 +409,13 @@ function allowlistLines(list: RepoAllowlist | undefined, width: number): readonl
 
 /** The lines of a tab that is not built yet or whose data could not be read. */
 function plainBody(state: TabHostState): readonly SheetLine[] {
-  if (state.unreadable) return [{ kind: 'failed', text: PERMISSIONS_UNREADABLE }];
+  if (state.unreadable)
+    return [
+      {
+        kind: 'failed',
+        text: state.tab === 'defined' ? DEFINED_UNREADABLE : PERMISSIONS_UNREADABLE,
+      },
+    ];
   const title = TABS.find((tab) => tab.id === state.tab)?.title ?? '';
   return [{ kind: 'text', text: `${title} — ${PLACEHOLDER_NOTE}.` }];
 }
@@ -371,6 +441,8 @@ export function tabHostLines(state: TabHostState, geometry: SheetGeometry): read
   const head = [tabStrip(state.tab, width), rule(width)];
   const foot = legendLine(tabHostLegendItems(state), width);
   const sheet = state.sheet;
+  if (state.defined !== undefined)
+    return [...head, ...definedBody(state.defined, width, budget - head.length - 1), foot];
   if (sheet === undefined) return [...head, ...plainBody(state), foot];
   // The sheet's own note and message row sit under its list; its legend is replaced by the tab host's, which names the tab keys too.
   const sheetFoot = permissionsSheetChrome(sheet, geometry).foot.slice(0, 2);

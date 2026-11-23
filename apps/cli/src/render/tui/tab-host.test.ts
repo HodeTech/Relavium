@@ -135,8 +135,8 @@ describe('the tab registry', () => {
     expect(TABS.map((tab) => tab.title)).toEqual(['Defined', 'Active', 'History', 'Permissions']);
   });
 
-  it('draws one line that says so on each of the three placeholders, and reads no port for them', () => {
-    for (const tab of ['defined', 'active', 'history'] as const) {
+  it('draws one line that says so on each of the two placeholders, and reads no port for them', () => {
+    for (const tab of ['active', 'history'] as const) {
       const r = rig(snapshotOf(2), tab);
       const text = tabHostLines(r.state, { columns: 80, terminalRows: 24 }).map(
         (line) => line.text,

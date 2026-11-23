@@ -421,6 +421,20 @@ const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
   run: () => undefined,
 });
 
+/**
+ * The bare Home's `/workflows` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §2, MVP-8 step 4): the tab host on its Defined tab. The chat's `/workflows` (above) is its own command and lists what the project
+ * holds; this one is the Home's and is not in any chat palette, so a line typed in a chat reaches the chat's command and nothing else.
+ */
+const HOME_WORKFLOWS_COMMAND = freezeReplCommand({
+  name: 'workflows',
+  label: 'Workflows',
+  description: 'The workflows of this project: run or export one.',
+  effect: 'read',
+  availableIn: ['home'],
+  run: () => undefined,
+});
+
 const HOME_RESUME_COMMAND = freezeReplCommand({
   name: 'resume',
   label: 'Resume session',
@@ -452,7 +466,8 @@ export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
 ]);
 
 /** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
- *  (S5, pre-chat diagnostics). The chat-only info commands (`/workflows` / `/cost`) stay out of the Home set. */
+ *  (S5, pre-chat diagnostics). The chat's own `/workflows` and `/cost` stay out of the Home set; the Home has its own `/workflows`
+ *  (the Defined tab, MVP-8 step 4), and `/cost` is chat-only. */
 export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
   HOME_PROVIDERS_COMMAND,
@@ -460,6 +475,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
   HOME_PERMISSIONS_COMMAND,
   HOME_RESUME_COMMAND,
   HOME_RUN_COMMAND,
+  HOME_WORKFLOWS_COMMAND,
 ]);
 
 /** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */

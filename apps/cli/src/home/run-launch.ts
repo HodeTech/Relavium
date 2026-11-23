@@ -129,6 +129,11 @@ export const LAUNCH_CANCELLED = 'Run cancelled.';
 export const LAUNCH_NO_WORKFLOWS =
   'No workflows to run in this project. Add one under .relavium/workflows (see /init).';
 
+/** What `open(slug)` says when no valid workflow of the project carries that slug: no flow is begun and nothing is read by it. */
+export function launchNotOffered(slug: string): string {
+  return `Not started. ${bounded(slug, LABEL_LIMIT)} is not a valid workflow of this project.`;
+}
+
 const IGNORED = (state: LaunchState): LaunchStep => ({ state, effects: [] });
 
 function withValue(
@@ -537,8 +542,13 @@ export interface RunLaunch {
   /**
    * Run the launch flow once and resolve with the notice the Home shows. A second call while one is open joins it. It rejects only
    * for a fault no refusal describes; every refusal is a notice.
+   *
+   * With a `slug` the picker is skipped once and the form starts for that workflow (the Defined tab's `r`), through the same
+   * machine, validation, confirmation (default No) and single-start latch. The slug is only COMPARED with the slugs of the valid
+   * catalog entries: it is never a path, never read from disk, and one that matches no entry opens nothing ({@link launchNotOffered}).
+   * `Esc` at the first field steps back to the picker, which then opens on that workflow.
    */
-  readonly open: () => Promise<string>;
+  readonly open: (slug?: string) => Promise<string>;
   /** The launch in flight, if any. */
   readonly session: () => LaunchSession | undefined;
 }
@@ -555,7 +565,7 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
   const { flow, catalog } = deps;
   let current: { readonly session: LaunchSession; readonly done: Promise<string> } | undefined;
 
-  const open = async (): Promise<string> => {
+  const open = async (slug?: string): Promise<string> => {
     if (current !== undefined) return current.done;
     deps.assertAdmitting?.();
     let entries: readonly CatalogEntry[];
@@ -568,10 +578,13 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
     const { choices, skipped } = offeredWorkflows(entries);
     if (choices.length === 0)
       return skipped === undefined ? LAUNCH_NO_WORKFLOWS : `${LAUNCH_NO_WORKFLOWS} ${skipped}`;
+    // A slug that names no offered workflow starts no flow at all: nothing is begun, asked or loaded for it.
+    if (slug !== undefined && !choices.some((choice) => choice.slug === slug))
+      return launchNotOffered(slug);
 
     const signal = flow.begin();
     const hold = createSecretHold();
-    const running = runSession({ deps, hold, signal });
+    const running = runSession({ deps, hold, signal, preselect: slug });
     current = { session: running.session, done: running.done };
     try {
       if (skipped !== undefined) flow.note(skipped, 'Run workflow');
@@ -600,9 +613,12 @@ function runSession(options: {
   readonly deps: RunLaunchDeps;
   readonly hold: SecretHold;
   readonly signal: AbortSignal;
+  /** The slug the picker is skipped for, once; the picker opens on it when the person steps back to it. */
+  readonly preselect?: string | undefined;
 }): SessionRun {
-  const { deps, hold, signal } = options;
+  const { deps, hold, signal, preselect } = options;
   const { flow, host, catalog } = deps;
+  let preselected = preselect !== undefined; // the picker is skipped only the first time
   let state: LaunchState = { kind: 'idle', turn: 0 };
   let loaded: WorkflowDefinition | undefined;
   let finish: (notice: string) => void = () => undefined;
@@ -662,15 +678,25 @@ function runSession(options: {
   }
 
   async function pick(effect: Extract<LaunchEffect, { kind: 'pick' }>): Promise<void> {
-    const answer = await flow.select({
-      message: 'Run which workflow?',
-      options: effect.choices.map((choice, index) => ({
-        value: String(index),
-        label: choice.label,
-        hint: bounded(choice.path, REASON_LIMIT),
-      })),
-      escape: 'cancel',
-    });
+    const at = preselect === undefined ? -1 : effect.choices.findIndex((c) => c.slug === preselect);
+    let answer: string | symbol;
+    if (preselected && at >= 0) {
+      // The Defined tab asked for this workflow: the picker is skipped this once, and everything after it is the ordinary flow.
+      preselected = false;
+      answer = String(at);
+    } else {
+      preselected = false;
+      answer = await flow.select({
+        message: 'Run which workflow?',
+        options: effect.choices.map((choice, index) => ({
+          value: String(index),
+          label: choice.label,
+          hint: bounded(choice.path, REASON_LIMIT),
+        })),
+        ...(at >= 0 ? { initialValue: String(at) } : {}),
+        escape: 'cancel',
+      });
+    }
     const choice = typeof answer === 'string' ? effect.choices[Number(answer)] : undefined;
     if (choice === undefined) {
       dispatch({ kind: 'stop' });

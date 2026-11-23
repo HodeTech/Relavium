@@ -280,7 +280,13 @@ export function writeAuthoredFile(
  * workflow and an agent is ambiguous (exit 2) — disambiguate by renaming one. Only VALID catalog entries match
  * (an unparseable file's slug is a filename FALLBACK, never a real id).
  */
-export function resolveById(opts: { projectConfigDir: string; cwd: string; id: string }): {
+export function resolveById(opts: {
+  projectConfigDir: string;
+  cwd: string;
+  id: string;
+  /** The operator home the catalog's path rules read; default is the process's own. A caller that is handed one passes it on. */
+  homeDir?: string;
+}): {
   kind: AuthoredKind;
   path: string;
 } {
@@ -290,6 +296,7 @@ export function resolveById(opts: { projectConfigDir: string; cwd: string; id: s
       projectConfigDir: opts.projectConfigDir,
       cwd: opts.cwd,
       kind: KIND_DIR[kind],
+      ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
     }).find((e) => e.valid && e.slug === opts.id);
     if (entry !== undefined) {
       matches.push({ kind, path: resolve(opts.cwd, entry.path) });

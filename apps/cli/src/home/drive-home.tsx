@@ -27,8 +27,9 @@ import {
   createSessionUsageStore,
   createProviderStore,
   createRunHistoryReader,
+  createRunPinStore,
 } from '@relavium/db';
-import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
+import type { AgentSessionRecord, ReasoningEffort, RunStatus } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -146,7 +147,9 @@ import { createHomeStore } from './home-store.js';
 import { RunHost } from './run-host.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
+import { createDefinedPort, createExportPort } from './defined-port.js';
 import { createProjectCatalog, createRunLaunch } from './run-launch.js';
+import { runExportCard } from '../render/tui/export-card.js';
 import { defaultSubscribeSignals } from '../process/signals.js';
 
 /**
@@ -1849,26 +1852,60 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       };
       // `/run`: the picker, the form and the confirmation on the native prompt flow, then the host's single-flight start
       // (ADR-0139 §2, §7). The catalog finds the project directory afresh, so a `/init` in this Home is seen at once.
+      const launchCatalog = createProjectCatalog({
+        cwd: deps.global.cwd,
+        projectConfigDir: () => {
+          try {
+            return findProjectConfigDir(deps.global.cwd, homeDir);
+          } catch {
+            return undefined; // a home that cannot be resolved safely: there is no project to offer
+          }
+        },
+        homeDir,
+      });
       const runLaunch = createRunLaunch({
         flow: promptFlow,
         host: hostedRuns,
-        catalog: createProjectCatalog({
-          cwd: deps.global.cwd,
-          projectConfigDir: () => {
-            try {
-              return findProjectConfigDir(deps.global.cwd, homeDir);
-            } catch {
-              return undefined; // a home that cannot be resolved safely: there is no project to offer
-            }
-          },
-          homeDir,
-        }),
+        catalog: launchCatalog,
         assertAdmitting: assertHomeAdmitting,
       });
+      // The Defined tab (ADR-0140 §2, MVP-8 step 4): the very catalog `/run` offers, and the project's workflow pins, read every time the
+      // tab is entered. The pins are keyed by the project's real path; the project is found afresh, as the catalog's is.
+      const definedPins = createRunPinStore(opened.db);
+      const defined = createDefinedPort({
+        catalog: launchCatalog,
+        // The latest run of each workflow in this project, as the runs recorded it (the working directory, as `status` reads them).
+        lastRuns: () =>
+          new Map(
+            runReader
+              .loadLatestRunPerWorkflowInProject(deps.global.cwd)
+              .map((summary): [string, RunStatus] => [summary.slug, summary.lastRun.status]),
+          ),
+        pins: () => {
+          let configDir: string | undefined;
+          try {
+            configDir = findProjectConfigDir(deps.global.cwd, homeDir);
+          } catch {
+            configDir = undefined; // no project resolves safely: the pins of the working directory, which hold none
+          }
+          return definedPins.listPins({
+            kind: 'workflow',
+            projectRoot: commandGrantRoot(deps.global.cwd, configDir),
+          });
+        },
+      });
+      // `x` on a Defined row: the export card over the command's own prepare and commit, on the Home's native flow.
+      const exportPort = createExportPort({ global: deps.global, homeDir });
       controller = createHomeController({
         ...(ownership === undefined ? {} : { workOwner: ownership.surface.work }),
         chordHistory,
-        launchRun: () => runLaunch.open(),
+        launchRun: (slug) => runLaunch.open(slug),
+        defined,
+        exportDefined: (slug) =>
+          runExportCard(
+            { flow: promptFlow, port: exportPort, assertAdmitting: assertHomeAdmitting },
+            slug,
+          ),
         // Leaving the Home with a leg executing asks first, and a confirmed exit cancels the leg and waits for it for at most the
         // engine's grace window (ADR-0139 §6). The host's own `close` is the Home's teardown of the leg, joined again below.
         hostedRuns,

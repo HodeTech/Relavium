@@ -37,6 +37,7 @@ import {
   launchFields,
   LAUNCH_CANCELLED,
   LAUNCH_NO_WORKFLOWS,
+  launchNotOffered,
   reduceLaunch,
   type LaunchChoice,
   type LaunchState,
@@ -478,6 +479,105 @@ describe('a double submit starts one run', () => {
     keys(r).esc();
     expect(await first).toBe(LAUNCH_CANCELLED);
     expect(await second).toBe(LAUNCH_CANCELLED);
+  });
+});
+
+describe('open(slug) starts the form for one workflow (the Defined tab’s r)', () => {
+  it('skips the picker: the first prompt is the workflow’s own, and the confirmation still defaults to No', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('no-inputs');
+    const card = await shows(r, 'select', 'Run no-inputs');
+    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
+    expect(card.options[card.selected]?.label, 'the cursor is on No').toBe('No');
+    keys(r).enter();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    expect(r.startCalls).toHaveLength(0);
+    // The picker was never drawn: no snapshot of the whole session asked "which workflow".
+    expect(r.snapshots.some((snapshot) => snapshot.includes('Run which workflow?'))).toBe(false);
+  });
+
+  it('asks the workflow’s inputs with the workflow’s own validator, and starts exactly once on a deliberate Yes', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open('host-happy');
+    await shows(r, 'text', 'Input 1 of 1: n');
+    k.type('abc');
+    k.enter();
+    await untilPrompt(
+      r,
+      (snapshot) => snapshot.error.includes('decimal number'),
+      'the number field`s refusal',
+    );
+    for (let i = 0; i < 3; i += 1) k.backspace();
+    k.type('4');
+    k.enter();
+    await shows(r, 'select', 'Run host-happy with n=4?');
+    const turn = r.launch.session()?.state().turn ?? -1;
+    k.up();
+    k.enter();
+    r.launch.session()?.dispatch({ kind: 'confirmed', turn, yes: true }); // the same answer again, in the same tick
+    expect(await opened).toMatch(/^Started host-happy as run /);
+    expect(r.startCalls, 'one start').toHaveLength(1);
+    expect(r.startCalls[0]?.request.workflow).toBe('.relavium/workflows/happy.relavium.yaml');
+    expect(runCount()).toBe(1);
+    await idle(r);
+  });
+
+  it('Esc at the first field steps back to the picker, which opens on that workflow', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('secret.relavium.yaml', SECRET_RUN);
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const r = rig();
+    const opened = r.launch.open('host-secret');
+    await shows(r, 'text', 'Input 1 of 2: n');
+    keys(r).esc();
+    const picker = await shows(r, 'select', 'Run which workflow?');
+    expect(picker.options.map((option) => option.label)).toEqual([
+      'host-happy',
+      'host-secret',
+      'no-inputs',
+    ]);
+    expect(
+      picker.options[picker.selected]?.label,
+      'the cursor is on the workflow it came from',
+    ).toBe('host-secret');
+    keys(r).esc();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    expect(r.startCalls).toHaveLength(0);
+  });
+
+  it.each([
+    ['a slug no file carries', 'ghost'],
+    ['a path', '../../x'],
+    ['a file that is not a valid workflow', 'broken-one'],
+  ])('%s (%s) opens nothing: no flow, no prompt, no load, no run', async (_what, slug) => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    writeWorkflow('not-a-workflow.relavium.yaml', BROKEN);
+    // A valid workflow exactly where `workflows/../../x` would land if a slug were ever joined into a path.
+    writeFileSync(join(root, 'x.relavium.yaml'), HAPPY.replace('id: host-happy', 'id: x'));
+    const r = rig();
+    const notice = await r.launch.open(slug);
+    expect(notice).toBe(launchNotOffered(slug));
+    expect(notice).toMatch(/^Not started\. .* is not a valid workflow of this project\.$/u);
+    expect(r.snapshots, 'no prompt was ever published').toEqual([]);
+    expect(r.channel.ui.getSnapshot().active, 'no flow was begun').toBe(false);
+    expect(r.startCalls).toHaveLength(0);
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    expect(r.states, 'the machine never left idle').toEqual([]);
+  });
+
+  it('a slug is only compared: one with control characters is shown clean in the notice', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const notice = await r.launch.open('a\u001b[31mb\u202ec');
+    expect(notice.includes(String.fromCharCode(0x1b)), 'no escape byte').toBe(false);
+    expect(notice.includes(String.fromCharCode(0x202e)), 'no bidi override').toBe(false);
+    expect(r.snapshots).toEqual([]);
   });
 });
 

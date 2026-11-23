@@ -15,6 +15,7 @@ import {
   createClient,
   createEffectJournalStore,
   createRunHistoryStore,
+  createRunPinStore,
   createSessionStore,
   runMigrations,
   type DbClient,
@@ -23,7 +24,7 @@ import { REASONING_EFFORTS, RunEventSchema, type ReasoningEffort } from '@relavi
 import type { AskUserDelegate, AskUserRequest, ToolRoundLimitHook } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { render as renderInk, type Instance } from 'ink';
+import { render as renderInk, type Instance, type Key } from 'ink';
 import { createElement, isValidElement } from 'react';
 
 import {
@@ -1618,6 +1619,136 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  describe('ADR-0140 §2: the bare Home’s `/workflows` is the Defined tab over the project’s own catalog and pins', () => {
+    const WORKFLOW = (id: string): string => `schema_version: '1.0'
+workflow:
+  id: ${id}
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+    const definedOf = (props: RootAppProps) => {
+      const screen = props.controller.getSnapshot().screen;
+      return screen?.kind === 'tab-host' ? screen.host.defined : undefined;
+    };
+    /** A project with two workflows, `beta` pinned in the Home's own `history.db`. */
+    function project(): void {
+      mkdirSync(join(cwd, '.relavium', 'workflows'), { recursive: true });
+      writeFileSync(join(cwd, '.relavium', 'workflows', 'alpha.relavium.yaml'), WORKFLOW('alpha'));
+      writeFileSync(join(cwd, '.relavium', 'workflows', 'beta.relavium.yaml'), WORKFLOW('beta'));
+      createRunPinStore(client.db).pinItem({
+        kind: 'workflow',
+        projectRoot: commandGrantRoot(cwd, findProjectConfigDir(cwd, testHomeDir)),
+        ref: 'beta',
+        at: 1,
+      });
+    }
+    /** A whole key as the host's `useInput` hands it to the prompt channel. */
+    const channelKey = (over: Partial<Key>): Key => ({
+      upArrow: false,
+      downArrow: false,
+      leftArrow: false,
+      rightArrow: false,
+      pageDown: false,
+      pageUp: false,
+      home: false,
+      end: false,
+      return: false,
+      escape: false,
+      ctrl: false,
+      shift: false,
+      tab: false,
+      backspace: false,
+      delete: false,
+      meta: false,
+      super: false,
+      hyper: false,
+      capsLock: false,
+      numLock: false,
+      ...over,
+    });
+    const typeLine = (props: RootAppProps, line: string): void => {
+      props.controller.handlePaste(line);
+      props.controller.handleKey('', ENTER);
+    };
+
+    it('lists the catalog the Home’s `/run` offers with the pins the Home’s database holds, pinned first, and starts no chat', async () => {
+      project();
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+      expect(definedOf(props)?.read.model.rows.map((row) => [row.slug, row.pinWord])).toEqual([
+        ['beta', 'pinned'],
+        ['alpha', 'unpinned'],
+      ]);
+      expect(props.controller.getSnapshot().session, 'no chat began').toBeUndefined();
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('x opens the export card over the real prepare, naming the destination in this directory; a No writes nothing', async () => {
+      project();
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const prompt = props.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt channel');
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+      props.controller.handleKey('x', {}); // the cursor is on `beta`, the pinned row
+      await vi.waitFor(() => expect(prompt.getSnapshot().kind).toBe('chord'), { timeout: WAIT_MS });
+      const card = prompt.getSnapshot();
+      expect(card.message).toBe("Write workflow 'beta' to a file in this directory?");
+      expect(card.details[0]).toBe('destination beta.relavium.yaml');
+      prompt.input('n', channelKey({ ctrl: true }));
+      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Nothing was written.'), {
+        timeout: WAIT_MS,
+      });
+      expect(() => readFileSync(join(cwd, 'beta.relavium.yaml'), 'utf8')).toThrow();
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
+
+    it('r opens the launch flow at that workflow, skipping the picker: its first card is the confirmation, and Ctrl+C leaves it with nothing started', async () => {
+      project();
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p));
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      const prompt = props.nativePrompt;
+      if (prompt === undefined) throw new Error('the Home has no native prompt channel');
+      typeLine(props, '/workflows');
+      await vi.waitFor(() => expect(definedOf(props)).toBeDefined(), { timeout: WAIT_MS });
+      props.controller.handleKey('', { downArrow: true }); // `alpha`
+      props.controller.handleKey('r', {});
+      await vi.waitFor(() => expect(prompt.getSnapshot().message).toContain('Run alpha'), {
+        timeout: WAIT_MS,
+      });
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['Yes', 'No']);
+      prompt.input('c', channelKey({ ctrl: true }));
+      await vi.waitFor(() => expect(definedOf(props)?.message).toBe('Run cancelled.'), {
+        timeout: WAIT_MS,
+      });
+      props.controller.handleKey('', { escape: true });
+      props.controller.handleKey('c', CTRL_C);
+      props.controller.handleKey('c', CTRL_C);
+      expect(await drivePromise).toBe(EXIT_CODES.success);
+    });
   });
 
   describe('ADR-0137 §3: the bare Home’s sheet reads the project’s own store, afresh every time', () => {

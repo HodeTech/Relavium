@@ -33,10 +33,12 @@ import {
   foldTabHostKey,
   freshTabMemory,
   tabHostMemory,
+  withDefinedNote,
   type TabHostState,
   type TabId,
   type TabMemory,
 } from './tab-host.js';
+import type { DefinedPort } from './tab-host-workflows.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
@@ -459,7 +461,19 @@ export interface HomeControllerDeps {
    * only: a live chat never reaches it (the typed `/run` is routed here only with no session, and the chat palette does not list it).
    * Absent ⇒ `/run` says it is unavailable.
    */
-  readonly launchRun?: () => Promise<string>;
+  readonly launchRun?: (slug?: string) => Promise<string>;
+  /**
+   * The Defined tab's read, over the project's catalog and pins ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+   * §2): read again every time the tab is entered. Absent ⇒ the tab says it cannot list, and a typed `/workflows` at the Home says the
+   * workflows are not available.
+   */
+  readonly defined?: DefinedPort | undefined;
+  /**
+   * The Defined tab's export card: prepare the export of one catalog workflow, show where it would be written, and write it only on a
+   * Yes. It resolves with the sentence the tab shows; it holds the native action while the card is open. Absent ⇒ `x` says export is
+   * unavailable.
+   */
+  readonly exportDefined?: ((slug: string) => Promise<string>) | undefined;
   /**
    * The Home's workflow-run host, as far as leaving the Home needs it ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
    * §3, §6): `snapshot` says whether a leg is executing or cancelling, `cancel` requests the cooperative stop, and `close` is the Home's
@@ -977,8 +991,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let tabHostIsTheCommand = false;
   /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
   const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
-    const host = enterTab(memory, memory.tab, { port: deps.permissions, now: interruptNow() });
-    return host.unreadable ? undefined : { kind: 'tab-host', host };
+    const host = enterTab(memory, memory.tab, {
+      port: deps.permissions,
+      defined: deps.defined,
+      now: interruptNow(),
+    });
+    // Permissions that cannot be read opens nothing. The Defined tab that cannot be read still opens, on a line that says so: it is what
+    // a typed `/workflows` asked for, and the other tabs are one key away.
+    return host.unreadable && host.tab === 'permissions' ? undefined : { kind: 'tab-host', host };
   };
   const openTabHost = (tab: TabId): boolean => {
     if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
@@ -1030,11 +1050,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     refreshHostedRun();
   };
-  /** Put the run view of the leg that is executing in front (a leg the person just started, or came back to); `false` when none is. */
-  const openRunView = (): boolean => {
+  /**
+   * Put the run view of the leg that is executing in front (a leg the person just started, or came back to); `false` when none is. A
+   * view opened from the tab host returns to it with `Esc`, on the tab and the row it came from.
+   */
+  const openRunView = (from: ScreenOrigin = 'landing'): boolean => {
     const runId = deps.hostedRuns?.snapshot().active?.runId;
     if (runId === undefined) return false;
-    return openScreen('run-view', { runId, store: deps.runStore?.(runId) });
+    return openScreen('run-view', { runId, store: deps.runStore?.(runId), from });
   };
   /** `Esc` on a run view: back to the tab host it was opened from, else out of the screen. */
   const leaveRunView = (screen: RunViewScreen): void => {
@@ -1192,6 +1215,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): void => {
     const step = foldTabHostKey(screen.host, input, key, {
       port: deps.permissions,
+      defined: deps.defined,
       canArm:
         terminal === undefined ||
         sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
@@ -1203,6 +1227,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     tabMemory = tabHostMemory(step.state);
     if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
+    // A request of the Defined tab: the tab is left as the key left it, and the native flow takes the keyboard for the run or the card.
+    if (step.kind === 'run') openDefinedRun(step.slug);
+    else if (step.kind === 'export') openDefinedExport(step.slug);
   };
 
   // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
@@ -1538,6 +1565,51 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }, 'Run workflow');
   };
 
+  /**
+   * A sentence for the person who is looking at the Defined tab: the tab's message row, which the next key drops. With another screen in
+   * front (or none) it is the landing's notice, which is where such a person would look.
+   */
+  const noteOnDefinedTab = (text: string): void => {
+    const screen = state.screen;
+    if (screen?.kind !== 'tab-host' || screen.host.defined === undefined) {
+      set({ notice: text });
+      return;
+    }
+    set({ screen: { kind: 'tab-host', host: withDefinedNote(screen.host, text) } });
+  };
+
+  /**
+   * `r` on a Defined row: the launch flow, started at that workflow (its picker is skipped once; the form, the confirmation that defaults
+   * to No and the single start are the flow's own). A run that started is shown at once and `Esc` returns to the tab; a launch that was
+   * refused or left says so on the tab.
+   */
+  const openDefinedRun = (slug: string): void => {
+    const launch = deps.launchRun;
+    if (launch === undefined) {
+      noteOnDefinedTab('Running a workflow is unavailable in this session.');
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await launch(slug);
+      if (exiting) return;
+      set({ notice, ...parkedPatch() });
+      if (!openRunView('tab-host')) noteOnDefinedTab(notice);
+    }, 'Run workflow');
+  };
+
+  /** `x` on a Defined row: the export card. What it writes, it writes only on a Yes, and the tab says what happened. */
+  const openDefinedExport = (slug: string): void => {
+    const exportDefined = deps.exportDefined;
+    if (exportDefined === undefined) {
+      noteOnDefinedTab('Export is unavailable in this session.');
+      return;
+    }
+    openNativeAction(async () => {
+      const notice = await exportDefined(slug);
+      if (!exiting) noteOnDefinedTab(notice);
+    }, 'Export');
+  };
+
   const openResume = (selectedId?: string): void => {
     const resume = deps.resumeChat;
     if (resume === undefined || (selectedId === undefined && deps.pickSession === undefined)) {
@@ -1628,6 +1700,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else if (deps.permissions === undefined)
         set({ notice: 'Remembered commands are not available here.' });
       else openTabHost('permissions');
+      return true;
+    }
+    // `/workflows` at the Home opens the tab host on its Defined tab (ADR-0140 §2, MVP-8 step 4); it no longer starts a chat. With a chat
+    // in front it is the chat's own command, which lists what the project holds, and it is not routed here.
+    if (state.session === undefined && /^\/workflows(?:\s|$)/u.test(text)) {
+      set({ input: emptyEditor() });
+      if (text !== '/workflows') set({ notice: '/workflows accepts no arguments.' });
+      else if (deps.defined === undefined)
+        set({ notice: 'The project’s workflows are not available here.' });
+      else openTabHost('defined');
       return true;
     }
     // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
@@ -2181,7 +2263,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     cancel: () => undefined,
     exportSession: () => undefined,
     help: () => undefined,
-    showWorkflows: () => undefined,
+    showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens the Defined tab from the controller (MVP-8 step 4)
     // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
     // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
     // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
@@ -2267,6 +2349,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openResume();
         } else if (step.command.name === 'run' && active === undefined) {
           openRunLaunch();
+        } else if (step.command.name === 'workflows' && active === undefined) {
+          // home: bare `/workflows` opens the tab host on its Defined tab (ADR-0140 §2) — the same as the typed command.
+          if (deps.defined === undefined)
+            set({ notice: 'The project’s workflows are not available here.' });
+          else openTabHost('defined');
         } else if (step.command.name === 'permissions' && active === undefined) {
           // home: bare `/permissions` opens the tab host on its Permissions tab (ADR-0140 §3).
           if (deps.permissions === undefined)

@@ -3,6 +3,7 @@ import './force-color.js';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { buildDefinedModel, type DefinedEntry } from '../../history/defined-model.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type {
   PermissionsPort,
@@ -53,6 +54,37 @@ const ALLOWLIST: RepoAllowlist = {
   globs: ['git *'],
   omitted: 0,
 };
+/** The Defined tab over two workflows, `beta` pinned and one file that does not parse, plus a pin whose workflow left. */
+const definedHost = (): TabHostState =>
+  enterTab(freshTabMemory('defined'), 'defined', {
+    port: undefined,
+    now: 0,
+    defined: {
+      read: () => {
+        const entries: readonly DefinedEntry[] = [
+          { slug: 'alpha', name: 'Alpha', nodeCount: 3, path: 'a.yaml', valid: true },
+          { slug: 'beta', name: undefined, nodeCount: 1, path: 'b.yaml', valid: true },
+          {
+            slug: 'torn',
+            name: undefined,
+            path: 't.yaml',
+            valid: false,
+            error: 'not a workflow',
+          },
+        ];
+        return {
+          model: buildDefinedModel({
+            entries,
+            pins: [
+              { kind: 'workflow', ref: 'beta', rowid: 1, oversized: false },
+              { kind: 'workflow', ref: 'gone', rowid: 2, oversized: false },
+            ],
+          }),
+          slugOf: (index: number) => entries[index]?.slug,
+        };
+      },
+    },
+  });
 const portOf = (snapshot: PermissionsSnapshot): PermissionsPort => ({
   surface: 'project',
   load: () => snapshot,
@@ -119,7 +151,6 @@ describe('TabHostView at 80×24', () => {
 
   it('says what it shows on each placeholder, in a word as well as a glyph', () => {
     for (const [tab, title] of [
-      ['defined', 'Defined'],
       ['active', 'Active'],
       ['history', 'History'],
     ] as const) {
@@ -127,6 +158,37 @@ describe('TabHostView at 80×24', () => {
       expect(drawn).toContain(`▸ ${title}`);
       expect(drawn).toContain(`${title} — available in the next increment.`);
     }
+  });
+});
+
+describe('TabHostView on the Defined tab', () => {
+  it('draws every row with a glyph and a word, in 23 rows, with no colour at all when colour is off', () => {
+    const styled = frame(definedHost(), false);
+    expect(styled).not.toMatch(ANY_COLOUR);
+    const drawn = plain(styled);
+    const lines = drawn.split('\n');
+    expect(lines.length).toBeLessThanOrEqual(23);
+    expect(lines[0]).toContain('▸ Defined');
+    for (const word of [
+      '★ pinned',
+      '· unpinned',
+      '? not in catalog',
+      '✗ invalid',
+      '3 nodes',
+      '1 node',
+    ])
+      expect(drawn, word).toContain(word);
+    expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
+    expect(lines.at(-1)).toContain('↑/↓ select · [r] run · [x] export · Esc close');
+  });
+
+  it('draws the selected row in cyan, a quiet tail dimmed, and the key of an action in its own style', () => {
+    const drawn = frame(definedHost(), true);
+    expect(lineWith(drawn, '› beta')).toContain(CYAN);
+    expect(lineWith(drawn, 'alpha')).toContain(DIM);
+    expect(lineWith(drawn, 'Tab'), 'the legend: the keys apart from the words').toContain(
+      `${BOLD}[r]`,
+    );
   });
 });
 

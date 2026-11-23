@@ -247,7 +247,19 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
       'resume',
       'run', // the launch of a hosted workflow run (ADR-0139 §7, MVP-8 step 3)
+      'workflows', // the Defined tab of the tab host (ADR-0140 §2, MVP-8 step 4): the Home's own, not the chat's
     ]);
+  });
+
+  it('/workflows is two commands: the chat lists, the bare Home opens the Defined tab, and neither palette carries the other', () => {
+    const chat = REPL_COMMANDS_BY_NAME.get('workflows');
+    expect(chat?.availableIn, 'the chat’s own command is unchanged').toEqual(['chat']);
+    const home = HOME_PALETTE_COMMANDS.find((command) => command.name === 'workflows');
+    expect(home?.availableIn).toEqual(['home']);
+    expect(home, 'a distinct entry, not the chat’s').not.toBe(chat);
+    expect(CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
+    expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
+    expect(HOME_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([home]);
   });
 
   it('/run is a Home command only: it is in the Home palette and in no chat palette (ADR-0139 §7)', () => {
