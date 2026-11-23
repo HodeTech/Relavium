@@ -100,14 +100,17 @@ function lineKey(line: SheetLine, index: number): string {
   return `${String(index)}:${line.kind}`;
 }
 
-export function PermissionsSheetView(props: Readonly<PermissionsSheetViewProps>): ReactElement {
-  const lines = permissionsSheetLines(props.state, {
-    columns: props.columns,
-    terminalRows: props.rows,
-  });
+/**
+ * Lines drawn as the sheet draws them: each in the style of its kind, each span in its role, no line wrapped. The one painter of a
+ * {@link SheetLine} list, so a screen that composes the sheet's body in a frame of its own (the Home's tab host, ADR-0140 §3) paints
+ * the very same rows the chat's docked sheet does.
+ */
+export function SheetLinesView(
+  props: Readonly<{ lines: readonly SheetLine[]; color: boolean }>,
+): ReactElement {
   return (
     <Box flexDirection="column">
-      {lines.map((line, index) => (
+      {props.lines.map((line, index) => (
         <Text key={lineKey(line, index)} {...styleFor(line.kind, props.color)} wrap="truncate-end">
           {line.text.length === 0
             ? ' '
@@ -129,4 +132,12 @@ export function PermissionsSheetView(props: Readonly<PermissionsSheetViewProps>)
       ))}
     </Box>
   );
+}
+
+export function PermissionsSheetView(props: Readonly<PermissionsSheetViewProps>): ReactElement {
+  const lines = permissionsSheetLines(props.state, {
+    columns: props.columns,
+    terminalRows: props.rows,
+  });
+  return <SheetLinesView lines={lines} color={props.color} />;
 }

@@ -22,11 +22,22 @@ export interface SessionCommandApprovals {
   readonly forgetCommandsByGrant?: (grantId: string) => number;
 }
 
+/** What the repository's `[chat]` allowlist says, as the config resolves it: the exact entries and the opt-in glob patterns, either of them absent. */
+export interface RepoAllowlistSource {
+  readonly commands: readonly string[] | undefined;
+  readonly globs: readonly string[] | undefined;
+}
+
 export interface PermissionsDeps {
   /** The project's remembered grants, `undefined` where the surface has none (no operator home, or one that cannot ask). */
   readonly grants: Pick<CommandGrantStore, 'list' | 'revokeById' | 'matches'> | undefined;
   /** This chat's session approvals; `undefined` on a surface with no chat (the bare Home, a bare `relavium permissions`). */
   readonly session: SessionCommandApprovals | undefined;
+  /**
+   * The repository's `[chat]` allowlist, read now, for a surface that lists it (the Home's Permissions tab, ADR-0140 §3); `undefined`
+   * on one that does not (a chat's own sheet). It may throw: the snapshot then says the allowlist could not be read.
+   */
+  readonly allowlist?: (() => RepoAllowlistSource) | undefined;
 }
 
 /** A remembered command as the sheet lists it: held by the grant's `id`, shown by its label and when it was remembered. */
@@ -82,10 +93,28 @@ export type ProjectPermissions =
   /** The store cannot answer: the section says why, in a fixed sentence, instead of rows. */
   | { readonly ok: false; readonly text: string };
 
+/**
+ * The repository's `[chat]` allowlist as the Permissions tab lists it, read-only and bounded: at most {@link MAX_ALLOWLIST_ENTRIES} entries
+ * of each list are kept, each cut to {@link MAX_ROW_TEXT} characters, and `omitted` counts what was not kept. It pre-approves nothing in a
+ * chat ([ADR-0118](../../../../docs/decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1, amended 2026-11-21): the
+ * file is the repository's, not the person's, so a listed command only says so on its card.
+ */
+export type RepoAllowlist =
+  | {
+      readonly ok: true;
+      readonly commands: readonly string[];
+      readonly globs: readonly string[];
+      readonly omitted: number;
+    }
+  /** The config cannot answer: the section says so, in a fixed sentence, instead of rows. */
+  | { readonly ok: false; readonly text: string };
+
 export interface PermissionsSnapshot {
   readonly project: ProjectPermissions;
   /** `undefined` where there is no chat: the sheet then has no session section. */
   readonly session: readonly SessionApprovalRow[] | undefined;
+  /** The repository's allowlist, for the surface that lists it; `undefined` where the surface does not (a chat's sheet). */
+  readonly allowlist?: RepoAllowlist | undefined;
 }
 
 const plural = (count: number): string =>
@@ -109,6 +138,10 @@ const WITHDRAW_FAILURES: Readonly<Record<string, string>> = Object.freeze({
 });
 
 const FALLBACK_FAILURE = 'The remembered commands could not be read.';
+/** The fixed sentence for a config that cannot be read; it carries no path and no entry. */
+export const ALLOWLIST_UNREADABLE = 'The repository’s [chat] allowlist could not be read.';
+/** The most entries of each allowlist kept in a snapshot; a config can hold any number and the tab draws a handful. */
+export const MAX_ALLOWLIST_ENTRIES = 50;
 export const NOT_AVAILABLE = 'Remembered commands are not available in this chat.';
 
 /** `2026-11-19T14:03:21.123Z` → `2026-11-19 14:03Z`; a value of another shape is passed on as it is (the store validates it already, and the sheet escapes what it draws). */
@@ -161,7 +194,28 @@ export function readPermissions(deps: PermissionsDeps): PermissionsSnapshot {
       alsoRemembered: deps.grants?.matches(approval.argv) === true,
     }),
   );
-  return { project, session };
+  return deps.allowlist === undefined
+    ? { project, session }
+    : { project, session, allowlist: readAllowlist(deps.allowlist) };
+}
+
+/** The allowlist, read now and bounded. Never throws: a config that cannot be read is said in a sentence, not drawn as an empty list. */
+function readAllowlist(read: () => RepoAllowlistSource): RepoAllowlist {
+  try {
+    const source = read();
+    const commands = source.commands ?? [];
+    const globs = source.globs ?? [];
+    return {
+      ok: true,
+      commands: commands.slice(0, MAX_ALLOWLIST_ENTRIES).map(bounded),
+      globs: globs.slice(0, MAX_ALLOWLIST_ENTRIES).map(bounded),
+      omitted:
+        Math.max(0, commands.length - MAX_ALLOWLIST_ENTRIES) +
+        Math.max(0, globs.length - MAX_ALLOWLIST_ENTRIES),
+    };
+  } catch {
+    return { ok: false, text: ALLOWLIST_UNREADABLE };
+  }
 }
 
 const sameArgv = (a: readonly string[], b: readonly string[]): boolean =>

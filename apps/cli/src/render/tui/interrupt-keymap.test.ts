@@ -11,6 +11,7 @@ import {
   pressOtherKey,
   pressRunViewInterrupt,
   pressRunViewKey,
+  pressTabHostInterrupt,
   type ExitDecision,
   type ExitGuardAnswer,
   type HostedLegState,
@@ -423,5 +424,57 @@ describe('the run view keys (ADR-0139 §5)', () => {
     expect(answers.size).toBe(8);
     for (const [flags, answer] of answers)
       expect(answer, flags).toBe(flags.endsWith('|esc') ? 'leave' : 'ignore');
+  });
+});
+
+/**
+ * The tab host's `Ctrl+C` (ADR-0140 §1): a browser is not a run and not an approval, so the one row is "close the screen, arm nothing, cancel
+ * nothing", whatever the keymap held before and whatever the Home's leg is doing. The function takes neither a leg nor a clock, which is the
+ * guarantee: nothing it is given could be cancelled by it. The table below says the rest next to the run view's rows, which differ from it
+ * exactly where a run can be cancelled.
+ */
+describe('the tab host: Ctrl+C (ADR-0140 §1)', () => {
+  it('closes the screen and arms nothing: the one row of its table', () => {
+    const result = pressTabHostInterrupt();
+    expect(result.action).toBe('close-screen');
+    expect(result.state).toEqual(DISARMED);
+    expect(isArmed(result.state, 0)).toBe(false);
+  });
+
+  it('is the same row on every press: a second press is not a different action, and never one that ends a session or cancels a run', () => {
+    const first = pressTabHostInterrupt();
+    const second = pressTabHostInterrupt();
+    expect(second).toEqual(first);
+    expect(second.action).not.toBe('end-session');
+    expect(second.action).not.toBe('cancel-run');
+  });
+
+  it('differs from the run view’s table exactly where a run can be cancelled: there, a leg that executes arms on the first press and cancels on the second', () => {
+    const rows: readonly {
+      readonly leg: HostedLegState;
+      readonly runView: RunViewInterruptAction;
+    }[] = [
+      { leg: 'executing', runView: 'arm-run-cancel' },
+      { leg: 'cancelling', runView: 'wait-for-stop' },
+      { leg: 'none', runView: 'close-screen' },
+    ];
+    for (const { leg, runView } of rows) {
+      expect(pressRunViewInterrupt(DISARMED, leg, 100).action, `run view, ${leg}`).toBe(runView);
+      expect(
+        pressTabHostInterrupt().action,
+        `tab host, ${leg}: the same row whatever the leg`,
+      ).toBe('close-screen');
+    }
+    // the two agree only where the run view closes too: no leg executing
+    expect(pressRunViewInterrupt(DISARMED, 'none', 100).action).toBe(
+      pressTabHostInterrupt().action,
+    );
+  });
+
+  it('is not the landing’s row either: the landing arms on a first press and a second one leaves, which a browser must not do', () => {
+    const landing = pressInterrupt(DISARMED, { kind: 'home', loading: false }, 100);
+    expect(landing.action).toBe('arm-hint');
+    expect(landing.state.armedAt).toBe(100);
+    expect(pressTabHostInterrupt().state.armedAt).toBeUndefined();
   });
 });

@@ -53,6 +53,7 @@ import { MentionView } from './mention-view.js';
 import type { EffortPickerState } from './effort-picker.js';
 import type { PermissionsSheetState } from './permissions-sheet.js';
 import { PermissionsSheetView } from './permissions-sheet-view.js';
+import { TabHostView } from './tab-host-view.js';
 import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
@@ -736,7 +737,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       current.screen !== undefined ||
       current.palette !== undefined ||
       current.modelPicker !== undefined ||
-      current.permissionsSheet !== undefined ||
       (!key.pageUp && !key.pageDown)
     )
       return false;
@@ -1001,6 +1001,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           color={color}
         />
       )}
+      {!prompt.active && state.screen?.kind === 'tab-host' && (
+        <TabHostView state={state.screen.host} color={color} columns={size.cols} rows={size.rows} />
+      )}
       {!prompt.active && state.screen === undefined && (
         <HomeView
           onFrame={(node) => {
@@ -1014,11 +1017,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           cols={Number.isFinite(size.cols) ? size.cols : 0}
           rows={size.rows}
           color={color}
-          paletteOpen={
-            state.palette !== undefined ||
-            state.modelPicker !== undefined ||
-            state.permissionsSheet !== undefined
-          }
+          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
           showBanner={props.showBanner}
           keyless={state.keyless}
           continueSessionId={state.continueSessionId}
@@ -1035,16 +1034,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       )}
       {state.modelPicker !== undefined && homeFitsTerminal(size.cols, size.rows) && (
         <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
-      )}
-      {/* The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, docked under the Home; below its own
-          80×24 floor the sheet says so itself, so it is drawn whatever the Home strip does. */}
-      {state.permissionsSheet !== undefined && (
-        <PermissionsSheetView
-          state={state.permissionsSheet}
-          color={color}
-          columns={size.cols}
-          rows={size.rows}
-        />
       )}
     </Box>
   );

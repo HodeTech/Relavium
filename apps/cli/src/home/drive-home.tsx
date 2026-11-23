@@ -166,8 +166,8 @@ import { defaultSubscribeSignals } from '../process/signals.js';
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
 export interface HomeDeps {
-  /** Open the `/permissions` sheet as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3): the Home ends
-   *  with success when the sheet is closed. Absent ⇒ the ordinary Home. */
+  /** Open the tab host on its Permissions tab as the run's whole job (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   *  ADR-0140 §1): the Home ends with success when the screen is closed. Absent ⇒ the ordinary Home. */
   readonly openPermissions?: boolean;
   /** Explicit home override for hermetic embeddings and tests. */
   readonly homeDir?: string;
@@ -1881,10 +1881,16 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           read: (runId) => readRunGates(runReader, deps.global.cwd, runId),
           resume: createGateResumer({ host: hostedRuns, flow: promptFlow }),
         },
-        // The bare Home's `/permissions` sheet (ADR-0137 §3): the project's remembered commands, over the very store a chat and
-        // `relavium permissions` read. Nothing is read until the sheet is opened.
+        // The bare Home's `/permissions` (ADR-0137 §3, ADR-0140 §3): the Permissions tab of the tab host. The project's remembered commands,
+        // over the very store a chat and `relavium permissions` read, and the repository's `[chat]` allowlist as a chat started now would
+        // resolve it (read again from disk, like the `/models` readers above), listed read-only. Nothing is read until the tab is entered,
+        // and it is read again every time it is.
         permissions: createPermissionsPort(
           {
+            allowlist: () => {
+              const chat = readEffectiveChat();
+              return { commands: chat.allowedCommands, globs: chat.allowedCommandGlobs };
+            },
             // A store holds the digest key it first read for as long as it lives, and this Home lives as long as the person uses it:
             // another terminal's `revoke --all`, then a new grant, would leave a long-lived store listing nothing while a chat that
             // starts afterwards runs the new grant unasked. So every read and every withdrawal opens its own store.
@@ -1961,7 +1967,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           );
         },
       });
-      // A bare `relavium permissions` on a terminal (ADR-0137 §3): the Home opens with the sheet open and ends when it is closed.
+      // A bare `relavium permissions` on a terminal (ADR-0137 §3, ADR-0140 §1): the Home opens with the Permissions tab open and ends when it is closed.
       if (deps.openPermissions === true) controller.openPermissionsAsCommand();
       const alternateScreen = renderMode === 'alt';
       const interactive = outputMode === 'tui';
@@ -2027,7 +2033,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         inputEnabled: () => !homeInputSealed,
         onRendererReady: (flush) => {
           if (!homeInputSealed) flushVisible = flush;
-          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the sheet it came for.
+          // A bare `relavium permissions` is not a first run: no provider card or key consent may open on top of the screen it came for.
           if (
             !automaticSetupStarted &&
             !homeInputSealed &&

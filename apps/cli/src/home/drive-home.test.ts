@@ -108,6 +108,11 @@ vi.mock('../engine/providers.js', async (importOriginal) => {
  * builds a real default-agent session. The session state machine itself is unit-tested in home-controller.test.ts.
  */
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+/** The Permissions tab's sheet, while the Home's tab host is open on it (the bare Home's `/permissions`, ADR-0140 §3); `undefined` otherwise. */
+const tabSheetOf = (props: RootAppProps) => {
+  const screen = props.controller.getSnapshot().screen;
+  return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
+};
 const type = (props: RootAppProps, text: string): void => {
   for (const ch of text) props.controller.handleKey(ch, {});
 };
@@ -1575,7 +1580,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: the bare Home is wired to the /permissions sheet over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
+  it('ADR-0137 §3: the bare Home is wired to the Permissions tab over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
     // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
     // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.
     let captured: RootAppProps | undefined;
@@ -1583,29 +1588,29 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const drivePromise = driveHome({ ...deps, openPermissions: true });
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    // The sheet is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
+    // The tab is already open on the project's list (no key was ever written: empty and readable), with no chat behind it.
     expect(props.controller.getSnapshot().mode).toBe('home');
-    expect(props.controller.getSnapshot().permissionsSheet?.surface).toBe('project');
-    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.project).toEqual({
+    expect(tabSheetOf(props)?.surface).toBe('project');
+    expect(tabSheetOf(props)?.snapshot.project).toEqual({
       ok: true,
       rows: [],
     });
-    expect(props.controller.getSnapshot().permissionsSheet?.snapshot.session).toBeUndefined();
+    expect(tabSheetOf(props)?.snapshot.session).toBeUndefined();
     props.controller.handleKey('', { escape: true });
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
-  it('ADR-0137 §3: an ordinary Home opens no sheet of its own, and the typed command opens the project list without ending the Home', async () => {
+  it('ADR-0137 §3: an ordinary Home opens no tab of its own, and the typed command opens the project list without ending the Home', async () => {
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p));
     const drivePromise = driveHome(deps);
     const props = captured;
     if (props === undefined) throw new Error('the injected render was never invoked');
-    expect(props.controller.getSnapshot().permissionsSheet).toBeUndefined();
+    expect(tabSheetOf(props)).toBeUndefined();
     props.controller.handleKey('/', {});
     for (const ch of 'permissions') props.controller.handleKey(ch, {});
     props.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(props.controller.getSnapshot().permissionsSheet).toBeDefined(), {
+    await vi.waitFor(() => expect(tabSheetOf(props)).toBeDefined(), {
       timeout: WAIT_MS,
     });
     props.controller.handleKey('', { escape: true });
@@ -1633,7 +1638,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         findProgram: (name) => Promise.resolve(`/usr/bin/${name}`),
       });
     const rowLabels = (props: RootAppProps): readonly string[] => {
-      const project = props.controller.getSnapshot().permissionsSheet?.snapshot.project;
+      const project = tabSheetOf(props)?.snapshot.project;
       return project?.ok === true ? project.rows.map((row) => row.label) : [];
     };
 
@@ -1697,10 +1702,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       // The controller runs on the real clock here: the sheet settles (400 ms), then the question must have stood for 800 ms.
       await new Promise<void>((resolve) => setTimeout(resolve, 600));
       props.controller.handleKey('d', {});
-      expect(props.controller.getSnapshot().permissionsSheet?.armed).toBe(true);
+      expect(tabSheetOf(props)?.armed).toBe(true);
       await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
       props.controller.handleKey('', ENTER);
-      expect(props.controller.getSnapshot().permissionsSheet?.message?.tone).toBe('done');
+      expect(tabSheetOf(props)?.message?.tone).toBe('done');
       expect(rowLabels(props)).toEqual([]);
       expect(projectStore(keychain).list()).toEqual({ ok: true, grants: [] });
       props.controller.handleKey('', { escape: true });
@@ -1762,7 +1767,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       if (props === undefined) throw new Error('the injected render was never invoked');
       await flush();
       expect(props.nativePrompt?.getSnapshot().active, 'no card over the sheet').toBe(false);
-      expect(props.controller.getSnapshot().permissionsSheet).toBeDefined();
+      expect(tabSheetOf(props)).toBeDefined();
       props.controller.handleKey('', { escape: true });
       expect(await drivePromise).toBe(EXIT_CODES.success);
     });

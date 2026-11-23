@@ -129,6 +129,24 @@ export function pressRunViewInterrupt(
   }
 }
 
+/** What the surface must do for a `Ctrl+C` in the Home's tab host. */
+export type TabHostInterruptAction =
+  /** Close the whole screen, from any tab and any depth: the way out is one press. */
+  'close-screen';
+
+/**
+ * The tab host's `Ctrl+C` ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §1). A browser is not a run and not an approval: the press closes the screen and arms nothing, so a second press is a first press of
+ * the landing's own keymap, and a withdrawal's question never survives it. It takes no leg and no clock on purpose: nothing a browser
+ * shows can be cancelled by it. (A run view opened FROM a browser is the run view's, [`pressRunViewInterrupt`]: its second press cancels.)
+ */
+export function pressTabHostInterrupt(): {
+  readonly state: InterruptState;
+  readonly action: TabHostInterruptAction;
+} {
+  return { state: DISARMED, action: 'close-screen' };
+}
+
 /**
  * Whether a raw key is `Ctrl+C`. Raw mode delivers it as the key (the kernel no longer turns it into SIGINT), as ink's `useInput`
  * parses it: the letter with `ctrl` set. A key with `meta` set is a different chord and is not an interrupt.

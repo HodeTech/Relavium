@@ -1273,7 +1273,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
   });
 });
 
-describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', () => {
+describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', () => {
   const homePort: PermissionsPort = {
     surface: 'project',
     load: () => ({
@@ -1290,10 +1290,15 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => (m.harness.lastFrame() ?? '').includes('permissions'));
     m.harness.stdin.write('permissions');
     m.harness.stdin.write('\r');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('Permissions · this project'));
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('▸ Permissions'));
+  };
+  /** The Permissions tab's sheet, while the tab host is open on it. */
+  const tabSheet = (m: MountedHome) => {
+    const screen = m.c.getSnapshot().screen;
+    return screen?.kind === 'tab-host' ? screen.host.sheet : undefined;
   };
 
-  it('is drawn under the Home from the palette: the project’s list only, no session section, and Esc closes it back to the Home', async () => {
+  it('is drawn in place of the Home from the palette: the tab strip and the project’s list only, no session section, and Esc closes it back to the Home', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
     await openFromPalette(m);
@@ -1302,19 +1307,19 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     expect(frame).toContain('› npm, 1 argument');
     expect(frame).toContain('[d] withdraw');
     expect(frame, 'the bare Home has no session list').not.toContain('This session');
-    expect(frame).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(frame).toContain('Defined  │  Active  │  History  │  ▸ Permissions');
+    expect(frame).toContain('←/→ tab · Tab cycle · ↑/↓ select · [d / Del] withdraw · Esc close');
     m.harness.stdin.write('\u001b');
-    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('Permissions ·'));
+    await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('▸ Permissions'));
     expect(m.c.getSnapshot().mode).toBe('home');
+    expect(m.c.getSnapshot().screen).toBeUndefined();
   });
 
   it('draws at the terminal’s real width and says so below the floor, as in a chat', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
     await openFromPalette(m);
-    const rule = (m.harness.lastFrame() ?? '')
-      .split('\n')
-      .find((line) => line.includes('Permissions · this project'));
+    const rule = (m.harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('───'));
     expect(rule?.trimEnd().length, 'two columns of margin on a 100-column terminal').toBe(98);
     m.setSize({ cols: 80, rows: 23 });
     m.fireResize();
@@ -1344,9 +1349,9 @@ describe('RootApp — the /permissions sheet on the bare Home (ADR-0137 §3)', (
     await untilTrue(() => m.c.getSnapshot().notice === long);
     m.harness.stdin.write('\x1b[6~');
     // the key went to the sheet: a page is six rows
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 6);
+    await untilTrue(() => tabSheet(m)?.cursor === 6);
     m.harness.stdin.write('\x1b[5~'); // and PgUp is the sheet's too
-    await untilTrue(() => m.c.getSnapshot().permissionsSheet?.cursor === 0);
+    await untilTrue(() => tabSheet(m)?.cursor === 0);
   });
 
   it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {

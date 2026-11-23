@@ -25,7 +25,18 @@ import {
 import {
   foldPermissionsSheetThroughPort,
   openPermissionsSheetThroughPort,
+  PERMISSIONS_UNREADABLE,
 } from './permissions-sheet-port.js';
+import {
+  disarmTabHost,
+  enterTab,
+  foldTabHostKey,
+  freshTabMemory,
+  tabHostMemory,
+  type TabHostState,
+  type TabId,
+  type TabMemory,
+} from './tab-host.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
@@ -76,6 +87,7 @@ import {
   pressOtherKey,
   pressRunViewInterrupt,
   pressRunViewKey,
+  pressTabHostInterrupt,
   type HostedLegState,
   type InterruptContext,
   type InterruptState,
@@ -242,9 +254,9 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
-  /** The open `/permissions` sheet (ADR-0137 §2, §3) — `undefined` ⇒ closed. In a live in-Home chat with a wired port it shows both lists;
-   *  on the bare Home it shows the project's only. A keyboard-owning overlay like `/effort`, opened only at an idle prompt, so no card can
-   *  arrive while it is open. */
+  /** The open `/permissions` sheet of a live in-Home chat (ADR-0137 §2) — `undefined` ⇒ closed. It shows both lists. A keyboard-owning
+   *  overlay like `/effort`, opened only at an idle prompt, so no card can arrive while it is open. The bare Home's `/permissions` is not
+   *  this: it is the Permissions tab of the tab host, a kind of {@link HomeControllerState.screen} (ADR-0140 §3). */
   readonly permissionsSheet: PermissionsSheetState | undefined;
   /** The interrupt keymap is armed (ADR-0115 §1): a second `Ctrl+C` inside the window ends the chat or exits the Home, and the
    *  footer hint says so. Cleared by any other key and by the window running out. */
@@ -274,20 +286,35 @@ export interface HomeControllerState {
 }
 
 /**
- * What a screen of the slot is told when it opens. `run-view` is the only kind so far (MVP-8 step 3); the tab host (step 4) and the
- * landing's `/help` sheet (step 5) add their own, each with its own props, and the opener and the readers switch on `kind`.
+ * What a screen of the slot is told when it opens. `run-view` (MVP-8 step 3) and `tab-host` (step 4) are the kinds so far; the landing's
+ * `/help` sheet (step 5) adds its own, each with its own props, and the opener and the readers switch on `kind`.
  */
 export interface RunViewProps {
   /** The run the view shows: the run host's snapshot is read for exactly this run, never for whichever one executes. */
   readonly runId: string;
   /** The leg's live output (the `RunApp` projection's store); absent when nothing feeds this Home. */
   readonly store?: RunStore | undefined;
+  /**
+   * Where `Esc` returns to: `landing` (the default) closes the screen, `tab-host` puts the tab host back on the tab and row it was on
+   * (ADR-0140 §1). Only a view opened from the tab host says `tab-host`; `Ctrl+C` closes the whole screen either way.
+   */
+  readonly from?: ScreenOrigin | undefined;
+}
+
+/** Where a screen was opened from, and so where its `Esc` returns to. */
+export type ScreenOrigin = 'landing' | 'tab-host';
+
+/** What the tab host is told when it opens: the tab to show. Every tab remembers its own position while the screen lives. */
+export interface TabHostProps {
+  readonly tab: TabId;
 }
 
 /** The run view of one run, with the notice ring as it was last read (re-read while a leg is live). */
 export interface RunViewScreen {
   readonly kind: 'run-view';
   readonly runId: string;
+  /** Where `Esc` returns to ({@link RunViewProps.from}). */
+  readonly from: ScreenOrigin;
   readonly store: RunStore | undefined;
   /** The host's notice ring, then {@link RunViewScreen.note} when there is one: the view shows the newest rows. */
   readonly notices: readonly string[];
@@ -309,13 +336,29 @@ export interface GateCardScreen {
   readonly card: RunCard;
   /** Where closing the card returns to. */
   readonly back: 'landing' | 'run-view';
+  /** Where the screen the card came from (a view, or the card itself from a browser) returns to, once the card is closed. */
+  readonly from: ScreenOrigin;
   /** A card has no live output and no notice ring: both read as `undefined`, so a reader of the slot needs no narrowing to ask. */
   readonly store?: undefined;
   readonly notices?: undefined;
 }
 
+/**
+ * The tab host of the management browsers ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
+ * §1, §3): the strip of tabs and the tab in front, as the pure model of `tab-host.ts` holds them. It owns every key while it is open and
+ * drops a paste; closing it (`Esc`, `Ctrl+C`) returns to the landing, or ends a bare `relavium permissions`.
+ */
+export interface TabHostScreen {
+  readonly kind: 'tab-host';
+  readonly host: TabHostState;
+  /** A tab host has no run, no live output and no notice ring: all three read as `undefined`, so a reader of the slot needs no narrowing to ask. */
+  readonly runId?: undefined;
+  readonly store?: undefined;
+  readonly notices?: undefined;
+}
+
 /** The slot's contents. */
-export type HomeScreen = RunViewScreen | GateCardScreen;
+export type HomeScreen = RunViewScreen | GateCardScreen | TabHostScreen;
 
 /**
  * What the Home needs to show and answer the gates of the runs parked in its project: the reads, the answer and the numbers the
@@ -403,8 +446,9 @@ export interface HomeControllerDeps {
   /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
    *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
   readonly models?: HomeModelsPort;
-  /** The bare Home's `/permissions` sheet port (ADR-0137 §3): the project's remembered commands only, there being no chat. Absent ⇒
-   *  the Home has no sheet to open (a test may omit it); a live chat's own port is `HomeChatSession.permissions`. */
+  /** The bare Home's permissions port (ADR-0137 §3, ADR-0140 §3): the project's remembered commands only, there being no chat, and the
+   *  repository's allowlist, read again every time the Permissions tab is entered. Absent ⇒ the Home has no tab to open (a test may omit
+   *  it); a live chat's own port, for its docked sheet, is `HomeChatSession.permissions`. */
   readonly permissions?: PermissionsPort;
   readonly openModeSettings?: () => Promise<void>;
   readonly initializeProject?: () => Promise<string>;
@@ -477,9 +521,9 @@ export interface HomeController {
    *  withdrawal's question (ADR-0137 §2). Until it is told, the sheet assumes a terminal that can. */
   readonly setTerminalSize: (columns: number, rows: number) => void;
   /**
-   * Open the `/permissions` sheet as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3): the sheet
-   * opens at once and, when the person closes it, the Home ends with success instead of staying open behind it. If the sheet cannot
-   * open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
+   * Open the tab host on the Permissions tab as the whole job of this run (a bare `relavium permissions` on a terminal, ADR-0137 §3,
+   * ADR-0140 §1): the screen opens at once and, when the person closes it, the Home ends with success instead of staying open behind it.
+   * If it cannot open (no port, or the port cannot be read) the Home stays, with the reason in its notice, as it does for the typed command.
    */
   readonly openPermissionsAsCommand: () => void;
   /**
@@ -488,8 +532,14 @@ export interface HomeController {
    * build), an overlay is open, the exit-guard card is up or the Home is ending. The screen then owns every key, and no paste reaches
    * the prompt behind it.
    */
-  readonly openScreen: (kind: 'run-view', props: RunViewProps) => boolean;
-  /** Close the screen, if one is open, and drop the interrupt state it armed: the one reset of the slot. */
+  readonly openScreen: {
+    (kind: 'run-view', props: RunViewProps): boolean;
+    (kind: 'tab-host', props: TabHostProps): boolean;
+  };
+  /**
+   * Close the screen, if one is open, and drop the interrupt state it armed and what the tab host remembers of its tabs: the one reset
+   * of the slot. Reopening the tab host afterwards starts every tab at its top.
+   */
   readonly closeScreen: () => void;
   /**
    * The host's evidence that a gate card's exact snapshot is on screen, measured and flushed at 80×24 (`createGateCardFrame`). A card
@@ -727,8 +777,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     notify();
   };
 
-  // A bare `relavium permissions` opens the sheet as the run's whole job: closing it ends the run (ADR-0137 §3).
-  let permissionsIsTheCommand = false;
   const exitHome = (): void => {
     if (exiting) return; // idempotent — a second Ctrl+C (or a race) must not settle `driveHome` twice
     exiting = true;
@@ -910,21 +958,65 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // While a leg is live the view follows it (its state, its notices): the same poll as the strip's, started if it is not running.
     if (snapshot !== undefined && hostedLeg(snapshot) !== 'none') watchHostedRun();
   };
-  const runViewScreen = (runId: string, store: RunStore | undefined): RunViewScreen => ({
+  const runViewScreen = (
+    runId: string,
+    store: RunStore | undefined,
+    from: ScreenOrigin,
+  ): RunViewScreen => ({
     kind: 'run-view',
     runId,
+    from,
     store,
     notices: readNotices(),
   });
-  const openScreen = (kind: 'run-view', props: RunViewProps): boolean => {
-    if (!slotAdmits()) return false;
-    putScreen({ ...runViewScreen(props.runId, props.store), kind });
+  // What the tab host remembers of its tabs (ADR-0140 §1): the tab it is on and where each tab's cursor stands. It outlives the tab host's
+  // screen object, because a run view opened from the tab host replaces that screen in the one slot and `Esc` must bring it back as it was;
+  // and it dies with the screen, in `closeScreen`, so a tab host opened again starts every tab at its top.
+  let tabMemory: TabMemory = freshTabMemory();
+  // A bare `relavium permissions` opens the tab host as the run's whole job: closing it ends the run (ADR-0137 §3, ADR-0140 §1).
+  let tabHostIsTheCommand = false;
+  /** The tab host on `memory`'s tab, every tab read again as it is entered; `undefined` when the Permissions tab cannot be read at all. */
+  const tabHostScreen = (memory: TabMemory): TabHostScreen | undefined => {
+    const host = enterTab(memory, memory.tab, { port: deps.permissions, now: interruptNow() });
+    return host.unreadable ? undefined : { kind: 'tab-host', host };
+  };
+  const openTabHost = (tab: TabId): boolean => {
+    if (!slotAdmits() || state.submitBusy || state.nativeActionBusy) return false;
+    const screen = tabHostScreen({ ...tabMemory, tab });
+    // The port could not be read: nothing opens, and the Home says why where the person who asked is looking.
+    if (screen === undefined) {
+      set({ notice: PERMISSIONS_UNREADABLE });
+      return false;
+    }
+    tabMemory = tabHostMemory(screen.host);
+    putScreen(screen);
     return true;
   };
+  /** The tab host back in front after a screen opened from it is left with `Esc`: the tab and the row it came from, read again. */
+  const reopenTabHost = (): void => {
+    const screen = tabHostScreen(tabMemory);
+    if (screen === undefined) {
+      closeScreen();
+      return;
+    }
+    putScreen(screen, parkedPatch());
+  };
+  function openScreen(kind: 'run-view', props: RunViewProps): boolean;
+  function openScreen(kind: 'tab-host', props: TabHostProps): boolean;
+  function openScreen(kind: 'run-view' | 'tab-host', props: RunViewProps | TabHostProps): boolean {
+    if (kind === 'tab-host') return 'tab' in props && openTabHost(props.tab);
+    if (!('runId' in props) || !slotAdmits()) return false;
+    const from = props.from ?? 'landing';
+    // What a tab host remembers is only kept for a screen that can come back to it.
+    if (from !== 'tab-host') tabMemory = freshTabMemory();
+    putScreen(runViewScreen(props.runId, props.store, from));
+    return true;
+  }
   const closeScreen = (): void => {
     const screen = state.screen;
     if (screen === undefined) return;
     if (screen.kind === 'gate-card') screen.card.dispose();
+    tabMemory = freshTabMemory(); // the tab host's life ends with the screen (ADR-0140 §1)
     disarmInterrupt();
     // Back at the landing the Attention rows are read again: what the screen did may have changed which runs are parked.
     set({ screen: undefined, ...parkedPatch() });
@@ -943,6 +1035,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const runId = deps.hostedRuns?.snapshot().active?.runId;
     if (runId === undefined) return false;
     return openScreen('run-view', { runId, store: deps.runStore?.(runId) });
+  };
+  /** `Esc` on a run view: back to the tab host it was opened from, else out of the screen. */
+  const leaveRunView = (screen: RunViewScreen): void => {
+    if (screen.from === 'tab-host') reopenTabHost();
+    else closeScreen();
   };
 
   // ---- The gate and budget cards (ADR-0139 §4) -------------------------------------------------------------------------------
@@ -983,7 +1080,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     set({ notice: text, ...parkedPatch() });
   };
-  const openGateCard = (runId: string, back: GateCardScreen['back']): boolean => {
+  const openGateCard = (
+    runId: string,
+    back: GateCardScreen['back'],
+    from: ScreenOrigin = 'landing',
+  ): boolean => {
     const port = deps.gateCards;
     if (port === undefined || !slotAdmits()) return false;
     let run: RunGates | undefined;
@@ -1016,7 +1117,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       painted: (snapshot) => gateCardVisible?.(snapshot) === true,
     });
     // The Attention rows are read again as the card opens: what put the person here may be a moment old.
-    putScreen({ kind: 'gate-card', runId: run.runId, card, back }, parkedPatch());
+    putScreen({ kind: 'gate-card', runId: run.runId, card, back, from }, parkedPatch());
     return true;
   };
   /** `Esc` and `Ctrl+C` on a card: it closes and decides nothing; the run view it came from, if any, is back in front. */
@@ -1024,7 +1125,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     screen.card.dispose();
     disarmInterrupt();
     if (screen.back === 'run-view') {
-      set({ screen: runViewScreen(screen.runId, deps.runStore?.(screen.runId)), ...parkedPatch() });
+      set({
+        screen: runViewScreen(screen.runId, deps.runStore?.(screen.runId), screen.from),
+        ...parkedPatch(),
+      });
+      return;
+    }
+    if (screen.from === 'tab-host') {
+      reopenTabHost();
       return;
     }
     set({ screen: undefined, ...parkedPatch() });
@@ -1046,15 +1154,55 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): void => {
     switch (screen.kind) {
       case 'run-view':
-        if (pressRunViewKey(key) === 'leave') closeScreen();
+        if (pressRunViewKey(key) === 'leave') leaveRunView(screen);
         else if (key.return === true && viewOffersGate(screen.runId))
-          openGateCard(screen.runId, 'run-view');
+          openGateCard(screen.runId, 'run-view', screen.from);
         return;
       case 'gate-card':
         if (key.escape === true) closeGateCard(screen);
         else screen.card.input(input, key);
         return;
+      case 'tab-host':
+        routeTabHostKey(screen, input, key);
+        return;
     }
+  };
+  /**
+   * The tab host closes: the screen with it, and the run with it when this tab host is a bare `relavium permissions`. The last frame such
+   * a run leaves (the scrollback of the inline renderer) is the screen's, not a Home prompt, so the closed state is never published on
+   * the way out; unless the screen closed because of a fault (`note`): then the Home stays with the note, so that it can be read.
+   */
+  const leaveTabHost = (note?: string): void => {
+    const asCommand = tabHostIsTheCommand;
+    tabHostIsTheCommand = false; // the command is over either way: a tab host opened later is an ordinary one
+    if (asCommand && note === undefined) {
+      requestExit();
+      // The exit guard may have held the Home open (a leg is live): the screen it was closed from must not stay open behind the card.
+      if (!exiting) closeScreen();
+      return;
+    }
+    closeScreen();
+    if (note !== undefined) set({ notice: note });
+  };
+  /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
+  const routeTabHostKey = (
+    screen: TabHostScreen,
+    input: string,
+    key: HomeKey & ChatKey & PaletteKey,
+  ): void => {
+    const step = foldTabHostKey(screen.host, input, key, {
+      port: deps.permissions,
+      canArm:
+        terminal === undefined ||
+        sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }),
+      now: interruptNow(),
+    });
+    if (step.kind === 'close') {
+      leaveTabHost(step.note);
+      return;
+    }
+    tabMemory = tabHostMemory(step.state);
+    if (step.state !== screen.host) set({ screen: { kind: 'tab-host', host: step.state } });
   };
 
   // `Ctrl+Y` here cancels a run, and a cancelled run cannot be resumed: it counts only for the exact frame of the card on screen, and not
@@ -1479,7 +1627,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       if (text !== '/permissions') set({ notice: '/permissions accepts no arguments.' });
       else if (deps.permissions === undefined)
         set({ notice: 'Remembered commands are not available here.' });
-      else openPermissionsSheet(undefined);
+      else openTabHost('permissions');
       return true;
     }
     // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
@@ -1911,40 +2059,30 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // ---- The in-Home `/permissions` sheet (ADR-0137 §2) ---------------------------------------------------------
+  // ---- The in-Home chat's `/permissions` sheet (ADR-0137 §2) -----------------------------------------------------------------
   // Open on the data read NOW, in the chat's current mode: only at an idle prompt with nothing pending, so a card cannot arrive while
-  // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so.
-  const openPermissionsSheet = (active: HomeChatSession | undefined): void => {
-    const port = active === undefined ? deps.permissions : active.permissions;
+  // it is open (the same gate ChatApp applies). A chat without a port is never offered the sheet; it dispatches and says so. The bare
+  // Home has no such sheet: its `/permissions` is the Permissions tab of the tab host (ADR-0140 §3), a screen of the slot.
+  const openPermissionsSheet = (active: HomeChatSession): void => {
+    const port = active.permissions;
     if (port === undefined) return;
-    if (active === undefined) {
-      // The bare Home: only from the Home itself, with nothing being built or resumed. (`submitBusy` and `nativeActionBusy` are defence in
-      // depth: the keys that start those are gated while one runs, so a test can only reach the mode check.)
-      if (state.mode !== 'home' || state.submitBusy || state.nativeActionBusy) return;
-    } else {
-      const snap = active.store.getSnapshot();
-      // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
-      // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
-      if (
-        snap.state.status === 'running' ||
-        state.shellBusy ||
-        state.submitBusy ||
-        snap.review !== undefined ||
-        snap.question !== undefined ||
-        snap.checkpoint !== undefined ||
-        snap.approval !== undefined
-      )
-        return;
-    }
+    const snap = active.store.getSnapshot();
+    // The key gates above already keep a busy chat from reaching here (a running turn, a `!` command and a submit in flight all gate
+    // typed input and the palette), so these checks are defence in depth, not a path a test can drive.
+    if (
+      snap.state.status === 'running' ||
+      state.shellBusy ||
+      state.submitBusy ||
+      snap.review !== undefined ||
+      snap.question !== undefined ||
+      snap.checkpoint !== undefined ||
+      snap.approval !== undefined
+    )
+      return;
     // The port promises not to throw, but a defect in it must not take the prompt down with it: the sheet simply does not open.
-    const opened = openPermissionsSheetThroughPort(
-      port,
-      active?.store.getSnapshot().mode,
-      interruptNow(),
-    );
+    const opened = openPermissionsSheetThroughPort(port, snap.mode, interruptNow());
     if (opened.sheet !== undefined) set({ permissionsSheet: opened.sheet });
-    else if (active !== undefined) active.store.note(opened.note);
-    else set({ notice: opened.note });
+    else active.store.note(opened.note);
   };
   // The open sheet owns every key. A withdrawal runs through the port (the store is read again there) and the sheet reloads with the
   // answer; a defect in the port must not leave the keyboard owned by a frozen sheet.
@@ -1954,7 +2092,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     key: ChatKey,
   ): boolean => {
     const open = state.permissionsSheet;
-    const port = active === undefined ? deps.permissions : active.permissions;
+    const port = active?.permissions;
     if (open === undefined) return false;
     // A card that arrived wins (ADR-0137 §1): the sheet closes with its question dropped and the key goes on to the card's own handling.
     // The sheet opens only at an idle prompt, so this is a defence for a host that lets one arrive, not a path the product takes.
@@ -1969,7 +2107,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ permissionsSheet: undefined });
       return false;
     }
-    if (port === undefined) {
+    if (active === undefined || port === undefined) {
       set({ permissionsSheet: undefined });
       return true;
     }
@@ -1977,23 +2115,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       terminal === undefined ||
       sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows });
     const result = foldPermissionsSheetThroughPort(port, open, input, key, canArm, interruptNow());
-    if (result.sheet === undefined && permissionsIsTheCommand) {
-      // The sheet a command opened is closing: the run ends with it, and the last frame it leaves (the scrollback of the inline renderer) is
-      // the sheet's, not a Home prompt, so the closed state is never published. Unless it closed because of a fault: then the Home stays,
-      // with the note, so that the person can read it. Either way the command is over: a sheet opened later is an ordinary one.
-      permissionsIsTheCommand = false;
-      if (result.note === undefined) {
-        requestExit();
-        // The exit guard may have held the Home open (a leg is live): the sheet it was closed from must not stay open behind the card.
-        if (!exiting) set({ permissionsSheet: undefined });
-        return true;
-      }
-    }
     set({ permissionsSheet: result.sheet });
-    if (result.note !== undefined) {
-      if (active !== undefined) active.store.note(result.note);
-      else set({ notice: result.note });
-    }
+    if (result.note !== undefined) active.store.note(result.note);
     return true;
   };
 
@@ -2145,10 +2268,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         } else if (step.command.name === 'run' && active === undefined) {
           openRunLaunch();
         } else if (step.command.name === 'permissions' && active === undefined) {
-          // home: bare `/permissions` opens the sheet over the Home with the project's list only (ADR-0137 §3).
+          // home: bare `/permissions` opens the tab host on its Permissions tab (ADR-0140 §3).
           if (deps.permissions === undefined)
             set({ notice: 'Remembered commands are not available here.' });
-          else openPermissionsSheet(undefined);
+          else openTabHost('permissions');
         } else if (active === undefined) {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
@@ -2531,6 +2654,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // The run view's ladder (ADR-0139 §5). It asks the host about THE VIEW'S run now, not the poll's last read: a press that arrives a
   // moment after the leg ended must not cancel anything. The first press only arms; nothing is cancelled until the second.
   const handleScreenInterrupt = (screen: HomeScreen): void => {
+    if (screen.kind === 'tab-host') {
+      // A browser is not a run: `Ctrl+C` closes the whole screen from any tab, arms nothing and cancels nothing, even with a leg executing
+      // behind it (ADR-0140 §1). A run view opened from it is the run view's: its second press is what cancels.
+      interrupt = pressTabHostInterrupt().state;
+      showInterruptHint(false);
+      leaveTabHost();
+      return;
+    }
     if (screen.kind === 'gate-card') {
       // `Ctrl+C` on a card closes the card AND the view it was opened from (ADR-0139 §5): it never answers, and it arms nothing (a card
       // is not a run to cancel). `Esc` is the one step back, to the view.
@@ -2856,11 +2987,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       homeFrameVisible = visible;
     },
     openPermissionsAsCommand() {
-      if (exiting) return;
-      permissionsIsTheCommand = true;
-      openPermissionsSheet(undefined);
+      if (exiting || deps.permissions === undefined) return;
+      tabHostIsTheCommand = openTabHost('permissions');
       // It did not open (the port could not be read): stay in the Home, whose notice says why.
-      if (state.permissionsSheet === undefined) permissionsIsTheCommand = false;
     },
     handlePaste(text) {
       if (exiting || state.nativeActionBusy) return;
@@ -2870,6 +2999,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // A screen answers to keys only: a paste reaches neither it nor the prompt behind it. A card counts it as typing, so a chord
         // soon after it is refused.
         if (state.screen.kind === 'gate-card') state.screen.card.paste(text);
+        // The tab host drops it too, and a withdrawal's question that was waiting is dropped with it: a paste is typing (ADR-0137 §2).
+        else if (state.screen.kind === 'tab-host') {
+          const host = disarmTabHost(state.screen.host);
+          if (host !== state.screen.host) set({ screen: { kind: 'tab-host', host } });
+        }
         return;
       }
       // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).

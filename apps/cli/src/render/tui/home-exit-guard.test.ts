@@ -3,7 +3,7 @@
  * ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6).
  *
  * `requestExit()` is the one way the Home ends. Every path that would end it (`/exit` chosen from the palette, the second
- * `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out, a closed bare `relavium permissions` sheet) is
+ * `Ctrl+C` on the loaded landing, `Ctrl+D` on an empty prompt, the loading bail-out, a closed bare `relavium permissions` tab host) is
  * driven here in both states: with a leg live it asks and leaves nothing changed, with none it leaves exactly as it always did. The
  * run host and the clock are scripted, so nothing here sleeps, builds an engine or touches an operator home.
  */
@@ -210,10 +210,10 @@ const SITES: readonly {
     },
   },
   {
-    site: 'the close of a bare `relavium permissions` sheet',
+    site: 'the close of a bare `relavium permissions` tab host',
     drive: (c) => {
       c.openPermissionsAsCommand();
-      expect(c.getSnapshot().permissionsSheet).toBeDefined();
+      expect(c.getSnapshot().screen?.kind).toBe('tab-host');
       c.handleKey('', { escape: true });
     },
   },
@@ -236,6 +236,7 @@ describe('every path that ends the Home goes through one request (ADR-0139 §6)'
       expect(run.host.close).not.toHaveBeenCalled();
       expect(log).toEqual([]);
       expect(controller.getSnapshot().permissionsSheet, 'no sheet behind the card').toBeUndefined();
+      expect(controller.getSnapshot().screen, 'no screen behind the card either').toBeUndefined();
     });
 
     it('with no leg: leaves exactly once and opens no card', async () => {
