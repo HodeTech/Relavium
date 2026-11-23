@@ -23,6 +23,13 @@ import { runPins } from './schema.js';
 
 const T0 = 1_780_000_000_000;
 
+/**
+ * A listing without the two fields that describe the ROW rather than the pin (`rowid` and `oversized`, which
+ * `run-pins-rowid.test.ts` owns), so these tests keep asserting the pin's own key and time exactly.
+ */
+const bare = (pins: ReturnType<RunPinStore['listPins']>) =>
+  pins.map(({ kind, projectRoot, ref, pinnedAt }) => ({ kind, projectRoot, ref, pinnedAt }));
+
 describe('createRunPinStore', () => {
   let client: DbClient;
   let store: RunPinStore;
@@ -48,7 +55,7 @@ describe('createRunPinStore', () => {
   it('pins an item once and reports a repeat as already pinned', () => {
     expect(store.pinItem(runPin('run-1'))).toBe('pinned');
     expect(store.pinItem(runPin('run-1', T0 + 99))).toBe('already-pinned');
-    expect(store.listPins()).toEqual([
+    expect(bare(store.listPins())).toEqual([
       { kind: 'run', projectRoot: '', ref: 'run-1', pinnedAt: T0 }, // the first pin's time is kept
     ]);
   });
@@ -57,7 +64,7 @@ describe('createRunPinStore', () => {
     expect(store.pinItem(workflowPin('/p1', 'deploy'))).toBe('pinned');
     expect(store.pinItem(workflowPin('/p2', 'deploy'))).toBe('pinned');
     expect(store.pinItem(workflowPin('/p1', 'deploy'))).toBe('already-pinned');
-    expect(store.listPins({ kind: 'workflow', projectRoot: '/p1' })).toEqual([
+    expect(bare(store.listPins({ kind: 'workflow', projectRoot: '/p1' }))).toEqual([
       { kind: 'workflow', projectRoot: '/p1', ref: 'deploy', pinnedAt: T0 },
     ]);
     // A run with the same text as a slug is another pin altogether.
@@ -103,10 +110,11 @@ describe('createRunPinStore', () => {
     };
 
     it('removes a crafted row whose ref is longer than a store would ever write, so it cannot hold a slot for good', () => {
-      // A foreign writer's row past the write-path bound: it is listed, it counts toward the cap, and it must go.
+      // A foreign writer's row past the write-path bound: it is listed (as a preview, never whole: the list is
+      // `run-pins-rowid.test.ts`'s), it counts toward the cap, and it must go. The exact key still matches it.
       const long = 'r'.repeat(600);
       craftRow('run', '', long);
-      expect(store.listPins().map((pin) => pin.ref)).toEqual([long]);
+      expect(store.listPins().map((pin) => pin.oversized)).toEqual([true]);
       expect(store.unpinItem({ kind: 'run', projectRoot: '', ref: long })).toBe(true);
       expect(store.listPins()).toEqual([]);
     });
@@ -295,7 +303,7 @@ describe('createRunPinStore', () => {
       expect(store.pinItem(workflowPin(persianRoot, jointRef))).toBe('already-pinned');
 
       const listed = store.listPins();
-      expect(listed).toEqual([
+      expect(bare(listed)).toEqual([
         { kind: 'run', projectRoot: '', ref: `run${zwj}1`, pinnedAt: T0 + 1 },
         { kind: 'workflow', projectRoot: persianRoot, ref: jointRef, pinnedAt: T0 },
         { kind: 'workflow', projectRoot: familyRoot, ref: 'deploy', pinnedAt: T0 },
@@ -354,14 +362,14 @@ describe('createRunPinStore', () => {
       // Exactly at the bound is a pin, not a refusal.
       const atBound = 'p'.repeat(MAX_PIN_PROJECT_ROOT_LENGTH);
       expect(store.pinItem(workflowPin(atBound, 'deploy'))).toBe('pinned');
-      expect(store.listPins()).toEqual([
+      expect(bare(store.listPins())).toEqual([
         { kind: 'workflow', projectRoot: atBound, ref: 'deploy', pinnedAt: T0 },
       ]);
     });
 
     it('pins at epoch 0 (the time is a NON-negative integer) and lists it back as 0, and refuses a negative time', () => {
       expect(store.pinItem(runPin('at-zero', 0))).toBe('pinned');
-      expect(store.listPins()).toEqual([
+      expect(bare(store.listPins())).toEqual([
         { kind: 'run', projectRoot: '', ref: 'at-zero', pinnedAt: 0 },
       ]);
       for (const at of [-1, Number.MIN_SAFE_INTEGER, -0.5]) {

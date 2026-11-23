@@ -42,6 +42,12 @@ export interface CatalogEntry {
   readonly name: string | undefined;
   /** Authored `tags` (workflows only — `AgentSchema` has none), used for the `relavium list` tag grouping. */
   readonly tags: readonly string[];
+  /**
+   * The number of nodes the parsed workflow declares (`workflow.nodes.length`): a count the parse already holds, so
+   * reading it costs nothing and it is bounded by the source-size cap. Present only on a VALID WORKFLOW entry: an
+   * agent has no nodes, and a file that failed to parse has no document to count, so it keeps its refusal and no count.
+   */
+  readonly nodeCount?: number;
   /** The cwd-relative file path, for display. */
   readonly path: string;
   /** `false` when the file failed to parse — `list` shows it flagged rather than dropping it. */
@@ -252,6 +258,7 @@ function readEntry(
         slug: def.workflow.id,
         name: def.workflow.name,
         tags: def.workflow.tags ?? [],
+        nodeCount: def.workflow.nodes.length,
         path: rel,
         valid: true,
       };

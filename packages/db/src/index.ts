@@ -136,11 +136,13 @@ export {
 // The Home's pins (ADR-0140 §5, migration 0022) — a global, capped list of pinned runs and workflows.
 export {
   createRunPinStore,
+  canonicalRoot,
   RunPinError,
   isRunPinError,
   MAX_RUN_PINS,
   MAX_PIN_REF_LENGTH,
   MAX_PIN_PROJECT_ROOT_LENGTH,
+  OVERSIZED_PREVIEW_CODE_POINTS,
   type RunPinStore,
   type RunPinErrorCode,
   type PinKind,

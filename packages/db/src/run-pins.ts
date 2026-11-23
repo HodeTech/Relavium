@@ -1,5 +1,7 @@
+import { realpathSync } from 'node:fs';
+
 import { RelaviumError } from '@relavium/shared';
-import { and, desc, asc, eq, sql } from 'drizzle-orm';
+import { and, desc, asc, eq, sql, type SQL } from 'drizzle-orm';
 
 import type { Db } from './client.js';
 import { withBusyRetry } from './retry.js';
@@ -23,6 +25,14 @@ export const MAX_RUN_PINS = 50;
 export const MAX_PIN_REF_LENGTH = 512;
 /** The longest `projectRoot` the store accepts. */
 export const MAX_PIN_PROJECT_ROOT_LENGTH = 4096;
+/**
+ * The most UTF-8 bytes one UTF-16 code unit takes: a BMP character is at most 3 bytes, and an astral character is 4
+ * bytes for TWO units. A text of at most N units is therefore at most `3 * N` bytes, and a stored text of more bytes
+ * than that is over its character bound without being decoded (the SQL length gate of {@link RunPinStore.listPins}).
+ */
+const MAX_UTF8_BYTES_PER_UNIT = 3;
+/** How many code points of an over-long text {@link RunPinStore.listPins} still returns, to say which pin it is. */
+export const OVERSIZED_PREVIEW_CODE_POINTS = 64;
 
 export type { PinKind } from './schema.js';
 
@@ -41,13 +51,29 @@ export interface PinKey {
 export interface PinRecord extends PinKey {
   /** Epoch ms the pin was made, as the caller stated it. */
   readonly pinnedAt: number;
+  /**
+   * SQLite's `rowid` of the pin's row, the handle {@link RunPinStore.unpinByRow} removes it by. It names a pin whose
+   * text cannot be given back as a key: a ref that is not valid UTF-8 reads as replacement characters, and an
+   * over-long one is cut (below). A rowid is good for the listing it came from: SQLite hands the number of a deleted
+   * last row to the next insert, and `VACUUM` may renumber a table, so a list kept open across another process's
+   * writes can name a different pin by then (`unpinByRow` removes what the number names now).
+   */
+  readonly rowid: number;
+  /**
+   * `true` when the stored `ref` or `projectRoot` is longer than its write-path bound ({@link MAX_PIN_REF_LENGTH},
+   * {@link MAX_PIN_PROJECT_ROOT_LENGTH}), which only a row written outside this store can be. An over-long column is
+   * never read whole: it is returned as its first {@link OVERSIZED_PREVIEW_CODE_POINTS} code points, so `ref` and
+   * `projectRoot` are then a PREVIEW, not the key, and the pin is removed by its {@link PinRecord.rowid}.
+   */
+  readonly oversized: boolean;
 }
 
 export type RunPinErrorCode =
   | 'invalid_kind'
   | 'invalid_ref'
   | 'invalid_project_root'
-  | 'invalid_time';
+  | 'invalid_time'
+  | 'invalid_row';
 
 /**
  * A pin the store refused to describe. Content-free by construction: the message names the rule and never echoes
@@ -72,19 +98,33 @@ export interface RunPinStore {
    * Pin an item. `'already-pinned'` when the exact `(kind, projectRoot, ref)` is there — which also wins over
    * `'full'`, so re-pinning at the cap is not reported as a refusal — and `'full'` when {@link MAX_RUN_PINS} rows
    * exist already. `at` is epoch ms. A run pin carries `projectRoot: ''`; a workflow pin must carry its project.
+   * A workflow pin is KEYED by {@link canonicalRoot} of its project root, so two spellings of one directory (a
+   * symlink and its target) are one pin; the root is checked in the form it is given AND in the form it is stored.
    * @throws {RunPinError} for an invalid kind, ref, project root or time.
    */
   readonly pinItem: (input: PinKey & { readonly at: number }) => PinResult;
   /**
-   * Remove a pin; `true` when a row was removed, `false` when there was none. It matches the EXACT stored key and
-   * does not judge its content: a row written outside this store (an older writer, a crafted row) must stay
-   * removable by the ref {@link listPins} shows for it, and a content rule here would turn a bad row into a pin
-   * nothing can remove. Only the kind and the text types are checked: a known kind, and text for the ref and the
-   * project root; the length is not judged either.
+   * Remove a pin; `true` when a row was removed, `false` when there was none. It matches the EXACT stored key (a
+   * workflow pin's root through {@link canonicalRoot}, as `pinItem` stored it) and does not judge its content: a row
+   * written outside this store (an older writer, a crafted row) must stay removable, and a content rule here would
+   * turn a bad row into a pin nothing can remove. Only the kind and the text types are checked: a known kind, and
+   * text for the ref and the project root; the length is not judged either. A row whose key cannot be spelled back
+   * (not valid UTF-8, over-long, a root that is not the canonical spelling) is removed by {@link unpinByRow}.
    * @throws {RunPinError} for an unknown kind, or a non-text ref or project root.
    */
   readonly unpinItem: (key: PinKey) => boolean;
-  /** The pins as stored, newest first (ties in a stable key order), optionally narrowed by kind and project. */
+  /**
+   * Remove exactly the row with this `rowid` (from {@link listPins}) and nothing else; `true` when a row was removed.
+   * It is the way out for a pin whose key cannot be given back as text: a ref that is not valid UTF-8 (the list shows
+   * it as replacement characters, which match no row), an over-long one (never read whole), or a crafted row.
+   * @throws {RunPinError} (`invalid_row`) when `rowid` is not a safe integer.
+   */
+  readonly unpinByRow: (rowid: number) => boolean;
+  /**
+   * The pins as stored, newest first (ties in a stable key order), optionally narrowed by kind and project (a
+   * workflow root through {@link canonicalRoot}). Each carries its {@link PinRecord.rowid}. A `ref` or `projectRoot`
+   * longer than its bound is never read whole: it comes back as a preview and the record is {@link PinRecord.oversized}.
+   */
   readonly listPins: (filter?: {
     readonly kind?: PinKind;
     readonly projectRoot?: string;
@@ -111,6 +151,20 @@ function validateKind(key: PinKey): void {
   }
 }
 
+/** A workflow pin's project root: 1 to {@link MAX_PIN_PROJECT_ROOT_LENGTH} characters of the allowed classes. */
+function validateWorkflowRoot(projectRoot: string): void {
+  if (
+    projectRoot.length === 0 ||
+    projectRoot.length > MAX_PIN_PROJECT_ROOT_LENGTH ||
+    FORBIDDEN_TEXT.test(projectRoot)
+  ) {
+    throw new RunPinError(
+      'invalid_project_root',
+      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control, format (other than the zero-width joiners) or unpaired-surrogate characters`,
+    );
+  }
+}
+
 /** The write path's whole rule set: the kind, the bounds AND the character classes of {@link FORBIDDEN_TEXT}. */
 function validateKey(key: PinKey): void {
   validateKind(key);
@@ -133,15 +187,8 @@ function validateKey(key: PinKey): void {
     if (key.projectRoot !== '') {
       throw new RunPinError('invalid_project_root', 'a run pin carries no project root');
     }
-  } else if (
-    key.projectRoot.length === 0 ||
-    key.projectRoot.length > MAX_PIN_PROJECT_ROOT_LENGTH ||
-    FORBIDDEN_TEXT.test(key.projectRoot)
-  ) {
-    throw new RunPinError(
-      'invalid_project_root',
-      `a workflow pin carries its project root: 1 to ${MAX_PIN_PROJECT_ROOT_LENGTH} characters with no control, format (other than the zero-width joiners) or unpaired-surrogate characters`,
-    );
+  } else {
+    validateWorkflowRoot(key.projectRoot);
   }
 }
 
@@ -161,6 +208,62 @@ function validateLookupKey(key: PinKey): void {
   }
 }
 
+/**
+ * The spelling a workflow pin's project root is KEYED by: the directory's real path, so `/work/link` and the
+ * `/work/real` it points at are one project and one pin. A pin is the operator's mark on a project, and the same
+ * project reached through a symlink (or a different case on a case-insensitive disk) must not be pinnable twice, nor
+ * lose its pins when it is opened by another spelling. Only the PIN key is canonicalised: a run reads `project_root`
+ * exactly as the run recorded it (`process.cwd()` at its start), and nothing here rewrites that.
+ *
+ * **When `realpath` fails the path is returned as given.** It fails for a directory that is gone, one the process
+ * cannot traverse, a string that is not a usable path (an embedded NUL, a name past the system limit) and the empty
+ * string. A project that has since been moved or deleted must stay pinned and removable, so the raw spelling is the
+ * key, never a refusal; the write path still checks its bounds and characters either way.
+ */
+export function canonicalRoot(projectRoot: string): string {
+  if (projectRoot.length === 0) return projectRoot;
+  try {
+    return realpathSync.native(projectRoot);
+  } catch {
+    // The documented fallback above: an unresolvable path is its own key.
+    return projectRoot;
+  }
+}
+
+/** The root a pin of `kind` is stored and compared under: canonical for a workflow pin, `''` as given for a run pin. */
+function keyRoot(kind: PinKind, projectRoot: string): string {
+  return kind === 'workflow' ? canonicalRoot(projectRoot) : projectRoot;
+}
+
+/**
+ * What the list reads of a text column: the whole text when it is at most `maxUnits * 3` bytes (every text within its
+ * character bound is), else only its first {@link OVERSIZED_PREVIEW_CODE_POINTS} code points. The byte length is the
+ * gate (`length(CAST(col AS BLOB))`, the same gate the run documents use) because `length()` of text stops at an
+ * embedded NUL and counts characters only after decoding. The `CAST(.. AS TEXT)` makes a column that holds a BLOB
+ * (a crafted row) come back as text rather than as a buffer the types would not describe.
+ */
+function boundedText(column: SQL, maxUnits: number): SQL<string> {
+  const limit = sql.raw(String(maxUnits * MAX_UTF8_BYTES_PER_UNIT));
+  const preview = sql.raw(String(OVERSIZED_PREVIEW_CODE_POINTS));
+  return sql<string>`CASE WHEN length(CAST(${column} AS BLOB)) <= ${limit} THEN CAST(${column} AS TEXT) ELSE substr(CAST(${column} AS TEXT), 1, ${preview}) END`;
+}
+
+/** The first {@link OVERSIZED_PREVIEW_CODE_POINTS} code points of `text`, never splitting a surrogate pair. */
+function previewOf(text: string): string {
+  return Array.from(text).slice(0, OVERSIZED_PREVIEW_CODE_POINTS).join('');
+}
+
+/** A column as the list returns it: the text, or its preview when the column is over its bound. */
+function shownText(
+  text: string,
+  bytes: number,
+  maxUnits: number,
+): { readonly text: string; readonly over: boolean } {
+  // Over when the byte gate cut it, or when it was read whole and still has more UTF-16 units than the bound.
+  const over = bytes > maxUnits * MAX_UTF8_BYTES_PER_UNIT || text.length > maxUnits;
+  return { text: over ? previewOf(text) : text, over };
+}
+
 /** Wire a {@link RunPinStore} over a `@relavium/db` connection. */
 export function createRunPinStore(db: Db): RunPinStore {
   return {
@@ -169,9 +272,13 @@ export function createRunPinStore(db: Db): RunPinStore {
       if (!Number.isSafeInteger(input.at) || input.at < 0) {
         throw new RunPinError('invalid_time', 'a pin time is a non-negative integer of epoch ms');
       }
+      // The key is the root's real path. The raw root passed the bounds above (so a long one never reaches the file
+      // system); the real path is another string, so it is held to the same rule before it is written.
+      const projectRoot = keyRoot(input.kind, input.projectRoot);
+      if (projectRoot !== input.projectRoot) validateWorkflowRoot(projectRoot);
       const row: NewRunPinRow = {
         kind: input.kind,
-        projectRoot: input.projectRoot,
+        projectRoot,
         ref: input.ref,
         pinnedAt: input.at,
       };
@@ -186,7 +293,7 @@ export function createRunPinStore(db: Db): RunPinStore {
               .where(
                 and(
                   eq(runPins.kind, input.kind),
-                  eq(runPins.projectRoot, input.projectRoot),
+                  eq(runPins.projectRoot, projectRoot),
                   eq(runPins.ref, input.ref),
                 ),
               )
@@ -208,6 +315,7 @@ export function createRunPinStore(db: Db): RunPinStore {
 
     unpinItem: (key) => {
       validateLookupKey(key);
+      const projectRoot = keyRoot(key.kind, key.projectRoot);
       return withBusyRetry(
         () =>
           db
@@ -215,7 +323,7 @@ export function createRunPinStore(db: Db): RunPinStore {
             .where(
               and(
                 eq(runPins.kind, key.kind),
-                eq(runPins.projectRoot, key.projectRoot),
+                eq(runPins.projectRoot, projectRoot),
                 eq(runPins.ref, key.ref),
               ),
             )
@@ -223,16 +331,42 @@ export function createRunPinStore(db: Db): RunPinStore {
       );
     },
 
+    unpinByRow: (rowid) => {
+      if (!Number.isSafeInteger(rowid)) {
+        throw new RunPinError('invalid_row', 'a pin row is an integer');
+      }
+      // One statement, one row: `rowid` is unique in the table, and nothing else about the row is read or judged.
+      return withBusyRetry(
+        () =>
+          db
+            .delete(runPins)
+            .where(sql`rowid = ${rowid}`)
+            .run().changes > 0,
+      );
+    },
+
     listPins: (filter) =>
       db
-        .select()
+        .select({
+          rowid: sql<number>`rowid`,
+          kind: runPins.kind,
+          // Both text columns pass the byte gate in the statement, so an over-long value never enters JavaScript whole.
+          projectRoot: boundedText(sql`${runPins.projectRoot}`, MAX_PIN_PROJECT_ROOT_LENGTH),
+          rootBytes: sql<number>`length(CAST(${runPins.projectRoot} AS BLOB))`,
+          ref: boundedText(sql`${runPins.ref}`, MAX_PIN_REF_LENGTH),
+          refBytes: sql<number>`length(CAST(${runPins.ref} AS BLOB))`,
+          pinnedAt: runPins.pinnedAt,
+        })
         .from(runPins)
         .where(
           and(
             filter?.kind === undefined ? undefined : eq(runPins.kind, filter.kind),
             filter?.projectRoot === undefined
               ? undefined
-              : eq(runPins.projectRoot, filter.projectRoot),
+              : eq(
+                  runPins.projectRoot,
+                  filter.kind === 'run' ? filter.projectRoot : canonicalRoot(filter.projectRoot),
+                ),
           ),
         )
         // Newest first; the key columns settle a tie so the order never flips between reads.
@@ -243,13 +377,17 @@ export function createRunPinStore(db: Db): RunPinStore {
           asc(runPins.ref),
         )
         .all()
-        .map(
-          (row): PinRecord => ({
+        .map((row): PinRecord => {
+          const ref = shownText(row.ref, row.refBytes, MAX_PIN_REF_LENGTH);
+          const root = shownText(row.projectRoot, row.rootBytes, MAX_PIN_PROJECT_ROOT_LENGTH);
+          return {
+            rowid: row.rowid,
             kind: row.kind,
-            projectRoot: row.projectRoot,
-            ref: row.ref,
+            projectRoot: root.text,
+            ref: ref.text,
             pinnedAt: row.pinnedAt,
-          }),
-        ),
+            oversized: ref.over || root.over,
+          };
+        }),
   };
 }
