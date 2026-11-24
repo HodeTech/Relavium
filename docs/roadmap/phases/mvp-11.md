@@ -1,6 +1,6 @@
 # MVP-11 — One surface language for the CLI: Home, chat, sheets, popups and the palette
 
-> Status: **Planned** (2026-11-24). MVP-11's product work starts when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) is merged to `main`; Step 1 (decisions, ADRs and a spike, no product code) may start earlier. Nothing in this file is built and no ADR it asks for is written. On 2026-11-24 the maintainer accepted the recommendation of each decision of [§7.2](#72-decisions-od-1-to-od-23); two sub-questions stay open (the populated Home's title in OD-8 and the default-model agreement in OD-23).
+> Status: **Planned** (2026-11-24). MVP-11's product work was to start when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) was merged to `main`; it was merged on 2026-11-24 as `c17e9763`, so nothing waits on it and Step 1 (decisions, ADRs and a spike, no product code) can begin. Nothing in this file is built and no ADR it asks for is written. On 2026-11-24 the maintainer accepted the recommendation of each decision of [§7.2](#72-decisions-od-1-to-od-23); two sub-questions stay open (the populated Home's title in OD-8 and the default-model agreement in OD-23).
 >
 > Last updated: 2026-11-24
 
