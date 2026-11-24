@@ -969,6 +969,79 @@ describe('cost:updated and sequenceNumber invariants', () => {
       ).toBe(false);
     });
 
+    // sse-event-schema.md, "A node's tool trace": the outcome table has four rows and `durationMs` is "present only
+    // when it was measured". Every combination of (resultRecorded, ok, durationMs present) is listed here, so a rule
+    // dropped from the schema — or one added that refuses a state the tracker writes — fails exactly one row.
+    describe('the cross-field rules of an entry (PR #102 review: P2)', () => {
+      const parses = (entry: Record<string, unknown>) =>
+        RunEventSchema.safeParse({
+          ...valid['node:completed'],
+          toolActivity: [{ toolId: 'read_file', ...entry }],
+        });
+
+      it.each([
+        // resultRecorded, ok, durationMs, verdict, outcome
+        [true, true, undefined, true, 'succeeded, not measured'],
+        [true, true, 12, true, 'succeeded, measured'],
+        [true, true, 0, true, 'succeeded, measured as 0 ms'],
+        [true, false, undefined, true, 'refused: a result, nothing ran'],
+        [true, false, 340, true, 'failed and measured'],
+        [false, false, undefined, true, 'unpaired'],
+        [false, true, undefined, false, 'unpaired but ok: no result, so no success'],
+        [false, false, 12, false, 'unpaired but measured: nothing was recorded to measure it by'],
+        [false, true, 12, false, 'unpaired, ok and measured'],
+        [false, false, 0, false, 'unpaired with a zero duration is still a duration'],
+      ] as const)(
+        'resultRecorded %s, ok %s, durationMs %s -> accepted %s (%s)',
+        (resultRecorded, ok, durationMs, accepted, outcome) => {
+          const parsed = parses({
+            resultRecorded,
+            ok,
+            ...(durationMs === undefined ? {} : { durationMs }),
+          });
+          expect(parsed.success, outcome).toBe(accepted);
+        },
+      );
+
+      it('names the field that breaks the rule, for each node terminal', () => {
+        for (const type of terminals) {
+          const result = RunEventSchema.safeParse({
+            ...valid[type],
+            toolActivity: [{ toolId: 'web_fetch', ok: true, resultRecorded: false, durationMs: 3 }],
+          });
+          expect(result.success).toBe(false);
+          const paths = result.success
+            ? []
+            : result.error.issues.map((issue) => issue.path.join('.'));
+          expect(paths.sort()).toEqual(['toolActivity.0.durationMs', 'toolActivity.0.ok']);
+        }
+      });
+
+      it('one impossible entry refuses the whole event, however many valid ones surround it', () => {
+        expect(
+          RunEventSchema.safeParse({
+            ...valid['node:failed'],
+            toolActivity: [
+              { toolId: 'a', ok: true, resultRecorded: true, durationMs: 1 },
+              { toolId: 'b', ok: true, resultRecorded: false },
+              { toolId: 'c', ok: false, resultRecorded: false },
+            ],
+          }).success,
+        ).toBe(false);
+      });
+
+      it('still strips an unknown key from an accepted entry (the lenient read is unchanged)', () => {
+        const parsed = RunEventSchema.parse({
+          ...valid['node:completed'],
+          toolActivity: [{ toolId: 'read_file', ok: false, resultRecorded: false, extra: 'x' }],
+        });
+        expect(parsed).toMatchObject({
+          toolActivity: [{ toolId: 'read_file', ok: false, resultRecorded: false }],
+        });
+        expect(JSON.stringify(parsed)).not.toContain('extra');
+      });
+    });
+
     it('REQUIRES resultRecorded: an entry without it is rejected, so a refusal is never mistaken for an unpaired call', () => {
       for (const type of terminals) {
         expect(

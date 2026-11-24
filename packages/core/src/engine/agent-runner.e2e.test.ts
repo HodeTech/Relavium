@@ -474,6 +474,45 @@ workflow:
       // No result was ever emitted for it, so the call is on the trace as started and never answered.
       expect(failed.toolActivity).toEqual([{ toolId: 'echo', ok: false, resultRecorded: false }]);
     });
+
+    it('a FATAL refusal (a registered tool the node was not granted) is UNPAIRED too — the refused row is for the two refusals a workflow node hands back (PR #102 review: P2)', async () => {
+      // The reference states this as accepted ("A fatal tool failure is unpaired"): the turn announces the call and
+      // then throws, with no `agent:tool_result`, so even a refusal decided before anything ran is on the trace as
+      // "no result recorded" — the node's own `error` says why it failed. This pins that the entry is the schema's
+      // valid unpaired shape and nothing the schema now refuses.
+      let dispatched = 0;
+      const other: CoreToolDef = {
+        ...echoToolDef,
+        id: 'other',
+        dispatch: () => {
+          dispatched += 1;
+          return Promise.resolve('never reached');
+        },
+      };
+      const registry = createToolRegistry({ tools: [echoToolDef, other], host: {} });
+      const engine = new WorkflowEngine({
+        host: createInMemoryHost(),
+        executor: agentExecutor(
+          () =>
+            scriptedProvider([
+              [
+                { type: 'tool_call_start', id: 'c1', name: 'other' },
+                { type: 'tool_call_end', id: 'c1' },
+                { type: 'stop', stopReason: 'tool_use', usage },
+              ],
+            ]),
+          registry,
+          [echoToolDef, other],
+        ),
+      });
+      const events = await drain(engine.start({ workflow: TOOL_WORKFLOW }));
+      const failed = events.find((e) => e.type === 'node:failed');
+      if (failed?.type !== 'node:failed') throw new Error('expected node:failed');
+      expect(failed.error.code).toBe('tool_denied');
+      expect(dispatched).toBe(0);
+      expect(failed.toolActivity).toEqual([{ toolId: 'other', ok: false, resultRecorded: false }]);
+      expect(events.some((e) => e.type === 'agent:tool_result')).toBe(false);
+    });
   });
 
   it('runs two agent nodes concurrently against the shared executor, gap-free, with no cross-node bleed', async () => {

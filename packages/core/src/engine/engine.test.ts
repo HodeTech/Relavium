@@ -6616,6 +6616,70 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     );
   });
 
+  // PR #102 review (P3): the settling message named EVERY unresolved effect, so its size grew with the journal.
+  // The terminal is exempt from CR-32's event-size bound on purpose (a run that cannot publish its terminal is
+  // worse than a large one), but nothing else bounds the message — and the run-detail read refuses a stored
+  // document above MAX_RUN_DETAIL_DOCUMENT_BYTES, so a long list made the run's own error unreadable.
+  describe('a crashed run with many unresolved external effects', () => {
+    const many = (runId: string, count: number): readonly UnresolvedEffect[] =>
+      Array.from({ length: count }, (_, index) => ({
+        identity: {
+          scope: `run:${runId}:node-${String(index)}`,
+          slot: index,
+          toolId: 'run_command',
+        },
+        state: 'prepared' as const,
+        tier: 3 as const,
+        nodeId: `node-${String(index)}`,
+      }));
+
+    async function settleWith(count: number): Promise<string> {
+      const store = new InMemoryRunStore();
+      await seedStarted(store, 'effects-many');
+      const engine = engineWith(undefined, createInMemoryHost({ store }), {
+        effectResume: {
+          unresolvedForRun: () => Promise.resolve(many('effects-many', count)),
+        },
+      });
+      const settled = await engine.reconcile();
+      const failed = settled.find((e) => e.type === 'run:failed');
+      if (failed?.type !== 'run:failed') throw new Error('expected the run to be settled');
+      expect(failed.error.code).toBe('effect_needs_attention');
+      return failed.error.message;
+    }
+
+    it('keeps the settling message bounded, names a fixed number of effects and counts the rest', async () => {
+      const message = await settleWith(20_000);
+      // The total is stated first, in full, and the tail says how many were not named.
+      expect(message).toContain('20000 external effect(s) unresolved');
+      expect(message).toContain('node-0/run_command (prepared, tier 3)');
+      expect(message).toContain('and 19980 more');
+      expect(message).not.toContain('node-20/run_command');
+      expect(message).not.toContain('node-19999/run_command');
+      // Whatever the journal holds, the message stays a sentence a person can read and a store can keep.
+      expect(Buffer.byteLength(message, 'utf8')).toBeLessThan(4096);
+    });
+
+    it('names the first twenty and counts exactly one more at twenty-one (the cap is inclusive)', async () => {
+      const atCap = await settleWith(20);
+      expect(atCap).toContain('node-19/run_command (prepared, tier 3)');
+      expect(atCap).not.toContain(' more');
+      const overCap = await settleWith(21);
+      expect(overCap).toContain('node-19/run_command (prepared, tier 3)');
+      expect(overCap).not.toContain('node-20/run_command');
+      expect(overCap).toContain(', and 1 more');
+    });
+
+    it('names every effect and says nothing about "more" when the list is within the cap', async () => {
+      const message = await settleWith(3);
+      expect(message).toContain('3 external effect(s) unresolved');
+      for (const index of [0, 1, 2]) {
+        expect(message).toContain(`node-${String(index)}/run_command (prepared, tier 3)`);
+      }
+      expect(message).not.toContain(' more');
+    });
+  });
+
   it('settles a crashed run as effect_needs_attention when its effect journal cannot be read', async () => {
     const store = new InMemoryRunStore();
     await seedStarted(store, 'unreadable-1');

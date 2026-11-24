@@ -393,8 +393,10 @@ export const TOOL_ACTIVITY_UNKNOWN_TOOL_ID = 'unknown_tool';
  * — never its arguments, its result text or a summary (a tool's result is not kept as durable content anywhere else
  * either, ADR-0132). Three outcomes, told apart by `resultRecorded` and `durationMs`:
  *
- * - **refused** — a result was recorded but the call never dispatched (an unknown tool, a grant or policy refusal, a
- *   user denial, invalid arguments): `resultRecorded: true`, `ok: false`, `durationMs` absent;
+ * - **refused** — a result was recorded but the call never dispatched: `resultRecorded: true`, `ok: false`,
+ *   `durationMs` absent. In a workflow node only an unknown tool and invalid arguments reach this state, because
+ *   they are the only two refusals the turn hands back to the model there; a grant, policy or user denial ends the
+ *   turn and is **unpaired** (below);
  * - **finished** — a result was recorded for a dispatch that ran, whether it succeeded or threw: `resultRecorded:
  *   true`, `ok` = the result's `success`, `durationMs` present when the dispatch was measured (a failed dispatch that
  *   ran is `ok: false` WITH a duration);
@@ -403,17 +405,41 @@ export const TOOL_ACTIVITY_UNKNOWN_TOOL_ID = 'unknown_tool';
  *   absent.
  *
  * `ok` is therefore the result's `success` and `false` for an unpaired call; only `resultRecorded` says which of the
- * two `false`s it is. The `toolId` is bounded to {@link TOOL_ACTIVITY_TOOL_ID_PATTERN}, so text a model invented
+ * two `false`s it is. The schema REFUSES the two combinations that follow from that and that no writer produces: an
+ * unpaired entry with `ok: true`, and an unpaired entry with a `durationMs` (every other combination is a state the
+ * tracker writes). The `toolId` is bounded to {@link TOOL_ACTIVITY_TOOL_ID_PATTERN}, so text a model invented
  * cannot be stored in it. The lenient-read rule of the header applies: no `.strict()`, so an unknown key is stripped
  * on read and never kept. `resultRecorded` is REQUIRED: the field was added in the same increment that introduced
  * `toolActivity`, before any release wrote an entry without it.
  */
-export const ToolActivityEntrySchema = z.object({
-  toolId: z.string().max(128).regex(TOOL_ACTIVITY_TOOL_ID_PATTERN),
-  ok: z.boolean(),
-  resultRecorded: z.boolean(),
-  durationMs: nonNegativeInt.optional(),
-});
+export const ToolActivityEntrySchema = z
+  .object({
+    toolId: z.string().max(128).regex(TOOL_ACTIVITY_TOOL_ID_PATTERN),
+    ok: z.boolean(),
+    resultRecorded: z.boolean(),
+    durationMs: nonNegativeInt.optional(),
+  })
+  .superRefine((entry, ctx) => {
+    // The two states the tracker can never write and the reference rules out (sse-event-schema.md, "A node's tool
+    // trace"): an UNPAIRED call has no result, so it has no success and no measured duration. Nothing else is
+    // refused — a recorded result may or may not carry a duration (`durationMs` is present only when it was
+    // measured), and `ok` is the result's own `success`, true or false.
+    if (entry.resultRecorded) return;
+    if (entry.ok) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'a tool call with no recorded result cannot be ok',
+        path: ['ok'],
+      });
+    }
+    if (entry.durationMs !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'a tool call with no recorded result has no measured duration',
+        path: ['durationMs'],
+      });
+    }
+  });
 export type ToolActivityEntry = z.infer<typeof ToolActivityEntrySchema>;
 
 export const NodeCompletedEventSchema = z.object({

@@ -392,6 +392,22 @@ export const MAX_RUN_SUMMARY_IDS = 200;
 export const MAX_RUN_DETAIL_DOCUMENT_BYTES = 1_048_576;
 /** Rows the tail read pulls from SQLite per statement while it looks for `limit` readable events. */
 const RUN_TAIL_BATCH_ROWS = 256;
+/**
+ * The most rows ONE {@link RunHistoryReader.loadRunEventsAfter} call scans, readable or not (PR #102 review: P3). The
+ * call stops at `limit` events, and a log made of readable rows never reaches this; it is the backstop for a log that
+ * is mostly rows THIS binary skips (a newer binary's types), which count toward no `limit` and would otherwise be read
+ * to the end of the table in one call, holding every one of them in `skipped`. The engine's own dispatch ceiling keeps a
+ * run's durable events to a few thousand rows in practice, so this is far above any log a current writer produces.
+ */
+export const MAX_RUN_TAIL_SCAN_ROWS = 50_000;
+/**
+ * The most attempt rows {@link RunHistoryReader.listStepSummaries} returns for one run (PR #102 review: P3). A run's
+ * attempt rows are bounded at the WRITER, not by the workflow schema: the engine refuses a run's
+ * `ADMISSION_CEILINGS.nodeDispatchesPerRun` (500) -th dispatch, a count the checkpoint carries across a resume, and a
+ * dispatch is what opens an attempt row. This is ten times that, a read-side backstop for a log no current engine
+ * wrote: a result of EXACTLY this length means the run may have more, and is the only case in which the list is cut.
+ */
+export const MAX_RUN_STEP_SUMMARIES = 5000;
 
 /** A finite positive integer; anything else is refused (never read as "unbounded" or as an empty page). */
 function positiveIntegerLimit(limit: number): number {
@@ -552,6 +568,9 @@ export interface RunHistoryReader {
   /**
    * A run's node attempts in execution order, one row per attempt, without an input, output or error column —
    * the node table. Keyed by `runId` alone (the caller validates the run first), like {@link loadStepExecutions}.
+   * At most {@link MAX_RUN_STEP_SUMMARIES} rows, the first ones in execution order: a run's attempts are bounded at the
+   * writer (see that constant), so the cut is never made on a log this engine wrote, and a result of exactly that
+   * length is the signal that it was made.
    */
   listStepSummaries: (runId: string) => StepSummaryRecord[];
   /**
@@ -567,10 +586,13 @@ export interface RunHistoryReader {
    * The events AFTER `afterSeq` (`run_id = ? AND seq > ?`, in `seq` order) — the poll tail of ADR-0140 §2 and
    * `logs --follow`. Reads through the same row reader as {@link loadRunEventLog}: a row a NEWER binary wrote is
    * skipped and counted, a damaged row throws {@link CorruptRunEventError}. It keeps scanning until it holds
-   * `limit` events or the log ends, so it never returns an empty page while readable rows remain. The caller
-   * advances its cursor to `scannedThroughSeq`, never to the last event. `limit` is validated and clamped to
-   * {@link MAX_RUN_TAIL_EVENTS}; `afterSeq` must be a safe integer (`-1` reads from the start). Keyed by `runId`
-   * alone, like {@link loadRunEvents}.
+   * `limit` events, the log ends, or it has scanned {@link MAX_RUN_TAIL_SCAN_ROWS} rows, so it does not return an
+   * empty page while readable rows remain within that many rows of the cursor. The caller advances its cursor to
+   * `scannedThroughSeq`, never to the last event. A caller that must read to the END of the log continues until a call
+   * scans nothing past the cursor (`scannedThroughSeq` equal to the `afterSeq` it passed): a page shorter than `limit`
+   * is the end of the log only when it stopped short of the scan cap, which a log of readable rows never reaches.
+   * `limit` is validated and clamped to {@link MAX_RUN_TAIL_EVENTS}; `afterSeq` must be a safe integer (`-1` reads
+   * from the start). Keyed by `runId` alone, like {@link loadRunEvents}.
    */
   loadRunEventsAfter: (runId: string, afterSeq: number, limit: number) => RunEventTail;
   /**
@@ -1667,7 +1689,12 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
  * from a plain db handle (mirroring the standalone {@link loadRunSnapshot}). All methods are synchronous
  * (better-sqlite3) and validate at the row↔domain boundary, like the writer mappers above.
  */
-export function createRunHistoryReader(db: Db): RunHistoryReader {
+export function createRunHistoryReader(
+  db: Db,
+  /** Test seam: a smaller scan cap than {@link MAX_RUN_TAIL_SCAN_ROWS}, so a cap-sized log need not be built. */
+  options: { readonly tailScanRows?: number } = {},
+): RunHistoryReader {
+  const tailScanRows = Math.max(1, Math.trunc(options.tailScanRows ?? MAX_RUN_TAIL_SCAN_ROWS));
   return {
     listRuns: (opts) => {
       // `id` is a stable secondary key so the order never flips between reads for same-createdAt runs (same
@@ -1926,6 +1953,7 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .where(eq(stepExecutions.runId, runId))
         // The same execution order as `loadStepExecutions`: `created_at`, then insertion order.
         .orderBy(asc(stepExecutions.createdAt), asc(sql`rowid`))
+        .limit(MAX_RUN_STEP_SUMMARIES)
         .all()
         .map(fromStepSummaryRow),
 
@@ -1976,7 +2004,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       const events: RunEvent[] = [];
       const skipped: SkippedRunEvent[] = [];
       let scannedThroughSeq = afterSeq;
+      let scanned = 0;
       for (;;) {
+        // The last statement asks for no more than the scan cap has left, so the cap is exact, not a batch late.
+        const batch = Math.min(RUN_TAIL_BATCH_ROWS, tailScanRows - scanned);
         const rows = db
           .select({
             seq: runEvents.seq,
@@ -1986,9 +2017,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
           .from(runEvents)
           .where(and(eq(runEvents.runId, runId), gt(runEvents.seq, scannedThroughSeq)))
           .orderBy(asc(runEvents.seq))
-          .limit(RUN_TAIL_BATCH_ROWS)
+          .limit(batch)
           .all();
         for (const row of rows) {
+          scanned += 1;
           // The shared row reader: an unknown `type` is a newer binary's row (skipped, never an error), a damaged
           // row throws `CorruptRunEventError` — the same two outcomes `loadRunEventLog` has.
           const event = readStoredEventRow(runId, row);
@@ -1999,7 +2031,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
           else events.push(event);
           if (events.length >= wanted) return { events, scannedThroughSeq, skipped };
         }
-        if (rows.length < RUN_TAIL_BATCH_ROWS) return { events, scannedThroughSeq, skipped };
+        // The end of the log (a short batch), or the scan cap: either way the caller's cursor is `scannedThroughSeq`.
+        if (rows.length < batch || scanned >= tailScanRows) {
+          return { events, scannedThroughSeq, skipped };
+        }
       }
     },
 

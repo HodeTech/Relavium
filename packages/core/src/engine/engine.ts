@@ -231,6 +231,26 @@ const DEFAULT_NODE_RETRY_BACKOFF_MS = 1000;
  *  arm an absurd timer. A node-retry that needs a >24h wait should be a scheduled job, not a backoff. */
 const MAX_NODE_RETRY_BACKOFF_MS = 86_400_000;
 
+/**
+ * How many unresolved external effects a settling message NAMES; the rest are only counted (PR #102 review).
+ * The message used to name every one, so its size grew with the journal. A terminal is exempt from CR-32's
+ * durable-event bound on purpose (a run that cannot publish its terminal is worse than a large one,
+ * {@link measureDraft}), so nothing else bounded it — and the run-detail read refuses a stored document above
+ * `MAX_RUN_DETAIL_DOCUMENT_BYTES`, so a long list made the run's own error unreadable. Twenty names is more than
+ * a person checks by hand; the full list stays in the effect journal.
+ */
+const UNRESOLVED_EFFECTS_NAMED = 20;
+
+/** The effects a settling message names, in journal order, with `, and N more` for the ones it does not. */
+function describeUnresolvedEffects(unresolved: readonly UnresolvedEffect[]): string {
+  const named = unresolved
+    .slice(0, UNRESOLVED_EFFECTS_NAMED)
+    .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
+    .join(', ');
+  const rest = unresolved.length - UNRESOLVED_EFFECTS_NAMED;
+  return rest > 0 ? `${named}, and ${String(rest)} more` : named;
+}
+
 /** The input to {@link WorkflowEngine.start} — a parsed workflow plus its run inputs and mode. */
 export interface StartInput {
   /** Primary delivery policy for this execution; defaults to lossless `iterated` delivery (ADR-0087 §1). */
@@ -1513,9 +1533,7 @@ class RunExecution {
         message:
           `${String(blocking.length)} external effect(s) from a prior attempt are unresolved, so this run ` +
           `cannot continue without a human: ` +
-          blocking
-            .map((b) => `${b.nodeId}/${b.identity.toolId} (${b.state}, tier ${String(b.tier)})`)
-            .join(', ') +
+          describeUnresolvedEffects(blocking) +
           `. Check the target before resolving them — resuming again re-enters this gate and stops here.`,
         retryable: false,
       },
@@ -5163,12 +5181,12 @@ class RunExecution {
     // run-wide `cumulativeCostMicrocents` (a per-node executor cannot know it), so it is recomputed here
     // authoritatively rather than passed through.
     switch (event.type) {
-      case 'agent:token':
-      case 'agent:reasoning':
-      case 'agent:file_patch_proposed':
       // `agent:tool_call` passes through without being recorded here: the node's `toolActivity` takes a call when it STARTS
       // (`ctx.onToolStart`), because this event is emitted only after the dispatch returned and is dropped once the node is no
       // longer live — a call still running at a deadline would leave no trace (ADR-0140 §4). Counting it here too would count it twice.
+      case 'agent:token':
+      case 'agent:reasoning':
+      case 'agent:file_patch_proposed':
       case 'agent:tool_call':
         this.#bus.emit({ ...event, runId });
         return;
@@ -6040,10 +6058,12 @@ export class WorkflowEngine {
    *   driven forward.
    *
    * Throws `unknown_run` when no checkpoint exists, or `run_already_active` when the run is already in
-   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}; the cross-process
-   * guarantee is bounded by the store's durable single-writer of `human_gate:resumed` per gate — a true
-   * concurrent double-resolve (two processes loading the same pending gate before either persists) is
-   * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
+   * memory (use {@link resume}). Within a single process the same guarantee holds via {@link resume}. Across
+   * processes it holds because the run's lease is acquired BEFORE the checkpoint is read (ADR-0079 §4): two
+   * processes cannot both load the same pending gate, so the loser is refused with `run_owned_elsewhere` before it
+   * reads or writes anything, and a stale in-memory card that answers meanwhile is refused at its re-take and ends
+   * fenced; the compare-and-append guard and the fence close the rest in the store. `stale-gate-card.e2e.test.ts`
+   * holds the winner inside that window and proves both orders (PR #102 review: P02a-1).
    */
   /**
    * Why the lease could not be taken — naming the holder and WHEN, not just "shortly".
@@ -6777,9 +6797,7 @@ export class WorkflowEngine {
           message:
             `the run was interrupted before completion with ${String(unresolved.length)} external effect(s) ` +
             'unresolved: ' +
-            unresolved
-              .map((u) => `${u.nodeId}/${u.identity.toolId} (${u.state}, tier ${String(u.tier)})`)
-              .join(', ') +
+            describeUnresolvedEffects(unresolved) +
             '. Check the target before running it again.',
         };
       }

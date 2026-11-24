@@ -502,3 +502,251 @@ workflow:
     expect(persisted.map((event) => event.type)).not.toContain('human_gate:resumed');
   });
 });
+
+/** A hold a test releases by hand: `reached` settles when the held code arrives, and stays held until `release()`. */
+function barrier() {
+  let release: () => void = () => undefined;
+  let arrive: () => void = () => undefined;
+  const reached = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return {
+    reached,
+    release,
+    hold: async (): Promise<void> => {
+      arrive();
+      await released;
+    },
+  };
+}
+
+/**
+ * One process on the shared store whose own steps can be HELD: `beforeLoad` runs after the lease was acquired and
+ * before the checkpoint is read (the first thing the owner does, ADR-0079 §4), and `beforeWrite` runs before an
+ * event reaches the shared store. The lease table and the event log are the ones every process shares; the hook is
+ * the only thing this process adds, so what it holds is exactly the window a second process would have to race.
+ */
+function heldProcessOn(
+  store: InMemoryRunStore,
+  name: string,
+  hooks: {
+    readonly beforeLoad?: () => Promise<void>;
+    readonly beforeWrite?: (event: RunEvent) => Promise<void>;
+  },
+) {
+  const base = createInMemoryHost({ store });
+  const checkpointer = createInMemoryCheckpointer(store);
+  const heldView: RunStore = {
+    resolveWorkflowId: (slug: string) => store.resolveWorkflowId(slug),
+    listInterruptedRuns: () => store.listInterruptedRuns(),
+    readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
+    persistEvent: async (event: RunEvent, ctx?: DurableWriteContext) => {
+      await hooks.beforeWrite?.(event);
+      return store.persistEvent(event, ctx);
+    },
+  };
+  const host = {
+    ...base,
+    store: heldView,
+    checkpointer: {
+      load: async (runId: string) => {
+        await hooks.beforeLoad?.();
+        return checkpointer.load(runId);
+      },
+    },
+  };
+  let next = 0;
+  const ids = { newId: () => `${name}-${String(++next)}` };
+  const engine = new WorkflowEngine({ host: { ...host, ids }, executor: new GateStub() });
+  return { host, engine };
+}
+
+/** Terminal A parked at g1 with its card open and the claim handed back; nobody else has touched the run. */
+async function cardOpenAtFirstGate(a: ReturnType<typeof heldProcessOn>, store: InMemoryRunStore) {
+  const handle = a.engine.start({ workflow: TWO_GATES });
+  const events: RunEvent[] = [];
+  let reached: (gateId: string) => void = () => undefined;
+  const atFirstGate = new Promise<string>((resolve) => {
+    reached = resolve;
+  });
+  const drained = (async () => {
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') reached(event.gateIds[0] ?? '');
+    }
+  })();
+  const gateId = await atFirstGate;
+  await leaseVacant(a.host.runLeases, handle.runId);
+  expect(store.eventsFor(handle.runId).some((e) => e.type === 'human_gate:resumed')).toBe(false);
+  return { handle, events, drained, runId: handle.runId, gateId };
+}
+
+/** The gate-decision events of one gate node (`g1`) in the shared log. */
+const decisionsOf = (store: InMemoryRunStore, runId: string, nodeId: string) =>
+  store
+    .eventsFor(runId)
+    .filter((event) => event.type === 'human_gate:resumed' && event.nodeId === nodeId);
+
+/** Exactly-once, whoever won: one decision for the gate, no reused sequence, no terminal, nothing in either outbox. */
+async function expectOneDecisionAndNoTerminal(
+  store: InMemoryRunStore,
+  runId: string,
+  hosts: ReadonlyArray<{ readonly terminalOutbox: { list: () => Promise<readonly unknown[]> } }>,
+): Promise<void> {
+  expect(decisionsOf(store, runId, 'g1')).toHaveLength(1);
+  const persisted = store.eventsFor(runId);
+  const seqs = persisted.map((event) => event.sequenceNumber);
+  expect(new Set(seqs).size).toBe(seqs.length);
+  expect(persisted.filter((event) => TERMINALS.has(event.type))).toEqual([]);
+  for (const host of hosts) expect(await host.terminalOutbox.list()).toEqual([]);
+}
+
+describe('two engines deciding the SAME gate at once, interleaved (ADR-0079 §4/§7; PR #102 review: P02a-1, T02a-2)', () => {
+  // The sequential scenario above proves the loser is fenced AFTER the winner finished. These two hold the winner
+  // INSIDE the window — lease taken, decision not yet persisted — and make the loser arrive there, in both orders,
+  // so the exclusion is the lease's and not an accident of who ran first.
+
+  it('B holds the claim before it has read anything: A’s stale card is refused at the re-take, ends fenced, and B decides the gate once', async () => {
+    const store = new InMemoryRunStore();
+    // Every write A ATTEMPTS after its card is open: the refusal must come at the re-take, before A reaches the store,
+    // not from the store's fence check on a write A already made.
+    let cardOpen = false;
+    const attemptedByA: string[] = [];
+    const a = heldProcessOn(store, 'terminal-a', {
+      beforeWrite: (event) => {
+        if (cardOpen) attemptedByA.push(event.type);
+        return Promise.resolve();
+      },
+    });
+    const scene = await cardOpenAtFirstGate(a, store);
+    cardOpen = true;
+    const { runId, gateId } = scene;
+
+    const hold = barrier();
+    const b = heldProcessOn(store, 'terminal-b', { beforeLoad: hold.hold });
+    const resumingB = b.engine.resumeFromCheckpoint({
+      runId,
+      workflow: TWO_GATES,
+      gateId,
+      decision: approve('terminal-b'),
+    });
+    await hold.reached; // B's acquire succeeded; it has read nothing and written nothing
+    const held = await b.host.runLeases.read(runId);
+    expect(held).toBeDefined();
+    const logWhileHeld = [...store.eventsFor(runId)];
+
+    // A's card answers INSIDE that window. A's re-take is refused because B holds the row, and A stops as fenced.
+    await a.engine.resume(runId, gateId, approve('terminal-a'));
+    await scene.drained;
+    expect(scene.events.filter((event) => TERMINALS.has(event.type))).toEqual([]);
+    expect(scene.handle.durability()).toBe('uncertain');
+    expect(scene.handle.terminalError()).toBeUndefined();
+    // A wrote nothing — it did not even try — and its refusal did not give away B's claim: the row is still B's.
+    expect(attemptedByA).toEqual([]);
+    expect(store.eventsFor(runId)).toEqual(logWhileHeld);
+    expect(await a.host.runLeases.read(runId)).toEqual(held);
+
+    // B resumes its work and is the one decision: it runs on to g2 and parks.
+    hold.release();
+    const handleB = await resumingB;
+    const secondPause = await readToPause(handleB);
+    expect((await handleB.depart()).kind).toBe('detached');
+    await leaseVacant(b.host.runLeases, runId);
+
+    await expectOneDecisionAndNoTerminal(store, runId, [a.host, b.host]);
+    const [decision] = decisionsOf(store, runId, 'g1');
+    expect(decision?.type === 'human_gate:resumed' && decision.decidedBy).toBe('terminal-b');
+    expect(
+      reconstructCheckpointState(store.eventsFor(runId))?.pendingGates.map((g) => g.gateId),
+    ).toEqual(secondPause.gateIds);
+    // The run A gave up stays healthy: a later process decides g2 and the run completes with one terminal.
+    const c = processOn(store, 'terminal-c');
+    const handleC = await c.engine.resumeFromCheckpoint({
+      runId,
+      workflow: TWO_GATES,
+      gateId: secondPause.gateIds[0] ?? '',
+      decision: approve('terminal-c'),
+    });
+    const eventsC: RunEvent[] = [];
+    for await (const event of handleC.events) eventsC.push(event);
+    expect(eventsC.at(-1)?.type).toBe('run:completed');
+    expect(
+      store
+        .eventsFor(runId)
+        .filter((event) => TERMINALS.has(event.type))
+        .map((event) => event.type),
+    ).toEqual(['run:completed']);
+  });
+
+  it('A holds the claim with its decision not yet persisted: B’s `gate` resume is refused as owned elsewhere, writes nothing, and A decides the gate once', async () => {
+    const store = new InMemoryRunStore();
+    const hold = barrier();
+    let held = false;
+    const a = heldProcessOn(store, 'terminal-a', {
+      beforeWrite: async (event) => {
+        if (event.type !== 'human_gate:resumed' || held) return;
+        held = true;
+        await hold.hold();
+      },
+    });
+    const scene = await cardOpenAtFirstGate(a, store);
+    const { runId, gateId } = scene;
+
+    const answering = a.engine.resume(runId, gateId, approve('terminal-a'));
+    await hold.reached; // A re-took the claim and is about to persist the decision
+    const claimed = await a.host.runLeases.read(runId);
+    expect(claimed).toBeDefined();
+    const logWhileHeld = [...store.eventsFor(runId)];
+
+    // B arrives inside that window: the lease is acquired before anything is read, so B is refused up front — it
+    // never reads the checkpoint, which is what keeps a loser from being a second producer even briefly (§4).
+    let loadsByB = 0;
+    const b = heldProcessOn(store, 'terminal-b', {
+      beforeLoad: () => {
+        loadsByB += 1;
+        return Promise.resolve();
+      },
+    });
+    await expect(
+      b.engine.resumeFromCheckpoint({
+        runId,
+        workflow: TWO_GATES,
+        gateId,
+        decision: approve('terminal-b'),
+      }),
+    ).rejects.toMatchObject({ code: 'run_owned_elsewhere' });
+    // B read nothing, wrote nothing, took nothing and left A's claim as it was.
+    expect(loadsByB).toBe(0);
+    expect(store.eventsFor(runId)).toEqual(logWhileHeld);
+    expect(await b.host.runLeases.read(runId)).toEqual(claimed);
+    expect(await b.host.terminalOutbox.list()).toEqual([]);
+
+    // A's decision lands once, and A runs on to g2 and parks (its claim is handed back again).
+    hold.release();
+    await answering;
+    await untilAsync(
+      async () => (await a.host.runLeases.read(runId)) === undefined,
+      'A parked at g2 and handed the claim back',
+    );
+
+    await expectOneDecisionAndNoTerminal(store, runId, [a.host, b.host]);
+    const [decision] = decisionsOf(store, runId, 'g1');
+    expect(decision?.type === 'human_gate:resumed' && decision.decidedBy).toBe('terminal-a');
+    const pending = reconstructCheckpointState(store.eventsFor(runId))?.pendingGates ?? [];
+    expect(pending).toHaveLength(1);
+    // B's retry, once A is parked, is the documented idempotent re-delivery: it does not decide g1 a second time.
+    const retry = await b.engine.resumeFromCheckpoint({
+      runId,
+      workflow: TWO_GATES,
+      gateId,
+      decision: approve('terminal-b'),
+    });
+    await retry.depart();
+    expect(decisionsOf(store, runId, 'g1')).toHaveLength(1);
+    expect(store.eventsFor(runId).filter((event) => TERMINALS.has(event.type))).toEqual([]);
+    void scene.drained;
+  });
+});

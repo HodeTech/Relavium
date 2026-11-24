@@ -8,8 +8,10 @@ import {
   isRunHistoryReadError,
   MAX_RUN_DETAIL_DOCUMENT_BYTES,
   MAX_RUN_LEASE_IDS,
+  MAX_RUN_STEP_SUMMARIES,
   MAX_RUN_SUMMARY_PAGE,
   MAX_RUN_TAIL_EVENTS,
+  MAX_RUN_TAIL_SCAN_ROWS,
   type RunHistoryReader,
   type RunSummaryRecord,
 } from './run-history-store.js';
@@ -610,6 +612,30 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       for (const column of BLOB_COLUMNS) expect(statement).not.toContain(column);
     });
 
+    it('returns at most MAX_RUN_STEP_SUMMARIES rows, the first ones in execution order, and a full list is the signal (PR #102 review: P3)', () => {
+      expect(MAX_RUN_STEP_SUMMARIES).toBe(5000);
+      seedRun('r', T0);
+      seedRun('small', T0);
+      client.db.transaction(() => {
+        for (let index = 0; index < MAX_RUN_STEP_SUMMARIES + 1; index++) {
+          seedStep('r', `n${String(index)}`, 1, T0 + index);
+        }
+        for (let index = 0; index < 3; index++)
+          seedStep('small', `n${String(index)}`, 1, T0 + index);
+      });
+
+      const capped = reader.listStepSummaries('r');
+      expect(capped).toHaveLength(MAX_RUN_STEP_SUMMARIES);
+      // The FIRST rows in execution order, not an arbitrary subset: the cut is at the tail.
+      expect(capped[0]?.nodeId).toBe('n0');
+      expect(capped.at(-1)?.nodeId).toBe(`n${String(MAX_RUN_STEP_SUMMARIES - 1)}`);
+      // A run below the cap is returned whole, so a list of exactly the cap is the only list that may be cut.
+      expect(reader.listStepSummaries('small')).toHaveLength(3);
+      // The bound is in the statement, not applied after the rows reached JavaScript.
+      const [statement] = statementsOf(() => reader.listStepSummaries('r'));
+      expect(statement?.toLowerCase()).toContain('limit');
+    });
+
     it('loads one attempt with its output, error and token columns', () => {
       seedRun('r', T0);
       seedStep('r', 'n1', 1, T0 + 10, { status: 'failed', errorJson: '{"code":"first"}' });
@@ -842,6 +868,60 @@ describe('the run-history reads of the Home browsers (ADR-0140 §4)', () => {
       expect(page.events.map((event) => event.sequenceNumber)).toEqual([300]);
       expect(page.scannedThroughSeq).toBe(300);
       expect(page.skipped).toHaveLength(300);
+    });
+
+    describe('the scan cap (PR #102 review: P3)', () => {
+      const capped = (rows: number): RunHistoryReader =>
+        createRunHistoryReader(client.db, { tailScanRows: rows });
+
+      it('the default cap is a constant far above any log a current writer produces', () => {
+        expect(MAX_RUN_TAIL_SCAN_ROWS).toBe(50_000);
+      });
+
+      it('stops after exactly the cap, with a cursor the caller continues from, and loses no row', () => {
+        seedRun('r', T0);
+        // 700 rows this binary cannot read, then two it can: the old read scanned all of them in ONE call.
+        client.db.transaction(() => {
+          for (let seq = 0; seq < 700; seq++) insertNewerRow('r', seq);
+        });
+        insertEvent('r', 700);
+        insertEvent('r', 701);
+        // 300 is not a multiple of the 256-row batch, so the cap is exact only if the last statement is shortened.
+        const small = capped(300);
+
+        const first = small.loadRunEventsAfter('r', -1, 10);
+        expect(first.events).toEqual([]);
+        expect(first.skipped).toHaveLength(300);
+        expect(first.scannedThroughSeq).toBe(299);
+
+        const second = small.loadRunEventsAfter('r', first.scannedThroughSeq, 10);
+        expect(second.events).toEqual([]);
+        expect(second.skipped).toHaveLength(300);
+        expect(second.scannedThroughSeq).toBe(599);
+
+        // The third call reaches the readable rows, and the cursor protocol delivered every one of them.
+        const third = small.loadRunEventsAfter('r', second.scannedThroughSeq, 10);
+        expect(third.events.map((event) => event.sequenceNumber)).toEqual([700, 701]);
+        expect(third.skipped).toHaveLength(100);
+        expect(third.scannedThroughSeq).toBe(701);
+
+        // A call past the end scans nothing, which is how a caller that read to the end knows it did.
+        expect(small.loadRunEventsAfter('r', 701, 10)).toEqual({
+          events: [],
+          scannedThroughSeq: 701,
+          skipped: [],
+        });
+      });
+
+      it('a log of exactly the cap is read whole in one call, and readable rows never reach the cap', () => {
+        seedRun('r', T0);
+        for (let seq = 0; seq < 5; seq++) insertEvent('r', seq);
+        const page = capped(5).loadRunEventsAfter('r', -1, 100);
+        expect(page.events.map((event) => event.sequenceNumber)).toEqual([0, 1, 2, 3, 4]);
+        expect(page.scannedThroughSeq).toBe(4);
+        // Readable rows stop the call at `limit`, whatever the cap is.
+        expect(capped(5).loadRunEventsAfter('r', -1, 2).events).toHaveLength(2);
+      });
     });
 
     it('throws CorruptRunEventError on a damaged row, as the other reads do', () => {
