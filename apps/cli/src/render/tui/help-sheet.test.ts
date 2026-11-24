@@ -119,6 +119,18 @@ describe('which keys the sheet names', () => {
     }
   });
 
+  it('says what the Home does with a run in view, whole at 80×24: `Enter` opens it, a row is any row of the strip, and leaving asks first', () => {
+    const lines = textOf(80);
+    const rowOf = (keys: string): string =>
+      lines.find((line) => line.trimStart().startsWith(`${keys} `)) ?? '';
+    expect(rowOf('Enter')).toContain('or open the row or the running run');
+    expect(rowOf('↓')).toContain('move onto a row of the strip');
+    expect(rowOf('Ctrl+D')).toContain('asks first while a run executes');
+    expect(rowOf('Ctrl+C')).toContain('asks first while a run executes');
+    // No verb is cut at 80 columns: every key row carries its verb whole.
+    for (const key of Object.values(HOME_KEYS)) expect(rowOf(key.keys)).toContain(key.verb);
+  });
+
   it('ends on the legend that names the sheet’s own keys, and they are the ones the constant says', () => {
     const lines = textOf(80);
     expect(lines.at(-1)).toBe(`${HELP_SHEET_KEYS.close.keys} ${HELP_SHEET_KEYS.close.verb}`);

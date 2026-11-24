@@ -5,7 +5,7 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RunApp } from './RunApp.js';
 import { layoutColumns } from './layout-columns.js';
 import { colorProps, dimProps } from './projection.js';
-import { runScreenModel } from './run-screen.js';
+import { RUN_SCREEN_NOTE_MARK, runScreenModel } from './run-screen.js';
 import type { RunStore } from './run-store.js';
 
 /**
@@ -96,7 +96,7 @@ export function RunScreenView(props: Readonly<RunScreenViewProps>): ReactElement
           {model.notices.map((line, index) => (
             // The ring is append-only and bounded: a row's place among the newest is its identity.
             <Text key={`${String(index)}:${line}`} {...dimProps(color)} wrap="truncate-end">
-              {`note: ${line}`}
+              {`${RUN_SCREEN_NOTE_MARK}${line}`}
             </Text>
           ))}
           {card?.rows.map((line, index) => (

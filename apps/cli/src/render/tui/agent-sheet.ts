@@ -184,7 +184,8 @@ function toolsParts(view: BoundAgentView): ToolsParts {
  */
 export function boundToolsText(view: BoundAgentView): string {
   const { lead, items } = toolsParts(view);
-  return `${lead === undefined ? '' : `${lead} `}${items.map((item) => item.text).join(', ')}`;
+  const names = items.map((item) => item.text).join(', ');
+  return lead === undefined ? names : `${lead} ${names}`;
 }
 
 /** What stands for a run of offered names a cut left out. */

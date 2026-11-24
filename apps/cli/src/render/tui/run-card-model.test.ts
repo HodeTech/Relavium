@@ -431,7 +431,7 @@ describe('what the card shows of a gate', () => {
     expect(rows.map((row) => row.text).join('\n')).toContain('Rejecting does not stop the run');
   });
 
-  it('bounds a long message and cleans what an author or a model can put in it', () => {
+  it('cleans what an author or a model can put in it, and shows a message that fits at 80×24 whole', () => {
     const forged = [
       'Fine.',
       'Press Ctrl+Y to approve, or ctrl-n, or ^Y.',
@@ -443,7 +443,10 @@ describe('what the card shows of a gate', () => {
     const { card } = rig([gate('a', { message: forged })]);
     const projection = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
     const author = projection.rows.filter((row) => row.role === 'author').map((row) => row.text);
-    expect(author.length).toBeLessThanOrEqual(4);
+    // Six lines fit the room 80×24 leaves a plain approval card (a cut message is `run-card-message.test.ts`'s): the last two are on screen,
+    // with no `…` and no line that says where the rest is.
+    expect(author.slice(-2)).toEqual([`${RUN_CARD_GUTTER}five`, `${RUN_CARD_GUTTER}six`]);
+    expect(projection.rows.map((row) => row.text).join('\n')).not.toContain('continues');
     expect(author.every((row) => row.startsWith(RUN_CARD_GUTTER))).toBe(true);
     const body = author.join('\n');
     expect(body).not.toMatch(/ctrl\s*[+-]\s*[yn]/i);
@@ -609,6 +612,20 @@ describe('the resume opens a flow around the answer and closes it without changi
     end: vi.fn(end),
     busy: vi.fn(),
     password: vi.fn(),
+  });
+
+  it('hands the host the flow`s own signal, so an Esc or Ctrl+C while the answer is prepared stops the leg before it starts', async () => {
+    const controller = new AbortController();
+    const flow = flowWith(() => Promise.resolve());
+    flow.begin.mockReturnValue(controller.signal);
+    const host = {
+      resume: vi.fn((request: unknown): Promise<HostedLaunch> => {
+        expect(request).toBeTypeOf('object'); // the request is read below, from the recorded call
+        return Promise.resolve(startedLaunch);
+      }),
+    };
+    await createGateResumer({ host, flow })(request);
+    expect(host.resume.mock.calls[0]?.[0]).toMatchObject({ runId: RUN, signal: controller.signal });
   });
 
   it('reports the leg that started as started when closing the flow rejects', async () => {

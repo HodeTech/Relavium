@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { HOME_PALETTE_COMMANDS, REPL_COMMANDS } from '../../commands/repl-commands.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { createChatStore } from './chat-store.js';
 import { HELP_SHEET_KEYS, HOME_HELP_COMMANDS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
 import {
@@ -50,16 +51,52 @@ const WITH_SESSION: HomeSnapshot = {
 
 const ENTER = { return: true } as const;
 const ESC = { escape: true } as const;
+/** A leg that is executing a run: what makes `Enter` at an empty prompt show it, and `Ctrl+D` and a second `Ctrl+C` ask before they leave. */
+const EXECUTING: RunHostSnapshot = {
+  launching: false,
+  active: { leg: 'start', runId: 'run-0001', cancelling: false },
+  last: undefined,
+};
+const WITH_FAILED_RUN: HomeSnapshot = {
+  ...EMPTY,
+  attention: {
+    gates: [],
+    failedRuns: [
+      {
+        runId: 'failed-run',
+        workflowSlug: 'nightly',
+        status: 'failed',
+        createdAt: '2026-11-10T00:00:00.000Z',
+        startedAt: undefined,
+        completedAt: undefined,
+        totalCostMicrocents: 0,
+      },
+    ],
+  },
+  isEmpty: false,
+};
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** A Home over scripted ports, with no timers and a chat build that never finishes (so a started chat is a `startChat` call). */
-function mount(options: { readonly snapshot?: HomeSnapshot } = {}) {
+function mount(
+  options: { readonly snapshot?: HomeSnapshot; readonly hosted?: RunHostSnapshot } = {},
+) {
   const onExit = vi.fn();
   const startChat = vi.fn(() => new Promise<HomeChatSession>(() => {}));
   const deps: HomeControllerDeps = {
     doctorProbes: { keychain: () => {}, config: () => {}, toolHost: {} },
     startChat,
     homeStore: { read: () => options.snapshot ?? EMPTY },
+    ...(options.hosted === undefined
+      ? {}
+      : {
+          hostedRuns: {
+            snapshot: () =>
+              options.hosted ?? { launching: false, active: undefined, last: undefined },
+            cancel: () => true,
+            close: () => Promise.resolve(),
+          },
+        }),
     schedule: () => () => {},
     now: () => 1_000,
     onExit,
@@ -589,6 +626,14 @@ describe('every key the sheet names does what it says on the landing', () => {
       pressAll(home, 'send');
       expect(home.startChat).toHaveBeenCalledOnce();
       expect(home.controller.getSnapshot().pendingMessage).toBe('hello');
+      // `or open the row or the running run`: at an empty prompt `Enter` shows the run that executes, and starts no chat.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'send');
+      expect(running.controller.getSnapshot().screen).toMatchObject({
+        kind: 'run-view',
+        runId: 'run-0001',
+      });
+      expect(running.startChat).not.toHaveBeenCalled();
     },
     newline: () => {
       const home = mount();
@@ -613,6 +658,10 @@ describe('every key the sheet names does what it says on the landing', () => {
       const home = mount({ snapshot: WITH_SESSION });
       pressAll(home, 'rows');
       expect(home.controller.getSnapshot().stripFocus?.id).toBe('saved');
+      // `a row of the strip`: a failed run is one too, and `Enter` on it opens its detail.
+      const failed = mount({ snapshot: WITH_FAILED_RUN });
+      pressAll(failed, 'rows');
+      expect(failed.controller.getSnapshot().stripFocus).toEqual({ kind: 'run', id: 'failed-run' });
       // From an empty prompt only: with something typed, `↓` moves nothing.
       const typedFirst = mount({ snapshot: WITH_SESSION });
       typedFirst.controller.handleKey('a', {});
@@ -637,6 +686,11 @@ describe('every key the sheet names does what it says on the landing', () => {
       pressAll(typedFirst, 'eof');
       expect(typedFirst.onExit).not.toHaveBeenCalled();
       expect(typedFirst.controller.getSnapshot().input.text).toBe('a');
+      // `asks first while a run executes`: the exit-guard card opens, and nothing leaves.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'eof');
+      expect(running.controller.getSnapshot().exitGuard).toBe('confirm');
+      expect(running.onExit).not.toHaveBeenCalled();
     },
     interrupt: () => {
       const home = mount();
@@ -645,6 +699,12 @@ describe('every key the sheet names does what it says on the landing', () => {
       expect(home.onExit).not.toHaveBeenCalled();
       pressAll(home, 'interrupt');
       expect(home.onExit, 'the second ends the Home').toHaveBeenCalledOnce();
+      // `asks first while a run executes`: the second press opens the exit-guard card instead, and nothing leaves.
+      const running = mount({ hosted: EXECUTING });
+      pressAll(running, 'interrupt');
+      pressAll(running, 'interrupt');
+      expect(running.controller.getSnapshot().exitGuard).toBe('confirm');
+      expect(running.onExit).not.toHaveBeenCalled();
     },
   };
 

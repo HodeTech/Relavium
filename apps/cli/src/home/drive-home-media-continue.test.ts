@@ -218,7 +218,7 @@ describe('driveHome asks about a media park, and a Yes is the run host`s media r
   it('the row says it waits for media, `Enter` opens the question on the prompt channel, and a Yes sends the media form for that run', async () => {
     const h = await mountHome();
     expect(h.props.controller.getSnapshot().parkedRuns).toEqual([
-      { runId: RUN, kind: 'media', gates: 0 },
+      { runId: RUN, kind: 'media', gates: 0, workflow: 'wf' },
     ]);
 
     h.ask();
@@ -242,7 +242,10 @@ describe('driveHome asks about a media park, and a Yes is the run host`s media r
       'kind',
       'runId',
       'secrets',
+      'signal',
     ]);
+    // The flow's own signal: an Esc or Ctrl+C while the leg is being prepared stops it before it starts (ADR-0139 §4).
+    expect(request.signal).toBeInstanceOf(AbortSignal);
     await until(() => h.props.nativePrompt?.getSnapshot().active === false, 'the flow closing');
     expect(await h.leave()).toBe(0);
   });

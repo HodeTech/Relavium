@@ -33,7 +33,7 @@ import type { EditorState } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { GateCardScreen, HomeController } from './home-controller.js';
+import type { GateCardScreen, HomeController, HomeControllerState } from './home-controller.js';
 import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
 import { RunScreenView } from './run-screen-view.js';
@@ -202,17 +202,15 @@ function ChatRegion(
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   const viewport = props.viewport;
+  // The rows the region is bounded to: the viewport's own, else the room a native card leaves, else none.
+  const boundedRows = viewport === undefined ? props.promptHeight : viewport.rows;
   return (
     // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
     // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
     <Box
       flexDirection="column"
       width={layoutColumns(props.cols)}
-      {...(viewport === undefined
-        ? props.promptHeight === undefined
-          ? {}
-          : { height: props.promptHeight, overflowY: 'hidden' }
-        : { height: viewport.rows, overflowY: 'hidden' })}
+      {...(boundedRows === undefined ? {} : { height: boundedRows, overflowY: 'hidden' })}
     >
       <ChatView
         hidden={review !== undefined && review.screen !== 'card'}
@@ -712,6 +710,23 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     return true;
   };
 
+  /** Whether a key is delivered to the Home below 80×24: `Esc`, `Ctrl+C` and `Ctrl+D`, and `Ctrl+Y` and `Ctrl+N` while the exit-guard card is open. */
+  const deliveredBelowMinimum = (input: string, key: Key, exitGuardOpen: boolean): boolean => {
+    if (key.escape) return true;
+    if (!key.ctrl) return false;
+    return input === 'c' || input === 'd' || (exitGuardOpen && (input === 'y' || input === 'n'));
+  };
+
+  /** Whether `PgUp` or `PgDn` pages the landing's notice: the bare landing with a notice, and no card, screen or overlay over it. */
+  const pagesNotice = (current: HomeControllerState, key: Key): boolean =>
+    current.mode === 'home' &&
+    current.notice !== undefined &&
+    current.exitGuard === undefined &&
+    current.screen === undefined &&
+    current.palette === undefined &&
+    current.modelPicker === undefined &&
+    (key.pageUp || key.pageDown);
+
   const routeHomeInput = (input: string, key: Key): boolean => {
     const current = controller.getSnapshot();
     if (current.mode === 'chat') return false;
@@ -728,28 +743,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       return true;
     if (!homeFitsTerminal(live.cols, live.rows)) {
       // Below the minimum only the way out is live; with the exit-guard card open its two chords are too (the degrade shows the card).
-      if (
-        key.escape ||
-        (key.ctrl &&
-          (input === 'c' ||
-            input === 'd' ||
-            (current.exitGuard !== undefined && (input === 'y' || input === 'n'))))
-      )
+      if (deliveredBelowMinimum(input, key, current.exitGuard !== undefined))
         controller.handleKey(input, key);
       // Any other key is not delivered, but a card that is open counts it as typing: a chord soon after it is refused.
       else if (current.screen?.kind === 'gate-card') current.screen.card.unseenInput();
       return true;
     }
-    if (
-      current.mode !== 'home' ||
-      current.notice === undefined ||
-      current.exitGuard !== undefined ||
-      current.screen !== undefined ||
-      current.palette !== undefined ||
-      current.modelPicker !== undefined ||
-      (!key.pageUp && !key.pageDown)
-    )
-      return false;
+    if (!pagesNotice(current, key)) return false;
     const previous = noticeWindowRef.current;
     const same =
       previous.revision === current.noticeRevision &&
@@ -889,11 +889,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           viewport={
             props.alternateScreen === true
               ? {
-                  rows: prompt.active
-                    ? nativePromptFits(size)
-                      ? Math.max(1, size.rows - promptRows(prompt, size.cols))
-                      : 1
-                    : size.rows,
+                  rows: chatViewportRows(prompt, size),
                   cols: size.cols,
                   scroll,
                   // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
@@ -911,13 +907,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           historyEntries={state.historyEntries}
           attachments={state.attachments}
           copied={copied}
-          promptHeight={
-            prompt.active
-              ? nativePromptFits(size)
-                ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2)
-                : 0
-              : undefined
-          }
+          promptHeight={chatPromptHeight(prompt, size)}
         />
         {nativeAcknowledgement && (
           <NativePromptView
@@ -1128,6 +1118,23 @@ const emptyPrompt: import('./native-prompt-channel.js').NativePromptSnapshot = {
 };
 const emptyPromptSubscribe = (): (() => void) => () => {};
 
+type NativeSize = Parameters<typeof nativePromptFits>[0];
+
+/**
+ * The rows the chat's transcript viewport keeps in the alternate screen: the terminal's own with no native card open, what the card leaves
+ * while one is, and one row when the card does not fit (the card then owns the screen).
+ */
+function chatViewportRows(prompt: NativePromptSnapshot, size: NativeSize): number {
+  if (!prompt.active) return size.rows;
+  return nativePromptFits(size) ? Math.max(1, size.rows - promptRows(prompt, size.cols)) : 1;
+}
+
+/** The rows the chat region is bounded to while a native card is open (two fewer than the viewport keeps), or `undefined` with none open. */
+function chatPromptHeight(prompt: NativePromptSnapshot, size: NativeSize): number | undefined {
+  if (!prompt.active) return undefined;
+  return nativePromptFits(size) ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2) : 0;
+}
+
 function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
   if (prompt.kind === 'picker') {
@@ -1147,10 +1154,11 @@ function promptRows(prompt: NativePromptSnapshot, columns: number): number {
     prompt.message,
     // A chord card's body sits behind a two-column gutter, and its key rows carry a nine-column `[Ctrl+Y] ` tag.
     ...prompt.details.map((line) => `│ ${line}`),
-    ...prompt.options.map(
-      (option) =>
-        `${prompt.kind === 'chord' ? '  [Ctrl+Y] ' : '  '}${option.label}${option.hint ? ` — ${option.hint}` : ''}`,
-    ),
+    ...prompt.options.map((option) => {
+      const lead = prompt.kind === 'chord' ? '  [Ctrl+Y] ' : '  ';
+      const hint = option.hint ? ` — ${option.hint}` : '';
+      return `${lead}${option.label}${hint}`;
+    }),
     prompt.display,
     prompt.error,
   ].filter(Boolean);

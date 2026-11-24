@@ -16,6 +16,7 @@ import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { RunScreenView } from './run-screen-view.js';
 import { createRunStore, type RunStore } from './run-store.js';
+import { displayWidth } from './viewport.js';
 
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
 const WAIT_MS = 5000;
@@ -98,6 +99,8 @@ interface ViewOptions {
   readonly store?: RunStore | undefined;
   readonly notices?: readonly string[];
   readonly armed?: boolean;
+  readonly openGate?: boolean;
+  readonly gateOpenFailed?: boolean;
   readonly columns?: number;
   readonly rows?: number;
   readonly color?: boolean;
@@ -111,6 +114,8 @@ function view(options: ViewOptions = {}) {
       hostedRun={'hostedRun' in options ? options.hostedRun : running()}
       notices={options.notices ?? []}
       interruptArmed={options.armed ?? false}
+      openGate={options.openGate}
+      gateOpenFailed={options.gateOpenFailed}
       columns={options.columns ?? 80}
       rows={options.rows ?? 24}
       color={options.color ?? false}
@@ -239,7 +244,16 @@ describe('every state has a glyph and a word, with colour off', () => {
     readonly hostedRun: RunHostSnapshot | undefined;
     readonly title: string;
   }[] = [
-    { name: 'starting', hostedRun: { ...IDLE, launching: true }, title: '◌ starting' },
+    {
+      // No view is opened for a run that has no id, so a leg that has not named its run is not this view's (and never its `Ctrl+C`'s).
+      name: 'a leg that has not named its run',
+      hostedRun: {
+        launching: false,
+        active: { leg: 'start', runId: undefined, cancelling: false },
+        last: undefined,
+      },
+      title: '○ not held',
+    },
     { name: 'running', hostedRun: running(), title: '▶ running' },
     { name: 'cancelling', hostedRun: running(true), title: '■ cancelling' },
     { name: 'completed', hostedRun: settled(ended('completed')), title: '✓ completed' },
@@ -307,6 +321,60 @@ describe('below 80×24', () => {
   it('a settled run below the minimum reads "Esc / Ctrl+C close"', () => {
     const { lastFrame } = view({ columns: 60, rows: 20, hostedRun: settled(ended('completed')) });
     expect(linesOf(lastFrame()).at(-1)).toBe('Esc / Ctrl+C close');
+  });
+
+  it.each([
+    { columns: 60, rows: 24 },
+    { columns: 40, rows: 24 },
+  ])(
+    'a run that ended parked names only the keys that are delivered at $columns columns, and no row is wider than the terminal',
+    ({ columns, rows }) => {
+      for (const gateOpenFailed of [false, true]) {
+        const { lastFrame } = view({
+          columns,
+          rows,
+          hostedRun: settled(ended('paused', 'Open the run to continue it.')),
+          openGate: true,
+          gateOpenFailed,
+          store: storeWithNodes(3),
+          notices: ['a notice'],
+        });
+        const lines = linesOf(lastFrame());
+        expect(lines).toHaveLength(2);
+        expect(lines[1], 'Enter is not delivered here').toMatch(/^Esc \/ Ctrl\+C close/u);
+        expect(lastFrame()).not.toContain('Enter');
+        for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(columns);
+      }
+    },
+  );
+
+  it('at 80×24 the same run names Enter, and below it does not: the key line follows the size the keys are delivered at', () => {
+    const at = (columns: number, rows: number): string =>
+      view({
+        columns,
+        rows,
+        hostedRun: settled(ended('paused', 'Open the run to continue it.')),
+        openGate: true,
+      }).lastFrame() ?? '';
+    expect(linesOf(at(80, 24)).at(-1)).toBe('Enter opens the gate · Esc / Ctrl+C close');
+    expect(linesOf(at(79, 24)).at(-1)).toBe('Esc / Ctrl+C close');
+  });
+});
+
+describe('a notice wider than the terminal', () => {
+  it('ends in an ellipsis inside the terminal, at 80 columns and on a wide one, in Latin and in wide characters', () => {
+    for (const columns of [80, 120]) {
+      const { lastFrame } = view({
+        columns,
+        notices: ['withheld effort warning '.repeat(30), '日本語のお知らせ'.repeat(30)],
+      });
+      const notes = linesOf(lastFrame()).filter((line) => line.startsWith('note: '));
+      expect(notes).toHaveLength(2);
+      for (const note of notes) {
+        expect(note.endsWith('…'), `${String(columns)} columns: the cut is shown`).toBe(true);
+        expect(displayWidth(note)).toBeLessThanOrEqual(columns);
+      }
+    }
   });
 });
 

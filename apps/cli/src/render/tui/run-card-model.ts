@@ -28,7 +28,11 @@
 
 import type { GateDecision } from '@relavium/shared';
 
-import { budgetApprovalDecision, budgetPromptDetails } from '../../gate/budget.js';
+import {
+  budgetApprovalDecision,
+  budgetPromptDetails,
+  resumeCommandBase,
+} from '../../gate/budget.js';
 import { approvalDecision, rejectionDecision } from '../../gate/decision.js';
 import { humanGateResumeHints } from '../../gate/pending.js';
 import {
@@ -420,8 +424,11 @@ export function createGateResumer(deps: {
   readonly flow: Pick<NativePromptFlow, 'begin' | 'end' | 'busy' | 'password'>;
 }): (request: Omit<HostedResumeRequest, 'secrets'>) => Promise<HostedLaunch> {
   return async (request) => {
+    // The flow's own signal: an Esc or Ctrl+C while the answer is being prepared (a secret is asked, an MCP server connects) stops the leg
+    // before it starts, and a leg that has started is never cancelled by a late abort (ADR-0139 §4).
+    let signal: AbortSignal;
     try {
-      deps.flow.begin();
+      signal = deps.flow.begin();
     } catch {
       return {
         kind: 'refused',
@@ -431,7 +438,11 @@ export function createGateResumer(deps: {
     }
     try {
       deps.flow.busy('Answering the gate…');
-      return await deps.host.resume({ ...request, secrets: createSlotSecretPort(deps.flow) });
+      return await deps.host.resume({
+        ...request,
+        signal,
+        secrets: createSlotSecretPort(deps.flow),
+      });
     } finally {
       // Closing the flow never changes the answer already sent: a leg that started is a started leg, and an `end` that rejects (a picker
       // that did not drain, a renderer that went away) must not turn it into "The answer could not be sent." The fault is discarded here:
@@ -449,8 +460,13 @@ export function createGateResumer(deps: {
 // The projection.
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** How many rows of a gate's message the card shows. */
+/**
+ * The fewest rows of a gate's message block (the message, and the lines that say where the rest is when it was cut) the card keeps, whatever
+ * else it shows. The block takes what the terminal leaves after the card's other rows ({@link messageRoom}), and never fewer than this.
+ */
 export const RUN_CARD_MESSAGE_ROWS = 4;
+/** The most rows the message block takes at any terminal size: a longer message is cut, and the card says where to read the rest. */
+export const RUN_CARD_MESSAGE_MAX_ROWS = 12;
 /** How many gates the list shows at once. */
 export const RUN_CARD_LIST_ROWS = 4;
 /** The host's gutter: every row of author text starts with it, so column 0 belongs to the host. */
@@ -561,14 +577,14 @@ function spell(...letters: readonly ChordLetter[]): string {
 const CHORD_WORD = `(?:${spell('c', 't', 'r', 'l')}|${spell('c', 'o', 'n', 't', 'r', 'o', 'l')})`;
 
 /** A plus, any dash or the minus sign: the forms of a chord a person writes, so spaces may stand around them (`Ctrl + Y`). */
-const CHORD_JOINER = '[+\\p{Pd}\\u2212]';
+const CHORD_JOINER = String.raw`[+\p{Pd}\u2212]`;
 /**
  * A middle dot, a full stop, `/`, `:`, `_` or U+02C6: they end sentences and join words in ordinary prose (`control. I will`,
  * `control: a plan`), so no space may stand on either side of them (`Ctrl.Y`, not `Ctrl. Y`).
  */
-const CHORD_PUNCTUATION = '[\\u00B7./:_\\u02C6]';
+const CHORD_PUNCTUATION = String.raw`[\u00B7./:_\u02C6]`;
 /** The letter that ends a token: a letter or digit after it makes the token a word (`controlling`, `Ctrl+Yes`), not a chord. */
-const CHORD_END = '(?![\\p{L}\\p{N}])';
+const CHORD_END = String.raw`(?![\p{L}\p{N}])`;
 
 /**
  * An answer-chord token, matched on the FOLDED text (see {@link foldAuthorText}), so the four forms read the way a
@@ -584,10 +600,10 @@ const CHORD_END = '(?![\\p{L}\\p{N}])';
  */
 const CHORD_TOKENS = new RegExp(
   [
-    `(?<!\\w)${CHORD_WORD}(?:\\s*${CHORD_JOINER}\\s*|${CHORD_PUNCTUATION})\\p{L}${CHORD_END}`,
-    `(?<!\\w)${CHORD_WORD}\\s+(?:[yn]|(?=\\p{L})[\\u0370-\\u03FF\\u0400-\\u04FF])${CHORD_END}`,
-    `\\u2303\\s*\\p{L}${CHORD_END}`,
-    `(?<![\\w^])\\^\\p{L}${CHORD_END}`,
+    String.raw`(?<!\w)${CHORD_WORD}(?:\s*${CHORD_JOINER}\s*|${CHORD_PUNCTUATION})\p{L}${CHORD_END}`,
+    String.raw`(?<!\w)${CHORD_WORD}\s+(?:[yn]|(?=\p{L})[\u0370-\u03FF\u0400-\u04FF])${CHORD_END}`,
+    String.raw`\u2303\s*\p{L}${CHORD_END}`,
+    String.raw`(?<![\w^])\^\p{L}${CHORD_END}`,
   ].join('|'),
   'giu',
 );
@@ -608,17 +624,56 @@ export function authorLine(text: string): string {
     .replace(CHORD_TOKENS, '[chord]');
 }
 
-/** The author's message as at most {@link RUN_CARD_MESSAGE_ROWS} rows of `width` columns, each a row of author text. */
-function messageRows(message: string, width: number): readonly string[] {
-  const rows = message
+/** The author's message as rows of `width` columns, each one a row of author text, with nothing cut. */
+function wrappedMessage(message: string, width: number): readonly string[] {
+  return message
     .split('\n')
     .flatMap((line) => wrapText(authorLine(line), width))
     .map((line) => line.trimEnd())
     .filter((line) => line !== '');
-  if (rows.length <= RUN_CARD_MESSAGE_ROWS) return rows;
-  const kept = rows.slice(0, RUN_CARD_MESSAGE_ROWS);
-  kept[RUN_CARD_MESSAGE_ROWS - 1] = clipLine(`${kept[RUN_CARD_MESSAGE_ROWS - 1] ?? ''}…`, width);
-  return kept;
+}
+
+/**
+ * What the card says when it cut a message, in rows of host text: where the rest can be read. An approval is answered with what is on screen,
+ * so a cut that said nothing would let the fifth line's instruction go unread. `relavium gate list <run id>` prints every pending message in
+ * full. The command carries the run id only when the recorded ids are shell-inert (the rule of the resume hints); otherwise it is named
+ * without one, and the title row has the id.
+ */
+function continuesRows(gate: RunGate, width: number): readonly RunCardRow[] {
+  const inert = resumeCommandBase('human', gate.runId, gate.gateId) !== undefined;
+  const lines = inert
+    ? ['The message continues. To read all of it, run:', `  relavium gate list ${gate.runId}`]
+    : [
+        'The message continues. To read all of it, run relavium gate list',
+        'with the id of this run.',
+      ];
+  return lines.map((text): RunCardRow => ({ role: 'fact', text: clipLine(text, width) }));
+}
+
+/**
+ * How many rows the message block may take: what the terminal leaves after the card's `used` other rows and the one row no frame uses, never
+ * fewer than {@link RUN_CARD_MESSAGE_ROWS} and never more than {@link RUN_CARD_MESSAGE_MAX_ROWS}.
+ */
+function messageRoom(terminalRows: number, used: number): number {
+  const left = Math.floor(terminalRows) - 1 - used;
+  return Math.min(RUN_CARD_MESSAGE_MAX_ROWS, Math.max(RUN_CARD_MESSAGE_ROWS, left));
+}
+
+/**
+ * The author's message behind the gutter, in at most `room` rows. A message that does not fit is cut at a row that ends in `…`, and the
+ * rows that remain say where to read the rest ({@link continuesRows}), so the card never shows a partial instruction as the whole one.
+ */
+function messageBlock(gate: RunGate, width: number, room: number): readonly RunCardRow[] {
+  const gutter = RUN_CARD_GUTTER;
+  const inner = Math.max(1, width - gutter.length);
+  const all = wrappedMessage(gate.message, inner);
+  const author = (text: string): RunCardRow => ({ role: 'author', text: `${gutter}${text}` });
+  if (all.length <= room) return all.map(author);
+  const rest = continuesRows(gate, width);
+  const kept = all.slice(0, Math.max(1, room - rest.length));
+  const last = kept.length - 1;
+  kept[last] = clipLine(`${kept[last] ?? ''}…`, inner);
+  return [...kept.map(author), ...rest];
 }
 
 /** The instant the deadline passes, or `undefined` for a gate with none (or one that does not parse). */
@@ -710,30 +765,35 @@ function overdueRows(gate: RunCardGate, width: number): readonly RunCardRow[] {
   return rows;
 }
 
-/** What a human gate's keys do: a rejection continues the run, and an `input` gate takes a typed value this card does not. */
-function humanGateNotes(gate: RunGate, width: number): readonly RunCardRow[] {
-  if (gate.accepts.includes('approved'))
-    return [
-      {
-        role: 'fact',
-        text: clipLine(
-          'Rejecting does not stop the run: the workflow routes on a rejection.',
-          width,
-        ),
-      },
-    ];
-  // An input gate takes a typed value, which this card does not: say where the answer goes instead of offering a key for it.
-  const hint = humanGateResumeHints(gate.runId, gate.gateId, gate.gateType)[0];
-  return [
-    {
-      role: 'fact',
-      text: clipLine(
-        `This gate takes a typed value, which this card cannot take.${hint === undefined ? '' : ` ${hint}`}`,
-        width,
-      ),
-    },
-  ];
+/** What a rejection of a human gate does, which the card says whatever the gate's type: the run continues, the workflow routes on it. */
+const REJECTION_CONTINUES = 'Rejecting does not stop the run: the workflow routes on a rejection.';
+
+/** `lines` as the card's own dim rows, each cut to the width. */
+function factRows(lines: readonly string[], width: number): readonly RunCardRow[] {
+  return lines.map((text): RunCardRow => ({ role: 'fact', text: clipLine(text, width) }));
 }
+
+/**
+ * What a human gate's keys do: a rejection continues the run, and an `input` gate takes a typed value this card does not. For that gate the
+ * card says so and shows the shell command that takes the value, wrapped over as many rows as it needs (the run id is long, and a command
+ * cut at the width would end before its `--input`), and still says that its one key, a rejection, continues the run.
+ */
+function humanGateNotes(gate: RunGate, width: number): readonly RunCardRow[] {
+  if (gate.accepts.includes('approved')) return factRows([REJECTION_CONTINUES], width);
+  const hint = humanGateResumeHints(gate.runId, gate.gateId, gate.gateType)[0];
+  const command = hint === undefined ? [] : wrapText(hint, width).slice(0, INPUT_HINT_MAX_ROWS);
+  return factRows(
+    [
+      'This gate takes a typed value, which this card cannot take. In a shell:',
+      ...command.map((line) => line.trimEnd()),
+      REJECTION_CONTINUES,
+    ],
+    width,
+  );
+}
+
+/** The most rows the shell command of an input gate takes: a 36-character run id and a gate id wrap to two. */
+const INPUT_HINT_MAX_ROWS = 3;
 
 /** How many excluded-candidate notices a budget card shows; the rest are counted. */
 export const RUN_CARD_EXCLUDED_ROWS = 3;
@@ -839,6 +899,14 @@ function listRows(snapshot: RunCardSnapshot, width: number): readonly RunCardRow
   return rows;
 }
 
+/** The host's words for the last answer, wrapped, at most two rows. */
+function noticeRows(snapshot: RunCardSnapshot, width: number): readonly RunCardRow[] {
+  if (snapshot.notice === undefined) return [];
+  return wrapText(sanitizeInline(snapshot.notice), width)
+    .slice(0, 2)
+    .map((text): RunCardRow => ({ role: 'note', text: clipLine(text, width) }));
+}
+
 /**
  * The card as the terminal shows it. Pure: the same snapshot, size and time are always the same rows. Below 80×24 it is the enlarge
  * line and the key line only, and the view takes no key as an answer.
@@ -868,30 +936,23 @@ export function projectRunCard(
     snapshot.gates.length > 1
       ? `  ·  gate ${String(snapshot.cursor + 1)} of ${String(snapshot.gates.length)}`
       : '';
-  const rows: RunCardRow[] = [
-    {
-      role: 'title',
-      text: clipLine(
-        `${appearance.glyph} ${appearance.word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
-        width,
-      ),
-    },
-  ];
-  if (snapshot.phase === 'open' && gate !== undefined) {
-    const gutter = RUN_CARD_GUTTER;
-    // A budget gate has no author text: what it shows is the host's own words and the structured allowance.
-    if (!isBudgetGate(gate))
-      for (const line of messageRows(gate.message, Math.max(1, width - gutter.length)))
-        rows.push({ role: 'author', text: `${gutter}${line}` });
-    rows.push(...gateFacts(gate, width, overdue));
-    rows.push(...listRows(snapshot, width));
-  }
-  if (snapshot.notice !== undefined)
-    rows.push(
-      ...wrapText(sanitizeInline(snapshot.notice), width)
-        .slice(0, 2)
-        .map((text): RunCardRow => ({ role: 'note', text: clipLine(text, width) })),
-    );
-  rows.push(keys);
+  const open = snapshot.phase === 'open' && gate !== undefined ? gate : undefined;
+  // The facts, the list and the notice are counted before the message is: the message block takes what the terminal has left of them.
+  const facts =
+    open === undefined ? [] : [...gateFacts(open, width, overdue), ...listRows(snapshot, width)];
+  const notice = noticeRows(snapshot, width);
+  // A budget gate has no author text: what it shows is the host's own words and the structured allowance.
+  const message =
+    open === undefined || isBudgetGate(open)
+      ? []
+      : messageBlock(open, width, messageRoom(input.rows, 2 + facts.length + notice.length));
+  const title: RunCardRow = {
+    role: 'title',
+    text: clipLine(
+      `${appearance.glyph} ${appearance.word}${place}  ·  run ${sanitizeInline(snapshot.runId)}`,
+      width,
+    ),
+  };
+  const rows: readonly RunCardRow[] = [title, ...message, ...facts, ...notice, keys];
   return { fits, tooSmall: undefined, state, ...appearance, rows, overdue };
 }

@@ -62,8 +62,10 @@ export async function runMediaContinue(
   runId: string,
 ): Promise<string | undefined> {
   deps.assertAdmitting?.();
+  // The flow's own signal: an Esc or Ctrl+C while the leg is being prepared stops it before it starts (ADR-0139 §4).
+  let signal: AbortSignal;
   try {
-    deps.flow.begin();
+    signal = deps.flow.begin();
   } catch {
     return MEDIA_CONTINUE_PROMPT_OPEN;
   }
@@ -75,6 +77,7 @@ export async function runMediaContinue(
     const launch = await deps.host.resume({
       kind: 'media',
       runId,
+      signal,
       secrets: createSlotSecretPort(deps.flow, MEDIA_CONTINUE_SECRETS_CANCELLED),
     });
     return launchNotice(launch);

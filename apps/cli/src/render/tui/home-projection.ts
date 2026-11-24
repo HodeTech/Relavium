@@ -171,7 +171,7 @@ export function hostedRunIsLive(snapshot: RunHostSnapshot | undefined): boolean 
 export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | undefined {
   if (snapshot === undefined || !hostedRunIsLive(snapshot)) return undefined;
   const active = snapshot.active;
-  if (active === undefined || active.runId === undefined) return `▶ run${SEP}starting`;
+  if (active?.runId === undefined) return `▶ run${SEP}starting`;
   // Once the engine has named the run, `Enter` at the empty prompt brings its view back: the row says so, because nothing else does.
   return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
 }
@@ -208,7 +208,8 @@ export function exitGuardLines(
   boundSeconds: number,
 ): readonly string[] {
   const active = hostedRunIsLive(snapshot) ? snapshot?.active : undefined;
-  const id = active?.runId === undefined ? undefined : sanitizeInline(active.runId);
+  // `: <run id>` for a leg that has named its run, nothing for one that has not: the card's title names the run when it can.
+  const named = active?.runId === undefined ? '' : `: ${sanitizeInline(active.runId)}`;
   if (phase === 'stopping')
     return [
       `${EXIT_GUARD_GLYPH.stopping} Stopping the run…`,
@@ -221,11 +222,11 @@ export function exitGuardLines(
     ];
   if (active?.cancelling === true)
     return [
-      `${EXIT_GUARD_GLYPH.warning} The run is stopping${id === undefined ? '' : `: ${id}`}.`,
+      `${EXIT_GUARD_GLYPH.warning} The run is stopping${named}.`,
       `Ctrl+Y leave when it has stopped (about ${boundSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
     ];
   return [
-    `${EXIT_GUARD_GLYPH.warning} A workflow run is executing${id === undefined ? '' : `: ${id}`}.`,
+    `${EXIT_GUARD_GLYPH.warning} A workflow run is executing${named}.`,
     'Leaving stops it, and a stopped run cannot be resumed.',
     'Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay',
   ];

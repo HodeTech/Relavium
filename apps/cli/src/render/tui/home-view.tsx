@@ -27,6 +27,7 @@ import {
 import {
   PARKED_ROW_INDENT_COLUMNS,
   parkedRunLabel,
+  parkedRunOverdue,
   type ParkedRunKind,
   type ParkedRunRow,
 } from './home-attention.js';
@@ -187,7 +188,15 @@ function Section(
 function parkedHintCue(kind: ParkedRunKind | undefined): string {
   if (kind === 'none') return 'Enter says why';
   if (kind === 'media') return 'Enter continue it';
+  // An input gate's card takes no typed value: it shows how to answer in a shell, and offers a rejection.
+  if (kind === 'input') return 'Enter shows how';
   return 'Enter open the gate';
+}
+
+/** The one more door the hint bar names while a run can be shown: a parked run, else the saved sessions, else the chat itself. */
+function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): string {
+  if (hasParkedRuns) return '↓ Open a parked run';
+  return hasRecentSessions ? '↓ Continue' : 'type a message to chat';
 }
 
 /**
@@ -218,11 +227,7 @@ function homeHint(state: {
   if (!state.emptyDraft) return 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
   if (state.runCanBeShown) {
     // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
-    const next = state.hasParkedRuns
-      ? '↓ Open a parked run'
-      : state.hasRecentSessions
-        ? '↓ Continue'
-        : 'type a message to chat';
+    const next = runHintNext(state.hasParkedRuns, state.hasRecentSessions);
     return `/ commands · ${HOSTED_RUN_ENTER_CUE} · ${next} · Ctrl+C twice to exit`;
   }
   if (state.hasParkedRuns)
@@ -299,10 +304,9 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     palette === undefined ? undefined : paletteRowBudget(rows, palette.commands.length);
   // The notice leaves the palette what the prompt block would have left it (`homePromptRows + 3 + keyless`, the notice's own slack included)
   // and the rest of the palette's rows (`paletteRows + 2`: the budget, the unused row and the same slack).
+  const keylessRows = keylessLine ? 1 : 0;
   const paletteNoticeRows =
-    paletteRows === undefined
-      ? 0
-      : Math.max(0, paletteRows + 2 - (promptHeight + 3 + (keylessLine ? 1 : 0)));
+    paletteRows === undefined ? 0 : Math.max(0, paletteRows + 2 - (promptHeight + 3 + keylessRows));
   const noticeLayout = layoutHomeNotice({
     notice: guardRows === undefined ? notice : undefined,
     editor,
@@ -319,18 +323,17 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   });
   // Reserve all headings/margins and the whole editor before allocating management rows. An open palette takes the prompt's place and the
   // rows `paletteRowBudget` names (and the one row no frame uses): the strip is trimmed to what is left, as it is for a long prompt.
+  const promptBlockRows = palette === undefined ? promptHeight + 2 + keylessRows : 0;
   const reservedBelow =
-    (guardRows === undefined
-      ? palette === undefined
-        ? promptHeight + 2 + (keylessLine ? 1 : 0)
-        : 0
-      : guardRows + 1) + (paletteRows === undefined ? 0 : paletteRows + 1);
+    (guardRows === undefined ? promptBlockRows : guardRows + 1) +
+    (paletteRows === undefined ? 0 : paletteRows + 1);
+  const welcomeRows = noticeLayout === undefined ? 4 : 0;
   const fixedRows =
     (showBanner ? 4 : 1) +
     runRows +
     (errorText === undefined ? 0 : 2) +
     (noticeLayout === undefined ? 0 : noticeLayout.rowCount + 1) +
-    (isEmpty ? (noticeLayout === undefined ? 4 : 0) : 1);
+    (isEmpty ? welcomeRows : 1);
   const stripBudget = Math.max(0, rows - reservedBelow - fixedRows);
   let remaining = stripBudget;
   let attentionRemaining = Math.max(
@@ -351,9 +354,12 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
   const parkedFocusIndex = parked.findIndex((row) => runFocused(row.runId));
   const parkedCapacity = Math.max(0, attentionRemaining - attentionReserve);
   const parkedStart = Math.max(0, parkedFocusIndex - parkedCapacity + 1);
-  const parkedRows: StripRow[] = takeAttention(parked.slice(parkedStart)).map((row) => ({
+  const parkedRows: (StripRow & { readonly overdue: boolean })[] = takeAttention(
+    parked.slice(parkedStart),
+  ).map((row) => ({
     key: `parked:${row.runId}`,
-    line: `${runFocused(row.runId) ? '> ' : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS)}`,
+    line: `${runFocused(row.runId) ? '> ' : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
+    overdue: parkedRunOverdue(row, nowMs),
   }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
   const gateRows = takeAttention(
@@ -420,6 +426,22 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
     fixedRows + (stripBudget - remaining) + (guardRows === undefined ? 0 : guardRows + 1);
   const paletteMaxRows = Math.max(PALETTE_MIN_ROWS, rows - 1 - bodyRows);
 
+  // Nothing to show: a welcome in the strip's place, unless a notice (a `/doctor` report) holds its rows.
+  const welcome =
+    noticeLayout === undefined ? (
+      <Box flexDirection="column" marginLeft={2} marginTop={1}>
+        <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+          Welcome to Relavium.
+        </Text>
+        <Text wrap="truncate-end">
+          Start an agent chat, then graduate it into a saved workflow.
+        </Text>
+        <Text {...dimProps(color)} wrap="truncate-end">
+          e.g. “summarize the files in this folder”
+        </Text>
+      </Box>
+    ) : null;
+
   return (
     <Box ref={frame} flexDirection="column">
       {showBanner ? (
@@ -453,19 +475,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       )}
 
       {isEmpty ? (
-        noticeLayout === undefined ? (
-          <Box flexDirection="column" marginLeft={2} marginTop={1}>
-            <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-              Welcome to Relavium.
-            </Text>
-            <Text wrap="truncate-end">
-              Start an agent chat, then graduate it into a saved workflow.
-            </Text>
-            <Text {...dimProps(color)} wrap="truncate-end">
-              e.g. “summarize the files in this folder”
-            </Text>
-          </Box>
-        ) : null
+        welcome
       ) : (
         <Box flexDirection="column" marginTop={1}>
           {(parkedRows.length > 0 ||
@@ -478,7 +488,11 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               </Text>
               <Box flexDirection="column" marginLeft={2}>
                 {parkedRows.map((row) => (
-                  <Text key={row.key} {...colorProps(color, 'yellow')} wrap="truncate-end">
+                  <Text
+                    key={row.key}
+                    {...colorProps(color, row.overdue ? 'red' : 'yellow')}
+                    wrap="truncate-end"
+                  >
                     {row.line}
                   </Text>
                 ))}

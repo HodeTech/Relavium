@@ -368,6 +368,55 @@ describe('a card persists until it is dismissed or another run starts', () => {
   });
 });
 
+describe('a leg that has not named its run is not the view`s', () => {
+  // A view is opened for a run that has an id, and the host's cancel acts on whichever leg is live: a `Ctrl+C` in a view must never
+  // reach a leg it cannot name, or it would cancel another run's start.
+  it.each([
+    [
+      'a leg preparing, with no run yet',
+      {
+        launching: false,
+        active: { leg: 'start', runId: undefined, cancelling: false },
+        last: undefined,
+      },
+    ],
+    [
+      'a resume leg preparing, with no run yet',
+      {
+        launching: true,
+        active: { leg: 'resume', runId: undefined, cancelling: false },
+        last: undefined,
+      },
+    ],
+    ['a launch before any leg exists', { launching: true, active: undefined, last: undefined }],
+  ] as const satisfies readonly (readonly [string, RunHostSnapshot])[])(
+    'with %s: Ctrl+C closes the view, however often it is pressed, and cancels nothing',
+    (_name, initial) => {
+      const { controller, cancel, tick } = viewing({ initial });
+      expect(controller.getSnapshot().screen?.runId).toBe(RUN);
+      ctrl(controller, 'c');
+      expect(controller.getSnapshot().screen, 'nothing to arm: the press leaves').toBeUndefined();
+      expect(controller.getSnapshot().interruptArmed).toBe(false);
+      tick(10);
+      ctrl(controller, 'c');
+      expect(cancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it('a view that was armed while its own leg executed stops being armed when another leg is all that is preparing', () => {
+    const { controller, cancel, set, tick } = viewing();
+    ctrl(controller, 'c'); // the view's own leg: the first press arms
+    tick(10);
+    set({
+      launching: true,
+      active: { leg: 'resume', runId: undefined, cancelling: false },
+      last: undefined,
+    });
+    ctrl(controller, 'c'); // the second press finds no leg of THIS run: it closes the view
+    expect(cancel, 'the leg that is preparing was never this view`s').not.toHaveBeenCalled();
+  });
+});
+
 describe('the slot', () => {
   it('opens one screen, holds the run id, the store and the notice ring, and closes it', () => {
     const store = createRunStore(false); // the slot only holds it: the view is what reads it

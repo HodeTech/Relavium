@@ -75,6 +75,7 @@ import type { AgentsPort } from '../../home/agents-port.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import type {
   HostedLaunch,
+  HostedLegEnd,
   HostedResumeRequest,
   RunHost,
   RunHostSnapshot,
@@ -172,7 +173,7 @@ import {
 import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
-import type { ParkedRunRow } from './home-attention.js';
+import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
 import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
@@ -662,6 +663,9 @@ export interface HomeControllerDeps {
   };
 }
 
+/** A key as the Home's one input owner forwards it: the landing's, the chat's and the palette's flags together. */
+export type HomeKeyEvent = HomeKey & ChatKey & PaletteKey;
+
 export interface HomeController {
   // Declared as function PROPERTIES (not methods) so a `useSyncExternalStore(c.subscribe, c.getSnapshot)`
   // unbound reference is sound (no `this`) — matching the chat store's read surface.
@@ -669,7 +673,7 @@ export interface HomeController {
   readonly getSnapshot: () => HomeControllerState;
   readonly setProviderState: (keyless: boolean, notice?: string) => void;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
-  readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
+  readonly handleKey: (input: string, key: HomeKeyEvent) => void;
   /** A key the host consumed before the controller (an open card takes every key): it still ends the armed interrupt state, so
    *  `Ctrl+C`, a key, `Ctrl+C` is two first presses and never an exit (ADR-0115 §1). */
   readonly disarmInterrupt: () => void;
@@ -804,10 +808,11 @@ function sameParkedRows(a: readonly ParkedRunRow[], b: readonly ParkedRunRow[]):
     a.every((row, index) => {
       const other = b[index];
       return (
-        other !== undefined &&
-        row.runId === other.runId &&
+        row.runId === other?.runId &&
         row.kind === other.kind &&
-        row.gates === other.gates
+        row.gates === other.gates &&
+        row.workflow === other.workflow &&
+        row.expiresAt === other.expiresAt
       );
     })
   );
@@ -888,8 +893,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let activePoll: ActivePoll | undefined;
   // The strip's idle refresh (ADR-0140 §6): one poll for the life of the Home, created below once everything it asks about exists.
   let stripPoll: ActivePoll | undefined;
-  // Set when a refresh drops the focused strip row because the row is gone: the first `Enter` after it is ignored once (the person's
-  // `Enter` was meant for that row), and any other key ends it. It is a flag of the landing's key handling, not something a screen draws.
+  // Set when the strip's idle refresh drops the focused strip row because another terminal removed it: the first `Enter` after it is ignored
+  // once (the person's `Enter` was meant for that row), and any other key, and any screen that opens or closes, ends it. It is a flag of
+  // the landing's key handling, not something a screen draws.
   let focusJustDropped = false;
   let activePollRunning = false;
   let lastActiveRead: ActiveRead | undefined;
@@ -999,6 +1005,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         state.session?.store.getSnapshot().approval !== undefined ||
         state.session?.store.getSnapshot().review !== undefined,
     });
+  /** The landing is what the person is looking at: the bare Home, with no screen or card in front of it. */
+  const landingInFront = (): boolean => state.mode === 'home' && state.screen === undefined;
   const set = (patch: Partial<HomeControllerState>): void => {
     const noticeRevision = state.noticeRevision + ('notice' in patch ? 1 : 0);
     const before = state;
@@ -1010,13 +1018,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         stripRows(state.parkedRuns, state.snapshot),
         state.stripFocus,
       );
-      if (stripFocus !== state.stripFocus) {
-        // A refresh took the focused row off the strip: an `Enter` the person aimed at it must not fall through to the empty prompt's own
-        // (the run view, or provider setup when keyless), so the first `Enter` after the drop is ignored once (`focusJustDropped`).
-        if (stripFocus === undefined && state.stripFocus !== undefined) focusJustDropped = true;
-        state = { ...state, stripFocus };
-      }
+      if (stripFocus !== state.stripFocus) state = { ...state, stripFocus };
     }
+    // A screen or a card that opens or closes ends the swallowed `Enter` (see `focusJustDropped`): the first key after the landing comes
+    // back is the landing's own.
+    if (before.screen !== state.screen) focusJustDropped = false;
     syncActivePoll();
     notify();
     // The landing is back from a screen: the strip is read again now rather than at the next tick (ADR-0140 §6).
@@ -1034,9 +1040,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       screen.host.active !== undefined
     );
   }
-  /** No read while the exit question is up or the terminal is below the floor (the tab then shows only its one line). */
+  /**
+   * No read while the exit question is up, a native question or form holds the keyboard (a card is open: ADR-0140 §2), or the terminal is below
+   * the floor (the tab then shows only its one line).
+   */
   const activePollPaused = (): boolean =>
     state.exitGuard !== undefined ||
+    state.nativeActionBusy ||
     (terminal !== undefined &&
       !sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }));
   const onActiveRead = (read: ActiveRead): void => {
@@ -1186,6 +1196,22 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // The focus is resolved on the new rows by `set`: it follows its row, and moves to the nearest one when the run is no longer parked.
     return parkedRuns === state.parkedRuns ? {} : { parkedRuns };
   };
+  // The leg end this Home has already looked at, by identity: the one place that tells a chat about a leg's end reads it once, whoever read
+  // the host first (a card, a screen, the exit guard), and a chat that opens after an end is told nothing about it (the strip is its news).
+  let seenLegEnd: HostedLegEnd | undefined = deps.hostedRuns?.snapshot().last;
+  /**
+   * A leg ended (parked, finished or failed) while a chat is in front: the chat's transcript says so once, since no card and no strip row
+   * can take the keyboard from it (ADR-0139 §3, ADR-0140 §8). The run view is on the landing and never open behind a chat, and when it is
+   * showing that very run the view is the news; a chat being torn down is told nothing.
+   */
+  const announceLegEnd = (end: HostedLegEnd): void => {
+    const chat = state.mode === 'chat' ? state.session : undefined;
+    if (chat === undefined || tearingDown === chat) return;
+    if (state.screen?.kind === 'run-view' && state.screen.runId === end.runId) return;
+    const row = state.parkedRuns.find((parked) => parked.runId === end.runId);
+    const line = hostedEndNotice({ runId: end.runId, disposition: end.terminal.disposition }, row);
+    if (line !== undefined) chat.store.note(line);
+  };
   /** Read the run host again: publish what changed, keep watching while a leg is live, and end a confirmed exit once none is left. */
   const refreshHostedRun = (): void => {
     const host = deps.hostedRuns;
@@ -1202,6 +1228,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (hostedChanged && screenChanged) set({ hostedRun: snapshot, screen, ...parked });
     else if (hostedChanged) set({ hostedRun: snapshot, ...parked });
     else if (screenChanged) set({ screen });
+    if (snapshot.last !== undefined && snapshot.last !== seenLegEnd) {
+      seenLegEnd = snapshot.last;
+      announceLegEnd(snapshot.last);
+    }
     if (hostedLeg(snapshot) !== 'none') watchHostedRun();
     else if (state.exitGuard === 'stopping') finishExit(false);
   };
@@ -1541,11 +1571,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
   /** A key at a screen. `Esc` closes a run view and a card, and decides nothing; a card takes only its chords and `↑`/`↓`. */
-  const routeScreenKey = (
-    screen: HomeScreen,
-    input: string,
-    key: HomeKey & ChatKey & PaletteKey,
-  ): void => {
+  const routeScreenKey = (screen: HomeScreen, input: string, key: HomeKeyEvent): void => {
     switch (screen.kind) {
       case 'run-view':
         if (pressRunViewKey(key) === 'leave') leaveRunView(screen);
@@ -1583,11 +1609,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (note !== undefined) set({ notice: note });
   };
   /** A key at the tab host: its pure model decides, the controller carries a close out and keeps what the tabs remember. */
-  const routeTabHostKey = (
-    screen: TabHostScreen,
-    input: string,
-    key: HomeKey & ChatKey & PaletteKey,
-  ): void => {
+  const routeTabHostKey = (screen: TabHostScreen, input: string, key: HomeKeyEvent): void => {
     const step = foldTabHostKey(screen.host, input, key, {
       port: deps.permissions,
       defined: deps.defined,
@@ -1641,11 +1663,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
     history: chordHistory,
   });
-  const routeExitGuardKey = (
-    phase: ExitGuardPhase,
-    input: string,
-    key: HomeKey & ChatKey & PaletteKey,
-  ): void => {
+  const routeExitGuardKey = (phase: ExitGuardPhase, input: string, key: HomeKeyEvent): void => {
     disarmInterrupt(); // any key at the card ends the armed interrupt state (ADR-0115 §1)
     const stamp = exitGuardChord.stamp();
     if (phase === 'stopping') return; // the wait is bounded and cannot be taken back: no key changes it
@@ -2854,11 +2872,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'blocked': {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
         // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
+        const noKeyRemedy =
+          deps.providerSetup === undefined
+            ? `run \`relavium provider set-key ${step.provider}\``
+            : 'open /providers to connect a key';
         const hint =
           step.reason === 'no-key'
-            ? deps.providerSetup === undefined
-              ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
-              : `${step.displayName}: no key for ${step.provider} — open /providers to connect a key`
+            ? `${step.displayName}: no key for ${step.provider} — ${noKeyRemedy}`
             : `${step.displayName} is not available on your key — pick another`;
         set({ modelPicker: { ...open, hint } });
         break;
@@ -3115,10 +3135,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (step.kind === 'run') {
       set({ palette: undefined });
       // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling, a
-      // sentence), and it is answered as the same line typed or pasted is (ADR-0140 §3). It starts with a slash, so it is a command line and
-      // is always answered: it never starts a chat.
+      // sentence), and it is answered as the same line pasted is (ADR-0140 §3): by `managementCommand`, which a submitted line goes through
+      // first, so `/run extra` says `/run accepts no arguments` here as it does for a paste, not that `/run` is unknown. It starts with a
+      // slash, so it is a command line and is always answered: it never starts a chat.
       if (step.command === undefined && active === undefined && palette.query.trim().length > 0)
-        answerTypedWord(`/${palette.query.trim()}`);
+        managementCommand(`/${palette.query.trim()}`);
       if (step.command !== undefined) {
         if (step.command.name === 'providers') {
           openProviderSetup();
@@ -3398,6 +3419,30 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  /**
+   * The bare chat commands that open an overlay of the Home instead of dispatching to the session, as the open call or `undefined`. Each is
+   * an exact match, so `/models <arg>` and the like are not intercepted: they dispatch and are rejected as the command that takes no
+   * argument, like the standalone chat.
+   * - `/models` opens the reseat picker (ADR-0059), parity with the standalone ChatApp's submit-intercept, only when a reseat builder is
+   *   wired (always, in production); else it falls through to the normal slash dispatch (which surfaces the "interactive terminal" hint).
+   * - `/permissions` opens the remembered-commands sheet (ADR-0137 §2), where the session holds a port for it.
+   * - `/agent` opens the read-only sheet of the agent this chat is bound to (ADR-0140 §3), where the session holds its view.
+   * - `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the informational notice; a
+   *   non-reasoning model falls through to the slash dispatch (the ctx handler's "no controllable tier" notice).
+   */
+  const overlayCommandFor = (
+    active: HomeChatSession,
+    trimmed: string,
+  ): (() => void) | undefined => {
+    if (trimmed === '/models' && deps.reseatChat !== undefined) return openModelPicker;
+    if (trimmed === '/permissions' && active.permissions !== undefined)
+      return () => openPermissionsSheet(active);
+    if (trimmed === '/agent' && active.boundAgent !== undefined)
+      return () => openAgentSheet(active);
+    if (trimmed === '/effort' && canOpenEffortPicker(active)) return () => openEffortPicker(active);
+    return undefined;
+  };
+
   // Submit `line`: a leading `!command` runs the shell escape (attachments stay pending — they ride the NEXT
   // message); a `/slash` passes through unchanged (attachments stay); otherwise it is a MESSAGE — expand the pending
   // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
@@ -3423,37 +3468,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       runShell(active, parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
       return;
     }
-    // `/models` in a LIVE chat opens the reseat picker (ADR-0059) instead of dispatching — parity with the standalone
-    // ChatApp's submit-intercept. Only when a reseat builder is wired (always, in production); else it falls through
-    // to the normal slash dispatch (which surfaces the "interactive terminal" hint). `/models <arg>` is NOT
-    // intercepted (exact match) — it dispatches and is rejected as an unknown argument, like the standalone chat.
-    if (trimmed === '/models' && deps.reseatChat !== undefined) {
+    const open = overlayCommandFor(active, trimmed);
+    if (open !== undefined) {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
-      openModelPicker();
-      return;
-    }
-    // Bare `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the
-    // informational notice — parity with the standalone ChatApp. A non-reasoning model falls through to the slash
-    // dispatch (the ctx handler's "no controllable tier" notice). `/effort <tier>` (with an arg) is not intercepted.
-    if (trimmed === '/permissions' && active.permissions !== undefined) {
-      history = recordHistory(history, line);
-      set({ input: emptyEditor(), historyEntries: history.entries });
-      openPermissionsSheet(active);
-      return;
-    }
-    // Bare `/agent` opens the read-only sheet of the agent this chat is bound to (ADR-0140 §3), where the session holds its view.
-    // `/agent <anything>` is not intercepted: the dispatch rejects it as a command that takes no argument.
-    if (trimmed === '/agent' && active.boundAgent !== undefined) {
-      history = recordHistory(history, line);
-      set({ input: emptyEditor(), historyEntries: history.entries });
-      openAgentSheet(active);
-      return;
-    }
-    if (trimmed === '/effort' && canOpenEffortPicker(active)) {
-      history = recordHistory(history, line);
-      set({ input: emptyEditor(), historyEntries: history.entries });
-      openEffortPicker(active);
+      open();
       return;
     }
     if (trimmed.startsWith('/') || state.attachments.length === 0) {
@@ -3735,6 +3754,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return false;
   };
 
+  /**
+   * The strip's own keys at the landing: a focused row's (`routeStripFocusKey`), and `↓` at the empty prompt, which moves onto the first row
+   * the strip draws, across its sections in their order: the parked runs, the failed runs, the sessions, the recent runs. Whether the key
+   * was handled; any other key is the prompt's.
+   */
+  const handleStripKey = (key: HomeKey & ChatKey): boolean => {
+    if (state.stripFocus !== undefined) return routeStripFocusKey(state.stripFocus, key);
+    if (key.downArrow !== true || state.input.text.length > 0) return false;
+    const first = stepFocus(stripRows(state.parkedRuns, state.snapshot), undefined, 1);
+    if (first === undefined) return false;
+    set({ stripFocus: first });
+    return true;
+  };
+
   const handleHomeKey = (input: string, key: HomeKey & ChatKey, focusDropped: boolean): void => {
     // Ctrl-D (EOF) on an EMPTY prompt exits cleanly, the REPL convention (a non-empty buffer keeps it — no data loss).
     if (key.ctrl === true && input === 'd' && state.input.text.length === 0) {
@@ -3746,16 +3779,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (focusDropped && key.return === true && state.stripFocus === undefined) return;
     const action = reduceHomeKey(input, key);
     if (state.mode === 'loading') return; // ignore edits/submit while a session builds (Ctrl+C bails, in `handleInterrupt`)
-    if (state.stripFocus !== undefined) {
-      if (routeStripFocusKey(state.stripFocus, key)) return;
-    } else if (key.downArrow === true && state.input.text.length === 0) {
-      // The first row the strip draws, across its sections in their order: the parked runs, the failed runs, the sessions, the recent runs.
-      const first = stepFocus(stripRows(state.parkedRuns, state.snapshot), undefined, 1);
-      if (first !== undefined) {
-        set({ stripFocus: first });
-        return;
-      }
-    }
+    if (handleStripKey(key)) return;
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
@@ -3783,10 +3807,36 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  /**
+   * The key at an open overlay, whether one took it. Each open overlay owns EVERY key while it is open, and only one opens at a time:
+   * - the `/` palette, before the mode dispatch, so it overlays Home/chat input;
+   * - the `/models` picker (2.5.G S7), opened from the bare-Home palette (next-session default, ADR-0063) OR a live in-Home chat (a typed
+   *   or palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches;
+   * - the `/effort` overlay (ADR-0066 §6), chat-scoped, so it always has a live session; the guard keeps `routeEffortPickerKey`'s `active`
+   *   non-null (a stale overlay with no session falls through, never expected);
+   * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
+   *   withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
+   */
+  const routeOverlayKey = (input: string, key: HomeKeyEvent): boolean => {
+    if (state.palette !== undefined) {
+      handlePaletteKey(input, key);
+      return true;
+    }
+    if (state.modelPicker !== undefined) {
+      if (!state.submitBusy) routeModelPickerKey(input, key);
+      return true;
+    }
+    if (state.effortPicker !== undefined && state.session !== undefined) {
+      routeEffortPickerKey(state.session, input, key);
+      return true;
+    }
+    return state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key);
+  };
+
   // The open-overlay + mode key router — extracted from `handleKey` so its bracketed-paste handling stays within the
   // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
   // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
-  const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+  const dispatchKey = (input: string, key: HomeKeyEvent): void => {
     // Any key ends "the focus was just dropped"; the landing's own handling below is told, once, whether this key was the first after it.
     const focusDropped = focusJustDropped;
     focusJustDropped = false;
@@ -3806,27 +3856,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       routeScreenKey(state.screen, input, key);
       return;
     }
-    // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
-    if (state.palette !== undefined) {
-      handlePaletteKey(input, key);
-      return;
-    }
-    // The `/models` picker (2.5.G S7) — opened from the bare-Home palette (next-session default, ADR-0063) OR a live
-    // in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches.
-    if (state.modelPicker !== undefined) {
-      if (state.submitBusy) return;
-      routeModelPickerKey(input, key);
-      return;
-    }
-    // The `/effort` overlay (ADR-0066 §6) — chat-scoped, so it always has a live session; the guard keeps
-    // `routeEffortPickerKey`'s `active` non-null (a stale overlay with no session falls through, never expected).
-    if (state.effortPicker !== undefined && state.session !== undefined) {
-      routeEffortPickerKey(state.session, input, key);
-      return;
-    }
-    // The docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
-    // withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
-    if (state.chatSheet !== undefined && routeChatSheetKey(state.session, input, key)) return;
+    if (routeOverlayKey(input, key)) return;
     if (state.mode === 'chat' && state.session !== undefined) {
       handleChatKey(state.session, input, key);
       return;
@@ -3859,10 +3889,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     const snapshotMoved = !isDeepStrictEqual(read.snapshot, state.snapshot);
     const parkedMoved = !sameParkedRows(parked, state.parkedRuns);
     if (!snapshotMoved && !parkedMoved) return;
+    const focused = state.stripFocus;
     set({
       ...(snapshotMoved ? { snapshot: read.snapshot } : {}),
       ...(parkedMoved ? { parkedRuns: parked } : {}),
     });
+    // A read of what ANOTHER terminal changed took the focused row off the strip under a person who was looking at it: an `Enter` they aimed
+    // at it must not fall through to the empty prompt's own (the run view, or provider setup when keyless), so the first `Enter` after the
+    // drop is ignored once (`focusJustDropped`). Not when the row left because this Home started a leg on that run (the person answered its
+    // gate: they know it has gone), and it is set here and nowhere else: the other reads of the rows follow the person's own act (a leg that
+    // started or ended, a screen that closed). Only the landing counts: behind a screen, a card or a chat the person is not looking at the strip.
+    const ownLeg =
+      focused?.kind === 'run' && deps.hostedRuns?.snapshot().active?.runId === focused.id;
+    if (focused !== undefined && state.stripFocus === undefined && !ownLeg && landingInFront())
+      focusJustDropped = true;
   };
   const strip = deps.strip;
   if (strip !== undefined) {
@@ -3898,7 +3938,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // A failed read keeps the rows the strip has, and the next attempt comes later each time.
       onError: backoff.failed,
       intervalMs: STRIP_REFRESH_MS,
-      // Nothing about the strip depends on the clock alone, so a token that has not moved is never a reason to read.
+      // What the strip READS does not depend on the clock alone (ADR-0140 §6: it reads when the change token moved, and a read that matches what
+      // is shown repaints nothing), so a token that has not moved is never a reason to read. Its relative words (`5m ago`, `expires in 5m`)
+      // are worded when the landing is painted from the clock then: a landing nothing repaints keeps the words of its last paint until the
+      // next key, read or resize repaints it. That is the contract as written, not a missed tick.
       maxAgeMs: Number.POSITIVE_INFINITY,
       // The strip was read as the Home was built, so the first tick compares with the token taken before that read instead of reading
       // again: a commit that landed in between is read at the first tick. A token that could not be taken makes the poll read at once.

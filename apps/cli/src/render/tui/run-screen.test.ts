@@ -16,6 +16,7 @@ import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
 import {
   RUN_SCREEN_CARD_ROWS,
   RUN_SCREEN_MIN_LIVE_ROWS,
+  RUN_SCREEN_NOTE_MARK,
   RUN_SCREEN_NOTICE_ROWS,
   RUN_SCREEN_NOTICE_WIDTH,
   runScreenLeg,
@@ -23,6 +24,7 @@ import {
   runScreenPhase,
   type RunScreenInput,
 } from './run-screen.js';
+import { displayWidth } from './viewport.js';
 
 const RUN = 'run-0001';
 const OTHER = 'run-0002';
@@ -93,20 +95,22 @@ function model(over: Partial<RunScreenInput> = {}) {
 describe('the states of the view', () => {
   it.each([
     {
+      // A view is opened for a run that has an id; a leg that has not named its run is not provably this view's, and the host's cancel
+      // acts on whichever leg is live, so a `Ctrl+C` here must never reach it (it would cancel the wrong run).
       name: 'a leg that has not named its run yet',
       snapshot: preparing(),
-      phase: 'launching',
-      leg: 'executing',
-      glyph: '◌',
-      word: 'starting',
+      phase: 'replaced',
+      leg: 'none',
+      glyph: '○',
+      word: 'not held',
     },
     {
       name: 'a launch before the leg exists',
       snapshot: { ...IDLE, launching: true },
-      phase: 'launching',
-      leg: 'executing',
-      glyph: '◌',
-      word: 'starting',
+      phase: 'replaced',
+      leg: 'none',
+      glyph: '○',
+      word: 'not held',
     },
     {
       name: 'the leg executing',
@@ -125,12 +129,12 @@ describe('the states of the view', () => {
       word: 'cancelling',
     },
     {
-      name: 'a stop requested while the leg is still preparing',
+      name: 'a stop requested while a leg that has not named its run is still preparing',
       snapshot: preparing(true),
-      phase: 'cancelling',
-      leg: 'cancelling',
-      glyph: '■',
-      word: 'cancelling',
+      phase: 'replaced',
+      leg: 'none',
+      glyph: '○',
+      word: 'not held',
     },
     {
       name: 'a host with no record of the run',
@@ -193,7 +197,7 @@ describe('the states of the view', () => {
   });
 
   it('says what the view is waiting for, and for how long a stop can take', () => {
-    expect(model({ snapshot: preparing() }).status).toBe('Preparing the run…');
+    expect(model({ snapshot: preparing() }).status).toContain('no longer held by the Home');
     expect(model({ snapshot: running(RUN, true) }).status).toBe(
       'Cancelling · the run stops at its next safe point (up to 10 s)',
     );
@@ -363,13 +367,36 @@ describe('the notice rows', () => {
     const m = model({
       notices: [`${'w'.repeat(500)}`, 'a\u001b[2Jb\u0007\nc\u009b2Jd\u202e', '   ', ''],
     });
-    expect(Array.from(m.notices[0] ?? '').length).toBe(RUN_SCREEN_NOTICE_WIDTH);
+    // Cut by display columns to what the terminal leaves after the `note: ` mark (74 at 80 columns), the cut shown by `…`.
+    expect(displayWidth(m.notices[0] ?? '')).toBe(80 - RUN_SCREEN_NOTE_MARK.length);
     expect(m.notices[0]?.endsWith('…')).toBe(true);
     // The second line lost its controls and its line break; the blank ones are not rows.
     expect(m.notices).toHaveLength(2);
     // eslint-disable-next-line no-control-regex -- the assertion is that no control survives
     expect(m.notices.join('')).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/u);
     expect(m.earlierNotices).toBe(0);
+  });
+
+  it('is cut by display columns, so a wide character is two columns and the cut is always shown by an ellipsis', () => {
+    const wide = '日本語のお知らせ'.repeat(30);
+    const [shown] = model({ notices: [wide] }).notices;
+    const room = 80 - RUN_SCREEN_NOTE_MARK.length;
+    expect(displayWidth(shown ?? '')).toBeLessThanOrEqual(room);
+    expect(shown?.endsWith('…')).toBe(true);
+    // Nothing is cut that fits, and nothing drawn is wider than the terminal leaves it.
+    expect(model({ notices: ['short'] }).notices).toEqual(['short']);
+    expect(model({ notices: ['x'.repeat(room)] }).notices).toEqual(['x'.repeat(room)]);
+    expect(model({ notices: ['x'.repeat(room + 1)] }).notices[0]).toBe(`${'x'.repeat(room - 1)}…`);
+  });
+
+  it('follows the terminal`s width up to the named bound, and no further on a very wide one', () => {
+    const long = 'w'.repeat(500);
+    expect(displayWidth(model({ columns: 100, notices: [long] }).notices[0] ?? '')).toBe(
+      100 - RUN_SCREEN_NOTE_MARK.length,
+    );
+    expect(displayWidth(model({ columns: 300, notices: [long] }).notices[0] ?? '')).toBe(
+      RUN_SCREEN_NOTICE_WIDTH,
+    );
   });
 });
 
@@ -379,7 +406,30 @@ describe('the key line', () => {
     expect(model({ armed: true }).keys).toBe(
       'Ctrl+C again cancels the run · Esc leaves it running',
     );
-    expect(model({ armed: true, snapshot: preparing() }).keys).toContain('Ctrl+C again');
+    // Armed but not executing: a leg that has not named its run is not this view's, so there is nothing for the press to cancel.
+    expect(model({ armed: true, snapshot: preparing() }).keys).toBe('Esc / Ctrl+C close');
+  });
+
+  it('names Enter for a run that ended parked only where Enter is delivered: at 80×24 or more, never below', () => {
+    const parked = settled(ended({ outcome: 'paused' }));
+    const offered = { snapshot: parked, openGate: true } as const;
+    expect(model(offered).keys).toBe('Enter opens the gate · Esc / Ctrl+C close');
+    expect(model({ ...offered, gateOpenFailed: true }).keys).toBe(
+      'Enter tries the gate again · Esc / Ctrl+C close',
+    );
+    for (const [columns, rows] of [
+      [79, 24],
+      [80, 23],
+      [60, 20],
+      [40, 10],
+    ] as const) {
+      const below = model({ ...offered, gateOpenFailed: true, columns, rows });
+      expect(below.fits).toBe(false);
+      expect(
+        below.keys,
+        `${String(columns)}×${String(rows)}: only the keys that are delivered`,
+      ).toBe('Esc / Ctrl+C close');
+    }
   });
 
   it('never says a press cancels when the leg is not executing, armed or not', () => {
@@ -395,7 +445,7 @@ describe('fitting the terminal', () => {
   const STATES: readonly { readonly name: string; readonly snapshot: RunHostSnapshot }[] = [
     { name: 'running', snapshot: running() },
     { name: 'cancelling', snapshot: running(RUN, true) },
-    { name: 'launching', snapshot: preparing() },
+    { name: 'a leg that has not named its run', snapshot: preparing() },
     { name: 'completed card', snapshot: settled(ended({})) },
     {
       name: 'the longest card (money and effect, a fault)',

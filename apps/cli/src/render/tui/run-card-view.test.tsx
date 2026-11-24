@@ -137,7 +137,12 @@ describe('at 80×24', () => {
     expect(lines.length).toBeLessThanOrEqual(23);
     for (const line of lines) expect(Array.from(line).length).toBeLessThanOrEqual(80);
     expect(lines.at(-1)).toContain('Esc leaves it pending');
-    expect(lines.filter((line) => line.startsWith(RUN_CARD_GUTTER)).length).toBeLessThanOrEqual(4);
+    // The message takes what the rest of the card leaves, and the cut says where to read the rest, inside the same 23 rows.
+    expect(lines.filter((line) => line.startsWith(RUN_CARD_GUTTER)).length).toBeGreaterThanOrEqual(
+      4,
+    );
+    expect(lines.join('\n')).toContain('The message continues. To read all of it, run:');
+    expect(lines.join('\n')).toContain('relavium gate list run-0001');
   });
 
   it('hands its box to the measured-frame acknowledgement after every commit', async () => {

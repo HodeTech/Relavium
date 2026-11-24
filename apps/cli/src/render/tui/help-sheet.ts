@@ -78,7 +78,7 @@ export const HELP_SHEET_KEYS = {
 export const HOME_KEYS = {
   send: {
     keys: 'Enter',
-    verb: 'start a chat with what you typed, or open the row you moved onto',
+    verb: 'start a chat with what you typed, or open the row or the running run',
     presses: [{ input: '', key: { return: true } }],
   },
   newline: {
@@ -93,7 +93,7 @@ export const HOME_KEYS = {
   },
   rows: {
     keys: '↓',
-    verb: 'move onto a parked run or a saved session, from an empty prompt',
+    verb: 'move onto a row of the strip, from an empty prompt',
     presses: [{ input: '', key: { downArrow: true } }],
   },
   back: {
@@ -103,12 +103,12 @@ export const HOME_KEYS = {
   },
   eof: {
     keys: 'Ctrl+D',
-    verb: 'exit, from an empty prompt',
+    verb: 'exit from an empty prompt; asks first while a run executes',
     presses: [{ input: 'd', key: { ctrl: true } }],
   },
   interrupt: {
     keys: 'Ctrl+C',
-    verb: 'press twice to exit',
+    verb: 'press twice to exit; asks first while a run executes',
     presses: [{ input: 'c', key: { ctrl: true } }],
   },
 } as const satisfies Readonly<Record<string, HelpKey>>;

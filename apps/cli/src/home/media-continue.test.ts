@@ -117,7 +117,10 @@ describe('what an answer does', () => {
       'kind',
       'runId',
       'secrets',
+      'signal',
     ]);
+    // The flow's own signal: an Esc or Ctrl+C while the leg is being prepared stops it before it starts (ADR-0139 §4).
+    expect(request.signal).toBeInstanceOf(AbortSignal);
     expect(notice).toBe(`Continuing run ${RUN}. It runs in the background.`);
     expect(channel.ui.getSnapshot().active, 'the flow is closed again').toBe(false);
   });

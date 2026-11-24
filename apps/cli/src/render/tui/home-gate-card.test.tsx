@@ -116,6 +116,8 @@ interface Options {
   /** What the log says when the card opens: `undefined` is a run that is not parked here. */
   readonly run?: RunGates | undefined;
   readonly guard?: ApprovalGuard;
+  /** The controller's monotonic clock, which the card's guard runs on (default the real one): a test of a dwell moves it by hand. */
+  readonly now?: () => number;
   readonly host?: RunHostSnapshot;
   readonly size?: { cols: number; rows: number };
   readonly snapshot?: HomeSnapshot;
@@ -143,6 +145,7 @@ function mount(options: Options = {}) {
       close: () => Promise.resolve(),
     },
     gateCards,
+    ...(options.now === undefined ? {} : { now: options.now }),
     schedule: () => () => {},
     onExit: vi.fn(),
     onError: vi.fn(),
@@ -663,5 +666,185 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     await flush();
     expect(m.resume).not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().screen?.kind).toBe('gate-card');
+  });
+});
+
+describe('the dwell, with the real stdin path and a dwell that is not zero', () => {
+  /** What `run-card-keys.test.ts` pins on the model, here through the mounted app: the card's frame is acknowledged by the host. */
+  const DWELL = { settleMs: 400, quietMs: 0, typeaheadMs: 0, lockoutMs: 0 } as const;
+
+  it('a Ctrl+Y inside the dwell of the painted frame answers nothing, and the one after it answers once', async () => {
+    let now = 10_000;
+    const m = mount({ guard: DWELL, now: () => now });
+    await openCard(m);
+    await eventually(m.cardPainted, 'the card`s frame being painted');
+    // The frame was shown at `now`: 399 ms later is inside the dwell, and the card is still waiting.
+    now += 399;
+    m.harness.stdin.write(CTRL_Y);
+    await settleFrames(8);
+    expect(m.resume, 'inside the dwell: nothing was sent').not.toHaveBeenCalled();
+    expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card' });
+    // A refused key restarts nothing here (the lockout is off), and the dwell is over one millisecond later.
+    now += 1;
+    m.harness.stdin.write(CTRL_Y);
+    await eventually(() => m.resume.mock.calls.length > 0, 'the answer reaching the run host');
+    expect(m.resume).toHaveBeenCalledOnce();
+  });
+
+  it('a different gate under the cursor is a new frame: its dwell starts again', async () => {
+    let now = 10_000;
+    const second: RunGates = {
+      ...APPROVAL_RUN,
+      gates: [
+        ...APPROVAL_RUN.gates,
+        {
+          runId: RUN,
+          gateId: 'g2',
+          nodeId: 'second-step',
+          gateType: 'approval',
+          message: 'And this one?',
+          accepts: ['approved', 'rejected'],
+        },
+      ],
+    };
+    const m = mount({ guard: DWELL, now: () => now, run: second });
+    await openCard(m);
+    await eventually(m.cardPainted, 'the first gate painted');
+    now += 1_000;
+    m.harness.stdin.write(DOWN);
+    await eventually(() => m.frame().includes('gate 2 of 2'), 'the second gate shown');
+    // The dwell counts from the frame that SHOWS this gate: a key at once is refused, however old the first frame was.
+    m.harness.stdin.write(CTRL_Y);
+    await settleFrames(8);
+    expect(m.resume).not.toHaveBeenCalled();
+    await eventually(m.cardPainted, 'the second gate painted');
+    now += 400;
+    m.harness.stdin.write(CTRL_Y);
+    await eventually(() => m.resume.mock.calls.length > 0, 'the answer reaching the run host');
+    expect(m.resume).toHaveBeenCalledWith(expect.objectContaining({ gate: 'g2' }));
+  });
+});
+
+describe('the message and the input gate, at 80×24 through the mounted app', () => {
+  it('a message longer than the card`s room says where to read the rest, and the card is still answerable', async () => {
+    const long = Array.from({ length: 30 }, (_, i) => `step ${String(i + 1)}`).join('\n');
+    const m = mount({
+      size: { cols: 80, rows: 24 },
+      run: {
+        ...APPROVAL_RUN,
+        gates: [{ ...APPROVAL_RUN.gates[0], message: long } as RunGates['gates'][number]],
+      },
+    });
+    await openCard(m);
+    const lines = m.frame().split('\n');
+    expect(lines.length, 'the whole card fits 24 rows').toBeLessThanOrEqual(23);
+    expect(m.frame()).toContain('step 1');
+    expect(m.frame(), 'the tail is not on screen').not.toContain('step 30');
+    expect(m.frame()).toContain('The message continues. To read all of it, run:');
+    expect(m.frame()).toContain('relavium gate list run-0001');
+    expect(m.frame()).toContain('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    await answerOnceThePaintLanded(m);
+    expect(m.resume).toHaveBeenCalledOnce();
+  });
+
+  it('an input gate shows the whole command that takes its value, wrapped, says that rejecting continues the run, and its row says how', async () => {
+    const m = mount({
+      size: { cols: 80, rows: 24 },
+      rows: [{ runId: RUN, kind: 'input', gates: 1 }],
+      run: {
+        ...APPROVAL_RUN,
+        gates: [
+          {
+            runId: RUN,
+            gateId: 'collect-the-token',
+            nodeId: 'ask',
+            gateType: 'input',
+            message: 'Paste the deploy token',
+            accepts: ['input_provided', 'rejected'],
+          },
+        ],
+      },
+    });
+    await settleFrames();
+    m.harness.stdin.write(DOWN);
+    await eventually(
+      () => m.frame().includes('Enter shows how to answer') && m.homePainted(),
+      'the focused input row, which says what Enter does',
+    );
+    expect(m.frame()).toContain('> ‖ run-0001  ·  input gate  ·  Enter shows how to answer');
+    expect(m.frame()).toContain('Enter shows how');
+    m.harness.stdin.write(ENTER);
+    await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
+    await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
+    const frame = m.frame();
+    expect(frame).toContain(
+      'This gate takes a typed value, which this card cannot take. In a shell:',
+    );
+    expect(frame.replace(/\s+/g, ' ')).toContain(
+      'relavium gate run-0001 --gate collect-the-token --input <json>',
+    );
+    expect(frame).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
+    expect(frame).toContain('Ctrl+N rejects · Esc leaves it pending');
+    expect(frame).not.toContain('Ctrl+Y approves');
+  });
+});
+
+describe('what an Attention row says of the run it names', () => {
+  const UUID = '0b8f3a52-9d41-4c6e-8a07-5e2d1c9b7f64';
+
+  it('at 80×24 it names the workflow and the deadline beside the kind and the key, and the id gives way to them', async () => {
+    const m = mount({
+      size: { cols: 80, rows: 24 },
+      // The app's clock reads 0: a deadline five minutes after the epoch is five minutes away.
+      rows: [
+        {
+          runId: UUID,
+          kind: 'approval',
+          gates: 1,
+          workflow: 'deploy',
+          expiresAt: '1970-01-01T00:05:00.000Z',
+        },
+      ],
+    });
+    await settleFrames();
+    const row = m
+      .frame()
+      .split('\n')
+      .find((line) => line.includes('‖'));
+    expect(row?.trimStart()).toBe(
+      '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ selects',
+    );
+    m.harness.stdin.write(DOWN);
+    await eventually(
+      () => m.frame().includes('Enter opens') && m.homePainted(),
+      'the focused row on screen',
+    );
+    const focused = m
+      .frame()
+      .split('\n')
+      .find((line) => line.includes('‖'));
+    expect(focused?.trimStart()).toBe(
+      '> ‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter opens',
+    );
+    expect((focused ?? '').length, 'inside the 80 columns').toBeLessThanOrEqual(80);
+  });
+
+  it('an overdue gate says `expired` in the row, with colour off too', async () => {
+    const m = mount({
+      size: { cols: 80, rows: 24 },
+      rows: [
+        {
+          runId: RUN,
+          kind: 'approval',
+          gates: 1,
+          workflow: 'deploy',
+          expiresAt: '1969-12-31T23:00:00.000Z',
+        },
+      ],
+    });
+    await settleFrames();
+    expect(m.frame()).toContain(
+      '‖ run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ selects',
+    );
   });
 });
