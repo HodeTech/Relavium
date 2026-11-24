@@ -113,7 +113,7 @@ export function createActivePoll<T>(deps: ActivePollDeps<T>): ActivePoll {
       fail(cause);
     };
     let pending: Promise<T>;
-    try {
+    try /* NOSONAR — S4822: a synchronous refusal of the read; the promise's own rejection is handled by the two-arm `then` below. */ {
       pending = deps.read();
     } catch (cause) {
       onFailure(cause);

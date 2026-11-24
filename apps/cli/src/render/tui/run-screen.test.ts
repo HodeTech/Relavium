@@ -324,7 +324,7 @@ describe('the disposition card', () => {
   });
 
   it("is secret-free and control-free: nothing but the describer's words and the sanitized id reach it", () => {
-    const hostile = 'run\u001b[31m-\u009b2J\nforged‮';
+    const hostile = 'run\u001b[31m-\u009b2J\nforged\u202e';
     const m = runScreenModel({
       runId: hostile,
       snapshot: settled(ended({ outcome: 'failed' }, hostile, 'bad\u001b]52;c;Zm9v\u0007\nline')),
@@ -335,7 +335,7 @@ describe('the disposition card', () => {
     });
     const all = [m.header, ...(m.card?.rows ?? [])].join('\n');
     // eslint-disable-next-line no-control-regex -- the assertion is that no control survives
-    expect(all).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f‮]/u);
+    expect(all).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/u);
   });
 });
 
@@ -361,14 +361,14 @@ describe('the notice rows', () => {
 
   it('cuts a long line and strips controls, again, whatever the ring did', () => {
     const m = model({
-      notices: [`${'w'.repeat(500)}`, 'a\u001b[2Jb\u0007\nc\u009b2Jd‮', '   ', ''],
+      notices: [`${'w'.repeat(500)}`, 'a\u001b[2Jb\u0007\nc\u009b2Jd\u202e', '   ', ''],
     });
     expect(Array.from(m.notices[0] ?? '').length).toBe(RUN_SCREEN_NOTICE_WIDTH);
     expect(m.notices[0]?.endsWith('…')).toBe(true);
     // The second line lost its controls and its line break; the blank ones are not rows.
     expect(m.notices).toHaveLength(2);
     // eslint-disable-next-line no-control-regex -- the assertion is that no control survives
-    expect(m.notices.join('')).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f‮]/u);
+    expect(m.notices.join('')).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202e]/u);
     expect(m.earlierNotices).toBe(0);
   });
 });

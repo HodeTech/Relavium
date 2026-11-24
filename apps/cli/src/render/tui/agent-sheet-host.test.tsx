@@ -120,6 +120,7 @@ describe('the /agent sheet in the standalone chat', () => {
   it('opens on the command typed with trailing spaces', async () => {
     const { view } = mount({ boundAgent: () => VIEW });
     await openAgent(view, '/agent   ');
+    expect(frame(view)).toContain(SHEET);
   });
 
   it('opens when /agent is chosen from the palette, as the typed command does', async () => {
@@ -132,6 +133,7 @@ describe('the /agent sheet in the standalone chat', () => {
     }
     view.stdin.write(ENTER);
     await until(() => frame(view).includes(SHEET));
+    expect(frame(view)).toContain(SHEET);
   });
 
   it('draws the definition the host hands it AT THE MOMENT it opens: a reseated session’s view shows the new model', async () => {
@@ -254,6 +256,7 @@ describe('the /agent sheet in the standalone chat', () => {
     await until(() => !frame(view).includes(SHEET));
     view.stdin.write('hello again');
     await until(() => frame(view).includes('hello again'));
+    expect(frame(view)).toContain('hello again');
   });
 
   it('gives way to a card that arrives: the sheet closes and the card is shown', async () => {
@@ -268,6 +271,7 @@ describe('the /agent sheet in the standalone chat', () => {
     void store.requestApproval(request, false);
     await until(() => !frame(view).includes(SHEET));
     await until(() => frame(view).includes('Esc stops the turn'));
+    expect(frame(view)).not.toContain(SHEET);
   });
 
   it('does not open when the view cannot be made: the chat says so, and the prompt is still usable', async () => {

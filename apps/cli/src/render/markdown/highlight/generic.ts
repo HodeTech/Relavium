@@ -147,7 +147,10 @@ class GenericScan {
     const { profile } = this;
     if (code === 64) return profile.decorators === true && this.decorator();
     if (code === 35) {
-      if (this.lineStart && profile.preprocessor === true) return this.directive();
+      if (this.lineStart && profile.preprocessor === true) {
+        this.directive();
+        return true;
+      }
       return profile.rust === true && this.attribute();
     }
     return code === QUOTE && profile.rust === true && this.rustQuote();
@@ -284,8 +287,8 @@ class GenericScan {
     return true;
   }
 
-  /** `#include <x.h>`, `#define`: the directive is meta, and an angle-bracket path is a string. */
-  private directive(): boolean {
+  /** `#include <x.h>`, `#define`: the directive is meta, and an angle-bracket path is a string. It always consumes at least the `#`. */
+  private directive(): void {
     const { source } = this;
     let at = this.i + 1;
     while (isBlank(source.charCodeAt(at))) at += 1;
@@ -294,15 +297,14 @@ class GenericScan {
     const name = source.slice(at, end);
     this.i = end;
     this.previous = 0;
-    if (name !== 'include' && name !== 'import') return true;
+    if (name !== 'include' && name !== 'import') return;
     let path = end;
     while (isBlank(source.charCodeAt(path))) path += 1;
-    if (source.charCodeAt(path) !== 60) return true;
+    if (source.charCodeAt(path) !== 60) return;
     const close = this.out.find('>', path);
-    if (close < 0 || close > this.out.lineEnd(path)) return true;
+    if (close < 0 || close > this.out.lineEnd(path)) return;
     this.out.mark(path, close + 1, 'string');
     this.i = close + 1;
-    return true;
   }
 
   /** Rust `#[derive(Debug)]` and `#![allow(x)]`: meta up to the closing bracket, or the end of the line. */

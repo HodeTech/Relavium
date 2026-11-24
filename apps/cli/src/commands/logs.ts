@@ -139,7 +139,10 @@ export async function logsFollowCommand(
     /** A no-owner verdict is held back until the injected clock reaches this: set when a gap over one TTL is seen. */
     let resumeGraceUntilMs = Number.NEGATIVE_INFINITY;
     let cursor = history.scannedThroughSeq;
-    let state = history.events.reduce(observeFollow, QUIET_RUN);
+    let state = history.events.reduce(
+      (previous, event) => observeFollow(previous, event),
+      QUIET_RUN,
+    );
     /** One read after the cursor, printed through the same filter and writer; the events it returned. */
     const readAndPrintTail = (): readonly RunEvent[] => {
       const tail = reader.loadRunEventsAfter(args.runId, cursor, MAX_RUN_TAIL_EVENTS);

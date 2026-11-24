@@ -197,7 +197,7 @@ describe('the card agrees with the shell and is data only', () => {
 });
 
 describe('the sanitize floor on the run id', () => {
-  const HOSTILE = '\u001b[31mrun\u001b[0m\u0007-\u009b2J\nforged: ‮done\ttab';
+  const HOSTILE = '\u001b[31mrun\u001b[0m\u0007-\u009b2J\nforged: \u202edone\ttab';
   const everyDisposition: readonly [string, Partial<HostedRunTerminalInput>][] = [
     ['completed', {}],
     ['failed', { outcome: 'failed' }],

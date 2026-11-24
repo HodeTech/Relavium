@@ -701,12 +701,12 @@ describe('the repository’s allowlist, read-only under the list', () => {
   it('shows a control or an override character as a visible token, never as the character: the entries are the repository’s words', () => {
     const lines = draw({
       ok: true,
-      commands: [`git‮push`, `rm\tx`],
+      commands: [`git\u202epush`, `rm\tx`],
       globs: [],
       omitted: 0,
     });
     const joined = lines.join('\n');
-    expect(joined).not.toContain('‮');
+    expect(joined).not.toContain('\u202e');
     expect(joined).not.toContain('\t');
     expect(joined).toContain('<U+202E>');
     expect(joined).toContain('<TAB>');

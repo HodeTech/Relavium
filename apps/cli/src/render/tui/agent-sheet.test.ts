@@ -598,11 +598,11 @@ describe('the notice of a chat that has no sheet to open', () => {
   });
 
   it('is as scrubbed as the sheet, and carries no path and no control character', () => {
-    const view = viewOf(definition({ system_prompt: `${KEY}\u001b[31m‮ hidden` }));
+    const view = viewOf(definition({ system_prompt: `${KEY}\u001b[31m\u202e hidden` }));
     const notice = agentNotice(view);
     expect(notice).not.toContain(KEY);
     // eslint-disable-next-line no-control-regex -- the point of the test: no control character reaches a terminal
-    expect(notice).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f‮]/u);
+    expect(notice).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f\u202e]/u);
   });
 });
 

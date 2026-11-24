@@ -82,7 +82,7 @@ describe('RunNotices', () => {
     it('strips every terminal control and escape sequence from a line', () => {
       const notices = new RunNotices();
       notices.push('ok\x1b[31m red \x1b]0;title\x07 end\x00\x07\r\n');
-      notices.push('bidi ‮ reversed ⁦ isolate\n');
+      notices.push('bidi \u202e reversed \u2066 isolate\n');
       for (const entry of notices.snapshot())
         expect(hasControl(entry), JSON.stringify(entry)).toBe(false);
       expect(notices.snapshot()[0]).toContain('ok');
