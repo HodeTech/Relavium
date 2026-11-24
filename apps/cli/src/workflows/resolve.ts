@@ -143,14 +143,25 @@ function tryRead(path: string, kind: string, cwd: string): string | undefined {
       `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
     );
   }
+  let bytes: Buffer;
   try {
-    return readFileSync(path, 'utf8');
+    bytes = readFileSync(path);
   } catch (err) {
     throw new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
       cause: err,
     });
   }
+  try {
+    return STRICT_UTF8.decode(bytes);
+  } catch {
+    // A lenient decode turns each malformed sequence into U+FFFD, so the run would start on a prompt that is not the one in the file
+    // (review P05-2; the catalog and the authoring read refuse the same bytes).
+    throw new CliError('invalid_invocation', `${kind} file '${label}' is not valid UTF-8.`);
+  }
 }
+
+/** UTF-8 that refuses malformed input instead of repairing it; `ignoreBOM` keeps a leading U+FEFF in the text, as the lenient decode did. */
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 /** Narrow an unknown thrown value to its `errno` string code (e.g. `'ENOENT'`), if present. */
 function errnoCode(err: unknown): string | undefined {

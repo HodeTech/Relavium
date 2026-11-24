@@ -6,12 +6,15 @@
  * ADR got the answer wrong in a way measurement caught — those say which.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   statSync,
@@ -27,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   appendGrant,
   appendRevocation,
+  MAX_CONSENT_STORE_BYTES,
   fingerprint,
   readGrants,
   resolveStdioSpawn,
@@ -309,6 +313,71 @@ describe('the grant log (ADR-0084 §5)', () => {
     chmodSync(path(), 0o644);
     appendGrant(path(), grantOf('v1:bbb'));
     expect(statSync(path()).mode & 0o777).toBe(0o600);
+  });
+
+  describe('the read refuses what the write refuses (review M-E2)', () => {
+    const posix = process.platform !== 'win32';
+
+    it.skipIf(!posix)(
+      'reads NO grants through a symbolic link, even one whose target holds a valid grant',
+      () => {
+        appendGrant(path(), grantOf('v1:aaa'));
+        const target = join(dir, 'planted.ndjson');
+        writeFileSync(target, readFileSync(path(), 'utf8'));
+        rmSync(path());
+        symlinkSync(target, path());
+        // Read through the link the store would hold the grant (the target's bytes are a whole, valid store); it is refused instead.
+        expect(readGrants(target)?.has('v1:aaa')).toBe(true);
+        expect(readGrants(path())).toBeUndefined();
+      },
+    );
+
+    it.skipIf(!posix)(
+      'does not wait on a FIFO at the path: it folds closed, and nothing is read from it',
+      () => {
+        execFileSync('mkfifo', [path()]);
+        // A reader and a writer are held so that a read that forgot O_NONBLOCK could not hang the test worker on the open (a blocked
+        // synchronous open cannot be timed out); the refusal itself comes from the descriptor being no regular file.
+        const reader = openSync(path(), constants.O_RDONLY | constants.O_NONBLOCK);
+        const writer = openSync(path(), constants.O_WRONLY);
+        try {
+          expect(readGrants(path())).toBeUndefined();
+        } finally {
+          closeSync(writer);
+          closeSync(reader);
+        }
+      },
+    );
+
+    it('folds a DIRECTORY at the path closed', () => {
+      mkdirSync(path());
+      expect(readGrants(path())).toBeUndefined();
+    });
+
+    it('folds a file over the size bound closed, and reads one of exactly the bound', () => {
+      writeFileSync(path(), '\n'.repeat(MAX_CONSENT_STORE_BYTES));
+      expect(readGrants(path())?.size).toBe(0); // newlines to the bound are a store with no grants
+      writeFileSync(path(), '\n'.repeat(MAX_CONSENT_STORE_BYTES + 1));
+      expect(readGrants(path())).toBeUndefined(); // one byte more is refused before it is read
+    });
+
+    it.skipIf(!posix)('refuses to APPEND to a FIFO or a directory, and writes nothing', () => {
+      execFileSync('mkfifo', [path()]);
+      const reader = openSync(path(), constants.O_RDONLY | constants.O_NONBLOCK);
+      try {
+        expect(() => {
+          appendGrant(path(), grantOf('v1:aaa'));
+        }).toThrow(/not a regular file/);
+      } finally {
+        closeSync(reader);
+      }
+      rmSync(path());
+      mkdirSync(path());
+      expect(() => {
+        appendGrant(path(), grantOf('v1:aaa'));
+      }).toThrow();
+      expect(statSync(path()).isDirectory()).toBe(true);
+    });
   });
 
   it('a tombstone withdraws a grant, and a later grant re-establishes it', () => {

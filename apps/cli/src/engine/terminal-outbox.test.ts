@@ -1,10 +1,15 @@
+import { execFileSync } from 'node:child_process';
 import {
+  closeSync,
+  constants,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,7 +18,11 @@ import { join } from 'node:path';
 import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createFileTerminalOutbox, terminalOutboxStamp } from './terminal-outbox.js';
+import {
+  MAX_OUTBOX_BYTES,
+  createFileTerminalOutbox,
+  terminalOutboxStamp,
+} from './terminal-outbox.js';
 
 /**
  * The file-backed outbox had NO test when it landed, and it is the half the maintainer specifically chose
@@ -191,7 +200,51 @@ describe('createFileTerminalOutbox', () => {
     // would replace a delivered terminal event with an unhandled rejection.
     await expect(outbox.put(terminal('r1'))).resolves.toBeUndefined();
     expect(readFileSync(target, 'utf8')).toBe('untouched');
-    await expect(outbox.list()).resolves.toEqual([]);
+    // The read refuses the link too (it used to follow it): "could not look", never an empty answer and never the target's text.
+    await expect(outbox.list()).rejects.toThrow(/^the terminal outbox could not be read$/u);
+  });
+
+  describe('the read refuses what the write refuses (review M-E2)', () => {
+    const posix = process.platform !== 'win32';
+    const unreadable = /^the terminal outbox could not be read$/u;
+
+    it.skipIf(!posix)(
+      'does not read terminals through a link: a planted target is never listed',
+      async () => {
+        // The target is a WHOLE, valid outbox (so the old read, which followed the link, listed `r1` from it).
+        const planted = join(dir, 'planted.ndjson');
+        await createFileTerminalOutbox(planted).put(terminal('r1'));
+        symlinkSync(planted, path);
+        await expect(createFileTerminalOutbox(planted).list()).resolves.toHaveLength(1);
+        await expect(createFileTerminalOutbox(path).list()).rejects.toThrow(unreadable);
+        expect(terminalOutboxStamp(path)).toMatch(/^\d+:/); // the stamp only stats: a poll still tells the file changed
+      },
+    );
+
+    it.skipIf(!posix)('does not wait on a FIFO, and neither lists nor writes it', async () => {
+      execFileSync('mkfifo', [path]);
+      // A reader and a writer are held so that a read that forgot O_NONBLOCK could not hang the test worker on the open.
+      const reader = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+      const writer = openSync(path, constants.O_WRONLY);
+      try {
+        const outbox = createFileTerminalOutbox(path);
+        await expect(outbox.list()).rejects.toThrow(unreadable);
+        await expect(outbox.put(terminal('r1'))).resolves.toBeUndefined();
+        await expect(outbox.remove('r1')).resolves.toBeUndefined();
+        expect(statSync(path).isFIFO()).toBe(true); // still a FIFO, and nothing was written into it
+      } finally {
+        closeSync(writer);
+        closeSync(reader);
+      }
+    });
+
+    it('refuses a file over the size bound before reading it, and reads one of exactly the bound', async () => {
+      writeFileSync(path, '');
+      truncateSync(path, MAX_OUTBOX_BYTES);
+      await expect(createFileTerminalOutbox(path).list()).resolves.toEqual([]); // NULs only: no line is a terminal
+      truncateSync(path, MAX_OUTBOX_BYTES + 1);
+      await expect(createFileTerminalOutbox(path).list()).rejects.toThrow(unreadable);
+    });
   });
 
   it('survives an event carrying a C1 / bidi payload — the line is re-read, so it must round-trip', async () => {

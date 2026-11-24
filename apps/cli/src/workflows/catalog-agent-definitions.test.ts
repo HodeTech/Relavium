@@ -196,6 +196,19 @@ describe('readAgentFile', () => {
     return path;
   };
 
+  it('refuses an agent whose bytes are not valid UTF-8, so the Home never binds a prompt with U+FFFD in it (review P05-2)', () => {
+    const path = join(configDir, 'agents', 'bad.agent.yaml');
+    writeFileSync(
+      path,
+      Buffer.concat([
+        Buffer.from('id: bad\nmodel: m\nprovider: anthropic\nsystem_prompt: "pay '),
+        Buffer.from([0xff]),
+        Buffer.from(' never"\n'),
+      ]),
+    );
+    expect(read(path)).toEqual({ kind: 'refused' });
+  });
+
   it('reads a valid agent in agents/, and returns the definition it parsed', () => {
     const result = read(place('agents', 'summarizer.agent.yaml'));
     expect(result.kind).toBe('read');

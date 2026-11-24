@@ -104,6 +104,52 @@ describe('resolveWorkflowSource', () => {
     }
   });
 
+  it.each(['workflow', 'agent'] as const)(
+    'refuses a %s file that is not valid UTF-8 instead of running it with U+FFFD in place of the bad bytes (review P05-2)',
+    (kind) => {
+      const path = join(root, `bad-${kind}.yaml`);
+      writeFileSync(
+        path,
+        Buffer.concat([
+          Buffer.from('id: bad\nmodel: m\nsystem_prompt: "pay '),
+          Buffer.from([0xff, 0xfe]),
+          Buffer.from(' never"\n'),
+        ]),
+      );
+      let caught: unknown;
+      try {
+        resolveYamlSource(path, {
+          cwd: root,
+          kind,
+          subdir: kind,
+          projectConfigDir: undefined,
+          idSuffixes: ['.yaml'],
+        });
+      } catch (err) {
+        caught = err;
+      }
+      expect(isCliError(caught)).toBe(true);
+      if (isCliError(caught)) {
+        expect(caught.code).toBe('invalid_invocation');
+        expect(caught.message).toBe(`${kind} file 'bad-${kind}.yaml' is not valid UTF-8.`);
+        expect(caught.message).not.toContain(root);
+      }
+    },
+  );
+
+  it('still reads well-formed multibyte text and keeps a leading byte-order mark', () => {
+    const path = join(root, 'wide.yaml');
+    writeFileSync(path, `\uFEFFid: wide\nname: 日本語 €\n`);
+    const source = resolveYamlSource(path, {
+      cwd: root,
+      kind: 'agent',
+      subdir: 'agent',
+      projectConfigDir: undefined,
+      idSuffixes: ['.yaml'],
+    });
+    expect(source.yaml).toBe('\uFEFFid: wide\nname: 日本語 €\n');
+  });
+
   it('rejects a workflow file over the size cap before reading it', () => {
     const path = join(root, 'huge.relavium.yaml');
     writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1)); // above the actual byte ceiling

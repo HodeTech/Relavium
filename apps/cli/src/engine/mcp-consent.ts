@@ -1,23 +1,15 @@
 import { createHash } from 'node:crypto';
-import {
-  constants,
-  appendFileSync,
-  chmodSync,
-  closeSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-} from 'node:fs';
+import { constants, closeSync, mkdirSync, openSync } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { RelaviumError, canonicalJson } from '@relavium/shared';
 import { z } from 'zod';
 
+import { readRegularFile } from '../permissions/file-state.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
 import { findOnPath } from './find-on-path.js';
+import { AppendTargetRefusedError, appendToOwnerOnlyFile } from './owner-only-append.js';
 
 /**
  * The consent fingerprint and its grant log
@@ -219,6 +211,13 @@ const ConsentTombstoneSchema = z
   .strict();
 
 /**
+ * The most bytes of grant log {@link readGrants} reads, 4 MiB. A grant line is a few hundred bytes (its comparison metadata is clipped,
+ * {@link boundMetadata}), so this is thousands of grants and tombstones, far past what one person approves; a log past it is a
+ * planted or runaway file, and it reads as "no grants" rather than being read whole into memory.
+ */
+export const MAX_CONSENT_STORE_BYTES = 4 * 1024 * 1024;
+
+/**
  * The effective grants, or `undefined` when the log could not be folded (ADR-0084 §5).
  *
  * **`undefined` means NO GRANTS, and that is the whole point of returning it.** Skipping an unparseable line
@@ -229,13 +228,12 @@ const ConsentTombstoneSchema = z
  * reversed without anyone saying so.
  */
 export function readGrants(path: string): ReadonlyMap<string, ConsentGrant> | undefined {
-  if (!existsSync(path)) return new Map();
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
-  }
+  // The same read the operator's two permission files get: a link, a FIFO, a device or a directory at the path, or a file over the size
+  // bound, is "could not be read" (no grants) instead of being followed, waited on or slurped whole. An absent file is simply empty.
+  const read = readRegularFile(path, MAX_CONSENT_STORE_BYTES);
+  if (read.kind === 'absent') return new Map();
+  if (read.kind === 'refused') return undefined;
+  const { text } = read;
   const grants = new Map<string, ConsentGrant>();
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue; // the leading-newline framing, and a trailing terminator
@@ -272,23 +270,17 @@ export function readGrants(path: string): ReadonlyMap<string, ConsentGrant> | un
  */
 export function appendGrant(path: string, grant: ConsentGrant): void {
   ensureFile(path);
-  refuseSymlink(path);
   const bounded = boundMetadata(grant);
   // A LEADING newline as well as a trailing one: a process killed mid-append leaves a partial last line with
   // no terminator, and appending straight onto it would concatenate into one corrupt line — which, under
   // this file's fail-closed fold, would cost every grant on the machine rather than one entry.
-  appendFileSync(path, `\n${stringifyJsonLine(bounded)}\n`, { mode: FILE_MODE });
-  healMode(path);
+  append(path, `\n${stringifyJsonLine(bounded)}\n`);
 }
 
 /** Withdraw a grant by appending a tombstone — the fold drops the digest when it sees one. */
 export function appendRevocation(path: string, digest: string, revokedAt: string): void {
   ensureFile(path);
-  refuseSymlink(path);
-  appendFileSync(path, `\n${stringifyJsonLine({ v: 1, revoked: digest, revokedAt })}\n`, {
-    mode: FILE_MODE,
-  });
-  healMode(path);
+  append(path, `\n${stringifyJsonLine({ v: 1, revoked: digest, revokedAt })}\n`);
 }
 
 function ensureFile(path: string): void {
@@ -339,28 +331,28 @@ const MAX_METADATA_CHARS = 512;
 const MAX_METADATA_ENTRIES = 64;
 
 /**
- * Refuse to write through a SYMLINK at the grant path.
+ * One append through ONE descriptor ({@link appendToOwnerOnlyFile}): a link at the grant path is refused unfollowed, and so is a file
+ * that is not a regular one, and the `0600` mode is set on the descriptor that was written.
  *
- * `ensureFile`'s exclusive create refuses to follow one at first creation, but every later `appendFileSync`
- * and `chmodSync` follows links — so a process that replaced the file with a symlink after the first write
- * turned this store into a write primitive against any file the CLI can write. A review reproduced a grant
- * record landing in an arbitrary target. ADR-0084 accepts that anything with write access to `~/.relavium`
- * can edit the grant FILE; using it to write somewhere else is a different thing, and not accepted.
- *
- * `lstat` rather than `O_NOFOLLOW` because `appendFileSync` takes no flags — a check-then-write window
- * remains, and it is narrower than the unbounded one it replaces. The sibling terminal outbox has the
- * identical shape and gets the identical guard.
+ * `ensureFile`'s exclusive create refuses to follow a link at first creation, but a later append that opened the path again would
+ * follow one — so a process that replaced the file with a symlink after the first write turned this store into a write primitive
+ * against any file the CLI can write. A review reproduced a grant record landing in an arbitrary target. ADR-0084 accepts that
+ * anything with write access to `~/.relavium` can edit the grant FILE; using it to write somewhere else is a different thing, and
+ * not accepted. An earlier version closed it with an `lstat` followed by `appendFileSync` and `chmodSync`, which left a window
+ * between the check and each of the two operations; the open, the check and the write are now one file.
  */
-function refuseSymlink(path: string): void {
+function append(path: string, text: string): void {
   try {
-    if (lstatSync(path).isSymbolicLink()) {
+    appendToOwnerOnlyFile(path, text, FILE_MODE);
+  } catch (error) {
+    if (error instanceof AppendTargetRefusedError) {
       throw new ConsentStoreError(
-        'the MCP consent store is a symbolic link; refusing to write through it',
+        error.reason === 'symlink'
+          ? 'the MCP consent store is a symbolic link; refusing to write through it'
+          : 'the MCP consent store is not a regular file; refusing to write to it',
       );
     }
-  } catch (error) {
-    if (error instanceof ConsentStoreError) throw error;
-    // The path vanished between the create and this check — the append below fails on its own terms.
+    throw error;
   }
 }
 
@@ -369,13 +361,5 @@ export class ConsentStoreError extends RelaviumError {
   constructor(message: string) {
     super(message);
     this.name = 'ConsentStoreError';
-  }
-}
-
-function healMode(path: string): void {
-  try {
-    chmodSync(path, FILE_MODE);
-  } catch {
-    // Windows, or a file we do not own. The at-rest guard there is the per-user profile ACL (ADR-0050).
   }
 }

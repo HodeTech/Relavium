@@ -1,3 +1,4 @@
+import { RelaviumError } from '@relavium/shared';
 import {
   type DocumentOptions,
   type LineCounter,
@@ -6,6 +7,7 @@ import {
   type SchemaOptions,
   type ToJSOptions,
   type YAMLError,
+  YAMLParseError,
   isScalar,
   parse as parseYaml,
   parseDocument,
@@ -18,6 +20,24 @@ import {
  * least), which is ~230,000 comparisons and a few milliseconds. A longer source takes {@link duplicateKeyCheck} instead.
  */
 export const LIBRARY_CHECK_MAX_CHARS = 2048;
+
+/**
+ * The most map keys one long source may hold, counting a key only when another key of its map comes before it (the first key
+ * of every map is free). The linear duplicate check ({@link duplicateKeyCheck}) makes the library build one `DUPLICATE_KEY`
+ * error per counted key, to be dropped afterwards, so the work and the memory of a decode grow with the keys: measured on a 2 MiB
+ * source of 357,523 distinct keys, 1.9 s and about 575 MB of heap (the same source takes 0.95 s and 290 MB with no check at all),
+ * and a catalog scan decodes up to eight such sources one after the other on the Home's UI thread. A source over the budget is
+ * refused with a `YAMLParseError` (code `RESOURCE_EXHAUSTION`, a fixed message with no authored text) the moment the key past it
+ * is met, before the library builds another error for it or composes the rest of that map.
+ *
+ * 100,000 is several times the keys of the largest workflow the admission ceilings describe in practice (500 nodes of ~15 keys
+ * and 2,000 edges are ~14,000), and above the 60,000-key map the decode tests parse. It bounds one decode, not a scan: a scan's
+ * total is the catalog's own byte budget.
+ */
+export const MAX_MAP_KEYS = 100_000;
+
+/** The fixed, source-free message of the refusal above. */
+const TOO_MANY_KEYS = `the document has more than ${String(MAX_MAP_KEYS)} mapping keys`;
 
 /**
  * The single hardened, deterministic YAML 1.2-core decode profile (ADR-0035) every authored-YAML parser
@@ -67,8 +87,17 @@ function profile(
   };
 }
 
-/** A fixed, source-free message (no authored text) for the fail-closed case. */
-const MISALIGNED = 'the YAML duplicate-key check no longer matches the YAML parser';
+/**
+ * The duplicate-key bookkeeping stopped matching the parser's own errors: a library change, or a bug here. An internal fault, not an
+ * authored one, so it is its own type (a caller can tell it from a syntax fault) and its message is fixed and source-free. The
+ * decode fails CLOSED with it rather than let a duplicate through; the two parsers file it as "not valid YAML".
+ */
+export class YamlDecodeInvariantError extends RelaviumError {
+  constructor() {
+    super('the YAML duplicate-key check no longer matches the YAML parser');
+    this.name = 'YamlDecodeInvariantError';
+  }
+}
 
 /** What {@link duplicateKeyCheck} hands the decode: the comparator for `uniqueKeys` and the settling of the errors. */
 interface DuplicateKeyCheck {
@@ -95,8 +124,16 @@ interface DuplicateKeyCheck {
  * all of that stays the library's).
  *
  * Two keys are equal exactly when the library's default comparison said so: both are scalars with the same
- * `value` (a quoted `"a"` equals a plain `a`); a collection key and an alias equal nothing. Under `stringKeys`
- * every scalar key's value is a string, so `Set` (SameValueZero) and `===` agree.
+ * `value` (a quoted `"a"` equals a plain `a`); a collection key and an alias equal nothing. Under `stringKeys` the
+ * library resolves every scalar key AS A STRING (`compose-scalar.js`, `ctx.atKey`), even a tagged one (`!!float .nan`
+ * keeps the string `'.nan'` and gets a `NON_STRING_KEY` error of its own), so no key's value is ever `NaN` and `Set`
+ * (SameValueZero) and `===` agree on every key: two `.nan` keys are a duplicate for the library and for this check.
+ *
+ * At most {@link MAX_MAP_KEYS} questions are answered; the next one throws a `YAMLParseError` (`RESOURCE_EXHAUSTION`,
+ * {@link TOO_MANY_KEYS}). The library catches a throw from a collection's composition and files it as an error of its own
+ * with the same message, then goes on with the rest of the document; every later question throws the same fault at once, so
+ * no key past the budget costs a comparison or an answer, and `settle` hands the refusal back like any other error
+ * (a fault before it in the document still comes first). A library that let the throw escape would escape with this error.
  *
  * It FAILS CLOSED: if the errors and the questions stop lining up (a library that asks differently, or not at
  * all), `settle` throws instead of letting a duplicate through.
@@ -104,8 +141,17 @@ interface DuplicateKeyCheck {
 function duplicateKeyCheck(): DuplicateKeyCheck {
   const keysOfMap = new WeakMap<ParsedNode, Set<unknown>>();
   const answers: boolean[] = [];
+  let overBudget: YAMLParseError | undefined;
 
   const ask = (first: ParsedNode, candidate: ParsedNode): boolean => {
+    if (overBudget === undefined && answers.length >= MAX_MAP_KEYS) {
+      overBudget = new YAMLParseError(
+        [candidate.range[0], candidate.range[1]],
+        'RESOURCE_EXHAUSTION',
+        TOO_MANY_KEYS,
+      );
+    }
+    if (overBudget !== undefined) throw overBudget;
     let keys = keysOfMap.get(first);
     if (keys === undefined) {
       // The first key of a map is never a candidate (nothing to compare it with), so it joins the set here.
@@ -132,13 +178,13 @@ function duplicateKeyCheck(): DuplicateKeyCheck {
       }
       const duplicate = answers[asked];
       asked += 1;
-      if (duplicate === undefined) throw new Error(MISALIGNED);
+      if (duplicate === undefined) throw new YamlDecodeInvariantError();
       if (duplicate) faults.push(error);
     }
     // More questions than errors is only legitimate after a second document, which the library composes (and then
     // refuses with `MULTIPLE_DOCS`) after the first document's errors were already collected.
     if (asked < answers.length && !errors.some((error) => error.code === 'MULTIPLE_DOCS')) {
-      throw new Error(MISALIGNED);
+      throw new YamlDecodeInvariantError();
     }
     return faults;
   };

@@ -26,15 +26,24 @@
  * cannot read: its callers (the engine's drain, `status`) catch that, and an empty answer would be a lie.
  */
 
-import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { RunEventSchema, type RunEvent, type TerminalOutbox } from '@relavium/shared';
 
+import { readRegularFile } from '../permissions/file-state.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { appendToOwnerOnlyFile } from './owner-only-append.js';
 
 /** Owner-only, matching `history.db` (ADR-0050). A no-op on Windows, as the at-rest guard there is the ACL. */
 const FILE_MODE = 0o600;
+
+/**
+ * The most bytes of outbox {@link readEntries} reads, 32 MiB. An entry is one terminal event (bounded by the run-event size guard) and
+ * the file is "approximately never" written, so this is far past a real outbox; one past it is a planted or runaway file, and it is
+ * refused as unreadable rather than read whole into memory.
+ */
+export const MAX_OUTBOX_BYTES = 32 * 1024 * 1024;
 
 /** The `errno` code of a Node fs error (`ENOENT`, `EACCES`, …), or `undefined` if it is not one. */
 function errnoCode(err: unknown): string | undefined {
@@ -61,17 +70,20 @@ function tombstoneRunId(raw: unknown): string | undefined {
  * An absent file holds nothing. A file that exists but cannot be read is NOT empty: it throws a fixed error, so
  * `list` rejects and a reader can tell "nothing held" from "could not look". That difference is what keeps a
  * reconcile from repairing a run whose held terminal it could not see (ADR-0078 §4), and what lets `status` warn.
+ *
+ * **A link, a FIFO, a device, a directory or a file over {@link MAX_OUTBOX_BYTES} is "could not look", not a file to read.** The
+ * read goes through the same descriptor discipline as the operator's permission files (`readRegularFile`: no link followed, no
+ * wait on a FIFO, the size checked on the descriptor), so it is symmetric with the write, which already refused a link. The reader
+ * parses what it finds as terminal events and persists them, so a planted link to attacker-chosen text would otherwise be a way to
+ * fabricate one.
  */
 function readEntries(path: string): Map<string, RunEvent> {
   const held = new Map<string, RunEvent>();
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (error) {
-    if (errnoCode(error) === 'ENOENT') return held;
-    // Fixed text: a filesystem error may carry a private path.
-    throw new Error('the terminal outbox could not be read');
-  }
+  const read = readRegularFile(path, MAX_OUTBOX_BYTES);
+  if (read.kind === 'absent') return held;
+  // Fixed text: a filesystem error may carry a private path.
+  if (read.kind === 'refused') throw new Error('the terminal outbox could not be read');
+  const { text } = read;
   for (const line of text.split('\n')) {
     if (line.trim() === '') continue;
     let raw: unknown;
@@ -123,28 +135,17 @@ export function terminalOutboxStamp(path: string): string | undefined {
  */
 export function createFileTerminalOutbox(path: string): TerminalOutbox {
   /**
-   * Refuse to write through a SYMLINK at the outbox path.
+   * One append through ONE descriptor, refusing to write through a SYMLINK (or any file that is not a regular one) at the outbox path.
    *
-   * `appendFileSync` and `chmodSync` both follow links, so a process that replaced this file with one
-   * turned the outbox into a write primitive against any file the CLI can write. Added with the identical
-   * guard on the MCP consent store
-   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §5): the two files are
-   * the same shape, and fixing one and not the other would be a coin-flip about which one an attacker used.
+   * `appendFileSync` and `chmodSync` both follow links, so a process that replaced this file with one turned the outbox into a write
+   * primitive against any file the CLI can write. The first guard was an `lstat` before the two path-based calls
+   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §5, added with the identical guard on the MCP
+   * consent store); a link put there AFTER the `lstat` was still followed. The open is now `O_NOFOLLOW`, the regular-file check is
+   * the descriptor's, and the write and the `0600` mode go to that same descriptor ({@link appendToOwnerOnlyFile}). A refusal is as
+   * silent as every other failure here: nothing was written, and the run reports `uncertain`.
    */
-  const isSymlink = (): boolean => {
-    try {
-      return lstatSync(path).isSymbolicLink();
-    } catch {
-      return false; // absent — the append creates it, and `appendFileSync` does not follow a link it makes
-    }
-  };
-
-  const ensureMode = (): void => {
-    try {
-      chmodSync(path, FILE_MODE);
-    } catch {
-      // Windows, or a file we do not own. The at-rest guard there is the per-user profile ACL (ADR-0050).
-    }
+  const append = (text: string): void => {
+    appendToOwnerOnlyFile(path, text, FILE_MODE);
   };
 
   return {
@@ -160,9 +161,7 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
         //
         // `stringifyJsonLine`, not a bare `JSON.stringify` — this line is read back and re-parsed, and the
         // payload carries model output. The escape is lossless, so the round-trip is exact (`CR-03`).
-        if (isSymlink()) return Promise.resolve(); // never write through a link (ADR-0084 §5)
-        appendFileSync(path, `\n${stringifyJsonLine(event)}\n`, { mode: FILE_MODE });
-        ensureMode();
+        append(`\n${stringifyJsonLine(event)}\n`); // never through a link (ADR-0084 §5)
       } catch {
         // Deliberately silent — see the module docblock. The run reports `uncertain` either way.
       }
@@ -189,11 +188,7 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
         // claimed. A removal appends one marker line and the reader drops the run when it sees one. The file
         // grows by a line per resolved entry rather than shrinking, which is affordable by construction: an
         // entry exists only for a run whose terminal write failed, which is meant to be approximately never.
-        if (isSymlink()) return Promise.resolve(); // never write through a link (ADR-0084 §5)
-        appendFileSync(path, `\n${stringifyJsonLine({ [TOMBSTONE_KEY]: runId })}\n`, {
-          mode: FILE_MODE,
-        });
-        ensureMode();
+        append(`\n${stringifyJsonLine({ [TOMBSTONE_KEY]: runId })}\n`); // never through a link (ADR-0084 §5)
       } catch {
         // A stale entry is retried next start and dropped when its run is found already terminal — an
         // orphan costs one read, never a wrong terminal.

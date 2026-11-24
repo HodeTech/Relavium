@@ -4,7 +4,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentParseError, parseAgent } from './agent-parser.js';
 import { WorkflowSyntaxError } from './errors.js';
 import { parseWorkflow } from './parser.js';
-import { LIBRARY_CHECK_MAX_CHARS, decodeHardenedYaml } from './yaml-decode.js';
+import {
+  LIBRARY_CHECK_MAX_CHARS,
+  MAX_MAP_KEYS,
+  YamlDecodeInvariantError,
+  decodeHardenedYaml,
+} from './yaml-decode.js';
 
 /** What a parser's caller sees of a YAML fault: the library's code and message, its offsets, its line/column. */
 interface Fault {
@@ -118,6 +123,9 @@ describe.each(WAYS)(
       ['a key with no value, then the same key', 'a\na: 1\n'],
       ['an anchored duplicate', '&x a: 1\na: 2\n'],
       ['a non-string key before a duplicate', '? {x: 1}\n: 1\na: 1\na: 2\n'],
+      // Under `stringKeys` a key is always a string, even a tagged one, so `.nan` is never NaN: `Set` and `===` agree.
+      ['two `.nan` keys (strings under stringKeys)', '.nan: 1\n.nan: 2\n'],
+      ['two tagged `!!float .nan` keys', '!!float .nan: 1\n!!float .nan: 2\na: 1\na: 2\n'],
       ['the same keys in one map and in its flow child', 'a: 1\nb: {a: 1, a: 2}\n'],
       ['a nested duplicate before an outer one', 'a:\n  x: 1\n  x: 2\na: 3\n'],
       ['an empty-keyed pair after an empty value', 'a:\n: 1\n: 2\n'],
@@ -252,6 +260,97 @@ describe('decodeHardenedYaml — a large map is not quadratic', () => {
   });
 });
 
+describe('decodeHardenedYaml — a source has a budget of map keys', () => {
+  // Each test decodes sources of 100,000 keys and more; a loaded CI worker needs more than the default five seconds.
+  const SLOW = 30_000;
+  const TOO_MANY = `the document has more than ${String(MAX_MAP_KEYS)} mapping keys`;
+
+  function flat(count: number, indent = ''): string {
+    return `${Array.from({ length: count }, (_, index) => `${indent}k${index}: ${index}`).join('\n')}\n`;
+  }
+
+  it(
+    'admits a map of exactly the budget and refuses it one key later',
+    () => {
+      // The first key of a map is free: MAX_MAP_KEYS + 1 keys put MAX_MAP_KEYS questions to the check.
+      expect(
+        Object.keys(decodeHardenedYaml(flat(MAX_MAP_KEYS + 1), new LineCounter()) as object),
+      ).toHaveLength(MAX_MAP_KEYS + 1);
+      const fault = faultOf(decodeHardenedYaml, flat(MAX_MAP_KEYS + 2));
+      expect(fault.code).toBe('RESOURCE_EXHAUSTION');
+      expect(fault.message).toBe(TOO_MANY);
+    },
+    SLOW,
+  );
+
+  it(
+    'counts the keys of a flow map the same way',
+    () => {
+      const flow = (count: number): string =>
+        `{${Array.from({ length: count }, (_, index) => `k${index}: ${index}`).join(', ')}}`;
+      expect(
+        Object.keys(decodeHardenedYaml(flow(MAX_MAP_KEYS + 1), new LineCounter()) as object),
+      ).toHaveLength(MAX_MAP_KEYS + 1);
+      expect(faultOf(decodeHardenedYaml, flow(MAX_MAP_KEYS + 2)).message).toBe(TOO_MANY);
+    },
+    SLOW,
+  );
+
+  it(
+    'counts the keys of every map of the document together, not of each map alone',
+    () => {
+      // Three keys in each of the maps: two questions each, so 50,000 maps are exactly the budget and one more map is over it.
+      const maps = (count: number): string =>
+        Array.from({ length: count }, (_, index) => `- {a: ${index}, b: 1, c: 2}`).join('\n');
+      expect(decodeHardenedYaml(maps(MAX_MAP_KEYS / 2), new LineCounter())).toHaveLength(
+        MAX_MAP_KEYS / 2,
+      );
+      expect(faultOf(decodeHardenedYaml, maps(MAX_MAP_KEYS / 2 + 1)).message).toBe(TOO_MANY);
+    },
+    SLOW,
+  );
+
+  it(
+    'keeps a fault that comes before the budget as the fault',
+    () => {
+      // The first error in the document wins, as it does for `uniqueKeys: true`: a real duplicate at the second key is it.
+      const fault = faultOf(decodeHardenedYaml, `a: 1\na: 2\n${flat(MAX_MAP_KEYS + 50)}`);
+      expect(fault.code).toBe('DUPLICATE_KEY');
+      expect(fault.line).toBe(2);
+    },
+    SLOW,
+  );
+
+  it(
+    'refuses through parseWorkflow and parseAgent with the fixed sentence and the position, and no authored text',
+    () => {
+      const agent = `id: a\nmodel: m\nmetadata:\n${flat(MAX_MAP_KEYS + 50, '  ')}`;
+      try {
+        parseAgent(agent, { source: 'agents/a.agent.yaml' });
+        expect.unreachable('a source over the key budget must be refused');
+      } catch (error) {
+        if (!(error instanceof AgentParseError)) throw error;
+        expect(error.code).toBe('agent_syntax');
+        expect(error.message).toMatch(
+          new RegExp(`^${TOO_MANY} \\(agents/a\\.agent\\.yaml — line \\d+, column \\d+\\)$`),
+        );
+        expect(error.message).not.toContain('k0');
+      }
+      try {
+        parseWorkflow(
+          `schema_version: '1.0'\nworkflow:\n  id: w\n  metadata:\n${flat(MAX_MAP_KEYS + 50, '    ')}`,
+        );
+        expect.unreachable('a source over the key budget must be refused');
+      } catch (error) {
+        if (!(error instanceof WorkflowSyntaxError)) throw error;
+        expect(error.message).toBe(TOO_MANY);
+        expect(error.line).toBeGreaterThan(0);
+      }
+    },
+    SLOW,
+  );
+});
+
 describe('decodeHardenedYaml — the linear duplicate check fails closed', () => {
   const LONG_PAD = `# ${'x'.repeat(LIBRARY_CHECK_MAX_CHARS)}\n`;
 
@@ -260,10 +359,10 @@ describe('decodeHardenedYaml — the linear duplicate check fails closed', () =>
     vi.resetModules();
   });
 
-  /** `decodeHardenedYaml` over a `yaml` whose `parseDocument` hands back a document changed by `tamper`. */
+  /** `yaml-decode` over a `yaml` whose `parseDocument` hands back a document changed by `tamper`. */
   async function decodeWithTamperedDocument(
     tamper: (document: { errors: unknown[] }, actual: typeof import('yaml')) => void,
-  ): Promise<typeof decodeHardenedYaml> {
+  ): Promise<typeof import('./yaml-decode.js')> {
     vi.resetModules();
     vi.doMock('yaml', async (importOriginal) => {
       const actual = await importOriginal<typeof import('yaml')>();
@@ -276,22 +375,49 @@ describe('decodeHardenedYaml — the linear duplicate check fails closed', () =>
         },
       };
     });
-    return (await import('./yaml-decode.js')).decodeHardenedYaml;
+    return import('./yaml-decode.js');
   }
 
   it('throws when the library reports a duplicate its comparator was never asked about', async () => {
-    const decode = await decodeWithTamperedDocument((document, actual) => {
-      document.errors.push(
-        new actual.YAMLParseError([0, 1], 'DUPLICATE_KEY', 'Map keys must be unique'),
-      );
-    });
-    expect(() => decode(`${LONG_PAD}a: 1\n`, new LineCounter())).toThrow(/no longer matches/);
+    const { decodeHardenedYaml: decode, YamlDecodeInvariantError: Invariant } =
+      await decodeWithTamperedDocument((document, actual) => {
+        document.errors.push(
+          new actual.YAMLParseError([0, 1], 'DUPLICATE_KEY', 'Map keys must be unique'),
+        );
+      });
+    const attempt = (): unknown => decode(`${LONG_PAD}a: 1\n`, new LineCounter());
+    expect(attempt).toThrow(/no longer matches/);
+    // A typed internal fault, not a bare `Error` and not a syntax fault: a caller can tell it from a YAML mistake.
+    expect(attempt).toThrow(Invariant);
   });
 
   it('throws when the comparator was asked about a duplicate the library never reported', async () => {
-    const decode = await decodeWithTamperedDocument((document) => {
-      document.errors.length = 0;
+    const { decodeHardenedYaml: decode, YamlDecodeInvariantError: Invariant } =
+      await decodeWithTamperedDocument((document) => {
+        document.errors.length = 0;
+      });
+    const attempt = (): unknown => decode(`${LONG_PAD}a: 1\na: 2\n`, new LineCounter());
+    expect(attempt).toThrow(/no longer matches/);
+    expect(attempt).toThrow(Invariant);
+  });
+
+  it('does not build a library error per key past the key budget', async () => {
+    let built = -1;
+    const { decodeHardenedYaml: decode } = await decodeWithTamperedDocument((document) => {
+      built = document.errors.length;
     });
-    expect(() => decode(`${LONG_PAD}a: 1\na: 2\n`, new LineCounter())).toThrow(/no longer matches/);
+    const keys = Array.from({ length: 3 * MAX_MAP_KEYS }, (_, index) => `k${index}: ${index}`);
+    expect(() => decode(`${keys.join('\n')}\n`, new LineCounter())).toThrow(/mapping keys/);
+    // One DUPLICATE_KEY error per answered question, and the refusal: never one for each of the 300,000 keys.
+    expect(built).toBeLessThanOrEqual(MAX_MAP_KEYS + 1);
+  }, 30_000);
+});
+
+describe('YamlDecodeInvariantError', () => {
+  it('is a typed internal fault with a fixed, source-free message', () => {
+    const error = new YamlDecodeInvariantError();
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe('YamlDecodeInvariantError');
+    expect(error.message).toBe('the YAML duplicate-key check no longer matches the YAML parser');
   });
 });

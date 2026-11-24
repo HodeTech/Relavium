@@ -272,6 +272,9 @@ function invalidEntry(path: string, rel: string, error: string): CatalogEntry {
   };
 }
 
+/** UTF-8 that refuses malformed input instead of repairing it; `ignoreBOM` keeps a leading U+FEFF in the text, as `Buffer#toString` did. */
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
 /** The hardened read of one catalog file: its text, or the `valid: false` entry that says why it was not read. */
 type CatalogText =
   | { readonly ok: true; readonly yaml: string; readonly rel: string }
@@ -353,7 +356,13 @@ function readCatalogText(
       // what was really read. (Past the budget the file is refused, as a file that did not fit is.)
       const grown = total - Number(stats.size);
       if (grown > 0 && !budget.charge(grown)) return refused(path, rel, budget.reason);
-      yaml = Buffer.concat(chunks, total).toString('utf8');
+      try {
+        yaml = STRICT_UTF8.decode(Buffer.concat(chunks, total));
+      } catch {
+        // A lenient decode turns each malformed sequence into U+FFFD: the entry would list as VALID, and the Home would bind and run an
+        // agent whose prompt is no longer the one in the file (review P05-2; the authoring read refuses the same bytes).
+        return refused(path, rel, 'not valid UTF-8');
+      }
     } finally {
       closeSync(fd);
     }

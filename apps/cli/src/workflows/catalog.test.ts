@@ -415,6 +415,78 @@ describe('discoverCatalog', () => {
     expect(vi.mocked(readSync)).not.toHaveBeenCalled();
   });
 
+  describe('malformed UTF-8 (review P05-2)', () => {
+    /** A valid agent whose prompt holds `bytes` (so the file is well formed except for them). */
+    function agentWithPromptBytes(bytes: readonly number[]): Buffer {
+      return Buffer.concat([
+        Buffer.from(
+          'id: summarizer\nname: Summarizer\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: "Summarize ',
+        ),
+        Buffer.from(bytes),
+        Buffer.from(' the input."\n'),
+      ]);
+    }
+    function writeBuffer(kind: 'workflows' | 'agents', name: string, body: Buffer): void {
+      mkdirSync(join(configDir, kind), { recursive: true });
+      writeFileSync(join(configDir, kind, name), body);
+    }
+
+    it.each([
+      ['a lone continuation byte', [0x80]],
+      ['an invalid start byte', [0xff, 0xfe]],
+      ['a truncated three-byte sequence', [0xe2, 0x82]],
+      ['an overlong encoding', [0xc0, 0xaf]],
+      ['an encoded surrogate', [0xed, 0xa0, 0x80]],
+    ])('lists %s as a refused file with a fixed reason, not as a valid entry', (_label, bytes) => {
+      writeBuffer('agents', 'bad.agent.yaml', agentWithPromptBytes(bytes));
+      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+      expect(
+        entries.map((entry) => ({ slug: entry.slug, valid: entry.valid, error: entry.error })),
+      ).toEqual([{ slug: 'bad', valid: false, error: 'not valid UTF-8' }]);
+    });
+
+    it('refuses a workflow the same way', () => {
+      writeBuffer(
+        'workflows',
+        'bad.relavium.yaml',
+        Buffer.concat([
+          Buffer.from('# '),
+          Buffer.from([0xff]),
+          Buffer.from('\n'),
+          Buffer.from(VALID_WORKFLOW),
+        ]),
+      );
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        kind: 'workflows',
+      });
+      expect(entries.map((entry) => [entry.slug, entry.valid, entry.error])).toEqual([
+        ['bad', false, 'not valid UTF-8'],
+      ]);
+    });
+
+    it('still lists well-formed multibyte text, and a file that begins with a byte-order mark, as before', () => {
+      writeBuffer('agents', 'wide.agent.yaml', agentWithPromptBytes([...Buffer.from('日本語 €')]));
+      writeBuffer(
+        'workflows',
+        'bom.relavium.yaml',
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(VALID_WORKFLOW)]),
+      );
+      expect(
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' }).map((entry) => [
+          entry.slug,
+          entry.valid,
+        ]),
+      ).toEqual([['summarizer', true]]);
+      expect(
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }).map(
+          (entry) => [entry.slug, entry.valid],
+        ),
+      ).toEqual([['hello', true]]);
+    });
+  });
+
   it('admits a dense multibyte file over the character cap in bytes but within it in characters', () => {
     // Three bytes per character: half the cap in characters is one and a half times it in bytes.
     write('workflows', 'dense.yaml', `# ${'€'.repeat(MAX_SOURCE_CHARS / 2)}\n${VALID_WORKFLOW}`);

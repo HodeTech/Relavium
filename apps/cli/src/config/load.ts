@@ -1,4 +1,13 @@
-import { chmodSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  type BigIntStats,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -39,33 +48,8 @@ export function loadConfigFile<T>(
   // Automatic project layers must not read global state through child aliases.
   // Explicit operator config reads retain their selected-file contract.
   if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home ?? homedir());
-  let stats: Stats;
-  try {
-    stats = statSync(filePath);
-  } catch (err) {
-    if (errnoCode(err) === 'ENOENT') {
-      return undefined; // an absent layer is not an error
-    }
-    throw new ConfigError(filePath, 'could not be read.', { cause: err });
-  }
-  if (!stats.isFile()) {
-    throw new ConfigError(filePath, 'is not a regular file.');
-  }
-  if (opts?.selfHealMode === true) {
-    reassertOwnerOnly(filePath, stats);
-  }
-  // Enforce the size cap BEFORE reading into memory (ADR-0048 hardened loader) — an oversize
-  // file is rejected without ever being loaded.
-  if (stats.size > MAX_CONFIG_BYTES) {
-    throw new ConfigError(filePath, `exceeds the ${MAX_CONFIG_BYTES}-byte config size limit.`);
-  }
-
-  let text: string;
-  try {
-    text = readFileSync(filePath, 'utf8');
-  } catch (err) {
-    throw new ConfigError(filePath, 'could not be read.', { cause: err });
-  }
+  const text = readConfigText(filePath, opts?.selfHealMode === true);
+  if (text === undefined) return undefined; // an absent layer is not an error
 
   let data: unknown;
   try {
@@ -87,6 +71,83 @@ export function loadConfigFile<T>(
     });
   }
   return result.data;
+}
+
+/**
+ * The text of one config layer, or `undefined` when there is no file. The file is opened ONCE and every question (is it a regular
+ * file, how big, which mode) and the read itself are asked of the DESCRIPTOR, never of the path again: a `stat` then a `readFileSync`
+ * by path left a window in which a same-directory owner could rename a FIFO over the file (the read then blocks with no deadline) or
+ * a larger file (the size cap was checked on the old one). `O_NONBLOCK` keeps the open itself from waiting on a FIFO, which the
+ * descriptor's own `fstat` then refuses.
+ *
+ * **A link is FOLLOWED, on purpose.** There is no `O_NOFOLLOW`: the operator's global config (and `--config`) may be a link into a
+ * dotfiles repository, and a project layer may be a link to a file the project owns; reads through intentional links remain
+ * supported ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md), amended 2026-10-16). What keeps a project
+ * layer out of global state is the canonical-path rule at the top of {@link loadConfigFile}, not a refusal of every link. The one
+ * place a link must NOT be followed is the `0600` self-heal, which {@link reassertOwnerOnly} settles from the descriptor.
+ *
+ * Every failure keeps its fixed sentence; none carries the path (the caller's {@link ConfigError} names the file).
+ */
+function readConfigText(filePath: string, selfHeal: boolean): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  } catch (err) {
+    const code = errnoCode(err);
+    if (code === 'ENOENT') return undefined;
+    // Windows reports a directory at the open; elsewhere it opens and the descriptor says what it is.
+    if (code === 'EISDIR') throw new ConfigError(filePath, 'is not a regular file.');
+    throw new ConfigError(filePath, 'could not be read.', { cause: err });
+  }
+  try {
+    let stats: BigIntStats;
+    try {
+      stats = fstatSync(fd, { bigint: true });
+    } catch (err) {
+      throw new ConfigError(filePath, 'could not be read.', { cause: err });
+    }
+    if (!stats.isFile()) {
+      throw new ConfigError(filePath, 'is not a regular file.');
+    }
+    if (selfHeal) {
+      reassertOwnerOnly(filePath, fd, stats);
+    }
+    // Enforce the size cap BEFORE reading into memory (ADR-0048 hardened loader) — an oversize
+    // file is rejected without ever being loaded. The read below is bounded too: a file that grew after the `fstat` is refused as
+    // one that was over the cap.
+    if (stats.size > BigInt(MAX_CONFIG_BYTES)) {
+      throw new ConfigError(filePath, `exceeds the ${MAX_CONFIG_BYTES}-byte config size limit.`);
+    }
+    return readWithinCap(fd, filePath);
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // A read-only descriptor that fails to close has nothing left to lose.
+    }
+  }
+}
+
+/** The descriptor's bytes as UTF-8, read in bounded chunks; refuses (the size-limit sentence) once more than the cap are there. */
+function readWithinCap(fd: number, filePath: string): string {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, MAX_CONFIG_BYTES + 1 - total));
+      const count = readSync(fd, buffer, 0, buffer.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_CONFIG_BYTES) {
+        throw new ConfigError(filePath, `exceeds the ${MAX_CONFIG_BYTES}-byte config size limit.`);
+      }
+      chunks.push(buffer.subarray(0, count));
+    }
+  } catch (err) {
+    if (err instanceof ConfigError) throw err;
+    throw new ConfigError(filePath, 'could not be read.', { cause: err });
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 export interface LoadConfigOptions {
@@ -204,20 +265,22 @@ function operatorIssue(error: ZodError): OperatorSetting | undefined {
  *
  * Skips the `chmod` entirely when the mode is already right, so the common path adds no syscall at all.
  */
-function reassertOwnerOnly(filePath: string, stats: Stats): void {
+function reassertOwnerOnly(filePath: string, fd: number, stats: BigIntStats): void {
   // The permission bits of `st_mode` — masking is the only way to read them.
-  if ((stats.mode & 0o777) === 0o600) {
+  if ((stats.mode & 0o777n) === 0o600n) {
     return;
   }
-  // `stat` followed the link to get here, and `chmod` would follow it too — changing the mode of whatever the
-  // link points AT, which may be a file outside `~/.relavium` that this heal has no business touching
-  // (#W15-13). `lstat` is the only way to ask about the link itself. A symlinked config is left alone; that is
-  // the same "leave it as it was" outcome as any other failure on this best-effort path.
+  // The descriptor was opened THROUGH a link if the path is one, and `fchmod` would change the mode of whatever the link points AT,
+  // which may be a file outside `~/.relavium` that this heal has no business touching (#W15-13). `lstat` is the only way to ask about
+  // the path's own entry: it must be a regular file and the very file the descriptor holds (same device and inode), or it is left
+  // alone. A symlinked config is left alone; that is the same "leave it as it was" outcome as any other failure on this best-effort
+  // path. The mode is then set on the DESCRIPTOR, so a path swapped after the `lstat` is not chmod'ed either.
   try {
-    if (lstatSync(filePath).isSymbolicLink()) {
+    const entry = lstatSync(filePath, { bigint: true });
+    if (!entry.isFile() || entry.dev !== stats.dev || entry.ino !== stats.ino) {
       return;
     }
-    chmodSync(filePath, 0o600);
+    fchmodSync(fd, 0o600);
   } catch {
     // Best-effort by design — see the doc comment. A config layer is readable either way.
   }

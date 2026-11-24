@@ -7,9 +7,18 @@
  * proves the code believes it did not spawn.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 import type { McpServerRef } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -118,8 +127,56 @@ describe('assertStdioConsent — nothing spawns without a decision (ADR-0084 §1
       prompt: () => Promise.resolve(true),
     });
     expect(err()).toContain('could not be read');
-    expect(err()).toContain(store);
+    // Named from `~`, so a transcript or a screen share does not carry the operator's directory layout away.
+    expect(err()).toContain(`~${sep}.relavium${sep}mcp-consent.ndjson could not be read`);
+    expect(err()).not.toContain(home);
   });
+
+  // A symbolic link is not created on every Windows account.
+  it.skipIf(process.platform === 'win32')(
+    'does NOT honour a grant read through a symbolic link, says so without a path, and refuses to record into it',
+    async () => {
+      const store = mcpConsentPath(home);
+      const deps = {
+        global: globalOptions(),
+        homeDir: home,
+        now: () => '2026-08-20T00:00:00.000Z',
+      };
+      let asked = 0;
+      const prompt = (): Promise<boolean> => {
+        asked += 1;
+        return Promise.resolve(true);
+      };
+      const first = io();
+      await assertStdioConsent([ref()], process.cwd(), { ...deps, io: first.io, prompt });
+      expect(asked).toBe(1);
+      expect(first.err()).not.toContain('could not be read'); // a readable store: no warning
+      // The store is moved aside and a link to it takes its place: the grant is still readable THROUGH the link.
+      const moved = join(home, 'moved-store.ndjson');
+      renameSync(store, moved);
+      symlinkSync(moved, store);
+      const before = readFileSync(moved, 'utf8');
+
+      const second = io();
+      await expect(
+        assertStdioConsent([ref()], process.cwd(), { ...deps, io: second.io, prompt }),
+      ).rejects.toSatisfy(isCliError);
+      expect(asked).toBe(2); // the grant behind the link was not honoured, so it asked again
+      expect(second.err()).toContain(`~${sep}.relavium${sep}mcp-consent.ndjson could not be read`);
+      expect(readFileSync(moved, 'utf8')).toBe(before); // and nothing was written through the link
+      // Neither the warning nor the failure that follows the answer names the operator's directory.
+      expect(second.err()).not.toContain(home);
+      try {
+        await assertStdioConsent([ref()], process.cwd(), { ...deps, io: io().io, prompt });
+        expect.unreachable('a consent that cannot be recorded must not let the run start');
+      } catch (error) {
+        if (!isCliError(error)) throw error;
+        expect(error.message).toContain(`recorded in ~${sep}.relavium${sep}mcp-consent.ndjson`);
+        expect(error.message).toContain('symbolic link');
+        expect(error.message).not.toContain(home);
+      }
+    },
+  );
 
   it('refuses a declaration carrying a LONE SURROGATE rather than crashing (§10.15)', async () => {
     // §3 refuses it "at parse": the string has no UTF-8 encoding, so a non-TypeScript implementation of the

@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
@@ -8,6 +8,7 @@ import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { ResolvedServerRef, StdioConsentGate } from './mcp-servers.js';
 import {
   appendGrant,
+  ConsentStoreError,
   fingerprint,
   readGrants,
   resolveStdioSpawn,
@@ -157,11 +158,12 @@ export async function assertStdioConsent(
   const path = mcpConsentPath(deps.homeDir);
   const grants = readGrants(path);
   if (grants === undefined) {
-    // §5: an unparseable line folds the WHOLE store closed, because a truncated one may be a tombstone.
-    // Reported here rather than swallowed — the user's own grants have just become invisible, and silence
-    // would leave them re-approving everything with no idea why.
+    // §5: an unparseable line folds the WHOLE store closed, because a truncated one may be a tombstone — and so does a store that is a
+    // link, not a regular file, or over the size bound. Reported here rather than swallowed — the user's own grants have just become
+    // invisible, and silence would leave them re-approving everything with no idea why. The file is named from `~`, not by its
+    // absolute path.
     deps.io.writeErr(
-      `warning: ${sanitizeUntrustedInline(path)} could not be read; every stdio MCP server will be asked about again.\n`,
+      `warning: ${consentStoreLabel(deps.homeDir, path)} could not be read; every stdio MCP server will be asked about again.\n`,
     );
   }
 
@@ -255,8 +257,31 @@ async function askAndRecord(
     }
     const grantedAt = now();
     deps.signal?.throwIfAborted();
-    recordGrant(path, spawn, digest, grantedAt);
+    recordGrant(deps.homeDir, path, spawn, digest, grantedAt);
   }
+}
+
+/**
+ * How the grant log is named in a message: from `~`, never by its absolute path (a transcript or a screen share carries the operator's
+ * directory layout away). The log is `<home>/.relavium/mcp-consent.ndjson` by construction ({@link mcpConsentPath}), so the label is
+ * the path below the home.
+ */
+function consentStoreLabel(homeDir: string, path: string): string {
+  return `~${sep}${relative(homeDir, path)}`;
+}
+
+/**
+ * Why a consent could not be recorded, in words that carry no path: the store's own refusal (already fixed text), or a fixed sentence
+ * for the filesystem faults a person can act on. A raw `fs` message names the absolute path, so it is never echoed.
+ */
+function recordFailureReason(error: unknown): string {
+  if (error instanceof ConsentStoreError) return error.message;
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+  if (code === 'EACCES' || code === 'EPERM') return 'permission denied';
+  if (code === 'ENOSPC') return 'no space is left on the device';
+  if (code === 'EROFS') return 'the file system is read-only';
+  return 'the file could not be written';
 }
 
 /**
@@ -267,6 +292,7 @@ async function askAndRecord(
  * unexpected internal error occurred" seconds after the user answered YES to a security prompt.
  */
 function recordGrant(
+  homeDir: string,
   path: string,
   spawn: ResolvedStdioSpawn,
   digest: string,
@@ -285,7 +311,7 @@ function recordGrant(
   } catch (error) {
     throw new CliError(
       'invalid_invocation',
-      `your consent could not be recorded in ${safe(path)}: ${safe(error instanceof Error ? error.message : String(error))}`,
+      `your consent could not be recorded in ${consentStoreLabel(homeDir, path)}: ${recordFailureReason(error)}`,
       { cause: error },
     );
   }

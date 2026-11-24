@@ -47,7 +47,25 @@ export interface HomeNoticeLayout {
   readonly rowCount: number;
 }
 
-/** Keep the full source; page only its wrapped presentation after reserving Home's actionable chrome. */
+/**
+ * The most characters of one notice the Home sanitizes, wraps and pages, 32,768: far past any diagnostic (the doctor's whole report is a
+ * few kilobytes, and a test of 200 full rows is 22 KB), and low enough that the layout, which is rebuilt on every frame, stays cheap.
+ * A notice is whatever a caller was handed (a parse fault, a config detail, a hosted-run fault) and nothing bounded it: measured, 1 MiB
+ * of wide characters took 2.3 s to lay out, once per frame. What is over the bound is cut BEFORE it is wrapped and the cut is shown by
+ * `…` at the end of the last page, so a longer notice reads as longer, not as complete. The cut is by code unit, not by
+ * {@link clipLine}'s display columns: that helper measures the whole text first, which is the cost this bound avoids.
+ */
+export const MAX_HOME_NOTICE_CHARS = 32_768;
+
+/** `notice`, or its first {@link MAX_HOME_NOTICE_CHARS} characters and a `…` when it is longer; a surrogate pair is never cut in two. */
+function boundedNotice(notice: string): string {
+  if (notice.length <= MAX_HOME_NOTICE_CHARS) return notice;
+  const last = notice.charCodeAt(MAX_HOME_NOTICE_CHARS - 1);
+  const end = last >= 0xd800 && last <= 0xdbff ? MAX_HOME_NOTICE_CHARS - 1 : MAX_HOME_NOTICE_CHARS;
+  return `${notice.slice(0, end)}…`;
+}
+
+/** Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
   const heading = shouldShowBanner({
@@ -78,7 +96,10 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
       (options.reservedRows ?? 0) -
       management,
   );
-  const all = wrapText(options.notice.split('\n').map(sanitizeInline).join('\n'), options.cols);
+  const all = wrapText(
+    boundedNotice(options.notice).split('\n').map(sanitizeInline).join('\n'),
+    options.cols,
+  );
   const overflow = all.length > available;
   const pageSize = overflow ? available - 1 : available;
   const maxPage = Math.max(0, Math.ceil(all.length / pageSize) - 1);
