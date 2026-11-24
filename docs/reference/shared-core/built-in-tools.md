@@ -65,15 +65,20 @@ Older and authored conversations retain their frozen grants; the
   arbitrary spill paths do not certify a file read. Reset on turn end/abort,
   context reset, clear, resume and model reseat; do not implement CR-70's
   deferred cross-turn tool-content carry.
-- `search_files` takes a literal nonempty pattern, optional case-sensitive and
+- `search_files` takes a literal nonempty single-line pattern, optional case-sensitive and
   whole-word matching, a scoped directory and optional file glob. Whole-word
   boundaries use Unicode letters/numbers/underscore, not locale-dependent
   casing or a model-supplied regular expression. Results identify usable paths,
   one-based line numbers and bounded line excerpts. Omitted/skipped counts and
   incomplete traversal are explicit; an unknown unvisited count is labelled
-  unknown, never invented as exact. A file in scope that the walk reached and did
-  not read (oversized, hard-linked, vanished) makes the result incomplete, so "no
-  match" is never said of a file that was not searched (MISC-2; stats below).
+  unknown, never invented as exact. A file or directory in scope that the walk
+  reached and did not read (oversized, hard-linked, vanished, unreadable), or a
+  link it did not follow, makes the result incomplete and the walk goes on, so
+  "no match" is never said of a file that was not searched (MISC-2; stats below).
+  The search reads one line at a time, so a pattern containing `\r` or `\n` can
+  never match: the tool's schema refuses it, and the host refuses it again when it
+  is called without the schema, instead of returning a complete-looking empty
+  result.
 - `find_files` takes a scoped directory and glob. Sort the admitted scanned set
   by descending mtime with relative-path order as a deterministic tie-break.
   A capped walk is labelled incomplete; it cannot claim the newest files in
@@ -86,7 +91,13 @@ Older and authored conversations retain their frozen grants; the
   syntax are not silently advertised as Git parity. Ignore rules only hide;
   they never grant access. Bound ignore bytes/rules and matching work, preserve
   security-pruned directories even under negation, and report unreadable or
-  unsupported ignore inputs rather than silently treating them as empty.
+  unsupported ignore inputs rather than silently treating them as empty. The
+  workspace `.gitignore` and `.relaviumignore` govern scans inside the workspace
+  only: a scan of a granted root outside it loads neither and applies none of
+  their rules, so a workspace ignore file that is unreadable or unsupported says
+  nothing about such a scan and does not end it. Discovery does not prune `.git`:
+  only a `.git/config` or `config.worktree` is refused on read, so a search or
+  find inside the workspace may walk the rest of a `.git` directory.
 - All discovery work is capped independently of matches: visited entries,
   directories, depth, candidate files, per-file and aggregate bytes, pattern
   and ignore work, results, output bytes and line width. Yield/check cancellation
@@ -120,7 +131,7 @@ Returned glob `sizeBytes` counts delivered text sources, excluding skipped ones.
 `find_files` accepts `glob` and optional `path` (default `.`). `search_files`
 accepts a nonempty `pattern`, optional `path`/`glob`, `caseSensitive` (default
 true) and `wholeWord` (default false). Paths/globs are at most 4,096 UTF-8 bytes;
-literal patterns are at most 1,024. Case-insensitive search uses locale-independent
+literal patterns are at most 1,024 and hold no line break. Case-insensitive search uses locale-independent
 per-code-point lowercase with source-offset mapping; it is not full Unicode
 case folding. Word boundaries are tested on the original source.
 
@@ -128,21 +139,29 @@ Find returns `{ files: [{ path, sizeBytes, lastModified }], stats }`; search
 returns `{ matches: [{ path, line, content, omittedBytes }], stats }`. Stats
 contain visited entries, scanned files/bytes, the files skipped without being
 read by cause (`skippedBinary`, `skippedOversize`, `skippedHardLink`,
-`skippedVanished`), unreadable count, `incomplete` and optional limiting
-category. `incomplete` is true when a ceiling stopped the walk (`limit` names
-it) or when a file inside the scope was reached and not read: over the 1 MiB
-per-file search ceiling (`skippedOversize`), refused by the jail's hard-link
-guard (`skippedHardLink`), gone or no longer the listed regular file when it was
-read (`skippedVanished`), or unreadable. A skip alone sets no `limit` and does
-not stop the walk, so the rest is still searched. Binary and invalid UTF-8 files
-are the one skip that leaves `incomplete` false: the tool searches UTF-8 text,
-so they lie outside what a result claims, and `skippedBinary` still counts them
-(a literal inside a non-UTF-8 file is not found, and the count says that such
-files were passed over). Files hidden by an ignore rule or refused as
-confidential are likewise outside the claim, as they always were.
-`skippedHardLink` and `skippedVanished` are optional in the contract: a host
-that does not report them omits them. `find_files` counts the same skips, since
-a hard-linked file is left out of its list. Search byte accounting charges
+`skippedVanished`, `skippedSymlink`), unreadable count, `incomplete` and optional
+limiting category. `incomplete` is true when a ceiling stopped the walk (`limit`
+names it) or when something inside the scope was reached and not read: a file
+over the 1 MiB per-file search ceiling (`skippedOversize`), refused by the jail's
+hard-link guard (`skippedHardLink`), gone or no longer the listed regular file
+when it was read (`skippedVanished`; an `ENOENT` on any entry the walk reached
+counts here), a link the walk did not follow (`skippedSymlink`), or a file or
+directory it could not read for a permission or I/O failure (`unreadable`). A
+skip alone sets no `limit` and does not stop the walk, so the rest is still
+searched, and the skips are summed into `incomplete` once, after the walk. Only a
+ceiling or an ignore input the walk cannot apply (`limit: 'ignore'`) ends it.
+`skippedSymlink` counts every link the walk did not follow, whatever its target
+(a directory, a file outside the scope or a protected one, or nothing) and never
+says which; a link to a regular file inside the scope is read as that file and is
+not counted. Binary and invalid UTF-8 files are the one skip that leaves
+`incomplete` false: the tool searches UTF-8 text, so they lie outside what a
+result claims, and `skippedBinary` still counts them (a literal inside a
+non-UTF-8 file is not found, and the count says that such files were passed
+over). Files, and links, hidden by an ignore rule or whose own name is
+confidential are likewise outside the claim, as they always were, and are counted
+nowhere. `skippedHardLink`, `skippedVanished` and `skippedSymlink` are optional
+in the contract: a host that does not report them omits them. `find_files` counts
+the same skips, since a hard-linked file is left out of its list. Search byte accounting charges
 actual source reads, including skipped binary/invalid UTF-8 candidates; every
 descriptor read observes the remaining aggregate budget. Capped traversal does not
 invent an unvisited total or global-newest claim. Each clipped line states its
@@ -156,7 +175,11 @@ Scoped discovery checks up to 32 admitted ancestors above its selected root for
 unsupported ignore files, stopping at workspace, grant or confidentiality
 boundaries. It also
 checks each visited non-workspace directory before enumerating it; presence is
-enough, so nested rule contents and final symlink targets are never read.
+enough, so nested rule contents and final symlink targets are never read. A
+visited directory whose probe cannot run because the directory cannot be searched
+is one counted unreadable skip, and the walk goes on to the rest; a nested ignore
+file, an unsupported rule or a failed probe of an ancestor still stops the walk
+with `limit: 'ignore'`.
 An exhausted ancestor check reports the depth limit rather than a complete scan.
 
 | Independent host ceiling | Default |
@@ -408,11 +431,11 @@ changes no permission; and know that the question and the answer are kept with t
 | Tool id | Purpose | Returns (shape) | Notes |
 | --- | --- | --- | --- |
 | `read_file` | Read UTF-8 text, optionally by line/byte range or multi-file glob. | `{ content, mimeType, sizeBytes, lastModified, range? }`; generic media-capable hosts may use durable handles, while CLI hosts refuse binary/invalid UTF-8 text | Respects FS scope; source evidence requires an untruncated result and a later model response. A multi-file glob read grants **no** edit evidence — re-read a file by its own path before `edit_file`. In a glob view each file's header name has control characters, line separators and Unicode format characters (bidi controls, zero-width marks, a BOM, tag characters) written as `\uXXXX` (`\u{XXXXX}` above the BMP). |
-| `search_files` | Bounded literal content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
+| `search_files` | Bounded literal single-line content search with case/word options and root ignore rules. | `{ matches: [{ path, line, content, omittedBytes }], stats }` | Idempotent; no edit evidence from snippets. |
 | `find_files` | Find by bounded glob, newest-first within the scanned set. | `{ files: [{ path, sizeBytes, lastModified }], stats }` | Idempotent; incomplete traversal is explicit. |
 | `write_file` | Write or append content to a file. Optionally creates parent directories. | `{ path, bytesWritten }` | Within the allowed scope only. |
 | `edit_file` | Replace exact text in a previously observed unchanged UTF-8 file. | `{ path, bytesWritten }` | Scoped read evidence, exact matching, bounded diff approval and durable effect admission; binary or stale sources refuse. |
-| `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }`; `type` is `file`, `directory` or `symlink` (a link is reported from its own directory entry; its target is never resolved or followed) | Respects FS scope. |
+| `list_directory` | List directory contents, optional recursive + glob filter. | `{ entries: [{ name, type, sizeBytes, lastModified }] }`; `type` is `file`, `directory` or `symlink` (a link is reported from its own directory entry; its target is never resolved or followed; any other kind of entry, a FIFO, a socket or a device, is reported as `file`, because the type has no fourth value) | Respects FS scope. |
 | `run_command` | Spawn an OS process with **`shell: false`** (no shell interpretation) and return its byte-bounded captured output. | `{ exitCode, stdout, stderr, durationMs }` | **Exact-match allowlist required** in a workflow — see below; a headless chat surface refuses every governed call, and in an interactive chat a command outside it needs a person's approval ([ADR-0118](../../decisions/0118-a-command-outside-the-allowlist-asks-instead-of-failing.md) §1). |
 | `http_request` | Outbound **HTTPS** (GET/POST/PUT/DELETE), custom headers, JSON body, streaming response. | response body / stream | **HTTPS-only**, exact-FQDN `allowedDomains` allowlist (empty/absent ⇒ disabled), private/loopback/link-local/metadata ranges blocked (SSRF) — see below. |
 | `web_search` | Web search via the configured provider (e.g. Brave Search / SearXNG). | `{ results: [{ title, url, snippet }] }` | Provider key in the secret store, not the workflow file. |

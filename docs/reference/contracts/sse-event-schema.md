@@ -229,11 +229,11 @@ The two do **not** join: on a node the budget retried, `node:completed.attemptNu
   | Outcome | `resultRecorded` | `ok` | `durationMs` | What happened |
   |---|---|---|---|---|
   | **succeeded** | `true` | `true` | present when measured | the dispatch ran and returned |
-  | **refused** | `true` | `false` | absent | the call got a failed result but the tool never ran: an unknown tool, invalid arguments, a grant, policy or user denial (a repeated denial included) |
+  | **refused** | `true` | `false` | absent | the call got a failed result but the tool never ran: an unknown tool, invalid arguments, a grant, policy or user denial (a repeated denial included); in a workflow node only the first two reach this row, since the turn hands back only those, and any other denial ends the turn and is unpaired (below) |
   | **failed and measured** | `true` | `false` | present when a reading was available | the dispatch ran and the tool threw, and the turn handed the failure back to the model as a failed result (a surface that recovers tool failures; a workflow node recovers only an unknown tool and invalid arguments) |
   | **unpaired** | `false` | `false` | absent | no result was recorded before the node ended — see the next two items |
 
-  A refusal and an unpaired call are both `ok: false` with no duration; only `resultRecorded` tells them apart, and a reader must not describe a `resultRecorded: true` entry as "no result recorded".
+  A refusal and an unpaired call are both `ok: false` with no duration; only `resultRecorded` tells them apart, and a reader must not describe a `resultRecorded: true` entry as "no result recorded". The schema refuses the two combinations that follow and that no writer produces: an unpaired entry (`resultRecorded: false`) with `ok: true`, and an unpaired entry with a `durationMs`, a `0` included; every other combination is a state the tracker writes.
 - **A fatal tool failure is unpaired.** A failure the turn does not hand back to the model — a non-recoverable denial, a cancel in the middle of a call, a fatal tool error (every tool that throws in a workflow node, which recovers only the two refusals above) — emits `agent:tool_call` and then **throws**, with no `agent:tool_result`. Its entry is therefore `resultRecorded: false`, `ok: false`, no duration, the same as a call the node ended before answering. This is accepted and stated, not fixed: the node's own `error` says why it failed; the trace says only which tools were called.
 - **A call in flight when its node is cut is shown, as unpaired.** The trace of an attempt includes **every call the attempt started**, up to the 50 kept. A node cut by its authored deadline (`timeout_ms`), or abandoned after the run's grace window, has its terminal written while a tool may still be running; that call was recorded when it started, so the terminal carries it as `resultRecorded: false`, `ok: false`, no duration, instead of omitting it. A call a dispatch announces **after** it lost the node (the terminal already took the trace) is ignored, the same fence that drops its other late events, and a node that starts again discards the earlier attempt's trace.
 - **Source and ordering.** The two bus events are streamed and never persisted; the engine aggregates them in process and writes the result onto the terminal it was already going to emit. The field changes no event's order, no sequence number and nothing the checkpoint fold reads.
@@ -299,7 +299,7 @@ export interface ToolActivityEntry {
   toolId: string;        // /^[A-Za-z0-9_.:-]{1,128}$/ — a registered tool's id, or the fixed 'unknown_tool' for a name that is not registered
   ok: boolean;           // the paired result's `success`; false for an unpaired call
   resultRecorded: boolean; // true when a result paired with the call (succeeded, failed or refused); false when the node ended with the call unpaired — the one fact that tells a refusal from a call that never got an answer. REQUIRED
-  durationMs?: number;   // the dispatch span the paired result carried, measured by the turn; absent for a refusal, for an unpaired call and for a result that carried none
+  durationMs?: number;   // the dispatch span the paired result carried, measured by the turn; absent for a refusal, for an unpaired call (the schema refuses one with a duration, and one with ok: true) and for a result that carried none
 }
 
 export interface NodeSkippedEvent extends BaseEvent {
@@ -559,7 +559,8 @@ If an eligible crash reconciliation sees that rejection without a run terminal, 
 `internal`; outstanding gates retain the existing resumable policy. Both give way to
 `effect_needs_attention` when the run left an external effect unresolved or its effect journal cannot be
 read ([effect-journal.md §8](../shared-core/effect-journal.md#8-needs_attention)): the precedence is
-`effect_needs_attention`, then `budget_exceeded`, then `internal`. A decided rejection may leave the
+`effect_needs_attention`, then `budget_exceeded`, then `internal`. The `effect_needs_attention` message names at
+most twenty of the unresolved effects and counts the rest (`, and N more`), as the resume gate's message does. A decided rejection may leave the
 materialized run status `running` until that terminal is durably appended. Neither discovery nor
 reconciliation fabricates a terminal or output during the ordered suspension fold.
 

@@ -369,6 +369,10 @@ shapes were weighed and two rejected:
 A run a crashed process left behind gets the same code when crash reconciliation settles it: `reconcile()` reads
 the journal's resume half for the run, and a row §4 says blocks (or a journal it cannot read) makes the terminal
 `effect_needs_attention` rather than `internal`, which a caller would read as an ordinary failure to run again.
+The message of that terminal, and the message of the resume gate's refusal in §4, name at most twenty of the
+unresolved effects (`<nodeId>/<toolId> (<state>, tier <n>)`, in journal order) and count the rest as
+`, and N more`: a crashed run can leave tens of thousands, and a message that grows with the journal is a message the
+run's own detail read refuses. The full list stays in the journal.
 
 **It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
 section.** Terminal durability and final local effect health are independent. After all admitted

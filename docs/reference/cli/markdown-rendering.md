@@ -168,6 +168,7 @@ with each cell wrapped inside its column
 - alignment applies to every wrapped line; the header row is bold and ruled off;
 - body rows are ruled apart only when a cell wraps;
 - a word wider than its column breaks inside the word.
+- a wrap drops only an ASCII space or tab where it broke a line (a continuation line starts at its text, and a line has no trailing space); a no-break space (U+00A0), an ideographic space (U+3000) and the other Unicode spaces are content and stay, though a line may still break at one.
 
 **Records.** Only when even the column floors do not fit the width does the
 table render as records:
@@ -192,8 +193,8 @@ table with a hard break inside a cell, a header-only table that does not fit its
 grid, and a width at which not even one record value fits (two columns or fewer,
 or a label or value whose widest grapheme cannot fit its line). A header-only
 table that fits is drawn as a grid. A table kept literal starts each wrapped line
-at its text, not at the space that broke the line, because a table's spacing is
-not prose. A grid or a record never replaces a grapheme with `?`; a literal table
+at its text, not at the ASCII space or tab that broke the line, because a table's
+spacing is not prose. A grid or a record never replaces a grapheme with `?`; a literal table
 is drawn by the general [geometry](#geometry) rule, which does, at a width below
 that grapheme's own. Inside a quote, a table kept literal for a fixed limit is
 drawn with the quote bar and its inner source, and one that falls back for width
@@ -300,7 +301,10 @@ its own (identifiers, punctuation, whitespace) is drawn in the default colour.
   a failure of the scanner, not of the input. A partly coloured block would read as broken; a plain one reads as it
   always did.
 - Every scanner is a single pass, and every lookahead (the search for a closing delimiter, or for the end of a line) goes
-  through one remembered search for each delimiter, so asking again past a search that found nothing reads nothing. The
+  through one remembered search for each delimiter, so asking again past a search that found nothing reads nothing. A
+  lookahead that stops at a character class and not at a delimiter (the colon after a string, the characters after a CSS
+  property name, a YAML line's key, the blanks before a TOML `=`) cannot use that search, so it charges what it reads
+  itself (`Segments.charge`), and a block built to make each of them read far ahead is shown plain. The
   work counter counts every step and every character such a search reads. It stays at most four per character on every
   input tested, and the block is not highlighted past eight per character plus 256. Tests prove the bound by counting,
   not by time: four times the text must cost no more than about four times the work, which a repeated failing search

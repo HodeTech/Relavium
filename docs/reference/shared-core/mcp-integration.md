@@ -407,12 +407,17 @@ are distinguishable despite naming the same text.
 `~/.relavium/mcp-consent.ndjson`, one JSON object per line, **append-only with tombstones** — never rewritten,
 because a rewrite that is interrupted loses grants, and losing a *revocation* is the failure that matters.
 The file is created `0600` inside a `0700` directory, and a **symlink at that path is refused** rather than
-written through.
+written through. An append is **one descriptor**: the file is opened once, without following a link and without
+waiting on a FIFO, the descriptor is checked to be a regular file, and the write and the `0600` mode both go to that
+same descriptor (`appendToOwnerOnlyFile`), so a link or a special file swapped in after a check is neither written
+through nor waited on. A **read** refuses the same things: a link, a FIFO or other file that is not regular, a
+directory, and a file over 4 MiB read as *no grants* (the fail-closed fold below) rather than being followed, waited on
+or read whole into memory.
 
 | Line | Shape |
 |------|-------|
 | grant | `{"v":1,"digest":"v1:…","command":"…","args":[…],"envNames":[…],"cwd":"…","grantedAt":"<ISO-8601>"}` |
-| revocation | `{"v":1,"revokes":"v1:…","revokedAt":"<ISO-8601>"}` |
+| revocation | `{"v":1,"revoked":"v1:…","revokedAt":"<ISO-8601>"}` |
 
 `command`, `args`, `envNames` and `cwd` are **comparison metadata for the prompt only** — never inputs to the
 digest — and are length-bounded on write. `envNames` carries names, never values: no credential is written.
@@ -420,7 +425,10 @@ digest — and are length-bounded on write. `envNames` carries names, never valu
 A reader folds the file in order, a revocation removing an earlier grant. **Any unparseable line fails the
 whole fold closed** — the store reads as *no grants* and every server is asked about again — because a
 truncated final line may be a revocation, and a reader that skipped it would resurrect revoked trust. The fold
-failure is reported, never silent: a user re-approving everything is owed the reason.
+failure is reported, never silent: a user re-approving everything is owed the reason. The warning names the file as
+`~/.relavium/mcp-consent.ndjson`, never by its absolute path, and a consent that could not be recorded names it the
+same way with a fixed reason (permission denied, no space left, read-only file system, or the store's own refusal),
+not the file system's message.
 
 ### The environment denylist
 
