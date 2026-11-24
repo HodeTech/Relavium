@@ -1,0 +1,97 @@
+import { legendStates } from '../frames.js';
+import { label, type Producer, type Recorder } from '../golden.js';
+import { INITIAL_REVERSE_SEARCH, reverseSearchExtendQuery } from '../../input-history.js';
+import { MentionView } from '../../mention-view.js';
+import { buildPaletteEntries, filterPaletteEntries } from '../../palette-entries.js';
+import type { PaletteLayout, PaletteList } from '../../palette-reducer.js';
+import { PaletteView } from '../../palette-view.js';
+import { ReverseSearchView } from '../../reverse-search-view.js';
+
+export const INPUT_PRODUCERS: readonly Producer[] = [
+  {
+    id: 'palette-view',
+    file: 'render/tui/palette-view.tsx',
+    describe:
+      'the `/` palette’s legend line, on the Home (list runs down) and in a chat (list runs up), with a match and with none',
+  },
+  {
+    id: 'reverse-search-view',
+    file: 'render/tui/reverse-search-view.tsx',
+    describe: 'the `Ctrl+R` search line’s hint, with a match and with none',
+  },
+  {
+    id: 'mention-view',
+    file: 'render/tui/mention-view.tsx',
+    describe: 'the `@` completion’s hint under its candidates, loading, listing and empty',
+  },
+];
+
+/** The `/` palette: its one legend line, on both surfaces' directions, and the line it draws when no command matches. */
+const palette: Recorder = () => {
+  const out: Record<string, readonly string[]> = {};
+  for (const [surface, layout] of [
+    ['home', 'down'],
+    ['chat', 'up'],
+  ] as const satisfies readonly (readonly ['home' | 'chat', PaletteLayout])[]) {
+    const entries = buildPaletteEntries(surface, { hasKey: true });
+    // One row only (`/exit`): the registry's own descriptions that name a key are the registry's to record, not the view's.
+    const listOf = (query: string): PaletteList => ({
+      entries,
+      rows: filterPaletteEntries(entries, query),
+      layout,
+    });
+    for (const [query, kind] of [
+      ['exit', 'a-match'],
+      ['zzzz', 'no-match'],
+    ] as const) {
+      Object.assign(
+        out,
+        legendStates(label({ surface, layout, query: kind }), (color) => (
+          <PaletteView list={listOf(query)} state={{ query, index: 0 }} color={color} />
+        )),
+      );
+    }
+  }
+  return out;
+};
+
+/** `Ctrl+R`'s search line and the hint under it, with a match and with none. */
+const reverseSearch: Recorder = () => {
+  const entries = ['git status', 'npm test'];
+  const matched = { query: 'npm', matchIndex: 1 };
+  const failed = reverseSearchExtendQuery(entries, INITIAL_REVERSE_SEARCH, 'zz');
+  return {
+    ...legendStates('match=found', (color) => (
+      <ReverseSearchView state={matched} entries={entries} color={color} />
+    )),
+    ...legendStates('match=none', (color) => (
+      <ReverseSearchView state={failed} entries={entries} color={color} />
+    )),
+  };
+};
+
+/** The `@` completion's hint under its candidates, while loading, with candidates and with none. */
+const mention: Recorder = () => {
+  const base = { dir: '', filter: '', selected: 0 };
+  const candidates = [
+    { name: 'src', type: 'directory' as const, path: 'src' },
+    { name: 'a.md', type: 'file' as const, path: 'a.md' },
+  ];
+  return {
+    ...legendStates('list=loading', (color) => (
+      <MentionView state={{ ...base, candidates: [], loading: true }} color={color} />
+    )),
+    ...legendStates('list=candidates', (color) => (
+      <MentionView state={{ ...base, candidates, loading: false }} color={color} />
+    )),
+    ...legendStates('list=none', (color) => (
+      <MentionView state={{ ...base, candidates: [], loading: false }} color={color} />
+    )),
+  };
+};
+
+export const INPUT_RECORDERS = {
+  'palette-view': palette,
+  'reverse-search-view': reverseSearch,
+  'mention-view': mention,
+} as const satisfies Readonly<Record<string, Recorder>>;
