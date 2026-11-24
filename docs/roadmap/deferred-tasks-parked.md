@@ -1640,6 +1640,13 @@ Positive consequence, and ADR-0120's plain drawing, against ADR-0114 §5. Record
   *(export-1)* `O_NONBLOCK` is what keeps that open from blocking; a test would hang its worker on a regression
   rather than fail. **Re-check:** run the case in a child process with a `spawnSync` timeout. *(low ·
   apps/cli/src/process/owned-storage.ts)*
+  **Checked 2026-11-24 (PR #102 review; stays open):** the entry is about the own-export identity check (`identityIfUnchanged`,
+  `apps/cli/src/process/owned-storage.ts`, whose comment still says no test drives it), not about the forced write. The forced write
+  of `chat-export --force` is another path: `2de9eefe` moved it to `process/forced-write.ts`, and `chat/export-force.test.ts` ("a FIFO
+  at the target") now drives a FIFO there, there from the start and swapped in after the look, with a **late reader** (a helper that
+  reads the FIFO after a second, so a write that waits shows as elapsed time and the test fails instead of hanging its worker). The
+  same technique would close this entry for the own-export check: swap a FIFO in between the `lstat` and the open, with a late reader
+  at the other end, and assert that the check answers "changed" in under a second. It was not done.
 - [~] **The MCP consent card's argument display passes U+2028 and U+2029.** *Low; pre-existing.* *(security-1's
   sibling)* `safe()` in the consent gate strips controls and zero-width characters but not the line separators, so a
   repository-declared server's argument can look like a comment. **Re-check:** apply ADR-0120's approval escape when

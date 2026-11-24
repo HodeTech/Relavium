@@ -112,3 +112,10 @@ with every earlier one, which let a file of tens of thousands of distinct keys f
 own check remains for a shorter source. The outcome, the error code and the position of every error are unchanged: a
 341,547-document differential run against the previous profile found 0 differences. The decision itself, the
 parser, its pinned options and its dependency status, is not changed.
+
+### Amendment note — 2026-11-24 (PR #102 review)
+
+Two changes to the decode profile, neither of which touches the parser choice, its pinned options or its dependency status.
+
+- **A key budget.** The linear duplicate-key check above makes the library build one `DUPLICATE_KEY` error for every key it is asked about, to be dropped afterwards, so the work and the memory of one decode grew with the keys: a hostile 2 MiB block map took about 1.95 s and 575 MB of heap, and a catalog scan decodes up to eight such files one after the other on the Home's UI thread. For a source of more than 2048 characters, a mapping is now refused once it holds more than 100,000 keys (`MAX_MAP_KEYS` in `packages/core/src/yaml-decode.ts`; a key counts only when another key of its map comes before it), with a `YAMLParseError` of code `RESOURCE_EXHAUSTION` and the fixed message `the document has more than 100000 mapping keys`, before the library builds another error for it. The same hostile map measured about 1.16 s and 273 MB after. The budget bounds **one decode, not a scan**: the total cost of a catalog scan of several such files has no deterministic bound yet, which is a maintainer decision, registered. A source of at most 2048 characters is unaffected (it cannot hold that many keys).
+- **A typed invariant error.** When the duplicate-key bookkeeping stops matching the parser's own errors (a library change, or a bug here), the decode fails closed with `YamlDecodeInvariantError`, a `RelaviumError` with a fixed, source-free message, where it used to throw a bare `Error`. A caller can tell it from a syntax fault; the two parsers file it as "not valid YAML".
