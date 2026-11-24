@@ -5,11 +5,15 @@ import { type ReasoningEffort } from '@relavium/shared';
 
 import { effortRowLabel, projectEffortToRow } from '../../chat/effort-notice.js';
 import { sanitizeInline } from './chat-projection.js';
-import { Emph } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
-import { blankStatusCell, glyphOf, statusCellOf } from './glyphs.js';
+import { blankStatusCell, statusCellOf } from './glyphs.js';
 import { exitKey, legend } from './legend.js';
 import { colorProps, dimProps } from './projection.js';
+import {
+  SelectableNote,
+  SelectableText,
+  selectedTone,
+  selectionMarker,
+} from './selectable-text.js';
 
 /**
  * The shared reasoning-effort tier list (ADR-0066/0071) — the per-model picker body used by BOTH the `/models`
@@ -64,7 +68,7 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
   const currentRow = current === undefined ? undefined : projectEffortToRow(model, tiers, current);
   const suffix = labelSuffix === undefined || labelSuffix.length === 0 ? '' : ` · ${labelSuffix}`;
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         Reasoning effort
         <Text {...dimProps(color)}>{sanitizeInline(suffix)}</Text>
@@ -72,15 +76,14 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
       {tiers.map((effort, index) => {
         const isSelected = index === highlighted;
         const isCurrent = effort === currentRow;
-        const rowColor = isSelected ? colorProps(color, 'cyan') : {};
         const { label, hint } = effortRowLabel(model, effort);
         return (
-          <Text key={effort} {...rowColor} wrap="truncate-end">
-            <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
-              {`${isSelected ? glyphOf('selection', !color) : ' '} ${isCurrent ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${label}${isCurrent ? ' · current' : ''} · `}
-            </Emph>
+          <Text key={effort} {...selectedTone(isSelected, color)} wrap="truncate-end">
+            <SelectableText selected={isSelected}>
+              {`${selectionMarker(isSelected, color)} ${isCurrent ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${label}${isCurrent ? ' · current' : ''} · `}
+            </SelectableText>
             <Text {...dimProps(color)}>
-              <Emph kinds={isSelected ? 'inverse' : undefined}>{hint}</Emph>
+              <SelectableNote selected={isSelected}>{hint}</SelectableNote>
             </Text>
           </Text>
         );

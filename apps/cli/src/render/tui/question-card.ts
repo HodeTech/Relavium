@@ -10,7 +10,7 @@
  * bytes), so an over-long unbroken word is broken, not cut — and every row of model text sits behind the host's gutter `│ `.
  */
 
-import { ASK_USER_BOUNDS, ASK_USER_OWN_ANSWER_GLYPH } from '@relavium/core';
+import { ASK_USER_BOUNDS } from '@relavium/core';
 
 import {
   currentEntry,
@@ -30,9 +30,9 @@ import {
   type OptionalItem,
   LEGEND_SEPARATOR,
   legend,
+  legendItems,
 } from './legend.js';
-import { glyph } from './glyphs.js';
-import { itemsRow } from './legend-row.js';
+import { blankAsciiHostShapes, glyph, plainFormInForce } from './glyphs.js';
 import { displayWidth } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
@@ -155,11 +155,17 @@ function mark(multiSelect: boolean, chosen: boolean): string {
   return chosen ? `(${glyph('bullet')})` : '( )';
 }
 
-/** The tab strip: one dot per question (filled once answered, bracketed when on screen) and the Review tab. */
+/**
+ * The tab strip: one dot per question (filled once answered) and the Review tab. The dot on screen is bracketed, but in the plain form
+ * it is drawn `<o>` and `<+>`, not `[o]` and `[+]`: a letter in brackets is a key under the legend's grammar, and `o` really types into the
+ * own-answer field (ADR-0145 §3).
+ */
 function tabs(state: QuestionCardState): string {
+  const plain = plainFormInForce();
   const dots = state.request.questions.map((_, index) => {
     const dot = glyph(isAnswered(state, index) ? 'answered' : 'pending');
-    return state.index === index ? `[${dot}]` : dot;
+    if (state.index !== index) return dot;
+    return plain ? `<${dot}>` : `[${dot}]`;
   });
   return `${dots.join(' ')} · ${isReview(state) ? '[Review]' : 'Review'}`;
 }
@@ -175,7 +181,7 @@ function optionRow(
   const chosen = entry.ticked.includes(index);
   const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
-  const text = hardWrap(`${prefix}${option?.label ?? ''}`, width)[0] ?? '';
+  const text = hardWrap(`${prefix}${blankAsciiHostShapes(option?.label ?? '')}`, width)[0] ?? '';
   return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
 }
 
@@ -184,7 +190,7 @@ function ownRow(state: QuestionCardState, entry: QuestionEntry, width: number): 
   const index = question.options.length;
   const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const chosen = entry.own !== undefined;
-  const prefix = `${cursor}   ${mark(question.multiSelect, chosen)} ${ASK_USER_OWN_ANSWER_GLYPH} `;
+  const prefix = `${cursor}   ${mark(question.multiSelect, chosen)} ${glyph('pencil')} `;
   const room = Math.max(1, width - displayWidth(prefix));
   if (state.field !== undefined) {
     const counter =
@@ -213,7 +219,7 @@ function summaryOf(state: QuestionCardState, index: number): string {
     .sort((a, b) => a - b)
     .flatMap((optionIndex) => {
       const option = question.options[optionIndex];
-      return option === undefined ? [] : [option.label];
+      return option === undefined ? [] : [blankAsciiHostShapes(option.label)];
     });
   return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
 }
@@ -230,7 +236,7 @@ function answerRow(
 ): string {
   const exitRoom = LEGEND_SEPARATOR.length + displayWidth(legend([], QUESTION_STOP));
   const kept = fitLegend(essentials, optional, QUESTION_STOP, width + exitRoom, displayWidth);
-  return head(itemsRow(kept).text, width);
+  return head(legendItems(kept).text, width);
 }
 
 function keyRows(
@@ -275,12 +281,20 @@ function keyRows(
       width,
     );
   }
-  const note = guideNote ? [GUIDE_NOTE] : [];
-  const stop =
-    state.field !== undefined && !isReview(state)
-      ? legend([...note, FIELD_STOP_KEY], FIELD_EXIT)
-      : legend(note, QUESTION_STOP);
-  return [first, head(stop, width)];
+  return [first, head(stopRow(state, guideNote, width), width)];
+}
+
+/**
+ * The second key row: the keys that stop, and the note that an answer is guidance where one is wanted. The keys that leave are required and
+ * the note is the one thing that gives way, so in a narrow terminal it is the note that is dropped and the exit that stays whole (the old
+ * order cut the exit and kept the note: `…Esc / [Ctrl…`). Written by {@link fitLegend}, the one fit-to-width rule.
+ */
+function stopRow(state: QuestionCardState, guideNote: boolean, width: number): string {
+  const inField = state.field !== undefined && !isReview(state);
+  const exit = inField ? FIELD_EXIT : QUESTION_STOP;
+  const required = inField ? [FIELD_STOP_KEY] : [];
+  const note: readonly OptionalItem[] = guideNote ? [{ item: GUIDE_NOTE, priority: 1 }] : [];
+  return legend(fitLegend(required, note, exit, width, displayWidth), exit);
 }
 
 /** The Review tab's rows for answers: the body bound minus its title and its closing note. */
@@ -354,7 +368,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   const rest = Math.max(1, width - REVIEW_INDENT.length);
   const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
-    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${question.header} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${blankAsciiHostShapes(question.header)} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
     return {
       tone: answered ? ('chosen' as const) : ('pending' as const),
       lines: wrapRows(line, width, rest),
@@ -375,7 +389,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   rows.push({
     text: head(
       state.hint === undefined
-        ? itemsRow([
+        ? legendItems([
             { keys: 'Enter', verb: 'send them' },
             { keys: ['←/→', `1-${String(questionCount(state))}`], verb: 'change one' },
           ]).text
@@ -402,8 +416,11 @@ export function projectQuestionCard(
   const entry = currentEntry(state);
   const progress = hasReview(state) ? `  ${tabs(state)}` : '';
   const body: QuestionCardRow[] = [
-    { text: hardWrap(`${question.header}${progress}`, width)[0] ?? '', tone: 'header' },
-    ...hardWrap(question.question, width - gutterWidth).map(
+    {
+      text: hardWrap(`${blankAsciiHostShapes(question.header)}${progress}`, width)[0] ?? '',
+      tone: 'header',
+    },
+    ...hardWrap(blankAsciiHostShapes(question.question), width - gutterWidth).map(
       (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),
     ...question.options.map((_, index) => optionRow(state, entry, index, width)),
@@ -417,7 +434,7 @@ export function projectQuestionCard(
     body.push({ text: `  ${head(OWN_DESCRIPTION, Math.max(1, width - 2))}`, tone: 'description' });
   } else {
     body.push({
-      text: `${GUTTER}${head(highlighted.description, Math.max(1, width - gutterWidth))}`,
+      text: `${GUTTER}${head(blankAsciiHostShapes(highlighted.description), Math.max(1, width - gutterWidth))}`,
       tone: 'description',
     });
   }

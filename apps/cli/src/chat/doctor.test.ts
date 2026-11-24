@@ -138,10 +138,45 @@ describe('formatDoctorReport', () => {
       true,
     );
     expect(out).toContain('x doctor: 1 check(s) failed');
-    expect(out).toContain('ok ok · OS keychain: reachable');
+    expect(out).toContain('  ok · OS keychain: reachable');
     expect(out).toContain('! warning · providers: no keys configured');
     expect(out).toContain('x failed · config: bad');
     expect(out).not.toMatch(/[✓✗⚠]/u);
+  });
+
+  it('never says a word twice: the plain `ok` is its own word, and every status says its word once in both modes', () => {
+    const rows = (status: 'ok' | 'warn' | 'fail', ascii: boolean): string =>
+      formatDoctorReport(
+        { checks: [{ id: 'a', label: 'label', status, detail: 'detail' }] },
+        ascii,
+      ).split('\n')[1] ?? '';
+    expect(rows('ok', true)).toBe('  ok · label: detail');
+    expect(rows('warn', true)).toBe('  ! warning · label: detail');
+    expect(rows('fail', true)).toBe('  x failed · label: detail');
+    expect(rows('ok', false)).toBe('  ✓ ok · label: detail');
+    expect(rows('warn', false)).toBe('  ⚠ warning · label: detail');
+    expect(rows('fail', false)).toBe('  ✗ failed · label: detail');
+    for (const status of ['ok', 'warn', 'fail'] as const) {
+      for (const ascii of [true, false]) {
+        expect(rows(status, ascii), `${status} ${String(ascii)}`).not.toMatch(
+          /\b(ok|warning|failed)\b.*\b\1\b.*·/u,
+        );
+      }
+    }
+  });
+
+  it('the heading does not repeat a plain `ok` in front of a sentence that already says it', () => {
+    const heading = (checks: Parameters<typeof formatDoctorReport>[0]['checks'], ascii: boolean) =>
+      formatDoctorReport({ checks }, ascii).split('\n')[0];
+    const pass = [{ id: 'a', label: 'a', status: 'ok' as const, detail: 'd' }];
+    const warn = [{ id: 'a', label: 'a', status: 'warn' as const, detail: 'd' }];
+    const fail = [{ id: 'a', label: 'a', status: 'fail' as const, detail: 'd' }];
+    expect(heading(pass, true)).toBe('doctor: all checks passed');
+    expect(heading(pass, false)).toBe('✓ doctor: all checks passed');
+    expect(heading(warn, true)).toBe('! doctor: 1 warning(s)');
+    expect(heading(warn, false)).toBe('⚠ doctor: 1 warning(s)');
+    expect(heading(fail, true)).toBe('x doctor: 1 check(s) failed');
+    expect(heading(fail, false)).toBe('✗ doctor: 1 check(s) failed');
   });
 
   it('counts failures in the heading and marks them with ✗', () => {

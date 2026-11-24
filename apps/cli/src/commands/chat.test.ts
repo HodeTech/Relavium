@@ -680,7 +680,7 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     const out = err();
     expect(out).toContain('doctor: all checks passed');
-    expect(out).toContain('ok ok · OS keychain: reachable');
+    expect(out).toContain('ok · OS keychain: reachable');
     expect(out).not.toContain('anthropic'); // the fast tier never ran the deep provider probe
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
   });
@@ -691,7 +691,7 @@ describe('chatCommand', () => {
     });
     await chatCommand({ agent: undefined }, d);
     const out = err();
-    expect(out).toContain('ok ok · anthropic: key works'); // the deep provider probe ran
+    expect(out).toContain('ok · anthropic: key works'); // the deep provider probe ran
     expect(out).toContain('! warning · MCP servers: none configured'); // the deep MCP probe ran
   });
 

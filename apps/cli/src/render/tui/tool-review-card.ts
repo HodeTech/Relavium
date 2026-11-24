@@ -1,10 +1,12 @@
 import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
+import type { DisplayPathRoots } from '../notation.js';
 import { sanitizeInline } from '../sanitize.js';
 import { glyph } from './glyphs.js';
 import { exitKey, keyToken, type LegendItem } from './legend.js';
 import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
+import { keepEnd, placeLabel } from './place-label.js';
 import type { ReviewDocument } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
 
@@ -84,11 +86,11 @@ export function cardVerb(
   }
 }
 
-/** `+17 −0 · 468 bytes` for a change; empty for a preview that carries no diff. */
+/** `+17 -0 · 468 bytes` for a change; empty for a preview that carries no diff. */
 export function cardStats(document: ReviewDocument | undefined): string {
   const diff = document?.preview.diff;
   if (document === undefined || diff === undefined) return '';
-  return `+${diff.stats.addedLines} −${diff.stats.removedLines} · ${document.changedBytes} bytes`;
+  return `+${diff.stats.addedLines} -${diff.stats.removedLines} · ${document.changedBytes} bytes`;
 }
 
 /** How a side's line-ending convention reads in a warning. */
@@ -149,20 +151,8 @@ export interface CardWarningInput {
   readonly commandFacts?: CommandCardFacts | undefined;
   /** The denial reason box is open: a command's plain rows (standing, directory) give way to it; its warnings stay. */
   readonly denialOpen?: boolean | undefined;
-}
-
-/** `text` cut to `width` display columns from the FRONT, keeping its end (the part of a path that names where it is). */
-function keepEnd(text: string, width: number): string {
-  if (displayWidth(text) <= width) return text;
-  const kept: string[] = [];
-  let used = 1; // the ellipsis
-  for (const char of [...text].reverse()) {
-    const next = displayWidth(char);
-    if (used + next > width) break;
-    kept.unshift(char);
-    used += next;
-  }
-  return `\u2026${kept.join('')}`;
+  /** What the command's directory is shortened against (the project and the home); absent ⇒ the roots the facts carry (`facts.paths`), and with none, as the host gave it. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /** The standing row of a command card: where the command stands before the person answers. */
@@ -185,20 +175,22 @@ export function commandStandingRow(facts: CommandCardFacts): string {
 
 /**
  * The rows a command card adds (ADR-0118 §1), as plain text, wrapped by the caller: the standing, the directory the host pins,
- * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, but it is
- * still shown through the one-line sanitizer.
+ * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, shortened
+ * against `paths` (default: the roots the facts carry) first (ADR-0145 §8: the project's own directory reads `. (project root)`, one inside it from the project, one inside the
+ * home from `~`, and one outside both stays whole), and only then sent through the one-line sanitizer and bounded to the room, keeping its end.
  */
 export function commandFactRows(
   facts: CommandCardFacts,
   columns = 76,
   compact = false,
+  paths: DisplayPathRoots | undefined = facts.paths,
 ): readonly string[] {
   const label = 'Runs in: ';
   const rows: string[] = [];
   // While the reason box is open the card has no room to spare: the warnings stay, the plain rows go (the box is for typing).
   if (!compact) {
     const standing = commandStandingRow(facts);
-    const directory = sanitizeInline(facts.cwd) || '(the workspace)';
+    const directory = sanitizeInline(placeLabel(facts.cwd, paths)) || '(the workspace)';
     // One row when the directory still has room to say where it is (it keeps its END), else two: a row saved is a row of the command.
     const separator = ' \u00b7 ';
     const room = columns - displayWidth(standing) - separator.length - label.length;
@@ -244,7 +236,14 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   const warnings: string[] =
     input.commandFacts === undefined
       ? []
-      : [...commandFactRows(input.commandFacts, input.columns, input.denialOpen === true)];
+      : [
+          ...commandFactRows(
+            input.commandFacts,
+            input.columns,
+            input.denialOpen === true,
+            input.paths,
+          ),
+        ];
   const factRows = warnings.length;
   // The lock sentence is the instruction for getting Allow back, so it is only true until the person has
   // inspected: afterwards the key rows offer Allow, and a warning that still says "locked" would contradict them

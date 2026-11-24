@@ -2388,6 +2388,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         },
         // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
         showBanner: config.showBanner,
+        // What a session's directory on the strip is shortened against (ADR-0145 §8).
+        paths: displayRoots(deps.global.cwd, homeDir),
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
         // (`--no-mouse` / `[preferences].mouse`); when it is off, no port is passed and nothing is ever captured.
         ...(mouseActive

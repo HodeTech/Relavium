@@ -7,8 +7,7 @@ import { formatRefreshed } from '../notation.js';
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
 import { Emph } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
-import { blankStatusCell, glyphOf, statusCellOf } from './glyphs.js';
+import { blankStatusCell, statusCellOf } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import {
   formatContextWindow,
@@ -17,6 +16,7 @@ import {
   type ModelPickerState,
 } from './model-picker.js';
 import { colorProps, dimProps } from './projection.js';
+import { SelectableText, selectionMarker } from './selectable-text.js';
 
 /** The most model rows shown at once — a large multi-provider catalog scrolls a window around the selection rather
  *  than flooding the terminal (parity with the mention overlay's {@link MENTION_WINDOW}). */
@@ -104,6 +104,36 @@ function unavailableParts(
   return ['unavailable on your key'];
 }
 
+/**
+ * One model row's text: the selection marker, the tick of the default (never alone: the word
+ * `default` stands beside the name, ahead of the columns the row is cut from), then the name, the provider, the context window, the price and
+ * whatever makes the row unavailable or deprecated, joined by ` · `.
+ */
+function modelRowText(
+  entry: ModelCatalogEntry,
+  look: {
+    readonly selected: boolean;
+    readonly isDefault: boolean;
+    readonly color: boolean;
+    readonly providerName: (id: string) => string;
+  },
+): string {
+  const ctx = formatContextWindow(entry.contextWindowTokens);
+  const parts = [
+    sanitizeInline(entry.displayName),
+    ...(look.isDefault ? ['default'] : []),
+    look.providerName(entry.provider),
+    ...(ctx.length > 0 ? [ctx] : []),
+    formatModelPrice(entry),
+    ...unavailableParts(entry, look.providerName),
+    ...(entry.deprecated ? ['deprecated'] : []),
+  ];
+  const cell = look.isDefault
+    ? statusCellOf('completed', !look.color)
+    : blankStatusCell(!look.color);
+  return `${selectionMarker(look.selected, look.color)} ${cell} ${parts.join(' · ')}`;
+}
+
 /** The row color: selected → cyan (the highlight wins for visibility); else an unavailable/deprecated row is
  *  dimmed; else the default (no color props). */
 function rowColorFor(
@@ -186,30 +216,22 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
     return windowed.map((entry, index) => {
       const isSelected = start + index === selected;
       const isDefault = entry.modelId === markedDefault;
-      const ctx = formatContextWindow(entry.contextWindowTokens);
-      const parts = [
-        sanitizeInline(entry.displayName),
-        // The tick is never alone: the word `default` stands beside the name, ahead of the columns the row is cut from.
-        ...(isDefault ? ['default'] : []),
-        providerName(entry.provider),
-        ...(ctx.length > 0 ? [ctx] : []),
-        formatModelPrice(entry),
-        ...unavailableParts(entry, providerName),
-        ...(entry.deprecated ? ['deprecated'] : []),
-      ];
-      const rowColor = rowColorFor(entry, isSelected, color);
       return (
-        <Text key={`${entry.provider}:${entry.modelId}`} {...rowColor} wrap="truncate-end">
-          <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
-            {`${isSelected ? glyphOf('selection', !color) : ' '} ${isDefault ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${parts.join(' · ')}`}
-          </Emph>
+        <Text
+          key={`${entry.provider}:${entry.modelId}`}
+          {...rowColorFor(entry, isSelected, color)}
+          wrap="truncate-end"
+        >
+          <SelectableText selected={isSelected}>
+            {modelRowText(entry, { selected: isSelected, isDefault, color, providerName })}
+          </SelectableText>
         </Text>
       );
     });
   };
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {SCOPE_WORDS[props.scope].title}
         <Text {...dimProps(color)}>{` · ${badge}`}</Text>

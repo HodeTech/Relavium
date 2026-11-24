@@ -47,7 +47,7 @@ export interface FinishLegInput {
   readonly leg: LegKind;
   /**
    * Where the line a taken-over run writes to {@link io} is READ: the shell names `relavium logs`, a hosted leg (every line becomes a
-   * notice inside the TUI) names the Home's own run browser ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6,
+   * notice inside the TUI) names the Home's own run browser ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7.4,
    * MVP-11 OD-20). REQUIRED, so a host that forgets it fails the typecheck.
    */
   readonly noticeSurface: NoticeSurface;

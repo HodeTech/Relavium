@@ -4,6 +4,7 @@ import {
   LEGEND_SEPARATOR,
   exitKey,
   fitLegend,
+  inertLegendText,
   keyLabel,
   keyHint,
   keyToken,
@@ -220,11 +221,66 @@ describe('fitLegend: the one fit-to-width rule', () => {
     expect(fits(1)).toBe('Enter apply · Esc close');
   });
 
+  it('fits exactly: at the width of the text it keeps everything, and one column less drops the lowest priority', () => {
+    const all = 'Enter apply · [v] full diff · [a] all · [f] filter · Esc close';
+    const withoutV = 'Enter apply · [a] all · [f] filter · Esc close';
+    const withoutVF = 'Enter apply · [a] all · Esc close';
+    const bare = 'Enter apply · Esc close';
+    for (const [text, smaller] of [
+      [all, withoutV],
+      [withoutV, withoutVF],
+      [withoutVF, bare],
+    ] as const) {
+      expect(fits(columnsOf(text)), `at ${String(columnsOf(text))} columns`).toBe(text);
+      expect(fits(columnsOf(text) - 1), `at ${String(columnsOf(text) - 1)} columns`).toBe(smaller);
+    }
+    // the same rule through a width function that is not the code-unit count: a wide mark costs two columns
+    const wide = (text: string): number => [...text].length + (text.includes('漢') ? 1 : 0);
+    const items = [{ item: { text: '漢' }, priority: 1 }];
+    const fullWide = legend(fitLegend([], items, exit, 99, wide), exit);
+    expect(fullWide).toBe('漢 · Esc close');
+    expect(legend(fitLegend([], items, exit, wide(fullWide), wide), exit)).toBe(fullWide);
+    expect(legend(fitLegend([], items, exit, wide(fullWide) - 1, wide), exit)).toBe('Esc close');
+  });
+
   it('drops the later of two equal priorities first', () => {
     const equal = [
       { item: { keys: 'x', verb: 'first' } as const, priority: 1 },
       { item: { keys: 'y', verb: 'second' } as const, priority: 1 },
     ];
     expect(legend(fitLegend([], equal, exit, 28, columnsOf), exit)).toBe('[x] first · Esc close');
+  });
+});
+
+describe('inertLegendText: text of another’s making inside a legend', () => {
+  it('turns the legend’s separator into something that does not look like it, wherever it stands', () => {
+    expect(inertLegendText('a · b')).toBe('a - b');
+    expect(inertLegendText('a · b · c')).toBe('a - b - c');
+    expect(inertLegendText('a  ·  b')).toBe('a  -  b');
+    expect(inertLegendText(`a${LEGEND_SEPARATOR}Esc keeps them`)).not.toContain(LEGEND_SEPARATOR);
+    // a dot with no spaces is not the separator
+    expect(inertLegendText('a·b')).toBe('a·b');
+  });
+
+  it('parenthesises a bracketed letter, digit or chord, and leaves every other bracket alone', () => {
+    expect(inertLegendText('[Ctrl+Y]')).toBe('(Ctrl+Y)');
+    expect(inertLegendText('[ctrl+y] [Alt+Enter] [Ctrl+Shift+R] [Cmd+K]')).toBe(
+      '(ctrl+y) (Alt+Enter) (Ctrl+Shift+R) (Cmd+K)',
+    );
+    expect(inertLegendText('[d] [v] [1] [é]')).toBe('(d) (v) (1) (é)');
+    expect(inertLegendText('pages/[id].tsx [slug] [] [Enter] [a b]')).toBe(
+      'pages/[id].tsx [slug] [] [Enter] [a b]',
+    );
+  });
+
+  it('every legend key the grammar brackets is made inert, and the result holds no token keyToken would write', () => {
+    for (const key of ['d', 'v', '1', 'Ctrl+Y', 'Ctrl+C', 'Alt+Enter', 'Ctrl+Shift+R']) {
+      expect(inertLegendText(keyToken(key)), key).toBe(`(${key})`);
+    }
+  });
+
+  it('leaves a plain text as it is', () => {
+    expect(inertLegendText('')).toBe('');
+    expect(inertLegendText('src/app.ts')).toBe('src/app.ts');
   });
 });

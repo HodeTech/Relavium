@@ -711,7 +711,7 @@ export function formatToolCall(call: ToolCallView, display?: ToolDisplay): strin
   const stats =
     display?.stats === undefined
       ? ''
-      : ` · +${display.stats.addedLines}/-${display.stats.removedLines} lines`;
+      : ` · +${display.stats.addedLines} -${display.stats.removedLines}`;
   return `${glyph('toolCall')} ${sanitizeInline(call.toolId)} ${marks[outcome]}${target}${stats}`;
 }
 

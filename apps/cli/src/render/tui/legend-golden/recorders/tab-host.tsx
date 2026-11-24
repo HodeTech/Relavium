@@ -919,9 +919,11 @@ const interruptRecorder: Recorder = () => {
   const floor = usableColumns(GEOMETRIES[0].geometry.columns);
   for (const { name, state } of everything) {
     const { items, exit } = tabHostLegend(state);
-    const named = items.some(
-      (item) => 'keys' in item && item.keys === TAB_HOST_KEYS.interrupt.keys,
-    );
+    const interruptKeys = TAB_HOST_KEYS.interrupt.keys;
+    // `Ctrl+C` is named either as its own item or inside the key list of the exit (`Esc / [Ctrl+C] close`).
+    const named =
+      items.some((item) => 'keys' in item && item.keys === interruptKeys) ||
+      (typeof exit.keys === 'string' ? [exit.keys] : exit.keys).includes(interruptKeys);
     const text = legend(items, exit);
     out[name] =
       `${named ? 'Ctrl+C named' : 'Ctrl+C left out'} (${String(displayWidth(text))} of ${String(floor)} columns): ${text}`;

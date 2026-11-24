@@ -422,23 +422,51 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
  * The second `Ctrl+C` of the interrupt keymap ends the session ([ADR-0115](../../../../../docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)):
  * what the armed idle hint and the `Interrupting` line say, as one legend exit.
  */
-const END_THE_SESSION_AGAIN = exitKey.close('Ctrl+C', 'end the session (again)');
+export const END_THE_SESSION_AGAIN = exitKey.leave('end the session (again)', 'Ctrl+C');
+
+/** The first `Ctrl+C` of an idle prompt with nothing typed: it arms, and the second one ends the session, so it is the key that LEAVES. */
+export const END_THE_SESSION_TWICE = exitKey.leave('end (twice)', 'Ctrl+C');
 
 /** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
 export function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
   if (interruptArmed) return legend([], END_THE_SESSION_AGAIN);
   return emptyDraft
     ? legend(
-        [{ keys: '/', verb: 'for commands' }, { text: '/exit end' }],
-        exitKey.close('Ctrl+C', 'end (twice)'),
+        // `/exit` is a command to type, never a key: it is written plain, in a sentence that says what typing it does.
+        [{ keys: '/', verb: 'for commands' }, { text: 'type /exit to end' }],
+        END_THE_SESSION_TWICE,
       )
     : legend(
         [
           { keys: 'Enter', verb: 'send' },
           { keys: 'Ctrl+J', verb: 'newline' },
         ],
+        // Not a leaving key: with a draft the first `Ctrl+C` only clears it, so this stays the `close` class (the legend needs an exit key).
         exitKey.close('Ctrl+C', 'clear the draft'),
       );
+}
+
+/** What is in flight behind a chat, as the host knows it. */
+export interface ChatWork {
+  /** A turn is streaming (the store's `status` is `running`). */
+  readonly turnRunning: boolean;
+  /** A `!`-shell command is running. */
+  readonly shellBusy: boolean;
+  /** A submit is in flight: a turn, a compaction, or a slash command that has not returned yet. */
+  readonly submitBusy: boolean;
+  /** A card of the native prompt channel (`/mode`, `/export`, `/resume`, ...) is on screen and answers every key. */
+  readonly nativePrompt: boolean;
+}
+
+/**
+ * Whether the chat draws its busy line (`Working… · Esc stops the turn`). A slash command that is only waiting on its own card is a submit in
+ * flight too, but no turn runs and the card answers `Esc` (it closes the card and stops nothing): the busy line would say a key does what it
+ * does not, so it is not drawn while a card holds the screen and nothing else is running. The input gate is not this: it keeps reading
+ * `submitBusy`, so a key still never reaches the composer behind the card.
+ */
+export function chatIsBusy(work: ChatWork): boolean {
+  const waitingOnItsOwnCard = work.nativePrompt && !work.turnRunning && !work.shellBusy;
+  return work.turnRunning || work.shellBusy || (work.submitBusy && !waitingOnItsOwnCard);
 }
 
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
@@ -2071,7 +2099,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           nowMs={Date.now()}
           color={color}
           editor={editor}
-          running={running || shellBusy || submitBusy}
+          running={chatIsBusy({
+            turnRunning: running,
+            shellBusy,
+            submitBusy,
+            nativePrompt: renderedOverlays.nativePrompt,
+          })}
           mode={mode}
           reasoningEffort={reasoningEffort}
           reasoningVisible={reasoningVisible}

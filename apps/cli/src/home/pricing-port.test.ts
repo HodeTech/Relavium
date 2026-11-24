@@ -389,14 +389,10 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
         const shell = shellRefusal(model, above);
         const form = refused(model, above);
         expect(shell).toBe(
-          field.unit === 'mtok'
-            ? `${field.flag} ($${ceiling + 0.01} per M) is implausibly large — the maximum is $${ceiling} per M`
-            : `${field.flag} ($${ceiling + 0.01}) is implausibly large — the maximum is $${ceiling} per unit`,
+          `${field.flag} ($${ceiling + 0.01} per ${field.priceUnit}) is implausibly large — the maximum is $${ceiling} per ${field.priceUnit}`,
         );
         expect(form).toBe(
-          field.unit === 'mtok'
-            ? `${field.label} ($${ceiling + 0.01} per M) is implausibly large — the maximum is $${ceiling} per M`
-            : `${field.label} ($${ceiling + 0.01}) is implausibly large — the maximum is $${ceiling} per unit`,
+          `${field.label} ($${ceiling + 0.01} per ${field.priceUnit}) is implausibly large — the maximum is $${ceiling} per ${field.priceUnit}`,
         );
       },
     );
@@ -427,9 +423,8 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
       return out();
     }
 
-    /** The smallest price, in the unit of `field`, as the refusals name it. */
-    const step = (field: PricingField): string =>
-      `$0.00000001 per ${field.unit === 'mtok' ? 'million tokens' : 'billed unit'}`;
+    /** The smallest price, in the unit of `field`, as the refusals name it (one spelling: `per M`, `per image`, `per second`). */
+    const step = (field: PricingField): string => `$0.00000001 per ${field.priceUnit}`;
     const belowSmallest = (name: string, field: PricingField): string =>
       `${name} is below the smallest price that can be stored, ${step(field)}. Enter 0 to record it as free.`;
     const tooPrecise = (name: string, field: PricingField): string =>

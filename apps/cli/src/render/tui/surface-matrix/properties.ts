@@ -19,7 +19,9 @@ export type PropertyId =
   /** Not one of the five: the surface draws its selected row inverse, with colour on and off alike (ADR-0145 §5), for a surface that names one. */
   | 'selected-row'
   /** Not one of the five: the surface's own landmark (or, below the floor, its notice) is on screen, so a frame that never opened cannot pass. */
-  | 'surface-shown';
+  | 'surface-shown'
+  /** Not one of the five: the surface's own legend row is on ONE row of the frame, whole, so a layout that merges or overwrites it cannot pass. */
+  | 'legend-row';
 
 export interface Violation {
   readonly property: PropertyId;
@@ -159,10 +161,42 @@ export function stylesBefore(raw: string, index: number): ReadonlySet<string> {
   return active;
 }
 
+/** The selection marker of ADR-0145 §5, written out here and not read from the glyph table: the table is what is being checked. */
+export const SELECTION_MARKER = { unicode: '›', plain: '>' } as const;
+
+/**
+ * The marker of the row that holds `text`, as the frame shows it: the LAST row of the frame with those words must carry `›` when colour is
+ * on and `>` when it is off (and never the other form with colour off), so a view that asks the glyph table for the wrong form, or draws no
+ * marker, is named even though the row is bold and inverse in both.
+ */
+function checkSelectionMarker(observation: Observation, text: string): Violation[] {
+  const color = observation.variant.color;
+  const row = [...observation.lines].reverse().find((line) => line.includes(text));
+  if (row === undefined) {
+    return [
+      {
+        property: 'selected-row',
+        message: `the selected row "${text}" is not on any row of the frame, so its marker cannot be read`,
+      },
+    ];
+  }
+  const want = color ? SELECTION_MARKER.unicode : SELECTION_MARKER.plain;
+  const problems: string[] = [];
+  if (!row.includes(want))
+    problems.push(`has no \`${want}\` marker (colour ${color ? 'on' : 'off'})`);
+  if (!color && row.includes(SELECTION_MARKER.unicode))
+    problems.push(`draws the Unicode marker \`${SELECTION_MARKER.unicode}\` with colour off`);
+  return problems.map((problem) => ({
+    property: 'selected-row',
+    message: `the selected row "${text}" ${problem}: "${preview(row)}"`,
+  }));
+}
+
 /**
  * (6) For a surface that names its selected row: the last time `text` was written to the terminal it was drawn inverse and bold, in every
- * cell, colour off included ("no colour" means colour only: ADR-0145 §5, MVP-11 OD-6). `text` is words that only the selected row has
- * (a command's name, a model's), not its marker, which is `›` with colour and `>` without.
+ * cell, colour off included ("no colour" means colour only: ADR-0145 §5, MVP-11 OD-6), and its row carries the selection marker in the
+ * form of the cell (`›` with colour on, `>` with colour off). `text` is words that only the selected row has (a command's name, a model's),
+ * not its marker.
  */
 export function checkSelectedRow(observation: Observation, text: string): Violation[] {
   const at = observation.raw.lastIndexOf(text);
@@ -176,12 +210,31 @@ export function checkSelectedRow(observation: Observation, text: string): Violat
   }
   const active = stylesBefore(observation.raw, at);
   const missing = ['inverse', 'bold'].filter((style) => !active.has(style));
-  return missing.length === 0
+  const style: Violation[] =
+    missing.length === 0
+      ? []
+      : [
+          {
+            property: 'selected-row',
+            message: `the selected row "${text}" is not ${missing.join(' and ')} (colour ${observation.variant.color ? 'on' : 'off'})`,
+          },
+        ];
+  return [...style, ...checkSelectionMarker(observation, text)];
+}
+
+/**
+ * (7) The surface's own legend row is on a row of the frame BY ITSELF, whole (`↑/↓ select · Enter run · Esc close`, and nothing else on
+ * the row): a layout that squeezes a list into the legend's row, so that the two are drawn over each other, leaves an exit key and a
+ * landmark on screen, and may leave the legend's words whole with another row's tail after them. Only a row that is exactly the legend
+ * passes.
+ */
+export function checkLegendRow(observation: Observation, row: string): Violation[] {
+  return observation.lines.some((line) => line.trim() === row)
     ? []
     : [
         {
-          property: 'selected-row',
-          message: `the selected row "${text}" is not ${missing.join(' and ')} (colour ${observation.variant.color ? 'on' : 'off'})`,
+          property: 'legend-row',
+          message: `the legend row "${row}" is not on a row of the frame by itself, whole`,
         },
       ];
 }
@@ -203,9 +256,17 @@ export function checkNoColour(observation: Observation): Violation[] {
 export interface PropertyExpectations {
   /** The words of the key that leaves the surface; absent ⇒ the exit key is not asserted (a below-floor notice has none). */
   readonly exitKey?: string | undefined;
-  /** Words only the surface's selected row has; absent ⇒ the selected row is not asserted (a surface with no selection, or below the floor). */
-  readonly selectedRow?: string | undefined;
+  /** The surface's own legend row, exactly as written; absent ⇒ not asserted (a surface with no one row of its own, or below the floor). */
+  readonly legendRow?: string | undefined;
+  /**
+   * Words only the surface's selected row has, or several such words (a list's selected row AND the selected tab above it); absent ⇒ the
+   * selected row is not asserted (a surface with no selection, or below the floor).
+   */
+  readonly selectedRow?: string | readonly string[] | undefined;
 }
+
+const selectedWords = (selected: string | readonly string[] | undefined): readonly string[] =>
+  selected === undefined ? [] : typeof selected === 'string' ? [selected] : selected;
 
 /** The five properties, and the sixth for a surface that names its selected row, over one observation. */
 export function checkProperties(
@@ -218,8 +279,11 @@ export function checkProperties(
     ...(expectations.exitKey === undefined ? [] : checkExitKey(observation, expectations.exitKey)),
     ...checkNoScrollbackClear(observation),
     ...checkNoColour(observation),
-    ...(expectations.selectedRow === undefined
+    ...selectedWords(expectations.selectedRow).flatMap((text) =>
+      checkSelectedRow(observation, text),
+    ),
+    ...(expectations.legendRow === undefined
       ? []
-      : checkSelectedRow(observation, expectations.selectedRow)),
+      : checkLegendRow(observation, expectations.legendRow)),
   ];
 }

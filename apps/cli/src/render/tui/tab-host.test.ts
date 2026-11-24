@@ -28,6 +28,7 @@ import { usableColumns, type SheetLine } from './sheet-frame.js';
 import { HISTORY_UNREADABLE } from './tab-host-history.js';
 import {
   TABS,
+  TAB_HOST_CLOSE_EITHER,
   TAB_HOST_KEYS,
   TAB_HOST_ROWS,
   disarmTabHost,
@@ -188,7 +189,7 @@ describe('entering a tab', () => {
     expect(none.unreadable).toBe(true);
     const text = tabHostLines(failed, { columns: 80, terminalRows: 24 }).map((line) => line.text);
     expect(text).toContain('Could not read the permissions.');
-    expect(text.at(-1), 'the way out is still the last line').toContain('Esc close');
+    expect(text.at(-1), 'the way out is still the last line').toContain('Esc / [Ctrl+C] close');
   });
 
   it('puts the cursor where the tab left it, clamped to the rows there are now', () => {
@@ -248,6 +249,11 @@ describe('every key the legend names, pressed', () => {
       expect(r.withdraw, 'Enter withdraws the selected row').toHaveBeenCalledTimes(1);
       expect(r.withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'g0' } });
     },
+    // From a tab's list both keys do the same, and the legend writes them as one item (ADR-0145 §3): each is pressed.
+    [printed(TAB_HOST_CLOSE_EITHER)]: (r) => {
+      expect(r.press('', ESC).kind, 'Esc closes').toBe('close');
+      expect(r.press('c', { ctrl: true }).kind, 'Ctrl+C closes').toBe('close');
+    },
     [printed(TAB_HOST_KEYS.close)]: (r) => {
       expect(r.press('', ESC).kind, 'Esc closes').toBe('close');
     },
@@ -273,17 +279,17 @@ describe('every key the legend names, pressed', () => {
     [
       'Permissions with rows',
       () => rig(snapshotOf(3)),
-      '←/→ tab,Tab cycle,↑/↓ select,[d] / Del withdraw,Esc close',
+      '←/→ tab,Tab cycle,↑/↓ select,[d] / Del withdraw,Esc / [Ctrl+C] close',
     ],
     [
       'an unreadable History tab',
       () => rig(snapshotOf(3), 'history'),
-      '←/→ tab,Tab cycle,[Ctrl+C] close,Esc close',
+      '←/→ tab,Tab cycle,Esc / [Ctrl+C] close',
     ],
     [
       'Permissions with nothing to select',
       () => rig(snapshotOf(0)),
-      '←/→ tab,Tab cycle,[Ctrl+C] close,Esc close',
+      '←/→ tab,Tab cycle,Esc / [Ctrl+C] close',
     ],
     ['Permissions while a withdrawal waits', asked, 'Enter withdraw,Esc keep'],
   ] as const)(
@@ -302,8 +308,9 @@ describe('every key the legend names, pressed', () => {
 
   it('names the class of the key that leaves by what it does there: it closes from a list, and steps back while a withdrawal’s question is up', () => {
     const idle = rig(snapshotOf(3));
+    // Both keys close from a list and change nothing, so they are ONE item with a key list.
     expect(tabHostLegend(idle.state).exit).toMatchObject({
-      keys: 'Esc',
+      keys: ['Esc', 'Ctrl+C'],
       verb: 'close',
       class: 'close',
     });
@@ -607,7 +614,9 @@ describe('what is drawn', () => {
     expect(lines).toContain(
       'Only auto mode runs a remembered command unasked, in a chat in this project.',
     );
-    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(lines.at(-1)).toBe(
+      '←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close',
+    );
     expect(lines.join('\n'), 'no second legend and no sheet rule').not.toContain(
       'Permissions · this project',
     );
@@ -622,7 +631,7 @@ describe('what is drawn', () => {
     expect(lines.at(-1)).toBe('Enter withdraw · Esc keep');
   });
 
-  it('below 80×24 is two lines: the hint that says to enlarge, and the legend with the way out (`Esc close` at a tab’s list)', () => {
+  it('below 80×24 is two lines: the hint that says to enlarge, and the legend with the way out (`Esc / [Ctrl+C] close` at a tab’s list)', () => {
     for (const geometry of [
       { columns: 79, terminalRows: 24 },
       { columns: 80, terminalRows: 23 },
@@ -630,19 +639,22 @@ describe('what is drawn', () => {
     ]) {
       expect(textOf(tabHostLines(rig().state, geometry))).toEqual([
         'Enlarge the terminal.',
-        'Esc close',
+        'Esc / [Ctrl+C] close',
       ]);
     }
   });
 
-  it('below 80×24 with a withdrawal’s question still up, `Esc close` is true: the question is not on screen, so the first `Esc` closes the screen and withdraws nothing', () => {
+  it('below 80×24 with a withdrawal’s question still up, `Esc / [Ctrl+C] close` is true: the question is not on screen, so the first `Esc` closes the screen and withdraws nothing', () => {
     const r = rig(snapshotOf(2));
     r.advance(SHEET_SETTLE_MS + 100);
     r.press('d');
     expect(r.state.sheet?.armed, 'the question is up').toBe(true);
     // The terminal was made smaller after the question was asked: it cannot be shown, and it is still up.
     const small = { columns: 60, terminalRows: 20 };
-    expect(textOf(tabHostLines(r.state, small))).toEqual(['Enlarge the terminal.', 'Esc close']);
+    expect(textOf(tabHostLines(r.state, small))).toEqual([
+      'Enlarge the terminal.',
+      'Esc / [Ctrl+C] close',
+    ]);
     // What the legend says is what the key does there (the sheet's rule: a frame that cannot say what it asks never leaves it waiting).
     expect(r.press('', ESC, { canArm: false }).kind).toBe('close');
     expect(r.withdraw).not.toHaveBeenCalled();

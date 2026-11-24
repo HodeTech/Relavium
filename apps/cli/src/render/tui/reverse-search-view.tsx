@@ -30,7 +30,7 @@ export function ReverseSearchView(
   const match = reverseSearchMatchText(entries, state);
   const failed = state.query.length > 0 && match === undefined;
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       <Text {...colorProps(color, failed ? 'yellow' : 'cyan')} wrap="truncate-end">
         {failed ? '(failed reverse-i-search) ' : '(reverse-i-search) '}
         <Emph kinds="bold">{sanitizeInline(state.query)}</Emph>

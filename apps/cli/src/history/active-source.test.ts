@@ -741,6 +741,32 @@ describe('the asynchronous read', () => {
     expect(rowOf(again.rows, 'run-a').class).toBe('held');
   });
 
+  it('a read that failed forgets what an older stamp held: the earlier stamp is parsed again, never trusted', async () => {
+    await seedRun(client.db, { slug: 'wf', runId: 'run-a', state: 'running', atMs: NOW });
+    let stamp = '10:1';
+    let fail = false;
+    const listHeld = vi.fn(() =>
+      fail ? Promise.reject(new Error('EACCES')) : Promise.resolve([{ runId: 'run-a' }]),
+    );
+    const read = createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld,
+      outboxStamp: () => stamp,
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    await read(); // stamp A is parsed and kept
+    stamp = '40:2';
+    fail = true;
+    expect((await read()).heldUnread).toBe(true); // stamp B cannot be read: what was kept under A goes
+    stamp = '10:1';
+    fail = false;
+    await read(); // the file is at A again, but A was forgotten with the failed read
+    expect(listHeld).toHaveBeenCalledTimes(3);
+  });
+
   it('a stamp that throws is no stamp: the outbox is listed', async () => {
     const listHeld = vi.fn(() => Promise.resolve([]));
     const read = createActiveReader({

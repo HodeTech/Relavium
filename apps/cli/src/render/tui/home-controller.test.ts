@@ -12,7 +12,9 @@ import { type ChatMode } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import type { RunHostSnapshot } from '../../home/run-host.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { HOSTED_RUN_POLL_MS } from './tui-constants.js';
 import { toolReviewPage } from './tool-review-model.js';
 import {
   createHomeController,
@@ -2187,8 +2189,10 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('', ENTER);
       await flush();
       const notice = c.getSnapshot().notice;
-      expect(notice).toContain('ok doctor: all checks passed');
-      expect(notice).toContain('ok ok · OS keychain: reachable');
+      expect(notice).toContain('doctor: all checks passed');
+      expect(notice).not.toContain('ok doctor');
+      expect(notice).toContain('  ok · OS keychain: reachable');
+      expect(notice).not.toContain('ok ok');
       expect(notice).not.toMatch(/[✓✗⚠]/u);
     });
 
@@ -4113,4 +4117,138 @@ describe('the /permissions tab on the bare Home (ADR-0137 §3, ADR-0140 §3)', (
       expect(onExit).not.toHaveBeenCalled();
     });
   });
+});
+
+describe('the lines the controller writes into a chat itself follow `plainGlyphs` (ADR-0145 §5)', () => {
+  const RUN = '3f2a9c1e-7b64-4d0a-9c11-5a2e8f6d0b13';
+  const EMPTY_HOME: HomeSnapshot = {
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [],
+    recentRuns: [],
+    recentAgents: [],
+    unreadableRunIds: [],
+    isEmpty: true,
+  };
+  const homeStore: HomeStore = { read: () => EMPTY_HOME };
+
+  it.each([
+    { plain: false, line: '✓ run 3f2a9c1e completed. Leave this chat to see it on the Home.' },
+    { plain: true, line: 'ok run 3f2a9c1e completed. Leave this chat to see it on the Home.' },
+  ])(
+    'a leg that ends behind the chat is announced in the form of the colour setting (plainGlyphs $plain)',
+    async ({ plain, line }) => {
+      const { session, store } = makeSession();
+      const note = vi.spyOn(store, 'note');
+      let host: RunHostSnapshot = {
+        launching: false,
+        active: { leg: 'start', runId: RUN, cancelling: false },
+        last: undefined,
+      };
+      const timers = new Map<number, { at: number; run: () => void }>();
+      let now = 0;
+      let nextTimer = 1;
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        ...(plain ? { plainGlyphs: true } : {}),
+        startChat: () => Promise.resolve(session),
+        homeStore,
+        hostedRuns: { snapshot: () => host, cancel: () => true, close: () => Promise.resolve() },
+        gateCards: {
+          list: () => [],
+          read: () => undefined,
+          resume: () => Promise.reject(new Error('nothing is answered here')),
+        },
+        schedule: (run, delayMs) => {
+          const id = nextTimer;
+          nextTimer += 1;
+          timers.set(id, { at: now + delayMs, run });
+          return () => {
+            timers.delete(id);
+          };
+        },
+        now: () => now,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      // the run's view is opened once and left, so the poll that watches the live leg is running
+      expect(c.openScreen('run-view', { runId: RUN })).toBe(true);
+      c.closeScreen();
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      expect(c.getSnapshot().mode).toBe('chat');
+
+      host = {
+        launching: false,
+        active: undefined,
+        last: {
+          leg: 'start',
+          runId: RUN,
+          terminal: {
+            disposition: 'completed',
+            safety: undefined,
+            headline: 'h',
+            remedy: undefined,
+          },
+          handedOff: false,
+          retirement: 'retired',
+          fault: undefined,
+        },
+      };
+      now += HOSTED_RUN_POLL_MS;
+      for (const [id, timer] of [...timers.entries()]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.run();
+        }
+      }
+      await flush();
+      expect(note).toHaveBeenCalledWith(line);
+      await c.teardownActive();
+    },
+  );
+
+  it.each([
+    { plain: false, mark: '⇄' },
+    { plain: true, mark: '<->' },
+  ])(
+    'the model-switch marker of a reseat is drawn in the form of the colour setting (plainGlyphs $plain)',
+    async ({ plain, mark }) => {
+      const sessionA = makeSession({ sessionId: 'sess-A' });
+      sessionA.session.store.appendUser('what is 2+2');
+      const sessionB = makeSession({ sessionId: 'sess-A' });
+      const notice = vi.spyOn(sessionB.session.store, 'notice');
+      const { port } = makeModelsPort({
+        entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+      });
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        ...(plain ? { plainGlyphs: true } : {}),
+        startChat: () => Promise.resolve(sessionA.session),
+        reseatChat: () => Promise.resolve(sessionB.session),
+        models: port,
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      c.handleKey('/', {});
+      type(c, 'models');
+      c.handleKey('', ENTER);
+      await flush();
+      c.handleKey('', ENTER); // the only model: a live reseat
+      await flush();
+
+      const marker = notice.mock.calls
+        .map((call) => call[0])
+        .find((line) => line.includes('model changed'));
+      expect(marker, 'the reseat wrote its marker into the new transcript').toBeDefined();
+      expect(marker?.startsWith(`${mark} model changed`)).toBe(true);
+      if (plain) expect(marker).not.toContain('⇄');
+      else expect(marker).not.toContain('<->');
+      await c.teardownActive();
+    },
+  );
 });

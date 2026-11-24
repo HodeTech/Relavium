@@ -111,7 +111,7 @@ describe('cardVerb', () => {
 describe('cardStats', () => {
   it('gives the added/removed lines and changed bytes, or nothing without a diff', () => {
     const document = createReviewDocument(preview({ after: 'hello\n' }));
-    expect(cardStats(document)).toBe('+1 −0 · 6 bytes');
+    expect(cardStats(document)).toBe('+1 -0 · 6 bytes');
     expect(cardStats(createReviewDocument({ kind: 'operation', fields: [] }))).toBe('');
     expect(cardStats(undefined)).toBe('');
   });

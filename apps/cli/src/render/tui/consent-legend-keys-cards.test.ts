@@ -16,6 +16,12 @@ import {
 } from './question-card-model.js';
 import { createRunCard, projectRunCard, type RunCardSnapshot } from './run-card-model.js';
 import { exitGuardLines } from './home-projection.js';
+import {
+  DISARMED,
+  pressExitGuardKey,
+  pressRunViewInterrupt,
+  pressRunViewKey,
+} from './interrupt-keymap.js';
 import { runScreenModel } from './run-screen.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 
@@ -29,6 +35,8 @@ import type { ApprovalGuard } from './tool-review-model.js';
 
 const CTRL: ChatKey = { ctrl: true };
 const ESC: ChatKey = { escape: true };
+/** What the exit guard reads of a key. */
+type GuardKey = Parameters<typeof pressExitGuardKey>[1];
 
 /** The items of a key line, in order. */
 const itemsOf = (line: string): string[] => line.split(LEGEND_SEPARATOR);
@@ -348,28 +356,67 @@ describe('the run view: the key line names only what the state has (ADR-0145 §3
       ...over,
     });
 
-  it('names Ctrl+C twice and Esc leaves it running, and says one more Ctrl+C once the first armed it', () => {
-    expect(itemsOf(model().keys)).toEqual([
-      '[Ctrl+C] cancel the run (twice)',
-      'Esc leaves it running',
-    ]);
-    expect(itemsOf(model({ armed: true }).keys)).toEqual([
-      '[Ctrl+C] cancel the run (again)',
-      'Esc leaves it running',
-    ]);
+  /** `Ctrl+C` in the run view is the keymap's (`pressRunViewInterrupt`), `Esc` is the view's (`pressRunViewKey`): each named key is pressed on the one that owns it. */
+  const WINDOW = { armedAt: 1_000 };
+  const esc = { escape: true } as const;
+
+  it('names Ctrl+C twice and Esc leaves it running, and each does what it says', () => {
+    expect(
+      check(model().keys, {
+        // the first press arms and cancels nothing; a second inside the window cancels
+        '[Ctrl+C] cancel the run (twice)': () => {
+          const first = pressRunViewInterrupt(DISARMED, 'executing', 1_000);
+          expect(first.action).toBe('arm-run-cancel');
+          expect(pressRunViewInterrupt(first.state, 'executing', 1_500).action).toBe('cancel-run');
+        },
+        // Esc steps out and leaves the leg alone: nothing is cancelled, nothing is armed
+        'Esc leaves it running': () => {
+          expect(pressRunViewKey(esc)).toBe('leave');
+          expect(pressRunViewKey({})).toBe('ignore');
+        },
+      }),
+    ).toEqual(['[Ctrl+C] cancel the run (twice)', 'Esc leaves it running']);
+  });
+
+  it('says one more Ctrl+C once the first armed it, and that press cancels', () => {
+    expect(
+      check(model({ armed: true }).keys, {
+        '[Ctrl+C] cancel the run (again)': () => {
+          expect(pressRunViewInterrupt(WINDOW, 'executing', 1_500)).toEqual({
+            state: DISARMED,
+            action: 'cancel-run',
+          });
+        },
+        'Esc leaves it running': () => expect(pressRunViewKey(esc)).toBe('leave'),
+      }),
+    ).toEqual(['[Ctrl+C] cancel the run (again)', 'Esc leaves it running']);
   });
 
   it('names no Ctrl+C that cancels once the run is stopping or gone: there is nothing it would cancel', () => {
     const cancelling = model({
       snapshot: { ...executing, active: { leg: 'start', runId: RUN, cancelling: true } },
     });
-    expect(itemsOf(cancelling.keys)).toEqual([
-      'Waiting for the run to stop',
-      'Esc leaves the view',
-    ]);
+    expect(
+      check(cancelling.keys, {
+        // a Ctrl+C while the run is stopping is a hint only: it arms nothing and cancels nothing more, even inside a window
+        'Waiting for the run to stop': () => {
+          expect(pressRunViewInterrupt(WINDOW, 'cancelling', 1_500)).toEqual({
+            state: DISARMED,
+            action: 'wait-for-stop',
+          });
+        },
+        'Esc leaves the view': () => expect(pressRunViewKey(esc)).toBe('leave'),
+      }),
+    ).toEqual(['Waiting for the run to stop', 'Esc leaves the view']);
     expect(cancelling.leg).toBe('cancelling');
     const replaced = model({ snapshot: undefined });
     expect(replaced.keys).toBe('Esc / [Ctrl+C] close');
+    // both named keys close the view and cancel nothing: Esc by the view's key, Ctrl+C by the keymap with no leg executing
+    expect(pressRunViewKey(esc)).toBe('leave');
+    expect(pressRunViewInterrupt(DISARMED, 'none', 1_000)).toEqual({
+      state: DISARMED,
+      action: 'close-screen',
+    });
     expect(replaced.leg).toBe('none');
   });
 });
@@ -385,11 +432,33 @@ describe('the exit guard: the keys its lines name are the keys that leave and th
     last: undefined,
   };
 
-  it('names Ctrl+Y as the one key that leaves, and Esc, Ctrl+C and Ctrl+N as the keys that stay', () => {
+  it('names Ctrl+Y as the one key that leaves, and Esc, Ctrl+C and Ctrl+N as the keys that stay, and each does it', () => {
     const line = exitGuardLines('confirm', running, 13).at(-1) ?? '';
-    expect(itemsOf(line)).toEqual([
-      '[Ctrl+Y] stop the run and leave',
-      'Esc / [Ctrl+C] / [Ctrl+N] stay',
-    ]);
+    expect(
+      check(line, {
+        '[Ctrl+Y] stop the run and leave': () => {
+          expect(pressExitGuardKey('y', CTRL)).toBe('confirm');
+          // and nothing else leaves: not a bare letter, Enter, Esc, Ctrl+C or Ctrl+N
+          const others: readonly (readonly [string, GuardKey])[] = [
+            ['y', {}],
+            ['', {}], // Enter carries no flag the guard reads
+            ['', { escape: true }],
+            ['c', { ctrl: true }],
+            ['n', { ctrl: true }],
+            ['d', { ctrl: true }],
+            ['y', { ctrl: true, meta: true }],
+          ];
+          for (const [input, key] of others)
+            expect(pressExitGuardKey(input, key), `${input} ${JSON.stringify(key)}`).not.toBe(
+              'confirm',
+            );
+        },
+        'Esc / [Ctrl+C] / [Ctrl+N] stay': () => {
+          expect(pressExitGuardKey('', ESC)).toBe('stay');
+          expect(pressExitGuardKey('c', CTRL)).toBe('stay');
+          expect(pressExitGuardKey('n', CTRL)).toBe('stay');
+        },
+      }),
+    ).toEqual(['[Ctrl+Y] stop the run and leave', 'Esc / [Ctrl+C] / [Ctrl+N] stay']);
   });
 });

@@ -1,11 +1,15 @@
 import { plainTextRefusal } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { CliError } from '../../process/errors.js';
+import { consentCardText, CONSENT_PATH_REFUSED } from '../../home/consent-card.js';
+import type { ConsentSubject } from '../../engine/mcp-consent-gate.js';
 import {
   blankHostGlyphs,
   blankMarkerGlyphs,
   GLYPH_ROLES,
   GLYPHS,
+  HOST_BLANKED_GLYPHS,
   MARKER_GLYPHS,
   TABLE_GLYPHS,
 } from './glyphs.js';
@@ -13,10 +17,31 @@ import { authorLine } from './run-card-model.js';
 
 /**
  * The host-glyph relation of [ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §5, pinned BY BEHAVIOUR: the
- * core's refusal (`plainTextRefusal`, through its public export) is the base set the CLI's set must contain, and every glyph of the table is
- * in the CLI's set too. Nothing here reads the core's pattern or the CLI's: each probe asks the real function, so a set that is edited, or a
+ * core's refusal (`plainTextRefusal`, through its public export) is the base set the CLI's set must contain, and so is every role of the table
+ * that does not say `hostBlanked: false`: the set is the core's refusal UNION the blanked roles. The roles that say it are the shapes that are
+ * also ordinary text (`•`, `▲`, `▼`), which a project path or an author's bullet list may hold (a refinement of ADR-0145 §5, which said "every
+ * glyph of the table"). Nothing here reads the core's pattern or the CLI's: each probe asks the real function, so a set that is edited, or a
  * table that gains a glyph the CLI function does not blank, fails here and not in a review.
  */
+
+/** The glyphs of the table that are ordinary text and so are not host glyphs. */
+const ORDINARY_TEXT = ['•', '▲', '▼'];
+
+/** A consent subject whose executable and directory are `path`: the card is built, or refused with fixed words. */
+const subjectAt = (path: string): ConsentSubject => ({
+  serverId: 'srv',
+  provenance: 'inline',
+  artifact: undefined,
+  resolvedCommand: path,
+  authoredCommand: undefined,
+  args: [],
+  env: [],
+  cwd: path,
+  digest: 'v1:00',
+  total: 1,
+  index: 1,
+  previouslyApprovedIn: undefined,
+});
 
 const REFUSED = "must not draw the host's own glyphs, tick shapes or approval keys";
 
@@ -56,10 +81,11 @@ describe('the core refuses what the CLI blanks', () => {
   });
 });
 
-describe('the CLI blanks every glyph of the table', () => {
-  it('each glyph of each role is blanked from author text, behind a card’s gutter', () => {
+describe('the CLI blanks every glyph of the table that is not ordinary text', () => {
+  it('each glyph of each role is blanked from author text, behind a card’s gutter, unless its role says it is ordinary text', () => {
     for (const role of GLYPH_ROLES) {
       const { glyph } = GLYPHS[role];
+      if (ORDINARY_TEXT.includes(glyph)) continue;
       expect(
         authorLine(probe(glyph)),
         `${role} (${glyph}) is blanked by the run card`,
@@ -70,9 +96,56 @@ describe('the CLI blanks every glyph of the table', () => {
     }
   });
 
-  it('the markers the plan names are in the set: `› ▸ ⇄ ◉ ◐ ▲ ▼ •`, the rail and the rules', () => {
+  it('the relation is the core’s refusal UNION the roles with no `hostBlanked: false`: the set holds exactly those glyphs and the box-drawing block', () => {
+    const blanked = new Set<string>([
+      ...CORE_PROBES,
+      ...GLYPH_ROLES.filter((role) => !('hostBlanked' in GLYPHS[role])).map(
+        (role) => GLYPHS[role].glyph,
+      ),
+    ]);
+    // every member of the union is blanked …
+    for (const character of blanked)
+      expect(blankHostGlyphs(probe(character)), character).toBe('a   b');
+    // … and every glyph of the table outside it is left alone
+    for (const character of TABLE_GLYPHS) {
+      if (blanked.has(character)) continue;
+      expect(blankHostGlyphs(probe(character)), character).toBe(probe(character));
+    }
+    expect([...HOST_BLANKED_GLYPHS].every((character) => blanked.has(character))).toBe(true);
+  });
+
+  it('a bullet and the two triangles survive an author’s text: `• first` lines and a `▲ ▼` rating are not turned into spaces', () => {
+    expect(authorLine('• first\n• second')).toBe('• first • second');
+    for (const character of ORDINARY_TEXT) {
+      expect(authorLine(`${character} item`), character).toBe(`${character} item`);
+      expect(blankHostGlyphs(`a ${character} b`), character).toBe(`a ${character} b`);
+    }
+  });
+
+  it('the glyphs that stay blanked still blank an author’s text: `★ ↻ ◇ ⇄` lead history, active and transcript rows', () => {
+    for (const character of ['★', '↻', '◇', '⇄', '✎', '◆', '▌', '█']) {
+      expect(authorLine(`${character} item`), character).toBe('  item');
+    }
+  });
+
+  it('a project path with a bullet or a triangle in it is shown by the MCP consent card, one with a glyph that stays blanked is refused', () => {
+    for (const character of ORDINARY_TEXT) {
+      const path = `/home/ada/${character}proj/srv`;
+      const card = consentCardText(subjectAt(path));
+      expect(card.details.join('\n'), character).toContain(path);
+    }
+    for (const character of ['★', '↻', '◇', '⇄', '✓', '│']) {
+      expect(() => consentCardText(subjectAt(`/home/ada/${character}proj/srv`)), character).toThrow(
+        CONSENT_PATH_REFUSED,
+      );
+    }
+    expect(() => consentCardText(subjectAt('/home/ada/x\u2502y/srv'))).toThrow(CliError);
+  });
+
+  it('the markers the plan names are in the set: `› ▸ ⇄ ◉ ◐`, the rail and the rules (`▲ ▼ •` are in the table, as ordinary text)', () => {
     for (const character of ['›', '▸', '⇄', '◉', '◐', '▲', '▼', '•', '╌', '━', '─']) {
       expect(TABLE_GLYPHS, character).toContain(character);
+      if (ORDINARY_TEXT.includes(character)) continue;
       expect(authorLine(probe(character)), character).not.toContain(character);
     }
   });

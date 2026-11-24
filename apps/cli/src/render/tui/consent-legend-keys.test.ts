@@ -124,35 +124,52 @@ const MASKED: ToolPreview = {
   },
 };
 
-/** What each named key must do on the card of a tool call (a file write) the person has inspected. */
+/**
+ * What each ITEM of a legend must do when its key is pressed, keyed by the item as the legend writes it (`[Ctrl+N] Deny`), not by the key
+ * alone: a legend that swaps two verbs (`[Ctrl+N] Allow`) names an item this table does not have, so it fails, where a table keyed by the key
+ * label would have passed it. The items are those of a file write the person has inspected (`file writes`) and of a command.
+ */
 const CARD_EFFECTS: Readonly<Record<string, (at: Reviewed) => void>> = {
-  '[Ctrl+Y]': (at) => expect(press(at, 'y', CTRL)).toEqual({ kind: 'approve', scope: 'once' }),
-  '[Ctrl+G]': (at) => expect(press(at, 'g', CTRL)).toEqual({ kind: 'approve', scope: 'always' }),
-  '[Ctrl+O]': (at) =>
+  '[Ctrl+Y] Allow': (at) =>
+    expect(press(at, 'y', CTRL)).toEqual({ kind: 'approve', scope: 'once' }),
+  '[Ctrl+Y] Allow once': (at) =>
+    expect(press(at, 'y', CTRL)).toEqual({ kind: 'approve', scope: 'once' }),
+  '[Ctrl+G] Allow all file writes this session': (at) =>
+    expect(press(at, 'g', CTRL)).toEqual({ kind: 'approve', scope: 'always' }),
+  '[Ctrl+G] Allow this session': (at) =>
+    expect(press(at, 'g', CTRL)).toEqual({ kind: 'approve', scope: 'always' }),
+  '[Ctrl+O] Allow + remember': (at) =>
     expect(press(at, 'o', CTRL, { rememberOffered: true })).toEqual({
       kind: 'approve',
       scope: 'remember',
     }),
-  '[Ctrl+N]': (at) => expect(press(at, 'n', CTRL)).toEqual({ kind: 'deny' }),
-  '[Ctrl+R]': (at) => expect(nextState(press(at, 'r', CTRL)).denial).toBe(''),
-  '[v]': (at) => expect(nextState(press(at, 'v', {})).screen).toBe('full'),
-  Esc: (at) => expect(press(at, '', { escape: true })).toEqual({ kind: 'abort' }),
+  '[Ctrl+N] Deny': (at) => expect(press(at, 'n', CTRL)).toEqual({ kind: 'deny' }),
+  '[Ctrl+R] Deny + reason': (at) => expect(nextState(press(at, 'r', CTRL)).denial).toBe(''),
+  '[v] full diff': (at) => expect(nextState(press(at, 'v', {})).screen).toBe('full'),
+  '[v] full view': (at) => expect(nextState(press(at, 'v', {})).screen).toBe('full'),
+  'Esc stops the turn': (at) => expect(press(at, '', { escape: true })).toEqual({ kind: 'abort' }),
 };
 
-/** Each key a row names is pressed on `at` and does what `effects` says; a key the table has no effect for fails. */
+/**
+ * Each item of `row` that names a key is pressed on `at` and does what `effects` says of that item; an item the table has no effect for
+ * fails, and so does a verb that was swapped. Returns the items, so a test says which it expected.
+ */
 function everyKeyDoesWhatItSays(
   row: LegendRow,
   at: Reviewed,
   effects: Readonly<Record<string, (at: Reviewed) => void>>,
 ): readonly string[] {
   const keys = keysOf(row);
-  for (const key of keys) {
-    const effect = effects[key];
+  const items = row.text
+    .split(LEGEND_SEPARATOR)
+    .filter((item) => keys.some((key) => item.startsWith(key)));
+  for (const item of items) {
+    const effect = effects[item];
     if (effect === undefined)
-      throw new Error(`the legend names ${key}, which has no checked effect`);
+      throw new Error(`the legend says "${item}", which has no checked effect`);
     effect(at);
   }
-  return keys;
+  return items;
 }
 
 describe('the approval card: every key its legend names does what it says (ADR-0145 §3)', () => {
@@ -161,20 +178,46 @@ describe('the approval card: every key its legend names does what it says (ADR-0
   it('names Ctrl+Y, Ctrl+G, Ctrl+N, Ctrl+R, v and Esc, and each does what its word says', () => {
     const [grants, refusals] = cardKeyLegend(input);
     const at = review(SMALL);
-    expect(everyKeyDoesWhatItSays(grants, at, CARD_EFFECTS)).toEqual(['[Ctrl+Y]', '[Ctrl+G]']);
-    expect(everyKeyDoesWhatItSays(refusals, at, CARD_EFFECTS)).toEqual([
-      '[Ctrl+N]',
-      '[Ctrl+R]',
-      '[v]',
-      'Esc',
+    expect(everyKeyDoesWhatItSays(grants, at, CARD_EFFECTS)).toEqual([
+      '[Ctrl+Y] Allow',
+      '[Ctrl+G] Allow all file writes this session',
     ]);
+    expect(everyKeyDoesWhatItSays(refusals, at, CARD_EFFECTS)).toEqual([
+      '[Ctrl+N] Deny',
+      '[Ctrl+R] Deny + reason',
+      '[v] full diff',
+      'Esc stops the turn',
+    ]);
+  });
+
+  it('a legend that swaps two verbs fails: `[Ctrl+N] Allow` is no item the table knows', () => {
+    const at = review(SMALL);
+    const swapped: LegendRow = { text: '[Ctrl+N] Allow · [Ctrl+Y] Deny', spans: [] };
+    const named = (row: LegendRow): string[] => keysOf(row);
+    // the swapped row, read the way the legend builder writes its spans (a key in a role, the verb dim)
+    const built: LegendRow = {
+      text: swapped.text,
+      spans: [
+        { from: 0, to: 8, role: 'strong' },
+        { from: 8, to: 14, role: 'dim' },
+        { from: 14, to: 17, role: 'dim' },
+        { from: 17, to: 25, role: 'strong' },
+        { from: 25, to: 30, role: 'dim' },
+      ],
+    };
+    expect(named(built)).toEqual(['[Ctrl+N]', '[Ctrl+Y]']);
+    expect(() => everyKeyDoesWhatItSays(built, at, CARD_EFFECTS)).toThrow(/no checked effect/u);
   });
 
   it('names Ctrl+O only for a command that may be remembered, and then it asks to remember it', () => {
     const [grants] = cardKeyLegend({ ...input, command: true, remember: true });
     expect(keysOf(grants)).toEqual(['[Ctrl+Y]', '[Ctrl+G]', '[Ctrl+O]']);
     const at = review(SMALL, {}, 'approval', IDLE_FACTS);
-    everyKeyDoesWhatItSays(grants, at, CARD_EFFECTS);
+    expect(everyKeyDoesWhatItSays(grants, at, CARD_EFFECTS)).toEqual([
+      '[Ctrl+Y] Allow once',
+      '[Ctrl+G] Allow this session',
+      '[Ctrl+O] Allow + remember',
+    ]);
     expect(keysOf(cardKeyLegend({ ...input, command: true, remember: false })[0])).not.toContain(
       '[Ctrl+O]',
     );
@@ -203,12 +246,14 @@ describe('the approval card: every key its legend names does what it says (ADR-0
   });
 });
 
-/** What each named key must do on the full view of an approval. */
+/** What each named item must do on the full view of an approval: the card's items, and the ones of the full view's own. */
 const FULL_EFFECTS: Readonly<Record<string, (at: Reviewed) => void>> = {
-  ...CARD_EFFECTS,
-  '[b]': (at) => expect(nextState(press(at, 'b', {})).screen).toBe('card'),
-  '[Ctrl+C]': (at) => expect(press(at, 'c', CTRL)).toEqual({ kind: 'abort' }),
-  Esc: (at) => expect(nextState(press(at, '', { escape: true })).screen).toBe('card'),
+  ...Object.fromEntries(
+    Object.entries(CARD_EFFECTS).filter(([item]) => item !== 'Esc stops the turn'),
+  ),
+  '[b] back to the card': (at) => expect(nextState(press(at, 'b', {})).screen).toBe('card'),
+  '[Ctrl+C] stops the turn': (at) => expect(press(at, 'c', CTRL)).toEqual({ kind: 'abort' }),
+  'Esc back': (at) => expect(nextState(press(at, '', { escape: true })).screen).toBe('card'),
 };
 
 describe('the full view of an approval: every key its answer rows name does what they say', () => {
@@ -219,12 +264,15 @@ describe('the full view of an approval: every key its answer rows name does what
       cacheable: true,
       scope: 'file writes',
     });
-    expect(everyKeyDoesWhatItSays(grants, at, FULL_EFFECTS)).toEqual(['[Ctrl+Y]', '[Ctrl+G]']);
+    expect(everyKeyDoesWhatItSays(grants, at, FULL_EFFECTS)).toEqual([
+      '[Ctrl+Y] Allow',
+      '[Ctrl+G] Allow all file writes this session',
+    ]);
     expect(everyKeyDoesWhatItSays(refusals, at, FULL_EFFECTS)).toEqual([
-      '[Ctrl+N]',
-      '[b]',
-      '[Ctrl+C]',
-      'Esc',
+      '[Ctrl+N] Deny',
+      '[b] back to the card',
+      '[Ctrl+C] stops the turn',
+      'Esc back',
     ]);
     // Esc leaves the review pending: it steps back, it does not stop the turn (so the row must not say it does)
     expect(refusals.text).toMatch(/Esc back$/u);
@@ -236,7 +284,16 @@ describe('the full view of an approval: every key its answer rows name does what
       const keys = keysOf(row);
       expect(keys).toContain('[Ctrl+C]');
       expect(keys.at(-1)).toBe('Esc');
-      for (const key of keys.filter((name) => name !== 'Enter')) FULL_EFFECTS[key]?.(at);
+      // the items that name a key are pressed (the question's own `Enter confirm` is the store's: asserted below); the rest are words
+      const items = row.text
+        .split(LEGEND_SEPARATOR)
+        .filter((item) => keys.some((key) => item.startsWith(key)) && !item.startsWith('Enter'));
+      expect(items).toEqual(['[Ctrl+C] stops the turn', 'Esc back']);
+      for (const item of items) {
+        const effect = FULL_EFFECTS[item];
+        if (effect === undefined) throw new Error(`no checked effect for "${item}"`);
+        effect(at);
+      }
     }
     expect(keysOf(FULL_CONFIRM_ENTER_LEGEND)).toContain('Enter');
     expect(isAlwaysConfirmKey(at.state, { return: true })).toBe(true);

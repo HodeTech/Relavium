@@ -1,3 +1,5 @@
+import { posix, win32 } from 'node:path';
+
 import { CATALOG_SNAPSHOT } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
@@ -18,6 +20,8 @@ import {
   formatUsd,
   formatUsdExact,
   IN_THE_FUTURE,
+  NO_TIME,
+  pricePhrase,
   shortId,
   SHORT_ID_CHARS,
   usdDecimal,
@@ -208,6 +212,18 @@ describe('prices: a per-million price and its digits', () => {
     expect(formatPricePair(0, 0)).toBe('$0 / $0 per M');
   });
 
+  it('writes the phrase after a price once: the digits are the caller’s and the words are the notation’s, and formatPrice is that phrase over an integer', () => {
+    expect(pricePhrase('3')).toBe('$3 per M');
+    expect(pricePhrase('0.04', 'image')).toBe('$0.04 per image');
+    expect(pricePhrase('1e+30', 'M')).toBe('$1e+30 per M');
+    for (const [microcents, unit] of [
+      [300_000_000, 'M'],
+      [4_000_000, 'image'],
+      [100_000, 'second'],
+    ] as const)
+      expect(formatPrice(microcents, unit)).toBe(pricePhrase(usdDecimal(microcents), unit));
+  });
+
   it('is one price per unit', () => {
     expect(formatPrice(300_000_000)).toBe('$3 per M');
     expect(formatPrice(4_000_000, 'image')).toBe('$0.04 per image');
@@ -277,9 +293,27 @@ describe('time', () => {
     expect(formatDuration(-5)).toBe('0ms');
   });
 
+  it('formatDuration: a span that rounds to a whole second reads in seconds, never "1000ms"', () => {
+    expect(formatDuration(999)).toBe('999ms');
+    expect(formatDuration(999.4)).toBe('999ms');
+    expect(formatDuration(999.5)).toBe('1.0s');
+    expect(formatDuration(999.6)).toBe('1.0s');
+    expect(formatDuration(999.999)).toBe('1.0s');
+    expect(formatDuration(1000)).toBe('1.0s');
+    expect(formatDuration(1049)).toBe('1.0s');
+    expect(formatDuration(1050)).toBe('1.1s');
+  });
+
+  it('formatDuration: a number that is not finite is a clock fault and clamps to zero, never NaNmNaNs', () => {
+    expect(formatDuration(Number.NaN)).toBe('0ms');
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe('0ms');
+    expect(formatDuration(Number.NEGATIVE_INFINITY)).toBe('0ms');
+  });
+
   it('formatElapsed: whole seconds under a minute, floored so a live counter never reads ahead', () => {
     expect(formatElapsed(0)).toBe('0s');
     expect(formatElapsed(3200)).toBe('3s');
+    expect(formatElapsed(3999)).toBe('3s');
     expect(formatElapsed(59_000)).toBe('59s');
   });
 
@@ -305,7 +339,19 @@ describe('time', () => {
     expect(formatAge(HOUR)).toBe('1h ago');
     expect(formatAge(DAY - 1)).toBe('23h ago');
     expect(formatAge(DAY)).toBe('1d ago');
+    expect(formatAge(DAY + 13 * HOUR)).toBe('1d ago');
+    expect(formatAge(2 * DAY - 1)).toBe('1d ago');
     expect(formatAge(400 * DAY)).toBe('400d ago');
+  });
+
+  it('formatAge and formatTimeUntil: a number that is not finite is no time at all (NO_TIME), never "NaNd ago" or "in NaNd"', () => {
+    expect(NO_TIME).toBe('');
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      expect(formatAge(value), String(value)).toBe(NO_TIME);
+      expect(formatTimeUntil(value), String(value)).toBe(NO_TIME);
+    }
+    expect(formatRefreshed(Number.NaN, 5 * MINUTE)).toBe('never refreshed');
+    expect(formatRefreshed(0, Number.NaN)).toBe('never refreshed');
   });
 
   it('formatAge: a stamp up to one minute ahead is skew; more than that is not an age', () => {
@@ -327,6 +373,8 @@ describe('time', () => {
     expect(formatTimeUntil(0)).toBe('in 1s');
     expect(formatTimeUntil(500)).toBe('in 1s');
     expect(formatTimeUntil(30_000)).toBe('in 30s');
+    expect(formatTimeUntil(59_999)).toBe('in 59s');
+    expect(formatTimeUntil(MINUTE)).toBe('in 1m');
     expect(formatTimeUntil(5 * MINUTE)).toBe('in 5m');
     expect(formatTimeUntil(2 * HOUR)).toBe('in 2h');
     expect(formatTimeUntil(3 * DAY)).toBe('in 3d');
@@ -351,6 +399,37 @@ describe('shortId', () => {
     expect(shortId('😀'.repeat(20))).toBe('😀'.repeat(8));
     expect(shortId(`ab${'😀'.repeat(20)}`)).toBe(`ab${'😀'.repeat(6)}`);
     expect(shortId('x'.repeat(5_000_000))).toBe('x'.repeat(8));
+  });
+
+  it('reads at most the code points it keeps (twice over, for a surrogate pair) of a 5 MB id: counted through the string iterator', () => {
+    const huge = 'x'.repeat(5_000_000);
+    const original = String.prototype[Symbol.iterator];
+    let yielded = 0;
+    Object.defineProperty(String.prototype, Symbol.iterator, {
+      configurable: true,
+      writable: true,
+      value: function* counting(this: string): Generator<string> {
+        for (const character of original.call(this)) {
+          yielded += 1;
+          yield character;
+        }
+      },
+    });
+    let cut: string;
+    try {
+      yielded = 0;
+      cut = shortId(huge);
+    } finally {
+      Object.defineProperty(String.prototype, Symbol.iterator, {
+        configurable: true,
+        writable: true,
+        value: original,
+      });
+    }
+    expect(cut).toBe('xxxxxxxx');
+    // an implementation that walks the whole id would yield five million; the bound is its own slice
+    expect(yielded).toBeLessThanOrEqual(SHORT_ID_CHARS * 2);
+    expect(yielded).toBeGreaterThan(0);
   });
 });
 
@@ -452,7 +531,161 @@ describe('displayPath', () => {
       expect(displayPath('C:\\', { cwd: 'C:\\', home: 'C:\\', win32: true })).toBe('C:\\');
       expect(displayPath('.\\src\\a.ts', win)).toBe('src\\a.ts');
     });
+
+    it('never shows a project folder named `~` as the home: it keeps its `.\\` (or `./`, the separator the input used)', () => {
+      expect(displayPath('C:\\Users\\Ada\\work\\app\\~\\x.yaml', win)).toBe('.\\~\\x.yaml');
+      expect(displayPath('C:\\Users\\Ada\\work\\app\\~bob\\x', win)).toBe('.\\~bob\\x');
+      expect(displayPath('C:/Users/Ada/work/app/~/x.yaml', win)).toBe('./~/x.yaml');
+      expect(displayPath('C:\\Users\\Ada\\work\\app\\a\\~\\x', win)).toBe('a\\~\\x');
+      // the home itself is still the home
+      expect(displayPath('C:\\Users\\Ada\\~\\x', win)).toBe('~\\~\\x');
+      expect(displayPath('.\\~\\x', win)).toBe('.\\~\\x');
+      expect(displayPath('.\\', win)).toBe('.');
+      expect(displayPath('.\\\\a', win)).toBe('a');
+    });
   });
+
+  it('never shows a project folder named `~` or `~name` as the home: a path under <project>/~ keeps its ./', () => {
+    expect(displayPath('/home/ada/work/app/~/x.yaml', roots)).toBe('./~/x.yaml');
+    expect(displayPath('/home/ada/work/app/~', roots)).toBe('./~');
+    expect(displayPath('/home/ada/work/app/~/', roots)).toBe('./~/');
+    expect(displayPath('/home/ada/work/app/~bob/x', roots)).toBe('./~bob/x');
+    expect(displayPath('/home/ada/work/app/~.bak', roots)).toBe('./~.bak');
+    // a `~` that is not the first name is not confusable, and stays as it is
+    expect(displayPath('/home/ada/work/app/a/~/x.yaml', roots)).toBe('a/~/x.yaml');
+    // the home and a `~` folder INSIDE the home are the home's: `~/~/x` is the second one, read once
+    expect(displayPath('/home/ada/~/x.yaml', roots)).toBe('~/~/x.yaml');
+    // when the project IS the home, a `~` folder of it is still not the home
+    expect(displayPath('/home/ada/~/x.yaml', { cwd: '/home/ada', home: '/home/ada' })).toBe(
+      './~/x.yaml',
+    );
+  });
+
+  it('reads `./` as the project, never as an empty string, and never turns `.//a` into the absolute `/a`', () => {
+    expect(displayPath('./', roots)).toBe('.');
+    expect(displayPath('.//', roots)).toBe('.');
+    expect(displayPath('././', roots)).toBe('.');
+    expect(displayPath('.//a', roots)).toBe('a');
+    expect(displayPath('././/a/b', roots)).toBe('a/b');
+    expect(displayPath('.', roots)).toBe('.');
+    expect(displayPath('..', roots)).toBe('..');
+    expect(displayPath('../a', roots)).toBe('../a');
+    expect(displayPath('', roots)).toBe('');
+  });
+
+  it('keeps the `./` of a relative path that would otherwise start with `~`, and leaves a given `~` form alone', () => {
+    expect(displayPath('./~/x', roots)).toBe('./~/x');
+    expect(displayPath('././~bob', roots)).toBe('./~bob');
+    expect(displayPath('~/x', roots)).toBe('~/x');
+    expect(displayPath('~bob/x', roots)).toBe('~bob/x');
+  });
+});
+
+/**
+ * The oracle `node:path` gives: whatever `displayPath` shows, read the way a person reads it (relative to the project, `~` as the home,
+ * anything else as it is), names the SAME file as the path that went in. A seeded fuzz over folder names that are hostile to the
+ * shortening (`~`, `~x`, `.`, `..`, repeated separators, other case on Windows).
+ */
+describe('displayPath: what is shown names the file that went in (a node:path oracle)', () => {
+  const NAMES = ['a', 'b', 'src', '~', '~x', '.', '..', 'A', 'x y', '~.bak'] as const;
+
+  interface Flavour {
+    readonly name: string;
+    readonly win32: boolean;
+    /** Resolves like the platform, and compares in the way its filesystem names compare. */
+    readonly resolve: (...paths: string[]) => string;
+    readonly roots: readonly string[];
+    readonly separators: readonly string[];
+  }
+
+  const FLAVOURS: readonly Flavour[] = [
+    {
+      name: 'posix',
+      win32: false,
+      resolve: (...paths) => posix.resolve(...paths),
+      roots: ['/home/ada', '/home/ada/work/app', '/srv', '/'],
+      separators: ['/', '//', '///'],
+    },
+    {
+      name: 'win32',
+      win32: true,
+      resolve: (...paths) => win32.resolve(...paths).toLowerCase(),
+      roots: ['C:\\Users\\Ada', 'C:\\Users\\Ada\\work\\app', 'D:\\data', 'c:/Users/Ada'],
+      separators: ['\\', '/', '\\\\', '/\\'],
+    },
+  ];
+
+  /** What a person reads a shown path as, against the project and the home: the path it names, or `undefined` when it reads as neither. */
+  function reading(shown: string, cwd: string, home: string, flavour: Flavour): string {
+    const rest = /^~(?:[\\/]+(.*))?$/su.exec(shown);
+    if (rest !== null) return flavour.resolve(home, rest[1] ?? '.');
+    if (shown.startsWith('~')) return `a home that belongs to somebody else: ${shown}`;
+    return flavour.resolve(cwd, shown);
+  }
+
+  function pick<T>(next: () => number, items: readonly T[]): T {
+    return items[Math.floor(next() * items.length)] as T;
+  }
+
+  /** A path under `base` (or not): names joined with the flavour's separators, sometimes repeated. */
+  function pathUnder(base: string, next: () => number, flavour: Flavour): string {
+    const count = Math.floor(next() * 4);
+    const names = Array.from({ length: count }, () => pick(next, NAMES));
+    const trailing = next() < 0.2 ? pick(next, flavour.separators) : '';
+    const root = base.replace(/[\\/]+$/u, '');
+    return `${root}${names.map((name) => `${pick(next, flavour.separators)}${name}`).join('')}${trailing}`;
+  }
+
+  for (const flavour of FLAVOURS) {
+    it(`${flavour.name}: 4,000 seeded cases, every shown path reads back as the file that went in`, () => {
+      const next = generator(flavour.win32 ? 24_112_026 : 11_242_026);
+      let shortened = 0;
+      let home = 0;
+      let confusable = 0;
+      for (let draw = 0; draw < 4000; draw += 1) {
+        const cwd = pick(next, flavour.roots);
+        const homeDir = pick(next, flavour.roots);
+        const base = pick(next, [cwd, cwd, homeDir, pick(next, flavour.roots)]);
+        const target = pathUnder(
+          flavour.win32 && next() < 0.3 ? base.toUpperCase() : base,
+          next,
+          flavour,
+        );
+        const shown = displayPath(target, { cwd, home: homeDir, win32: flavour.win32 });
+        if (shown === target) continue;
+        shortened += 1;
+        if (shown.startsWith('~')) home += 1;
+        if (/(^|[\\/])~/u.test(shown) && !shown.startsWith('~')) confusable += 1;
+        expect(
+          reading(shown, cwd, homeDir, flavour),
+          `${JSON.stringify({ target, shown, cwd, home: homeDir })}`,
+        ).toBe(flavour.resolve(target));
+      }
+      // the draw is not vacuous: many were shortened, both ways, and a fair share held a `~` name that must not be mistaken for the home
+      expect(shortened).toBeGreaterThan(1000);
+      expect(home).toBeGreaterThan(100);
+      expect(confusable).toBeGreaterThan(20);
+    });
+
+    it(`${flavour.name}: a relative path with leading dots reads back as the same file`, () => {
+      const next = generator(flavour.win32 ? 77 : 78);
+      const cwd = flavour.roots[1] ?? '/';
+      for (let draw = 0; draw < 1500; draw += 1) {
+        const dots = Array.from(
+          { length: 1 + Math.floor(next() * 3) },
+          () => `.${pick(next, flavour.separators)}`,
+        ).join('');
+        const rest = pathUnder('', next, flavour).replace(/^[\\/]+/u, '');
+        const given = `${dots}${rest}`;
+        const shown = displayPath(given, { cwd, home: flavour.roots[0], win32: flavour.win32 });
+        if (/(^|[\\/])\.\.([\\/]|$)/u.test(given)) continue;
+        expect(
+          reading(shown, cwd, flavour.roots[0] ?? '/', flavour),
+          JSON.stringify({ given, shown }),
+        ).toBe(flavour.resolve(cwd, given));
+      }
+    });
+  }
 });
 
 describe('dates and clock times', () => {

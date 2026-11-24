@@ -1,3 +1,4 @@
+import { Box } from 'ink';
 import type { ReactElement } from 'react';
 
 import { agentSheetLines } from './agent-sheet.js';
@@ -19,19 +20,20 @@ export interface ChatSheetViewProps {
 
 export function ChatSheetView(props: Readonly<ChatSheetViewProps>): ReactElement {
   const { state, color, columns, rows } = props;
-  switch (state.kind) {
-    case 'permissions':
-      return (
+  // The sheet keeps its own height: in the full-screen frame the viewport above it is the box that gives way (and clips), never the
+  // sheet's rows, which Yoga would otherwise squeeze onto one another (two rows sharing a line, the legend overwritten).
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {state.kind === 'permissions' ? (
         <PermissionsSheetView state={state.sheet} color={color} columns={columns} rows={rows} />
-      );
-    case 'agent':
-      return (
+      ) : (
         <SheetLinesView
           lines={withGlyphForm(!color, () =>
             agentSheetLines(state.view, { columns, terminalRows: rows }),
           )}
           color={color}
         />
-      );
-  }
+      )}
+    </Box>
+  );
 }

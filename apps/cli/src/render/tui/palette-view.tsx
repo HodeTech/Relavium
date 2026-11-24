@@ -2,14 +2,13 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
-import { Emph } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
 import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';
-import { glyphOf, withGlyphForm } from './glyphs.js';
+import { withGlyphForm } from './glyphs.js';
 import { paletteLines } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
+import { SelectableNote, SelectableText, selectionMarker } from './selectable-text.js';
 
 /**
  * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the palette's rows ({@link PaletteList.rows}), the very list
@@ -58,12 +57,12 @@ function EntryRow(
       {...(selected ? colorProps(color, 'cyan') : entry.enabled ? {} : dimProps(color))}
       wrap="truncate-end"
     >
-      <Emph kinds={selected ? SELECTED_ROW : undefined}>
-        {`${selected ? glyphOf('selection', !color) : ' '} /${sanitizeInline(entry.command.name)}  `}
-      </Emph>
+      <SelectableText selected={selected}>
+        {`${selectionMarker(selected, color)} /${sanitizeInline(entry.command.name)}  `}
+      </SelectableText>
       <Text {...dimProps(color)}>
         {/* the dimmed words of the selected row are inverse with it but not bold: the two contradict, and both close with ESC[22m */}
-        <Emph kinds={selected ? 'inverse' : undefined}>{words}</Emph>
+        <SelectableNote selected={selected}>{words}</SelectableNote>
       </Text>
     </Text>
   );
@@ -117,7 +116,7 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
       })
     );
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       {list.layout === 'down' ? [query, body, legend] : [legend, body, query]}
     </Box>
   );

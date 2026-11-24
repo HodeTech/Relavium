@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 
 import { attachmentChip, type PendingAttachment } from './attachments.js';
 import { sanitizeInline } from './chat-projection.js';
-import { exitKey, legend } from './legend.js';
+import { exitKey, inertLegendText, legend, LEGEND_SEPARATOR } from './legend.js';
 import { dimProps } from './projection.js';
 
 /** `Esc` at an idle prompt discards the queued attachments: something is cancelled, so the effect is stated (ADR-0145 §2, the decide class). */
@@ -19,7 +19,11 @@ export function AttachmentBar(
   props: Readonly<{ attachments: readonly PendingAttachment[]; color: boolean }>,
 ): ReactElement {
   const { attachments, color } = props;
-  const chips = attachments.map((a) => sanitizeInline(attachmentChip(a))).join(' · ');
+  // The chips are joined by the legend's own separator and sit beside its keys, so a name that holds ` · ` or a `[Ctrl+Y]` is made inert first
+  // (a file called `a · Esc keeps them` must not read as an item of this legend).
+  const chips = attachments
+    .map((a) => inertLegendText(sanitizeInline(attachmentChip(a))))
+    .join(LEGEND_SEPARATOR);
   return (
     <Text {...dimProps(color)} wrap="truncate-end">
       {legend([{ text: `📎 ${chips}` }], CLEAR_THEM)}

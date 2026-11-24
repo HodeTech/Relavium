@@ -172,15 +172,13 @@ describe('the rows and the legend of a select card', () => {
   });
 
   it('says what the keys do, and adds the page keys only to a windowed list', () => {
-    expect(selectLegend(false, false)).toBe('↑/↓ select · Enter continue · Esc close');
-    expect(selectLegend(true, false)).toBe(
-      '↑/↓ select · Enter continue · Esc back · [Ctrl+C] close',
-    );
+    expect(selectLegend(false, false)).toBe('↑/↓ select · Enter choose · Esc close');
+    expect(selectLegend(true, false)).toBe('↑/↓ select · Enter choose · Esc back · [Ctrl+C] close');
     expect(selectLegend(false, true)).toBe(
-      '↑/↓ select · PgUp/PgDn page · Enter continue · Esc close',
+      '↑/↓ select · PgUp/PgDn page · Enter choose · Esc close',
     );
     expect(selectLegend(true, true)).toBe(
-      '↑/↓ select · PgUp/PgDn page · Enter continue · Esc back · [Ctrl+C] close',
+      '↑/↓ select · PgUp/PgDn page · Enter choose · Esc back · [Ctrl+C] close',
     );
   });
 });

@@ -1,7 +1,7 @@
 import type { ToolHost } from '@relavium/core';
 
 import { sanitizeInline } from '../render/tui/chat-projection.js';
-import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
+import { glyphOf, markWithWord, type StatusGlyphRole } from '../render/tui/glyphs.js';
 
 /**
  * The `/doctor` health-check core (2.5.C S5) — a staged check of the local setup, surfaced as a notice (chat) or
@@ -149,21 +149,26 @@ const DOCTOR_APPEARANCE: Readonly<
  *  the words (parity with the Home strip's at-a-glance status). `warn` is visible here so a glanceable read can't
  *  mistake "no keys configured" for healthy; a failure outranks a warning. */
 function doctorHeading(failures: number, warnings: number, ascii: boolean): string {
-  const mark = (status: DoctorStatus): string => glyphOf(DOCTOR_APPEARANCE[status].role, ascii);
-  if (failures > 0) return `${mark('fail')} doctor: ${failures} check(s) failed`;
-  if (warnings > 0) return `${mark('warn')} doctor: ${warnings} warning(s)`;
-  return `${mark('ok')} doctor: all checks passed`;
+  // A mark that is the very word of its status (the plain `ok`) is not repeated in front of a sentence that says it: `doctor: all checks passed`.
+  const lead = (status: DoctorStatus): string => {
+    const { role, word } = DOCTOR_APPEARANCE[status];
+    const mark = glyphOf(role, ascii);
+    return mark === word ? '' : `${mark} `;
+  };
+  if (failures > 0) return `${lead('fail')}doctor: ${failures} check(s) failed`;
+  if (warnings > 0) return `${lead('warn')}doctor: ${warnings} warning(s)`;
+  return `${lead('ok')}doctor: all checks passed`;
 }
 
 /** Format a report as a multi-line, secret-free block: a heading + one `<glyph> <word> · <label>: <detail>` row per check, in the plain
- *  glyph forms when `ascii` (colour is off: ADR-0145 §5).
+ *  glyph forms when `ascii` (colour is off: ADR-0145 §5; the plain `ok` is its own word, so that row reads `ok · <label>: <detail>`).
  *  Both the label AND the detail are sanitized — the Home renders these rows verbatim (no outer scrub like the
  *  chat notice channel), so a label carrying a control char (e.g. a crafted MCP server id) is neutralized here. */
 export function formatDoctorReport(report: DoctorReport, ascii = false): string {
   const rows = report.checks.map((check) => {
     const { role, word } = DOCTOR_APPEARANCE[check.status];
-    // The glyph is never alone: the check's word stands beside it, and the label and the detail follow.
-    return `  ${glyphOf(role, ascii)} ${word} · ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`;
+    // The glyph is never alone: the check's word stands beside it (once, when the plain form is the word), and the label and the detail follow.
+    return `  ${markWithWord(glyphOf(role, ascii), word)} · ${sanitizeInline(check.label)}: ${sanitizeInline(check.detail)}`;
   });
   const failures = report.checks.filter((check) => check.status === 'fail').length;
   const warnings = report.checks.filter((check) => check.status === 'warn').length;

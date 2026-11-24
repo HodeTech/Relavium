@@ -3,6 +3,7 @@ import { ToolReviewHost } from './tool-review-view.js';
 import { QuestionCardHost } from './question-card-view.js';
 import { CheckpointCardHost } from './checkpoint-card-view.js';
 import { CliError } from '../../process/cli-error.js';
+import type { DisplayPathRoots } from '../notation.js';
 import { NativePromptView } from './native-prompt-view.js';
 import type { NativePromptUi, NativePromptSnapshot } from './native-prompt-channel.js';
 import {
@@ -22,7 +23,7 @@ import {
 } from 'react';
 
 import type { PendingAttachment } from './attachments.js';
-import { ChatView, useCopiedToast } from './chat-ink.js';
+import { chatIsBusy, ChatView, useCopiedToast } from './chat-ink.js';
 import { useVisibleRenderFlush } from './render-acknowledgement.js';
 import {
   createTranscriptAcknowledgement,
@@ -53,7 +54,7 @@ import {
 } from './overlay-flags.js';
 import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
-import { exitKey, legend } from './legend.js';
+import { exitKey, keyToken, legend } from './legend.js';
 import { RunScreenView } from './run-screen-view.js';
 import { RunCardView } from './run-card-view.js';
 import { createGateCardFrame } from './gate-card-frame.js';
@@ -139,6 +140,11 @@ export interface RootAppProps {
   readonly reviewClipboard?: ClipboardWriter | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
+  /**
+   * What a path on the landing is shortened against (ADR-0145 §8): the project directory and the operator's home. The host that mounts the
+   * Home builds it once (`displayRoots`); absent ⇒ a session's directory is drawn as it was stored.
+   */
+  readonly paths?: DisplayPathRoots | undefined;
   /**
    * Turn terminal mouse reporting on/off as the in-Home CHAT takes and gives up the screen (2.6.F Step 6g).
    *
@@ -246,7 +252,12 @@ function ChatRegion(
         nowMs={nowMs}
         color={color}
         editor={props.editor}
-        running={state.status === 'running' || props.shellBusy || props.submitBusy}
+        running={chatIsBusy({
+          turnRunning: state.status === 'running',
+          shellBusy: props.shellBusy,
+          submitBusy: props.submitBusy,
+          nativePrompt: props.overlays.nativePrompt,
+        })}
         mode={mode}
         reasoningEffort={reasoningEffort}
         reasoningVisible={reasoningVisible}
@@ -1051,6 +1062,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           paletteOpen={landingPromptHidden(flags)}
           {...(state.palette === undefined ? {} : { palette: state.palette })}
           showBanner={props.showBanner}
+          paths={props.paths}
           keyless={state.keyless}
           parkedRuns={state.parkedRuns}
           stripFocus={state.stripFocus}
@@ -1077,7 +1089,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 /** The line under the echo of a message while the first chat is built: `Ctrl+C` leaves the Home from here (ADR-0145 §3). Exported for the legend golden. */
 export const STARTING_CHAT_LINE = legend(
   [{ text: 'Starting chat…' }],
-  exitKey.close('Ctrl+C', 'exit'),
+  exitKey.leave('exit', 'Ctrl+C'),
 );
 
 /**
@@ -1175,7 +1187,11 @@ function chatPromptHeight(
   return nativePromptFits(size) ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2) : 0;
 }
 
-function promptRows(prompt: NativePromptSnapshot, columns: number): number {
+/**
+ * How many rows a native card takes at `columns`, never fewer than it draws: the room the chat region leaves it. A chord card's key rows carry
+ * the answer key's tag as the legend writes it ({@link keyToken}), so the estimate cannot drift from the words on screen.
+ */
+export function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const width = Math.max(1, Number.isFinite(columns) ? Math.trunc(columns) : 80);
   if (prompt.kind === 'picker') {
     const lines = [prompt.note, prompt.message, prompt.error].filter(Boolean);
@@ -1192,10 +1208,10 @@ function promptRows(prompt: NativePromptSnapshot, columns: number): number {
   const lines = [
     prompt.note,
     prompt.message,
-    // A chord card's body sits behind a two-column gutter, and its key rows carry a nine-column `[Ctrl+Y] ` tag.
+    // A chord card's body sits behind a two-column gutter, and its key rows carry the answer key's tag (`[Ctrl+Y] `, as the legend writes it).
     ...prompt.details.map((line) => `│ ${line}`),
     ...prompt.options.map((option) => {
-      const lead = prompt.kind === 'chord' ? '  [Ctrl+Y] ' : '  ';
+      const lead = prompt.kind === 'chord' ? `  ${keyToken('Ctrl+Y')} ` : '  ';
       const hint = option.hint ? ` — ${option.hint}` : '';
       return `${lead}${option.label}${hint}`;
     }),

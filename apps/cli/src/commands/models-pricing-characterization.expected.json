@@ -812,7 +812,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--image ($1000.01) is implausibly large — the maximum is $1000 per unit"
+      "message": "--image ($1000.01 per image) is implausibly large — the maximum is $1000 per image"
     },
     "stdout": "",
     "stderr": "",
@@ -822,7 +822,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--audio ($5000) is implausibly large — the maximum is $1000 per unit"
+      "message": "--audio ($5000 per second) is implausibly large — the maximum is $1000 per second"
     },
     "stdout": "",
     "stderr": "",
@@ -832,7 +832,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--video ($1001) is implausibly large — the maximum is $1000 per unit"
+      "message": "--video ($1001 per second) is implausibly large — the maximum is $1000 per second"
     },
     "stdout": "",
     "stderr": "",
@@ -962,7 +962,7 @@
     "exit": 2,
     "refusal": {
       "code": "invalid_invocation",
-      "message": "--image ($5000) is implausibly large — the maximum is $1000 per unit"
+      "message": "--image ($5000 per image) is implausibly large — the maximum is $1000 per image"
     },
     "stdout": "",
     "stderr": "",

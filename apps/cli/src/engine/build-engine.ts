@@ -108,7 +108,7 @@ interface BuildEngineBaseOptions {
  * `run.ts` wires the sink to stderr — never stdout, which `--json` owns. Absent ⇒ silent (the tier is still withheld).
  *
  * **A sink says where it is read.** The note names a remedy, and a remedy that exists in the shell (`relavium models refresh`) does not
- * exist in the Home (`/models`; ADR-0145 §6, MVP-11 OD-20). A caller that gives a sink without saying so fails the typecheck, so a host
+ * exist in the Home (`/models`; ADR-0145 §7.4, MVP-11 OD-20). A caller that gives a sink without saying so fails the typecheck, so a host
  * can no more take the scripted wording by forgetting than it could before by default; a caller with no sink has nothing to word.
  */
 type EffortNoticeOptions =

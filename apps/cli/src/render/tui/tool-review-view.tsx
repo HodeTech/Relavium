@@ -39,8 +39,8 @@ import {
   type InspectionPending,
 } from './tool-review-screen.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
-import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
-import { itemsRow, rowSegments, type LegendRow } from './legend-row.js';
+import { exitKey, keyToken, legend, legendItems, type LegendItem } from './legend.js';
+import { rowSegments, type LegendRow } from './legend-row.js';
 import { EmphText } from './emphasis-view.js';
 import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import type { SheetRole } from './sheet-frame.js';
@@ -855,7 +855,7 @@ function ReviewScreen({
       {review.searching && (
         <Text wrap="truncate-end">
           {
-            itemsRow([
+            legendItems([
               {
                 text: `Search visible source: ${inputDisplay(review.query ?? '')}${glyphOf('caret', plain)}`,
               },

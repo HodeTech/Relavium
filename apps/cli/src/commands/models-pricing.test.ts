@@ -221,11 +221,11 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
         expect(err, String(below)).toEqual({
           code: 'invalid_invocation',
           message:
-            '--input is below the smallest price that can be stored, $0.00000001 per million tokens. Enter 0 to record it as free.',
+            '--input is below the smallest price that can be stored, $0.00000001 per M. Enter 0 to record it as free.',
         });
       }
       expect(runThrows({ ...baseArgs, imageUsdPerCount: 1e-9 }).message).toBe(
-        '--image is below the smallest price that can be stored, $0.00000001 per billed unit. Enter 0 to record it as free.',
+        '--image is below the smallest price that can be stored, $0.00000001 per image. Enter 0 to record it as free.',
       );
       expect(catalog.listAll()).toHaveLength(0);
     });
@@ -233,7 +233,7 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     it('REFUSES a price that is not a whole number of micro-cents instead of rounding it', () => {
       const err = runThrows({ ...baseArgs, inputUsdPerMtok: 0.123456789 });
       expect(err.message).toBe(
-        '--input has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per million tokens. Enter it to the nearest step.',
+        '--input has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per M. Enter it to the nearest step.',
       );
       // A sum of two decimals is not the decimal that was meant, and is refused for it.
       expect(runThrows({ ...baseArgs, outputUsdPerMtok: 0.1 + 0.2 }).message).toContain(

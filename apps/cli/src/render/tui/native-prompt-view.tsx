@@ -1,9 +1,7 @@
 import { Box, Text, useApp, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
-import { Emph } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
-import { glyphOf, withGlyphForm } from './glyphs.js';
-import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
+import { withGlyphForm } from './glyphs.js';
+import { keyToken, legend, type LegendItem, type LegendKey } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
@@ -11,6 +9,7 @@ import {
 } from './native-prompt-acknowledgement.js';
 import { dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
+import { SelectableText, selectionMarker } from './selectable-text.js';
 import { hardWrap } from './question-card.js';
 import {
   SELECT_MARKER_INDENT,
@@ -36,24 +35,44 @@ function leaveEffect(snapshot: NativePromptSnapshot): string | undefined {
   return snapshot.kind === 'busy' ? 'cancels it' : undefined;
 }
 
-/** The legend under a picker: what its keys do, or, after a failed read, how to try again or change the filter. */
-function pickerLegend(snapshot: NativePromptSnapshot): string {
+/** `Tab` flips the picker between this directory and all of them, and the legend says which one it goes to. */
+function scopeKey(snapshot: NativePromptSnapshot): LegendKey {
+  return {
+    keys: 'Tab',
+    verb: snapshot.picker?.allDirectories === true ? 'this directory' : 'all directories',
+  };
+}
+
+/**
+ * The legend under a picker: what its keys do, or, after a failed read, how to try again or change the filter. Its leaving keys are the
+ * card's own ({@link nativeLeave}), read from the same `escape` the channel reads, so a picker opened to step back says `Esc back` and
+ * names `Ctrl+C` as the key that closes it. `Tab` flips between this directory and all of them, and says which one it goes to.
+ */
+export function pickerLegend(snapshot: NativePromptSnapshot): string {
+  const { before, exit } = nativeLeave(snapshot.escape === 'back');
   if (snapshot.error === '') {
     return legend(
       [
         { keys: '↑/↓', verb: 'select' },
         { keys: 'Enter', verb: 'resume' },
-        { keys: 'Tab', verb: 'scope' },
+        scopeKey(snapshot),
         { keys: 'PgUp/PgDn', verb: 'page' },
+        ...before,
       ],
-      exitKey.close(),
+      exit,
     );
   }
   const next: LegendItem =
     snapshot.picker?.retryable === true
       ? { keys: 'Enter', verb: 'retry' }
       : { text: 'Edit filter' };
-  return legend([next], exitKey.close());
+  return legend([next, ...before], exit);
+}
+
+/** What a picker with no row says, with the card's own leaving keys. */
+function pickerEmptyLegend(snapshot: NativePromptSnapshot): string {
+  const { before, exit } = nativeLeave(snapshot.escape === 'back');
+  return legend([{ text: 'No matching sessions' }, ...before], exit);
 }
 
 /** The one-line key legend under a prompt card, by the kind of card. */
@@ -111,9 +130,9 @@ export function NativePromptView({
   // A row's text is built in the glyph form the colour setting asks for (the cursor is the table's selection marker). The row under the
   // cursor is the selected row: bold and inverse, with colour on and off alike.
   const rowText = (index: number): ReactElement => (
-    <Emph kinds={index === snapshot.selected ? SELECTED_ROW : undefined}>
+    <SelectableText selected={index === snapshot.selected}>
       {withGlyphForm(!color, () => selectRowText(snapshot, index))}
-    </Emph>
+    </SelectableText>
   );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
@@ -135,15 +154,15 @@ export function NativePromptView({
           {snapshot.picker?.loading === true ? (
             <Text>Loading sessions…</Text>
           ) : snapshot.options.length === 0 && snapshot.error === '' ? (
-            <Text>{legend([{ text: 'No matching sessions' }], exitKey.close())}</Text>
+            <Text>{pickerEmptyLegend(snapshot)}</Text>
           ) : null}
           {snapshot.options.map((option, index) => (
             <Box key={option.value} flexDirection="column">
               <Text wrap="truncate-end">
-                <Emph kinds={index === snapshot.selected ? SELECTED_ROW : undefined}>
-                  {index === snapshot.selected ? `${glyphOf('selection', !color)} ` : '  '}
+                <SelectableText selected={index === snapshot.selected}>
+                  {`${selectionMarker(index === snapshot.selected, color)} `}
                   {option.label}
-                </Emph>
+                </SelectableText>
               </Text>
               {option.hint !== undefined && (
                 <Text {...dimProps(color)} wrap="truncate-end">

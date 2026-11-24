@@ -72,6 +72,26 @@ const PLAIN_KEYS: ReadonlySet<string> = new Set([
   'Home/End',
 ]);
 
+/**
+ * The key tokens the grammar brackets: a single letter or digit (`[d]`, `[1]`) and a chord (`[Ctrl+Y]`, `[Alt+Enter]`, `[Ctrl+Shift+R]`). The
+ * universal keys are never bracketed, so a `[Enter]` is not the grammar's and is left alone. A name such as `[id].tsx` has no token in it.
+ */
+const BRACKETED_KEY =
+  /\[(?:[\p{L}\p{N}]|(?:Ctrl|Alt|Shift|Cmd|Meta|Super|Win)\+[^\]\n]{1,16})\]/giu;
+
+/**
+ * Text from an untrusted source (a file name, a command line, a path) that is drawn INSIDE a legend as a {@link LegendText}: with the
+ * legend's separator and its key tokens made inert, so a name cannot be read as another item of the legend (ADR-0145 §5: "a separator the
+ * status line uses is neutralised inside a field value"). Every ` · ` becomes ` - ` (a different shape, not a lookalike: the forgery is
+ * visual) and a bracketed key token becomes a parenthesised one (`[Ctrl+Y]` reads `(Ctrl+Y)`). Everything else, brackets of a name
+ * included, is left as it is. It does not sanitise: the control characters go through the inline sanitiser first.
+ */
+export function inertLegendText(text: string): string {
+  return text
+    .replaceAll(LEGEND_SEPARATOR, ' - ')
+    .replace(BRACKETED_KEY, (token) => `(${token.slice(1, -1)})`);
+}
+
 /** A key as the grammar writes it: `Enter` stays `Enter`, `d` becomes `[d]`, `Ctrl+Y` becomes `[Ctrl+Y]`. Idempotent on a bracketed key. */
 export function keyToken(key: string): string {
   if (key.startsWith('[') && key.endsWith(']')) return key;

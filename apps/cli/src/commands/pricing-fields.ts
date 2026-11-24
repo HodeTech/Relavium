@@ -1,5 +1,10 @@
 import { CliError, isCliError } from '../process/errors.js';
-import { usdDecimal, withoutTrailingZeros, type PriceUnit } from '../render/notation.js';
+import {
+  pricePhrase,
+  usdDecimal,
+  withoutTrailingZeros,
+  type PriceUnit,
+} from '../render/notation.js';
 
 /**
  * The field table of `relavium models pricing` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -271,7 +276,7 @@ function precisionSentence(
   naming: PricingNaming,
 ): string {
   const name = nameOf(field, naming);
-  const step = `$${usdTextOfMicrocents(1)} per ${perUnit(field)}`;
+  const step = pricePhrase(usdTextOfMicrocents(1), field.priceUnit);
   return refusal === 'below-smallest'
     ? `${name} is below the smallest price that can be stored, ${step}. Enter 0 to record it as free.`
     : `${name} has more than ${String(PRICE_DECIMAL_PLACES)} decimal places, and a price is stored in whole steps of ${step}. Enter it to the nearest step.`;
@@ -324,7 +329,6 @@ export function priceToMicrocents(
   naming: PricingNaming = 'flag',
 ): number {
   const name = nameOf(field, naming);
-  const perMtok = field.unit === 'mtok';
   if (!Number.isFinite(usd) || usd < 0) {
     throw new CliError(
       'invalid_invocation',
@@ -334,9 +338,7 @@ export function priceToMicrocents(
   if (usd > field.ceiling) {
     throw new CliError(
       'invalid_invocation',
-      perMtok
-        ? `${name} ($${usd} per M) is implausibly large — the maximum is $${field.ceiling} per M`
-        : `${name} ($${usd}) is implausibly large — the maximum is $${field.ceiling} per unit`,
+      `${name} (${pricePhrase(String(usd), field.priceUnit)}) is implausibly large — the maximum is ${pricePhrase(String(field.ceiling), field.priceUnit)}`,
     );
   }
   const decimal = readDecimal(String(usd));

@@ -1,6 +1,7 @@
 import { ASK_USER_BOUNDS, plainTextRefusal, type AskUserRequest } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { withGlyphForm } from './glyphs.js';
 import { cardRowBudget, CARD_KEY_ROWS, CARD_RULE_ROWS } from './tool-review-card.js';
 import {
   initialQuestionCard,
@@ -864,5 +865,220 @@ describe('the Review tab shows the whole answer, or says how much it hides (ADR-
     // Both outcomes really happened, or the property proves only one of them.
     expect(whole).toBeGreaterThan(100);
     expect(counted).toBeGreaterThan(30);
+  });
+});
+
+describe('the stop row gives up the note, never the key that leaves (round-1 fix)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which?',
+        multiSelect: false,
+        options: [
+          { label: 'a', description: 'first' },
+          { label: 'b', description: 'second' },
+        ],
+      },
+    ],
+  };
+  const NOTE = 'an answer is guidance, not a veto';
+  const state = initialQuestionCard(request);
+  const inField: QuestionCardState = { ...state, field: { text: '', cursor: 0 } };
+
+  it('keeps `stops the turn` whole at 50, 60 and 66 columns, where the note no longer fits, and keeps both at 67', () => {
+    for (const columns of [50, 60, 66]) {
+      const row = projectQuestionCard(state, columns, { guideNote: true }).keys[1];
+      expect(row, `${String(columns)} columns`).toBe('Esc / [Ctrl+C] stops the turn');
+      expect(row).not.toContain(NOTE);
+      expect(displayWidth(row)).toBeLessThanOrEqual(columns - 2);
+    }
+    const whole = projectQuestionCard(state, 67, { guideNote: true }).keys[1];
+    expect(whole).toBe(`${NOTE} · Esc / [Ctrl+C] stops the turn`);
+    expect(displayWidth(whole)).toBe(65);
+  });
+
+  it('the note goes first and the exit last, with the room to hold both', () => {
+    const row = projectQuestionCard(state, COLUMNS, { guideNote: true }).keys[1];
+    expect(row.startsWith(NOTE)).toBe(true);
+    expect(row.endsWith('stops the turn')).toBe(true);
+  });
+
+  it('the own-answer field row keeps `Esc close`, and `[Ctrl+C] stops the turn`, as the note gives way', () => {
+    for (const columns of [38, 40, 50, 60, 66, 67, 80]) {
+      const row = projectQuestionCard(inField, columns, { guideNote: true }).keys[1];
+      expect(row, `${String(columns)} columns`).toContain('Esc close');
+      expect(row, `${String(columns)} columns`).toContain('[Ctrl+C] stops the turn');
+      expect(displayWidth(row)).toBeLessThanOrEqual(columns - 2);
+    }
+    expect(projectQuestionCard(inField, 50, { guideNote: true }).keys[1]).toBe(
+      '[Ctrl+C] stops the turn · Esc close',
+    );
+    expect(projectQuestionCard(inField, 80, { guideNote: true }).keys[1]).toBe(
+      `[Ctrl+C] stops the turn · ${NOTE} · Esc close`,
+    );
+    // no note wanted: the row is what it was
+    expect(projectQuestionCard(inField, 50).keys[1]).toBe('[Ctrl+C] stops the turn · Esc close');
+  });
+});
+
+describe('what a model wrote cannot draw the host’s plain radio or its `>` (round-1 fix)', () => {
+  const ask = (over: {
+    header?: string;
+    question?: string;
+    label?: string;
+    description?: string;
+  }): QuestionCardState =>
+    initialQuestionCard({
+      questions: [
+        {
+          header: over.header ?? 'Pick',
+          question: over.question ?? 'Which?',
+          multiSelect: false,
+          options: [
+            { label: over.label ?? 'Keep it', description: over.description ?? 'first' },
+            { label: 'Delete', description: 'second' },
+          ],
+        },
+      ],
+    });
+  const textOf = (state: QuestionCardState, form: boolean): string =>
+    withGlyphForm(form, () =>
+      projectQuestionCard(state, COLUMNS)
+        .body.map((row) => row.text)
+        .join('\n'),
+    );
+
+  it('the probes the core accepts are the probes the card must blank (the premise)', () => {
+    expect(plainTextRefusal('>1 (*) Delete', 200)).toBeUndefined();
+    expect(plainTextRefusal('Keep (*) Delete the folder', 200)).toBeUndefined();
+    expect(plainTextRefusal('Keep (x) Delete (o) the folder', 200)).toBeUndefined();
+  });
+
+  it('a `(*)` in a label is blanked in both forms, so it cannot pass for the host’s chosen radio', () => {
+    for (const form of [true, false]) {
+      const rows = textOf(ask({ label: 'Keep (*) Delete the folder' }), form).split('\n');
+      const row = rows.find((candidate) => candidate.includes('Keep')) ?? '';
+      expect(row.match(/\(\*\)/gu), `form ${String(form)}`).toBeNull();
+      expect(row).toContain('Keep     Delete the folder');
+    }
+  });
+
+  it('`(x)` and `(o)` go too, in the header, the question, a label and a description', () => {
+    const state = ask({
+      header: 'Head (x) er',
+      question: 'Ask (o) this (*) one',
+      label: 'Lab (X) el',
+      description: 'Desc (O) ription',
+    });
+    for (const form of [true, false]) {
+      const text = textOf(state, form);
+      expect(text, `form ${String(form)}`).not.toMatch(/\([*xXoO]\)/u);
+      for (const piece of ['Head', 'Ask', 'this', 'Lab', 'el']) expect(text).toContain(piece);
+    }
+  });
+
+  it('a header that starts with `>1 (*) Delete` does not draw at column 0 as the host’s `> 1 ( ) Keep it`', () => {
+    for (const form of [true, false]) {
+      const rows = textOf(ask({ header: '>1 (*) Delete' }), form).split('\n');
+      expect(rows[0], `form ${String(form)}`).toBe(' 1     Delete');
+    }
+  });
+
+  it('a `>` that is not at the start of a text, and a `>` before a letter, are left alone', () => {
+    const state = ask({ header: 'a > b', label: '>x then', description: 'x > 1' });
+    const text = textOf(state, true);
+    expect(text).toContain('a > b');
+    expect(text).toContain('>x then');
+    expect(text).toContain('x > 1');
+  });
+
+  it('the Review tab blanks them too: a header and a chosen label are model text', () => {
+    const two = initialQuestionCard({
+      questions: [
+        {
+          header: 'Head (*)',
+          question: 'Which?',
+          multiSelect: false,
+          options: [
+            { label: 'Keep (x) it', description: 'first' },
+            { label: 'Delete', description: 'second' },
+          ],
+        },
+        {
+          header: 'Also',
+          question: 'And?',
+          multiSelect: false,
+          options: [
+            { label: 'c', description: 'third' },
+            { label: 'd', description: 'fourth' },
+          ],
+        },
+      ],
+    });
+    const answered: QuestionCardState = {
+      ...two,
+      index: 2,
+      entries: two.entries.map((entry, index) => (index === 0 ? { ...entry, ticked: [0] } : entry)),
+    };
+    const review = projectQuestionCard(answered, COLUMNS)
+      .body.map((row) => row.text)
+      .join('\n');
+    expect(review).toContain('Keep');
+    expect(review).not.toMatch(/\([*xXoO]\)/u);
+    expect(review).toContain('Head');
+    expect(review).toContain('Keep');
+  });
+});
+
+describe('the current dot of the tab strip is not a key token without colour (round-1 fix)', () => {
+  const request: AskUserRequest = {
+    questions: [
+      {
+        header: 'Pick',
+        question: 'Which?',
+        multiSelect: false,
+        options: [
+          { label: 'a', description: 'first' },
+          { label: 'b', description: 'second' },
+        ],
+      },
+      {
+        header: 'Also',
+        question: 'And?',
+        multiSelect: false,
+        options: [
+          { label: 'c', description: 'third' },
+          { label: 'd', description: 'fourth' },
+        ],
+      },
+    ],
+  };
+  const head = (state: QuestionCardState, plain: boolean): string =>
+    withGlyphForm(plain, () => projectQuestionCard(state, COLUMNS).body[0]?.text ?? '');
+
+  it('is `<o>` and `<+>` in the plain form and `[○]` and `[●]` with the Unicode form', () => {
+    const state = initialQuestionCard(request);
+    expect(head(state, true)).toBe('Pick  <o> o · Review');
+    expect(head(state, false)).toBe('Pick  [○] ○ · Review');
+    const answered: QuestionCardState = {
+      ...state,
+      entries: state.entries.map((entry, index) =>
+        index === 0 ? { ...entry, ticked: [0] } : entry,
+      ),
+    };
+    expect(head(answered, true)).toBe('Pick  <+> o · Review');
+    expect(head(answered, false)).toBe('Pick  [●] ○ · Review');
+    expect(head({ ...answered, index: 1 }, true)).toBe('Also  + <o> · Review');
+  });
+
+  it('the plain header holds no bracketed letter or sign that the legend would write as a key', () => {
+    const state = initialQuestionCard(request);
+    expect(head(state, true)).not.toMatch(/\[[a-z+]\]/u);
+    const review = withGlyphForm(
+      true,
+      () => projectQuestionCard({ ...state, index: 2 }, COLUMNS).body[0]?.text,
+    );
+    expect(review).not.toMatch(/\[[a-z+]\]/u);
   });
 });

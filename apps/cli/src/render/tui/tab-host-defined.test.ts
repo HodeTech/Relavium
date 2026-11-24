@@ -534,8 +534,7 @@ describe('the legend names exactly the keys the tab answers to', () => {
     expect([...items, exit].map((item) => ('keys' in item ? item.keys : item.text))).toEqual([
       '←/→',
       'Tab',
-      'Ctrl+C',
-      'Esc',
+      ['Esc', 'Ctrl+C'],
     ]);
   });
 });
@@ -597,7 +596,7 @@ describe('the Defined tab fits the 23-row budget', () => {
         const lines = r.lines(columns, terminalRows);
         expect(lines.length, `cursor ${String(at)}`).toBeLessThanOrEqual(TAB_HOST_ROWS);
         expect(lines[0]).toContain('› Defined');
-        expect(lines.at(-1)).toContain('Esc close');
+        expect(lines.at(-1)).toMatch(/Esc (\/ \[Ctrl\+C\] )?close$/u);
         for (const line of lines)
           expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));
         const selected = lines.slice(1).filter((line) => line.startsWith('› '));

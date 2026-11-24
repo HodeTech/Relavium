@@ -42,7 +42,10 @@ describe('keyless Home view', () => {
       const frame = view.lastFrame() ?? '';
       expect(frame).toContain('> Conversation 7');
       expect(frame).toContain('Enter resume');
-      expect(frame).toContain('/workspace/');
+      // A long directory is cut at the FRONT (ADR-0145 §8): the end of a path is what tells one directory from another.
+      const hint = frame.split('\n').find((line) => line.includes('long directory/')) ?? '';
+      expect(hint.trimStart().startsWith('…'), hint).toBe(true);
+      expect(hint.endsWith('long directory/'), hint).toBe(true);
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
       view.unmount();
     },

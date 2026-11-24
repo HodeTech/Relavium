@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
@@ -181,6 +181,17 @@ describe('chatExportCommand (2.P)', () => {
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
     }
+  });
+
+  it('prints a file under a project folder named `~` as ./~/…, never as if it were in the home (bash leaves --out=~/x unexpanded)', () => {
+    const { io, out } = captureIo();
+    // `chat export --out=~/x.yaml`: the shell passes the `~` through, so the file lands in <project>/~/x.yaml
+    expect(chatExportCommand({ sessionId: 's1', out: '~/x.yaml', force: false }, deps(io))).toBe(
+      EXIT_CODES.success,
+    );
+    expect(existsSync(join(cwd, '~', 'x.yaml'))).toBe(true);
+    expect(out()).toBe(`Exported session s1 to .${sep}~${sep}x.yaml\n`);
+    expect(out()).not.toMatch(/to ~/u);
   });
 
   it('emits a single session:exported event under --json (stdout pure)', () => {

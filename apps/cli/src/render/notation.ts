@@ -96,10 +96,20 @@ export function usdDecimal(microcents: number): string {
 /** What a price is quoted per: a million tokens, or one billed media unit. */
 export type PriceUnit = 'M' | 'image' | 'second';
 
+/**
+ * One price whose digits are already written (`3` is `$3 per M`): the one place the words "per M", "per image" and "per second" are put
+ * after a price. {@link formatPrice} is this over a stored integer; a caller that holds a figure of its own (a ceiling, a number the person
+ * typed and a sentence that quotes it back) writes its digits and asks for the phrase here, so no sentence spells a price another way
+ * (`per million tokens`, `per unit`).
+ */
+export function pricePhrase(usdDigits: string, unit: PriceUnit = 'M'): string {
+  return `$${usdDigits} per ${unit}`;
+}
+
 /** One price: `$3 per M`, `$0.04 per image`, `$0.001 per second`. Every digit the stored integer has, and no trailing zero. */
 export function formatPrice(microcents: number, unit: PriceUnit = 'M'): string {
   const amount = usdDecimal(microcents);
-  return amount === AMOUNT_UNAVAILABLE ? amount : `$${amount} per ${unit}`;
+  return amount === AMOUNT_UNAVAILABLE ? amount : pricePhrase(amount, unit);
 }
 
 /** A model's input and output price together: `$3 / $15 per M` (input first). A column that shows it says what the two are. */
@@ -122,11 +132,16 @@ const DAY_MS = 24 * HOUR_MS;
 const minutesAndSeconds = (wholeSeconds: number): string =>
   `${Math.floor(wholeSeconds / 60)}m${String(wholeSeconds % 60).padStart(2, '0')}s`;
 
-/** A completed span, compactly: `420ms`, `3.2s`, `1m04s`. Negatives (clock skew) clamp to 0. */
+/**
+ * A completed span, compactly: `420ms`, `3.2s`, `1m04s`. A negative (clock skew) and a number that is not finite (`NaN`, `Infinity`: a
+ * clock that failed) clamp to 0, as {@link formatElapsed} does, so a row never reads `NaNmNaNs`. A span that rounds to a whole second
+ * reads in seconds (`999.5 ms` is `1.0s`, never `1000ms`).
+ */
 export function formatDuration(ms: number): string {
-  const safeMs = Math.max(0, ms);
-  if (safeMs < SECOND_MS) {
-    return `${Math.round(safeMs)}ms`;
+  const safeMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  const wholeMs = Math.round(safeMs);
+  if (wholeMs < SECOND_MS) {
+    return `${wholeMs}ms`;
   }
   const totalSeconds = safeMs / SECOND_MS;
   // Below the boundary where one-decimal rounding would read "60.0s" — show one-decimal seconds.
@@ -151,12 +166,17 @@ export function formatElapsed(ms: number): string {
 /** What a timestamp more than one minute ahead of the clock says: it is not an age, and `just now` would be a lie. */
 export const IN_THE_FUTURE = 'in the future';
 
+/** What an age or a time-until of a number that is not finite is: nothing. It is the answer {@link formatAgeOfIso} gives for a text that is not a time, so a row draws what it has and never `NaNd ago`. */
+export const NO_TIME = '';
+
 /**
  * A coarse relative age from the time elapsed since (`nowMs - thenMs`): `just now` (under a minute, and a skew of up to one minute
  * into the future), `5m ago`, `3h ago`, `2d ago`. Each unit starts exactly at its boundary (60 s, 60 min, 24 h) and rounds down. More
- * than one minute ahead of the clock is {@link IN_THE_FUTURE}, never `just now`. One spelling of "ago" for every surface.
+ * than one minute ahead of the clock is {@link IN_THE_FUTURE}, never `just now`. One spelling of "ago" for every surface. A number
+ * that is not finite (`NaN`, `Infinity`) is no age: {@link NO_TIME}.
  */
 export function formatAge(elapsedMs: number): string {
+  if (!Number.isFinite(elapsedMs)) return NO_TIME;
   if (elapsedMs < -MINUTE_MS) return IN_THE_FUTURE;
   if (elapsedMs < MINUTE_MS) return 'just now';
   if (elapsedMs < HOUR_MS) return `${Math.floor(elapsedMs / MINUTE_MS)}m ago`;
@@ -170,8 +190,12 @@ export function formatAgeOfIso(iso: string, nowMs: number): string {
   return Number.isNaN(thenMs) ? '' : formatAge(nowMs - thenMs);
 }
 
-/** The forward-looking counterpart of {@link formatAge}: `in 30s`, `in 5m`, `in 2h`, `in 3d` (a sub-second remainder reads `in 1s`, never `in 0s`). */
+/**
+ * The forward-looking counterpart of {@link formatAge}: `in 30s`, `in 5m`, `in 2h`, `in 3d` (a sub-second remainder reads `in 1s`, never
+ * `in 0s`). A number that is not finite is {@link NO_TIME}, never `in NaNd`.
+ */
 export function formatTimeUntil(remainingMs: number): string {
+  if (!Number.isFinite(remainingMs)) return NO_TIME;
   const seconds = Math.max(1, Math.floor(remainingMs / SECOND_MS));
   if (seconds < 60) return `in ${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -211,11 +235,11 @@ export function formatDateTime(iso: string): string {
   return date === '' ? '' : `${date} ${formatClock(iso)} UTC`;
 }
 
-/** The freshness of the newest live refresh: `never refreshed` when there is none, else `updated` and its {@link formatAge}. */
+/** The freshness of the newest live refresh: `never refreshed` when there is none (or its time is not a number), else `updated` and its {@link formatAge}. */
 export function formatRefreshed(refreshedAtMs: number | undefined, nowMs: number): string {
-  return refreshedAtMs === undefined
-    ? 'never refreshed'
-    : `updated ${formatAge(nowMs - refreshedAtMs)}`;
+  const age = refreshedAtMs === undefined ? NO_TIME : formatAge(nowMs - refreshedAtMs);
+  // a refresh time that is not a number is no refresh a person can be told about: `updated ` with nothing after it would be worse
+  return age === NO_TIME ? 'never refreshed' : `updated ${age}`;
 }
 
 // ── identifiers ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -305,6 +329,76 @@ function insideOf(
   return rest.some(isDotSegment) ? undefined : rest;
 }
 
+/** The separator a shortened path is written with: a backslash when it is a Windows path that used one, else a slash. */
+const separatorOf = (path: string, win32: boolean): string =>
+  win32 && path.includes('\\') ? '\\' : '/';
+
+const isSeparator = (char: string | undefined, win32: boolean): boolean =>
+  char === '/' || (win32 && char === '\\');
+
+/** The index after every leading `./` of `path` and after the separators that follow each (`.//a` and `././a` both start at `a`). */
+function afterLeadingDots(path: string, win32: boolean): number {
+  let at = 0;
+  while (path[at] === '.' && isSeparator(path[at + 1], win32)) {
+    at += 2;
+    while (isSeparator(path[at], win32)) at += 1;
+  }
+  return at;
+}
+
+/**
+ * A relative path as it is read: without its leading `./`, the project itself as `.`. A path that was given as `~…` is left alone (it was
+ * already written from the home), but one that only BECOMES `~…` by losing its `./` keeps it: `./~/x` is a folder named `~` in the
+ * project, and `~/x` would read as the home.
+ */
+function relativeForm(path: string, win32: boolean): string {
+  const at = afterLeadingDots(path, win32);
+  if (at === 0) return path;
+  const rest = path.slice(at);
+  if (rest === '') return '.';
+  return rest.startsWith('~') ? `.${separatorOf(path, win32)}${rest}` : rest;
+}
+
+/** The names that follow a root, as the text of a path: separated, with the separator the input ended in kept. */
+function tailOf(rest: readonly string[], trailing: boolean, separator: string): string {
+  return rest.join(separator) + (trailing && rest.length > 0 ? separator : '');
+}
+
+/**
+ * A path inside the project, project-relative: `src/app.ts`, and `.` for the project itself. A tail that STARTS with `~` (a folder named
+ * `~` or `~bob`) keeps its `./`, because `~/x.yaml` is where a person reads the home: a file written under `<project>/~/` must never be
+ * shown as if it were in the home directory.
+ */
+function projectForm(rest: readonly string[], trailing: boolean, separator: string): string {
+  const tail = tailOf(rest, trailing, separator);
+  if (tail === '') return '.';
+  return tail.startsWith('~') ? `.${separator}${tail}` : tail;
+}
+
+/** A path inside the home and outside the project, from `~`. */
+function homeForm(rest: readonly string[], trailing: boolean, separator: string): string {
+  const tail = tailOf(rest, trailing, separator);
+  return tail === '' ? '~' : `~${separator}${tail}`;
+}
+
+/** The root a path is shortened against, parsed; `undefined` for none (an empty root or no root at all). */
+function parsedBase(root: string | undefined, win32: boolean): ParsedPath | undefined {
+  return root === undefined || root === '' ? undefined : parseAbsolute(root, win32);
+}
+
+/** An absolute path shortened against the project and then the home, or `undefined` when it is inside neither. */
+function shortenAbsolute(
+  target: ParsedPath,
+  separator: string,
+  roots: DisplayPathRoots,
+  win32: boolean,
+): string | undefined {
+  const inProject = insideOf(parsedBase(roots.cwd, win32), target, win32);
+  if (inProject !== undefined) return projectForm(inProject, target.trailing, separator);
+  const inHome = insideOf(parsedBase(roots.home, win32), target, win32);
+  return inHome === undefined ? undefined : homeForm(inHome, target.trailing, separator);
+}
+
 /**
  * A path as a person reads it: project-relative when it is inside `cwd` (`src/app.ts`, never `./src/app.ts`; the project itself is
  * `.`), `~/…` when it is inside `home`, and otherwise the path exactly as it was given. A path outside both cannot be shortened
@@ -312,27 +406,15 @@ function insideOf(
  * relative path is already short: it is returned without a leading `./`. With `win32` the path is read as a Windows path and the
  * result uses the separator the input used.
  *
+ * **A result that starts with `~` is always the home.** A project folder named `~` or `~bob` (a shell leaves `--out=~/x.yaml`
+ * unexpanded, so the file lands in `<project>/~/`) is shown `./~/x.yaml`, never `~/x.yaml`.
+ *
  * **It does not sanitise.** A path read from configuration, a project file or chosen by a model is an untrusted string: the caller
  * sends the result through the inline sanitiser, the host-glyph blanking and a length bound AFTER the shortening.
  */
 export function displayPath(path: string, roots: DisplayPathRoots): string {
   const win32 = roots.win32 === true;
   const target = parseAbsolute(path, win32);
-  if (target === undefined) {
-    let relative = path;
-    while (relative.startsWith('./') || (win32 && relative.startsWith('.\\'))) {
-      relative = relative.slice(2);
-    }
-    return relative;
-  }
-  const separator = win32 && path.includes('\\') ? '\\' : '/';
-  const base = (root: string | undefined): ParsedPath | undefined =>
-    root === undefined || root === '' ? undefined : parseAbsolute(root, win32);
-  const inProject = insideOf(base(roots.cwd), target, win32);
-  const inHome = inProject === undefined ? insideOf(base(roots.home), target, win32) : undefined;
-  const rest = inProject ?? inHome;
-  if (rest === undefined) return path;
-  const tail = rest.join(separator) + (target.trailing && rest.length > 0 ? separator : '');
-  if (inProject !== undefined) return tail === '' ? '.' : tail;
-  return tail === '' ? '~' : `~${separator}${tail}`;
+  if (target === undefined) return relativeForm(path, win32);
+  return shortenAbsolute(target, separatorOf(path, win32), roots, win32) ?? path;
 }

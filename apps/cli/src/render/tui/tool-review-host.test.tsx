@@ -598,7 +598,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     await settle();
     const frame = f.lastFrameWith('Esc stops the turn') ?? '';
     expect(frame).toContain('+1 line 1 of the new file');
-    expect(frame).toContain('write_file \u00b7 +3 \u22120');
+    expect(frame).toContain('write_file \u00b7 +3 -0');
     expect(frame).not.toMatch(/masked/u);
     expect(frame).not.toContain('<LF>');
     expect(frame).not.toContain('Inspection requirements met');
@@ -2765,7 +2765,7 @@ describe.each(['chat', 'home'] as const)(
       const { rows } = screen;
       // The header carries the identity and the counts.
       expect(rows[0]).toContain('Review · tool edit_file · action fs_write');
-      expect(rows[0]).toMatch(/\+2 −2 · \d+ bytes · 0 masked values$/u);
+      expect(rows[0]).toMatch(/\+2 -2 · \d+ bytes · 0 masked values$/u);
       expect(rows[1], 'a target row').toBe('target src/app.ts');
       // The status rule says how far down the page reaches and which changed lines are not on it.
       expect(rows[screen.rule]).toMatch(/^- \d+% · changed lines off this page: \d+ below -+$/u);
@@ -2833,7 +2833,7 @@ describe.each(['chat', 'home'] as const)(
         rows.findIndex((row) => row.startsWith('target ')),
       );
       expect(header, 'the identity does not fit beside the title and takes its own rows').toEqual([
-        expect.stringMatching(/^Review +\+6 −6 /u),
+        expect.stringMatching(/^Review +\+6 -6 /u),
         `tool ${toolId}`,
         'action fs_write',
       ]);
@@ -2872,7 +2872,7 @@ describe.each(['chat', 'home'] as const)(
       if (screen === undefined) throw new Error('no full view');
       const { rows } = screen;
       expect(rows[0], 'the title with the counts flush right, and no identity').toMatch(
-        /^Review {2,}\+2 −2 · \d+ bytes · 0 masked values$/u,
+        /^Review {2,}\+2 -2 · \d+ bytes · 0 masked values$/u,
       );
       expect(rows[0]?.length, 'flush to the right edge of the usable width').toBe(78);
       expect(rows[1], 'the whole identity on one row').toBe(`tool ${toolId} · action fs_write`);
@@ -3157,13 +3157,13 @@ describe.each(['chat', 'home'] as const)(
         const rows = listRows(f) ?? [];
         expect(rows[0]).toBe('Tool calls');
         expect(rows[1], 'the edit: mark, tool, target, counts').toMatch(
-          /^ {2}ok edit_file +src\/a\.ts +\+2 \u22122$/u,
+          /^ {2}ok edit_file +src\/a\.ts +\+2 -2$/u,
         );
         expect(rows[2], 'a call with no target and no preview says nothing more').toBe(
           '  ok git_status',
         );
         expect(rows[3], 'the failed command is the newest, and selected').toMatch(
-          /^> x run_command +failed$/u,
+          /^> x {2}run_command +failed$/u,
         );
         expect(
           rows.filter((row) => row.startsWith('> ')),
@@ -3183,11 +3183,11 @@ describe.each(['chat', 'home'] as const)(
         const f = await openList();
         const up = await select(f, KEY.up, 'call 2 of 3');
         expect(up[2]).toMatch(/^> ok git_status/u);
-        expect(up[3]).toMatch(/^ {2}x run_command/u);
+        expect(up[3]).toMatch(/^ {2}x {2}run_command/u);
         const home = await select(f, KEY.home, 'call 1 of 3');
         expect(home[1]).toMatch(/^> ok edit_file/u);
         const end = await select(f, KEY.end, 'call 3 of 3');
-        expect(end[3]).toMatch(/^> x run_command/u);
+        expect(end[3]).toMatch(/^> x {2}run_command/u);
         await select(f, KEY.down, 'call 3 of 3'); // the end of the list holds
         expect(f.errors).toEqual([]);
       });
@@ -3202,7 +3202,7 @@ describe.each(['chat', 'home'] as const)(
         const edit = details(f);
         if (edit === undefined) throw new Error('no details');
         expect(edit.rows[0]).toMatch(
-          /^Details \u00b7 tool edit_file \u00b7 outcome success +\+2 \u22122 \u00b7 \d+ bytes \u00b7 0 masked values$/u,
+          /^Details \u00b7 tool edit_file \u00b7 outcome success +\+2 -2 \u00b7 \d+ bytes \u00b7 0 masked values$/u,
         );
         expect(edit.rows).toContain('target src/a.ts');
         expect(edit.diff).toEqual(
@@ -3229,7 +3229,7 @@ describe.each(['chat', 'home'] as const)(
         );
         const screen = plain.rows.join('\n');
         expect(screen).toContain('Clean worktree');
-        expect(screen).not.toMatch(/\+\d+ \u2212\d+/u);
+        expect(screen).not.toMatch(/\+\d+ -\d+/u);
         expect(screen).not.toMatch(/masked value/u);
         expect(screen).not.toContain('0 changed lines');
         expect(screen).not.toContain('[r]');
@@ -3281,7 +3281,7 @@ describe.each(['chat', 'home'] as const)(
         await pause(80);
         const row = (listRows(f) ?? [])[1] ?? '';
         expect(row, 'the call is listed').toMatch(/^> ok /u);
-        expect(row).toMatch(/\+1 \u22121$/u);
+        expect(row).toMatch(/\+1 -1$/u);
         for (const char of row) expect(char.codePointAt(0)).toBeGreaterThanOrEqual(0x20);
         f.input.push('\r');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('full'));
@@ -3834,12 +3834,12 @@ describe.each(['chat', 'home'] as const)(
         await pause(80);
         const rows = listRows(f);
         const [wide, wideEdit, plain] = [rows[1] ?? '', rows[2] ?? '', rows[3] ?? ''];
-        expect(wide, 'a denied command').toMatch(/^ {2}\/ run_command /u);
+        expect(wide, 'a denied command').toMatch(/^ {2}\/ {2}run_command /u);
         expect(wide.endsWith('denied'), 'keeps its outcome word').toBe(true);
         expect(wide, 'the target is cut in the middle').toContain('…');
-        expect(wideEdit).toMatch(/^ {2}x write_file /u);
-        expect(wideEdit, 'keeps the counts and the outcome word').toMatch(/\+1 −1 · failed$/u);
-        expect(plain).toMatch(/^> \/ write_file +src\/ordinary\.ts +\+1 −1 · denied$/u);
+        expect(wideEdit).toMatch(/^ {2}x {2}write_file /u);
+        expect(wideEdit, 'keeps the counts and the outcome word').toMatch(/\+1 -1 · failed$/u);
+        expect(plain).toMatch(/^> \/ {2}write_file +src\/ordinary\.ts +\+1 -1 · denied$/u);
         for (const row of rows.slice(1, 4))
           expect(stringWidth(row), 'measured as the renderer does').toBeLessThanOrEqual(78);
       });

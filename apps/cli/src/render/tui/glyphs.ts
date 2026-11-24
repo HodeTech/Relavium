@@ -1,8 +1,10 @@
 /**
  * The one glyph table of the CLI ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §5 and §9; the cells are
  * [MVP-11 §4.10](../../../../../docs/roadmap/phases/mvp-11.md#410-the-visual-language)): every status and marker glyph a surface draws, its plain
- * ASCII form, and, for a status, the word that always stands beside it. This is the ONLY file of the application's non-test source that writes
- * one of these characters; every status table, selection marker, scroll marker and tool marker reads it.
+ * ASCII form, and, for a status, the word that always stands beside it. Every status table, selection marker, scroll marker and tool marker reads
+ * it, and `glyph-table-only.test.ts` holds the rest of the application's non-test source to a reasoned allow-list of the symbol characters it
+ * may still write itself (key labels, box-drawing gutters, the markdown, banner and scrollback renderers, secret masks, and seven lead-in glyphs
+ * that have no plain form yet).
  *
  * - **A status carries a word.** A glyph is never the only carrier of a state ({@link wordOf}); the shapes (rules, rail, selection, markers)
  *   carry none. A surface that has a more exact word (`needs attention`, `already decided`) keeps it and takes only the glyph.
@@ -13,9 +15,15 @@
  *   Phase 2.6.L (ADR-0145 §5). The mapping is by role, never by text: a string a model, a user, a project or a provider wrote is never rewritten.
  * - **ASCII forms** are at most three columns, distinct from each other (the declared {@link SHARED_GLYPH_ROLES} excepted) and never a key
  *   label: the legend writes letters and chords in brackets (`[v]`, `[Ctrl+Y]`), so no form here starts with one.
- * - **Host glyphs.** Every character here is drawn by the host, so none may be reproduced by text a model wrote where it is drawn next to the
- *   host's own. {@link blankHostGlyphs} is the CLI's set (the core's refusal set plus every glyph of this table plus the retired ones) and
- *   {@link blankMarkerGlyphs} is the narrower set a transcript guard blanks in model text; `host-glyphs.test.ts` pins the relation by behaviour.
+ * - **Host glyphs.** The glyphs the host draws as a status or marker must not be reproduced by text a model wrote where it is drawn next to the
+ *   host's own. {@link blankHostGlyphs} is the CLI's set: the core's refusal set, the box-drawing block, the retired glyphs and every role of this
+ *   table that does not say `hostBlanked: false`. Three roles say it, the shapes that are also ordinary text: `•` (the bullet of a list a person
+ *   or an author writes), `▲` and `▼` (a triangle in a path, a name, a rating). Blanking them rewrote an author's bullet list into spaces and made
+ *   the MCP consent card refuse to start a program whose directory held one. Every other glyph keeps the guard: `↻`, `◇` and `★` lead a history
+ *   or active-run row from which a person reads a status, and `⇄`, `›`, `▸` lead a transcript row, so a forged one beside the host's own would
+ *   mislead; a path that holds such a glyph is refused by the consent card (the fail-closed side). This refines ADR-0145 §5, which said "every
+ *   glyph of the table". {@link blankMarkerGlyphs} is the narrower set a transcript guard blanks in model text; `host-glyphs.test.ts` pins the
+ *   relation by behaviour.
  *
  * A data module: it imports nothing from `ink`, `react` or `node:` (ADR-0145 §10), so the later extraction to a shared package is mechanical.
  */
@@ -37,6 +45,12 @@ export interface GlyphEntry {
   readonly tone?: GlyphTone;
   /** A marker a transcript guard blanks in model text (`›`, `▸`, `⇄`): the glyphs a reply must not be able to draw where a person's turn, a tool call or a model switch is drawn. */
   readonly guarded?: true;
+  /**
+   * `false` for a glyph that is also ordinary text (a bullet, a triangle), so that text an author, a path or a project wrote is NOT blanked of it
+   * (see the module header). Absent means blanked: a glyph that joins the table is guarded until someone decides, in a line of the table, that it
+   * is not a forgeable marker.
+   */
+  readonly hostBlanked?: false;
 }
 
 /**
@@ -90,11 +104,11 @@ const ENTRIES = {
   /** A tool call: an arrow with a stem, as a call goes out. */
   toolCall: { glyph: '▸', ascii: '->', kind: 'shape', guarded: true },
   /** More rows above the window. */
-  moreAbove: { glyph: '▲', ascii: '^', kind: 'shape' },
+  moreAbove: { glyph: '▲', ascii: '^', kind: 'shape', hostBlanked: false },
   /** More rows below the window. */
-  moreBelow: { glyph: '▼', ascii: 'v', kind: 'shape' },
+  moreBelow: { glyph: '▼', ascii: 'v', kind: 'shape', hostBlanked: false },
   /** A dot of a choice: the filled radio of the question card, `(•)`. */
-  bullet: { glyph: '•', ascii: '*', kind: 'shape' },
+  bullet: { glyph: '•', ascii: '*', kind: 'shape', hostBlanked: false },
   /** The model-switch marker, two arrows against each other. */
   modelSwitch: { glyph: '⇄', ascii: '<->', kind: 'shape', guarded: true },
   /** The text caret of a field the host draws. */
@@ -103,6 +117,12 @@ const ENTRIES = {
   activeBar: { glyph: '▌', ascii: '|', kind: 'shape' },
   /** The lead of a produced media deliverable's line. */
   media: { glyph: '◆', ascii: '&', kind: 'shape' },
+  /**
+   * The pencil: the lead of the question card's own-answer row (the core's own `ASK_USER_OWN_ANSWER_GLYPH`, which its refusal rejects in model
+   * text) and of a proposed patch's line. The plain form is the letter `e`, for edit. It is a role so that the host-glyph set and the table
+   * agree about every glyph the host draws; the two surfaces that write it still write it themselves until the plain form is wired (Phase 2.6.L).
+   */
+  pencil: { glyph: '✎', ascii: 'e', kind: 'shape' },
 } as const satisfies Record<string, GlyphEntry>;
 
 export type GlyphRole = keyof typeof ENTRIES;
@@ -196,9 +216,22 @@ export function glyph(role: GlyphRole): string {
   return glyphOf(role, activeForm === 'ascii');
 }
 
+/** Whether the plain forms are in force ({@link withGlyphForm}), for a model that draws a mark of its own besides the table's (a bracket that must not read as a key). */
+export function plainFormInForce(): boolean {
+  return activeForm === 'ascii';
+}
+
+/**
+ * A mark and the word that stands beside it, `✓ completed`. A mark that IS the word is written once: the plain form of a check that says `ok`
+ * is `ok`, and `ok ok` reads as a stutter while the word is already there. Every other pairing is the mark, a space and the word.
+ */
+export function markWithWord(mark: string, word: string): string {
+  return mark === word ? word : `${mark} ${word}`;
+}
+
 /** The glyph and its word, `✓ completed`, in the form in force: for a surface that has no more exact word. */
 export function glyphWithWord(role: StatusGlyphRole): string {
-  return `${glyph(role)} ${wordOf(role)}`;
+  return markWithWord(glyph(role), wordOf(role));
 }
 
 /** The columns a status glyph is given in a list so the words after it line up: one for a Unicode glyph, two for a plain form (`ok`, `||`). */
@@ -221,11 +254,6 @@ export function blankStatusCell(ascii: boolean): string {
   return ' '.repeat(statusCellWidth(ascii));
 }
 
-/** A mark that is not a table glyph (the animated spinner) padded to the same list column, so it lines up with the statuses around it. */
-export function padToStatusCell(mark: string): string {
-  return mark.padEnd(statusCellWidth(activeForm === 'ascii'));
-}
-
 /** The longest word of any status: the width a column of status words is padded to (`completed`, `cancelled`). */
 export const STATUS_WORD_WIDTH: number = Math.max(
   ...GLYPH_ROLES.filter(isStatusRole).map((role) => wordOf(role).length),
@@ -235,8 +263,9 @@ export const STATUS_WORD_WIDTH: number = Math.max(
 
 /**
  * The glyphs the core's question refusal rejects besides the box-drawing range (`HOST_GLYPH` in `packages/core/src/tools/ask-user.ts`: the
- * cursor, the own-answer glyph, the field's block cursor). The core owns that set and this CLI does not import it; `host-glyphs.test.ts` calls
- * the core's own refusal and fails when it refuses something the CLI set does not blank.
+ * cursor, the own-answer glyph, the field's block cursor). The core owns that set and this module does not import it (all three are also roles
+ * of the table, so this list is the declared floor, not the source of the set); `host-glyphs.test.ts` calls the core's own refusal and fails
+ * when it refuses something the CLI set does not blank.
  */
 const CORE_REFUSAL_GLYPHS = ['›', '✎', '█'] as const;
 
@@ -254,6 +283,18 @@ export const TABLE_GLYPHS: readonly string[] = [
   ...new Set(GLYPH_ROLES.map((role) => ENTRIES[role].glyph)),
 ];
 
+/**
+ * The glyphs of the table that {@link blankHostGlyphs} blanks: those of every role that does not say `hostBlanked: false`. A glyph two roles
+ * share is blanked when either of them is (`⊘`, `›`, `○`), so a declared sharing can never un-blank a glyph by one of its roles.
+ */
+export const HOST_BLANKED_GLYPHS: readonly string[] = [
+  ...new Set(
+    GLYPH_ROLES.filter((role) => !('hostBlanked' in ENTRIES[role])).map(
+      (role) => ENTRIES[role].glyph,
+    ),
+  ),
+];
+
 /** The marker glyphs a transcript guard blanks in model text: `›`, `▸`, `⇄`. */
 export const MARKER_GLYPHS: readonly string[] = [
   ...new Set(
@@ -266,19 +307,34 @@ function glyphClass(glyphs: readonly string[], extra = ''): RegExp {
 }
 
 const HOST_GLYPH_PATTERN = glyphClass(
-  [...CORE_REFUSAL_GLYPHS, ...TABLE_GLYPHS, ...RETIRED_GLYPHS],
+  [...CORE_REFUSAL_GLYPHS, ...HOST_BLANKED_GLYPHS, ...RETIRED_GLYPHS],
   BOX_DRAWING_CLASS,
 );
 const MARKER_GLYPH_PATTERN = glyphClass(MARKER_GLYPHS);
+/** The plain radio shapes and the selection `>` at the start of a text, before a digit or a space. */
+const ASCII_HOST_SHAPE = /\((?:[*xXoO])\)|^>(?=[\d\s])/gu;
 
 /**
- * `text` with every host glyph replaced by a space: the core's refusal set, the box-drawing block, every glyph of the table and the retired
- * ones. For text an author wrote that is drawn inside a host card (a gate's message, an MCP consent's subject), where a glyph of the host's own
- * could draw a row the host did not. Blanking is destructive (a `✓` an author wrote goes), which is right behind a card's gutter and wrong in a
- * transcript: use {@link blankMarkerGlyphs} there.
+ * `text` with every host glyph replaced by a space: the core's refusal set, the box-drawing block, the glyph of every role that is not
+ * `hostBlanked: false` ({@link HOST_BLANKED_GLYPHS}) and the retired ones. For text an author wrote that is drawn inside a host card (a gate's
+ * message, an MCP consent's subject), where a glyph of the host's own could draw a row the host did not. Blanking is destructive (a `✓` an
+ * author wrote goes), which is right behind a card's gutter and wrong in a transcript: use {@link blankMarkerGlyphs} there. The bullet and the
+ * two triangles are left alone: they are ordinary text.
  */
 export function blankHostGlyphs(text: string): string {
   return text.replace(HOST_GLYPH_PATTERN, ' ');
+}
+
+/**
+ * What the host draws in its PLAIN form that a model could write too: the radio of a chosen option (`(*)`, and its relatives `(x)` and
+ * `(o)`), and the selection marker `>` at the start of a line, followed by a digit or a space (`>1 (*) Delete` imitates the host's own
+ * `> 1 ( ) Keep it`). The core's question refusal rejects `(•)`, `( )`, `[x]`, `[ ]` and a list marker such as `> ` at the start, but it
+ * does not know the ASCII shapes, and it must not change (ADR-0145 §5: the engine does not change). Each shape is replaced by spaces of the
+ * same width, so a layout measured on the text is unchanged; ordinary text, and a `(*)` or `>` anywhere else, is left alone. Apply it to
+ * every string a model wrote that a card draws, in the Unicode form too (it costs nothing there and keeps one rule).
+ */
+export function blankAsciiHostShapes(text: string): string {
+  return text.replace(ASCII_HOST_SHAPE, (shape) => ' '.repeat(shape.length));
 }
 
 /**

@@ -184,9 +184,16 @@ export const TAB_HOST_KEYS = {
   tab: { keys: '←/→', verb: 'tab' },
   cycle: { keys: 'Tab', verb: 'cycle' },
   close: exitKey.close(),
-  /** The chord that closes the screen from any depth; named in the legend only where the keys of the screen leave it room. */
+  /**
+   * The chord that closes the screen from any depth. From a tab's list it does what `Esc` does, so the two are ONE item there
+   * ({@link TAB_HOST_CLOSE_EITHER}); from a detail `Esc` steps back and this chord is a second item that closes, named only where the keys
+   * of the screen leave it room.
+   */
   interrupt: { keys: 'Ctrl+C', verb: 'close' },
 } as const satisfies Readonly<Record<string, LegendKey>>;
+
+/** The way out of a tab's list when both of its keys close the screen and change nothing: one item with the key list, `Esc / [Ctrl+C] close`. */
+export const TAB_HOST_CLOSE_EITHER: LegendExit = exitKey.close(['Esc', 'Ctrl+C']);
 
 /** The legend of a tab with nothing to select; its way out is {@link TAB_HOST_KEYS.close}. */
 export const TAB_HOST_LEGEND_PLAIN_ITEMS: readonly LegendItem[] = [
@@ -767,12 +774,23 @@ export interface TabHostLegend {
   readonly exit: LegendExit;
 }
 
-/** The legend: the withdrawal question's while one is up, else the tab's with `Ctrl+C close` named where it fits. */
+/**
+ * The legend: the withdrawal question's while one is up, else the tab's with the chord named where it fits. On a tab's list `Esc` and
+ * `Ctrl+C` do the same (they close the screen and change nothing), so they are one item, `Esc / [Ctrl+C] close`, where the legend still fits
+ * the floor, and `Esc close` alone where it does not (the way out is never cut). On a detail the effects differ (`Esc` steps back, `Ctrl+C`
+ * closes), so the chord is a second item, as before.
+ */
 export function tabHostLegend(state: TabHostState): TabHostLegend {
   const exit = tabExit(state);
   const items = tabLegendItems(state, exit);
   // A withdrawal's question names its own two answers, and any other key drops it: the chord is not offered as a third.
-  return { items: state.sheet?.armed === true ? items : withInterruptItem(items, exit), exit };
+  if (state.sheet?.armed === true) return { items, exit };
+  if (exit === TAB_HOST_KEYS.close) {
+    const both =
+      displayWidth(legend(items, TAB_HOST_CLOSE_EITHER)) <= usableColumns(LEGEND_FLOOR_COLUMNS);
+    return { items, exit: both ? TAB_HOST_CLOSE_EITHER : exit };
+  }
+  return { items: withInterruptItem(items, exit), exit };
 }
 
 /** The legend as text, as the screen draws it before it is clipped. */
@@ -934,7 +952,7 @@ const TOO_SMALL_BACK_TO_RUN = exitKey.step('Esc', 'back to the run');
 function tooSmallEscape(state: TabHostState): LegendExit {
   if (state.agents?.detail !== undefined) return TOO_SMALL_BACK_TO_LIST;
   const detail = state.history?.detail;
-  if (detail === undefined) return TAB_HOST_KEYS.close;
+  if (detail === undefined) return TAB_HOST_CLOSE_EITHER;
   return detail.node === undefined ? TOO_SMALL_BACK_TO_LIST : TOO_SMALL_BACK_TO_RUN;
 }
 

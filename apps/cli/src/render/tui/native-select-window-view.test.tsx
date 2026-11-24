@@ -220,7 +220,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
         '> wf-00 — .relavium/workflows/wf-00.yaml',
         '  wf-01 — .relavium/workflows/wf-01.yaml',
         '  wf-02 — .relavium/workflows/wf-02.yaml',
-        '↑/↓ select · Enter continue · Esc close',
+        '↑/↓ select · Enter choose · Esc close',
       ]);
       o.h.stdin.write(PGDN);
       await settleFrames(8);
@@ -239,7 +239,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     try {
       expect(tall.frame()).not.toContain('more');
       expect(tall.frame()).toContain('wf-29');
-      expect(tall.frame()).toContain('↑/↓ select · Enter continue · Esc close');
+      expect(tall.frame()).toContain('↑/↓ select · Enter choose · Esc close');
     } finally {
       await close(tall);
     }
@@ -288,7 +288,7 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
       expect(o.frame()).not.toContain('does not fit');
       expect(o.frame()).toContain('Not offered, the file is not valid');
       expect(o.frame()).toMatch(/^\s*v \d+ more$/mu);
-      expect(o.frame()).toContain('PgUp/PgDn page · Enter continue · Esc back · [Ctrl+C] close');
+      expect(o.frame()).toContain('PgUp/PgDn page · Enter choose · Esc back · [Ctrl+C] close');
       expect(o.visible()).toBe(true);
       await o.press(PGDN, 15);
       expect(cursorRows(o)).toHaveLength(1);

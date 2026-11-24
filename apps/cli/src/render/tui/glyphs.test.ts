@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 
+import { ASK_USER_OWN_ANSWER_GLYPH } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,9 +12,10 @@ import {
   glyph,
   glyphOf,
   glyphWithWord,
+  HOST_BLANKED_GLYPHS,
   isStatusRole,
+  markWithWord,
   MARKER_GLYPHS,
-  padToStatusCell,
   SHARED_GLYPH_ROLES,
   statusCell,
   statusCellOf,
@@ -65,8 +67,65 @@ describe('the glyph table', () => {
         'moreBelow',
         'bullet',
         'modelSwitch',
+        'pencil',
       ] satisfies GlyphRole[]),
     );
+  });
+
+  it('is, cell by cell, the table ADR-0145 §5 and MVP-11 §4.10 give: every role’s glyph, plain form, word and colour', () => {
+    // A literal: a cell that is edited (a word renamed, a form swapped, a colour changed) fails here and not in a review.
+    const status = (glyph: string, ascii: string, word: string, tone: string): object => ({
+      glyph,
+      ascii,
+      kind: 'status',
+      word,
+      tone,
+    });
+    const shape = (glyph: string, ascii: string, extra: object = {}): object => ({
+      glyph,
+      ascii,
+      kind: 'shape',
+      ...extra,
+    });
+    expect(Object.fromEntries(GLYPH_ROLES.map((role) => [role, { ...GLYPHS[role] }]))).toEqual({
+      completed: status('✓', 'ok', 'completed', 'green'),
+      failed: status('✗', 'x', 'failed', 'red'),
+      paused: status('‖', '||', 'paused', 'yellow'),
+      cancelled: status('⊘', '/', 'cancelled', 'gray'),
+      skipped: status('⊘', '/', 'skipped', 'gray'),
+      running: status('◐', '~', 'running', 'cyan'),
+      starting: status('◌', '..', 'starting', 'cyan'),
+      pending: status('○', 'o', 'pending', 'gray'),
+      ended: status('○', 'o', 'ended', 'gray'),
+      currentStep: status('◉', '@', 'current', 'cyan'),
+      retrying: status('↻', 'r', 'retrying', 'yellow'),
+      held: status('◇', '<>', 'held', 'yellow'),
+      warning: status('⚠', '!', 'warning', 'yellow'),
+      stopping: status('■', '#', 'stopping', 'yellow'),
+      answered: status('●', '+', 'answered', 'green'),
+      pinned: status('★', 'P', 'pinned', 'yellow'),
+      railLine: shape('╌', '.'),
+      heavyRule: shape('━', '='),
+      thinRule: shape('─', '-'),
+      selection: shape('›', '>', { guarded: true }),
+      yourTurn: shape('›', '>', { guarded: true }),
+      toolCall: shape('▸', '->', { guarded: true }),
+      moreAbove: shape('▲', '^', { hostBlanked: false }),
+      moreBelow: shape('▼', 'v', { hostBlanked: false }),
+      bullet: shape('•', '*', { hostBlanked: false }),
+      modelSwitch: shape('⇄', '<->', { guarded: true }),
+      caret: shape('█', '_'),
+      activeBar: shape('▌', '|'),
+      media: shape('◆', '&'),
+      pencil: shape('✎', 'e'),
+    });
+    // and the roles are in the order of the ADR, statuses first
+    expect(GLYPH_ROLES[0]).toBe('completed');
+    expect(GLYPH_ROLES.at(-1)).toBe('pencil');
+  });
+
+  it('the pencil is the core’s own own-answer glyph, so the table and the question refusal cannot drift apart', () => {
+    expect(GLYPHS.pencil.glyph).toBe(ASK_USER_OWN_ANSWER_GLYPH);
   });
 
   it('draws the paused role with the double bar, and the pause sign has retired', () => {
@@ -218,7 +277,6 @@ describe('the two forms of a glyph', () => {
     expect(blankStatusCell(false)).toBe(' ');
     expect(blankStatusCell(true)).toBe('  ');
     expect(withGlyphForm(true, () => statusCell('failed'))).toBe('x ');
-    expect(withGlyphForm(true, () => padToStatusCell('⠋'))).toBe('⠋ ');
     for (const role of GLYPH_ROLES.filter(isStatusRole)) {
       expect(displayWidth(statusCellOf(role, true)), role).toBe(2);
       expect(displayWidth(statusCellOf(role, false)), role).toBe(1);
@@ -228,6 +286,20 @@ describe('the two forms of a glyph', () => {
   it('glyphWithWord puts the word beside the glyph', () => {
     expect(glyphWithWord('pinned')).toBe('★ pinned');
     expect(withGlyphForm(true, () => glyphWithWord('pinned'))).toBe('P pinned');
+  });
+
+  it('a mark that is the word is written once: `ok ok` is a stutter, every other pairing is the mark and the word', () => {
+    expect(markWithWord('ok', 'ok')).toBe('ok');
+    expect(markWithWord('✓', 'ok')).toBe('✓ ok');
+    expect(markWithWord('x', 'failed')).toBe('x failed');
+    expect(markWithWord('ok', 'okay')).toBe('ok okay');
+    // no status of the table has its own word for a plain form, so glyphWithWord never drops one
+    for (const role of GLYPH_ROLES.filter(isStatusRole)) {
+      expect(
+        withGlyphForm(true, () => glyphWithWord(role)),
+        role,
+      ).toBe(`${GLYPHS[role].ascii} ${GLYPHS[role].word}`);
+    }
   });
 
   it('a status colour is the table’s: completed green, failed red, paused yellow, running cyan', () => {
@@ -240,12 +312,37 @@ describe('the two forms of a glyph', () => {
 });
 
 describe('what the table does to text', () => {
-  it('blankHostGlyphs blanks every glyph of the table, the retired ones and the box-drawing block', () => {
+  /** The glyphs of the table that are also ordinary text, and so are not host glyphs (the roles that say `hostBlanked: false`). */
+  const ORDINARY_TEXT = ['•', '▲', '▼'];
+
+  it('blankHostGlyphs blanks every glyph of the table but the three that are ordinary text, the retired ones and the box-drawing block', () => {
     for (const character of [...TABLE_GLYPHS, '⏸', '▶', '❯', '─', '│', '╿', '╭']) {
+      if (ORDINARY_TEXT.includes(character)) continue;
       expect(blankHostGlyphs(`a${character}b`), `U+${character.codePointAt(0)?.toString(16)}`).toBe(
         'a b',
       );
     }
+  });
+
+  it('a bullet and the two triangles are ordinary text: they survive, and the roles that say so are exactly those three', () => {
+    for (const character of ORDINARY_TEXT) {
+      expect(blankHostGlyphs(`a ${character} b`), character).toBe(`a ${character} b`);
+      expect(HOST_BLANKED_GLYPHS, character).not.toContain(character);
+    }
+    expect(
+      GLYPH_ROLES.filter((role) => 'hostBlanked' in GLYPHS[role]).sort((a, b) =>
+        a.localeCompare(b),
+      ),
+    ).toEqual(['bullet', 'moreAbove', 'moreBelow']);
+    // every other glyph of the table is in the set, and the set holds nothing the table does not
+    expect([...HOST_BLANKED_GLYPHS].sort()).toEqual(
+      TABLE_GLYPHS.filter((character) => !ORDINARY_TEXT.includes(character)).sort(),
+    );
+  });
+
+  it('a glyph that two roles share stays blanked while either of them is', () => {
+    // `⊘` (cancelled, skipped), `›` (selection, your turn) and `○` (pending, ended) are each blanked
+    for (const character of ['⊘', '›', '○']) expect(HOST_BLANKED_GLYPHS).toContain(character);
   });
 
   it('blankHostGlyphs leaves ordinary text alone', () => {

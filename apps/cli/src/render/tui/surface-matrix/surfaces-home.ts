@@ -26,8 +26,10 @@ import {
   RUN,
   RUNNING_HOST,
   SESSIONS_PORT,
+  TWO_GATES_RUN,
   parkedRunSetup,
 } from './home-fixtures.js';
+import { PALETTE_LEGEND_ROW } from './palette-legend.js';
 import type { HomeSurface } from './surface-types.js';
 
 /**
@@ -177,6 +179,22 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
   },
   {
     host: 'home',
+    id: 'home.strip-focus-parked',
+    title: 'The populated Home with the parked run focused (the ↓ flow on an Attention row)',
+    exitKey: 'Esc',
+    landmark: 'Esc return to prompt',
+    selectedRow: 'run-0001  ·  ship-it',
+    setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(
+        () => m.controller.getSnapshot().stripFocus?.id !== undefined && m.homePainted(),
+      );
+    },
+  },
+  {
+    host: 'home',
     id: 'home.loading',
     title: 'The Home while a chat is being built (the typed message echoed)',
     exitKey: 'Ctrl+C',
@@ -193,6 +211,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The / palette on the landing',
     exitKey: 'Esc',
     landmark: 'select · Enter run',
+    legendRow: PALETTE_LEGEND_ROW,
     selectedRow: '/run  ',
     open: async (m) => {
       m.key('/');
@@ -227,7 +246,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Defined tab (workflows)',
     exitKey: 'Esc',
     landmark: 'alpha',
-    selectedRow: 'beta  1 node',
+    selectedRow: ['beta  1 node', 'Defined'],
     setup: { deps: { defined: DEFINED_PORT } },
     open: openTab('defined'),
   },
@@ -237,7 +256,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Active tab (runs in flight)',
     exitKey: 'Esc',
     landmark: 'hostrun1',
-    selectedRow: 'running  hostrun1',
+    selectedRow: ['running  hostrun1', 'Active'],
     setup: { deps: { active: ACTIVE_PORT } },
     open: async (m) => {
       await openTab('active')(m);
@@ -296,7 +315,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Agents tab (the project’s agents)',
     exitKey: 'Esc',
     landmark: 'reviewer',
-    selectedRow: 'reviewer  Reviewer',
+    selectedRow: ['reviewer  Reviewer', 'Defined'],
     setup: { deps: { agents: AGENTS_PORT } },
     open: openTab('agents'),
   },
@@ -306,7 +325,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Sessions tab (saved conversations)',
     exitKey: 'Esc',
     landmark: 'Fix the flaky test',
-    selectedRow: 'Fix the flaky test  chat',
+    selectedRow: ['Fix the flaky test  chat', 'Sessions'],
     setup: { deps: { sessions: SESSIONS_PORT } },
     open: openTab('sessions'),
   },
@@ -316,7 +335,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Permissions tab (remembered commands)',
     exitKey: 'Esc',
     landmark: 'npm, 1 argument',
-    selectedRow: 'npm, 1 argument',
+    selectedRow: ['npm, 1 argument', 'Permissions'],
     setup: { deps: { permissions: PROJECT_PERMISSIONS_PORT } },
     open: openTab('permissions'),
   },
@@ -350,6 +369,24 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     exitKey: 'Esc',
     landmark: 'Ship the release?',
     setup: () => parkedRunSetup(APPROVAL_RUN, 'approval'),
+    open: async (m) => {
+      await m.until(() => m.homePainted());
+      m.key(KEYS.down);
+      await m.until(
+        () => m.controller.getSnapshot().stripFocus?.id !== undefined && m.homePainted(),
+      );
+      m.key(KEYS.enter);
+      await m.until(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
+    },
+  },
+  {
+    host: 'home',
+    id: 'home.gate-card-list',
+    title: 'The gate card of a run parked at two gates (the list, the cursor on the first)',
+    exitKey: 'Esc',
+    landmark: 'Ship the release?',
+    selectedRow: 'g1 · approval',
+    setup: () => parkedRunSetup(TWO_GATES_RUN, 'approval'),
     open: async (m) => {
       await m.until(() => m.homePainted());
       m.key(KEYS.down);

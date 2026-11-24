@@ -3,11 +3,10 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
 import { Emph } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
-import { glyphOf } from './glyphs.js';
 import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
 import { colorProps, dimProps } from './projection.js';
+import { SelectableText, selectedTone, selectionMarker } from './selectable-text.js';
 
 /** The most candidate rows shown at once — a directory with hundreds of entries scrolls a window around the
  *  selection rather than flooding the terminal (the palette renders all; a directory listing can be far larger). */
@@ -76,20 +75,16 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       const isSelected = start + index === selected;
       const marker = candidate.type === 'directory' ? '/' : '';
       return (
-        <Text
-          key={candidate.path}
-          {...(isSelected ? colorProps(color, 'cyan') : {})}
-          wrap="truncate-end"
-        >
-          <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
-            {`${isSelected ? glyphOf('selection', !color) : ' '} ${sanitizeInline(candidate.name)}${marker}`}
-          </Emph>
+        <Text key={candidate.path} {...selectedTone(isSelected, color)} wrap="truncate-end">
+          <SelectableText selected={isSelected}>
+            {`${selectionMarker(isSelected, color)} ${sanitizeInline(candidate.name)}${marker}`}
+          </SelectableText>
         </Text>
       );
     });
   };
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {`@ ${where}`}
         <Emph kinds="bold">{sanitizeInline(state.filter)}</Emph>

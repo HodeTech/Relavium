@@ -406,7 +406,10 @@ describe('below the 80×24 floor the legend names the level `Esc` steps back to'
     ]);
     r.press('', ESC);
     expect(r.state.history?.detail, 'Esc stepped back to the list').toBeUndefined();
-    expect(smallLines(r.state), 'the list: Esc closes the screen').toEqual([HINT, 'Esc close']);
+    expect(smallLines(r.state), 'the list: Esc closes the screen').toEqual([
+      HINT,
+      'Esc / [Ctrl+C] close',
+    ]);
   });
 });
 

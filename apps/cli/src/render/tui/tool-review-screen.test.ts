@@ -136,7 +136,7 @@ function documentOf(preview: ToolPreview): ReviewDocument {
   return document;
 }
 
-const COUNTS = '+3 −2 · 205 bytes · 0 masked values';
+const COUNTS = '+3 -2 · 205 bytes · 0 masked values';
 /** Three lines added and two removed, 205 changed bytes (every changed line counts its newline), no secret anywhere. */
 const countedDocument = documentOf(
   opsPreview([
@@ -299,7 +299,7 @@ const NO_PENDING: InspectionPending = { target: false, masks: 0 };
 describe('fullCounts — the change, its bytes and its masked values, always (ADR-0134 §3)', () => {
   it('states the lines added and removed, the changed bytes and the masked values, in that order', () => {
     expect(countedDocument.changedBytes, 'the fixture sums to the bytes it claims').toBe(205);
-    expect(fullCounts(countedDocument)).toBe('+3 −2 · 205 bytes · 0 masked values');
+    expect(fullCounts(countedDocument)).toBe('+3 -2 · 205 bytes · 0 masked values');
   });
 
   it('says `1 masked value` in the singular and `N masked values` otherwise, a zero included', () => {
@@ -337,7 +337,7 @@ describe('fullHeaderRows — one row when it fits, stacked when it does not, the
       columns: 80,
     });
     expect(rows).toEqual([
-      'Review · tool edit_file · action fs_write  +3 −2 · 205 bytes · 0 masked values',
+      'Review · tool edit_file · action fs_write  +3 -2 · 205 bytes · 0 masked values',
     ]);
     expect(displayWidth(rows[0] ?? '')).toBe(usable(80));
   });
@@ -480,7 +480,7 @@ describe('fullHeaderRows — one row when it fits, stacked when it does not, the
     }
   });
 
-  describe('property: no header row is wider than columns − 2, except an identity row that cannot be shortened', () => {
+  describe('property: no header row is wider than columns - 2, except an identity row that cannot be shortened', () => {
     const identities: readonly (readonly string[])[] = [
       [],
       IDENTITY,
@@ -754,7 +754,7 @@ describe('fullWarnings — only the warnings that apply, each naming its cause a
     );
     const all = [TARGET_LOCK, MASK_LOCK_MANY, '⚠ Line endings: CRLF → LF.'];
 
-    it('keeps every row inside columns − 2 at 40..200 columns, and loses no word to the wrapping', () => {
+    it('keeps every row inside columns - 2 at 40..200 columns, and loses no word to the wrapping', () => {
       for (const columns of WIDTHS) {
         const rows = warnings({ document, pending: { target: true, masks: 2 }, columns });
         for (const row of rows)
@@ -919,7 +919,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
       }
     });
 
-    it('is exactly columns − 2 wide when its words fit, with the words between rule glyphs', () => {
+    it('is exactly columns - 2 wide when its words fit, with the words between rule glyphs', () => {
       const row = status({
         page: placed({ above: 0, below: 33, total: 43 }, { above: 0, below: 4 }),
         columns: 80,
@@ -930,7 +930,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
   });
 
   describe('the row is FITTED to the usable width, in tiers, never cut by the renderer', () => {
-    /** A status row of `words` on a rule exactly `columns − 2` wide. */
+    /** A status row of `words` on a rule exactly `columns - 2` wide. */
     const ruled = (words: string, columns: number): string =>
       `─ ${words} ${'─'.repeat(usable(columns) - displayWidth(words) - 3)}`;
     const placedAt = (above: number, below: number): ReviewPage =>
@@ -1025,7 +1025,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
         [false, true],
         [false, false],
       ] as const)(
-        'is exactly columns − 2 wide for changes (above, below, none) × percent × document, from 80 columns up — revealed=%s numeric=%s',
+        'is exactly columns - 2 wide for changes (above, below, none) × percent × document, from 80 columns up — revealed=%s numeric=%s',
         (revealed, numeric) => {
           const { check, none } = collect();
           let cases = 0;
@@ -1055,7 +1055,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
         },
       );
 
-      it('is exactly columns − 2 wide below the floor too, down to 40 columns', () => {
+      it('is exactly columns - 2 wide below the floor too, down to 40 columns', () => {
         const { check, none } = collect();
         for (const columns of WIDTHS.filter((width) => width < FLOOR))
           for (const revealed of [true, false])
@@ -1275,7 +1275,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     const flagLabel = (flags: NavLegendInput, columns: number): string =>
       `@${columns} ${JSON.stringify({ ...flags, columns: undefined })}`;
 
-    it('no row is wider than columns − 2, no key is split, and each group keeps the legend’s own order', () => {
+    it('no row is wider than columns - 2, no key is split, and each group keeps the legend’s own order', () => {
       const { check, none } = collect();
       for (const columns of WIDTHS)
         for (const flags of flagSets) {
@@ -1769,11 +1769,11 @@ describe('fullBodyRows — what a terminal leaves once the chrome and the spare 
     expect(fullBodyRows(40, 10)).toBe(29);
   });
 
-  it('is capped at FULL_BODY_ROWS_CAP rows on a tall terminal, and is rows − 1 − chrome below the cap', () => {
+  it('is capped at FULL_BODY_ROWS_CAP rows on a tall terminal, and is rows - 1 - chrome below the cap', () => {
     expect(FULL_BODY_ROWS_CAP).toBe(200);
     expect(fullBodyRows(400, 9)).toBe(200);
     expect(fullBodyRows(1000, 30)).toBe(200);
-    // Exactly at and around the cap: 210 rows − 1 spare − 9 chrome = 200.
+    // Exactly at and around the cap: 210 rows - 1 spare - 9 chrome = 200.
     expect(fullBodyRows(210, 9)).toBe(200);
     expect(fullBodyRows(209, 9)).toBe(199);
     expect(fullBodyRows(211, 9)).toBe(200);
@@ -2854,14 +2854,14 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         expect(bare?.tone).toBe(tone);
         const [counted] = view([call(0, { outcome, stats: stats(3, 2) })]).rows;
         expect(counted?.text).toBe(
-          flushed(left, word === '' ? '+3 −2' : `+3 −2 · ${word}`, usable(80)),
+          flushed(left, word === '' ? '+3 -2' : `+3 -2 · ${word}`, usable(80)),
         );
       });
     });
 
-    it('draws `+a −r` flush right for a call that changed a file, and nothing for one that did not', () => {
+    it('draws `+a -r` flush right for a call that changed a file, and nothing for one that did not', () => {
       const [changed, untouched] = view([call(0, { stats: stats(12, 0) }), call(1)], 0).rows;
-      expect(changed?.text).toBe(flushed('› ✓ edit_file  src/file0.ts', '+12 −0', usable(80)));
+      expect(changed?.text).toBe(flushed('› ✓ edit_file  src/file0.ts', '+12 -0', usable(80)));
       expect(displayWidth(changed?.text ?? '')).toBe(usable(80));
       expect(untouched?.text).toBe('  ✓ edit_file  src/file1.ts');
     });
@@ -2873,7 +2873,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         summary: 'RESULT-BODY-WITH-A-SECRET',
       };
       const [row] = view([display]).rows;
-      expect(row?.text).toBe(flushed('› ✗ edit_file  src/file0.ts', '+1 −1 · failed', usable(80)));
+      expect(row?.text).toBe(flushed('› ✗ edit_file  src/file0.ts', '+1 -1 · failed', usable(80)));
       expect(row?.text).not.toContain('RESULT');
     });
   });
@@ -2920,14 +2920,14 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
     });
 
     it('is shown whole when it fits the room exactly, and cut in the middle with one ellipsis when it is a column longer', () => {
-      // 80 columns: width 78, head 13, `+3 −2` 5 plus its 2-column gap, 2-column gap before the target: room 56.
+      // 80 columns: width 78, head 13, `+3 -2` 5 plus its 2-column gap, 2-column gap before the target: room 56.
       const fits = 'a'.repeat(56);
       const [exact] = view([call(0, { target: fits, stats: stats(3, 2) })]).rows;
-      expect(exact?.text).toBe(flushed(`› ✓ edit_file  ${fits}`, '+3 −2', usable(80)));
+      expect(exact?.text).toBe(flushed(`› ✓ edit_file  ${fits}`, '+3 -2', usable(80)));
       const [over] = view([call(0, { target: `${fits}b`, stats: stats(3, 2) })]).rows;
       // A third of the 55 columns that are not the ellipsis for the start, the rest for the end.
       expect(over?.text).toBe(
-        flushed(`› ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 −2', usable(80)),
+        flushed(`› ✓ edit_file  ${'a'.repeat(18)}…${'a'.repeat(36)}b`, '+3 -2', usable(80)),
       );
       expect(displayWidth(over?.text ?? '')).toBe(usable(80));
     });
@@ -2956,10 +2956,10 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
             { columns },
           ).rows;
           const text = row?.text ?? '';
-          // `> ✗ edit_file` (13) + gap + target + gap + `+3 −2 · failed` (14) + gap: the target's room.
+          // `> ✗ edit_file` (13) + gap + target + gap + `+3 -2 · failed` (14) + gap: the target's room.
           const room = usable(columns) - 13 - 14 - 2 - 2;
           check(displayWidth(text) <= usable(columns), () => `@${columns}: too wide: ${text}`);
-          check(text.endsWith('+3 −2 · failed'), () => `@${columns}: lost the outcome: ${text}`);
+          check(text.endsWith('+3 -2 · failed'), () => `@${columns}: lost the outcome: ${text}`);
           if (room >= 24)
             check(text.includes('ReviewScreen.tsx'), () => `@${columns}: lost the name: ${text}`);
         }
@@ -3202,7 +3202,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
     });
   });
 
-  describe('property: no row is wider than columns − 2', () => {
+  describe('property: no row is wider than columns - 2', () => {
     const fixtures: readonly (readonly CallListEntry[])[] = [
       [
         call(0),

@@ -135,6 +135,9 @@ export function mountHome(
   const session = setup.session;
   const real = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
+    // As `driveHome` wires it from the colour setting: the lines the controller writes itself (the /doctor report, a leg's end, a model switch)
+    // are drawn in the plain glyph forms exactly when colour is off, so the matrix reads them as a person does.
+    plainGlyphs: !variant.color,
     startChat:
       session === undefined || chatStore === undefined
         ? () => new Promise<never>(() => {})

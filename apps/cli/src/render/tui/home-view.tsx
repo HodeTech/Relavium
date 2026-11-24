@@ -6,10 +6,9 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
-import { Emph, EmphText } from './emphasis-view.js';
-import { SELECTED_ROW } from './emphasis.js';
+import { EmphText } from './emphasis-view.js';
 import type { StatusColor } from './format.js';
-import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
+import { glyph, withGlyphForm } from './glyphs.js';
 import {
   agentLabel,
   exitGuardLines,
@@ -45,8 +44,11 @@ import {
 import { PaletteView } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { PALETTE_MIN_ROWS, paletteGapCount, paletteRowBudget } from './palette-window.js';
+import type { DisplayPathRoots } from '../notation.js';
+import { keepEnd, placeLabel } from './place-label.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
+import { SelectableText, selectionMarker } from './selectable-text.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
 import {
   isFocused,
@@ -103,6 +105,11 @@ interface HomeViewProps {
   readonly interruptArmed?: boolean | undefined;
   /** The run host's snapshot (ADR-0139 §3): the run row shows the active run, and nothing when none is active. */
   readonly hostedRun?: RunHostSnapshot | undefined;
+  /**
+   * What a session's directory is shortened against (ADR-0145 §8: project-relative or from `~`, never absolute unless it is outside both).
+   * Absent ⇒ the directory is drawn as it was stored.
+   */
+  readonly paths?: DisplayPathRoots | undefined;
   /** The exit-guard card (ADR-0139 §6), open while the person is asked whether to leave with a run executing. It owns the bottom of
    *  the view, so the prompt and the hint bar are not drawn, and it holds the notice back until it is closed. */
   readonly exitGuard?: ExitGuardPhase | undefined;
@@ -151,6 +158,24 @@ export function ExitGuardCard(
   );
 }
 
+/** Columns a strip row's hint line spends before its text: the section's margin (2) and the hint's own indent (4). */
+const STRIP_HINT_INDENT = 6;
+
+/**
+ * The directory line under a session row (ADR-0145 §8): the directory as {@link placeLabel} names it, shortened FIRST, then made safe for
+ * the terminal and cut at the FRONT to the row's room, so the end of a long path (the part that tells one directory from another) is what stays.
+ */
+function sessionPlace(
+  workingDir: string,
+  paths: DisplayPathRoots | undefined,
+  columns: number,
+): string {
+  return keepEnd(
+    sanitizeInline(placeLabel(workingDir, paths)),
+    Math.max(1, columns - STRIP_HINT_INDENT),
+  );
+}
+
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
 interface StripRow {
   readonly key: string;
@@ -178,10 +203,10 @@ function Section(
             {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
             wrap="truncate-end"
           >
-            <Emph kinds={row.selected === true ? SELECTED_ROW : undefined}>
-              {row.selected === true ? `${glyphOf('selection', !props.color)} ` : '  '}
+            <SelectableText selected={row.selected}>
+              {`${selectionMarker(row.selected, props.color)} `}
               {sanitizeInline(row.line)}
-            </Emph>
+            </SelectableText>
           </Text>
           {row.hint !== undefined && (
             <Text {...dimProps(props.color)} wrap="truncate-end">
@@ -218,8 +243,9 @@ function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): Legend
  * the key that leaves, written last in every state of the hint bar and on the line below the minimum size. The first press arms it, and the
  * armed state says so.
  */
-const EXIT_TWICE = exitKey.close('Ctrl+C', 'exit (twice)');
-const EXIT_AGAIN = exitKey.close('Ctrl+C', 'exit (again)');
+/** The key that leaves the Home: the first `Ctrl+C` arms and the second exits, so it is the `leave` class (ADR-0145 §2), not `close`. */
+export const EXIT_TWICE = exitKey.leave('exit (twice)', 'Ctrl+C');
+export const EXIT_AGAIN = exitKey.leave('exit (again)', 'Ctrl+C');
 
 /** The standing call to action of a Home with no key (ADR-0146 §5): `Enter` opens the provider setup. A key and a command word, so it has no leaving key of its own: the hint bar under the prompt carries that. */
 const KEYLESS_SETUP_LINE = `No provider key yet · ${keyToken('Enter')} connect · /providers`;
@@ -506,7 +532,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
   ).map((s) => ({
     key: s.sessionId,
     line: sessionLabel(s, nowMs),
-    hint: sanitizeInline(s.workingDir),
+    hint: sessionPlace(s.workingDir, props.paths, cols),
     selected: focus?.kind === 'session' && s.sessionId === focus.id,
   }));
   const runCapacity = Math.max(0, remaining - (continueHeading ? 1 : 2));
@@ -593,9 +619,9 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
                     {...colorProps(color, row.overdue ? 'red' : 'yellow')}
                     wrap="truncate-end"
                   >
-                    <Emph kinds={row.selected === true ? SELECTED_ROW : undefined}>
+                    <SelectableText selected={row.selected}>
                       {sanitizeInline(row.line)}
-                    </Emph>
+                    </SelectableText>
                   </Text>
                 ))}
                 {/* #W15-15: a run whose event log cannot be read used to render as an ordinary run with
@@ -623,10 +649,10 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
                 ))}
                 {failed.map((f) => (
                   <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-                    <Emph kinds={f.selected === true ? SELECTED_ROW : undefined}>
-                      {f.selected === true ? `${glyph('selection')} ` : '  '}
+                    <SelectableText selected={f.selected}>
+                      {`${selectionMarker(f.selected, color)} `}
                       {sanitizeInline(f.line)}
-                    </Emph>
+                    </SelectableText>
                   </Text>
                 ))}
               </Box>

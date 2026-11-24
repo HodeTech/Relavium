@@ -415,11 +415,11 @@ describe('what a key does', () => {
 
   it('names no key it does not answer to: an empty list offers neither select nor open, and the way out is last', () => {
     const full = tabHostLegendText(rig().state);
-    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · [Ctrl+C] close · Esc close');
+    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Esc / [Ctrl+C] close');
     const empty = tabHostLegendText(rig(read([])).state);
-    expect(empty).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+    expect(empty).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
     const loading = tabHostLegendText(rig(null).state);
-    expect(loading).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+    expect(loading).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
   });
 });
 

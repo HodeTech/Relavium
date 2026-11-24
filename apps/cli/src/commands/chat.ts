@@ -147,7 +147,8 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
-import { formatUsdExact } from '../render/notation.js';
+import { displayRoots } from '../render/display-roots.js';
+import { formatUsdExact, type DisplayPathRoots } from '../render/notation.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { chatSurfaceOf, noticeSurfaceOf, type Surface } from '../render/surface.js';
 import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
@@ -1717,6 +1718,8 @@ export function createChatModeControl(
     readonly interactive?: boolean;
     /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
     readonly commandGrants?: CommandGrantsPort;
+    /** What a command's card shortens its directory against (the project and the home, ADR-0145 §8); absent ⇒ the card draws it as it is. */
+    readonly commandPaths?: DisplayPathRoots;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1737,6 +1740,7 @@ export function createChatModeControl(
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
+    ...(opts?.commandPaths === undefined ? {} : { commandPaths: opts.commandPaths }),
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
     // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
@@ -2008,6 +2012,9 @@ export function createChatLineHandler(
   const modeControl = createChatModeControl(built, store, {
     interactive,
     ...(commandGrants === undefined ? {} : { commandGrants }),
+    // The roots the command card names its directory against (ADR-0145 §8): the same for the stand-alone chat and the one the Home hosts,
+    // which both build their handler here.
+    commandPaths: displayRoots(deps.global.cwd, built.operatorHomeDir),
   });
   const noticesStopped = (): boolean =>
     workOwner !== undefined &&

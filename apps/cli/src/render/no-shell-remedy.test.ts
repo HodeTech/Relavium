@@ -583,6 +583,58 @@ const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([
   'legend-golden',
 ]);
 
+/**
+ * Every module a source file names, read from its syntax tree: a static `import … from '…'`, a side-effect `import '…'`, a re-export
+ * `export … from '…'`, a dynamic `import('…')` (a string or an untagged template with no substitution) and `require('…')`. A comment, a
+ * string that is not a specifier and a `from '…'` inside prose never count.
+ */
+function moduleSpecifiers(file: string, text: string): string[] {
+  const specifiers: string[] = [];
+  const sf = ts.createSourceFile(
+    file,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const literalText = (node: ts.Node | undefined): string | undefined =>
+    node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
+      ? node.text
+      : undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      const specifier = literalText(node.moduleSpecifier);
+      if (specifier !== undefined) specifiers.push(specifier);
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      if (ts.isExternalModuleReference(node.moduleReference)) {
+        const specifier = literalText(node.moduleReference.expression);
+        if (specifier !== undefined) specifiers.push(specifier);
+      }
+    } else if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+    ) {
+      const specifier = literalText(node.arguments[0]);
+      if (specifier !== undefined) specifiers.push(specifier);
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      const specifier = literalText(node.argument.literal);
+      if (specifier !== undefined) specifiers.push(specifier);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return specifiers;
+}
+
+/** The harness directories a specifier reaches: any path segment of it that is the name of one. */
+function harnessDirectoriesIn(specifier: string): string[] {
+  const segments = specifier.split('/');
+  return [...HARNESS_DIRECTORIES].filter(
+    (name) => name !== 'node_modules' && name !== 'fixtures' && segments.includes(name),
+  );
+}
+
 function sourceFiles(dir: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -713,17 +765,50 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
     expect(exempt).toEqual(['chat/resume-hint.ts', 'render/tui/final-summary.ts']);
   });
 
-  it('leaves out the test harness directories only because no product source imports them', () => {
+  it('leaves out the test harness directories only because no product source imports them (a static, side-effect, re-export or dynamic import)', () => {
     const importers = [...FILES.keys()].filter((file) =>
-      [...HARNESS_DIRECTORIES]
-        .filter((name) => name !== 'node_modules' && name !== 'fixtures')
-        .some((name) =>
-          new RegExp(`from\\s+['"][^'"]*/${name}/`, 'u').test(
-            readFileSync(join(SRC, ...file.split('/')), 'utf8'),
-          ),
-        ),
+      moduleSpecifiers(file, readFileSync(join(SRC, ...file.split('/')), 'utf8')).some(
+        (specifier) => harnessDirectoriesIn(specifier).length > 0,
+      ),
     );
     expect(importers).toEqual([]);
+  });
+});
+
+describe('the harness-import guard sees every way a module is named (it is run on text it is given)', () => {
+  const reached = (text: string, file = 'x.ts'): string[] =>
+    moduleSpecifiers(file, text).flatMap(harnessDirectoriesIn);
+
+  it.each([
+    ['a named import', "import { a } from './x/surface-matrix/y.js';"],
+    ['a default import', "import a from '../render/tui/legend-golden/golden.js';"],
+    ['a side-effect import', "import './x/surface-matrix/y.js';"],
+    ['a type import', "import type { A } from './surface-matrix/y.js';"],
+    ['a re-export', "export { a } from './legend-golden/y.js';"],
+    ['a star re-export', "export * from './legend-golden/y.js';"],
+    ['a dynamic import', "const m = await import('./x/legend-golden/y.js');"],
+    ['a dynamic import with a template', 'const m = await import(`./x/surface-matrix/y.js`);'],
+    ['a require', "const m = require('./surface-matrix/y.js');"],
+    ['an import type node', "type T = import('./legend-golden/y.js').A;"],
+    ['an import-equals', "import m = require('./legend-golden/y.js');"],
+    ['a directory import with no trailing path', "import { a } from './surface-matrix';"],
+  ])('flags %s', (_name, text) => {
+    expect(reached(text).length, text).toBeGreaterThan(0);
+  });
+
+  it('flags a tsx file the same way', () => {
+    expect(reached("import './surface-matrix/y.js'; export const a = <b />;", 'x.tsx')).toEqual([
+      'surface-matrix',
+    ]);
+  });
+
+  it.each([
+    ['a comment', "// import './x/surface-matrix/y.js'\nconst a = 1;"],
+    ['a string that is not a specifier', 'const a = "from \'./surface-matrix/y.js\'";'],
+    ['an ordinary import', "import { a } from './x/y.js'; import('./z.js');"],
+    ['a name that only contains a harness name', "import a from './surface-matrix-like/y.js';"],
+  ])('does not flag %s', (_name, text) => {
+    expect(reached(text), text).toEqual([]);
   });
 });
 

@@ -20,7 +20,9 @@ import {
   STANDALONE_CHAT_PALETTE_FILLS_INLINE,
 } from './known-failures.js';
 import type { KnownFailure, SurfaceBase } from './registry.js';
+import { PALETTE_LEGEND_ROW } from './palette-legend.js';
 import type { ChatSurface } from './surface-types.js';
+import type { SessionViewSeed } from '../session-view-model.js';
 import { isBelowFloor, type Variant } from './variants.js';
 
 /**
@@ -74,6 +76,7 @@ export function chatSurfaces(definitions: readonly ChatSurfaceDefinition[]): Cha
         exitKey: definition.exitKey,
         landmark: definition.landmark,
         selectedRow: definition.selectedRow,
+        legendRow: definition.legendRow,
         belowFloor: definition.belowFloor,
         variants: definition.variants,
         knownFailure: [
@@ -217,6 +220,21 @@ function finishToolCall(m: ChatMount): void {
   });
 }
 
+/**
+ * A conversation long enough to fill the full-screen transcript: the palette is opened over it, as a person opens it in a chat that has a
+ * history. With an empty transcript the palette has the room it asks for and a layout that squeezes it (a list region that may shrink) never
+ * shows; over a full one, the palette is merged into the rows around it, and the legend row is the first to go.
+ */
+const LONG_CONVERSATION: SessionViewSeed = {
+  transcript: Array.from({ length: 40 }, (_, turn) => [
+    { role: 'user' as const, text: `question ${String(turn)} about the thing` },
+    {
+      role: 'assistant' as const,
+      text: `answer ${String(turn)} with a longer sentence so that it wraps over the width of the terminal once or twice, maybe more`,
+    },
+  ]).flat(),
+};
+
 const typeLineAndWait =
   (command: string, landmark: string) =>
   async (m: ChatMount): Promise<void> => {
@@ -238,8 +256,10 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The / palette, laid out upwards from the prompt',
     exitKey: 'Esc',
     landmark: 'select · Enter run',
+    legendRow: PALETTE_LEGEND_ROW,
     selectedRow: '/models  ',
     belowFloor: 'renders',
+    setup: { seed: LONG_CONVERSATION },
     knownFailure: {
       chat: HOSTED_CHAT_PALETTE_OVERFLOWS_INLINE,
       'standalone-chat': STANDALONE_CHAT_PALETTE_FILLS_INLINE,

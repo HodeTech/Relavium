@@ -13,6 +13,7 @@
  * Exits non-zero so CI fails loudly the moment any seam path stops being policed. Run from
  * the repo root:  node tools/lint-fixtures/assert-fence.mjs
  */
+import { existsSync } from 'node:fs';
 import { basename } from 'node:path';
 
 import { ESLint } from 'eslint';
@@ -40,11 +41,56 @@ const EXPECT_SYNTAX = 4;
 const EXPECT_AUTHORED = 7;
 
 /**
- * The CLI data-module fence's exact spec (ADR-0145 §10): FIVE errors on the fixture — `ink`, `react`, a `node:` module, a bare Node
- * built-in and a `react` subpath. A drop means a form a data module must not import stopped being policed; a rise means the named list's
- * entry now catches something the fixture did not mean to (read the fixture before changing this number).
+ * The CLI data-module fence's exact spec (ADR-0145 §10): NINE errors on the fixture — `chalk`, `ink`, `react`, `react-dom`, a `node:` module,
+ * a bare Node built-in, a `react` subpath, and a vendor SDK of the seam (`openai`) bare and as a subpath (`openai/resources`). A drop means a
+ * form a data module must not import stopped being policed (the entry's paths or patterns lost a name, or the seam paths fell out of the
+ * replaced entry); a rise means the named list's entry now catches something the fixture did not mean to (read the fixture before changing
+ * this number).
  */
-const EXPECT_DATA_MODULE = 5;
+const EXPECT_DATA_MODULE = 9;
+
+/**
+ * The modules that must carry the data-module fence, written out HERE and not read from `eslint.config.mjs`: the list in the config is what
+ * is being checked, so a check that read it would pass when an entry was dropped. Each must exist (a rename or a deletion fails here, not
+ * silently) and each must carry the rule with its full set of names. A module joins this list in the same commit that joins the config's.
+ */
+const EXPECTED_DATA_MODULES = [
+  'apps/cli/src/commands/repl-commands.ts',
+  'apps/cli/src/render/tui/legend.ts',
+  'apps/cli/src/render/tui/legend-row.ts',
+  'apps/cli/src/render/tui/glyphs.ts',
+  'apps/cli/src/render/tui/emphasis.ts',
+  'apps/cli/src/render/tui/format.ts',
+  'apps/cli/src/render/tui/palette-entries.ts',
+  'apps/cli/src/render/tui/sheet-frame.ts',
+  'apps/cli/src/render/tui/tui-constants.ts',
+  'apps/cli/src/render/notation.ts',
+  'apps/cli/src/render/notice-surface.ts',
+  'apps/cli/src/render/surface.ts',
+  'apps/cli/src/onboarding/setup-notes.ts',
+  DATA_MODULE,
+];
+
+/** The names the data-module entry must forbid: the renderer and its libraries, and the seam's vendor SDKs (the entry replaces the general one). */
+const REQUIRED_PATH_NAMES = [
+  'ink',
+  'react',
+  'react-dom',
+  'chalk',
+  '@anthropic-ai/sdk',
+  'openai',
+  '@google/genai',
+];
+/** The groups the entry must forbid by pattern: `node:` modules, bare Node built-ins (`fs`), subpaths of the renderer libraries and of the vendor SDKs. */
+const REQUIRED_PATTERN_GROUPS = [
+  'node:*',
+  'fs',
+  'path',
+  'ink/*',
+  'react/*',
+  'react-dom/*',
+  'openai/*',
+];
 
 const eslint = new ESLint();
 const results = await eslint.lintFiles([MAIN, CONFIG_NAMED, AUTHORED, DATA_MODULE]);
@@ -99,7 +145,7 @@ if (authoredHits !== EXPECT_AUTHORED) {
   );
 }
 
-// 4. The CLI data-module fence must fire EXACTLY five times on its fixture (see EXPECT_DATA_MODULE).
+// 4. The CLI data-module fence must fire EXACTLY nine times on its fixture (see EXPECT_DATA_MODULE).
 const dataModule = resultFor('forbidden-in-data-module.ts');
 const dataModuleHits = seamErrors(dataModule, STATIC_RULE);
 if (dataModuleHits !== EXPECT_DATA_MODULE) {
@@ -108,6 +154,36 @@ if (dataModuleHits !== EXPECT_DATA_MODULE) {
       'Fewer means an ink, react or node: import stopped being policed in the data modules (ADR-0145 §10 regression).',
     dataModule,
   );
+}
+
+// 5. Every module that must be a data module exists and carries the fence with its full names (a dropped, renamed or shadowed entry fails).
+for (const file of EXPECTED_DATA_MODULES) {
+  if (!existsSync(file)) {
+    fail(
+      `${file} is on the data-module list but does not exist: a renamed or deleted module must be renamed in eslint.config.mjs and here, not left to pass.`,
+    );
+  }
+  const config = await eslint.calculateConfigForFile(file);
+  const entry = config?.rules?.[STATIC_RULE];
+  const options = Array.isArray(entry) ? entry[1] : undefined;
+  const severity = Array.isArray(entry) ? entry[0] : entry;
+  const paths = (options?.paths ?? []).map((path) => (typeof path === 'string' ? path : path.name));
+  const groups = (options?.patterns ?? []).flatMap((pattern) =>
+    typeof pattern === 'string' ? [pattern] : (pattern.group ?? []),
+  );
+  const missingPaths = REQUIRED_PATH_NAMES.filter((name) => !paths.includes(name));
+  const missingGroups = REQUIRED_PATTERN_GROUPS.filter((group) => !groups.includes(group));
+  if (severity !== 2 && severity !== 'error') {
+    fail(
+      `${file} does not carry ${STATIC_RULE} as an error: it fell off the CLI_DATA_MODULES list in eslint.config.mjs (ADR-0145 §10).`,
+    );
+  }
+  if (missingPaths.length > 0 || missingGroups.length > 0) {
+    fail(
+      `${file} carries ${STATIC_RULE} without the data-module names — missing paths [${missingPaths.join(', ')}] and patterns [${missingGroups.join(', ')}]: ` +
+        'it is on the general entry, not the data-module one (ADR-0145 §10).',
+    );
+  }
 }
 
 console.log(
@@ -120,5 +196,6 @@ console.log(
     "the two residual forms ADR-0081 §1 names are still uncaught, and legitimate uses of the type aren't.",
 );
 console.log(
-  `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} ink, react and node: imports policed in the named data modules.`,
+  `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} ink, react, react-dom, chalk, node: and vendor-SDK imports policed; ` +
+    `${EXPECTED_DATA_MODULES.length} named data modules exist and carry it.`,
 );

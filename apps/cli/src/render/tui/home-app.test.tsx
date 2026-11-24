@@ -1398,7 +1398,9 @@ describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0
     expect(frame).toContain('[d] withdraw');
     expect(frame, 'the bare Home has no session list').not.toContain('This session');
     expect(frame).toContain('Defined  │  Active  │  History  │  > Permissions');
-    expect(frame).toContain('←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(frame).toContain(
+      '←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close',
+    );
     m.harness.stdin.write('\u001b');
     await untilTrue(() => !(m.harness.lastFrame() ?? '').includes('> Permissions'));
     expect(m.c.getSnapshot().mode).toBe('home');

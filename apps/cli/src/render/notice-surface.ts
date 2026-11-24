@@ -1,5 +1,5 @@
 /**
- * Where a notice is read, because that decides which remedy exists (MVP-11, [ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6
+ * Where a notice is read, because that decides which remedy exists (MVP-11, [ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7.4
  * and [ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) §6, OD-20).
  *
  * `shell` is scripted output (`relavium run`, `agent run`, `gate`, `list`, a plain or `--json` chat): a subcommand can be named there

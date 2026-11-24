@@ -1,7 +1,8 @@
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { ToolDisplay } from './tool-display.js';
 import type { CommandCardFacts } from '../../chat/command-facts.js';
-import { glyph } from './glyphs.js';
+import type { DisplayPathRoots } from '../notation.js';
+import { glyph, plainFormInForce, statusCell, statusCellWidth } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
 import {
@@ -64,7 +65,7 @@ export function fullCounts(document: ReviewDocument | undefined): string {
   const masks = `${count} masked value${count === 1 ? '' : 's'}`;
   const diff = document.preview.diff;
   if (diff !== undefined)
-    return `+${diff.stats.addedLines} −${diff.stats.removedLines}${SEPARATOR}${document.changedBytes} bytes${SEPARATOR}${masks}`;
+    return `+${diff.stats.addedLines} -${diff.stats.removedLines}${SEPARATOR}${document.changedBytes} bytes${SEPARATOR}${masks}`;
   return count > 0 ? masks : '';
 }
 
@@ -99,6 +100,8 @@ export interface FullWarningInput {
   readonly columns: number;
   /** A command's standing, directory and warnings (ADR-0118 §1), shown above the locks on its full view too. */
   readonly commandFacts?: CommandCardFacts | undefined;
+  /** What the command's directory is shortened against (see {@link commandFactRows}); absent ⇒ the roots the facts carry, and with none, as the host gave it. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 /**
@@ -109,7 +112,7 @@ export interface FullWarningInput {
 export function fullWarnings(input: FullWarningInput): readonly string[] {
   const warnings: string[] =
     input.kind === 'approval' && input.commandFacts !== undefined
-      ? [...commandFactRows(input.commandFacts, usableColumns(input.columns))]
+      ? [...commandFactRows(input.commandFacts, usableColumns(input.columns), false, input.paths)]
       : [];
   if (input.kind === 'approval') {
     if (input.pending.target) {
@@ -368,6 +371,8 @@ export interface FullChromeInput {
   readonly searching: boolean;
   /** A command's facts (ADR-0118 §1); absent for any other call. */
   readonly commandFacts?: CommandCardFacts | undefined;
+  /** What a command's directory is shortened against; absent ⇒ the roots the facts carry, and with none, as the host gave it. */
+  readonly paths?: DisplayPathRoots | undefined;
 }
 
 export interface FullChrome {
@@ -414,6 +419,7 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     pending: input.pending,
     columns: input.columns,
     commandFacts: input.commandFacts,
+    paths: input.paths,
   });
   const nav = fullNavRows({ ...input.nav, columns: input.columns });
   const answers = fullAnswers(input.keys, input.searching);
@@ -551,7 +557,13 @@ export interface CallListView {
 /** What a call list entry needs from a {@link ToolDisplay}. */
 export type CallListEntry = Pick<ToolDisplay, 'callId' | 'toolId' | 'outcome' | 'target' | 'stats'>;
 
-/** A call's mark, its word (the glyph is never alone) and its tone; the marks are the glyph table's, in the form in force. */
+/** A mark that is not a table glyph (`?`, `…`), padded to the list's status column in the form in force. */
+const statusColumn = (mark: string): string => mark.padEnd(statusCellWidth(plainFormInForce()));
+
+/**
+ * A call's mark, its word (the glyph is never alone) and its tone; the marks are the glyph table's, in the form in force, each padded to the
+ * list's status column (`ok` is two columns without colour, `/` and `x` one), so the tool names start in one column in both forms.
+ */
 function outcomeMark(outcome: ToolDisplay['outcome']): {
   mark: string;
   word: string;
@@ -561,15 +573,15 @@ function outcomeMark(outcome: ToolDisplay['outcome']): {
     case 'success':
       // A success carries no word of its own here: the row already says what the call was (its tool, its target and its change), and a word
       // on every success row would take the target's columns on each of them (the call list's one status glyph without a word, ADR-0145 §5).
-      return { mark: glyph('completed'), word: '', tone: 'ok' };
+      return { mark: statusCell('completed'), word: '', tone: 'ok' };
     case 'failure':
-      return { mark: glyph('failed'), word: 'failed', tone: 'bad' };
+      return { mark: statusCell('failed'), word: 'failed', tone: 'bad' };
     case 'denied':
-      return { mark: glyph('cancelled'), word: 'denied', tone: 'warn' };
+      return { mark: statusCell('cancelled'), word: 'denied', tone: 'warn' };
     case 'unknown':
-      return { mark: '?', word: 'outcome unknown', tone: 'warn' };
+      return { mark: statusColumn('?'), word: 'outcome unknown', tone: 'warn' };
     case 'running':
-      return { mark: '…', word: 'running', tone: 'dim' };
+      return { mark: statusColumn('…'), word: 'running', tone: 'dim' };
   }
 }
 
@@ -631,7 +643,7 @@ export function callListView(input: {
     const outcome = outcomeMark(call.outcome);
     const tool = escapedFit(sanitizeUntrustedInline(call.toolId), toolWidth);
     const right = [
-      call.stats === undefined ? '' : `+${call.stats.addedLines} −${call.stats.removedLines}`,
+      call.stats === undefined ? '' : `+${call.stats.addedLines} -${call.stats.removedLines}`,
       outcome.word,
     ]
       .filter((part) => part.length > 0)

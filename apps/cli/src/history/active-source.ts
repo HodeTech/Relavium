@@ -302,13 +302,20 @@ export interface ActiveReaderDeps {
   readonly snapshot?: ReadSnapshot | undefined;
 }
 
+/** The terminal outbox as one read of it: the run ids that hold a terminal, and whether the file could not be read at all. */
+interface HeldRead {
+  readonly heldRunIds: ReadonlySet<string>;
+  readonly heldUnread: boolean;
+}
+
 /**
- * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch and, with
- * {@link ActiveReaderDeps.snapshot}, in one read transaction, so the rows of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
- * as `status` degrades: it never fails the tab.
+ * The outbox's held run ids, read once per change of the file: the reader keeps them under the file's stamp, so an unchanged file is not
+ * parsed again at every tick. The stamp is taken BEFORE the file is read: a file that changes in between is read again at the next tick,
+ * never trusted stale. A file that cannot be read leaves the held set empty and says so, as `status` degrades; it never fails the tab.
  */
-export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
-  const gateCache: GateCountCache = new Map();
+function createHeldReader(
+  deps: Pick<ActiveReaderDeps, 'listHeld' | 'outboxStamp'>,
+): () => Promise<HeldRead> {
   let kept: { readonly stamp: string; readonly ids: ReadonlySet<string> } | undefined;
   const stampNow = (): string | undefined => {
     try {
@@ -318,24 +325,33 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
     }
   };
   return async () => {
-    let heldRunIds: ReadonlySet<string> = new Set();
-    let heldUnread = false;
-    // The stamp is taken BEFORE the file is read: a file that changes in between is read again at the next tick, never trusted stale.
     const stamp = stampNow();
-    if (stamp !== undefined && kept?.stamp === stamp) {
-      heldRunIds = kept.ids;
-    } else {
-      kept = undefined;
-      try {
-        const events = await deps.listHeld();
-        heldRunIds = new Set(
-          events.map((event) => event.runId).filter((id): id is string => id !== undefined),
-        );
-        if (stamp !== undefined) kept = { stamp, ids: heldRunIds };
-      } catch {
-        heldUnread = true;
-      }
+    if (stamp !== undefined && kept?.stamp === stamp)
+      return { heldRunIds: kept.ids, heldUnread: false };
+    kept = undefined;
+    try {
+      const events = await deps.listHeld();
+      const heldRunIds = new Set(
+        events.map((event) => event.runId).filter((id): id is string => id !== undefined),
+      );
+      if (stamp !== undefined) kept = { stamp, ids: heldRunIds };
+      return { heldRunIds, heldUnread: false };
+    } catch {
+      return { heldRunIds: new Set(), heldUnread: true };
     }
+  };
+}
+
+/**
+ * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch and, with
+ * {@link ActiveReaderDeps.snapshot}, in one read transaction, so the rows of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
+ * as `status` degrades: it never fails the tab.
+ */
+export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
+  const gateCache: GateCountCache = new Map();
+  const readHeld = createHeldReader(deps);
+  return async () => {
+    const { heldRunIds, heldUnread } = await readHeld();
     // The poll asked `isClosed` before it started this read, and the outbox was awaited since: a database closed meanwhile is not read.
     if (deps.isClosed?.() === true) throw new Error('the history database is closed');
     const snapshot = deps.snapshot ?? ((read) => read());

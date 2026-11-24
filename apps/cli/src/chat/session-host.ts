@@ -239,7 +239,7 @@ export interface BuildChatSessionOptions {
   readonly onEffortWithheld?: (note: string) => void;
   /**
    * Where the notices this host composes are READ (`onUnpriced`, `onEffortWithheld`): `tui` names an action of the surface (`/models`,
-   * `/pricing`), `shell` a subcommand ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6, OD-20). Absent ⇒
+   * `/pricing`), `shell` a subcommand ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7.4, OD-20). Absent ⇒
    * `shell`, the scripted wording, which is what `agent run` and a plain or `--json` chat read; the interactive chat and the Home say `tui`.
    */
   readonly noticeSurface?: NoticeSurface;

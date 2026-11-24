@@ -33,7 +33,7 @@ export function selectLegend(back: boolean, windowed: boolean): string {
   const { before, exit } = nativeLeave(back);
   const paging: readonly LegendItem[] = windowed ? [{ keys: 'PgUp/PgDn', verb: 'page' }] : [];
   return legend(
-    [{ keys: '↑/↓', verb: 'select' }, ...paging, { keys: 'Enter', verb: 'continue' }, ...before],
+    [{ keys: '↑/↓', verb: 'select' }, ...paging, { keys: 'Enter', verb: 'choose' }, ...before],
     exit,
   );
 }

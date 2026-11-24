@@ -12,6 +12,7 @@ import { mountInk } from './mount.js';
 import {
   checkExitKey,
   checkHeight,
+  checkLegendRow,
   checkNoColour,
   checkNoScrollbackClear,
   checkProperties,
@@ -26,7 +27,14 @@ import {
 import { observe, problemsOf } from './run-cell.js';
 import type { HomeSurface, Surface } from './surface-types.js';
 import { ScreenEmulator } from './terminal.js';
-import { BELOW_FLOOR_VARIANT, FLOOR_VARIANTS, cellsOf, type Variant } from './variants.js';
+import {
+  BELOW_FLOOR,
+  BELOW_FLOOR_VARIANT,
+  FLOOR_VARIANTS,
+  SIZES,
+  cellsOf,
+  type Variant,
+} from './variants.js';
 import { CHAT_SURFACES } from './surfaces-chat.js';
 import { HOME_SURFACES } from './surfaces-home.js';
 import { EMPTY_SNAPSHOT } from './home-host.js';
@@ -243,6 +251,15 @@ describe('the five properties, each on a surface that breaks it', () => {
         ?.property,
       'closed before the words',
     ).toBe('selected-row');
+    // a style closed before the words: each close is read for what it closes (the inverse close alone, then the bold close alone)
+    expect(
+      checkSelectedRow(row(`${sgr('1')}${sgr('7')}> ${sgr('27')}/run  `), '/run  ')[0]?.message,
+      'inverse closed, bold still open',
+    ).toContain('not inverse');
+    expect(
+      checkSelectedRow(row(`${sgr('1')}${sgr('7')}> ${sgr('22')}/run  `), '/run  ')[0]?.message,
+      'bold closed, inverse still open',
+    ).toContain('not bold');
     expect(checkSelectedRow(row(drawn), 'never written')[0]?.message).toContain('never written');
     // a style left open on the row above does not carry to the row below
     expect(
@@ -255,6 +272,177 @@ describe('the five properties, each on a surface that breaks it', () => {
     expect([...stylesBefore(closed, closed.indexOf('c'))]).toEqual(['inverse']);
     const reset = `${sgr('1')}ab${sgr('0')}c`;
     expect([...stylesBefore(reset, reset.indexOf('c'))]).toEqual([]);
+  });
+
+  it('each style is closed by its own close, and only by it: 22 ends bold and dim, 27 inverse, 24 underline, 0 everything', () => {
+    const after = (raw: string): string[] => [...stylesBefore(`${raw}c`, raw.length)].sort();
+    expect(after(`${sgr('7')}a${sgr('27')}`)).toEqual([]);
+    expect(after(`${sgr('7')}a${sgr('22')}`), '22 does not close inverse').toEqual(['inverse']);
+    expect(after(`${sgr('1')}a${sgr('27')}`), '27 does not close bold').toEqual(['bold']);
+    expect(after(`${sgr('4')}a${sgr('24')}`)).toEqual([]);
+    expect(
+      after(`${sgr('4')}a${sgr('22')}${sgr('27')}`),
+      '22 and 27 do not close underline',
+    ).toEqual(['underline']);
+    expect(after(`${sgr('2')}${sgr('1')}a${sgr('22')}`), '22 closes bold and dim together').toEqual(
+      [],
+    );
+    expect(after(`${sgr('1')}${sgr('7')}${sgr('4')}a${sgr('24')}`)).toEqual(['bold', 'inverse']);
+    expect(after(`${sgr('1;7')}a${sgr('22;27')}`)).toEqual([]);
+    expect(after(`${sgr('1')}${sgr('7')}a${sgr('0')}`)).toEqual([]);
+    expect(
+      after(`${sgr('1')}${sgr('7')}a${sgr('')}`),
+      'an empty parameter list is a reset',
+    ).toEqual([]);
+  });
+
+  it('the colour recogniser holds at the edges of every range: 30–37, 40–47, 90–97, 100–107, and the extended 38 and 48', () => {
+    for (const code of ['30', '37', '38', '40', '47', '48', '90', '97', '100', '107']) {
+      expect(sgrSetsColour(code), code).toBe(true);
+    }
+    for (const code of [
+      '0',
+      '1',
+      '4',
+      '7',
+      '22',
+      '27',
+      '29',
+      '39',
+      '49',
+      '50',
+      '89',
+      '98',
+      '99',
+      '108',
+    ]) {
+      expect(sgrSetsColour(code), code).toBe(false);
+    }
+    expect(sgrSetsColour('1;37'), 'a colour behind a bold').toBe(true);
+    expect(sgrSetsColour('5:2:107'), 'a colon-separated list').toBe(true);
+    expect(sgrSetsColour('')).toBe(false);
+  });
+
+  it('selected row marker: `›` with colour on, `>` with colour off, and never the Unicode one without colour', () => {
+    const row = (variant: Variant, marker: string, extra = ''): Observation =>
+      observation(
+        variant,
+        [`${marker} /run  words${extra}`],
+        `${sgr('1')}${sgr('7')}${marker} /run  ${sgr('27')}${sgr('22')}words${extra}`,
+      );
+    const INLINE_COLOUR = INLINE_80_COLOUR;
+    expect(checkSelectedRow(row(INLINE_COLOUR, '›'), '/run  ')).toEqual([]);
+    expect(checkSelectedRow(row(ALT_80, '>'), '/run  ')).toEqual([]);
+    expect(
+      checkSelectedRow(row(INLINE_COLOUR, '>'), '/run  ')[0]?.message,
+      'plain marker, colour on',
+    ).toContain('has no `›` marker');
+    expect(
+      checkSelectedRow(row(ALT_80, '›'), '/run  ')
+        .map((v) => v.message)
+        .join('|'),
+      'Unicode marker, colour off',
+    ).toMatch(/has no `>` marker.*Unicode marker `›` with colour off/su);
+    expect(
+      checkSelectedRow(row(ALT_80, '>', ' ›'), '/run  ')[0]?.message,
+      'a Unicode marker beside the plain one, colour off',
+    ).toContain('draws the Unicode marker');
+    expect(
+      checkSelectedRow(row(INLINE_COLOUR, '›', ' >'), '/run  '),
+      'a `>` in the text with colour on is the text',
+    ).toEqual([]);
+    // no marker at all
+    expect(checkSelectedRow(row(INLINE_COLOUR, ' '), '/run  ')[0]?.property).toBe('selected-row');
+    // the words are in the bytes but on no row of the frame
+    expect(
+      checkSelectedRow(
+        observation(
+          ALT_80,
+          ['elsewhere'],
+          `${sgr('1')}${sgr('7')}> /run  ${sgr('27')}${sgr('22')}`,
+        ),
+        '/run  ',
+      )[0]?.message,
+    ).toContain('is not on any row');
+    // it is the LAST row with those words that is read
+    expect(
+      checkSelectedRow(
+        observation(
+          ALT_80,
+          ['  /run  first', '> /run  second'],
+          `${sgr('1')}${sgr('7')}> /run  ${sgr('27')}${sgr('22')}second`,
+        ),
+        '/run  ',
+      ),
+    ).toEqual([]);
+  });
+
+  it('legend row: the surface’s own legend is on a row by itself, whole, or it fails', () => {
+    const LEGEND = '↑/↓ select · Enter run · Esc close';
+    const frame = (...lines: string[]): Observation => observation(ALT_80, lines);
+    expect(checkLegendRow(frame('above', LEGEND), LEGEND)).toEqual([]);
+    expect(
+      checkLegendRow(frame(`  ${LEGEND}  `), LEGEND),
+      'indent and trailing space are not content',
+    ).toEqual([]);
+    // overwritten: the list squeezed over the legend leaves the tail of the legend and then another row
+    expect(
+      checkLegendRow(
+        frame('  /resume  Search saved conversations Enter run · Esc close'),
+        LEGEND,
+      )[0]?.property,
+    ).toBe('legend-row');
+    // merged: the legend whole, with another row's tail after it
+    expect(checkLegendRow(frame(`${LEGEND}start a fresh session.`), LEGEND)[0]?.property).toBe(
+      'legend-row',
+    );
+    expect(checkLegendRow(frame(`/ ${LEGEND}`), LEGEND)[0]?.property).toBe('legend-row');
+    // split over two rows
+    expect(
+      checkLegendRow(frame('↑/↓ select · Enter run', '· Esc close'), LEGEND)[0]?.property,
+    ).toBe('legend-row');
+    expect(checkLegendRow(frame(), LEGEND)[0]?.message).toContain(
+      'not on a row of the frame by itself',
+    );
+  });
+
+  it('legend row: an exit key and a landmark that survive do not hide a legend that was drawn over', () => {
+    const entry = {
+      id: 'x.palette',
+      title: 'a palette',
+      exitKey: 'Esc',
+      landmark: 'select',
+      legendRow: '↑/↓ select · Enter run · Esc close',
+    };
+    const mount = (variant: Variant, lines: readonly string[]) => ({
+      variant,
+      frame: () => [...lines],
+      raw: () => lines.join('\n'),
+    });
+    const merged = ['/models  Switch model', '↑/↓ select · Esc close  start a fresh session.'];
+    const result = observe(entry, mount(INLINE_80, merged));
+    expect(result.violations.map((v) => v.property)).toEqual(['legend-row']);
+    expect(
+      observe(entry, mount(INLINE_80, ['↑/↓ select · Enter run · Esc close'])).violations,
+    ).toEqual([]);
+    // below the floor the surface's notice replaces it, so its legend is not asserted
+    const below = observe(
+      entry,
+      mount(BELOW_FLOOR_VARIANT, ['Terminal too small — enlarge the terminal']),
+    );
+    expect(below.violations.map((v) => v.property)).not.toContain('legend-row');
+    // a known failure of the property is an expected failure, and a plain violation where it does not apply
+    const known = {
+      ...entry,
+      knownFailure: { property: 'legend-row' as const, reason: 'drawn over by the list' },
+    };
+    expect(problemsOf(known, result)).toEqual([]);
+    expect(
+      problemsOf(
+        known,
+        observe(entry, mount(INLINE_80, ['↑/↓ select · Enter run · Esc close'])),
+      )[0],
+    ).toContain('no longer fails here');
   });
 
   it('all of them together', () => {
@@ -592,6 +780,22 @@ describe('real components that break a property are caught through the same moun
 });
 
 describe('the variants', () => {
+  it('pin the sizes the product promises, literally: 80×24 and 100×30, and below the floor 60×20 with the plainest renderer', () => {
+    expect(SIZES).toEqual([
+      { cols: 80, rows: 24 },
+      { cols: 100, rows: 30 },
+    ]);
+    expect(BELOW_FLOOR).toEqual({ cols: 60, rows: 20 });
+    expect(BELOW_FLOOR_VARIANT).toEqual({
+      renderer: 'alt',
+      color: false,
+      size: { cols: 60, rows: 20 },
+    });
+    expect(BELOW_FLOOR_VARIANT.color).toBe(false);
+    // every floor cell is a size of SIZES, and none is the below-floor one
+    for (const variant of FLOOR_VARIANTS) expect(SIZES).toContainEqual(variant.size);
+  });
+
   it('are the eight cells of the three axes and the one below the floor', () => {
     expect(FLOOR_VARIANTS).toHaveLength(8);
     expect(cellsOf(undefined)).toHaveLength(9);

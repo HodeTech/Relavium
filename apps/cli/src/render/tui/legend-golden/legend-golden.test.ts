@@ -27,6 +27,14 @@ const REGENERATE = process.env['UPDATE_LEGEND_GOLDEN'] === '1';
 /** Some recorders mount real views over real stores; a loaded machine needs the room. */
 const TIMEOUT_MS = 180_000;
 
+/**
+ * One recording for the whole file: recording every producer takes about twelve seconds, and the golden check and the determinism check both
+ * need a recording. The golden check reads this one; the determinism check compares THIS one with a fresh one (the only second recording the
+ * file makes), so the property it pins, that two recordings in a process agree, is the same as when each test recorded for itself.
+ */
+let recording: Promise<Golden> | undefined;
+const recordedOnce = (): Promise<Golden> => (recording ??= recordAll());
+
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -114,7 +122,7 @@ describe('the legend golden', () => {
       ? 'regenerates legend.golden.json (UPDATE_LEGEND_GOLDEN=1)'
       : 'says today what legend.golden.json says, state by state',
     async () => {
-      const actual = await recordAll();
+      const actual = await recordedOnce();
       if (REGENERATE) {
         writeFileSync(GOLDEN_PATH, serialize(actual));
         return;
@@ -133,7 +141,7 @@ describe('the legend golden', () => {
   it(
     'records the same strings twice (no clock, no order, no machine in them)',
     async () => {
-      const first = await recordAll();
+      const first = await recordedOnce();
       const second = await recordAll();
       expect(describeDifferences(first, second)).toEqual([]);
       expect(serialize(first)).toBe(serialize(second));

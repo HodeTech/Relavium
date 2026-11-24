@@ -14,6 +14,7 @@ import type { CommandGrantsPort } from '../chat/chat-mode.js';
 import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver } from '../chat/test-support.js';
 import { resolveConfig } from '../config/resolve.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { createChatModeControl, type ChatModeControl } from './chat.js';
@@ -60,6 +61,11 @@ export interface RealModeControl {
  */
 export async function realModeControl(options?: {
   readonly commandGrants?: CommandGrantsPort;
+  /**
+   * What the command card shortens the session workspace against (the project and the home), as the chat handler passes it; a function
+   * when the roots depend on the workspace, which the helper creates.
+   */
+  readonly commandPaths?: DisplayPathRoots | ((workspace: string) => DisplayPathRoots);
 }): Promise<RealModeControl> {
   const workspace = mkdtempSync(join(tmpdir(), 'relavium-mode-control-'));
   const built = await buildChatSession({
@@ -75,11 +81,17 @@ export async function realModeControl(options?: {
   });
   const pushes = vi.spyOn(built.session, 'setTurnPolicy');
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
-  const control = createChatModeControl(
-    built,
-    store,
-    options?.commandGrants === undefined ? undefined : { commandGrants: options.commandGrants },
-  );
+  const control = createChatModeControl(built, store, {
+    ...(options?.commandGrants === undefined ? {} : { commandGrants: options.commandGrants }),
+    ...(options?.commandPaths === undefined
+      ? {}
+      : {
+          commandPaths:
+            typeof options.commandPaths === 'function'
+              ? options.commandPaths(workspace)
+              : options.commandPaths,
+        }),
+  });
   return {
     store,
     control,

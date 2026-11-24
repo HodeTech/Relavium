@@ -28,7 +28,7 @@ const DOCTOR_KEYCHAIN_PROBE = 'doctor:reachability-probe';
 
 export interface DoctorHostInputs {
   /**
-   * Where the report is read (ADR-0145 §6, MVP-11 OD-20): the Home and an interactive chat say `/import`, a plain or `--json` chat is scripted
+   * Where the report is read (ADR-0145 §7.4, MVP-11 OD-20): the Home and an interactive chat say `/import`, a plain or `--json` chat is scripted
    * output that names the shell command. REQUIRED, so a host that forgets it fails the typecheck instead of printing the wrong wording.
    */
   readonly noticeSurface: NoticeSurface;

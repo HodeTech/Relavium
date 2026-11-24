@@ -39,9 +39,16 @@ export interface SurfaceBase {
   /**
    * Words that only the surface's SELECTED row has (a command's name, a model's): the matrix asserts that the last time they were written
    * to the terminal they were bold and inverse, in every cell, colour off included (ADR-0145 §5: the selection is the marker AND an inverse
-   * row, because the marker alone cannot tell a selected row from the prompt). Absent for a surface that draws no selection.
+   * row, because the marker alone cannot tell a selected row from the prompt), and that its row carries the marker (`›` with colour, `>`
+   * without). Several words are several selections (a list's row and the tab above it). Absent for a surface that draws no selection.
    */
-  readonly selectedRow?: string | undefined;
+  readonly selectedRow?: string | readonly string[] | undefined;
+  /**
+   * The surface's own legend row, exactly as drawn (`↑/↓ select · Enter run · Esc close`): the matrix asserts it is on ONE row of the frame,
+   * whole, in every cell where the surface renders. An exit key and a landmark can survive a layout that draws a list over the legend, so
+   * this is the property that names it. Absent for a surface whose legend is not one fixed row.
+   */
+  readonly legendRow?: string | undefined;
   /**
    * What the surface does below the floor (60×20): a pattern its below-floor text matches (the default is the Home's "too small" notice and
    * the sheets' "enlarge the terminal"), or `'renders'` for a surface that draws normally there and keeps every property, exit key included.

@@ -104,6 +104,21 @@ export const APPROVAL_RUN: RunGates = {
   budgetGates: [],
   degraded: false,
 };
+/** A run parked at two gates: its card lists them, and the one under the cursor is the card's selected row. */
+export const TWO_GATES_RUN: RunGates = {
+  ...APPROVAL_RUN,
+  gates: [
+    ...APPROVAL_RUN.gates,
+    {
+      runId: RUN,
+      gateId: 'g2',
+      nodeId: 'publish-step',
+      gateType: 'approval',
+      message: 'Publish the notes?',
+      accepts: ['approved', 'rejected'],
+    },
+  ],
+};
 export const BUDGET_RUN: RunGates = {
   runId: RUN,
   workflowId: 'wf',

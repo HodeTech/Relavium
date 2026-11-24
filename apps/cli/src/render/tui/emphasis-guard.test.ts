@@ -30,7 +30,7 @@ const RAW_PROP_ALLOWED: Readonly<Record<string, string>> = {
   'render/tui/emphasis.ts':
     'the rule itself: its table of the three pairs and the description of a set (a tone a test names)',
   'render/tui/markdown-text.tsx':
-    'draws MODEL content (a markdown heading, strong text, a link) under its own colour gate, and the highlight of a mouse selection inside it; the markdown layer is never handed literal SGR from model text',
+    'draws MODEL content (a markdown heading, strong text, a link) under its own colour gate; the highlight of a mouse selection is host feedback and is drawn through emphasis.ts; the markdown layer is never handed literal SGR from model text',
   'render/tui/syntax-palette.ts':
     'the colours and weights of a highlighted CODE BLOCK in a model’s reply (ADR-0144), a model-content style under its own colour gate',
 };

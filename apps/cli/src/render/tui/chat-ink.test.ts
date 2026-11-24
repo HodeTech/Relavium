@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { commandsOf } from '../../commands/repl-commands.js';
-import { finalizeInkExit, emitIntro, idleHint } from './chat-ink.js';
+import {
+  END_THE_SESSION_AGAIN,
+  END_THE_SESSION_TWICE,
+  emitIntro,
+  finalizeInkExit,
+  idleHint,
+} from './chat-ink.js';
 import { reduceChatKey } from './chat-input.js';
 import { DISARMED, pressInterrupt } from './interrupt-keymap.js';
 import { shouldOpenPalette } from './palette-reducer.js';
@@ -114,17 +120,30 @@ describe('idleHint — what the idle prompt tells the person to press', () => {
 
   it('offers the palette and the two ways out at an empty prompt, and the submit hint once composing', () => {
     expect(idleHint(false, true)).toBe(
-      '[/] for commands \u00b7 /exit end \u00b7 [Ctrl+C] end (twice)',
+      '[/] for commands \u00b7 type /exit to end \u00b7 [Ctrl+C] end (twice)',
     );
+    // `/exit` is a command to type, never a key: it is written plain, in a sentence that says what typing it does.
+    expect(idleHint(false, true)).not.toContain('[/exit]');
     expect(idleHint(false, false)).toBe(
       'Enter send \u00b7 [Ctrl+J] newline \u00b7 [Ctrl+C] clear the draft',
     );
   });
 
+  it('names `Ctrl+C` as the key that LEAVES where it ends the session, never as a close (ADR-0145 §2)', () => {
+    expect(END_THE_SESSION_TWICE).toMatchObject({ keys: 'Ctrl+C', class: 'leave' });
+    expect(END_THE_SESSION_AGAIN).toMatchObject({ keys: 'Ctrl+C', class: 'leave' });
+    // With a draft the first `Ctrl+C` only clears it and arms nothing: that is no leaving key, and the bar says so in its own class.
+    expect(idleHint(false, false)).toContain('[Ctrl+C] clear the draft');
+  });
+
   it('lists only keys the prompt answers, and each does what its word says (ADR-0145 §3: a test presses every key a legend lists)', () => {
     const now = 1000;
-    // At an empty prompt: `/` opens the palette, `/exit` is a typed command of the chat's registry (named, not a key), `Ctrl+C` twice ends the session.
-    expect(listedKeys(idleHint(false, true))).toEqual(['[/]', '/exit', '[Ctrl+C]']);
+    // At an empty prompt: `/` opens the palette, `/exit` is a typed command of the chat's registry (named in a sentence, not a key), `Ctrl+C` twice ends the session.
+    expect(listedKeys(idleHint(false, true)).filter((word) => word.startsWith('['))).toEqual([
+      '[/]',
+      '[Ctrl+C]',
+    ]);
+    expect(idleHint(false, true)).toContain('type /exit to end');
     expect(shouldOpenPalette('/', {}, false, 0)).toBe(true);
     expect(commandsOf('standalone-chat').map((command) => command.name)).toContain('exit');
     const first = pressInterrupt(DISARMED, { kind: 'prompt', hasText: false }, now);

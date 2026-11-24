@@ -46,6 +46,10 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
     'the populated Home with a parked run, a failed run, conversations and agents',
   ),
   row('home.strip-focus', 'the populated Home with a strip row focused (the ↓ flow)'),
+  row(
+    'home.strip-focus-parked',
+    'the populated Home with the parked run focused (the ↓ flow on an Attention row)',
+  ),
   row('home.loading', 'the Home while a chat is being built'),
   row('home.palette', 'the / palette on the landing'),
   row('home.help', 'the /help screen'),
@@ -62,6 +66,7 @@ export const PRODUCT_SURFACES: readonly ProductSurface[] = [
   row('home.run-view', 'the run view of a hosted run'),
   // The cards of a run.
   row('home.gate-card', 'the gate card of a parked run'),
+  row('home.gate-card-list', 'the gate card of a run parked at two gates (the list of gates)'),
   row('home.budget-card', 'the budget card of a parked run'),
   row('home.mcp-consent-card', 'the MCP consent card'),
   row('home.exit-guard', 'the exit-guard card'),

@@ -169,7 +169,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(frame).toContain('Which file should I change?');
     expect(frame).toContain('> 1 ( ) alpha.ts');
     expect(frame).toContain('2 ( ) beta.ts');
-    expect(frame).toContain('\u270e Type your own answer');
+    expect(frame).toContain('e Type your own answer');
     expect(frame).toContain('The first file'); // the highlighted option's description
     expect(frame).toContain('Esc / [Ctrl+C] stops the turn');
     expect(frame).not.toMatch(/Approval needed|\[y\]|\[a\]|\[n\]/u);
@@ -354,7 +354,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('One  [o] o o · Review'));
+      await vi.waitFor(() => expect(f.text()).toContain('One  <o> o o · Review'));
       await settle();
       // A held Enter repeats every few tens of milliseconds: only the first lands on a settled frame. (Keys pushed in the SAME
       // tick reach the card as one chunk, which it ignores whole, so they are spaced the way key repeat spaces them.)
@@ -438,11 +438,11 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [o] o o · Review'));
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  <o> o o · Review'));
       await settle();
       await tap(f, RIGHT); // look at question 2 without answering question 1
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  o [o] o · Review'),
+        expect(f.lastFrameWith('Which more?') ?? '').toContain('Also  o <o> o · Review'),
       );
       await tap(f, RIGHT);
       await tap(f, RIGHT); // the Review tab
@@ -453,7 +453,7 @@ describe.each(['chat', 'home'] as const)(
       );
       await tap(f, '\r'); // Enter with holes: goes to the first unanswered question, with a note
       await vi.waitFor(() =>
-        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  [o]'),
+        expect(f.lastFrameWith('Question 1 is not answered yet.') ?? '').toContain('Pick  <o>'),
       );
       await tap(f, '2'); // beta.ts → question 2
       await tap(f, '1'); // multi-select: tick "one" …
@@ -488,7 +488,7 @@ describe.each(['chat', 'home'] as const)(
       f.input.push('\r'); // SAVES the text — the question is still open
       await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
       expect(f.store.getSnapshot().question).toBeDefined();
-      await vi.waitFor(() => expect(f.lastFrameWith('Saved.') ?? '').toContain('[x] ✎ note'));
+      await vi.waitFor(() => expect(f.lastFrameWith('Saved.') ?? '').toContain('[x] e note'));
       await settle();
       f.input.push('\r'); // the second Enter confirms the question
       expect(await answer).toEqual({
@@ -501,7 +501,7 @@ describe.each(['chat', 'home'] as const)(
       const f = fixture(host, true, false);
       await f.ready();
       const answer = f.store.requestQuestion(THREE);
-      await vi.waitFor(() => expect(f.text()).toContain('Pick  [o]'));
+      await vi.waitFor(() => expect(f.text()).toContain('Pick  <o>'));
       await settle();
       await tap(f, '1'); // alpha.ts → question 2
       await tap(f, LEFT);

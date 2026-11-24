@@ -331,7 +331,7 @@ describe('the Defined tab lists the project’s agents, one row per file', () =>
   it('says there are no agents, and names no row key, when the catalog is empty', () => {
     const r = rig({ items: [] });
     expect(r.text()).toContain(AGENTS_EMPTY);
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
     expect(r.press('', ENTER).kind).toBe('state');
     expect(r.press('', DOWN).kind).toBe('state');
   });
@@ -350,7 +350,7 @@ describe('the Defined tab lists the project’s agents, one row per file', () =>
       expect(r.state.agents).toBeUndefined();
       expect(r.text()).toContain(AGENTS_UNREADABLE);
       expect(r.text()).not.toContain('PRIVATE_FAULT_TEXT');
-      expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+      expect(r.legendText()).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
       expect(r.press('', ESC).kind, 'Esc still closes it').toBe('close');
     }
   });
@@ -438,9 +438,9 @@ describe('the agent detail page is read-only, sanitized, and nothing else', () =
 describe('the legends name exactly the keys each page answers to, and every one is pressed', () => {
   it('Defined list: select and open with the tab keys and Esc last, each doing what it says', () => {
     const r = rig();
-    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', 'Ctrl+C', 'Esc']);
+    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', ['Esc', 'Ctrl+C']]);
     expect(r.legendText()).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ select · Enter open · [Ctrl+C] close · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · Enter open · Esc / [Ctrl+C] close',
     );
     expect(AGENTS_KEYS.select.keys).toBe('↑/↓');
     expect(AGENTS_KEYS.open.keys).toBe('Enter');
@@ -586,9 +586,9 @@ describe('the legends name exactly the keys each page answers to, and every one 
 
   it('Sessions: select and resume with the tab keys and Esc last, each doing what it says', () => {
     const r = rig({ tab: 'sessions' });
-    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', 'Ctrl+C', 'Esc']);
+    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', ['Esc', 'Ctrl+C']]);
     expect(r.legendText()).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ select · Enter resume · [Ctrl+C] close · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · Enter resume · Esc / [Ctrl+C] close',
     );
     expect(SESSIONS_KEYS.select.keys).toBe('↑/↓');
     expect(SESSIONS_KEYS.resume.keys).toBe('Enter');
@@ -641,7 +641,7 @@ describe('the Esc ladder is the other tabs’: the detail first, then the screen
     const small = r.lines(79, 24);
     expect(small).toHaveLength(2);
     expect(small[0]).toBe(TAB_HOST_TOO_SMALL);
-    expect(small[1]).toBe('Esc close');
+    expect(small[1]).toBe('Esc / [Ctrl+C] close');
     r.press('', ENTER);
     expect(r.lines(80, 23)[1]).toBe('Esc back to the list');
   });
@@ -684,7 +684,7 @@ describe('the Sessions tab lists this project’s conversations', () => {
   it('says there is none, names no row key and resumes nothing when the project has no conversation', () => {
     const r = rig({ tab: 'sessions', sessions: [] });
     expect(r.text()).toContain('No saved conversations in this project yet.');
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · Esc / [Ctrl+C] close');
     expect(r.press('', ENTER).kind).toBe('state');
   });
 
@@ -735,7 +735,7 @@ describe('both tabs fit the 23-row budget at the sizes a terminal has', () => {
           const lines = r.lines(columns, terminalRows);
           expect(lines.length, `${tab} cursor ${String(at)}`).toBeLessThanOrEqual(TAB_HOST_ROWS);
           expect(lines[0]).toContain('› ');
-          expect(lines.at(-1)).toContain('Esc close');
+          expect(lines.at(-1)).toContain('Esc / [Ctrl+C] close');
           for (const line of lines)
             expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));
           expect(lines.slice(1).filter((line) => line.startsWith('› '))).toHaveLength(1);
