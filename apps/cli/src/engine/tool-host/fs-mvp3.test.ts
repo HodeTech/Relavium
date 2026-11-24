@@ -533,7 +533,7 @@ it('visits a thousand ordinary files with a realistic root ignore file', async (
   const result = await capability().findFiles?.('.', { glob: '*.nomatch' });
   expect(result?.stats.entriesVisited).toBe(1001);
   expect(result?.stats.incomplete).toBe(false);
-});
+}, 30_000);
 
 it('keeps find_files at its own 1,000-file ceiling, even though the search ceiling is wider', async () => {
   // find counts each matching candidate and opens it, even when it is a hard link that is then skipped. Only the
@@ -547,7 +547,8 @@ it('keeps find_files at its own 1,000-file ceiling, even though the search ceili
   const result = await capability().findFiles?.('.', { glob: '*.txt' });
   expect(result?.files).toEqual([]);
   expect(result?.stats).toMatchObject({ incomplete: true, limit: 'files', filesScanned: 1000 });
-});
+  // A thousand hard links are a thousand file-system calls, and a Windows runner took 5.7 s for them (the default limit is 5 s).
+}, 30_000);
 
 it('reads a long adversarial line once, and rejects every non-word occurrence without a rescan', async () => {
   // Every occurrence of the pattern is inside a word, so each is a rejected whole-word match (ADR-0142).
