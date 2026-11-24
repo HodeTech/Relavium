@@ -6528,9 +6528,9 @@ What the PR carried:
   are tests and documents (`04645e2e`: the sweep of every microtask position at which a cancel can reach the resume path; `f9cf2627`), and CI run `45322172313` is their evidence. The installed-CLI smoke is CI-owned.
 - SonarCloud's gate on the pull request was **OK on `f9cf2627`** (reliability, security and maintainability A, duplication 0.4%, hotspots 100% reviewed; no bug and no vulnerability). It was red on earlier heads (reliability
   and security) until the fixes above. **138 smells stay open on the pull request by decision, all `MINOR`**: 132 `S7758`, 5 `S9382` and 1 `S6582`, each intentional and listed in the
-  [register](../deferred-tasks.md#pr-102-review-2026-11-24--findings-answered-refuted-and-deferred) entry "SonarCloud on PR #102 at the merge". **The analysis of the merge commit on `main` had not run when this was
-  written** (`main` still showed the analysis of `0a599a36`, OK), and a status is per branch, so `main`'s gate can differ from the pull request's; the merge commit's own `push` run (`45353015865`, nine jobs) had
-  eight jobs succeeded and one native-asset job (macOS x86_64) still running.
+  [register](../deferred-tasks.md#pr-102-review-2026-11-24--findings-answered-refuted-and-deferred) entry "SonarCloud on PR #102 at the merge". **SonarCloud's analysis of the merge commit on `main`** (`c17e9763`, 08:05:00Z) **finished: the gate is OK, with no bug and no vulnerability and 962 code smells** (886 before; 162 `S7758` are open on `main`, 132 of them
+  this PR's). A status is per branch, so the pull request's marks do not reach `main`. **The merge commit's own `push` run (`45353015865`) was still running at 08:13Z** (its first nine jobs had succeeded, and the shards,
+  the workspace checks, the coverage floor and the Windows jobs started at 08:09Z); its result is not claimed here, and its tree is the tree of the pull request's last run, which passed.
 - **The conditional acceptance stays conditional.** Rows 1 to 38 of [the Windows interrupt-evidence runbook](../../runbooks/windows-interrupt-evidence.md) (rows 1 to 16 are MVP-4's) have never been run by a person on
   Windows Terminal and the legacy console host; CI runs tests, not a console. The forced-write module's link, FIFO and race tests are skipped on Windows, so its behaviour there is untested.
 - **What no fix addressed** is in the register and in the review record's "Needs the maintainer" list: whether a hosted workflow's writes enter ADR-0138's marks, a command to withdraw an MCP consent, whether ADR-0142
