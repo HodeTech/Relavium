@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants, type BigIntStats, type Dirent } from 'node:fs';
+import { constants, type BigIntStats, type Dirent, type Stats } from 'node:fs';
 import { lstat, mkdir, open, opendir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -1744,6 +1744,9 @@ const SCAN_SEARCH_WORK = 64 * 1024 * 1024;
 const IGNORE_BYTES = 64 * 1024;
 const IGNORE_RULES = 256;
 const LINE_BYTES = 2048;
+// A fixed sentence, naming no path or pattern: the pattern is the model's own, and the cause is the same for every refusal.
+const SEARCH_PATTERN_LINE_BREAK =
+  'search_files: the pattern must not contain a line break, because the search matches one line at a time';
 const IGNORE_FILES = ['.gitignore', '.relaviumignore'] as const;
 
 /** Presence is enough: nested rules are unsupported, so never read their contents or follow a link. */
@@ -1793,6 +1796,10 @@ async function discover(
     throw new FsCapabilityError('discovery: invalid glob');
   if (search !== undefined && !fits(search.pattern, 1024))
     throw new FsCapabilityError('search_files: invalid pattern');
+  // The scan reads one line at a time, so a pattern with a line break could never match and a complete-looking result would call a
+  // literal absent that was never looked for. The tool schema refuses it first; a host called without it refuses it here (P1-8).
+  if (search !== undefined && /[\r\n]/.test(search.pattern))
+    throw new FsCapabilityError(SEARCH_PATTERN_LINE_BREAK);
   const inScope = buildScopeChecker(config);
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   const root = await jailExisting(config, inScope, path);
@@ -1808,6 +1815,7 @@ async function discover(
     skippedOversize: number;
     skippedHardLink: number;
     skippedVanished: number;
+    skippedSymlink: number;
     unreadable: number;
     incomplete: boolean;
     limit?: FsScanLimit;
@@ -1819,12 +1827,26 @@ async function discover(
     skippedOversize: 0,
     skippedHardLink: 0,
     skippedVanished: 0,
+    skippedSymlink: 0,
     unreadable: 0,
     incomplete: false,
   };
+  // Two different things end up in `stats.incomplete`. A ceiling or an ignore input the walk cannot apply ends the walk (`halted`,
+  // with `limit` naming it). A skip (a file or directory it could not read, a link it did not follow, a file it never opened) only
+  // makes the result partial: the walk goes on to the rest, so one locked entry never ends the search (built-in-tools.md; PR #102).
+  let halted = false;
   const stop = (limit: FsScanLimit): void => {
+    halted = true;
     stats.incomplete = true;
     stats.limit ??= limit;
+  };
+  /**
+   * An entry the walk reached and could not read is one counted skip: a vanished entry (`ENOENT`) by that name, anything else (a
+   * permission or I/O failure) as unreadable. The caller goes on to the next entry; the verdict is set once, after the walk.
+   */
+  const skipUnread = (error: unknown): void => {
+    if (errnoCode(error) === 'ENOENT') stats.skippedVanished++;
+    else stats.unreadable++;
   };
   /**
    * Counts a candidate the jail refused to open as the file that was listed, and says whether it was one. A hard-linked file is refused
@@ -1897,19 +1919,31 @@ async function discover(
 
     return true;
   }
-  for (const name of IGNORE_FILES) {
-    if (!(await loadIgnore(name))) break;
+  // The workspace ignore files govern the workspace: a scan of a granted root outside it applies none of their rules (matchCandidate),
+  // so a workspace ignore file that is unreadable or unsupported says nothing about that scan and must not end it.
+  if (isWithinFsRoot(workspaceRoot, root)) {
+    for (const name of IGNORE_FILES) {
+      if (!(await loadIgnore(name))) break;
+    }
   }
-  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+  /** Whether `dir` holds a nested ignore file; `undefined` when the probe itself failed, so the directory cannot be entered. */
+  const probeNestedIgnore = async (dir: string): Promise<boolean | undefined> => {
     if (relative(workspaceRoot, dir) === '') return false;
     try {
       const present = await hasIgnoreFile(dir, signal);
       throwIfAborted(signal);
-      if (!present) return false;
+      return present;
     } catch {
       throwIfAborted(signal);
-      stats.unreadable++;
+      return undefined;
     }
+  };
+  // An ancestor that cannot be probed leaves the scan unable to say what rules it inherits, so it ends the scan; a nested ignore file
+  // always does (its rules are unsupported).
+  const checkNestedIgnore = async (dir: string): Promise<boolean> => {
+    const present = await probeNestedIgnore(dir);
+    if (present === false) return false;
+    if (present === undefined) stats.unreadable++;
     stop('ignore');
     return true;
   };
@@ -1921,7 +1955,7 @@ async function discover(
     let ancestor = dirname(root);
     let inspected = 0;
     while (
-      !stats.incomplete &&
+      !halted &&
       relative(workspaceRoot, ancestor) !== '' &&
       inScope(ancestor) &&
       !isSensitivePolicyReadPath(ancestor, config.pathPolicy)
@@ -1962,32 +1996,59 @@ async function discover(
     stop('directories');
     return false;
   }
+  /** Whether a link leads to a regular file inside the scope, the one kind of link the walk reads (as that file). Never opens it. */
+  async function linkLeadsToScopedFile(link: string): Promise<boolean> {
+    try {
+      const target = await realpath(link);
+      if (!inScope(target) || isSensitivePolicyReadPath(target, config.pathPolicy)) return false;
+      return (await stat(target)).isFile();
+    } catch {
+      return false;
+    }
+  }
   async function walkDirectory(next: { dir: string; depth: number }): Promise<boolean> {
     if (!admitDirectory()) return false;
+    // A directory the walk cannot enter is one counted skip and its siblings are still walked: `true` means the walk goes on, `false`
+    // that it ended (a ceiling, or ignore rules it cannot apply).
     async function resolveDirectory(path: string): Promise<string | undefined> {
-      const resolved = await resolveInScope(path, inScope);
-      if (resolved === undefined || isSensitivePolicyReadPath(resolved, config.pathPolicy)) {
+      let resolved: string;
+      try {
+        resolved = await realpath(path);
+      } catch (error) {
+        // Queued and gone before it was entered: a vanished entry, by its errno; any other failure is one it could not read.
+        skipUnread(error);
+        return undefined;
+      }
+      if (!inScope(resolved) || isSensitivePolicyReadPath(resolved, config.pathPolicy)) {
         stats.unreadable++;
-        stats.incomplete = true;
         return undefined;
       }
       return resolved;
     }
     const resolved = await resolveDirectory(next.dir);
-    if (resolved === undefined) return false;
-    if (await checkNestedIgnore(resolved)) return false;
+    if (resolved === undefined) return true;
+    const nestedIgnore = await probeNestedIgnore(resolved);
+    if (nestedIgnore === undefined) {
+      // The probe is a `lstat` inside the directory: it fails where the directory cannot be searched, so nothing in it can be read.
+      stats.unreadable++;
+      return true;
+    }
+    if (nestedIgnore) {
+      stop('ignore');
+      return false;
+    }
     const atWorkspaceRoot = relative(workspaceRoot, resolved) === '';
     async function openDirectory(path: string) {
       try {
         return await opendir(path);
-      } catch {
-        stats.unreadable++;
-        stats.incomplete = true;
+      } catch (error) {
+        throwIfAborted(signal);
+        skipUnread(error);
         return undefined;
       }
     }
     const dir = await openDirectory(resolved);
-    if (dir === undefined) return false;
+    if (dir === undefined) return true;
     try {
       function matchCandidate(
         entry: import('node:fs').Dirent,
@@ -2050,14 +2111,27 @@ async function discover(
           return 'next';
         }
         if (entry.isDirectory()) return queueDirectory();
-        if (match === 'unmatched') return 'next';
-        const real = await realpath(candidate).catch(() => undefined);
-        if (real === undefined) {
-          stats.unreadable++;
-          stats.incomplete = true;
-          return 'stop';
+        // A link is never descended, so what is behind it is not read: it is counted, whatever its target (a directory, a file outside
+        // the scope, a protected path, nothing), and the count does not say which. The glob is matched against the link's own name,
+        // which says nothing about the files behind a directory link, so an unmatched link is still counted unless it leads to a file
+        // in the scope (the one case the walk reads as a file); its target is never opened or pinned (P1-2, PR #102).
+        const isLink = entry.isSymbolicLink();
+        if (match === 'unmatched') {
+          if (isLink && !(await linkLeadsToScopedFile(candidate))) stats.skippedSymlink++;
+          return 'next';
         }
-        if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) return 'next';
+        let real: string;
+        try {
+          real = await realpath(candidate);
+        } catch (error) {
+          if (isLink) stats.skippedSymlink++;
+          else skipUnread(error);
+          return 'next';
+        }
+        if (!inScope(real) || isSensitivePolicyReadPath(real, config.pathPolicy)) {
+          if (isLink) stats.skippedSymlink++;
+          return 'next';
+        }
         assertFsPolicyPath(config.pathPolicy, candidate, real);
         // The same vanish window, between the realpath above and the identity pin: skipped, never fatal.
         const realIdentity = await identityIfPresent(stat(real, { bigint: true }));
@@ -2066,13 +2140,17 @@ async function discover(
           return 'next';
         }
         stage.assertIdentity(realIdentity);
-        const info = await stat(real).catch(() => undefined);
-        if (info === undefined) {
-          stats.unreadable++;
-          stats.incomplete = true;
-          return 'stop';
+        let info: Stats;
+        try {
+          info = await stat(real);
+        } catch (error) {
+          skipUnread(error);
+          return 'next';
         }
-        if (!info.isFile()) return 'next';
+        if (!info.isFile()) {
+          if (isLink) stats.skippedSymlink++;
+          return 'next';
+        }
         if (stats.filesScanned >= (find !== undefined ? FIND_FILES : SCAN_FILES)) {
           stop('files');
           return 'stop';
@@ -2097,9 +2175,8 @@ async function discover(
           } catch (error) {
             throwIfAborted(signal);
             if (error instanceof FsStageInventoryError) throw error;
-            stats.unreadable++;
-            stats.incomplete = true;
-            return 'stop';
+            skipUnread(error);
+            return 'next';
           }
           if (skippedFileKind(checked)) return 'next';
           files.push({
@@ -2143,9 +2220,8 @@ async function discover(
               stop('bytes');
               return 'stop';
             }
-            stats.unreadable++;
-            stats.incomplete = true;
-            return 'stop';
+            skipUnread(error);
+            return 'next';
           } finally {
             // Failed decoding and skipped binary candidates have already consumed real I/O too.
             stats.bytesScanned = SCAN_BYTES - sourceBudget.remaining;
@@ -2213,7 +2289,7 @@ async function discover(
                 break;
               }
             }
-            if (stats.incomplete) return 'stop';
+            if (halted) return 'stop';
 
             return 'next';
           }
@@ -2231,7 +2307,7 @@ async function discover(
     return true;
   }
   async function walkDirectories(): Promise<void> {
-    while (stack.length > 0 && !stats.incomplete) {
+    while (stack.length > 0 && !halted) {
       throwIfAborted(signal);
       const next = stack.pop();
       if (next === undefined) break;
@@ -2240,10 +2316,18 @@ async function discover(
   }
   await walkDirectories();
   throwIfAborted(signal);
-  // A file inside the scope that the walk reached and did not read is not an absence, whatever the walk's own ceilings said. The walk's
-  // own `incomplete` stops it, so this is set only now: one oversized or hard-linked file must not end the search of the rest. Binary
-  // and invalid UTF-8 files stay out of this: the tool searches UTF-8 text (its description, built-in-tools.md), and counts the others.
-  if (stats.skippedOversize + stats.skippedHardLink + stats.skippedVanished > 0)
+  // A file inside the scope that the walk reached and did not read is not an absence, whatever the walk's own ceilings said. Only a
+  // ceiling or unsupported ignore input ends the walk (`halted`), so the skips are summed here, after it: one oversized, hard-linked or
+  // unreadable entry, or one link it did not follow, must not end the search of the rest. Binary and invalid UTF-8 files stay out of
+  // this: the tool searches UTF-8 text (its description, built-in-tools.md), and counts the others.
+  if (
+    stats.skippedOversize +
+      stats.skippedHardLink +
+      stats.skippedVanished +
+      stats.skippedSymlink +
+      stats.unreadable >
+    0
+  )
     stats.incomplete = true;
   if (find !== undefined) {
     files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

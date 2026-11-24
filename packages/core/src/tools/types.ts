@@ -160,11 +160,22 @@ export interface FsScanStats {
    * true. Absent from a host that does not report it.
    */
   readonly skippedVanished?: number;
+  /**
+   * Symbolic links the walk did not follow, whatever the reason: a link to a directory (the walk never descends one), to a target
+   * outside the authorized scope or protected, or to nothing. One count covers every case, so it never says which a target was. A
+   * link to a regular file inside the scope is read as that file and is not counted. Any is why `incomplete` is true. Absent from a
+   * host that does not report it.
+   */
+  readonly skippedSymlink?: number;
+  /**
+   * Files and directories the walk reached and could not read (a permission or I/O failure). Each is a counted skip: the walk goes on
+   * to the rest, so a result never stops at the first one. Any is why `incomplete` is true.
+   */
   readonly unreadable: number;
   /**
-   * True when the result is a partial answer: a ceiling stopped the walk (`limit` names it), or a file in scope was skipped without
-   * being read (`skippedOversize`, `skippedHardLink`, `skippedVanished` or `unreadable`). Binary and non-UTF-8 files are outside the
-   * search's text and only counted in `skippedBinary`. A skip-only partial result has no `limit`.
+   * True when the result is a partial answer: a ceiling stopped the walk (`limit` names it), or something in scope was passed over
+   * without being read (`skippedOversize`, `skippedHardLink`, `skippedVanished`, `skippedSymlink` or `unreadable`). Binary and
+   * non-UTF-8 files are outside the search's text and only counted in `skippedBinary`. A skip-only partial result has no `limit`.
    */
   readonly incomplete: boolean;
   readonly limit?: FsScanLimit;

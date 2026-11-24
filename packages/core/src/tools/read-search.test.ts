@@ -1,10 +1,15 @@
 import { unwiredEffectJournal } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { BUILTIN_TOOLS } from './builtins.js';
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
 import { createToolRegistry } from './registry.js';
 import type { FileRead, FsCapability, ToolDispatchContext, ToolHost } from './types.js';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 const source: FileRead = {
   content: 'observed',
@@ -109,6 +114,75 @@ describe('bounded file tools at the actual registry boundary', () => {
     );
     expect(outcome.output).toBe(result);
     expect(outcome.truncated).toBe(false);
+  });
+
+  // P1-8 (PR #102 review): the search reads one line at a time, so a pattern with a line break matches nothing, and a complete-looking
+  // "no match" would call a literal absent that was never looked for. The schema refuses it before the host is asked.
+  it.each([
+    ['LF', 'alpha\nbeta'],
+    ['CRLF', 'alpha\r\nbeta'],
+    ['lone CR', 'alpha\rbeta'],
+    ['a leading LF', '\nalpha'],
+    ['only a LF', '\n'],
+  ])('refuses a search pattern with a line break (%s) before host work', async (_name, pattern) => {
+    const searchFiles = vi.fn<NonNullable<FsCapability['searchFiles']>>(() =>
+      Promise.resolve({ matches: [], stats }),
+    );
+    const registry = createToolRegistry({
+      tools: BUILTIN_TOOLS,
+      host: { fs: filesystem({ searchFiles }) },
+    });
+    const refused = registry.dispatch(
+      { type: 'tool_call', id: 's', name: 'search_files', args: { pattern } },
+      context(),
+    );
+    await expect(refused).rejects.toBeInstanceOf(ToolArgsInvalidError);
+    await expect(refused).rejects.toMatchObject({ fields: ['pattern'] });
+    expect(searchFiles).not.toHaveBeenCalled();
+  });
+
+  it('names the reason in a fixed sentence and does not echo the pattern', () => {
+    const tool = BUILTIN_TOOLS.find((candidate) => candidate.id === 'search_files');
+    let thrown: unknown;
+    try {
+      tool?.parseArgs({ pattern: 'secret-line\nsecond' });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(z.ZodError);
+    const message = thrown instanceof z.ZodError ? (thrown.issues[0]?.message ?? '') : '';
+    expect(message).toMatch(/one line at a time/);
+    expect(JSON.stringify(thrown)).not.toContain('secret-line');
+  });
+
+  it.each(['alpha\tbeta', 'alpha\u2028beta', 'a line with spaces', '(a+)+$'])(
+    'still accepts a single-line pattern: %j',
+    async (pattern) => {
+      const searchFiles = vi.fn<NonNullable<FsCapability['searchFiles']>>(() =>
+        Promise.resolve({ matches: [], stats }),
+      );
+      const registry = createToolRegistry({
+        tools: BUILTIN_TOOLS,
+        host: { fs: filesystem({ searchFiles }) },
+      });
+      await registry.dispatch(
+        { type: 'tool_call', id: 's', name: 'search_files', args: { pattern } },
+        context(),
+      );
+      expect(searchFiles).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('tells the model, in the argument description, that the search is per line', () => {
+    const params = BUILTIN_TOOLS.find(
+      (candidate) => candidate.id === 'search_files',
+    )?.llmVisibleParams;
+    const properties: unknown = params?.['properties'];
+    const pattern: unknown = isRecord(properties) ? properties['pattern'] : undefined;
+    const description: unknown = isRecord(pattern) ? pattern['description'] : undefined;
+    const text = typeof description === 'string' ? description : '';
+    expect(text).toMatch(/one line at a time/);
+    expect(text).toMatch(/line break/);
   });
 
   it.each(['find_files', 'search_files'])('keeps the grant authoritative for %s', async (name) => {
