@@ -331,12 +331,19 @@ function readOtherProjects(
   return other;
 }
 
+/** `value` without its trailing path separators, by a scan from the end (a trailing-run regular expression backtracks over every run of separators). */
+function trimTrailingSeparators(value: string): string {
+  let end = value.length;
+  while (end > 0 && (value[end - 1] === '/' || value[end - 1] === '\\')) end -= 1;
+  return value.slice(0, end);
+}
+
 /**
  * A project root as a row may carry it: `~/…` when it lies under `homeDir`, otherwise only its last two segments behind `…/` (a root
  * outside the home is not abbreviated to a name that could be mistaken for a home path, and is never shown whole), scrubbed and bounded.
  */
 function projectLabel(root: string, homeDir: string | undefined): string {
-  const home = homeDir?.replace(/[\\/]+$/u, '');
+  const home = homeDir === undefined ? undefined : trimTrailingSeparators(homeDir);
   const rest = home === undefined || home === '' ? undefined : underHome(root, home);
   if (rest !== undefined) return scrubbedBounded(`~${rest}`, PROJECT_LABEL_MAX_CHARS);
   const tail = root

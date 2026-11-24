@@ -82,7 +82,7 @@ export class Segments {
   /** Class everything from the cursor up to `end` (exclusive). An `end` at or before the cursor adds nothing. */
   to(end: number, token: SyntaxToken): void {
     const limit = Math.min(end, this.source.length);
-    if (!(limit > this.cursor)) return; // also false for NaN, which `<=` would let through
+    if (!(limit > this.cursor)) return; // NOSONAR — S1940: the negation is deliberate, it is also true for NaN, which `<=` would let through
     const last = this.tokens.length - 1;
     if (last >= 0 && this.tokens[last] === token) this.ends[last] = limit;
     else {

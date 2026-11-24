@@ -5166,12 +5166,10 @@ class RunExecution {
       case 'agent:token':
       case 'agent:reasoning':
       case 'agent:file_patch_proposed':
-        this.#bus.emit({ ...event, runId });
-        return;
+      // `agent:tool_call` passes through without being recorded here: the node's `toolActivity` takes a call when it STARTS
+      // (`ctx.onToolStart`), because this event is emitted only after the dispatch returned and is dropped once the node is no
+      // longer live — a call still running at a deadline would leave no trace (ADR-0140 §4). Counting it here too would count it twice.
       case 'agent:tool_call':
-        // Not recorded here: the node's `toolActivity` takes a call when it STARTS (`ctx.onToolStart`), because this
-        // event is emitted only after the dispatch returned and is dropped once the node is no longer live — a call
-        // still running at a deadline would leave no trace (ADR-0140 §4). Counting it here too would count it twice.
         this.#bus.emit({ ...event, runId });
         return;
       // The result is what PAIRS with the call the start hook recorded (ADR-0140 §4). It is recorded AFTER the emit,

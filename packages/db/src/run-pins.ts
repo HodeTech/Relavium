@@ -161,7 +161,7 @@ export interface RunPinStore {
 const FORBIDDEN_TEXT = /(?![\u200c\u200d])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u;
 
 function validateKind(key: PinKey): void {
-  if (!PIN_KINDS.some((kind) => kind === key.kind)) {
+  if (!PIN_KINDS.includes(key.kind)) {
     throw new RunPinError('invalid_kind', 'a pin is a run or a workflow');
   }
 }
