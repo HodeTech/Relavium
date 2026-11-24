@@ -351,13 +351,19 @@ describe.skipIf(process.platform === 'win32')(
 
 // An entry that is listed and gone by the time it is opened is "vanished", not "unreadable": the cause is named by its errno (ENOENT),
 // so the model can tell a race from a permission problem. The cancellation signal is polled between the walk's steps, so removing the
-// entry from inside one poll opens the window deterministically; every poll position is tried, and none may fail the call.
+// entry from inside one poll opens the window deterministically; every poll position is tried (up to the walk's own last poll, which
+// depends on the Node version, since the runtime's own fs calls also read `signal.aborted`), and none may fail the call.
 describe('an entry that vanishes during the walk is a counted skip', () => {
   const SIBLING_BYTES = 'needle\n'.length;
+  /** A generous ceiling on the walk's polls (a tree this size polls about sixty times); reaching it fails the test. */
+  const MAX_POLL_POSITIONS = 600;
   function removingSignal(target: string, at: number) {
     const controller = new AbortController();
     let polls = 0;
     return {
+      get polls(): number {
+        return polls;
+      },
       get aborted(): boolean {
         if (++polls === at) rmSync(target, { recursive: true, force: true });
         return false;
@@ -370,7 +376,8 @@ describe('an entry that vanishes during the walk is a counted skip', () => {
   for (const kind of ['file', 'directory'] as const) {
     it(`counts a ${kind} removed after it was listed as vanished, never unreadable, and never hides its siblings`, async () => {
       let vanished = 0;
-      for (let at = 1; at <= 40; at++) {
+      let at = 1;
+      for (; at <= MAX_POLL_POSITIONS; at++) {
         const dir = await mkdtemp(join(root, 'run-'));
         await writeFile(join(dir, 'z.txt'), 'needle\n');
         // Three directories: the one the walk enters first is the one removed, so the others are only walked if a vanished
@@ -388,11 +395,8 @@ describe('an entry that vanishes during the walk is a counted skip', () => {
           workspaceDir: root,
           readOnly: true,
         });
-        const result = await fs.searchFiles?.(
-          dir,
-          { pattern: 'needle' },
-          removingSignal(target, at),
-        );
+        const signal = removingSignal(target, at);
+        const result = await fs.searchFiles?.(dir, { pattern: 'needle' }, signal);
         const paths = result?.matches.map((match) => match.path) ?? [];
         // Whatever was removed, the sibling file and the directories that were not removed are always read.
         const expected = [
@@ -414,7 +418,10 @@ describe('an entry that vanishes during the walk is a counted skip', () => {
           expect(result.stats.incomplete).toBe(true);
           expect(result.stats.limit).toBeUndefined();
         }
+        // The walk ended before this position: it removed nothing, and every position before it has been tried.
+        if (signal.polls < at) break;
       }
+      expect(at, 'the walk has a last poll').toBeLessThanOrEqual(MAX_POLL_POSITIONS);
       expect(vanished, 'some poll position lands between the listing and the open').toBeGreaterThan(
         0,
       );
