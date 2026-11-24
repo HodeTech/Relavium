@@ -1023,3 +1023,91 @@ describe('a cancel that lands while the engine prepares a resume never cancels t
     expect(runStatus(r.db, runId)).toBe('completed');
   });
 });
+
+describe('no microtask position of a cancel can cancel a parked run on the resume path (H1 commit point)', () => {
+  /**
+   * The depths the cancel is delayed by, in chained microtasks counted from the moment the engine is built. A behaviour-preserving
+   * refactor of the resume path moves every boundary by a microtask or two, so a pair of named positions (`before`, `inside`) cannot
+   * say that the commit point still holds: this sweeps the whole neighbourhood of it. Microtasks, not timers: every depth is the same
+   * position on every machine.
+   */
+  const DEPTHS = Array.from({ length: 17 }, (_, depth) => depth);
+
+  /** `then` runs after `depth` further microtasks (`0` is the very next one). */
+  function afterMicrotasks(depth: number, then: () => void): void {
+    let chain: Promise<void> = Promise.resolve();
+    for (let step = 0; step < depth; step += 1) chain = chain.then(() => undefined);
+    void chain.then(then);
+  }
+
+  /** A parked run, and a host whose NEXT engine, once built, has the flow's cancel fire `depth` microtasks later. */
+  async function parkedWithCancelAfter(depth: number) {
+    const controller = new AbortController();
+    let armed = false;
+    const r = rig({
+      buildEngine: async (options?: BuildEngineOptions) => {
+        const engine = await buildEngine(options);
+        if (armed) afterMicrotasks(depth, () => controller.abort());
+        return engine;
+      },
+    });
+    const runId = await park(r, GATED, `cancel-sweep-${String(depth)}.relavium.yaml`);
+    expect(runStatus(r.db, runId)).toBe('paused');
+    armed = true;
+    return { r, runId, controller };
+  }
+
+  it('whatever microtask the cancel lands on, the leg is stopped with the run parked, or it started and completed: never cancelled', async () => {
+    const outcomes: string[] = [];
+    for (const depth of DEPTHS) {
+      const { r, runId, controller } = await parkedWithCancelAfter(depth);
+      const where = `a cancel ${String(depth)} microtasks after the engine was built`;
+      const cancelledEvents = (): number =>
+        events(r.db, runId).filter((event) => event.type === 'run:cancelled').length;
+
+      const launch = await r.host.resume({
+        runId,
+        kind: 'human',
+        decision: approvalDecision(),
+        signal: controller.signal,
+      });
+      if (launch.kind === 'refused') {
+        expect(launch, `${where}: a refusal is a stop, nothing else`).toMatchObject({
+          reason: 'stopped',
+        });
+        expect(runStatus(r.db, runId), `${where}: a stopped leg leaves the run parked`).toBe(
+          'paused',
+        );
+        expect(cancelledEvents(), `${where}: run:cancelled was written`).toBe(0);
+        // The strongest form of "still answerable": the same answer, with no cancel, completes the run.
+        const again = await started(
+          r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
+        );
+        expect(again.terminal.disposition, `${where}: the parked run is still answerable`).toBe(
+          'completed',
+        );
+      } else {
+        expect(launch.kind, `${where}: a leg that was not stopped has started`).toBe('started');
+        const end = await started(launch);
+        expect(end.terminal.disposition, `${where}: the started leg ran to its end`).toBe(
+          'completed',
+        );
+      }
+      expect(controller.signal.aborted, `${where}: the cancel did land`).toBe(true);
+      expect(runStatus(r.db, runId), `${where}: the run ended answered, not cancelled`).toBe(
+        'completed',
+      );
+      expect(cancelledEvents(), `${where}: run:cancelled was written`).toBe(0);
+      expect(r.registry.activeOwners, `${where}: no owner is left registered`).toBe(0);
+      outcomes.push(launch.kind);
+    }
+
+    // The sweep means something only if it straddles the commit point: the early depths stop the leg, the late ones are too late.
+    expect(outcomes, 'some depth stopped the leg before the commit point').toContain('refused');
+    expect(outcomes, 'some depth landed after the commit point').toContain('started');
+    expect(
+      outcomes.indexOf('started'),
+      'every depth before the first started leg stopped it, and every later one started',
+    ).toBe(outcomes.lastIndexOf('refused') + 1);
+  }, 60_000);
+});

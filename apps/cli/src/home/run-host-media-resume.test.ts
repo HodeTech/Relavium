@@ -515,6 +515,92 @@ describe('a cancel that lands while the engine prepares a continue never cancels
   );
 });
 
+describe('no microtask position of a cancel can cancel a run parked on a media job on the continue path (H1 commit point)', () => {
+  /**
+   * The depths the cancel is delayed by, in chained microtasks counted from the moment the engine is built: the sweep of the human
+   * resume (`run-host-resume.test.ts`), over the continue. A refactor moves every boundary by a microtask or two, so two named
+   * positions cannot say that the commit point still holds. Microtasks, not timers: every depth is the same position on every machine.
+   */
+  const DEPTHS = Array.from({ length: 17 }, (_, depth) => depth);
+
+  it('whatever microtask the cancel lands on, the leg is stopped with the paid job untouched, or it started and fetched it: never cancelled', async () => {
+    const outcomes: string[] = [];
+    for (const depth of DEPTHS) {
+      const provider = jobProvider([DONE]);
+      const controller = new AbortController();
+      let armed = false;
+      const r = rig(provider, {
+        buildEngine: async (options?: BuildEngineOptions) => {
+          const host = options?.host;
+          // The re-attached job is first polled `pollInitialMs` (5 s) later on the engine's own timer: a sweep of seventeen legs cannot
+          // wait that out, so the continue's engine polls at once. Only a `work` timer (the poll) is shortened, the lease heartbeat is not.
+          const engine = await buildEngine(
+            !armed || host === undefined
+              ? options
+              : {
+                  ...options,
+                  host: {
+                    ...host,
+                    setTimer: (ms, onFire, kind) =>
+                      host.setTimer(kind === 'liveness' ? ms : 0, onFire, kind),
+                  },
+                },
+          );
+          if (armed) {
+            let chain: Promise<void> = Promise.resolve();
+            for (let step = 0; step < depth; step += 1) chain = chain.then(() => undefined);
+            void chain.then(() => {
+              controller.abort();
+            });
+          }
+          return engine;
+        },
+      });
+      const runId = await park(r, MEDIA_ONLY, `cancel-sweep-${String(depth)}.relavium.yaml`);
+      expect(runStatus(runId), 'the run is parked on its job').toBe('paused');
+      armed = true;
+      const where = `a cancel ${String(depth)} microtasks after the engine was built`;
+      const cancelledEvents = (): number =>
+        eventsOf(runId).filter((event) => event.type === 'run:cancelled').length;
+
+      const launch = await r.host.resume({ kind: 'media', runId, signal: controller.signal });
+      if (launch.kind === 'refused') {
+        expect(launch, `${where}: a refusal is a stop, nothing else`).toMatchObject({
+          reason: 'stopped',
+        });
+        expect(runStatus(runId), `${where}: a stopped leg leaves the run parked`).toBe('paused');
+        expect(cancelledEvents(), `${where}: run:cancelled was written`).toBe(0);
+        expect(provider.polled(), `${where}: a stopped leg never asked about the job`).toEqual([]);
+        // The strongest form of "still continuable": the same continue, with no cancel, fetches the job.
+        const again = await started(r.host.resume({ kind: 'media', runId }));
+        expect(again.terminal.disposition, `${where}: the parked run is still continuable`).toBe(
+          'completed',
+        );
+      } else {
+        expect(launch.kind, `${where}: a leg that was not stopped has started`).toBe('started');
+        const end = await started(launch);
+        expect(end.terminal.disposition, `${where}: the started leg ran to its end`).toBe(
+          'completed',
+        );
+      }
+      expect(controller.signal.aborted, `${where}: the cancel did land`).toBe(true);
+      expect(runStatus(runId), `${where}: the run ended fetched, not cancelled`).toBe('completed');
+      expect(provider.polled(), `${where}: the paid job was fetched, once`).toEqual(['job-1']);
+      expect(cancelledEvents(), `${where}: run:cancelled was written`).toBe(0);
+      expect(r.registry.activeOwners, `${where}: no owner is left registered`).toBe(0);
+      outcomes.push(launch.kind);
+    }
+
+    // The sweep means something only if it straddles the commit point: the early depths stop the leg, the late ones are too late.
+    expect(outcomes, 'some depth stopped the leg before the commit point').toContain('refused');
+    expect(outcomes, 'some depth landed after the commit point').toContain('started');
+    expect(
+      outcomes.indexOf('started'),
+      'every depth before the first started leg stopped it, and every later one started',
+    ).toBe(outcomes.lastIndexOf('refused') + 1);
+  }, 60_000);
+});
+
 describe('a continue is refused before an engine, a key or a card', () => {
   it('for a run that also waits on a human gate: it needs a decision, and the gate stays answerable', async () => {
     const provider = jobProvider([DONE]);
