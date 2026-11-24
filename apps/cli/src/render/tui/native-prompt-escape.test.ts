@@ -13,6 +13,7 @@ import {
   createNativePromptChannel,
   NATIVE_PROMPT_BACK,
   NATIVE_PROMPT_CANCEL,
+  NATIVE_PROMPT_INPUT_LIMIT,
 } from './native-prompt-channel.js';
 
 const none: Key = {
@@ -214,4 +215,55 @@ describe('the default is unchanged', () => {
       }
     }
   });
+});
+
+describe('the sentence a refused paste leaves names the keys that work, and each one does (ADR-0145 §3)', () => {
+  const backspace: Key = { ...none, backspace: true };
+  const refusals = [
+    ['a control character', 'a\u0001b', 'Input contains unsupported control characters'],
+    ['more than the limit', 'x'.repeat(NATIVE_PROMPT_INPUT_LIMIT + 1), 'Input is too long'],
+  ] as const;
+
+  it.each(refusals)(
+    '%s, where Esc ends the flow: Backspace edits, Esc closes',
+    async (_, text, reason) => {
+      const edited = fixture();
+      const field = edited.flow.text({ message: 'Name' });
+      edited.ui.paste(text);
+      expect(edited.ui.getSnapshot().error).toBe(`${reason} · Backspace edit · Esc close`);
+      // Backspace is the one key that takes the refusal away, and typing resumes where it left off.
+      edited.ui.input('', backspace);
+      expect(edited.ui.getSnapshot().error).toBe('');
+      edited.ui.paste('ok');
+      edited.ui.input('', enter);
+      expect(await field).toBe('ok');
+
+      const closed = fixture();
+      const second = closed.flow.text({ message: 'Name' });
+      closed.ui.paste(text);
+      closed.ui.input('', esc);
+      expect(await second).toBe(NATIVE_PROMPT_CANCEL);
+    },
+  );
+
+  it.each(refusals)(
+    '%s, where Esc steps back: Esc back, Ctrl+C closes',
+    async (_, text, reason) => {
+      const stepped = fixture();
+      const field = stepped.flow.password({ message: 'Token', escape: 'back' });
+      stepped.ui.paste(text);
+      expect(stepped.ui.getSnapshot().error).toBe(
+        `${reason} · Backspace edit · Esc back · [Ctrl+C] close`,
+      );
+      stepped.ui.input('', esc);
+      expect(await field).toBe(NATIVE_PROMPT_BACK);
+
+      const left = fixture();
+      const second = left.flow.password({ message: 'Token', escape: 'back' });
+      left.ui.paste(text);
+      left.ui.input(...ctrlC());
+      expect(await second).toBe(NATIVE_PROMPT_CANCEL);
+      expect(left.ui.signal()?.aborted).toBe(true);
+    },
+  );
 });

@@ -14,7 +14,7 @@ import {
  * The `/permissions` sheet ([ADR-0137](../../../../../docs/decisions/0137-permissions-is-a-sheet-and-esc-steps-back-out-of-the-full-view.md) §2)
  * — a PURE ink view over {@link permissionsSheetLines}. It owns no `useInput`: the host routes keys to `foldPermissionsSheetKey` and
  * re-renders this from the resulting state, as it does for the model picker. Every state the colour shows also has a word or a glyph (the
- * `›` marker, the `[d]` and `[Enter]` brackets, the `✓`/`✗` of an answer, the `▲`/`▼` markers), so the sheet reads the same with colour
+ * `›` marker, the `[d]` and `Enter` chips, the `✓`/`✗` of an answer, the `▲`/`▼` markers), so the sheet reads the same with colour
  * off (ADR-0122 §7.2).
  */
 export interface PermissionsSheetViewProps {

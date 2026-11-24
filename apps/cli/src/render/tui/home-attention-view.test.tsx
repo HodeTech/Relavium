@@ -100,7 +100,7 @@ describe('the hint bar on a focused input gate', () => {
       focus: 'in-run',
       color: false,
     });
-    expect(hint(input)).toContain('↑/↓ select · Enter shows how · Esc return to prompt');
+    expect(hint(input)).toContain('↑/↓ select · Enter show how · Esc return to prompt');
     expect(hint(input).length, 'it fits 80 columns').toBeLessThanOrEqual(80);
     const approval = frameOf([{ runId: 'ap-run', kind: 'approval', gates: 1 }], {
       focus: 'ap-run',

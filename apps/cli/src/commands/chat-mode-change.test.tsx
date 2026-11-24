@@ -45,7 +45,7 @@ afterEach(async () => {
 describe('the chat mode control while a turn runs (D6)', () => {
   it('names the notice the way the card names Esc', () => {
     expect(MODE_CHANGE_RUNNING_NOTICE).toBe(
-      'Mode changes apply between turns — Esc stops the running turn.',
+      'Mode changes apply between turns \u00b7 Esc stops the running turn',
     );
   });
 

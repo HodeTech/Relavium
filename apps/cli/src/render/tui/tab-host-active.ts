@@ -1,7 +1,7 @@
 import { STALLED_REASON, type ActiveRow } from '../../history/active-model.js';
 import type { ActiveRead } from '../../history/active-source.js';
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import { keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -98,16 +98,16 @@ export type ActiveStep =
 export const ACTIVE_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   open: { keys: 'Enter', verb: 'open' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 export const ACTIVE_LOADING = 'Reading the active runs…';
 export const ACTIVE_UNREADABLE = 'The active runs could not be read.';
-export const ACTIVE_EMPTY = 'No run is active. Start one from the Defined tab with r.';
+export const ACTIVE_EMPTY = `No run is active. Start one from the Defined tab with ${keyToken('r')}.`;
 export const ACTIVE_FRESHNESS = 'Shown as of each node boundary: streamed output is not stored.';
 export const ACTIVE_HELD_UNREAD = 'Outbox unreadable: a run whose end is held may show as running.';
 export const ACTIVE_STALE_READ = 'The runs could not be read again: this is the last list read.';
-export const ACTIVE_FOCUS_LEFT = 'The run you had selected left the list. ↑/↓ select another.';
-export const ACTIVE_SELECT_FIRST = 'No run is selected. ↑/↓ select one.';
+export const ACTIVE_FOCUS_LEFT = `The run you had selected left the list. ${keyToken('↑/↓')} select another.`;
+export const ACTIVE_SELECT_FIRST = `No run is selected. ${keyToken('↑/↓')} select one.`;
 
 const clamp = (value: number, last: number): number => Math.max(0, Math.min(value, last));
 
@@ -189,16 +189,16 @@ export function withActiveMessage(state: ActiveTabState, message: string): Activ
 function explain(row: ActiveRow): string {
   switch (row.class) {
     case 'hosted':
-      return 'This Home runs it. Enter reopens its view.';
+      return `This Home runs it. ${keyToken('Enter')} reopens its view.`;
     case 'other-paused-here':
-      return 'Waiting at a gate in this project. Enter opens the gate card.';
+      return `Waiting at a gate in this project. ${keyToken('Enter')} opens the gate card.`;
     case 'other-running':
       return row.stalled
         ? `No live owner: ${STALLED_REASON}. Read-only.`
         : 'Running in another process: read-only. There is no cross-process cancel.';
     case 'other-paused-media':
       return row.actionable
-        ? 'Waiting for a media job. Enter asks whether to continue it here.'
+        ? `Waiting for a media job. ${keyToken('Enter')} asks whether to continue it here.`
         : 'Waiting for a media job: there is nothing to decide here.';
     case 'paused-gate-unknown':
       return 'Its gate state could not be read. relavium status shows what it waits for.';
@@ -352,12 +352,11 @@ export function activeBody(
   return [...list, ...beyond, detail, footer];
 }
 
-/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). */
+/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). The key that leaves is the host's. */
 export function activeLegendItems(
   state: ActiveTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.phase !== 'ready' || state.rows.length === 0) return [...tabItems, closeItem];
-  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open, closeItem];
+  if (state.phase !== 'ready' || state.rows.length === 0) return tabItems;
+  return [...tabItems, ACTIVE_KEYS.select, ACTIVE_KEYS.open];
 }

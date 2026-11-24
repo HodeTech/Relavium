@@ -1,13 +1,17 @@
 import { legendStates, plainRows, styledRows } from '../frames.js';
 import { label, type Producer, type Recorder } from '../golden.js';
-import { sourceLiteral } from '../source-literal.js';
 import type { ModelCatalogEntry } from '@relavium/llm';
 import type { ReactElement } from 'react';
 
 import { providerDisplayName } from '../../../../engine/providers.js';
-import { EffortTierList } from '../../effort-tier-list.js';
-import { ModelPickerView, type ModelPickerScope } from '../../model-picker-view.js';
+import { EFFORT_OVERLAY_FOOTER, EffortTierList } from '../../effort-tier-list.js';
+import {
+  EFFORT_STEP_FOOTER,
+  ModelPickerView,
+  type ModelPickerScope,
+} from '../../model-picker-view.js';
 import type { ModelPickerState } from '../../model-picker.js';
+import { PICKER_READ_FAILED } from '../../native-picker.js';
 import { createNativePromptAcknowledgement } from '../../native-prompt-acknowledgement.js';
 import {
   createNativePromptChannel,
@@ -214,9 +218,8 @@ const SESSIONS: readonly NativePromptOption[] = [
   { value: 'session-2', label: 'Untitled — agent · 1d ago' },
 ];
 
-/** The text of the picker's `error` for a read that failed, as `native-picker.ts` writes it (the source literal: the read is a promise). */
-const pickerUnavailable = (): string =>
-  sourceLiteral('render/tui/native-picker.ts', 'Session history could not be read');
+/** The text of the picker's `error` for a read that failed, as `native-picker.ts` writes it (its constant: the read is a promise). */
+const pickerUnavailable = (): string => PICKER_READ_FAILED;
 
 /** Every kind of card, by escape, windowed, picker state, size and colour. */
 const nativePromptView: Recorder = () => {
@@ -511,12 +514,9 @@ const modelPickerView: Recorder = () => {
 const effortTierList: Recorder = () => {
   const out: Record<string, readonly string[]> = {};
   const callers = [
-    ['chat-ink overlay', sourceLiteral('render/tui/chat-ink.tsx', '↑/↓ select · Enter apply')],
-    ['home-app overlay', sourceLiteral('render/tui/home-app.tsx', '↑/↓ select · Enter apply')],
-    [
-      'model-picker sub-step',
-      sourceLiteral('render/tui/model-picker-view.tsx', '↑/↓ select · Enter apply'),
-    ],
+    ['chat-ink overlay', EFFORT_OVERLAY_FOOTER],
+    ['home-app overlay', EFFORT_OVERLAY_FOOTER],
+    ['model-picker sub-step', EFFORT_STEP_FOOTER],
   ] as const;
   for (const [caller, footer] of callers) {
     Object.assign(
@@ -543,12 +543,12 @@ const effortTierList: Recorder = () => {
 
 /** The standalone `/effort` overlay's footer in a stand-alone chat: an inline literal of the chat host, passed whole. */
 const chatEffortOverlay: Recorder = () => ({
-  'footer (source literal)': sourceLiteral('render/tui/chat-ink.tsx', '↑/↓ select · Enter apply'),
+  'footer (source literal)': EFFORT_OVERLAY_FOOTER,
 });
 
 /** The standalone `/effort` overlay's footer in a chat the Home hosts: an inline literal of the Home host, passed whole. */
 const homeEffortOverlay: Recorder = () => ({
-  'footer (source literal)': sourceLiteral('render/tui/home-app.tsx', '↑/↓ select · Enter apply'),
+  'footer (source literal)': EFFORT_OVERLAY_FOOTER,
 });
 
 export const PROMPTS_PRODUCERS: readonly Producer[] = [

@@ -189,6 +189,7 @@ import { nearestCommandName } from './command-typo.js';
 import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
 import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
+import { keyToken } from './legend.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
 import { looksLikeProviderKey } from '../provider-key-shape.js';
 import { sanitizeInline } from '../sanitize.js';
@@ -818,6 +819,21 @@ function failureLine(error: unknown): string {
   return characters.length <= FAILURE_NOTICE_MAX
     ? line
     : `${characters.slice(0, FAILURE_NOTICE_MAX).join('')}…`;
+}
+
+/**
+ * What a chat the Home hosts answers a near miss of `/providers` with: the keys are managed from the Home, and `Ctrl+C` twice is the way back
+ * to it. A sentence that names a key writes it by the legend's bracket rule ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §3);
+ * exported so the legend golden records the sentence the controller shows, not a copy of it.
+ */
+export const PROVIDER_KEYS_AT_THE_HOME = `Provider keys are managed from the Home: go back to it (${keyToken('Ctrl+C')} twice) and use /providers.`;
+
+/** The remedy a model the key of its provider does not cover names in a chat the Home hosts, where `/providers` itself answers with a pointer only. */
+export const PICKER_NO_KEY_REMEDY_IN_A_CHAT = ` — go back to the Home (${keyToken('Ctrl+C')} twice) and use /providers`;
+
+/** What the `/models` picker says when the model chosen is the one the chat already runs on: the picker stays open. */
+export function alreadyOnModelHint(displayName: string): string {
+  return `Already on ${displayName} — pick a different model or ${keyToken('Esc')}.`;
 }
 
 /** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
@@ -2578,10 +2594,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({ input: emptyEditor() });
     if (state.session === undefined)
       set({ notice: 'Use /providers to connect or manage provider keys.' });
-    else
-      state.session.store.notice(
-        'Provider keys are managed from the Home: go back to it (Ctrl+C twice) and use /providers.',
-      ); // the channel the chat's own dispatch answers through, as the pointer above
+    else state.session.store.notice(PROVIDER_KEYS_AT_THE_HOME); // the channel the chat's own dispatch answers through, as the pointer above
   };
 
   /**
@@ -3015,7 +3028,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           : {
               modelPicker: {
                 ...open,
-                hint: `Already on ${displayName} — pick a different model or Esc.`,
+                hint: alreadyOnModelHint(displayName),
               },
             },
       );
@@ -3067,7 +3080,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             ? ''
             : state.session === undefined
               ? ' — open /providers to connect a key'
-              : ' — go back to the Home (Ctrl+C twice) and use /providers';
+              : PICKER_NO_KEY_REMEDY_IN_A_CHAT;
         const hint =
           step.reason === 'no-key'
             ? `${step.displayName}: no key for ${providerDisplayName(step.provider)}${noKeyRemedy}`

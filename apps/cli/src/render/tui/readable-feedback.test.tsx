@@ -175,7 +175,7 @@ describe('MVP-2 truthful feedback', () => {
       const frame = stripTerminalControls(capture.lastFrame() ?? '');
       expect(frame).toContain('**literal**');
       expect(frame.includes('│')).toBe(color);
-      expect(frame).toContain('Esc to stop');
+      expect(frame).toContain('Esc stops the turn');
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
       store.apply({
         ...stamp,

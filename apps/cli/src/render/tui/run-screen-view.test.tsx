@@ -139,7 +139,7 @@ describe('at 80×24', () => {
     expect(frame).toContain('streamed line 3');
     expect(frame).toContain('note: a withheld-effort warning');
     expect(frame).toContain('note: an unpriced-model warning');
-    expect(lines.at(-1)).toBe('Ctrl+C twice cancels the run · Esc leaves it running');
+    expect(lines.at(-1)).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
     expect(lines.length, 'never more than the terminal less one row').toBeLessThanOrEqual(23);
   });
 
@@ -153,7 +153,7 @@ describe('at 80×24', () => {
     const lines = linesOf(frame);
     expect(lines.length).toBeLessThanOrEqual(23);
     expect(lines[0]).toBe('▶ running  ·  run run-0001');
-    expect(lines.at(-1)).toBe('Ctrl+C twice cancels the run · Esc leaves it running');
+    expect(lines.at(-1)).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
     // The newest of the output and its cost footer stay; the oldest node rows are what scrolled off the top.
     expect(frame).toContain('node-39');
     expect(frame).toContain('streamed line 3');
@@ -179,18 +179,18 @@ describe('at 80×24', () => {
     const frame = lastFrame() ?? '';
     expect(frame).toContain('No live output for this view.');
     expect(frame).toContain('note: a notice');
-    expect(frame).toContain('Ctrl+C twice cancels the run');
+    expect(frame).toContain('[Ctrl+C] cancel the run (twice)');
   });
 
   it('says that one more Ctrl+C cancels once the keymap is armed, and that the leg is stopping once it is cancelling', () => {
     expect(view({ armed: true }).lastFrame()).toContain(
-      'Ctrl+C again cancels the run · Esc leaves it running',
+      '[Ctrl+C] cancel the run (again) · Esc leaves it running',
     );
     const stopping = view({ hostedRun: running(true), armed: true }).lastFrame() ?? '';
     expect(stopping).toContain('■ cancelling  ·  run run-0001');
     expect(stopping).toContain('Cancelling · the run stops at its next safe point (up to 10 s)');
     expect(stopping).toContain('Waiting for the run to stop · Esc leaves the view');
-    expect(stopping).not.toContain('Ctrl+C again');
+    expect(stopping).not.toContain('[Ctrl+C] cancel the run');
   });
 
   it('shows the disposition card under the output once the leg has ended, within the same bounds', () => {
@@ -215,9 +215,9 @@ describe('at 80×24', () => {
     expect(frame).toContain('Run run-0001 failed.');
     expect(frame).toContain('Read `relavium logs run-0001`');
     expect(frame).toContain('Reason: the provider refused');
-    expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
+    expect(lines.at(-1)).toBe('Esc / [Ctrl+C] close');
     expect(lines.length).toBeLessThanOrEqual(23);
-    expect(frame).not.toContain('Ctrl+C twice cancels');
+    expect(frame).not.toContain('[Ctrl+C] cancel the run');
   });
 });
 
@@ -234,7 +234,7 @@ describe('the card is the end of a leg', () => {
       }).lastFrame() ?? '';
     expect(linesOf(frame)[0]).toBe('▶ running  ·  run run-0001  ·  resumed');
     expect(frame).not.toContain('Open the run to continue it.');
-    expect(frame).not.toContain('Esc / Ctrl+C close');
+    expect(frame).not.toContain('Esc / [Ctrl+C] close');
   });
 });
 
@@ -307,7 +307,7 @@ describe('below 80×24', () => {
       expect(lines[0]).toBe(
         `Terminal too small (${String(columns)}×${String(rows)}) — resize to at least 80×24.`,
       );
-      expect(lines[1]).toBe('Ctrl+C twice cancels the run · Esc leaves it running');
+      expect(lines[1]).toBe('[Ctrl+C] cancel the run (twice) · Esc leaves it running');
       expect(lastFrame()).not.toContain('node-00');
       expect(lastFrame()).not.toContain('note:');
     },
@@ -315,12 +315,12 @@ describe('below 80×24', () => {
 
   it('says that one more press cancels once armed: the person cannot see anything else, so the line must say so', () => {
     const { lastFrame } = view({ columns: 60, rows: 20, armed: true });
-    expect(lastFrame()).toContain('Ctrl+C again cancels the run');
+    expect(lastFrame()).toContain('[Ctrl+C] cancel the run (again)');
   });
 
-  it('a settled run below the minimum reads "Esc / Ctrl+C close"', () => {
+  it('a settled run below the minimum reads "Esc / [Ctrl+C] close"', () => {
     const { lastFrame } = view({ columns: 60, rows: 20, hostedRun: settled(ended('completed')) });
-    expect(linesOf(lastFrame()).at(-1)).toBe('Esc / Ctrl+C close');
+    expect(linesOf(lastFrame()).at(-1)).toBe('Esc / [Ctrl+C] close');
   });
 
   it.each([
@@ -341,7 +341,7 @@ describe('below 80×24', () => {
         });
         const lines = linesOf(lastFrame());
         expect(lines).toHaveLength(2);
-        expect(lines[1], 'Enter is not delivered here').toMatch(/^Esc \/ Ctrl\+C close/u);
+        expect(lines[1], 'Enter is not delivered here').toMatch(/^Esc \/ \[Ctrl\+C\] close/u);
         expect(lastFrame()).not.toContain('Enter');
         for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(columns);
       }
@@ -356,8 +356,8 @@ describe('below 80×24', () => {
         hostedRun: settled(ended('paused', 'Open the run to continue it.')),
         openGate: true,
       }).lastFrame() ?? '';
-    expect(linesOf(at(80, 24)).at(-1)).toBe('Enter opens the gate · Esc / Ctrl+C close');
-    expect(linesOf(at(79, 24)).at(-1)).toBe('Esc / Ctrl+C close');
+    expect(linesOf(at(80, 24)).at(-1)).toBe('Enter open the gate · Esc / [Ctrl+C] close');
+    expect(linesOf(at(79, 24)).at(-1)).toBe('Esc / [Ctrl+C] close');
   });
 });
 
@@ -456,12 +456,12 @@ describe.each([
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('note: a departure diagnostic');
     expect(frame).toContain('streamed line 3');
-    expect(frame).not.toContain('Ctrl+C twice to exit');
+    expect(frame).not.toContain('[Ctrl+C] exit (twice)');
     expect(linesOf(frame).length).toBeLessThanOrEqual(23);
 
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().interruptArmed);
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+C again cancels the run'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+C] cancel the run (again)'));
     expect(cancel, 'the first press only arms').not.toHaveBeenCalled();
 
     harness.stdin.write(CTRL_C);
@@ -483,7 +483,7 @@ describe.each([
     await vi.waitFor(() => expect(harness.lastFrame()).toContain('▶ run-0001'), {
       timeout: WAIT_MS,
     });
-    expect(harness.lastFrame()).toContain('Ctrl+C twice to exit');
+    expect(harness.lastFrame()).toContain('[Ctrl+C] exit (twice)');
     expect(cancel).not.toHaveBeenCalled();
     harness.stdin.write('\r');
     await waitFor(() => controller.getSnapshot().screen !== undefined);
@@ -503,7 +503,7 @@ describe.each([
       size: { cols: 60, rows: 20 },
     });
     await waitFor(() => (harness.lastFrame() ?? '').includes('Terminal too small (60×20)'));
-    expect(harness.lastFrame()).toContain('Ctrl+C twice cancels the run');
+    expect(harness.lastFrame()).toContain('[Ctrl+C] cancel the run (twice)');
     harness.stdin.write('x');
     await settleFrames();
     expect(
@@ -512,7 +512,7 @@ describe.each([
     ).toBeDefined();
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().interruptArmed);
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+C again cancels the run'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+C] cancel the run (again)'));
     expect(cancel).not.toHaveBeenCalled();
     harness.stdin.write(ESC);
     await vi.waitFor(() => expect(controller.getSnapshot().screen).toBeUndefined(), {

@@ -11,7 +11,7 @@ import { HomeView } from './home-view.js';
  */
 const CYAN = '\x1b[36m';
 const DIM = '\x1b[2m';
-const LINE = 'No provider key yet · Enter to connect · /providers';
+const LINE = 'No provider key yet · Enter connect · /providers';
 
 function rowOf(color: boolean, needle: string): string {
   const view = render(
@@ -54,7 +54,7 @@ describe('the keyless line colour', () => {
   });
 
   it('leaves the hint under the prompt dim, so the call to action is the louder of the two', () => {
-    const hint = rowOf(true, 'Enter to connect a provider');
+    const hint = rowOf(true, 'Enter connect a provider');
     expect(hint).toContain(DIM);
     expect(hint).not.toContain(CYAN);
   });

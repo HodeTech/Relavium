@@ -123,7 +123,7 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
         expect(h.frame('doctor:')).toContain('> Saved conversation 0');
-        expect(h.frame('doctor:')).toContain('No provider key yet · Enter to connect');
+        expect(h.frame('doctor:')).toContain('No provider key yet · Enter connect');
         expect(h.frame('doctor:')).toContain('PgUp/PgDn');
         expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);
         // Coalesced page keys reduce against the live page, without submitting or moving Continue focus.

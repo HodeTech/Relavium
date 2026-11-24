@@ -385,12 +385,14 @@ describe('the key ladder (ADR-0137 §2)', () => {
 
 describe('the legend and the handler (ADR-0137 §5)', () => {
   it('names every key the handler answers to, in the grammar: dim separators, leaving key last', () => {
-    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · [d / Del] withdraw · Esc close');
-    expect(SHEET_LEGEND_ARMED).toBe('[Enter] withdraw · Esc keep');
+    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(SHEET_LEGEND_ARMED).toBe('Enter withdraw · Esc keep');
     expect(SHEET_LEGEND_EMPTY).toBe('Esc close');
-    expect(SHEET_LEGEND_IDLE.endsWith(`${SHEET_KEYS.close.keys} ${SHEET_KEYS.close.verb}`)).toBe(
-      true,
-    );
+    expect(SHEET_LEGEND_IDLE.endsWith('Esc close')).toBe(true);
+    expect(SHEET_KEYS.close).toMatchObject({ keys: 'Esc', verb: 'close' });
+    // the key that leaves says its effect through the builder's classes: `Esc close` changes nothing, `Esc keep` goes one level back
+    expect(SHEET_KEYS.close.class).toBe('close');
+    expect(SHEET_KEYS.keep.class).toBe('step');
   });
 
   it('every item the legend promises does what its verb says, pressed on a real state', () => {
@@ -520,7 +522,7 @@ describe('what is drawn', () => {
   it('says what to do when nothing is remembered, per surface, and that nothing is approved for the session', () => {
     const chat = texts(open(snapshot([], []))).join(' ');
     expect(chat).toContain(
-      'Nothing is remembered for this project. Press Ctrl+O on a command card, then Enter, to remember one.',
+      'Nothing is remembered for this project. Press [Ctrl+O] on a command card, then Enter, to remember one.',
     );
     expect(chat).toContain('Nothing is approved for this session.');
     // `plan` has no cards, so it has nothing to point at.
@@ -529,7 +531,7 @@ describe('what is drawn', () => {
     expect(plan).not.toContain('Ctrl+O');
     const bare = texts(open(projectOnly([]), 'project', undefined));
     expect(bare.join(' ')).toMatch(
-      /A command is remembered from its card in a chat \(Ctrl\+O, then Enter\)\./u,
+      /A command is remembered from its card in a chat \(\[Ctrl\+O\], then Enter\)\./u,
     );
   });
 
@@ -680,10 +682,7 @@ describe('what is drawn', () => {
     const lines = permissionsSheetLines(open(TWO_AND_ONE), { columns: 60, terminalRows: 20 });
     const text = lines.map((line) => line.text);
     expect(text[0]).toMatch(/^─ Permissions · ask mode ─+$/u);
-    expect(text.slice(1)).toEqual([
-      'Enlarge the terminal to use this screen — Esc closes.',
-      'Esc close',
-    ]);
+    expect(text.slice(1)).toEqual(['Enlarge the terminal to use this screen.', 'Esc close']);
   });
 });
 
@@ -870,12 +869,12 @@ describe('the action is on the row it acts on, and every answer says how it went
     }
   });
 
-  it('says `[Enter] withdraw` on the armed row, in attention, and draws the row as armed', () => {
+  it('says `Enter withdraw` on the armed row, in attention, and draws the row as armed', () => {
     const armed = lineOf(armedAt(), 'armed');
-    expect(armed?.text).toContain('[Enter] withdraw');
+    expect(armed?.text).toContain('Enter withdraw');
     expect(armed?.text).not.toContain('[d]');
-    const key = armed?.text.indexOf('[Enter]') ?? -1;
-    expect(armed?.spans?.[0]).toEqual({ from: key, to: key + 7, role: 'warn' });
+    const key = armed?.text.indexOf('Enter withdraw') ?? -1;
+    expect(armed?.spans?.[0]).toEqual({ from: key, to: key + 5, role: 'warn' });
     expect(lineOf(armedAt(), 'selected')).toBeUndefined();
   });
 
@@ -883,19 +882,19 @@ describe('the action is on the row it acts on, and every answer says how it went
     const hint = (state: PermissionsSheetState): string | undefined => lineOf(state, 'hint')?.text;
     const snap = snapshot([project('a')], [session('git status'), session('npm test', true)]);
     expect(hint(open(snap))).toBe(
-      'Press d to withdraw it: auto mode will ask about this command again.',
+      'Press [d] to withdraw it: auto mode will ask about this command again.',
     );
     expect(hint({ ...open(snap), cursor: 1 })).toBe(
-      'Press d to withdraw it: this command will need approval again.',
+      'Press [d] to withdraw it: this command will need approval again.',
     );
     expect(hint({ ...open(snap), cursor: 2 })).toBe(
-      'Press d to withdraw the session approval; the project still remembers it.',
+      'Press [d] to withdraw the session approval; the project still remembers it.',
     );
-    // the key in the hint is the one thing on it that is not dimmed
+    // the key in the hint (with its bracket) is the one thing on it that is not dimmed
     expect(lineOf(open(snap), 'hint')?.spans).toEqual([
       { from: 0, to: 6, role: 'dim' },
-      { from: 6, to: 7, role: 'danger' },
-      { from: 7, to: hint(open(snap))?.length ?? 0, role: 'dim' },
+      { from: 6, to: 9, role: 'danger' },
+      { from: 9, to: hint(open(snap))?.length ?? 0, role: 'dim' },
     ]);
   });
 
@@ -930,8 +929,8 @@ describe('the action is on the row it acts on, and every answer says how it went
   });
 
   it('names the keys in the legend by their role: the action in danger, the confirmation in attention, the rest emphasised', () => {
-    expect(SHEET_KEYS.withdraw).toMatchObject({ keys: '[d / Del]', role: 'danger' });
-    expect(SHEET_KEYS.confirm).toMatchObject({ keys: '[Enter]', role: 'warn' });
+    expect(SHEET_KEYS.withdraw).toMatchObject({ keys: ['d', 'Del'], role: 'danger' });
+    expect(SHEET_KEYS.confirm).toMatchObject({ keys: 'Enter', role: 'warn' });
     const legendLine = permissionsSheetLines(open(TWO_AND_ONE), geometry).at(-1);
     const roles = legendLine?.spans?.filter((span) => span.role !== 'dim').map((span) => span.role);
     expect(roles).toEqual(['strong', 'danger', 'strong']);

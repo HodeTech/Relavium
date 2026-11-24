@@ -14,7 +14,7 @@ import {
   gateLabel,
   homeFitsTerminal,
   homeIsEmpty,
-  HOSTED_RUN_ENTER_CUE,
+  HOSTED_RUN_ENTER_ITEM,
   hostedRunCanBeShown,
   hostedRunLabel,
   runLabel,
@@ -30,6 +30,15 @@ import {
   type ParkedRunKind,
   type ParkedRunRow,
 } from './home-attention.js';
+import {
+  exitKey,
+  fitLegend,
+  keyToken,
+  legend,
+  type LegendItem,
+  type LegendKey,
+  type OptionalItem,
+} from './legend.js';
 import { PaletteView } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { PALETTE_MIN_ROWS, paletteGapCount, paletteRowBudget } from './palette-window.js';
@@ -44,6 +53,7 @@ import {
   type StripRole,
 } from './strip-focus.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The PURE render of the bare-invocation Home (2.5.B / ADR-0054): a management strip — an "Attention
@@ -182,23 +192,41 @@ function Section(
  * What the hint bar says `Enter` does on the focused parked row: a row with a gate opens it, a media park asks whether to continue the
  * run here, and a run with nothing to answer says why (the bar must not promise a gate where there is none).
  */
-function parkedHintCue(kind: ParkedRunKind | undefined): string {
-  if (kind === 'none') return 'Enter says why';
-  if (kind === 'media') return 'Enter continue it';
+function parkedHintCue(kind: ParkedRunKind | undefined): LegendKey {
+  if (kind === 'none') return { keys: 'Enter', verb: 'say why' };
+  if (kind === 'media') return { keys: 'Enter', verb: 'continue it' };
   // An input gate's card takes no typed value: it shows how to answer in a shell, and offers a rejection.
-  if (kind === 'input') return 'Enter shows how';
-  return 'Enter open the gate';
+  if (kind === 'input') return { keys: 'Enter', verb: 'show how' };
+  return { keys: 'Enter', verb: 'open the gate' };
 }
 
 /** The one more door the hint bar names while a run can be shown: a parked run, else the saved sessions, else the chat itself. */
-function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): string {
-  if (hasParkedRuns) return '↓ Open a parked run';
-  return hasRecentSessions ? '↓ Continue' : 'type a message to chat';
+function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): LegendItem {
+  if (hasParkedRuns) return { keys: '↓', verb: 'open a parked run' };
+  return hasRecentSessions ? { keys: '↓', verb: 'continue' } : { text: 'type a message to chat' };
 }
 
 /**
+ * `Ctrl+C` twice leaves the Home (the interrupt keymap, [ADR-0115](../../../../../docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)):
+ * the key that leaves, written last in every state of the hint bar and on the line below the minimum size. The first press arms it, and the
+ * armed state says so.
+ */
+const EXIT_TWICE = exitKey.close('Ctrl+C', 'exit (twice)');
+const EXIT_AGAIN = exitKey.close('Ctrl+C', 'exit (again)');
+
+/** The standing call to action of a Home with no key (ADR-0146 §5): `Enter` opens the provider setup. A key and a command word, so it has no leaving key of its own: the hint bar under the prompt carries that. */
+const KEYLESS_SETUP_LINE = `No provider key yet · ${keyToken('Enter')} connect · /providers`;
+
+/** `Esc` on a focused strip row steps back to the prompt; it is not the key that leaves the Home (`Ctrl+C` is). */
+const RETURN_TO_PROMPT: LegendKey = { keys: 'Esc', verb: 'return to prompt' };
+
+/** The palette's own key, written first wherever the prompt is empty. */
+const SLASH_COMMANDS: LegendKey = { keys: '/', verb: 'commands' };
+
+/**
  * The context-aware hint bar of the Home (2.5.C S6): the second `Ctrl+C` while the first is armed, the session picker's keys while one
- * is open, at an empty prompt the `/` palette beside the start-a-chat affordance, and once composing the submit hint.
+ * is open, at an empty prompt the `/` palette beside the start-a-chat affordance, and once composing the submit hint. Built by the legend
+ * builder (ADR-0145 §3): the key that leaves goes last, and what does not fit `columns` is dropped, the lowest priority first, never the exit.
  */
 function homeHint(state: {
   readonly interruptArmed: boolean;
@@ -215,36 +243,79 @@ function homeHint(state: {
   readonly keyless: boolean;
   /** The draft starts with `/`: a command line, which `Enter` RUNS (a registry word answers, and never opens the setup) whatever the key state. */
   readonly slashDraft: boolean;
+  /** The terminal's width: the bar is one row, so what does not fit is dropped rather than cut. */
+  readonly columns: number;
 }): string {
-  if (state.interruptArmed) return 'Press Ctrl+C again to exit';
+  if (state.interruptArmed) return legend([], EXIT_AGAIN);
+  const fitted = (
+    required: readonly LegendItem[],
+    optional: readonly OptionalItem[] = [],
+  ): string =>
+    legend(fitLegend(required, optional, EXIT_TWICE, state.columns, displayWidth), EXIT_TWICE);
   if (state.focusedRole === 'parked')
     // The same words as the row's own cue: a row that has no gate to decide says why on `Enter`, and the bar must not promise a gate.
-    return `↑/↓ select · ${parkedHintCue(state.parkedFocusKind)} · Esc return to prompt · Ctrl+C twice to exit`;
+    return fitted([
+      { keys: '↑/↓', verb: 'select' },
+      parkedHintCue(state.parkedFocusKind),
+      RETURN_TO_PROMPT,
+    ]);
   if (state.focusedRole === 'session')
-    return '↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit';
+    return fitted([
+      { keys: '↑/↓', verb: 'select session' },
+      { keys: 'Enter', verb: 'resume' },
+      RETURN_TO_PROMPT,
+    ]);
   // A failed or recent run opens its detail (the run this Home hosts opens its view): read-only either way.
   if (state.focusedRole !== undefined)
-    return '↑/↓ select · Enter open the run · Esc return to prompt · Ctrl+C twice to exit';
+    return fitted([
+      { keys: '↑/↓', verb: 'select' },
+      { keys: 'Enter', verb: 'open the run' },
+      RETURN_TO_PROMPT,
+    ]);
   // Keyless (ADR-0146 §5): `Enter` opens the provider setup and the message stays in the prompt, so the bar says both. A live run keeps
   // its own hint below, because `Enter` shows the run first.
   if (!state.emptyDraft)
     // A slash line is a command, not a message: `Enter` runs it with or without a key, so the keyless sentence ("your message is kept") would be
     // a promise about something else. It reads the keyed hint.
     return state.keyless && !state.slashDraft
-      ? 'Enter to connect a provider · your message is kept'
-      : 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
+      ? fitted([{ keys: 'Enter', verb: 'connect a provider' }, { text: 'your message is kept' }])
+      : fitted([
+          { keys: 'Enter', verb: 'start the chat' },
+          { keys: 'Ctrl+J', verb: 'newline' },
+        ]);
   if (state.keyless && !state.runCanBeShown)
-    return 'Enter to connect a provider · / commands · Ctrl+C twice to exit';
+    return fitted([{ keys: 'Enter', verb: 'connect a provider' }, SLASH_COMMANDS]);
   if (state.runCanBeShown) {
     // With a run to come back to, `Enter` is the first thing to say; the line keeps one more door, and the chat is one keystroke away anyway.
-    const next = runHintNext(state.hasParkedRuns, state.hasRecentSessions);
-    return `/ commands · ${HOSTED_RUN_ENTER_CUE} · ${next} · Ctrl+C twice to exit`;
+    // The cue is the one the `▶` row carries, so the row and the bar cannot say different things.
+    return fitted(
+      [SLASH_COMMANDS],
+      [
+        { item: HOSTED_RUN_ENTER_ITEM, priority: 2 },
+        { item: runHintNext(state.hasParkedRuns, state.hasRecentSessions), priority: 1 },
+      ],
+    );
   }
   if (state.hasParkedRuns)
-    return '/ commands · ↓ Open a parked run · type a message to chat · Ctrl+C twice to exit';
+    return fitted(
+      [SLASH_COMMANDS],
+      [
+        { item: { keys: '↓', verb: 'open a parked run' }, priority: 2 },
+        { item: { text: 'type a message to chat' }, priority: 1 },
+      ],
+    );
   return state.hasRecentSessions
-    ? '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit'
-    : '/ for commands · type a message to start a chat · Ctrl+C twice to exit';
+    ? fitted(
+        [SLASH_COMMANDS],
+        [
+          { item: { keys: '↓', verb: 'continue' }, priority: 2 },
+          { item: { text: 'type a message to chat' }, priority: 1 },
+        ],
+      )
+    : fitted(
+        [{ keys: '/', verb: 'for commands' }],
+        [{ item: { text: 'type a message to start a chat' }, priority: 1 }],
+      );
 }
 
 export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
@@ -280,7 +351,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Text>
         {exitGuard === undefined ? (
           <Text {...dimProps(color)} wrap="truncate-end">
-            {interruptArmed ? 'Press Ctrl+C again to exit' : 'Ctrl+C twice to exit'}
+            {legend([], interruptArmed ? EXIT_AGAIN : EXIT_TWICE)}
           </Text>
         ) : (
           <ExitGuardCard phase={exitGuard} hostedRun={props.hostedRun} color={color} />
@@ -577,7 +648,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         <Box marginTop={1} flexDirection="column">
           {keylessLine && (
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-              No provider key yet · Enter to connect · /providers
+              {KEYLESS_SETUP_LINE}
             </Text>
           )}
           <PromptEditor editor={editor} color={color} />
@@ -595,6 +666,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               runCanBeShown,
               keyless: props.keyless === true,
               slashDraft: editor.text.trimStart().startsWith('/'), // dispatch trims, so a line with blanks before its slash is a command too
+              columns: cols,
             })}
           </Text>
         </Box>

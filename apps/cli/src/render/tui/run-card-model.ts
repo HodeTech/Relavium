@@ -54,6 +54,7 @@ import {
 } from './chord-guard.js';
 import { formatCostUsd, type StatusColor } from './format.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
+import { exitKey, legend, type LegendItem } from './legend.js';
 import type { NativePromptFlow } from './native-prompt-channel.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 import { clipLine } from './sheet-frame.js';
@@ -714,23 +715,24 @@ function policyWords(gate: RunGate): string {
 function keysFor(snapshot: RunCardSnapshot, gate: RunCardGate | undefined, fits: boolean): string {
   switch (snapshot.phase) {
     case 'answering':
-      return 'Answering… · Esc leaves the view';
+      return legend([{ text: 'Answering…' }], exitKey.leave('leaves the view'));
     case 'answered':
     case 'settled':
     case 'empty':
-      return 'Esc closes';
+      return legend([], exitKey.close());
     case 'open': {
+      const pending = exitKey.leave('leaves it pending');
       // Below the minimum the Home delivers no answer key and no cursor key (only its way out is live), so the line offers none.
-      if (!fits) return 'Esc leaves it pending';
-      const parts: string[] = [];
-      if (snapshot.gates.length > 1) parts.push('↑/↓ choose a gate');
+      if (!fits) return legend([], pending);
+      const items: LegendItem[] = [];
+      if (snapshot.gates.length > 1) items.push({ keys: '↑/↓', verb: 'choose a gate' });
       // A budget gate's `Ctrl+N` aborts the run's step at the budget; the allowance Ctrl+Y funds is the card's own row, not the legend's.
       const budget = gate !== undefined && isBudgetGate(gate);
-      if (gate?.accepts.includes('approved') === true) parts.push('Ctrl+Y approves');
+      if (gate?.accepts.includes('approved') === true)
+        items.push({ keys: 'Ctrl+Y', verb: 'Approve', role: 'ok' });
       if (gate?.accepts.includes('rejected') === true)
-        parts.push(budget ? 'Ctrl+N aborts' : 'Ctrl+N rejects');
-      parts.push('Esc leaves it pending');
-      return parts.join(' · ');
+        items.push({ keys: 'Ctrl+N', verb: budget ? 'Abort' : 'Reject', role: 'danger' });
+      return legend(items, pending);
     }
   }
 }

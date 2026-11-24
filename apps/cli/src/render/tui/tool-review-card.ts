@@ -2,6 +2,8 @@ import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { sanitizeInline } from '../sanitize.js';
+import { exitKey, keyToken, type LegendItem } from './legend.js';
+import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
 import type { ReviewDocument } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
 
@@ -246,7 +248,7 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     warnings.push(
       input.inspected
         ? `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted.`
-        : `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press [v] to read all of it; Allow stays locked until you do.`,
+        : `\u26a0 Target shortened \u2014 ${input.targetHiddenBytes} bytes omitted. Press ${keyToken('v')} to read all of it; Allow stays locked until you do.`,
     );
   }
   if (document !== undefined && document.required.length > 0) {
@@ -256,14 +258,14 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     warnings.push(
       input.inspected
         ? `\u26a0 ${values}`
-        : `\u26a0 ${values} Press [v], then [r] to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
+        : `\u26a0 ${values} Press ${keyToken('v')}, then ${keyToken('r')} to inspect ${count === 1 ? 'it' : 'them'}; Allow stays locked until you do.`,
     );
   }
   // A change the body cannot reach is the one thing the person must not approve unseen, so it is named — with the
   // way to read it — whenever it is true. (The card also offers no Allow-all then: `cardKeyRows`' caller.)
   if (input.changesNotShown > 0) {
     warnings.push(
-      `\u26a0 ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press [v] for the full diff.`,
+      `\u26a0 ${input.changesNotShown} changed line${input.changesNotShown === 1 ? '' : 's'} not shown \u2014 press ${keyToken('v')} for the full diff.`,
     );
   }
   const linesNotShown = input.linesNotShown ?? 0;
@@ -273,8 +275,8 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
     const verb = linesNotShown === 1 ? 'is' : 'are';
     warnings.push(
       input.commandFacts === undefined
-        ? `\u26a0 ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press [v] for the full view.`
-        : `\u26a0 ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press [v]${commandRowsOfferNote(input.commandFacts.offers)}`,
+        ? `\u26a0 ${linesNotShown} line${plural} of this call ${verb} not shown \u2014 press ${keyToken('v')} for the full view.`
+        : `\u26a0 ${linesNotShown} row${plural} of this command ${verb} not shown \u2014 press ${keyToken('v')}${commandRowsOfferNote(input.commandFacts.offers)}`,
     );
   }
   const diff = document?.preview.diff;
@@ -284,7 +286,9 @@ export function cardWarnings(input: CardWarningInput): readonly string[] {
   }
   // The generic lock sentence only when nothing above already explained the lock (a command's own fact rows never do).
   if (warnings.length === factRows && !input.inspected) {
-    warnings.push('\u26a0 Allow is locked until the required content has been inspected ([v]).');
+    warnings.push(
+      `\u26a0 Allow is locked until the required content has been inspected (${keyToken('v')}).`,
+    );
   }
   return warnings.flatMap((warning) => wrapWords(warning, input.columns));
 }
@@ -300,8 +304,7 @@ export const CARD_TYPEAHEAD_NOTE =
 export const CARD_LOCKOUT_NOTE =
   'This card opened right after your last answer — wait, then press again.';
 /** An Enter that came before the question could be read, or after it had lapsed: the question is gone and nothing was granted. */
-export const CARD_ENTER_NOTE =
-  'Too early or too late for Enter — nothing was allowed. Press the key again.';
+export const CARD_ENTER_NOTE = `Too early or too late for ${keyToken('Enter')} — nothing was allowed. Press the key again.`;
 
 /** How a tool's `[Ctrl+G]` scope reads: what "always" would cover, in the person's words. */
 export function cardScopePhrase(toolId: string): string {
@@ -335,53 +338,89 @@ function commandRowsOfferNote(offers: CommandCardFacts['offers']): string {
     : '.';
 }
 
-/** The first key row once the call has been inspected: Allow, and the grants the card offers beside it. */
-function allowRow(input: CardKeyInput, session: string): string {
-  const once = input.command === true ? ' once' : '';
-  const sessionKey = input.cacheable ? session : '';
-  const remember = input.remember === true ? '   [Ctrl+O] Allow + remember' : '';
-  return `[Ctrl+Y] Allow${once}${sessionKey}${remember}`;
+/** What the key that stops a turn does, said the same on every card that has one. */
+const STOPS_THE_TURN = 'stops the turn';
+
+/** The question a command's wider grant asks, second row: what Enter does, what every other key does, and the stop key. */
+const COMMAND_CONFIRM_ITEMS: readonly LegendItem[] = [
+  { keys: 'Enter', verb: 'confirm' },
+  { text: 'any other key cancels, allowing nothing' },
+];
+
+/** The grants the card offers once the call has been inspected: Allow, and the grants beside it, each as the answer it is. */
+function allowItems(input: CardKeyInput): readonly LegendItem[] {
+  const command = input.command === true;
+  const items: LegendItem[] = [
+    { keys: 'Ctrl+Y', verb: command ? 'Allow once' : 'Allow', role: 'ok' },
+  ];
+  if (input.cacheable)
+    items.push({
+      keys: 'Ctrl+G',
+      verb: command ? 'Allow this session' : `Allow all ${input.scope} this session`,
+      role: 'ok',
+    });
+  if (input.remember === true) items.push({ keys: 'Ctrl+O', verb: 'Allow + remember', role: 'ok' });
+  return items;
 }
 
 /** The first key row while Allow is locked: what the person has to do first. */
-function lockedAllowRow(command: boolean): string {
-  return command
-    ? '(Allow is locked until you read the whole command)'
-    : '(Allow is locked until you inspect the change)';
+function lockedAllowRow(command: boolean): LegendRow {
+  return sentenceRow(
+    command
+      ? '(Allow is locked until you read the whole command)'
+      : '(Allow is locked until you inspect the change)',
+  );
 }
 
 /**
- * The two key rows: the grants, then the refusals and the rest. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the
- * legend spells them out; the rows are laid out so that, at 80 columns, the longest scope phrase still leaves both rows whole
- * and Deny is never the part a narrow terminal cuts. Allow is not offered while it is locked. While the session-wide grant
- * waits for its confirmation both rows say what the next key does — one question, two rows, so the card keeps its two key
- * rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of a row. The
- * confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
+ * The two key rows, as rows a view can colour by role ({@link cardKeyRows} is their text): the grants, then the refusals and the key that
+ * leaves. Every answer is a Ctrl chord (see `reviewAnswerKey`), and the legend spells them out; the rows are laid out so that, at 80
+ * columns, the longest scope phrase still leaves both rows whole and Deny is never the part a narrow terminal cuts. Allow is not offered
+ * while it is locked. While the session-wide grant waits for its confirmation both rows say what the next key does — one question, two
+ * rows, so the card keeps its two key rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of
+ * a row. The confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
  */
-export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
+export function cardKeyLegend(input: CardKeyInput): readonly [LegendRow, LegendRow] {
+  const stop = exitKey.decide(STOPS_THE_TURN);
+  const enter = keyToken('Enter');
   if (input.confirmRemember === true)
     return [
-      'Press Enter to allow this exact command now and remember it for this project',
-      'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn',
+      sentenceRow(
+        `Press ${enter} to allow this exact command now and remember it for this project`,
+      ),
+      exitRow(COMMAND_CONFIRM_ITEMS, stop),
     ];
   if (input.confirmAlways === true)
     return [
-      input.command === true
-        ? 'Press Enter to allow this exact command for this session'
-        : `Press Enter to allow all ${input.scope} this session`,
-      input.command === true
-        ? 'Enter confirms \u00b7 any other key cancels, allowing nothing \u00b7 Esc stops the turn'
-        : 'Any other key cancels \u00b7 Esc stops the turn',
+      sentenceRow(
+        input.command === true
+          ? `Press ${enter} to allow this exact command for this session`
+          : `Press ${enter} to allow all ${input.scope} this session`,
+      ),
+      exitRow(
+        input.command === true ? COMMAND_CONFIRM_ITEMS : [{ text: 'Any other key cancels' }],
+        stop,
+      ),
     ];
-  const session =
-    input.command === true
-      ? '   [Ctrl+G] Allow this session'
-      : `   [Ctrl+G] Allow all ${input.scope} this session`;
-  const grants = input.inspected
-    ? allowRow(input, session)
-    : lockedAllowRow(input.command === true);
-  const full = input.command === true ? 'Full view' : 'Full diff';
-  return [grants, `[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] ${full}   Esc stops the turn`];
+  const command = input.command === true;
+  const grants = input.inspected ? itemsRow(allowItems(input)) : lockedAllowRow(command);
+  return [
+    grants,
+    exitRow(
+      [
+        { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' },
+        { keys: 'Ctrl+R', verb: 'Deny + reason' },
+        { keys: 'v', verb: command ? 'full view' : 'full diff' },
+      ],
+      stop,
+    ),
+  ];
+}
+
+/** The text of {@link cardKeyLegend}'s two rows. */
+export function cardKeyRows(input: CardKeyInput): readonly [string, string] {
+  const [grants, refusals] = cardKeyLegend(input);
+  return [grants.text, refusals.text];
 }
 
 /** Rows a denial-reason capture takes beyond the key rows it replaces (the disclosure above the input). */

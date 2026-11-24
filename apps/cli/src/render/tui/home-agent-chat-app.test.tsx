@@ -84,7 +84,7 @@ describe('the loading echo', () => {
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     await waitFor(() => (harness.lastFrame() ?? '').includes('Starting chat…'));
     const lines = (harness.lastFrame() ?? '').split('\n').map((line) => line.trim());
-    expect(lines, 'the loading echo is on screen').toContain('Starting chat… · Ctrl+C to exit');
+    expect(lines, 'the loading echo is on screen').toContain('Starting chat… · [Ctrl+C] exit');
     expect(lines, 'and nothing was typed, so nothing is echoed').not.toContain('>');
   });
 

@@ -100,7 +100,7 @@ describe('a failed run and a recent run are rows the focus can stand on', () => 
     const frame = draw(SMALL, [], undefined);
     expect(frame).not.toContain('> ');
     expect(frame).not.toContain('Enter open the run');
-    expect(frame).toContain('↓ Continue');
+    expect(frame).toContain('↓ continue');
   });
 
   it('a session keeps its own words, and a parked run its own', () => {

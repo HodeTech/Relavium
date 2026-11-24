@@ -386,26 +386,26 @@ describe('chat-projection', () => {
 
     it('renders the compaction moment first (dim, ADR-0062 §7), winning over every other state', () => {
       const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });
-      expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc to cancel', dim: true });
+      expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc cancels it', dim: true });
       // Compaction has top priority — even paired with a (mutually-exclusive in practice) shell command it wins.
       const withShell = formatBusyLine({ ...base, compacting: true, busyCommand: 'npm test' });
-      expect(withShell.text).toBe('⠋ ⟳ Summarizing conversation… · Esc to cancel');
+      expect(withShell.text).toBe('⠋ ⟳ Summarizing conversation… · Esc cancels it');
     });
 
     it('renders the `!`-shell command line (dim) and sanitizes the command', () => {
       const line = formatBusyLine({ ...base, busyCommand: 'npm\x1b[31m test' });
       expect(line.dim).toBe(true);
-      expect(line.text).toBe('⠋ ! npm test — running · Esc to cancel'); // ANSI stripped
+      expect(line.text).toBe('⠋ ! npm test — running · Esc cancels it'); // ANSI stripped
     });
 
     it('shows the pre-first-token status with the live elapsed + abort hint (dim)', () => {
       const line = formatBusyLine({ ...base, elapsedMs: 3200 });
-      expect(line).toEqual({ text: '⠋ Working… 3s · Esc to stop', dim: true });
+      expect(line).toEqual({ text: '⠋ Working… 3s · Esc stops the turn', dim: true });
     });
 
     it('omits the timer when no turn is in flight yet (elapsedMs undefined)', () => {
       const line = formatBusyLine(base);
-      expect(line).toEqual({ text: '⠋ Working… · Esc to stop', dim: true });
+      expect(line).toEqual({ text: '⠋ Working… · Esc stops the turn', dim: true });
     });
 
     it('renders streaming content plain (not dim) with the spinner and no elision when untruncated', () => {
@@ -428,9 +428,11 @@ describe('chat-projection', () => {
 
     it('labels the pre-token status "Thinking…" when reasoning is active, else "Working…" (2.5.H)', () => {
       expect(formatBusyLine({ ...base, reasoningActive: true, elapsedMs: 2000 }).text).toBe(
-        '⠋ Thinking… 2s · Esc to stop',
+        '⠋ Thinking… 2s · Esc stops the turn',
       );
-      expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe('⠋ Working… 2s · Esc to stop');
+      expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe(
+        '⠋ Working… 2s · Esc stops the turn',
+      );
       // Once answer tokens stream, the content wins regardless of reasoningActive (no label).
       expect(formatBusyLine({ ...base, reasoningActive: true, liveTokens: 'hi' }).text).toBe(
         '⠋ hi',
@@ -449,11 +451,11 @@ describe('chat-projection', () => {
     it('returns the standalone hint for a streaming CONTENT line (which has no inline hint)', () => {
       const content = formatBusyLine({ ...base, liveTokens: 'the answer streams' });
       expect(content.dim).toBe(false);
-      expect(streamingAbortHint(content)).toBe('Esc to stop');
+      expect(streamingAbortHint(content)).toBe('Esc stops the turn');
     });
 
     it('returns undefined for every STATUS line — they already carry their own inline hint (no double-print)', () => {
-      // Pre-token ("· Esc to stop"), compaction ("· Esc to cancel"), and shell ("· Esc to cancel") are all dim.
+      // Pre-token ("· Esc stops the turn"), compaction ("· Esc cancels it"), and shell ("· Esc cancels it") are all dim.
       expect(streamingAbortHint(formatBusyLine({ ...base, elapsedMs: 1000 }))).toBeUndefined();
       expect(streamingAbortHint(formatBusyLine({ ...base, compacting: true }))).toBeUndefined();
       expect(
@@ -486,13 +488,13 @@ describe('chat-projection', () => {
 
     it('collapsed: a header with the "show" hint and NO body', () => {
       const panel = formatReasoningPanel({ ...base, visible: false });
-      expect(panel).toEqual({ header: '✻ Reasoning · Ctrl+T show' });
+      expect(panel).toEqual({ header: '✻ Reasoning · [Ctrl+T] show' });
       expect(panel.body).toBeUndefined();
     });
 
     it('expanded: the header switches to "hide" and the sanitized body is present', () => {
       const panel = formatReasoningPanel({ ...base, visible: true });
-      expect(panel.header).toBe('✻ Reasoning · Ctrl+T hide');
+      expect(panel.header).toBe('✻ Reasoning · [Ctrl+T] hide');
       expect(panel.body).toBe('weighing the options');
     });
 
@@ -1135,7 +1137,7 @@ describe('transcriptDocument — what `/edit` hands to $EDITOR', () => {
  *
  * The alt screen's frame is `height: rows` and ink clips it there, so an unbounded busy line does not scroll — it
  * COLLIDES with its siblings. Reproduced at 80x24 with a 900-character answer, well under `MAX_LIVE_TOKEN_CHARS`:
- * the "Esc to stop" hint and the streamed text landed on the SAME frame row, overwriting each other.
+ * the "Esc stops the turn" hint and the streamed text landed on the SAME frame row, overwriting each other.
  */
 describe('liveAnswerRowBudget', () => {
   it('is a third of the terminal, so the viewport, prompt and footer all survive', () => {

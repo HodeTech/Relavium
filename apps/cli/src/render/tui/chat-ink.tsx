@@ -58,7 +58,7 @@ import {
   type EffortPickerState,
 } from './effort-picker.js';
 import { effortRowLabel } from '../../chat/effort-notice.js';
-import { EffortTierList } from './effort-tier-list.js';
+import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import type { BoundAgentView } from '../../chat/bound-agent-view.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
@@ -171,11 +171,13 @@ import {
   formatToolCall,
   liveScrollGeometry,
   reasoningLabelActive,
+  STOP_THE_TURN,
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
   liveAnswerRowBudget,
 } from './chat-projection.js';
+import { exitKey, legend } from './legend.js';
 import { TranscriptViewport } from './transcript-viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
@@ -332,7 +334,7 @@ interface ChatViewProps {
   readonly acknowledgement?: TranscriptAcknowledgement | undefined;
   readonly state: SessionViewState;
   readonly tick: number;
-  /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc to stop",
+  /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc stops the turn",
    *  2.5.H). Render-only + cosmetic (no engine-purity concern — parity with `ModelPickerView`'s `nowMs`); the
    *  owner (`ChatApp` / the Home's `RootApp`) passes `Date.now()` so it advances with the frame loop. */
   readonly nowMs: number;
@@ -414,12 +416,27 @@ export function useCopiedToast(): { readonly copied: boolean; readonly flashCopi
   return { copied, flashCopied };
 }
 
+/**
+ * The second `Ctrl+C` of the interrupt keymap ends the session ([ADR-0115](../../../../../docs/decisions/0115-one-interrupt-keymap-for-the-interactive-cli.md)):
+ * what the armed idle hint and the `Interrupting` line say, as one legend exit.
+ */
+const END_THE_SESSION_AGAIN = exitKey.close('Ctrl+C', 'end the session (again)');
+
 /** The idle prompt's hint bar (2.5.C S6): the second `Ctrl+C` while the first is armed, the `/` palette at an empty prompt, else the submit hint. */
 export function idleHint(interruptArmed: boolean, emptyDraft: boolean): string {
-  if (interruptArmed) return 'Press Ctrl+C again to end the session';
+  if (interruptArmed) return legend([], END_THE_SESSION_AGAIN);
   return emptyDraft
-    ? '/ for commands · /exit or Ctrl+C twice to end'
-    : 'Enter to send · Ctrl+J newline · Ctrl+C clears the draft';
+    ? legend(
+        [{ keys: '/', verb: 'for commands' }, { text: '/exit end' }],
+        exitKey.close('Ctrl+C', 'end (twice)'),
+      )
+    : legend(
+        [
+          { keys: 'Enter', verb: 'send' },
+          { keys: 'Ctrl+J', verb: 'newline' },
+        ],
+        exitKey.close('Ctrl+C', 'clear the draft'),
+      );
 }
 
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
@@ -466,14 +483,14 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           props.nowMs - state.turnStartedAtMs - state.approvalWaitMs - (awaitingApprovalMs ?? 0),
         );
   // The in-flight busy line — the labeled compaction moment (ADR-0062 §7), the `!`-shell command line, the
-  // pre-token live-turn status ("Working… {elapsed} · Esc to stop"), or the streaming token line (with the
+  // pre-token live-turn status ("Working… {elapsed} · Esc stops the turn"), or the streaming token line (with the
   // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
   // its `dim` flag to `<Text>`. Only rendered while `running`.
   const renderBusyLine = (): ReactElement => {
     if (props.displaySuspended)
       return (
         <Text {...dimProps(color)} wrap="truncate-end">
-          Display paused for an oversized control sequence · Esc to stop
+          {legend([{ text: 'Display paused for an oversized control sequence' }], STOP_THE_TURN)}
         </Text>
       );
     if (
@@ -500,7 +517,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
             </Text>
           ))}
           <Text {...dimProps(color)} wrap="truncate-end">
-            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}Esc to stop
+            {spinnerFrame(tick)} {props.markdown.elided ? '… ' : ''}
+            {legend([], STOP_THE_TURN)}
           </Text>
         </Box>
       );
@@ -521,7 +539,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         ? {}
         : { columns: props.viewport.cols, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
     });
-    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
+    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc …" hint; a streaming
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
     // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
     const abortHint = streamingAbortHint(line);
@@ -645,7 +663,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               hung tool) would otherwise show nothing at all. At an idle prompt the hint row below carries the same words. */}
           {props.interruptArmed === true && (
             <Text {...dimProps(color)} wrap="truncate-end">
-              Interrupting · press Ctrl+C again to end the session
+              {legend([{ text: 'Interrupting' }], END_THE_SESSION_AGAIN)}
             </Text>
           )}
         </Box>
@@ -2106,7 +2124,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             selected={effortPicker.selected}
             current={effortPicker.current}
             labelSuffix={effortPicker.model}
-            footer="↑/↓ select · Enter apply · Esc cancel"
+            footer={EFFORT_OVERLAY_FOOTER}
             color={color}
           />
         )}

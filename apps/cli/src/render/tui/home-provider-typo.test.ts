@@ -63,7 +63,7 @@ describe('/provider (the near miss)', () => {
       .getSnapshot()
       .state.transcript.map((entry) => entry.text)
       .join('\n');
-    expect(notes).toContain('go back to it (Ctrl+C twice) and use /providers');
+    expect(notes).toContain('go back to it ([Ctrl+C] twice) and use /providers');
     expect(notes).not.toContain('Use /providers to connect');
     expect(c.getSnapshot().notice, 'nothing is left on the landing').toBeUndefined();
   });

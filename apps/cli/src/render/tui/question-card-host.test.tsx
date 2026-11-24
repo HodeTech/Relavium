@@ -171,7 +171,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     expect(frame).toContain('2 ( ) beta.ts');
     expect(frame).toContain('\u270e Type your own answer');
     expect(frame).toContain('The first file'); // the highlighted option's description
-    expect(frame).toContain('Esc or Ctrl+C stops the turn');
+    expect(frame).toContain('Esc / [Ctrl+C] stops the turn');
     expect(frame).not.toMatch(/Approval needed|\[y\]|\[a\]|\[n\]/u);
     f.input.push('2');
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['beta.ts'] }] });
@@ -255,7 +255,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await vi.waitFor(() =>
       expect(f.store.getSnapshot().question?.field?.text).toBe('half a thought'),
     );
-    await vi.waitFor(() => expect(f.text()).toContain('Esc closes · Ctrl+C stops the turn'));
+    await vi.waitFor(() => expect(f.text()).toContain('[Ctrl+C] stops the turn · Esc close'));
     const mark = f.output.frames.length; // only frames drawn AFTER the Esc count for the legend that follows
     f.input.push('\u001b'); // Esc: one level back, not out
     await vi.waitFor(() => expect(f.store.getSnapshot().question?.field).toBeUndefined());
@@ -268,7 +268,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
           // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
           .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
           .join(''),
-      ).toContain('Esc or Ctrl+C stops the turn'),
+      ).toContain('Esc / [Ctrl+C] stops the turn'),
     );
     f.input.push('1'); // and the card still answers
     expect(await answer).toEqual({ kind: 'answered', answers: [{ selected: ['alpha.ts'] }] });
@@ -281,7 +281,7 @@ describe.each(['chat', 'home'] as const)('the docked question card %s (ADR-0132)
     await f.ready();
     const answer = f.store.requestQuestion(QUESTION);
     await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc or Ctrl\+C/u);
+    expect(f.lastFrameWith('Terminal too small') ?? '').toMatch(/Esc \/\s+\[Ctrl\+C\]/u);
     f.input.push('1');
     f.input.push('s');
     await settle();

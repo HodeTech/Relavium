@@ -1,6 +1,7 @@
 import type { EditorState } from './chat-input.js';
 import { shouldShowBanner } from './banner.js';
 import { sanitizeInline } from './chat-projection.js';
+import { keyHint } from './legend.js';
 import { displayWidth, wrapWords } from './viewport.js';
 
 export function homePromptRows(editor: EditorState, columns: number): number {
@@ -160,7 +161,10 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
   const start = page * pageSize;
   const lines = all.slice(start, start + pageSize);
   const footer = overflow
-    ? `Notice ${start + 1}–${start + lines.length} of ${all.length} · PgUp/PgDn to read`
+    ? keyHint([
+        { text: `Notice ${start + 1}–${start + lines.length} of ${all.length}` },
+        { keys: 'PgUp/PgDn', verb: 'read' },
+      ])
     : undefined;
   return { lines, footer, page, maxPage, rowCount: lines.length + (footer === undefined ? 0 : 1) };
 }

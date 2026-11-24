@@ -395,7 +395,7 @@ describe('MVP-2 value-free availability and independent keychain health', () => 
       /\/providers|restart this chat|relavium/u,
     );
     expect(providerKeyAvailabilityMessage('openai', state, 'home-chat')).toContain(
-      'go back to the Home (Ctrl+C twice) and use `/providers`',
+      'go back to the Home ([Ctrl+C] twice) and use `/providers`',
     );
     expect(providerKeyAvailabilityMessage('openai', state, 'home-chat')).not.toContain('relavium');
     expect(providerKeyAvailabilityMessage('openai', state, 'home')).not.toContain('relavium');

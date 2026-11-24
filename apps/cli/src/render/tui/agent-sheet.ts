@@ -5,6 +5,7 @@ import { sanitizeInline } from '../sanitize.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { legend, legendSpans } from './legend.js';
 import {
+  SHEET_KEYS,
   SHEET_LEGEND_EMPTY_ITEMS,
   SHEET_MIN_COLUMNS,
   SHEET_MIN_ROWS,
@@ -362,14 +363,14 @@ function layoutLines(view: BoundAgentView, geometry: SheetGeometry): readonly Sh
   if (geometry.columns < SHEET_MIN_COLUMNS || geometry.terminalRows < SHEET_MIN_ROWS)
     return tooSmallSheetLines(title);
   const width = usableColumns(geometry.columns);
-  const legendText = clipLine(legend(SHEET_LEGEND_EMPTY_ITEMS), width);
+  const legendText = clipLine(legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close), width);
   return [
     titleRule(title, width),
     ...agentSheetBody(view, width, cardRowBudget(geometry.terminalRows) - FIXED_ROWS),
     {
       kind: 'legend',
       text: legendText,
-      spans: clampSpans(legendSpans(SHEET_LEGEND_EMPTY_ITEMS), legendText.length),
+      spans: clampSpans(legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close), legendText.length),
     },
   ];
 }

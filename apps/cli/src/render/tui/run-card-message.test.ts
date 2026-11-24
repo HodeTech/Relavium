@@ -119,7 +119,7 @@ describe('a message that does not fit', () => {
   it('keeps every key it had: the message being cut takes nothing away from the answer chords', () => {
     const projection = project([gate({ message: lines(30) })]);
     expect(projection.rows.at(-1)?.text).toBe(
-      'Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     );
   });
 
@@ -233,7 +233,7 @@ describe('a gate that takes a typed value', () => {
     expect(texts(projection)).toContain(
       'Rejecting does not stop the run: the workflow routes on a rejection.',
     );
-    expect(projection.rows.at(-1)?.text).toBe('Ctrl+N rejects · Esc leaves it pending');
+    expect(projection.rows.at(-1)?.text).toBe('[Ctrl+N] Reject · Esc leaves it pending');
   });
 
   it('names the flags only when the recorded ids would not be a safe command, and still fits', () => {

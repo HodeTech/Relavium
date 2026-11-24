@@ -7,6 +7,7 @@ import {
   type ChordHistory,
   type ChordStamp,
 } from './chord-guard.js';
+import { exitKey, legend, type LegendExit, type LegendItem } from './legend.js';
 import type { ApprovalGuard } from './tool-review-model.js';
 import {
   createNativePicker,
@@ -27,6 +28,25 @@ export const NATIVE_PROMPT_BACK = Symbol('native prompt stepped back');
  * the prompt with {@link NATIVE_PROMPT_BACK} and leaves the flow open; `Ctrl+C` still leaves the flow entirely in both modes.
  */
 export type NativePromptEscape = 'cancel' | 'back';
+
+/**
+ * What the keys that leave a native card say they do ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §2),
+ * read from the same `escape` the handler reads. At a prompt that ends the flow on `Esc`, `Esc` is the key that leaves; at one opened to step
+ * back, `Esc` steps back and `Ctrl+C` is the key that leaves, which closes the form (`leave` is the word for "the work stays", and here it
+ * does not). `effect` is what leaving means where it is more than closing: a chord card refuses (`denies`), a busy card stops what it waits
+ * for (`cancels it`).
+ */
+export function nativeLeave(
+  back: boolean,
+  effect?: string,
+): { readonly before: readonly LegendItem[]; readonly exit: LegendExit } {
+  const leaving = (keys: string): LegendExit =>
+    effect === undefined ? exitKey.close(keys) : exitKey.decide(effect, keys);
+  return back
+    ? { before: [{ keys: 'Esc', verb: 'back' }], exit: leaving('Ctrl+C') }
+    : { before: [], exit: leaving('Esc') };
+}
+
 export const NATIVE_PROMPT_INPUT_LIMIT = 4096;
 export class NativePromptVisibilityRefusedError extends Error {
   constructor() {
@@ -334,13 +354,13 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     // Keep the rejection visible until the user explicitly edits or cancels.
     if (invalid) return;
     // What `Esc` does here is what the person is told it does.
-    const escapeWord = snapshot.escape === 'back' ? 'go back' : 'cancel';
+    const refused = (reason: string): string => {
+      const { before, exit } = nativeLeave(snapshot.escape === 'back');
+      return legend([{ text: reason }, { keys: 'Backspace', verb: 'edit' }, ...before], exit);
+    };
     if (secret.length + text.length > NATIVE_PROMPT_INPUT_LIMIT) {
       invalid = true;
-      publish({
-        ...snapshot,
-        error: `Input is too long. Press Backspace to edit or Esc to ${escapeWord}.`,
-      });
+      publish({ ...snapshot, error: refused('Input is too long') });
       return;
     }
     if (
@@ -350,10 +370,7 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       })
     ) {
       invalid = true;
-      publish({
-        ...snapshot,
-        error: `Input contains unsupported control characters. Press Backspace to edit or Esc to ${escapeWord}.`,
-      });
+      publish({ ...snapshot, error: refused('Input contains unsupported control characters') });
       return;
     }
     secret += text;

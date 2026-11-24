@@ -253,9 +253,9 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 �
     expect(frame).toContain('Run npm test');
     expect(frame).toContain('Standing: not pre-approved \u00b7 Runs in: /work/project');
     expect(frame).toContain(
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember',
+      '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember',
     );
-    expect(frame).toContain('[v] Full view');
+    expect(frame).toContain('[v] full view');
     expect(frame).not.toContain('Allow all');
     expect(frame, 'a command card has no tool-identity row').not.toMatch(/^run_command/mu);
     for (const row of frame.split('\n')) expect(row.length, row).toBeLessThanOrEqual(80);
@@ -326,7 +326,7 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 �
     // The full view's own second row: Esc steps back here (the card's "Esc stops the turn" would be false), Ctrl+C stops.
     await vi.waitFor(() =>
       expect(f.text()).toContain(
-        'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn',
+        'Enter confirm · any other key cancels · [Ctrl+C] stops the turn · Esc back',
       ),
     );
     f.input.push('\x1b');
@@ -411,7 +411,7 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 �
     open(f, argv, facts());
     const frame = await shown(f);
     for (const argument of argv) expect(frame, argument).toContain(`  ${argument}\n`);
-    const keys = '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember';
+    const keys = '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember';
     expect(frame).toContain(keys);
     expect(frame).not.toMatch(/more lines|not shown/u);
     // A key typed just before an answer is refused with a note; the note takes the row kept for it, not a row of the command.
@@ -454,7 +454,7 @@ describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 �
     for (const argument of ['--silent', '--coverage'])
       expect(full, argument).toContain(`  ${argument}\n`);
     expect(full).toContain(
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember',
+      '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember',
     );
     expect(full, 'a command is not held to the file tools’ path rules, and says so').toContain(
       'Approving runs exactly this command; file-tool path rules do not limit it.',

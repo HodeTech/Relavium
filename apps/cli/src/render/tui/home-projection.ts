@@ -8,6 +8,7 @@ import type {
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { sanitizeInline } from './chat-projection.js';
 import { formatCostShort } from './format.js';
+import { exitKey, keyLabel, legend, type LegendExit, type LegendKey } from './legend.js';
 
 /**
  * Pure projection helpers for the 2.5.B Home strip (ADR-0054) — the read-only display of recent sessions /
@@ -176,8 +177,10 @@ export function hostedRunLabel(snapshot: RunHostSnapshot | undefined): string | 
   return `▶ ${sanitizeInline(active.runId)}${SEP}${active.cancelling ? 'cancelling' : 'running'}${SEP}${HOSTED_RUN_ENTER_CUE}`;
 }
 
-/** What `Enter` at the empty prompt does while a leg is live and has a run to show: the words the `▶` row and the landing's hint share. */
-export const HOSTED_RUN_ENTER_CUE = 'Enter shows it';
+/** What `Enter` at the empty prompt does while a leg is live and has a run to show: the item the landing's hint draws. */
+export const HOSTED_RUN_ENTER_ITEM: LegendKey = { keys: 'Enter', verb: 'show it' };
+/** The words the `▶` row and the landing's hint share: {@link HOSTED_RUN_ENTER_ITEM} as it is written. */
+export const HOSTED_RUN_ENTER_CUE = `${keyLabel(HOSTED_RUN_ENTER_ITEM.keys)} ${HOSTED_RUN_ENTER_ITEM.verb}`;
 
 /** Whether a leg is live and has named its run, so `Enter` at the empty prompt can show its view (`openRunView`). */
 export function hostedRunCanBeShown(snapshot: RunHostSnapshot | undefined): boolean {
@@ -194,6 +197,9 @@ export type ExitGuardPhase = 'confirm' | 'stopping';
  * view draws `■ cancelling`, and this card draws `⚠` (still asking) and then `■` (confirmed).
  */
 export const EXIT_GUARD_GLYPH = { warning: '⚠', stopping: '■', ended: '○' } as const;
+
+/** The three keys that leave the guard without leaving the Home: nothing changes, the run goes on and so does the Home. */
+const EXIT_GUARD_STAY: LegendExit = exitKey.close(['Esc', 'Ctrl+C', 'Ctrl+N'], 'stay');
 
 /**
  * The exit-guard card's lines ([ADR-0139](../../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §6). The title
@@ -218,16 +224,19 @@ export function exitGuardLines(
   if (!hostedRunIsLive(snapshot))
     return [
       `${EXIT_GUARD_GLYPH.ended} The run has ended.`,
-      'Ctrl+Y leave the Home · Esc, Ctrl+C or Ctrl+N stay',
+      legend([{ keys: 'Ctrl+Y', verb: 'leave the Home' }], EXIT_GUARD_STAY),
     ];
   if (active?.cancelling === true)
     return [
       `${EXIT_GUARD_GLYPH.warning} The run is stopping${named}.`,
-      `Ctrl+Y leave when it has stopped (about ${boundSeconds} s) · Esc, Ctrl+C or Ctrl+N stay`,
+      legend(
+        [{ keys: 'Ctrl+Y', verb: `leave once it stops (about ${boundSeconds} s)` }],
+        EXIT_GUARD_STAY,
+      ),
     ];
   return [
     `${EXIT_GUARD_GLYPH.warning} A workflow run is executing${named}.`,
     'Leaving stops it, and a stopped run cannot be resumed.',
-    'Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay',
+    legend([{ keys: 'Ctrl+Y', verb: 'stop the run and leave' }], EXIT_GUARD_STAY),
   ];
 }

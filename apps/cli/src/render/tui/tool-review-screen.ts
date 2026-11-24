@@ -1,8 +1,10 @@
 import { sanitizeUntrustedInline } from '../sanitize.js';
 import type { ToolDisplay } from './tool-display.js';
 import type { CommandCardFacts } from '../../chat/command-facts.js';
+import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
+import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
 import {
-  cardKeyRows,
+  cardKeyLegend,
   commandFactRows,
   endingsWarning,
   wrapWords,
@@ -119,14 +121,14 @@ export function fullWarnings(input: FullWarningInput): readonly string[] {
         (input.document?.masks.some((mask) => mask.field === targetField) ?? false);
       warnings.push(
         masked
-          ? '⚠ Allow is locked until the whole target has been on screen — press Home, reveal its masked value with [r], and page through it (PgDn).'
-          : '⚠ Allow is locked until the whole target has been on screen — press Home and page through it (PgDn).',
+          ? `⚠ Allow is locked until the whole target has been on screen — press ${keyToken('Home')}, reveal its masked value with ${keyToken('r')}, and page through it (${keyToken('PgDn')}).`
+          : `⚠ Allow is locked until the whole target has been on screen — press ${keyToken('Home')} and page through it (${keyToken('PgDn')}).`,
       );
     }
     if (input.pending.masks > 0) {
       const one = input.pending.masks === 1;
       warnings.push(
-        `⚠ Allow is locked until ${one ? 'the masked value has' : 'every masked value has'} been revealed — press [r], then scroll over ${one ? 'it' : 'each'}.`,
+        `⚠ Allow is locked until ${one ? 'the masked value has' : 'every masked value has'} been revealed — press ${keyToken('r')}, then scroll over ${one ? 'it' : 'each'}.`,
       );
     }
   }
@@ -222,41 +224,49 @@ export interface NavLegendInput {
   readonly columns: number;
 }
 
-/** The gap between two keys of a legend row: the card's. */
-const KEY_GAP = '   ';
-
-/** Greedily pack `items` into rows no wider than `width`. */
-function packRows(items: readonly string[], width: number): readonly string[] {
-  const rows: string[] = [];
-  let row = '';
+/** Greedily pack `items` into rows no wider than `width`, each row drawn as a legend row (the items between ` · `). */
+function packRows(items: readonly LegendItem[], width: number): readonly LegendRow[] {
+  const rows: LegendRow[] = [];
+  let row: LegendItem[] = [];
   for (const item of items) {
-    const candidate = row.length === 0 ? item : `${row}${KEY_GAP}${item}`;
-    if (row.length === 0 || displayWidth(candidate) <= width) row = candidate;
+    if (row.length === 0 || displayWidth(itemsRow([...row, item]).text) <= width) row.push(item);
     else {
-      rows.push(row);
-      row = item;
+      rows.push(itemsRow(row));
+      row = [item];
     }
   }
-  if (row.length > 0) rows.push(row);
+  if (row.length > 0) rows.push(itemsRow(row));
   return rows;
 }
 
 /**
- * The movement and inspection keys, in the card's `[key] words` style, only the ones that do something here: `Tab` appears
- * when there is a change to go to, `r` when there is a mask to reveal, `c` when a clipboard is bound. Movement is one group
- * and inspection another, each packed into as few rows as the width allows (one each at 80 columns). `[b]` is not here: it
- * sits with the answers on an approval and with the close note on details.
+ * The movement and inspection keys, only the ones that do something here: `Tab` appears when there is a change to go to, `r` when there is
+ * a mask to reveal, `c` when a clipboard is bound. Movement is one group and inspection another, each packed into as few rows as the width
+ * allows (one each at 80 columns). `[b]` is not here: it sits with the answers on an approval and with the close note on details.
  */
-export function fullNavLegend(input: NavLegendInput): readonly string[] {
-  const move = ['[\u2191\u2193] scroll', '[PgUp/PgDn] page', '[Home/End] top/end'];
-  if (input.hasChanges) move.push('[Tab/Shift+Tab] changes');
-  const tools = ['[/] search'];
-  if (input.hasMasks) tools.push(input.revealed ? '[r] hide masked' : '[r] reveal masked');
-  tools.push(input.numeric ? '[p] back to text' : '[p] Unicode codes');
-  if (input.canCopy) tools.push('[c] copy page');
+export function fullNavRows(input: NavLegendInput): readonly LegendRow[] {
+  const move: LegendItem[] = [
+    { keys: '↑/↓', verb: 'scroll' },
+    { keys: 'PgUp/PgDn', verb: 'page' },
+    { keys: 'Home/End', verb: 'top/end' },
+  ];
+  if (input.hasChanges) move.push({ keys: ['Tab', 'Shift+Tab'], verb: 'changes' });
+  const tools: LegendItem[] = [{ keys: '/', verb: 'search' }];
+  if (input.hasMasks)
+    tools.push({ keys: 'r', verb: input.revealed ? 'hide masked' : 'reveal masked' });
+  tools.push({ keys: 'p', verb: input.numeric ? 'back to text' : 'Unicode codes' });
+  if (input.canCopy) tools.push({ keys: 'c', verb: 'copy page' });
   const width = usableColumns(input.columns);
   return [...packRows(move, width), ...packRows(tools, width)];
 }
+
+/** The text of {@link fullNavRows}. */
+export function fullNavLegend(input: NavLegendInput): readonly string[] {
+  return fullNavRows(input).map((row) => row.text);
+}
+
+/** The stop key as an item, where `Esc` is the exit and so the stop key is named beside it (it stops the turn from anywhere). */
+const STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'warn' };
 
 /**
  * The second row while a session-wide or remember question waits in the FULL view (ADR-0137 §4). Any other key cancels the question
@@ -264,36 +274,68 @@ export function fullNavLegend(input: NavLegendInput): readonly string[] {
  * `Ctrl+C` stops the turn from anywhere and is named, because the stop key stays named wherever it works. The command variants
  * (an Enter confirms) and the tool variant (any key) differ only in their first words.
  */
-export const FULL_CONFIRM_ENTER_ROW =
-  'Enter confirms · any other key cancels · Esc back · Ctrl+C stops the turn';
-export const FULL_CONFIRM_ANY_ROW = 'Any other key cancels · Esc back · Ctrl+C stops the turn';
+export const FULL_CONFIRM_ENTER_LEGEND: LegendRow = exitRow(
+  [{ keys: 'Enter', verb: 'confirm' }, { text: 'any other key cancels' }, STOP_KEY],
+  exitKey.step(),
+);
+export const FULL_CONFIRM_ANY_LEGEND: LegendRow = exitRow(
+  [{ text: 'Any other key cancels' }, STOP_KEY],
+  exitKey.step(),
+);
+export const FULL_CONFIRM_ENTER_ROW = FULL_CONFIRM_ENTER_LEGEND.text;
+export const FULL_CONFIRM_ANY_ROW = FULL_CONFIRM_ANY_LEGEND.text;
 /**
  * The full view's second answer row: the refusals that exist here, the way back, and the stop key. `Esc` steps back to the card
  * (ADR-0137 §4) and `Ctrl+C` stops the turn; the row names both, so neither is learned by pressing it.
  */
-export const FULL_DENY_ROW =
-  '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+export const FULL_DENY_LEGEND: LegendRow = exitRow(
+  [
+    { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' },
+    { keys: 'b', verb: 'back to the card' },
+    STOP_KEY,
+  ],
+  exitKey.step(),
+);
+export const FULL_DENY_ROW = FULL_DENY_LEGEND.text;
 
 /** The grants row the card shows, then the refusals: the same words, minus the keys that only exist on the card, plus the way back. */
-export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
-  const rows = cardKeyRows(input);
+export function fullAnswerLegend(input: CardKeyInput): readonly [LegendRow, LegendRow] {
+  const rows = cardKeyLegend(input);
   if (input.confirmAlways === true || input.confirmRemember === true)
     return [
       rows[0],
       input.confirmRemember === true || input.command === true
-        ? FULL_CONFIRM_ENTER_ROW
-        : FULL_CONFIRM_ANY_ROW,
+        ? FULL_CONFIRM_ENTER_LEGEND
+        : FULL_CONFIRM_ANY_LEGEND,
     ];
   // The full view names what is owed in its warning row; the row here only says that Allow is off, not the card's generic cause.
-  return [input.inspected ? rows[0] : '(Allow is locked — see the warning above)', FULL_DENY_ROW];
+  return [
+    input.inspected ? rows[0] : sentenceRow('(Allow is locked — see the warning above)'),
+    FULL_DENY_LEGEND,
+  ];
+}
+
+/** The text of {@link fullAnswerLegend}'s two rows. */
+export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
+  const [grants, refusals] = fullAnswerLegend(input);
+  return [grants.text, refusals.text];
 }
 
 /**
  * The two answer rows while the full view's search box is open (ADR-0115 §3). The box owns the keyboard: a chord is not an answer in
  * it and `b` is typing, so the card's rows would name keys that do nothing. `Esc` closes the box and `Ctrl+C` is what stops the turn.
  */
+export function fullSearchLegend(): readonly [LegendRow, LegendRow] {
+  return [
+    exitRow([{ keys: 'Enter', verb: 'find' }], exitKey.close('Esc', 'close the search box')),
+    itemsRow([STOP_KEY]),
+  ];
+}
+
+/** The text of {@link fullSearchLegend}'s two rows. */
 export function fullSearchRows(): readonly [string, string] {
-  return ['Enter finds · Esc closes the search box', 'Ctrl+C stops the turn'];
+  const [find, stop] = fullSearchLegend();
+  return [find.text, stop.text];
 }
 
 /** The sentence ADR-0129 §5 moved from the card to the full view. */
@@ -301,9 +343,12 @@ export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or p
 /** A command card's full view says the opposite of that sentence: a command is not held to the file tools' path rules. */
 export const FULL_COMMAND_NOTE =
   'Approving runs exactly this command; file-tool path rules do not limit it.';
-/** The one line a details screen ends on. */
-export const DETAILS_CLOSE_NOTE =
-  '[b] Back to the list   Esc closes · viewing never executes a tool';
+/** The one line a details screen ends on: the way back to the list, what viewing does, and the key that closes. */
+export const DETAILS_CLOSE_LEGEND: LegendRow = exitRow(
+  [{ keys: 'b', verb: 'back to the list' }, { text: 'viewing never executes a tool' }],
+  exitKey.close(),
+);
+export const DETAILS_CLOSE_NOTE = DETAILS_CLOSE_LEGEND.text;
 
 export interface FullChromeInput {
   readonly kind: ScreenKind;
@@ -330,6 +375,12 @@ export interface FullChrome {
   readonly nav: readonly string[];
   readonly answers: readonly string[];
   readonly note: string;
+  /** The same rows as {@link FullChrome.nav}, {@link FullChrome.answers} and {@link FullChrome.note}, with where their keys are, for a view to colour. */
+  readonly legends: {
+    readonly nav: readonly LegendRow[];
+    readonly answers: readonly LegendRow[];
+    readonly note: LegendRow;
+  };
   readonly hasTarget: boolean;
   readonly searching: boolean;
   /** Every row the screen spends outside the body, status rule included. */
@@ -337,15 +388,15 @@ export interface FullChrome {
 }
 
 /** The answer rows of the full view: none for a details screen, the search rows while a search is typed, else the approval's. */
-function fullAnswers(keys: CardKeyInput | undefined, searching: boolean): readonly string[] {
+function fullAnswers(keys: CardKeyInput | undefined, searching: boolean): readonly LegendRow[] {
   if (keys === undefined) return [];
-  return searching ? fullSearchRows() : fullAnswerRows(keys);
+  return searching ? fullSearchLegend() : fullAnswerLegend(keys);
 }
 
 /** The closing note of the full view: a details screen's, a command's, or the protected-path sentence of any other approval. */
-function fullNote(kind: ScreenKind, commandFacts: CommandCardFacts | undefined): string {
-  if (kind !== 'approval') return DETAILS_CLOSE_NOTE;
-  return commandFacts === undefined ? FULL_PROTECTED_NOTE : FULL_COMMAND_NOTE;
+function fullNote(kind: ScreenKind, commandFacts: CommandCardFacts | undefined): LegendRow {
+  if (kind !== 'approval') return DETAILS_CLOSE_LEGEND;
+  return sentenceRow(commandFacts === undefined ? FULL_PROTECTED_NOTE : FULL_COMMAND_NOTE);
 }
 
 /** Everything the full view draws around its body, and how many rows that is. The one source the model and the view share. */
@@ -363,7 +414,7 @@ export function fullChrome(input: FullChromeInput): FullChrome {
     columns: input.columns,
     commandFacts: input.commandFacts,
   });
-  const nav = fullNavLegend({ ...input.nav, columns: input.columns });
+  const nav = fullNavRows({ ...input.nav, columns: input.columns });
   const answers = fullAnswers(input.keys, input.searching);
   const note = fullNote(input.kind, input.commandFacts);
   const rows =
@@ -381,9 +432,10 @@ export function fullChrome(input: FullChromeInput): FullChrome {
   return {
     header,
     warnings,
-    nav,
-    answers,
-    note,
+    nav: nav.map((row) => row.text),
+    answers: answers.map((row) => row.text),
+    note: note.text,
+    legends: { nav, answers, note },
     hasTarget: input.hasTarget,
     searching: input.searching,
     rows,
@@ -478,39 +530,6 @@ export function escapedFit(
   return `${startFit(width - 1)}…`;
 }
 
-/**
- * Split a key legend into its `[key]` labels, `Esc`, `Ctrl+C` (the stop key every legend names) and the words between, in one pass over the row. A label is a `[`, at least one
- * character and the next `]`; a `[` with no `]` after it is plain text. (The same split a regular expression gave, which backtracked
- * quadratically on a long run of `[`.)
- */
-export function keyLabelParts(row: string): readonly string[] {
-  const parts: string[] = [];
-  let plain = 0;
-  let close = row.indexOf(']');
-  let index = 0;
-  while (index < row.length) {
-    let end = -1;
-    if (row[index] === '[' && close !== -1) {
-      if (close <= index) close = row.indexOf(']', index + 1);
-      if (close > index + 1) end = close + 1;
-    } else if (row.startsWith('Esc', index)) {
-      end = index + 3;
-    } else if (row.startsWith('Ctrl+C', index)) {
-      end = index + 6;
-    }
-    if (end === -1) {
-      index++;
-      continue;
-    }
-    if (index > plain) parts.push(row.slice(plain, index));
-    parts.push(row.slice(index, end));
-    index = end;
-    plain = end;
-  }
-  if (plain < row.length) parts.push(row.slice(plain));
-  return parts;
-}
-
 export type CallTone = 'ok' | 'bad' | 'warn' | 'dim';
 export interface CallListRow {
   readonly text: string;
@@ -564,7 +583,14 @@ export function callListView(input: {
   readonly terminalRows: number;
 }): CallListView {
   const width = usableColumns(input.columns);
-  const hint = '↑↓ PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc closes';
+  const hint = legend(
+    [
+      { keys: ['↑/↓', 'PgUp/PgDn'], verb: 'select' },
+      { keys: 'Enter', verb: 'open' },
+      { keys: 'Home/End', verb: 'oldest/newest' },
+    ],
+    exitKey.close(),
+  );
   const count = input.calls.length;
   if (count === 0)
     return {
@@ -572,7 +598,7 @@ export function callListView(input: {
       rows: [],
       empty: 'No tool calls yet. Earlier sessions keep no previews.',
       status: '',
-      hint: 'Esc closes',
+      hint: legend([], exitKey.close()),
       height: 3,
     };
   const capacity = callListCapacity(input.terminalRows);

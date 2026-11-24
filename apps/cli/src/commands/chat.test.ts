@@ -1155,7 +1155,7 @@ describe('chatCommand', () => {
       out,
       'the typed forms are gone: the dispatch rejects the token and says where the job went',
     ).toContain(
-      "/permissions: unknown argument '--revoke'. Open /permissions and press d on a row to withdraw it.",
+      "/permissions: unknown argument '--revoke'. Open /permissions and press [d] on a row to withdraw it.",
     );
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: only the 'hello' turn persisted
   });
@@ -1336,7 +1336,7 @@ describe('chatCommand', () => {
     const { d, err } = deps(['/permissions now please', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain(
-      "/permissions: unknown argument 'now'. Open /permissions and press d on a row to withdraw it.",
+      "/permissions: unknown argument 'now'. Open /permissions and press [d] on a row to withdraw it.",
     );
   });
 

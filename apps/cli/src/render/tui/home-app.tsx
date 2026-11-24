@@ -53,6 +53,7 @@ import {
 } from './overlay-flags.js';
 import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
+import { exitKey, legend } from './legend.js';
 import { RunScreenView } from './run-screen-view.js';
 import { RunCardView } from './run-card-view.js';
 import { createGateCardFrame } from './gate-card-frame.js';
@@ -74,7 +75,7 @@ import { ChatSheetView } from './chat-sheet-view.js';
 import { SheetLinesView } from './permissions-sheet-view.js';
 import { TabHostView } from './tab-host-view.js';
 import { helpSheetLines } from './help-sheet.js';
-import { EffortTierList } from './effort-tier-list.js';
+import { EFFORT_OVERLAY_FOOTER, EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
@@ -309,7 +310,7 @@ function ChatRegion(
           selected={props.effortPicker.selected}
           current={props.effortPicker.current}
           labelSuffix={props.effortPicker.model}
-          footer="↑/↓ select · Enter apply · Esc cancel"
+          footer={EFFORT_OVERLAY_FOOTER}
           color={color}
         />
       )}
@@ -968,7 +969,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         )}
         {state.exitGuard === undefined ? (
           <Text {...dimProps(color)} wrap="truncate-end">
-            Starting chat… · Ctrl+C to exit
+            {STARTING_CHAT_LINE}
           </Text>
         ) : (
           <ExitGuardCard phase={state.exitGuard} hostedRun={state.hostedRun} color={color} />
@@ -1072,6 +1073,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     </Box>
   );
 }
+
+/** The line under the echo of a message while the first chat is built: `Ctrl+C` leaves the Home from here (ADR-0145 §3). Exported for the legend golden. */
+export const STARTING_CHAT_LINE = legend(
+  [{ text: 'Starting chat…' }],
+  exitKey.close('Ctrl+C', 'exit'),
+);
 
 /**
  * The echo shown while the first chat is being built: the person's first line, and the exit-guard card when one is open. Every commit of

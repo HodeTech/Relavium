@@ -22,7 +22,7 @@ import type { StatusColor } from './format.js';
 import { homeFitsTerminal, tooSmallMessage } from './home-projection.js';
 import { boundedNotice } from './home-notice.js';
 import type { HostedLegState } from './interrupt-keymap.js';
-import { LEGEND_SEPARATOR, legend, type LegendItem } from './legend.js';
+import { exitKey, legend, type LegendItem } from './legend.js';
 import { HOSTED_RUN_EXIT_GRACE_MS } from './tui-constants.js';
 import { clipLine } from './sheet-frame.js';
 import { wrapText } from './viewport.js';
@@ -226,29 +226,25 @@ function keysFor(
   armed: boolean,
   offered: { readonly openGate: boolean; readonly gateOpenFailed: boolean; readonly fits: boolean },
 ): string {
-  const leave: LegendItem = { keys: 'Esc', verb: 'leaves it running' };
   switch (phase) {
     case 'running':
-      return legend([
-        { keys: 'Ctrl+C', verb: armed ? 'again cancels the run' : 'twice cancels the run' },
-        leave,
-      ]);
+      return legend(
+        [{ keys: 'Ctrl+C', verb: `cancel the run (${armed ? 'again' : 'twice'})` }],
+        exitKey.leave('leaves it running'),
+      );
     case 'cancelling':
-      return [
-        'Waiting for the run to stop',
-        legend([{ keys: 'Esc', verb: 'leaves the view' }]),
-      ].join(LEGEND_SEPARATOR);
+      return legend([{ text: 'Waiting for the run to stop' }], exitKey.leave('leaves the view'));
     case 'settled':
     case 'replaced': {
       // Below 80×24 only `Esc` and `Ctrl+C` are delivered (the Home's key route), so no other key is named there.
       const gate: LegendItem = {
         keys: 'Enter',
-        verb: offered.gateOpenFailed ? 'tries the gate again' : 'opens the gate',
+        verb: offered.gateOpenFailed ? 'try the gate again' : 'open the gate',
       };
-      return legend([
-        ...(offered.openGate && offered.fits && phase === 'settled' ? [gate] : []),
-        { keys: 'Esc / Ctrl+C', verb: 'close' },
-      ]);
+      return legend(
+        offered.openGate && offered.fits && phase === 'settled' ? [gate] : [],
+        exitKey.close(['Esc', 'Ctrl+C']),
+      );
     }
   }
 }

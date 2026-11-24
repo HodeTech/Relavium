@@ -22,6 +22,16 @@ import {
   type QuestionCardState,
   type QuestionEntry,
 } from './question-card-model.js';
+import {
+  exitKey,
+  fitLegend,
+  type LegendExit,
+  type LegendItem,
+  type OptionalItem,
+  LEGEND_SEPARATOR,
+  legend,
+} from './legend.js';
+import { itemsRow } from './legend-row.js';
 import { displayWidth } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
@@ -54,14 +64,16 @@ export interface QuestionCardView {
 const RULE_LABEL = ' Question from the agent · not an approval ';
 const OWN_PLACEHOLDER = 'Type your own answer…';
 const OWN_DESCRIPTION = 'Just start typing — it is sent to the model.';
-const STOP_ROW = 'Esc or Ctrl+C stops the turn';
+/** `Esc` and `Ctrl+C` both stop the turn: the key that leaves says so, and what it does. */
+export const QUESTION_STOP: LegendExit = exitKey.decide('stops the turn', ['Esc', 'Ctrl+C']);
 /** With the own-answer field open `Esc` closes it first (ADR-0115 §3), so only `Ctrl+C` is the stop key there. */
-const FIELD_STOP_ROW = 'Esc closes · Ctrl+C stops the turn';
+const FIELD_STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'warn' };
+const FIELD_EXIT: LegendExit = exitKey.close();
 /**
  * Said only where a write needs no card (`accept-edits`, `auto`): there an answer is the person's only lever and it is not a
  * veto — nothing in the card otherwise tells them the agent may still act (ADR-0132 §6).
  */
-const GUIDE_NOTE = ' · an answer is guidance, not a veto';
+const GUIDE_NOTE: LegendItem = { text: 'an answer is guidance, not a veto' };
 /**
  * The host's gutter. EVERY row of model-authored text (the question, the highlighted description) starts with it, and the
  * glyph is refused inside model text, so column 0 of a wrapped line belongs to the renderer: a forged option row can neither
@@ -201,12 +213,19 @@ function summaryOf(state: QuestionCardState, index: number): string {
   return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
 }
 
-/** Pick the legend parts that fit, dropping the least important optional ones first; the essentials always stay. */
-function legend(essentials: readonly string[], optional: readonly string[], width: number): string {
-  const join = (extra: readonly string[]): string => [...essentials, ...extra].join(' · ');
-  let keep = [...optional];
-  while (keep.length > 0 && displayWidth(join(keep)) > width) keep = keep.slice(0, -1);
-  return head(join(keep), width);
+/**
+ * The first key row: the keys that answer, the optional ones dropped (the lowest priority first) when they do not fit, and the whole row
+ * cut with an ellipsis only when the essentials alone are too wide. The stop keys are on the second row, so the room this row has is the
+ * width, not the width less the exit's.
+ */
+function answerRow(
+  essentials: readonly LegendItem[],
+  optional: readonly OptionalItem[],
+  width: number,
+): string {
+  const exitRoom = LEGEND_SEPARATOR.length + displayWidth(legend([], QUESTION_STOP));
+  const kept = fitLegend(essentials, optional, QUESTION_STOP, width + exitRoom, displayWidth);
+  return head(itemsRow(kept).text, width);
 }
 
 function keyRows(
@@ -216,26 +235,47 @@ function keyRows(
 ): readonly [string, string] {
   const width = columns - 2;
   const several = hasReview(state);
+  const skip: LegendItem = { keys: 'Ctrl+S', verb: 'skip all' };
+  const questions: LegendItem = { keys: '←/→', verb: 'questions' };
   let first: string;
   if (isReview(state)) {
-    first = legend(['Enter send answers', '←→ questions', 'Ctrl+S skip all'], [], width);
+    first = answerRow([{ keys: 'Enter', verb: 'send answers' }, questions, skip], [], width);
   } else if (state.field !== undefined) {
-    first = legend(['Enter save', '↑ back to the list', 'Ctrl+S skip all'], [], width);
+    first = answerRow(
+      [{ keys: 'Enter', verb: 'save' }, { keys: '↑', verb: 'back to the list' }, skip],
+      [],
+      width,
+    );
   } else if (currentQuestion(state).multiSelect) {
-    first = legend(
-      ['↑↓ move', 'Space tick', 'Enter continue'],
-      [...(several ? ['←→ questions'] : []), 'Ctrl+S skip all'],
+    first = answerRow(
+      [
+        { keys: '↑/↓', verb: 'move' },
+        { keys: 'Space', verb: 'tick' },
+        { keys: 'Enter', verb: 'continue' },
+      ],
+      [...(several ? [{ item: questions, priority: 2 }] : []), { item: skip, priority: 1 }],
       width,
     );
   } else {
-    first = legend(
-      ['↑↓ move', 'Enter choose'],
-      ['type your own', ...(several ? ['←→ questions'] : []), 'Ctrl+S skip all'],
+    first = answerRow(
+      [
+        { keys: '↑/↓', verb: 'move' },
+        { keys: 'Enter', verb: 'choose' },
+      ],
+      [
+        { item: { text: 'type your own' }, priority: 3 },
+        ...(several ? [{ item: questions, priority: 2 }] : []),
+        { item: skip, priority: 1 },
+      ],
       width,
     );
   }
-  const stop = state.field !== undefined && !isReview(state) ? FIELD_STOP_ROW : STOP_ROW;
-  return [first, head(guideNote ? `${stop}${GUIDE_NOTE}` : stop, width)];
+  const note = guideNote ? [GUIDE_NOTE] : [];
+  const stop =
+    state.field !== undefined && !isReview(state)
+      ? legend([...note, FIELD_STOP_KEY], FIELD_EXIT)
+      : legend(note, QUESTION_STOP);
+  return [first, head(stop, width)];
 }
 
 /** The Review tab's rows for answers: the body bound minus its title and its closing note. */
@@ -330,7 +370,10 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   rows.push({
     text: head(
       state.hint === undefined
-        ? `Enter sends them · ←→ or 1-${String(questionCount(state))} to change one`
+        ? itemsRow([
+            { keys: 'Enter', verb: 'send them' },
+            { keys: ['←/→', `1-${String(questionCount(state))}`], verb: 'change one' },
+          ]).text
         : state.hint,
       width,
     ),

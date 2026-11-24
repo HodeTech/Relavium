@@ -12,6 +12,7 @@ import type {
   TranscriptEntry,
   TurnSummary,
 } from './session-view-model.js';
+import { exitKey, keyToken, legend } from './legend.js';
 import type { ScrollGeometry } from './scroll.js';
 import { wrapText, type DisplayLine } from './viewport.js';
 
@@ -442,6 +443,15 @@ export function liveScrollGeometry(
   };
 }
 
+/**
+ * What `Esc` says while a turn runs (ADR-0145 §2, the decide class: it stops the turn and keeps the session, EA7). One constant for the
+ * busy line, the abort hint under streamed content and the paused-display line, so the key says the same words on every state of the turn.
+ */
+export const STOP_THE_TURN = exitKey.decide('stops the turn');
+
+/** What `Esc` says while a compaction or a `!` command runs: the same abort, stated for what is being cancelled. */
+const CANCEL_IT = exitKey.decide('cancels it');
+
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
  *  shell / the pre-token "Working…" line) or as PLAIN, full-width streaming CONTENT (the answer token line). */
 export interface BusyLine {
@@ -454,7 +464,7 @@ export interface BusyLine {
  * without mounting React. Four states in priority order:
  *  1. the labeled compaction moment (ADR-0062 §7);
  *  2. the `!`-shell command line (2.5.D);
- *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc to stop`, a whole-second timer + the abort
+ *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc stops the turn`, a whole-second timer + the abort
  *     hint, so a running turn never reads as a frozen bare spinner;
  *  4. the streaming answer CONTENT — with a leading `…` elision marker when the live buffer's head scrolled out (a
  *     VISIBLE loss, not the old silent drop).
@@ -487,17 +497,26 @@ export function formatBusyLine(input: {
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
-    return { text: `${spinner} ⟳ Summarizing conversation… · Esc to cancel`, dim: true };
+    return {
+      text: legend([{ text: `${spinner} ⟳ Summarizing conversation…` }], CANCEL_IT),
+      dim: true,
+    };
   }
   if (input.busyCommand !== undefined) {
     return {
-      text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      text: legend(
+        [{ text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running` }],
+        CANCEL_IT,
+      ),
       dim: true,
     };
   }
   if (input.awaitingApprovalMs !== undefined) {
     return {
-      text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)} · Esc stops the turn`,
+      text: legend(
+        [{ text: `${spinner} Waiting for your answer ${formatElapsed(input.awaitingApprovalMs)}` }],
+        STOP_THE_TURN,
+      ),
       dim: true,
     };
   }
@@ -505,7 +524,7 @@ export function formatBusyLine(input: {
   if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
-    return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
+    return { text: legend([{ text: `${spinner} ${label}${elapsed}` }], STOP_THE_TURN), dim: true };
   }
   // The alt screen's live region is a FIXED-HEIGHT box: an unbounded busy line does not scroll, it collides with its
   // siblings and overwrites them. Bound it to the caller's row budget, the same discipline the reasoning panel uses.
@@ -519,8 +538,8 @@ export function formatBusyLine(input: {
 }
 
 /**
- * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc to stop"
- * inline, and the compaction/shell status lines carry their own "· Esc to cancel" — but once answer CONTENT
+ * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc stops the turn"
+ * inline, and the compaction/shell status lines carry their own "· Esc cancels it" — but once answer CONTENT
  * streams the busy line becomes full-width, wrapping text with no room for the affordance, even though `Esc`
  * still aborts the whole turn. Returns the standalone hint the caller renders as a dim line BENEATH the streaming
  * content, or `undefined` for a STATUS line (`busy.dim`) that already shows its inline hint — so the affordance
@@ -528,7 +547,7 @@ export function formatBusyLine(input: {
  * there is one source of truth for status-vs-content.
  */
 export function streamingAbortHint(busy: BusyLine): string | undefined {
-  return busy.dim ? undefined : 'Esc to stop';
+  return busy.dim ? undefined : legend([], STOP_THE_TURN);
 }
 
 /**
@@ -658,7 +677,7 @@ export function formatReasoningPanel(input: {
    *  or < 1 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
   readonly columns?: number | undefined;
 }): ReasoningPanel {
-  const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
+  const header = `✻ Reasoning · ${keyToken('Ctrl+T')} ${input.visible ? 'hide' : 'show'}`;
   if (!input.visible) {
     return { header };
   }

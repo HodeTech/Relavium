@@ -224,12 +224,12 @@ describe('the label', () => {
   });
 
   it('names the id, the gate kind and, on the focused row, the key that opens the card', () => {
-    expect(parkedRunLabel(row(), true)).toBe('‖ run-0001  ·  approval gate  ·  Enter opens');
+    expect(parkedRunLabel(row(), true)).toBe('‖ run-0001  ·  approval gate  ·  Enter open');
     expect(parkedRunLabel(row({ kind: 'budget' }), true)).toContain('budget gate');
     expect(parkedRunLabel(row({ kind: 'input' }), true)).toContain('input gate');
     // The card of an input gate takes no typed value, so its key says what `Enter` does there: it shows how to answer.
     expect(parkedRunLabel(row({ kind: 'input' }), true)).toBe(
-      '‖ run-0001  ·  input gate  ·  Enter shows how to answer',
+      '‖ run-0001  ·  input gate  ·  Enter show how to answer',
     );
     expect(parkedRunLabel(row({ kind: 'review' }), true)).toContain('review gate');
     expect(parkedRunLabel(row({ kind: 'several', gates: 3 }), true)).toContain('3 open gates');
@@ -237,26 +237,26 @@ describe('the label', () => {
 
   it('says how to reach a row that is not focused instead of offering Enter for it', () => {
     const label = parkedRunLabel(row(), false);
-    expect(label).toBe('‖ run-0001  ·  approval gate  ·  ↓ selects');
+    expect(label).toBe('‖ run-0001  ·  approval gate  ·  ↓ select');
     expect(label).not.toContain('Enter');
   });
 
   it('a run with no gate to decide says so, and its key explains instead of opening a card', () => {
     const label = parkedRunLabel(row({ kind: 'none', gates: 0 }), true);
     expect(label).toContain('no gate to decide');
-    expect(label).toContain('Enter says why');
-    expect(label).not.toContain('Enter opens');
+    expect(label).toContain('Enter say why');
+    expect(label).not.toContain('Enter open');
   });
 
   it('a run parked on media jobs alone says it waits for media, and its key says it asks before it continues', () => {
     const focused = parkedRunLabel(row({ kind: 'media', gates: 0 }), true);
-    expect(focused).toBe('‖ run-0001  ·  waiting for media  ·  Enter asks to continue');
+    expect(focused).toBe('‖ run-0001  ·  waiting for media  ·  Enter ask to continue');
     expect(focused, 'not the words of a run that has nothing to answer').not.toContain('no gate');
-    expect(focused).not.toContain('Enter says why');
-    expect(focused).not.toContain('Enter opens');
+    expect(focused).not.toContain('Enter say why');
+    expect(focused).not.toContain('Enter open');
     // Not focused: it says how to reach it, as every row does, and offers no Enter.
     expect(parkedRunLabel(row({ kind: 'media', gates: 0 }), false)).toBe(
-      '‖ run-0001  ·  waiting for media  ·  ↓ selects',
+      '‖ run-0001  ·  waiting for media  ·  ↓ select',
     );
   });
 
@@ -281,13 +281,13 @@ describe('the label', () => {
       const label = parkedRunLabel(none, true, full.length - 1);
       expect(label.length, 'exactly the room it was given').toBe(full.length - 1);
       expect(label.startsWith(`‖ ${UUID.slice(0, 20)}`)).toBe(true);
-      expect(label).toContain('…  ·  parked, no gate to decide  ·  Enter says why');
+      expect(label).toContain('…  ·  parked, no gate to decide  ·  Enter say why');
     });
 
     it('keeps at least one column of the id however little room there is, and never cuts the key', () => {
       const label = parkedRunLabel(none, true, 10);
       expect(label.startsWith('‖ 0…')).toBe(true);
-      expect(label.endsWith('Enter says why')).toBe(true);
+      expect(label.endsWith('Enter say why')).toBe(true);
     });
   });
 });
@@ -391,10 +391,10 @@ describe('the workflow and the deadline a row carries', () => {
 
     it('is the id, the workflow, the kind, the deadline and the key, when there is room', () => {
       expect(parkedRunLabel(parked(), true, Number.POSITIVE_INFINITY, NOW)).toBe(
-        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter opens',
+        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
       );
       expect(parkedRunLabel(parked(), false, Number.POSITIVE_INFINITY, NOW)).toBe(
-        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ selects',
+        '‖ run-0001  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
       );
     });
 
@@ -410,7 +410,7 @@ describe('the workflow and the deadline a row carries', () => {
 
     it('has no deadline words without a clock, and none for a run with no deadline', () => {
       expect(parkedRunLabel(parked(), true)).toBe(
-        '‖ run-0001  ·  deploy  ·  approval gate  ·  Enter opens',
+        '‖ run-0001  ·  deploy  ·  approval gate  ·  Enter open',
       );
       expect(parkedRunLabel(parked({ expiresAt: undefined }), true, 200, NOW)).not.toContain(
         'expire',
@@ -421,7 +421,7 @@ describe('the workflow and the deadline a row carries', () => {
       const room = 80 - 4;
       const label = parkedRunLabel(parked({ runId: UUID }), true, room, NOW);
       expect(label).toBe(
-        '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter opens',
+        '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
       );
       expect(displayWidth(label)).toBeLessThanOrEqual(room);
     });
@@ -430,16 +430,17 @@ describe('the workflow and the deadline a row carries', () => {
       const room = 80 - 4;
       const wide = parked({ runId: UUID, workflow: 'nightly-release-pipeline-eu' });
       const noWorkflow = parkedRunLabel(wide, true, room, NOW);
-      expect(noWorkflow).toBe('‖ 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  Enter opens');
-      // A run with nothing to decide has the longest words: neither the workflow nor the deadline fits beside them.
+      expect(noWorkflow).toBe('‖ 0b8f3a5…  ·  approval gate  ·  expires in 5m  ·  Enter open');
+      // A run with nothing to decide has the longest words: neither the workflow nor the deadline fits beside them. (`Enter say why` is
+      // one column shorter than the third-person `Enter says why` was, so the deadline needs one column less: the room is one less too.)
       const none = parked({ runId: UUID, kind: 'none', gates: 0 });
-      const bare = parkedRunLabel(none, true, room, NOW);
+      const bare = parkedRunLabel(none, true, room - 1, NOW);
       expect(bare).not.toContain('deploy');
       expect(bare).not.toContain('expire');
-      expect(bare.endsWith('parked, no gate to decide  ·  Enter says why')).toBe(true);
+      expect(bare.endsWith('parked, no gate to decide  ·  Enter say why')).toBe(true);
       for (let columns = 30; columns <= 120; columns += 1) {
         const label = parkedRunLabel(wide, true, columns, NOW);
-        expect(label.endsWith('Enter opens'), `${String(columns)} columns: the key`).toBe(true);
+        expect(label.endsWith('Enter open'), `${String(columns)} columns: the key`).toBe(true);
         expect(label, `${String(columns)} columns: the kind`).toContain('approval gate');
         if (columns >= 57) expect(displayWidth(label)).toBeLessThanOrEqual(columns);
       }

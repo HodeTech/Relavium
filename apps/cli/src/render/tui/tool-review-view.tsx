@@ -23,7 +23,7 @@ import {
   type ToolReviewState,
 } from './tool-review-model.js';
 import {
-  cardKeyRows,
+  cardKeyLegend,
   cardScopePhrase,
   cardStats,
   cardVerb,
@@ -34,11 +34,13 @@ import {
   fullChrome,
   fullBodyRows,
   fullStatusRow,
-  keyLabelParts,
   type CallListRow,
   type FullChrome,
   type InspectionPending,
 } from './tool-review-screen.js';
+import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
+import { itemsRow, rowSegments, type LegendRow } from './legend-row.js';
+import type { SheetRole } from './sheet-frame.js';
 import { colorProps, dimProps } from './projection.js';
 import {
   createReviewDocument,
@@ -187,16 +189,18 @@ export function ToolReviewHost(
   });
   if (review === undefined) return null;
   if (!reviewTerminalFits(props.size))
-    return <Text>Terminal too small — resize to at least 80×24. {reviewExitHint(review)}</Text>;
+    return <Text>{reviewExitHint(review, 'Terminal too small — resize to at least 80×24')}</Text>;
   if (blocked === review || page?.valid === false || identity?.valid === false)
     return (
       <Text>
-        {reviewUnavailableText({
-          identityInvalid: identity?.valid === false,
-          commandTooLarge: review.facts !== undefined && review.document?.valid === false,
-          onCard: review.screen === 'card',
-        })}{' '}
-        {reviewExitHint(review)}
+        {reviewExitHint(
+          review,
+          reviewUnavailableText({
+            identityInvalid: identity?.valid === false,
+            commandTooLarge: review.facts !== undefined && review.document?.valid === false,
+            onCard: review.screen === 'card',
+          }),
+        )}
       </Text>
     );
   if (review.screen === 'card') {
@@ -328,19 +332,26 @@ function buildFullChrome(
   });
 }
 
+/** `Ctrl+N` denies without ending the turn: the one answer a review that cannot be shown still takes. */
+const DENY_KEY: LegendItem = { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' };
+/** The stop key, named where `Esc` is the exit and so does something else. */
+const STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'warn' };
+
 /**
- * What the keys do on a review that cannot be shown: `Ctrl+N` denies without ending the turn; on the card Esc stops it, on the
- * full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4). Inside a modal sub-state (a typed denial reason, the
- * full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets those states act on a frame the person can
- * read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
+ * What `explanation` (why the review is not shown) is followed by: what the keys do on a review that cannot be shown. `Ctrl+N` denies
+ * without ending the turn; on the card Esc stops it, on the full view Esc steps back to the card and `Ctrl+C` stops it (ADR-0137 §4).
+ * Inside a modal sub-state (a typed denial reason, the full view's search) an unseen frame leaves `Ctrl+N` inert — the model only lets
+ * those states act on a frame the person can read — so only the two exits are true there: Esc closes the box and `Ctrl+C` stops the turn.
+ * The explanation is the legend's first item, its closing full stop dropped (a legend has none).
  */
-function reviewExitHint(review: ToolReviewState): string {
-  if (review.kind !== 'approval') return 'Esc closes.';
+function reviewExitHint(review: ToolReviewState, explanation: string): string {
+  const because: LegendItem = { text: explanation.replace(/\.$/u, '') };
+  if (review.kind !== 'approval') return legend([because], exitKey.close());
   const modal = review.denial !== undefined || review.searching;
-  if (modal) return 'Esc closes the box · Ctrl+C stops the turn.';
+  if (modal) return legend([because, STOP_KEY], exitKey.close('Esc', 'close the box'));
   return review.screen === 'card'
-    ? '[Ctrl+N] denies · Esc stops the turn.'
-    : '[Ctrl+N] denies · Esc back · Ctrl+C stops the turn.';
+    ? legend([because, DENY_KEY], exitKey.decide('stops the turn'))
+    : legend([because, DENY_KEY, STOP_KEY], exitKey.step());
 }
 
 const RULE_LABEL = ' Approval needed ';
@@ -357,8 +368,8 @@ export function reviewUnavailableText(why: {
     return 'A command is waiting, but it is too large for this card to show (more than 63 arguments, or an argument or the whole line over 4,096 characters), so it cannot be approved here. Denying tells the model to run it as smaller commands.';
   // `[v]` opens the full view from the card; on the full view it does nothing, so the sentence does not offer it.
   return why.onCard
-    ? 'Review unavailable — enlarge terminal, narrow change, or [v] full view / [p] code points.'
-    : 'Review unavailable — enlarge terminal, narrow change, or [p] code points.';
+    ? `Review unavailable — enlarge terminal, narrow change, or ${keyToken('v')} full view / ${keyToken('p')} code points.`
+    : `Review unavailable — enlarge terminal, narrow change, or ${keyToken('p')} code points.`;
 }
 
 /** The card's title rows: a delivered saved result's, an unlabelled call's, or the verb and the target's rows. */
@@ -388,17 +399,21 @@ function approvalRule(columns: number): string {
   return `\u2500${RULE_LABEL}${'\u2500'.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
 }
 
-/** Colour a key legend: the answers stand out (allow green, deny red, the rest cyan), the words stay dim. */
-export function keyTone(part: string, color: boolean): Record<string, unknown> {
+/** Colour a key legend by the role its builder gave each stretch: allow green, deny red, a stop yellow, other keys cyan, the words dim. */
+export function keyTone(role: SheetRole, color: boolean): Record<string, unknown> {
   if (!color) return {};
-  if (part === '[Ctrl+Y]' || part === '[Ctrl+G]' || part === '[Ctrl+O]')
-    return { color: 'green', bold: true };
-  if (part === '[Ctrl+N]') return { color: 'red', bold: true };
-  // `Esc` and `Ctrl+C` are the exits (back, or stop): the stop key is as visible as any answer.
-  if (part === 'Esc' || part === 'Ctrl+C') return { color: 'yellow', bold: true };
-  // Every other key (`[v]`, `[Ctrl+R]`, `[PgUp/PgDn]`, `[p]`, …) is a cyan label.
-  if (part.startsWith('[') && part.endsWith(']')) return { color: 'cyan', bold: true };
-  return { dimColor: true };
+  switch (role) {
+    case 'ok':
+      return { color: 'green', bold: true };
+    case 'danger':
+      return { color: 'red', bold: true };
+    case 'warn':
+      return { color: 'yellow', bold: true };
+    case 'strong':
+      return { color: 'cyan', bold: true };
+    case 'dim':
+      return { dimColor: true };
+  }
 }
 
 /**
@@ -422,18 +437,18 @@ function KeyRow({
   row,
   color,
   question = false,
-}: Readonly<{ row: string; color: boolean; question?: boolean }>): ReactElement {
+}: Readonly<{ row: LegendRow; color: boolean; question?: boolean }>): ReactElement {
   if (question)
     return (
       <Text wrap="truncate-end" bold>
-        {row}
+        {row.text}
       </Text>
     );
   return (
     <Text wrap="truncate-end">
-      {keyed(keyLabelParts(row), (part) => part).map(({ key, item: part }) => (
-        <Text key={key} {...keyTone(part, color)}>
-          {part}
+      {keyed(rowSegments(row), (segment) => segment.text).map(({ key, item: segment }) => (
+        <Text key={key} {...keyTone(segment.role, color)}>
+          {segment.text}
         </Text>
       ))}
     </Text>
@@ -538,7 +553,7 @@ function ReviewCard({
       reviewOffersAlways(review, page, snapshot.approval?.cacheable === true),
     ...commandKeys(snapshot, review, page),
   };
-  const keys = cardKeyRows(keyInput);
+  const keys = cardKeyLegend(keyInput);
   const questionOpen = keyInput.confirmAlways || keyInput.confirmRemember === true;
   const cut = (page?.hiddenLines ?? 0) > 0;
   return (
@@ -591,11 +606,14 @@ function ReviewCard({
           </Text>
           <Text wrap="truncate-end">{`Reason to deny: ${inputDisplay(review.denial)}\u2588`}</Text>
           <Text wrap="truncate-end">
-            {'Enter denies and continues \u00b7 Esc closes this box \u00b7 Ctrl+C stops the turn'}
+            {legend(
+              [{ keys: 'Enter', verb: 'deny and continue' }, STOP_KEY],
+              exitKey.close('Esc', 'close this box'),
+            )}
           </Text>
         </Box>
       ) : (
-        keyed(keys, (row) => row).map(({ key, item: row, index }) => (
+        keyed(keys, (row) => row.text).map(({ key, item: row, index }) => (
           <KeyRow
             key={key}
             row={row}
@@ -784,13 +802,18 @@ function ReviewScreen({
       <Text wrap="truncate-end">{review.message === '' ? ' ' : escaped(review.message)}</Text>
       {review.searching && (
         <Text wrap="truncate-end">
-          Search visible source: {inputDisplay(review.query ?? '')}█ · Enter find
+          {
+            itemsRow([
+              { text: `Search visible source: ${inputDisplay(review.query ?? '')}█` },
+              { keys: 'Enter', verb: 'find' },
+            ]).text
+          }
         </Text>
       )}
-      {keyed(chrome.nav, (row) => row).map(({ key, item: row }) => (
+      {keyed(chrome.legends.nav, (row) => row.text).map(({ key, item: row }) => (
         <KeyRow key={`nav-${key}`} row={row} color={color} />
       ))}
-      {keyed(chrome.answers, (row) => row).map(({ key, item: row }) => (
+      {keyed(chrome.legends.answers, (row) => row.text).map(({ key, item: row }) => (
         <KeyRow key={`answer-${key}`} row={row} color={color} />
       ))}
       {review.kind === 'approval' ? (
@@ -798,7 +821,7 @@ function ReviewScreen({
           {chrome.note}
         </Text>
       ) : (
-        <KeyRow row={chrome.note} color={color} />
+        <KeyRow row={chrome.legends.note} color={color} />
       )}
     </>
   );

@@ -88,7 +88,7 @@ describe('the allowance is the structured field, and only that', () => {
     expect(text).toContain('Approval funds this agent execution only, for exactly this amount.');
     expect(text).toContain('node writer · budget gate');
     expect(text).toContain('Aborting dispatches no agent and fails the run (budget_exceeded).');
-    expect(f.rows().at(-1)).toBe('Ctrl+Y approves · Ctrl+N aborts · Esc leaves it pending');
+    expect(f.rows().at(-1)).toBe('[Ctrl+Y] Approve · [Ctrl+N] Abort · Esc leaves it pending');
   });
 
   it('reads no figure from anything else: a node name, an excluded notice or a message that carries another amount changes nothing', () => {
@@ -147,7 +147,7 @@ describe('the allowance is the structured field, and only that', () => {
     expect(quoted[0]).not.toContain('✓');
     expect(quoted.at(-1)).toBe('│ … 2 more excluded');
     expect(rows.filter((row) => row.includes('Ctrl+Y'))).toEqual([
-      'Ctrl+Y approves · Ctrl+N aborts · Esc leaves it pending',
+      '[Ctrl+Y] Approve · [Ctrl+N] Abort · Esc leaves it pending',
     ]);
   });
 });
@@ -199,7 +199,7 @@ describe('Ctrl+Y approves exactly the frozen allowance, and Ctrl+N aborts', () =
     expect(snapshot).toMatchObject({ phase: 'open', refused: true });
     expect(snapshot.gates).toHaveLength(1);
     expect(f.text()).toContain('The quoted price changed.');
-    expect(f.rows().at(-1)).toContain('Ctrl+N aborts');
+    expect(f.rows().at(-1)).toContain('[Ctrl+N] Abort');
     f.at(20_000);
     expect(f.chord('n')).toMatchObject({ kind: 'answered', decision: { decision: 'rejected' } });
   });
@@ -212,7 +212,7 @@ describe('an allowance that cannot be approved offers Abort only', () => {
     expect(text).toContain('This execution has no priced allowance, so it can only be aborted.');
     expect(text).not.toContain('Frozen allowance');
     expect(text).not.toContain('Approval funds');
-    expect(f.rows().at(-1)).toBe('Ctrl+N aborts · Esc leaves it pending');
+    expect(f.rows().at(-1)).toBe('[Ctrl+N] Abort · Esc leaves it pending');
     expect(f.rows().at(-1)).not.toContain('Ctrl+Y');
   });
 
@@ -350,11 +350,11 @@ describe('an overdue budget gate, and a run with a human gate and a budget gate'
     const keys = (): string | undefined =>
       projectRunCard(card.getSnapshot(), { columns: 80, rows: 24, nowMs: 0 }).rows.at(-1)?.text;
     expect(keys()).toBe(
-      '↑/↓ choose a gate · Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '↑/↓ choose a gate · [Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     );
     card.input('', { downArrow: true });
     expect(keys()).toBe(
-      '↑/↓ choose a gate · Ctrl+Y approves · Ctrl+N aborts · Esc leaves it pending',
+      '↑/↓ choose a gate · [Ctrl+Y] Approve · [Ctrl+N] Abort · Esc leaves it pending',
     );
     card.input('n', CTRL);
     await flush();

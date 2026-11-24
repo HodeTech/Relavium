@@ -71,11 +71,11 @@ describe('the exit-guard card through RootApp', () => {
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('A workflow run is executing: run-0001.');
     expect(frame).toContain('▶ run-0001');
-    expect(frame).not.toContain('Ctrl+C twice to exit');
+    expect(frame).not.toContain('[Ctrl+C] exit (twice)');
     expect(onExit).not.toHaveBeenCalled();
   });
 
@@ -84,7 +84,7 @@ describe('the exit-guard card through RootApp', () => {
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const lines = (harness.lastFrame() ?? '').split('\n');
     const title = lines.find((line) => line.includes('A workflow run is executing'));
     expect(title?.trim(), 'a glyph, then the words, on one row').toBe(
@@ -109,8 +109,8 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     harness.stdin.write(CTRL_N);
     await waitFor(() => controller.getSnapshot().exitGuard === undefined);
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+C twice to exit'));
-    expect(harness.lastFrame()).not.toContain('Ctrl+Y stop the run');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+C] exit (twice)'));
+    expect(harness.lastFrame()).not.toContain('[Ctrl+Y] stop the run');
     expect(cancel).not.toHaveBeenCalled();
   });
 
@@ -119,7 +119,7 @@ describe('the exit-guard card through RootApp', () => {
     await settleFrames();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the card's exact frame is measured and flushed: only then does Ctrl+Y count
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
@@ -138,8 +138,8 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
-    expect(harness.lastFrame()).not.toContain('Starting chat… · Ctrl+C to exit');
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
+    expect(harness.lastFrame()).not.toContain('Starting chat… · [Ctrl+C] exit');
   });
 
   it('Ctrl+Y counts in the loading echo too, once that frame is on screen: the echo is measured like the landing', async () => {
@@ -150,7 +150,7 @@ describe('the exit-guard card through RootApp', () => {
     await waitFor(() => controller.getSnapshot().mode === 'loading');
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     await settleFrames(); // the echo's exact frame is measured and flushed: only then does Ctrl+Y count
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
@@ -169,7 +169,7 @@ describe('the exit-guard card through RootApp', () => {
     );
     harness.stdin.write(CTRL_C);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     const frame = harness.lastFrame() ?? '';
     expect(frame, 'the card and the line that explains why Ctrl+Y answers nothing').toContain(
       'Terminal too small (60×20) — resize to at least 80×24.',
@@ -203,7 +203,7 @@ describe('the exit-guard card through RootApp', () => {
     ).not.toHaveBeenCalled();
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
-    await waitFor(() => (harness.lastFrame() ?? '').includes('Ctrl+Y stop the run and leave'));
+    await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
     expect(harness.lastFrame()).toContain('Terminal too small (60×20)');
     // A cancel that cannot be undone needs the card on screen as the person is meant to read it: at 80×24 or more, never in the degrade.
     harness.stdin.write(CTRL_Y);

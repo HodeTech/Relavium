@@ -14,7 +14,8 @@ import {
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
 import { colorProps, dimProps } from './projection.js';
-import { projectQuestionCard, type QuestionRowTone } from './question-card.js';
+import { legend } from './legend.js';
+import { QUESTION_STOP, projectQuestionCard, type QuestionRowTone } from './question-card.js';
 
 function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknown> {
   switch (tone) {
@@ -102,10 +103,16 @@ export function QuestionCardHost(
   if (card === undefined) return null;
   if (!reviewTerminalFits(props.size))
     return (
-      <Text>Terminal too small — resize to at least 80×24. Esc or Ctrl+C stops the turn.</Text>
+      <Text>
+        {legend([{ text: 'Terminal too small — resize to at least 80×24' }], QUESTION_STOP)}
+      </Text>
     );
   if (blocked === shown)
-    return <Text>Question unavailable — enlarge the terminal. Esc or Ctrl+C stops the turn.</Text>;
+    return (
+      <Text>
+        {legend([{ text: 'Question unavailable — enlarge the terminal' }], QUESTION_STOP)}
+      </Text>
+    );
   const color = props.color === true;
   const view = projectQuestionCard(card, props.size.cols, {
     guideNote: snapshot.mode === 'accept-edits' || snapshot.mode === 'auto',

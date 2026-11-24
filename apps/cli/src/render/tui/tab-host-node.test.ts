@@ -40,14 +40,14 @@ import { createPinPort } from '../../home/pin-port.js';
 import { readAbsenceReference } from '../../test-support.js';
 import { ABSENCE_SENTENCES } from '../absence.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   withHistoryLoad,
   type TabHostContext,
@@ -57,6 +57,7 @@ import {
 import type { HistoryPort } from './tab-host-history.js';
 import {
   NODE_FAULT,
+  NODE_KEYS,
   NODE_LOG_PARTIAL,
   NODE_NOT_A_NODE,
   NODE_NOT_HERE,
@@ -279,8 +280,9 @@ describe('what the node page shows', () => {
       for (const line of lines)
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(usableColumns(80));
       expect(lines.at(-1)?.kind).toBe('legend');
+      // `[Ctrl+C] close` no longer fits the 78 columns beside the node page's own keys (the brackets of the key grammar take two), so it is left out
       expect(lines.at(-1)?.text).toBe(
-        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
+        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
       );
       expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
       r.press('', DOWN);
@@ -338,15 +340,18 @@ describe('what the node page shows', () => {
   it('names exactly the keys it answers to, and each does what it says', async () => {
     const r = rig();
     await r.openRun(FIXTURE_RUN_IDS.failed);
-    expect(legend(tabHostLegendItems(r.state))).toBe(
+    expect(tabHostLegendText(r.state)).toBe(
       '←/→ tab · ↑/↓ scroll · Enter open · [n] first failed · [p] pin · Esc back',
     );
     r.press('n');
     expect(r.selected()).toContain('review');
     r.press('', ENTER);
-    expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
+    expect(tabHostLegendText(r.state)).toBe(
+      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
     );
+    // the page's `Esc` returns to the run's detail on the line it left: one level, the Step class, and it is the page's own key
+    expect(tabHostLegend(r.state).exit).toBe(NODE_KEYS.back);
+    expect(NODE_KEYS.back).toMatchObject({ keys: 'Esc', verb: 'back', class: 'step' });
     r.press('n');
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
     r.press('', DOWN);
@@ -372,8 +377,8 @@ describe('what the node page shows', () => {
     const rows = r.text().split('\n');
     expect(rows).toContain('  The record of this node is unavailable.');
     expect(rows).toContain("  Its attempt, or the run's event log, could not be read.");
-    expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · Ctrl+C close · Esc back',
+    expect(tabHostLegendText(r.state)).toBe(
+      '←/→ tab · Tab cycle · ↑/↓ scroll · [Ctrl+C] close · Esc back',
     );
     r.press('n');
     expect(r.node()?.message).toBe(NODE_NO_ATTEMPT);
@@ -384,7 +389,7 @@ describe('below the 80×24 floor the legend names the level `Esc` steps back to'
   const SMALL = { columns: 79, terminalRows: 24 };
   const smallLines = (state: TabHostState): string[] =>
     tabHostLines(state, SMALL).map((line) => line.text);
-  const HINT = 'Enlarge the terminal — Esc steps back, or closes at the list.';
+  const HINT = 'Enlarge the terminal.';
 
   it('says `back to the run` on a node page, `back to the list` on a run’s detail, and `close` only at the list', async () => {
     const r = rig();

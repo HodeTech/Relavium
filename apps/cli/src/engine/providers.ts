@@ -14,6 +14,7 @@ import {
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import { keyLabel, keyToken, LEGEND_SEPARATOR } from '../render/tui/legend.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
@@ -161,7 +162,7 @@ export function providerKeyAvailabilityMessage(
     surface === 'home'
       ? 'open `/providers` to connect a key or review its source.'
       : surface === 'home-chat'
-        ? 'go back to the Home (Ctrl+C twice) and use `/providers` to connect a key or review its source.'
+        ? `go back to the Home (${keyToken('Ctrl+C')} twice) and use \`/providers\` to connect a key or review its source.`
         : surface === 'standalone-chat'
           ? 'connect a key or review its source from the Home (start Relavium without arguments).'
           : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
@@ -186,16 +187,20 @@ export function providerKeyAvailabilityMessage(
  * columns, which also leaves no wrapped row to start with a stray space.
  */
 export function providerRowHint(availability: ProviderKeyAvailability): string {
+  // What `Enter` does is a key and its verb after the state, the shape of a legend item; a row's hint names no key that leaves (the list's own
+  // legend does), which `legend()` requires, so the key and the separator are written by the builder's own rules instead.
+  const enter = (state: string, verb: string): string =>
+    `${state}${LEGEND_SEPARATOR}${keyLabel('Enter')} ${verb}`;
   switch (availability.status) {
     case 'present-standard-not-allowed':
-      return `${availability.source.name} is set · Enter to review it`;
+      return enter(`${availability.source.name} is set`, 'review it');
     case 'ineligible-custom-endpoint':
       // Short on purpose: choosing the row says why in a note of its own (`${name} cannot be used with the configured custom endpoint`).
-      return 'custom endpoint · Enter to add a key';
+      return enter('custom endpoint', 'add a key');
     case 'unavailable':
-      return 'the OS keychain is unavailable · Enter for options';
+      return enter('the OS keychain is unavailable', 'show options');
     case 'missing':
-      return 'no key yet · Enter to add one';
+      return enter('no key yet', 'add one');
     case 'usable':
       return `An API key is available from ${'name' in availability.source ? availability.source.name : availability.source.label}.`;
   }

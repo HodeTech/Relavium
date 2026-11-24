@@ -2934,7 +2934,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     await flush();
     c.handleKey('', ENTER);
     expect(c.getSnapshot().modelPicker?.hint).toBe(
-      'Model X: no key for Google Gemini — go back to the Home (Ctrl+C twice) and use /providers',
+      'Model X: no key for Google Gemini — go back to the Home ([Ctrl+C] twice) and use /providers',
     );
   });
 
@@ -3475,7 +3475,7 @@ describe('the /permissions sheet in the in-Home chat (ADR-0137 §2)', () => {
     expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.armed).toBe(false);
     expect(permissionsSheetOf(c.getSnapshot().chatSheet)?.message).toEqual({
       tone: 'note',
-      text: 'Wait a moment, then press d.',
+      text: 'Wait a moment, then press [d].',
     });
     // The person goes on typing at a slow, human pace: "…build", a character every 380 ms, then a long pause, `d`, a pause, Enter.
     for (const char of 'build') {

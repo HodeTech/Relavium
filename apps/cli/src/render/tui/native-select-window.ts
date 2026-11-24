@@ -1,4 +1,5 @@
-import type { NativePromptSnapshot } from './native-prompt-channel.js';
+import { legend, type LegendItem } from './legend.js';
+import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import { reviewTerminalFits, type TerminalFrameSize } from './measured-frame-acknowledgement.js';
 import { windowBody } from './sheet-frame.js';
 import { displayWidth, wrapWords } from './viewport.js';
@@ -28,8 +29,12 @@ const MARKED_WINDOW = 3;
 
 /** The legend under a select card: what it says changes only by the `PgUp/PgDn` item a windowed list adds. */
 export function selectLegend(back: boolean, windowed: boolean): string {
-  const leave = back ? 'Esc back · Ctrl+C leave' : 'Esc cancel';
-  return `↑/↓ select${windowed ? ' · PgUp/PgDn page' : ''} · Enter continue · ${leave}`;
+  const { before, exit } = nativeLeave(back);
+  const paging: readonly LegendItem[] = windowed ? [{ keys: 'PgUp/PgDn', verb: 'page' }] : [];
+  return legend(
+    [{ keys: '↑/↓', verb: 'select' }, ...paging, { keys: 'Enter', verb: 'continue' }, ...before],
+    exit,
+  );
 }
 
 /** What one option's row says: the cursor or its gutter, the label, and the hint after a dash. */

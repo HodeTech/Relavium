@@ -21,6 +21,7 @@
 
 import { CHAT_MODES, REASONING_EFFORTS } from '@relavium/shared';
 
+import { keyToken } from '../render/tui/legend.js';
 import type { CommandEffect } from './manifest.js';
 
 /**
@@ -469,7 +470,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
       ...inChats({
         group: 'model',
         rank: 20,
-        description: 'Choose the mode; Shift+Tab changes this chat only.',
+        description: `Choose the mode; ${keyToken('Shift+Tab')} changes this chat only.`,
         surface: 'popup',
       }),
     },
@@ -499,7 +500,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     placements: inChats({
       group: 'model',
       rank: 40,
-      description: 'Show or hide the reasoning ("thinking") panel (or Ctrl+T to toggle).',
+      description: `Show or hide the reasoning ("thinking") panel (or ${keyToken('Ctrl+T')} to toggle).`,
       surface: 'instant',
     }),
   },
@@ -532,21 +533,20 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Permissions',
     // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
     effect: 'read',
-    rejectHint: 'Open /permissions and press d on a row to withdraw it.',
+    rejectHint: `Open /permissions and press ${keyToken('d')} on a row to withdraw it.`,
     run: (ctx) => ctx.managePermissions(),
     placements: {
       // The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it.
       home: {
         group: 'setup',
         rank: 40,
-        description: 'Remembered commands for this project; d withdraws one.',
+        description: `Remembered commands for this project; ${keyToken('d')} withdraws one.`,
         surface: 'screen',
       },
       ...inChats({
         group: 'model',
         rank: 50,
-        description:
-          'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
+        description: `Open the permissions sheet: the commands remembered for this project and approved for this session; ${keyToken('d')} withdraws one.`,
         surface: 'popup',
       }),
     },

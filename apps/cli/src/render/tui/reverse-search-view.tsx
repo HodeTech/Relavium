@@ -3,7 +3,17 @@ import type { ReactElement } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
 import { reverseSearchMatchText, type ReverseSearchState } from './input-history.js';
+import { exitKey, legend } from './legend.js';
 import { colorProps, dimProps } from './projection.js';
+
+/** The hint under the search line: `Esc` leaves the search, and the draft it replaced is as it was (ADR-0145 §2, close). */
+const SEARCH_LEGEND = legend(
+  [
+    { keys: 'Ctrl+R', verb: 'older' },
+    { keys: 'Enter', verb: 'accept' },
+  ],
+  exitKey.close(),
+);
 
 /**
  * The `Ctrl+R` reverse-incremental-search line (2.5.D step 3) — a readline-style search prompt that replaces the
@@ -26,7 +36,7 @@ export function ReverseSearchView(
         {match !== undefined && <Text {...dimProps(color)}>{` → ${sanitizeInline(match)}`}</Text>}
       </Text>
       <Text {...dimProps(color)} wrap="truncate-end">
-        Ctrl+R older · Enter accept · Esc cancel
+        {SEARCH_LEGEND}
       </Text>
     </Box>
   );

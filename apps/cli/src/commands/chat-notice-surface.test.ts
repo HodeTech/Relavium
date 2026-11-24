@@ -118,7 +118,7 @@ describe('the effort notices a chat handler prints', () => {
 
   it('the interactive chat reads its own wording: the picker’s refresh, no shell command', async () => {
     const text = await effortText(true);
-    expect(text).toContain('Open /models and press Ctrl+R');
+    expect(text).toContain('Open /models and press [Ctrl+R]');
     expect(text).not.toContain('relavium models refresh');
   });
 
@@ -127,7 +127,7 @@ describe('the effort notices a chat handler prints', () => {
     expect(shell).toContain('relavium models refresh');
     expect(shell).not.toMatch(/Open \/models|Ctrl\+R/u);
     const tui = await withheldText(true);
-    expect(tui).toContain('Open /models and press Ctrl+R');
+    expect(tui).toContain('Open /models and press [Ctrl+R]');
     expect(tui).not.toContain('relavium models refresh');
   });
 });

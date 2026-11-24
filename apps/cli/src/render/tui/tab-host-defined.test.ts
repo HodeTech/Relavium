@@ -16,14 +16,14 @@ import {
 } from '../../history/defined-model.js';
 import { launchAmbiguous, launchChanged, launchMoved } from '../../home/run-launch.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   withDefinedNote,
@@ -183,7 +183,7 @@ describe('the rows say what they are, in a glyph and a word', () => {
     });
     const lines = tabHostLines(state, { columns: 80, terminalRows: 24 }).map((l) => l.text);
     const line = lines.find((l) => l.startsWith('Pinned in another project')) ?? '';
-    expect(line, 'the sentence about the pin is drawn').toContain('p removes the pin');
+    expect(line, 'the sentence about the pin is drawn').toContain('[p] removes the pin');
     expect(displayWidth(line)).toBeLessThanOrEqual(78);
     // The cut is real, and it falls on the project path (which comes last), never on what `p` does.
     expect(line.endsWith('…'), 'the line was cut').toBe(true);
@@ -210,7 +210,7 @@ describe('the rows say what they are, in a glyph and a word', () => {
       }),
       { columns: 80, terminalRows: 24 },
     ).map((l) => l.text);
-    expect(bare).toContain('Pinned in another project; p removes the pin.');
+    expect(bare).toContain('Pinned in another project; [p] removes the pin.');
   });
 
   it('says so when the project has no workflow, and when the tab cannot be listed', () => {
@@ -263,7 +263,7 @@ describe('↑ and ↓ move the cursor and stop at the ends', () => {
     expect(r.state.defined?.message).toBe(DEFINED_NO_DETAIL);
     expect(r.lines().join('\n')).toContain(DEFINED_NO_DETAIL);
     // The sentence names exactly the keys the legend names.
-    for (const key of ['r', 'x', 'p']) expect(DEFINED_NO_DETAIL).toContain(`${key} `);
+    for (const key of ['r', 'x', 'p']) expect(DEFINED_NO_DETAIL).toContain(`[${key}] `);
     // The next key drops it, as every message of the tab.
     r.press('', DOWN);
     expect(r.state.defined?.message).toBeUndefined();
@@ -504,17 +504,17 @@ describe('a crafted slug is inert', () => {
 describe('the legend names exactly the keys the tab answers to', () => {
   it('lists select, run, export and pin with the tab keys and Esc last, and each does what it says', () => {
     const r = rig(READY);
-    const items = tabHostLegendItems(r.state);
-    expect(items.map((item) => item.keys)).toEqual([
+    const { items, exit } = tabHostLegend(r.state);
+    expect([...items, exit].map((item) => ('keys' in item ? item.keys : item.text))).toEqual([
       '←/→',
       'Tab',
       '↑/↓',
-      '[r]',
-      '[x]',
-      '[p]',
+      'r',
+      'x',
+      'p',
       'Esc',
     ]);
-    expect(legend(items)).toBe(
+    expect(tabHostLegendText(r.state)).toBe(
       '←/→ tab · Tab cycle · ↑/↓ select · [r] run · [x] export · [p] pin · Esc close',
     );
     expect(DEFINED_KEYS.select.keys).toBe('↑/↓');
@@ -525,13 +525,18 @@ describe('the legend names exactly the keys the tab answers to', () => {
     // `p` is answered inside the tab host (through its pin port, which `tab-host-pin.test.ts` drives): here there is none.
     expect(r.press('p').kind).toBe('state');
     expect(r.state.defined?.message).toBe('Pinning is unavailable in this session.');
-    expect(DEFINED_KEYS.pin.keys).toBe('[p]');
+    expect(DEFINED_KEYS.pin.keys).toBe('p');
     expect(r.press('', ESC).kind).toBe('close');
   });
 
   it('names no row key when there is no row', () => {
-    const items = tabHostLegendItems(rig([]).state);
-    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', 'Ctrl+C', 'Esc']);
+    const { items, exit } = tabHostLegend(rig([]).state);
+    expect([...items, exit].map((item) => ('keys' in item ? item.keys : item.text))).toEqual([
+      '←/→',
+      'Tab',
+      'Ctrl+C',
+      'Esc',
+    ]);
   });
 });
 

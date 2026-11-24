@@ -1,6 +1,7 @@
 import { Box, Text, useApp, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
-import type { NativePromptSnapshot } from './native-prompt-channel.js';
+import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
+import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
 import {
   nativePromptFits,
   type NativePromptAcknowledgement,
@@ -21,29 +22,51 @@ import {
  * the card's own key rows (the same rule as the question card's gutter, ADR-0132).
  */
 const GUTTER = '│ ';
-const CHORD_KEYS: Readonly<Record<string, string>> = { allow: '[Ctrl+Y] ', deny: '[Ctrl+N] ' };
+const CHORD_KEYS: Readonly<Record<string, string>> = {
+  allow: `${keyToken('Ctrl+Y')} `,
+  deny: `${keyToken('Ctrl+N')} `,
+};
+
+/** What leaving a card does, where closing it is not the whole of it (ADR-0145 §2): a chord card refuses, and a busy card stops what it waits for. */
+function leaveEffect(snapshot: NativePromptSnapshot): string | undefined {
+  if (snapshot.kind === 'chord') return 'denies';
+  return snapshot.kind === 'busy' ? 'cancels it' : undefined;
+}
 
 /** The legend under a picker: what its keys do, or, after a failed read, how to try again or change the filter. */
 function pickerLegend(snapshot: NativePromptSnapshot): string {
   if (snapshot.error === '') {
-    return '↑/↓ select · Enter resume · Tab scope · PgUp/PgDn pages · Esc cancel';
+    return legend(
+      [
+        { keys: '↑/↓', verb: 'select' },
+        { keys: 'Enter', verb: 'resume' },
+        { keys: 'Tab', verb: 'scope' },
+        { keys: 'PgUp/PgDn', verb: 'page' },
+      ],
+      exitKey.close(),
+    );
   }
-  return snapshot.picker?.retryable === true
-    ? 'Enter retry · Esc cancel'
-    : 'Edit filter · Esc cancel';
+  const next: LegendItem =
+    snapshot.picker?.retryable === true
+      ? { keys: 'Enter', verb: 'retry' }
+      : { text: 'Edit filter' };
+  return legend([next], exitKey.close());
 }
 
-/** The one-line key legend under a prompt card, by the kind of card; `leave` is what the escape key does for this prompt. */
-function promptLegend(
-  snapshot: NativePromptSnapshot,
-  back: boolean,
-  leave: string,
-  windowed: boolean,
-): string {
+/** The one-line key legend under a prompt card, by the kind of card. */
+function promptLegend(snapshot: NativePromptSnapshot, windowed: boolean): string {
+  const back = snapshot.escape === 'back';
   if (snapshot.kind === 'picker') return pickerLegend(snapshot);
   if (snapshot.kind === 'select') return selectLegend(back, windowed);
-  if (snapshot.kind === 'busy' || snapshot.kind === 'chord') return leave;
-  return `Enter continue · ${leave}`;
+  const { before, exit } = nativeLeave(back, leaveEffect(snapshot));
+  if (snapshot.kind === 'busy' || snapshot.kind === 'chord') return legend(before, exit);
+  return legend([{ keys: 'Enter', verb: 'continue' }, ...before], exit);
+}
+
+/** A sentence in place of a card the terminal cannot show: the reason, then what the keys that leave do (ADR-0145 §3). */
+function refusal(snapshot: NativePromptSnapshot, reason: string): string {
+  const { before, exit } = nativeLeave(snapshot.escape === 'back', leaveEffect(snapshot));
+  return legend([{ text: reason }, ...before], exit);
 }
 
 export function NativePromptView({
@@ -72,23 +95,11 @@ export function NativePromptView({
       setOverflow({ snapshot, cols: size.cols, rows: size.rows });
   });
   if (!snapshot.active) return null;
-  const back = snapshot.escape === 'back';
   // `Esc` ends the flow unless the prompt was opened to step back; `Ctrl+C` always leaves it.
-  const leave = back ? 'Esc back · Ctrl+C leave' : 'Esc cancel';
   if (!nativePromptFits(size))
-    return (
-      <Text>
-        Terminal too small — resize to at least 80×24.{' '}
-        {back ? 'Esc steps back · Ctrl+C leaves.' : 'Esc cancels.'}
-      </Text>
-    );
+    return <Text>{refusal(snapshot, 'Terminal too small — resize to at least 80×24')}</Text>;
   if (blocked)
-    return (
-      <Text>
-        Prompt does not fit — enlarge the terminal.{' '}
-        {back ? 'Esc steps back · Ctrl+C leaves.' : 'Esc cancels.'}
-      </Text>
-    );
+    return <Text>{refusal(snapshot, 'Prompt does not fit — enlarge the terminal')}</Text>;
   // A select whose options do not all fit the terminal draws a window of them (LAUNCH-4); every other card, and a select that fits, is drawn whole.
   const selectWindow = snapshot.kind === 'select' ? selectLayout(snapshot, size) : undefined;
   return (
@@ -111,7 +122,7 @@ export function NativePromptView({
           {snapshot.picker?.loading === true ? (
             <Text>Loading sessions…</Text>
           ) : snapshot.options.length === 0 && snapshot.error === '' ? (
-            <Text>No matching sessions. Esc cancels.</Text>
+            <Text>{legend([{ text: 'No matching sessions' }], exitKey.close())}</Text>
           ) : null}
           {snapshot.options.map((option, index) => (
             <Box key={option.value} flexDirection="column">
@@ -171,9 +182,7 @@ export function NativePromptView({
         </Text>
       )}
       {snapshot.error !== '' && <Text>{snapshot.error}</Text>}
-      <Text {...dimProps(color)}>
-        {promptLegend(snapshot, back, leave, selectWindow !== undefined)}
-      </Text>
+      <Text {...dimProps(color)}>{promptLegend(snapshot, selectWindow !== undefined)}</Text>
     </Box>
   );
 }

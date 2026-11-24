@@ -89,24 +89,24 @@ describe('the keyless hint bar', () => {
 
   it('keyless and idle: Enter connects a provider, / opens the commands, Ctrl+C twice exits', () => {
     const frame = frameOf('', true);
-    expect(frame).toContain('No provider key yet · Enter to connect · /providers');
-    expect(frame).toContain('Enter to connect a provider · / commands · Ctrl+C twice to exit');
+    expect(frame).toContain('No provider key yet · Enter connect · /providers');
+    expect(frame).toContain('Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)');
   });
 
   it('keyless with a draft: Enter connects a provider and says the message is kept', () => {
     const frame = frameOf('hello', true);
-    expect(frame).toContain('Enter to connect a provider · your message is kept');
+    expect(frame).toContain('Enter connect a provider · your message is kept');
     expect(frame, 'the keyed draft hint would promise a chat that cannot start').not.toContain(
-      'Enter to start the chat',
+      'Enter start the chat',
     );
   });
 
   it('with a key the hints are the ones they were', () => {
     expect(frameOf('hello', false)).toContain(
-      'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit',
+      'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
     );
     expect(frameOf('', false)).toContain(
-      '/ for commands · type a message to start a chat · Ctrl+C twice to exit',
+      '[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)',
     );
   });
 });

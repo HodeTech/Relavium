@@ -7,7 +7,15 @@ import type { RunDetailLoad } from '../../history/run-detail-source.js';
 import type { PermissionsPort, RepoAllowlist } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
-import { legend, legendSpans, type LegendItem } from './legend.js';
+import {
+  exitKey,
+  fitLegend,
+  legend,
+  legendSpans,
+  type LegendExit,
+  type LegendItem,
+  type LegendKey,
+} from './legend.js';
 import {
   disarmPermissionsSheet,
   permissionsSheetBody,
@@ -32,6 +40,7 @@ import {
   type SheetSpan,
 } from './sheet-frame.js';
 import {
+  AGENTS_KEYS,
   AGENTS_UNREADABLE,
   agentsBody,
   agentsLegendItems,
@@ -62,6 +71,7 @@ import {
   type DefinedTabState,
 } from './tab-host-workflows.js';
 import {
+  HISTORY_KEYS,
   HISTORY_UNREADABLE,
   failHistoryDetail,
   foldHistoryKey,
@@ -77,6 +87,7 @@ import {
   type HistoryPort,
   type HistoryTabState,
 } from './tab-host-history.js';
+import { NODE_KEYS } from './tab-host-node.js';
 import type { PinPort } from './tab-host-pin.js';
 import {
   SESSIONS_UNREADABLE,
@@ -162,28 +173,30 @@ export const TAB_HOST_ROWS = 23;
 /** The most rows the allowlist section takes: its heading, its note and four entries (the last of them a count when more are listed). */
 const ALLOWLIST_ENTRY_ROWS = 4;
 
-/** The keys the tab host's legend names that are its own; the sheet's keys come from `SHEET_KEYS`. The test presses every one of them. */
+/**
+ * The keys the tab host's legend names that are its own; the sheet's keys come from `SHEET_KEYS`, a detail's `Esc` from its tab's own table
+ * ({@link tabExit} says which leaves where). The test presses every one of them. `Esc` from a tab's list closes the screen and changes
+ * nothing: the Close class of ADR-0145 §2.
+ */
 export const TAB_HOST_KEYS = {
   tab: { keys: '←/→', verb: 'tab' },
   cycle: { keys: 'Tab', verb: 'cycle' },
-  close: { keys: 'Esc', verb: 'close' },
+  close: exitKey.close(),
   /** The chord that closes the screen from any depth; named in the legend only where the keys of the screen leave it room. */
   interrupt: { keys: 'Ctrl+C', verb: 'close' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
-/** The legend of a tab with nothing to select. */
+/** The legend of a tab with nothing to select; its way out is {@link TAB_HOST_KEYS.close}. */
 export const TAB_HOST_LEGEND_PLAIN_ITEMS: readonly LegendItem[] = [
   TAB_HOST_KEYS.tab,
   TAB_HOST_KEYS.cycle,
-  TAB_HOST_KEYS.close,
 ];
-/** The legend of the Permissions tab with a row to select: the tab keys, the sheet's select and withdraw, and the way out last. */
+/** The legend of the Permissions tab with a row to select: the tab keys, and the sheet's select and withdraw; its way out is {@link TAB_HOST_KEYS.close}. */
 export const TAB_HOST_LEGEND_ROWS_ITEMS: readonly LegendItem[] = [
   TAB_HOST_KEYS.tab,
   TAB_HOST_KEYS.cycle,
   SHEET_KEYS.select,
   SHEET_KEYS.withdraw,
-  TAB_HOST_KEYS.close,
 ];
 
 /** What a tab remembers: where the cursor was, by tab. */
@@ -721,54 +734,59 @@ const LEGEND_FLOOR_COLUMNS = 80;
  * `items` with `Ctrl+C close` just before the way out, when the whole legend still fits the 80-column floor. `Ctrl+C` closes the screen from
  * any tab and any depth (ADR-0140 §1) and every state answers to it, so a person who has gone down a level reads that there is a way
  * out of all of them; where the keys of a screen already fill the floor (the History list's), it is left out for room, as `Shift+Tab`
- * and `PgUp` are, and the way out stays last and whole.
+ * and `PgUp` are, and the way out stays last and whole ({@link fitLegend}: the one fit rule of ADR-0145 §3).
  */
-function withInterruptItem(items: readonly LegendItem[]): readonly LegendItem[] {
-  const last = items.at(-1);
-  if (last === undefined) return items;
-  const named: readonly LegendItem[] = [...items.slice(0, -1), TAB_HOST_KEYS.interrupt, last];
-  return displayWidth(legend(named)) <= usableColumns(LEGEND_FLOOR_COLUMNS) ? named : items;
+function withInterruptItem(items: readonly LegendItem[], exit: LegendExit): readonly LegendItem[] {
+  return fitLegend(
+    items,
+    [{ item: TAB_HOST_KEYS.interrupt, priority: 1 }],
+    exit,
+    usableColumns(LEGEND_FLOOR_COLUMNS),
+    displayWidth,
+  );
 }
 
-/** The legend's items: the withdrawal question's while one is up, else the tab's with `Ctrl+C close` named where it fits. */
-export function tabHostLegendItems(state: TabHostState): readonly LegendItem[] {
-  const items = tabLegendItems(state);
+/**
+ * The key that leaves, by where the screen is: the class belongs to the (surface, state) pair (ADR-0145 §2). While a withdrawal's question is
+ * up `Esc` drops it and keeps the permission, a step back; on a run's detail, a node page or an agent's detail it goes back one level; on a
+ * tab's list it closes the screen and changes nothing.
+ */
+function tabExit(state: TabHostState): LegendExit {
+  if (state.sheet?.armed === true) return SHEET_KEYS.keep;
+  if (state.agents?.detail !== undefined) return AGENTS_KEYS.back;
+  const detail = state.history?.detail;
+  if (detail === undefined) return TAB_HOST_KEYS.close;
+  return detail.node === undefined ? HISTORY_KEYS.back : NODE_KEYS.back;
+}
+
+/** What the tab host's legend draws: the keys it names and, last, the key that leaves with its effect. */
+export interface TabHostLegend {
+  readonly items: readonly LegendItem[];
+  readonly exit: LegendExit;
+}
+
+/** The legend: the withdrawal question's while one is up, else the tab's with `Ctrl+C close` named where it fits. */
+export function tabHostLegend(state: TabHostState): TabHostLegend {
+  const exit = tabExit(state);
+  const items = tabLegendItems(state, exit);
   // A withdrawal's question names its own two answers, and any other key drops it: the chord is not offered as a third.
-  return state.sheet?.armed === true ? items : withInterruptItem(items);
+  return { items: state.sheet?.armed === true ? items : withInterruptItem(items, exit), exit };
 }
 
-function tabLegendItems(state: TabHostState): readonly LegendItem[] {
+/** The legend as text, as the screen draws it before it is clipped. */
+export function tabHostLegendText(state: TabHostState): string {
+  const { items, exit } = tabHostLegend(state);
+  return legend(items, exit);
+}
+
+function tabLegendItems(state: TabHostState, exit: LegendExit): readonly LegendItem[] {
   const sheet = state.sheet;
-  if (state.defined !== undefined)
-    return definedLegendItems(
-      state.defined,
-      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
-      TAB_HOST_KEYS.close,
-    );
-  if (state.active !== undefined)
-    return activeLegendItems(
-      state.active,
-      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
-      TAB_HOST_KEYS.close,
-    );
-  if (state.history !== undefined)
-    return historyLegendItems(
-      state.history,
-      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
-      TAB_HOST_KEYS.close,
-    );
-  if (state.agents !== undefined)
-    return agentsLegendItems(
-      state.agents,
-      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
-      TAB_HOST_KEYS.close,
-    );
-  if (state.sessions !== undefined)
-    return sessionsLegendItems(
-      state.sessions,
-      [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle],
-      TAB_HOST_KEYS.close,
-    );
+  const tabItems: readonly LegendItem[] = [TAB_HOST_KEYS.tab, TAB_HOST_KEYS.cycle];
+  if (state.defined !== undefined) return definedLegendItems(state.defined, tabItems);
+  if (state.active !== undefined) return activeLegendItems(state.active, tabItems);
+  if (state.history !== undefined) return historyLegendItems(state.history, tabItems, exit);
+  if (state.agents !== undefined) return agentsLegendItems(state.agents, tabItems);
+  if (state.sessions !== undefined) return sessionsLegendItems(state.sessions, tabItems);
   if (sheet === undefined) return TAB_HOST_LEGEND_PLAIN_ITEMS;
   if (sheet.armed) return SHEET_LEGEND_ARMED_ITEMS;
   return sheetEntries(sheet.snapshot).length > 0
@@ -811,9 +829,9 @@ function rule(width: number): SheetLine {
 }
 
 /** The legend as a line: the keys apart from the words, clipped to the width. */
-function legendLine(items: readonly LegendItem[], width: number): SheetLine {
-  const text = clipLine(legend(items), width);
-  return { kind: 'legend', text, spans: clampSpans(legendSpans(items), text.length) };
+function legendLine(items: readonly LegendItem[], exit: LegendExit, width: number): SheetLine {
+  const text = clipLine(legend(items, exit), width);
+  return { kind: 'legend', text, spans: clampSpans(legendSpans(items, exit), text.length) };
 }
 
 /**
@@ -898,17 +916,18 @@ function plainBody(state: TabHostState): readonly SheetLine[] {
 }
 
 /**
- * What the screen says below the floor. `Esc` there is the screen's own key (the Home delivers only `Esc` and `Ctrl+C` below 80×24): it
- * steps back one level on a run's detail and on a node page, and closes the screen only from a tab's list.
+ * What the screen says below the floor: why. `Esc` there is the screen's own key (the Home delivers only `Esc` and `Ctrl+C` below 80×24):
+ * it steps back one level on a run's detail and on a node page, and closes the screen only from a tab's list, and the legend under this
+ * line says which of the two it is at the level the person is on.
  */
-export const TAB_HOST_TOO_SMALL = 'Enlarge the terminal — Esc steps back, or closes at the list.';
+export const TAB_HOST_TOO_SMALL = 'Enlarge the terminal.';
 
 /** What `Esc` does on a run's detail and on a node page: it steps back one level, and the legend says which. */
-const TOO_SMALL_BACK_TO_LIST: LegendItem = { keys: 'Esc', verb: 'back to the list' };
-const TOO_SMALL_BACK_TO_RUN: LegendItem = { keys: 'Esc', verb: 'back to the run' };
+const TOO_SMALL_BACK_TO_LIST = exitKey.step('Esc', 'back to the list');
+const TOO_SMALL_BACK_TO_RUN = exitKey.step('Esc', 'back to the run');
 
 /** The `Esc` the legend below the floor names: the level it steps back to, or `close` from a tab's list (the tab host's own rule). */
-function tooSmallEscape(state: TabHostState): LegendItem {
+function tooSmallEscape(state: TabHostState): LegendExit {
   if (state.agents?.detail !== undefined) return TOO_SMALL_BACK_TO_LIST;
   const detail = state.history?.detail;
   if (detail === undefined) return TAB_HOST_KEYS.close;
@@ -920,10 +939,10 @@ function tooSmallEscape(state: TabHostState): LegendItem {
  * `Esc` steps back to, so a run's detail and a node page do not promise a close that the key does not make.
  */
 function tooSmallLines(state: TabHostState): readonly SheetLine[] {
-  const items: readonly LegendItem[] = [tooSmallEscape(state)];
+  const exit = tooSmallEscape(state);
   return [
     { kind: 'text', text: TAB_HOST_TOO_SMALL },
-    { kind: 'legend', text: legend(items), spans: legendSpans(items) },
+    { kind: 'legend', text: legend([], exit), spans: legendSpans([], exit) },
   ];
 }
 
@@ -937,7 +956,8 @@ export function tabHostLines(state: TabHostState, geometry: SheetGeometry): read
   const width = usableColumns(geometry.columns);
   const budget = Math.min(TAB_HOST_ROWS, geometry.terminalRows - 1);
   const head = [tabStrip(state.tab, width), rule(width)];
-  const foot = legendLine(tabHostLegendItems(state), width);
+  const { items, exit } = tabHostLegend(state);
+  const foot = legendLine(items, exit, width);
   const sheet = state.sheet;
   if (state.defined !== undefined)
     return [...head, ...definedBody(state.defined, width, budget - head.length - 1), foot];

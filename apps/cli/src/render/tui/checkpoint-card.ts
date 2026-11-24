@@ -16,6 +16,8 @@
 import { formatElapsed } from './format.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
+import { exitKey, legend, type LegendExit } from './legend.js';
+import { itemsRow } from './legend-row.js';
 
 /** What the open card says: the rounds dispatched, the rounds a "continue" grants, and the turn's working time so far. */
 export interface CheckpointCardState {
@@ -60,6 +62,9 @@ export interface CheckpointCardView {
 
 const RULE_LABEL = ' Checkpoint ';
 
+/** `Esc` and `Ctrl+C` both stop the turn: the key that leaves says so. */
+export const CHECKPOINT_STOP: LegendExit = exitKey.decide('stops the turn', ['Esc', 'Ctrl+C']);
+
 /** Cut `text` to `width` display columns, ASCII only (the card's text is, by construction): never longer than the row. */
 function head(text: string, width: number): string {
   return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
@@ -84,8 +89,14 @@ export function projectCheckpointCard(
       width,
     ),
     keys: [
-      head(`[Ctrl+Y] Continue   [Ctrl+N] Stop here`, width),
-      head('Esc or Ctrl+C stops the turn', width),
+      head(
+        itemsRow([
+          { keys: 'Ctrl+Y', verb: 'Continue', role: 'ok' },
+          { keys: 'Ctrl+N', verb: 'Stop here', role: 'danger' },
+        ]).text,
+        width,
+      ),
+      head(legend([], CHECKPOINT_STOP), width),
     ],
   };
 }

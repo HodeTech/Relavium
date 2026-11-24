@@ -20,7 +20,7 @@ afterEach(cleanup);
 const ESC = String.fromCharCode(0x1b);
 const plain = (text: string): string => text.replace(new RegExp(`${ESC}\\[\\d+m`, 'gu'), '');
 
-const LEGEND = '↑/↓ select · Enter run · Esc cancel';
+const LEGEND = '↑/↓ select · Enter run · Esc close';
 
 const command = (name: string, description: string): ReplCommand => ({
   name,

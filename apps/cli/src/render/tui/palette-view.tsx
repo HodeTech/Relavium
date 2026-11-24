@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';
 import { paletteLines } from './palette-window.js';
@@ -33,8 +34,14 @@ export interface PaletteViewProps {
 /** The words a dim row carries instead of its description: they read without colour (`unavailable · no conversation to clear`). */
 const UNAVAILABLE_PREFIX = 'unavailable · ';
 
-/** What the legend says. Step 3 rewrites the legends; the words are today's. */
-const LEGEND = '↑/↓ select · Enter run · Esc cancel';
+/** What the legend says (ADR-0145 §3): `Esc` closes the palette and nothing changes (the draft stays as it was). */
+const LEGEND = legend(
+  [
+    { keys: '↑/↓', verb: 'select' },
+    { keys: 'Enter', verb: 'run' },
+  ],
+  exitKey.close(),
+);
 
 function EntryRow(
   props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean }>,

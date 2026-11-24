@@ -17,6 +17,7 @@ import {
 import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pricing-fields.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { keyToken } from '../render/tui/legend.js';
 
 /**
  * Deterministic, locale-independent alphabetical order for a modality list.
@@ -94,7 +95,7 @@ export function effortUnavailableNote(model: string, surface: NoticeSurface = 's
     return `${safeModel(model)} publishes no controllable reasoning tier — a tier would be ignored.`;
   const refresh =
     surface === 'tui'
-      ? 'Open /models and press Ctrl+R to refresh the catalog if the model is newer than it.'
+      ? `Open /models and press ${keyToken('Ctrl+R')} to refresh the catalog if the model is newer than it.`
       : 'Run `relavium models refresh` if the model is newer than the catalog.';
   return `${safeModel(model)} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. ${refresh}`;
 }

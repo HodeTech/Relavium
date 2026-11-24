@@ -5,6 +5,8 @@
  * and applies the side effect (set the buffer / submit / cancel); this function decides only WHAT to do.
  */
 
+import { exitKey, legend } from './legend.js';
+
 /** The minimal `ink` `Key` fields the reducer reads (a structural subset, so a test needs no ink import). */
 export interface ChatKey {
   readonly ctrl?: boolean;
@@ -184,8 +186,10 @@ export function pasteIsEditable(f: PasteEditableFlags): boolean {
  * a turn starts, so the running turn keeps the previous mode's approval hook: a footer that switched at once would
  * show `ask` while that turn's later writes were still approved without a card.
  */
-export const MODE_CHANGE_RUNNING_NOTICE =
-  'Mode changes apply between turns \u2014 Esc stops the running turn.';
+export const MODE_CHANGE_RUNNING_NOTICE = legend(
+  [{ text: 'Mode changes apply between turns' }],
+  exitKey.decide('stops the running turn'),
+);
 
 /**
  * Reduce one keystroke of the chat prompt to an action.

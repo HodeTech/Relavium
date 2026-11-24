@@ -82,17 +82,17 @@ const rowsOf = (frame: string): string[] => frame.split('\n');
 const runRows = (frame: string): string[] => rowsOf(frame).filter((line) => line.includes('▶'));
 
 const hintRow = (frame: string): string =>
-  rowsOf(frame).find((line) => line.includes('Ctrl+C twice to exit')) ?? '';
+  rowsOf(frame).find((line) => line.includes('[Ctrl+C] exit (twice)')) ?? '';
 
 describe('the landing hint while a leg executes', () => {
   it.each([
     ['an empty Home', EMPTY, 'type a message to chat'],
-    ['a Home with sessions', FULL, '↓ Continue'],
+    ['a Home with sessions', FULL, '↓ continue'],
   ] as const)(
-    'names `Enter shows it` first, and keeps one more door open (%s)',
+    'names `Enter show it` first, and keeps one more door open (%s)',
     (_name, snapshot, door) => {
       const hint = hintRow(frameOf({ snapshot, hostedRun: running() }));
-      expect(hint).toContain('Enter shows it');
+      expect(hint).toContain('Enter show it');
       expect(hint).toContain(door);
       expect(hint.length, 'it fits 80 columns').toBeLessThanOrEqual(80);
     },
@@ -103,7 +103,7 @@ describe('the landing hint while a leg executes', () => {
     ['an idle host', IDLE],
     ['a leg still preparing', { launching: true, active: undefined, last: undefined }],
   ] as const)('does not say it with %s: there is nothing to show', (_name, hostedRun) => {
-    expect(hintRow(frameOf({ hostedRun }))).not.toContain('Enter shows it');
+    expect(hintRow(frameOf({ hostedRun }))).not.toContain('Enter show it');
   });
 });
 
@@ -135,13 +135,13 @@ describe('the ▶ row', () => {
     expect(frame).not.toContain('running');
   });
 
-  it('tells the person how to come back to a live run: the row says `Enter shows it` once the run has an id, and not before', () => {
-    expect(runRows(frameOf({ hostedRun: running() }))[0]).toContain('Enter shows it');
-    expect(runRows(frameOf({ hostedRun: running(true) }))[0]).toContain('Enter shows it');
+  it('tells the person how to come back to a live run: the row says `Enter show it` once the run has an id, and not before', () => {
+    expect(runRows(frameOf({ hostedRun: running() }))[0]).toContain('Enter show it');
+    expect(runRows(frameOf({ hostedRun: running(true) }))[0]).toContain('Enter show it');
     expect(
       runRows(frameOf({ hostedRun: { launching: true, active: undefined, last: undefined } }))[0],
       'a leg still preparing has no run to show',
-    ).not.toContain('Enter shows it');
+    ).not.toContain('Enter show it');
   });
 
   it('is one line that fits 80 columns', () => {
@@ -160,10 +160,10 @@ describe('the ▶ row', () => {
     // (The harness draws on a 100-column stream, so a long session title is not the line to measure: the run row and the card are.)
     for (const line of [...runRows(frame)]) expect(line.length, line).toBeLessThanOrEqual(80);
     expect(frame).toContain('▶');
-    // `Enter` at the empty prompt shows the run before it sets a provider up, so the setup line is not drawn beside `Enter shows it`.
+    // `Enter` at the empty prompt shows the run before it sets a provider up, so the setup line is not drawn beside `Enter show it`.
     expect(frame).not.toContain('Connect a provider');
-    expect(frame).toContain('Enter shows it');
-    expect(frame).toContain('Ctrl+C twice to exit');
+    expect(frame).toContain('Enter show it');
+    expect(frame).toContain('[Ctrl+C] exit (twice)');
   });
 
   it('reserves its row from a notice that fills the screen, so the Home is still 24 rows with the prompt in view', () => {
@@ -173,8 +173,8 @@ describe('the ▶ row', () => {
     const withRow = frameOf({ hostedRun: running(), notice, showBanner: false });
     expect(rowsOf(withRow).length).toBeLessThanOrEqual(24);
     expect(withRow).toContain('▶');
-    expect(withRow).toContain('Ctrl+C twice to exit');
-    expect(withRow).toContain('PgUp/PgDn to read');
+    expect(withRow).toContain('[Ctrl+C] exit (twice)');
+    expect(withRow).toContain('PgUp/PgDn read');
     expect(rowsOf(frameOf({ notice, showBanner: false })).length).toBeLessThanOrEqual(24);
   });
 
@@ -198,9 +198,9 @@ describe('the exit-guard card', () => {
       keyless: true,
     });
     expect(frame).toContain(`A workflow run is executing: ${RUN_ID}.`);
-    expect(frame).toContain('Ctrl+Y stop the run and leave');
-    expect(frame).toContain('Esc, Ctrl+C or Ctrl+N stay');
-    expect(frame, 'no prompt hint behind the card').not.toContain('Ctrl+C twice to exit');
+    expect(frame).toContain('[Ctrl+Y] stop the run and leave');
+    expect(frame).toContain('Esc / [Ctrl+C] / [Ctrl+N] stay');
+    expect(frame, 'no prompt hint behind the card').not.toContain('[Ctrl+C] exit (twice)');
     expect(frame, 'the notice waits behind the card').not.toContain('notice notice');
     expect(rowsOf(frame).length).toBeLessThanOrEqual(24);
     for (const line of rowsOf(frame).filter((row) =>
@@ -221,7 +221,7 @@ describe('the exit-guard card', () => {
   it('is drawn in the below-minimum degrade too, where the Home cannot show anything else', () => {
     const frame = frameOf({ hostedRun: running(), exitGuard: 'confirm', cols: 60, rows: 20 });
     expect(frame).toContain('Terminal too small (60×20)');
-    expect(frame).toContain('Ctrl+Y stop the run and leave');
+    expect(frame).toContain('[Ctrl+Y] stop the run and leave');
   });
 
   it('is absent when it is not open', () => {

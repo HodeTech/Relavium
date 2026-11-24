@@ -191,8 +191,8 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     const frame = f.lastFrameWith('Continue for 32 more?') ?? '';
     expect(frame).toContain('EARLIER-CONVERSATION-LINE');
     expect(frame).toContain('This turn has used 32 tool rounds in');
-    expect(frame).toContain('[Ctrl+Y] Continue   [Ctrl+N] Stop here');
-    expect(frame).toContain('Esc or Ctrl+C stops the turn');
+    expect(frame).toContain('[Ctrl+Y] Continue · [Ctrl+N] Stop here');
+    expect(frame).toContain('Esc / [Ctrl+C] stops the turn');
     expect(frame).not.toMatch(/Approval needed|Question from the agent/u);
     f.store.sealToolPreviews();
   });
@@ -273,7 +273,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     expect(await answer).toBe('stop');
     expect(f.aborts.count, 'Esc answers; it does not abort').toBe(0);
     await pause();
-    expect(f.text()).not.toContain('Press Ctrl+C again');
+    expect(f.text()).not.toContain('[Ctrl+C] end the session (again)');
     f.input.push(CTRL_C); // a first press again
     await pause();
     expect(f.submitted, 'Esc armed nothing, so this Ctrl+C ended nothing').toEqual([]);
@@ -290,7 +290,7 @@ describe.each(['chat', 'home'] as const)('the docked checkpoint card %s (ADR-013
     expect(f.aborts.count, 'nothing was aborted: the answer is what ends the turn').toBe(0);
     // The engine ends the turn itself on a "stop" (turn_limit); the idle prompt then shows the armed hint.
     f.store.apply(TURN_ENDED);
-    await vi.waitFor(() => expect(f.text()).toContain('Press Ctrl+C again'));
+    await vi.waitFor(() => expect(f.text()).toContain('[Ctrl+C] end the session (again)'));
     expect(f.submitted).toEqual([]);
     f.input.push(CTRL_C);
     await vi.waitFor(() => expect(f.submitted).toContain('/cancel'));

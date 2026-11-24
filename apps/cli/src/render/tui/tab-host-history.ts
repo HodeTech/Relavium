@@ -25,7 +25,14 @@ import {
   type RunDetailRead,
 } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
-import { legend, type LegendItem } from './legend.js';
+import {
+  exitKey,
+  fitLegend,
+  keyToken,
+  type LegendExit,
+  type LegendItem,
+  type LegendKey,
+} from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -159,31 +166,31 @@ export const HISTORY_KEYS = {
   open: { keys: 'Enter', verb: 'open' },
   pin: PIN_KEY,
   /** Shown while the scope is this project; the toggle back says `here`. */
-  widen: { keys: '[a]', verb: 'all' },
-  narrow: { keys: '[a]', verb: 'here' },
-  filter: { keys: '[f]', verb: 'filter' },
+  widen: { keys: 'a', verb: 'all' },
+  narrow: { keys: 'a', verb: 'here' },
+  filter: { keys: 'f', verb: 'filter' },
   scroll: { keys: '↑/↓', verb: 'scroll' },
   /** On a run's detail: the first node whose last attempt failed. The node page's own `n` is {@link NODE_KEYS}. */
   firstFailed: NODE_KEYS.firstFailed,
-  back: { keys: 'Esc', verb: 'back' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  /** On a run's detail `Esc` goes back to the list: one level (ADR-0145 §2, Step). The list's `Esc` is the host's. */
+  back: exitKey.step(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 export const HISTORY_UNREADABLE = 'The run history could not be read.';
-export const HISTORY_HINT = 'Finished runs, newest first. Enter opens a run.';
+export const HISTORY_HINT = `Finished runs, newest first. ${keyToken('Enter')} opens a run.`;
 /**
  * The hint while more lies past this page. A page can hold fewer than twenty finished runs (or none) and still not be the last: the store
  * is read 200 raw rows at a time, and the active runs among them belong to the Active tab, so the list cannot show a `▼ more` for rows it
  * has not read.
  */
-export const HISTORY_HINT_MORE =
-  'Newest first. Enter opens a run. ↓ at the end reads the next page.';
+export const HISTORY_HINT_MORE = `Newest first. ${keyToken('Enter')} opens a run. ${keyToken('↓')} at the end reads the next page.`;
 /** What a page with no finished run says when the next page may hold some. */
-export const HISTORY_EMPTY_PAGE = 'No finished run on this page. ↓ reads the next page.';
+export const HISTORY_EMPTY_PAGE = `No finished run on this page. ${keyToken('↓')} reads the next page.`;
 export const HISTORY_LOADING = 'Reading the run…';
-export const HISTORY_DETAIL_MISSING = 'That run is not in the history any more. Esc goes back.';
+export const HISTORY_DETAIL_MISSING = `That run is not in the history any more. ${keyToken('Esc')} goes back.`;
 export const HISTORY_DETAIL_UNREADABLE =
   'The event log of this run could not be read. relavium logs shows what is wrong with it.';
-export const HISTORY_DETAIL_FAULT = 'The run could not be loaded just now. Enter tries again.';
+export const HISTORY_DETAIL_FAULT = `The run could not be loaded just now. ${keyToken('Enter')} tries again.`;
 export const HISTORY_REREAD_FAILED = 'The history could not be read again.';
 /**
  * What a cost read that threw says. The cause is unknown (the source degrades a damaged log itself, so a throw is a fault of the moment),
@@ -191,8 +198,7 @@ export const HISTORY_REREAD_FAILED = 'The history could not be read again.';
  */
 export const HISTORY_COST_FAULT = 'the cost could not be read; press a key to retry';
 export const HISTORY_NO_FAILED_NODE = 'No node of this run ended failed.';
-export const HISTORY_MISSING_RUN =
-  'That pinned run is not in the history any more. p removes the pin.';
+export const HISTORY_MISSING_RUN = `That pinned run is not in the history any more. ${keyToken('p')} removes the pin.`;
 /** The remedy sits in the first 64 columns, so it survives the clip at the 80-column floor; the explanation is what a narrow terminal cuts. */
 export const HISTORY_HELD_NOTE =
   'Its end is held in the outbox. relavium status shows what to do. The run is over, but its record has no end.';
@@ -854,7 +860,7 @@ function detailLine(
   if (entry.kind === 'missing')
     return {
       kind: 'text',
-      text: clipLine('No run has this id any more; p removes the pin.', width),
+      text: clipLine(`No run has this id any more; ${keyToken('p')} removes the pin.`, width),
     };
   const { row } = entry;
   const money = costSentence(costOf(state, row), row);
@@ -898,7 +904,7 @@ function entriesIn(lines: readonly ListLine[], from: number, to: number): number
 function emptyText(read: HistoryRead): string {
   const { scope, status } = read.query;
   if (read.hasNext) return HISTORY_EMPTY_PAGE;
-  if (status !== undefined) return `No ${status} run here. f changes the filter.`;
+  if (status !== undefined) return `No ${status} run here. ${keyToken('f')} changes the filter.`;
   return scope === 'project'
     ? 'No finished run in this project yet. Run a workflow from the Defined tab.'
     : 'No finished run yet.';
@@ -1127,7 +1133,10 @@ function detailBody(
   );
   const footer: SheetLine =
     detail.message === undefined
-      ? { kind: 'hint', text: clipLine('No run is changed here; p only marks one.', width) }
+      ? {
+          kind: 'hint',
+          text: clipLine(`No run is changed here; ${keyToken('p')} only marks one.`, width),
+        }
       : { kind: 'notice', text: clipLine(detail.message, width) };
   return [...lines, footer];
 }
@@ -1146,7 +1155,7 @@ export function historyBody(
 /** The legend's own items after the tab item, with the cycle item between them when the whole fits the floor (see {@link historyLegendItems}). */
 type NamedLegend = (...rest: readonly LegendItem[]) => readonly LegendItem[];
 
-/** The detail's legend: the node page's own, the way back alone while the detail is not ready, or the scroll, open, first-failed and pin keys. */
+/** The detail's legend: the node page's own, nothing but the way back while the detail is not ready, or the scroll, open, first-failed and pin keys. */
 function detailLegendItems(
   detail: HistoryDetailState,
   named: NamedLegend,
@@ -1157,28 +1166,18 @@ function detailLegendItems(
     return named(...rest);
   }
   // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
-  if (detail.phase !== 'ready') return named(HISTORY_KEYS.back);
-  return named(
-    HISTORY_KEYS.scroll,
-    HISTORY_KEYS.open,
-    HISTORY_KEYS.firstFailed,
-    HISTORY_KEYS.pin,
-    HISTORY_KEYS.back,
-  );
+  if (detail.phase !== 'ready') return named();
+  return named(HISTORY_KEYS.scroll, HISTORY_KEYS.open, HISTORY_KEYS.firstFailed, HISTORY_KEYS.pin);
 }
 
 /** The list's legend; a page with no run still names the move keys while another page lies past it or before it. */
-function listLegendItems(
-  read: HistoryRead | undefined,
-  named: NamedLegend,
-  closeItem: LegendItem,
-): readonly LegendItem[] {
+function listLegendItems(read: HistoryRead | undefined, named: NamedLegend): readonly LegendItem[] {
   const scope = read?.query.scope === 'all' ? HISTORY_KEYS.narrow : HISTORY_KEYS.widen;
   if (read === undefined || read.pinned.length + read.rows.length === 0) {
     // A page with no run can still be walked: `↓` reads the next page and `↑` the previous one, so the legend names the keys that do it.
     return read?.hasNext === true || read?.hasPrev === true
-      ? named(HISTORY_KEYS.select, scope, HISTORY_KEYS.filter, closeItem)
-      : named(scope, HISTORY_KEYS.filter, closeItem);
+      ? named(HISTORY_KEYS.select, scope, HISTORY_KEYS.filter)
+      : named(scope, HISTORY_KEYS.filter);
   }
   return named(
     HISTORY_KEYS.select,
@@ -1186,31 +1185,36 @@ function listLegendItems(
     HISTORY_KEYS.pin,
     scope,
     HISTORY_KEYS.filter,
-    closeItem,
   );
 }
 
 /**
- * The legend's items: the detail's, or the list's (the tab host's tab item first, the way out last). A tab that could not be read names
- * the tab keys the other tabs without a list name. `Tab` (cycle) is named wherever the legend still fits the 80-column floor with it, so a
- * long legend (the list's, the detail's) keeps its own keys instead.
+ * The legend's items: the detail's, or the list's (the tab host's tab item first). The key that leaves is the host's `exit`, which the
+ * fit needs to measure: `Esc close` on the list, {@link HISTORY_KEYS.back} or the node page's on a detail. A tab that could not be read
+ * names the tab keys the other tabs without a list name. `Tab` (cycle) is named wherever the legend still fits the 80-column floor with it
+ * ({@link fitLegend}), so a long legend (the list's, the detail's) keeps its own keys instead.
  */
 export function historyLegendItems(
   state: HistoryTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
+  exit: LegendExit,
 ): readonly LegendItem[] {
   const [tabItem, cycleItem] = tabItems;
-  if (state.phase !== 'ready' || tabItem === undefined) return [...tabItems, closeItem];
+  if (state.phase !== 'ready' || tabItem === undefined) return tabItems;
   const named: NamedLegend = (...rest) => {
     const plain: readonly LegendItem[] = [tabItem, ...rest];
     if (cycleItem === undefined) return plain;
-    const withCycle: readonly LegendItem[] = [tabItem, cycleItem, ...rest];
-    return displayWidth(legend(withCycle)) <= usableColumns(LEGEND_FLOOR_COLUMNS)
-      ? withCycle
-      : plain;
+    // The cycle item is the one optional item: it is kept when the whole fits, and then it goes between the tab item and the rest.
+    const fitted = fitLegend(
+      plain,
+      [{ item: cycleItem, priority: 1 }],
+      exit,
+      usableColumns(LEGEND_FLOOR_COLUMNS),
+      displayWidth,
+    );
+    return fitted.length > plain.length ? [tabItem, cycleItem, ...rest] : plain;
   };
   return state.detail === undefined
-    ? listLegendItems(state.read, named, closeItem)
+    ? listLegendItems(state.read, named)
     : detailLegendItems(state.detail, named, tabItem);
 }

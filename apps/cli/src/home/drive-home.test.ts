@@ -565,7 +565,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             row.role === 'notice' &&
             row.text.includes('no usable key') &&
             // The chat the Home hosts answers `/providers` with a pointer only: the remedy is the way back.
-            row.text.includes('Go back to the Home (Ctrl+C twice) and use /providers') &&
+            row.text.includes('Go back to the Home ([Ctrl+C] twice) and use /providers') &&
             row.text.includes('/models'),
         ),
       ).toBe(true);

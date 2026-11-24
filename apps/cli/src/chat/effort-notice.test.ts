@@ -79,7 +79,7 @@ describe('effortUnavailableNote — the refresh it offers is the one the surface
     const shell = effortUnavailableNote('some-custom-endpoint-model');
     expect(shell).toContain('`relavium models refresh`');
     const tui = effortUnavailableNote('some-custom-endpoint-model', 'tui');
-    expect(tui).toContain('Open /models and press Ctrl+R');
+    expect(tui).toContain('Open /models and press [Ctrl+R]');
     expect(tui).not.toMatch(/relavium models|`/u);
     // The sentence that needs no refresh is the same on both surfaces.
     expect(effortUnavailableNote('deepseek-reasoner', 'tui')).toBe(

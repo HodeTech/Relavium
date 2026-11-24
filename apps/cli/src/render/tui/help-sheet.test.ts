@@ -142,8 +142,9 @@ describe('which keys the sheet names', () => {
 
   it('ends on the legend that names the sheet’s own keys, and they are the ones the constant says', () => {
     const lines = textOf(80);
-    expect(lines.at(-1)).toBe(`${HELP_SHEET_KEYS.close.keys} ${HELP_SHEET_KEYS.close.verb}`);
-    expect(HELP_SHEET_KEYS.close.keys).toBe('Esc / Ctrl+C');
+    expect(lines.at(-1)).toBe(`Esc / [Ctrl+C] ${HELP_SHEET_KEYS.close.verb}`);
+    expect(HELP_SHEET_KEYS.close.keys).toEqual(['Esc', 'Ctrl+C']);
+    expect(HELP_SHEET_KEYS.close.class).toBe('close');
     expect(HELP_SHEET_KEYS.close.presses).toEqual([
       { input: '', key: { escape: true } },
       { input: 'c', key: { ctrl: true } },
@@ -185,7 +186,7 @@ describe('the frame', () => {
         key.keys,
       ).toBe(true);
     expect(lines.some((line) => /\d+ more$/u.test(line))).toBe(false);
-    expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
+    expect(lines.at(-1)).toBe('Esc / [Ctrl+C] close');
   });
 
   it('names /import and /pricing at every size the sheet is drawn at, in at most 23 rows and with no note about anything left out', () => {
@@ -239,7 +240,7 @@ describe('the frame', () => {
           lines.some((line) => line.includes(key.keys)),
           key.keys,
         ).toBe(true);
-      expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
+      expect(lines.at(-1)).toBe('Esc / [Ctrl+C] close');
       for (const line of lines)
         expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(80));
     },
@@ -271,7 +272,7 @@ describe('the frame', () => {
     expect(shown).toBeLessThan(400);
     expect(lines).toContain(`  and ${String(400 - shown)} more`);
     expect(lines).toContain('Keys of the Home');
-    expect(lines.at(-1)).toBe('Esc / Ctrl+C close');
+    expect(lines.at(-1)).toBe('Esc / [Ctrl+C] close');
   });
 
   it.each([

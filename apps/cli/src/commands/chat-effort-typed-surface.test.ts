@@ -110,7 +110,7 @@ describe('/effort <tier> on a model whose control is unknown', () => {
 
   it('says the picker’s refresh on the interactive chat', async () => {
     const text = await typedText(true);
-    expect(text).toContain('Open /models and press Ctrl+R');
+    expect(text).toContain('Open /models and press [Ctrl+R]');
     expect(text).not.toContain('relavium models refresh');
   });
 });

@@ -294,7 +294,7 @@ describe('the /agent sheet in the standalone chat', () => {
     Object.defineProperty(view.stdout, 'rows', { value: 20, configurable: true });
     view.stdout.emit('resize');
     await openAgent(view);
-    expect(frame(view)).toContain('Enlarge the terminal to use this screen — Esc closes.');
+    expect(frame(view)).toContain('Enlarge the terminal to use this screen.');
     expect(frame(view)).not.toContain('claude-sonnet-4-6');
     view.stdin.write(ESC);
     await until(() => !frame(view).includes(SHEET));

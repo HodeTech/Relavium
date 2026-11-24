@@ -81,11 +81,11 @@ describe('PermissionsSheetView with colour on', () => {
     const text = frame(open(), true);
     // the dim stretch is closed (ESC[22m) before the key, so the key is bold red on its own, not red inside a dimmed line
     expect(lineWith(text, 'to withdraw it: auto mode')).toMatch(
-      new RegExp(`${ESC}\\[2mPress ${ESC}\\[22m${ESC}\\[1m${ESC}\\[31md`, 'u'),
+      new RegExp(`${ESC}\\[2mPress ${ESC}\\[22m${ESC}\\[1m${ESC}\\[31m\\[d\\]`, 'u'),
     );
     const legend = lineWith(text, 'select');
     expect(legend).toContain(`${BOLD}↑/↓`);
-    expect(legend).toMatch(new RegExp(`${ESC}\\[31m\\[d / Del\\]`, 'u'));
+    expect(legend).toMatch(new RegExp(`${ESC}\\[31m\\[d\\] / Del`, 'u'));
     expect(legend).toContain(`${BOLD}Esc`);
     expect(legend).toContain(`${DIM} withdraw`);
   });
@@ -94,10 +94,10 @@ describe('PermissionsSheetView with colour on', () => {
     const text = frame(open(true), true);
     const row = lineWith(text, '› npm, 1 argument');
     expect(row).toContain(YELLOW);
-    expect(row).toContain(`${BOLD}[Enter]`);
+    expect(row).toContain(`${BOLD}Enter`);
     expect(lineWith(text, 'Withdraw npm, 1 argument')).toContain(`${BOLD}${YELLOW}`);
     expect(lineWith(text, 'Any other key keeps it.')).toContain(BOLD);
-    expect(lineWith(text, 'Esc')).toMatch(new RegExp(`${ESC}\\[33m\\[Enter\\]`, 'u'));
+    expect(lineWith(text, 'Esc')).toMatch(new RegExp(`${ESC}\\[33mEnter`, 'u'));
   });
 
   it('draws a withdrawal’s answer by its tone: done in green with a tick, a failure in red with a cross, a note in yellow', () => {
@@ -125,15 +125,15 @@ describe('PermissionsSheetView with colour off', () => {
     expect(text).toContain('› npm, 1 argument');
     expect(text).toContain('[d] withdraw');
     expect(text).toContain('This project · remembered (2)');
-    expect(text).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
     const armedStyled = frame(open(true), false);
     expect(armedStyled).not.toMatch(ANY_COLOUR);
     const armed = plain(armedStyled);
-    expect(armed).toContain('[Enter] withdraw');
+    expect(armed).toContain('Enter withdraw');
     expect(armed).toContain(
       'Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.',
     );
-    expect(armed).toContain('[Enter] withdraw · Esc keep');
+    expect(armed).toContain('Enter withdraw · Esc keep');
     for (const message of [
       { tone: 'done', text: 'Withdrawn.' },
       { tone: 'failed', text: 'No room.' },
@@ -152,7 +152,7 @@ describe('PermissionsSheetView with colour off', () => {
       open(),
       open(true),
       withMessage({ tone: 'done', text: 'Withdrawn.' }),
-      withMessage({ tone: 'note', text: 'Wait a moment, then press d.' }),
+      withMessage({ tone: 'note', text: 'Wait a moment, then press [d].' }),
     ].map((state) => {
       const lines = plain(frame(state, false)).split('\n');
       return [lines.length, lines.findIndex((line) => line.includes(' Esc '))] as const;

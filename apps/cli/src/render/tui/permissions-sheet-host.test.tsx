@@ -143,7 +143,7 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(text).toContain('› npm, 1 argument');
     expect(text).toContain('This session · approved (1)');
     expect(text).toContain('git status');
-    expect(text).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
     expect(submitted, 'the sheet took the command: nothing was sent to the model').toEqual([]);
   });
 
@@ -219,7 +219,7 @@ describe('the permissions sheet in the standalone chat', () => {
     await until(() =>
       frame(view).includes('Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.'),
     );
-    expect(frame(view)).toContain('[Enter] withdraw · Esc keep');
+    expect(frame(view)).toContain('Enter withdraw · Esc keep');
     expect(withdraw, 'arming withdraws nothing').not.toHaveBeenCalled();
     await afterDwell();
     view.stdin.write(ENTER);
@@ -228,7 +228,7 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
     await settleFrames();
     expect(frame(view)).toContain('This project · remembered (1)');
-    expect(frame(view)).toContain('↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(frame(view)).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
   });
 
   it('a port that throws on a withdrawal leaves the sheet open and says so as a failure, with the cross', async () => {
@@ -351,7 +351,7 @@ describe('the permissions sheet in the standalone chat', () => {
     view.stdin.write(ENTER);
     await until(() => frame(view).includes('Permissions ·'));
     view.stdin.write('d');
-    await until(() => frame(view).includes('Wait a moment, then press d.'));
+    await until(() => frame(view).includes('Wait a moment, then press [d].'));
     await afterSettle();
     view.stdin.write('d');
     await until(() => frame(view).includes('Any other key keeps it.'));
@@ -372,11 +372,11 @@ describe('the permissions sheet in the standalone chat', () => {
   it('takes the composer’s place while open: the idle prompt and its hint are not drawn under the sheet, and come back when it closes', async () => {
     const { port } = fakePort(SNAPSHOT);
     const { view } = mount({ port });
-    await until(() => frame(view).includes('/ for commands'));
+    await until(() => frame(view).includes('[/] for commands'));
     await openSheet(view);
-    expect(frame(view)).not.toContain('/ for commands');
+    expect(frame(view)).not.toContain('[/] for commands');
     view.stdin.write(ESC);
-    await until(() => frame(view).includes('/ for commands'));
+    await until(() => frame(view).includes('[/] for commands'));
   });
 
   it('reads the terminal’s real width AND height: either one below the floor says so', async () => {
@@ -484,7 +484,7 @@ describe('the permissions sheet in the standalone chat', () => {
     Object.defineProperty(view.stdout, 'rows', { value: 20, configurable: true });
     view.stdout.emit('resize');
     await openSheet(view);
-    expect(frame(view)).toContain('Enlarge the terminal to use this screen — Esc closes.');
+    expect(frame(view)).toContain('Enlarge the terminal to use this screen.');
     await afterSettle();
     view.stdin.write('d');
     await settleFrames();

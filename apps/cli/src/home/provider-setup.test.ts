@@ -314,10 +314,10 @@ describe('provider setup coordinator', () => {
       await createProviderSetupCoordinator(f.deps).run('explicit');
       const list = f.messages.filter((message) => message.includes('no key yet'));
       expect(list).toEqual([
-        'Anthropic no key yet · Enter to add one',
-        'OpenAI no key yet · Enter to add one',
-        'Google Gemini no key yet · Enter to add one',
-        'DeepSeek no key yet · Enter to add one',
+        'Anthropic no key yet · Enter add one',
+        'OpenAI no key yet · Enter add one',
+        'Google Gemini no key yet · Enter add one',
+        'DeepSeek no key yet · Enter add one',
       ]);
       const text = f.messages.join('\n');
       expect(text).not.toContain('open `/providers`');
@@ -333,9 +333,7 @@ describe('provider setup coordinator', () => {
       expect(f.policy.allows('openai', 'OPENAI_API_KEY')).toBe(false);
       const before = f.messages.length;
       const explicit = await coordinator.run('explicit');
-      expect(f.messages.slice(before)).toContain(
-        'OpenAI OPENAI_API_KEY is set · Enter to review it',
-      );
+      expect(f.messages.slice(before)).toContain('OpenAI OPENAI_API_KEY is set · Enter review it');
       expect(
         f.messages.filter((message) => message.includes('Allow this source?')),
         'the consent card was asked a second time, from the list',

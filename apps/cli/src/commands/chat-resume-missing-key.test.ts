@@ -234,7 +234,7 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     const missing = notices.filter((text) => text.includes("no API key for provider 'anthropic'"));
     expect(missing).toHaveLength(2);
     for (const text of missing) {
-      expect(text).toContain('go back to the Home (Ctrl+C twice) and use `/providers`');
+      expect(text).toContain('go back to the Home ([Ctrl+C] twice) and use `/providers`');
       expect(text).not.toContain('open `/providers`');
       expect(text).toContain('/models');
       expect(text).not.toMatch(/relavium|set-key/u);

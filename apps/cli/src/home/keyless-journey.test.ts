@@ -267,10 +267,10 @@ describe('the keyless journey', () => {
           .getSnapshot()
           .options.map((option) => option.hint),
       ).toEqual([
-        'no key yet · Enter to add one',
-        'no key yet · Enter to add one',
-        'no key yet · Enter to add one',
-        'no key yet · Enter to add one',
+        'no key yet · Enter add one',
+        'no key yet · Enter add one',
+        'no key yet · Enter add one',
+        'no key yet · Enter add one',
       ]);
 
       // 3. Close the setup (Esc): the draft is still `hello`, still unsent.

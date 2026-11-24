@@ -66,9 +66,9 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
     const rows = frame();
     const at = (word: string): number =>
       rows.findIndex((line) => new RegExp(`^[› ] /${word}( |$)`, 'u').test(line));
-    expect(rows.some((line) => line === '↑/↓ select · Enter run · Esc cancel')).toBe(true);
+    expect(rows.some((line) => line === '↑/↓ select · Enter run · Esc close')).toBe(true);
     expect(
-      rows.indexOf('↑/↓ select · Enter run · Esc cancel'),
+      rows.indexOf('↑/↓ select · Enter run · Esc close'),
       'the legend is above the list',
     ).toBeLessThan(at('exit'));
     // Bottom-up: the LAST entry is at the top, the FIRST (/models) is next to the query line, and the query echo is the bottom row.

@@ -2,9 +2,9 @@ import { legendStates } from '../frames.js';
 import { MarkdownStream } from '../../../markdown/stream.js';
 import { label, type Producer, type Recorder } from '../golden.js';
 import { isHintShaped } from '../hint-shape.js';
-import { sourceLiteral } from '../source-literal.js';
 import { CHAT_MODES } from '@relavium/shared';
 import { effortUnavailableNote } from '../../../../chat/effort-notice.js';
+import { STARTING_MODE_HINT } from '../../../../chat/starting-mode-hint.js';
 import {
   commandsOf,
   placementOf,
@@ -356,10 +356,7 @@ const effortNote: Recorder = () => ({
 });
 
 const startingMode: Recorder = () => ({
-  'a chat starts in ask mode': sourceLiteral(
-    'chat/starting-mode-hint.ts',
-    'You started in ask mode',
-  ),
+  'a chat starts in ask mode': STARTING_MODE_HINT,
 });
 
 export const CHAT_MISC_RECORDERS = {

@@ -17,6 +17,7 @@ import type {
   WithdrawAnswer,
 } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
+import { keyLabel, type LegendItem } from './legend.js';
 import {
   SHEET_CONFIRM_DWELL_MS,
   SHEET_ENTER_NOTE,
@@ -33,7 +34,7 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
   tabHostLines,
   tabHostMemory,
   type TabHostContext,
@@ -45,6 +46,15 @@ import { displayWidth } from './viewport.js';
 
 const ENTER: ChatKey = { return: true };
 const ESC: ChatKey = { escape: true };
+
+/** One legend entry as the screen prints it (`keys verb`, the keys by the bracket rule of ADR-0145 §3). */
+const printed = (item: LegendItem): string =>
+  'keys' in item ? `${keyLabel(item.keys)} ${item.verb}` : item.text;
+/** Every entry the legend of `state` prints, the key that leaves last. */
+const legendLabels = (state: TabHostState): string[] => {
+  const { items, exit } = tabHostLegend(state);
+  return [...items, exit].map(printed);
+};
 
 const rows = (count: number) =>
   Array.from({ length: count }, (_, index) => ({
@@ -201,7 +211,7 @@ describe('every key the legend names, pressed', () => {
   type Rig = ReturnType<typeof rig>;
   /** Keyed by what the legend prints for the item (`keys verb`): a legend item that has no entry here fails the test that reads it. */
   const PRESSES: Readonly<Record<string, (r: Rig) => void>> = {
-    [`${TAB_HOST_KEYS.tab.keys} ${TAB_HOST_KEYS.tab.verb}`]: (r) => {
+    [printed(TAB_HOST_KEYS.tab)]: (r) => {
       const before = r.state.tab;
       r.press('', { leftArrow: true });
       expect(r.state.tab, '← moves to the tab before').toBe(
@@ -210,7 +220,7 @@ describe('every key the legend names, pressed', () => {
       r.press('', { rightArrow: true });
       expect(r.state.tab, '→ moves back').toBe(before);
     },
-    [`${TAB_HOST_KEYS.cycle.keys} ${TAB_HOST_KEYS.cycle.verb}`]: (r) => {
+    [printed(TAB_HOST_KEYS.cycle)]: (r) => {
       const before = r.state.tab;
       r.press('', { tab: true });
       const forward = TABS[(TABS.findIndex((tab) => tab.id === before) + 1) % TABS.length]?.id;
@@ -224,7 +234,7 @@ describe('every key the legend names, pressed', () => {
       r.press('', { upArrow: true });
       expect(sheetOf(r.state).cursor, '↑ selects the one before').toBe(0);
     },
-    '[d / Del] withdraw': (r) => {
+    '[d] / Del withdraw': (r) => {
       r.advance(SHEET_SETTLE_MS + 100);
       r.press('d');
       expect(sheetOf(r.state).armed, 'd asks').toBe(true);
@@ -232,16 +242,16 @@ describe('every key the legend names, pressed', () => {
       r.press('', { delete: true });
       expect(sheetOf(r.state).armed, 'Del asks too').toBe(true);
     },
-    '[Enter] withdraw': (r) => {
+    'Enter withdraw': (r) => {
       r.advance(SHEET_DWELL_AFTER_ASK);
       r.press('', ENTER);
       expect(r.withdraw, 'Enter withdraws the selected row').toHaveBeenCalledTimes(1);
       expect(r.withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'g0' } });
     },
-    [`${TAB_HOST_KEYS.close.keys} ${TAB_HOST_KEYS.close.verb}`]: (r) => {
+    [printed(TAB_HOST_KEYS.close)]: (r) => {
       expect(r.press('', ESC).kind, 'Esc closes').toBe('close');
     },
-    [`${TAB_HOST_KEYS.interrupt.keys} ${TAB_HOST_KEYS.interrupt.verb}`]: (r) => {
+    [printed(TAB_HOST_KEYS.interrupt)]: (r) => {
       expect(r.press('c', { ctrl: true }).kind, 'Ctrl+C closes').toBe('close');
     },
     'Esc keep': (r) => {
@@ -263,24 +273,23 @@ describe('every key the legend names, pressed', () => {
     [
       'Permissions with rows',
       () => rig(snapshotOf(3)),
-      '←/→ tab,Tab cycle,↑/↓ select,[d / Del] withdraw,Esc close',
+      '←/→ tab,Tab cycle,↑/↓ select,[d] / Del withdraw,Esc close',
     ],
     [
       'an unreadable History tab',
       () => rig(snapshotOf(3), 'history'),
-      '←/→ tab,Tab cycle,Ctrl+C close,Esc close',
+      '←/→ tab,Tab cycle,[Ctrl+C] close,Esc close',
     ],
     [
       'Permissions with nothing to select',
       () => rig(snapshotOf(0)),
-      '←/→ tab,Tab cycle,Ctrl+C close,Esc close',
+      '←/→ tab,Tab cycle,[Ctrl+C] close,Esc close',
     ],
-    ['Permissions while a withdrawal waits', asked, '[Enter] withdraw,Esc keep'],
+    ['Permissions while a withdrawal waits', asked, 'Enter withdraw,Esc keep'],
   ] as const)(
     '%s: each key named does what it says, and the leaving key is last',
     (_name, make, named) => {
-      const items = tabHostLegendItems(make().state);
-      const labels = items.map((item) => `${item.keys} ${item.verb}`);
+      const labels = legendLabels(make().state);
       expect(labels.join(',')).toBe(named);
       for (const label of labels) {
         const press = PRESSES[label];
@@ -291,9 +300,28 @@ describe('every key the legend names, pressed', () => {
     },
   );
 
+  it('names the class of the key that leaves by what it does there: it closes from a list, and steps back while a withdrawal’s question is up', () => {
+    const idle = rig(snapshotOf(3));
+    expect(tabHostLegend(idle.state).exit).toMatchObject({
+      keys: 'Esc',
+      verb: 'close',
+      class: 'close',
+    });
+    expect(idle.press('', ESC).kind, 'a list: Esc closes the screen').toBe('close');
+    const waiting = asked();
+    expect(tabHostLegend(waiting.state).exit).toMatchObject({
+      keys: 'Esc',
+      verb: 'keep',
+      class: 'step',
+    });
+    expect(waiting.press('', ESC).kind, 'a question: Esc drops it and the screen stays').toBe(
+      'state',
+    );
+  });
+
   it('names no key the model does not answer to: an Enter on a row opens nothing and withdraws nothing, and the legend does not offer it', () => {
     const r = rig();
-    const names = tabHostLegendItems(r.state).map((item) => item.keys);
+    const names = tabHostLegend(r.state).items.map((item) => ('keys' in item ? item.keys : ''));
     expect(names).not.toContain('Enter');
     r.advance(SHEET_SETTLE_MS + 100);
     r.press('', ENTER);
@@ -432,7 +460,7 @@ describe('Backspace on the Permissions tab (the maintainer’s ruling for this i
     const r = rig();
     r.press('', { backspace: true });
     expect(sheetOf(r.state).armed, 'too soon').toBe(false);
-    expect(sheetOf(r.state).message?.text).toBe('Wait a moment, then press d.');
+    expect(sheetOf(r.state).message?.text).toBe('Wait a moment, then press [d].');
     r.advance(SHEET_SETTLE_MS + 100);
     r.press('x');
     r.press('', { backspace: true });
@@ -473,7 +501,7 @@ describe('what a tab remembers', () => {
     expect(sheetOf(r.state).typed).toBe(false);
     r.press('d');
     expect(sheetOf(r.state).armed, 'too soon after entering').toBe(false);
-    expect(sheetOf(r.state).message?.text).toBe('Wait a moment, then press d.');
+    expect(sheetOf(r.state).message?.text).toBe('Wait a moment, then press [d].');
     r.advance(SHEET_SETTLE_MS + 100);
     r.press('d');
     expect(sheetOf(r.state).armed).toBe(true);
@@ -579,7 +607,7 @@ describe('what is drawn', () => {
     expect(lines).toContain(
       'Only auto mode runs a remembered command unasked, in a chat in this project.',
     );
-    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ select · [d / Del] withdraw · Esc close');
+    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc close');
     expect(lines.join('\n'), 'no second legend and no sheet rule').not.toContain(
       'Permissions · this project',
     );
@@ -591,7 +619,7 @@ describe('what is drawn', () => {
     r.press('d');
     const lines = textOf(tabHostLines(r.state, { columns: 80, terminalRows: 24 }));
     expect(lines.some((line) => line.startsWith('Withdraw tool0, 1 argument'))).toBe(true);
-    expect(lines.at(-1)).toBe('[Enter] withdraw · Esc keep');
+    expect(lines.at(-1)).toBe('Enter withdraw · Esc keep');
   });
 
   it('below 80×24 is two lines: the hint that says to enlarge, and the legend with the way out (`Esc close` at a tab’s list)', () => {
@@ -601,7 +629,7 @@ describe('what is drawn', () => {
       { columns: 40, terminalRows: 10 },
     ]) {
       expect(textOf(tabHostLines(rig().state, geometry))).toEqual([
-        'Enlarge the terminal — Esc steps back, or closes at the list.',
+        'Enlarge the terminal.',
         'Esc close',
       ]);
     }
@@ -614,10 +642,7 @@ describe('what is drawn', () => {
     expect(r.state.sheet?.armed, 'the question is up').toBe(true);
     // The terminal was made smaller after the question was asked: it cannot be shown, and it is still up.
     const small = { columns: 60, terminalRows: 20 };
-    expect(textOf(tabHostLines(r.state, small))).toEqual([
-      'Enlarge the terminal — Esc steps back, or closes at the list.',
-      'Esc close',
-    ]);
+    expect(textOf(tabHostLines(r.state, small))).toEqual(['Enlarge the terminal.', 'Esc close']);
     // What the legend says is what the key does there (the sheet's rule: a frame that cannot say what it asks never leaves it waiting).
     expect(r.press('', ESC, { canArm: false }).kind).toBe('close');
     expect(r.withdraw).not.toHaveBeenCalled();
@@ -626,7 +651,7 @@ describe('what is drawn', () => {
     floor.advance(SHEET_SETTLE_MS + 100);
     floor.press('d');
     expect(textOf(tabHostLines(floor.state, { columns: 80, terminalRows: 24 })).at(-1)).toBe(
-      '[Enter] withdraw · Esc keep',
+      'Enter withdraw · Esc keep',
     );
     expect(floor.press('', ESC).kind).toBe('state');
     expect(floor.state.sheet?.armed).toBe(false);

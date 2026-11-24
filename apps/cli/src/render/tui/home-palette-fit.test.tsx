@@ -43,7 +43,7 @@ const snapshotWith = (sessions: number): HomeSnapshot => ({
   isEmpty: sessions === 0,
 });
 
-const FOOTER = '↑/↓ select · Enter run · Esc cancel';
+const FOOTER = '↑/↓ select · Enter run · Esc close';
 const BANNER_TOP = '+--------------------------------------------------------+';
 
 function mount(size: { cols: number; rows: number }, sessions: number, alternateScreen: boolean) {
@@ -299,7 +299,7 @@ describe.each([
       await settleFrames();
       expect(m.controller.getSnapshot().palette).toBeUndefined();
       expect(m.onExit).not.toHaveBeenCalled();
-      expect(m.frame().join('\n')).toContain('/ for commands');
+      expect(m.frame().join('\n')).toContain('[/] for commands');
       expect(markersOf(m.frame())).toEqual([]);
       cleanup();
     }

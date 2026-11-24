@@ -17,7 +17,14 @@ import {
   sheetCanArm as currentSheetCanArm,
   type PermissionsSheetState,
 } from './permissions-sheet.js';
-import { legend, legendSpans, type LegendItem } from './legend.js';
+import {
+  exitKey,
+  legend,
+  legendSpans,
+  type LegendExit,
+  type LegendItem,
+  type LegendKey,
+} from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -41,7 +48,9 @@ import { displayWidth, wrapWords } from './viewport.js';
  *
  * The oracle is a copy, not an import: it is the file's rendering at the commit before the split (`53abf28b`), with its own constants, so
  * a constant the new module changes cannot move the oracle with it. It shares only the frame helpers (`sheet-frame`, `legend`, the card's
- * row budget, the review escape and `viewport`), which the split does not touch.
+ * row budget, the review escape and `viewport`), which the split does not touch. Its words follow the surface language (ADR-0145 §3,
+ * MVP-11 Step 3: `[d] / Del withdraw`, `Enter withdraw`, a key named in a sentence by the bracket rule) so that the layout stays the one thing
+ * it compares.
  */
 
 type SheetEntry = PermissionEntry;
@@ -51,22 +60,18 @@ type SheetMessage = WithdrawAnswer;
 
 const SHEET_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
-  withdraw: { keys: '[d / Del]', verb: 'withdraw', role: 'danger' },
-  confirm: { keys: '[Enter]', verb: 'withdraw', role: 'warn' },
-  keep: { keys: 'Esc', verb: 'keep' },
-  close: { keys: 'Esc', verb: 'close' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  withdraw: { keys: ['d', 'Del'], verb: 'withdraw', role: 'danger' },
+  confirm: { keys: 'Enter', verb: 'withdraw', role: 'warn' },
+  keep: exitKey.step('Esc', 'keep'),
+  close: exitKey.close(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
-const SHEET_LEGEND_IDLE_ITEMS: readonly LegendItem[] = [
-  SHEET_KEYS.select,
-  SHEET_KEYS.withdraw,
-  SHEET_KEYS.close,
-];
-const SHEET_LEGEND_EMPTY_ITEMS: readonly LegendItem[] = [SHEET_KEYS.close];
-const SHEET_LEGEND_ARMED_ITEMS: readonly LegendItem[] = [SHEET_KEYS.confirm, SHEET_KEYS.keep];
+const SHEET_LEGEND_IDLE_ITEMS: readonly LegendItem[] = [SHEET_KEYS.select, SHEET_KEYS.withdraw];
+const SHEET_LEGEND_EMPTY_ITEMS: readonly LegendItem[] = [];
+const SHEET_LEGEND_ARMED_ITEMS: readonly LegendItem[] = [SHEET_KEYS.confirm];
 
 const SHEET_CHIP_IDLE = '[d] withdraw';
-const SHEET_CHIP_ARMED = '[Enter] withdraw';
+const SHEET_CHIP_ARMED = 'Enter withdraw';
 
 const SHEET_WINDOW = 8;
 /** Below this the sheet does not promise a readable frame: ADR-0122 §7.3's floor. */
@@ -113,10 +118,10 @@ function sheetNote(state: PermissionsSheetState): string {
 /** What an empty project list says, by surface (`plan` has no cards, so it has nothing to point at). */
 function emptyProjectText(state: PermissionsSheetState): string {
   if (state.surface !== 'chat')
-    return 'Nothing is remembered for this project. A command is remembered from its card in a chat (Ctrl+O, then Enter).';
+    return 'Nothing is remembered for this project. A command is remembered from its card in a chat ([Ctrl+O], then Enter).';
   return state.mode === 'plan'
     ? 'Nothing is remembered for this project.'
-    : 'Nothing is remembered for this project. Press Ctrl+O on a command card, then Enter, to remember one.';
+    : 'Nothing is remembered for this project. Press [Ctrl+O] on a command card, then Enter, to remember one.';
 }
 
 const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
@@ -137,7 +142,7 @@ interface BodyLine {
 /**
  * One row: the marker and the label on the left; on the right the value (a date, or `(also remembered)`) flush to the edge, so the dates stay
  * in one column however the selection moves, and, on the selected row only, its action just before the value (`[d] withdraw`, or
- * `[Enter] withdraw` while its question is up) with the key in its role. A row too narrow for the right-hand side keeps the label alone.
+ * `Enter withdraw` while its question is up) with the key in its role. A row too narrow for the right-hand side keeps the label alone.
  */
 function rowLine(
   label: string,
@@ -159,7 +164,7 @@ function rowLine(
   };
 }
 
-/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `[Enter] withdraw`. */
+/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `Enter withdraw`. */
 function rowChip(selected: boolean, armed: boolean): string {
   if (!selected) return '';
   return armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
@@ -189,7 +194,11 @@ function rowSpans(
   if (right === '' || !text.endsWith(right)) return spans;
   const at = text.length - right.length;
   if (chip !== '')
-    spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
+    spans.push({
+      from: at,
+      to: at + (chip.startsWith('[') ? chip.indexOf(']') + 1 : chip.indexOf(' ')),
+      role: armed ? 'warn' : 'danger',
+    });
   if (tail !== '') {
     const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
     spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
@@ -222,7 +231,7 @@ function projectLines(state: PermissionsSheetState, width: number): BodyLine[] {
   });
   if (project.rows.length === 0) {
     for (const text of wrapWords(emptyProjectText(state), width))
-      lines.push({ kind: 'text', text: text.trimEnd() });
+      lines.push({ kind: 'text', text: text.trim() });
   }
   project.rows.forEach((item, entry) => {
     lines.push(rowLine(escaped(item.label), escaped(item.remembered), entry, state, width));
@@ -275,11 +284,11 @@ function ruleLine(state: PermissionsSheetState, width: number): SheetLine {
 function tooSmallLines(state: PermissionsSheetState): readonly SheetLine[] {
   return [
     ruleLine(state, 52),
-    { kind: 'text', text: 'Enlarge the terminal to use this screen — Esc closes.' },
+    { kind: 'text', text: 'Enlarge the terminal to use this screen.' },
     {
       kind: 'legend',
-      text: legend(SHEET_LEGEND_EMPTY_ITEMS),
-      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS),
+      text: legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
+      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
     },
   ];
 }
@@ -371,8 +380,8 @@ function legacyPermissionsSheetLines(
     };
   // A windowed list keeps one height: a window that had to be shorter is padded below, so the sheet does not change size under the cursor.
   while (all.length > height && body.length < height) body.push({ kind: 'text', text: '' });
-  const items = legendItems(state);
-  const legendText = clipLine(legend(items), width);
+  const { items, exit } = legendOf(state);
+  const legendText = clipLine(legend(items, exit), width);
   return [
     ruleLine(state, width),
     ...body,
@@ -381,26 +390,31 @@ function legacyPermissionsSheetLines(
     {
       kind: 'legend',
       text: legendText,
-      spans: clampSpans(legendSpans(items), legendText.length),
+      spans: clampSpans(legendSpans(items, exit), legendText.length),
     },
   ];
 }
 
-/** The legend's items: the armed question's, or the idle list's, or the empty list's. */
-function legendItems(state: PermissionsSheetState): readonly LegendItem[] {
-  if (state.armed) return SHEET_LEGEND_ARMED_ITEMS;
-  return sheetEntries(state.snapshot).length > 0
-    ? SHEET_LEGEND_IDLE_ITEMS
-    : SHEET_LEGEND_EMPTY_ITEMS;
+/** The legend: the armed question's (its `Esc` keeps the permission), or the idle list's, or the empty list's. */
+function legendOf(state: PermissionsSheetState): {
+  readonly items: readonly LegendItem[];
+  readonly exit: LegendExit;
+} {
+  if (state.armed) return { items: SHEET_LEGEND_ARMED_ITEMS, exit: SHEET_KEYS.keep };
+  return {
+    items:
+      sheetEntries(state.snapshot).length > 0 ? SHEET_LEGEND_IDLE_ITEMS : SHEET_LEGEND_EMPTY_ITEMS,
+    exit: SHEET_KEYS.close,
+  };
 }
 
 /** What withdrawing the entry would mean, in one sentence. */
 function withdrawHint(entry: SheetEntry): string {
   if (entry.kind === 'project')
-    return 'Press d to withdraw it: auto mode will ask about this command again.';
+    return 'Press [d] to withdraw it: auto mode will ask about this command again.';
   return entry.row.alsoRemembered
-    ? 'Press d to withdraw the session approval; the project still remembers it.'
-    : 'Press d to withdraw it: this command will need approval again.';
+    ? 'Press [d] to withdraw the session approval; the project still remembers it.'
+    : 'Press [d] to withdraw it: this command will need approval again.';
 }
 
 /** What withdrawing the selected row will do, said before it is done: the row under the list while nothing else needs saying. */
@@ -413,8 +427,8 @@ function hintLine(entry: SheetEntry, width: number): SheetLine {
     spans: clampSpans(
       [
         { from: 0, to: 6, role: 'dim' },
-        { from: 6, to: 7, role: 'danger' },
-        { from: 7, to: shown.length, role: 'dim' },
+        { from: 6, to: 9, role: 'danger' },
+        { from: 9, to: shown.length, role: 'dim' },
       ],
       shown.length,
     ),

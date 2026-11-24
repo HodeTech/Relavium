@@ -86,7 +86,7 @@ describe('at 80×24', () => {
     expect(lines).toContain(`${RUN_CARD_GUTTER}Ship build 42 to production?`);
     expect(lines).toContain('node node-a · approval gate');
     expect(lines).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
-    expect(lines.at(-1)).toBe('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    expect(lines.at(-1)).toBe('[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending');
   });
 
   it('lists several gates with a cursor on the one an answer applies to', () => {
@@ -99,7 +99,7 @@ describe('at 80×24', () => {
     expect(frame).toContain('  a · approval · node node-a');
     expect(frame).toContain('  c · approval · node node-c');
     expect(linesOf(frame).at(-1)).toBe(
-      '↑/↓ choose a gate · Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '↑/↓ choose a gate · [Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     );
   });
 
@@ -244,9 +244,9 @@ describe('a glyph and a word for every state', () => {
     expect(keys(snapshot({ phase: 'answering', gates: [] }))).toBe(
       'Answering… · Esc leaves the view',
     );
-    expect(keys(snapshot({ phase: 'answered', gates: [] }))).toBe('Esc closes');
-    expect(keys(snapshot({ phase: 'settled', gates: [] }))).toBe('Esc closes');
-    expect(keys(snapshot({ phase: 'empty', gates: [] }))).toBe('Esc closes');
+    expect(keys(snapshot({ phase: 'answered', gates: [] }))).toBe('Esc close');
+    expect(keys(snapshot({ phase: 'settled', gates: [] }))).toBe('Esc close');
+    expect(keys(snapshot({ phase: 'empty', gates: [] }))).toBe('Esc close');
   });
 });
 
@@ -265,7 +265,7 @@ describe('what an author can put in a gate`s message', () => {
     expect(authored.length).toBeGreaterThan(0);
     expect(authored.join('\n')).not.toMatch(/ctrl\s*[+-]\s*[yn]/iu);
     expect(lines.filter((line) => /Ctrl\+Y/u.test(line))).toEqual([
-      'Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending',
+      '[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending',
     ]);
     expect(lines.filter((line) => line.startsWith('▸'))).toEqual([]);
     expect(lastFrame()).not.toContain('\u001b]');

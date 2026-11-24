@@ -1,6 +1,6 @@
 import type { DefinedModel, DefinedRow } from '../../history/defined-model.js';
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import { keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -92,10 +92,10 @@ export type DefinedStep =
 /** The keys the Defined tab's legend names that are its own. The test presses every one of them. */
 export const DEFINED_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
-  run: { keys: '[r]', verb: 'run' },
-  export: { keys: '[x]', verb: 'export' },
+  run: { keys: 'r', verb: 'run' },
+  export: { keys: 'x', verb: 'export' },
   pin: PIN_KEY,
-} as const satisfies Readonly<Record<string, LegendItem>>;
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** What the tab says when the project has no workflow to list. */
 export const DEFINED_EMPTY =
@@ -103,7 +103,7 @@ export const DEFINED_EMPTY =
 /** What the tab says when its port cannot be read, or the Home has none. */
 export const DEFINED_UNREADABLE = 'The workflows of this project could not be listed.';
 /** What `Enter` says on a row: the workflow detail of ADR-0140 §2 is not built, and these are the keys that are. */
-export const DEFINED_NO_DETAIL = 'No workflow detail yet. r runs it, x exports it, p pins it.';
+export const DEFINED_NO_DETAIL = `No workflow detail yet. ${keyToken('r')} runs it, ${keyToken('x')} exports it, ${keyToken('p')} pins it.`;
 
 /** The tab opened on `read`, the cursor where it was (kept inside the rows there are now). */
 export function openDefinedTab(read: DefinedRead, cursor: number): DefinedTabState {
@@ -291,8 +291,8 @@ function detailLine(row: DefinedRow, width: number): SheetLine {
       // What `p` does comes first and the root last, so a long project path is the part a narrow terminal cuts.
       text: clipLine(
         (row.projectRoot ?? '') === ''
-          ? 'Pinned in another project; p removes the pin.'
-          : `Pinned in another project; p removes the pin (${row.projectRoot}).`,
+          ? `Pinned in another project; ${keyToken('p')} removes the pin.`
+          : `Pinned in another project; ${keyToken('p')} removes the pin (${row.projectRoot}).`,
         width,
       ),
     };
@@ -339,19 +339,17 @@ export function definedBody(
   return [...list, ...beyond, detail, message];
 }
 
-/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). */
+/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). The key that leaves is the host's. */
 export function definedLegendItems(
   state: DefinedTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.read.model.rows.length === 0) return [...tabItems, closeItem];
+  if (state.read.model.rows.length === 0) return tabItems;
   return [
     ...tabItems,
     DEFINED_KEYS.select,
     DEFINED_KEYS.run,
     DEFINED_KEYS.export,
     DEFINED_KEYS.pin,
-    closeItem,
   ];
 }

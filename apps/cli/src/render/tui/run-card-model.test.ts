@@ -149,7 +149,7 @@ describe('the answer applies to the gate under the cursor only', () => {
     expect(state(card).phase, 'the card is still open').toBe('open');
     const words = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
     const text = words.rows.map((row) => row.text).join('\n');
-    expect(text).toContain('Ctrl+N rejects');
+    expect(text).toContain('[Ctrl+N] Reject');
     expect(text).not.toContain('Ctrl+Y');
     expect(text).toContain('takes a typed value');
     expect(press(card, ctrl('n'))).toMatchObject({ kind: 'answered', gateId: 'typed' });
@@ -293,11 +293,11 @@ describe('below the terminal minimum', () => {
         { role: 'keys', text: 'Esc leaves it pending' },
       ]);
       expect(small.rows.map((row) => row.text).join('\n')).not.toMatch(
-        /Ctrl|approves|rejects|aborts|choose a gate/u,
+        /Ctrl|Approve|Reject|Abort|choose a gate/u,
       );
       // At the minimum the same card offers its keys: the degrade is the size, not the card.
       const fits = projectRunCard(state(card), { columns: 80, rows: 24, nowMs: 0 });
-      expect(fits.rows.map((row) => row.text).join('\n')).toContain('Ctrl+Y approves');
+      expect(fits.rows.map((row) => row.text).join('\n')).toContain('[Ctrl+Y] Approve');
     },
   );
 });

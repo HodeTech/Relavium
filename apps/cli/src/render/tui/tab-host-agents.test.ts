@@ -18,7 +18,6 @@ import {
 } from '../../history/agents-model.js';
 import type { AgentsPort } from '../../home/agents-port.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   AGENT_TABS,
@@ -28,7 +27,8 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   type TabHostContext,
@@ -199,9 +199,15 @@ function rig(options: RigOptions = {}) {
       tabHostLines(state, { columns, terminalRows: rows })
         .map((line) => line.text)
         .join('\n'),
-    legendText: () => legend(tabHostLegendItems(state)),
+    legendText: () => tabHostLegendText(state),
   };
 }
+
+/** Every key the legend of `state` names, the key that leaves last (a list of keys is one entry). */
+const legendKeys = (state: TabHostState): readonly (string | readonly string[])[] => {
+  const { items, exit } = tabHostLegend(state);
+  return [...items, exit].map((item) => ('keys' in item ? item.keys : item.text));
+};
 
 describe('the /agents strip is its own: Defined │ Sessions', () => {
   it('draws two tabs, the current one with a glyph, and none of the workflows strip’s', () => {
@@ -325,7 +331,7 @@ describe('the Defined tab lists the project’s agents, one row per file', () =>
   it('says there are no agents, and names no row key, when the catalog is empty', () => {
     const r = rig({ items: [] });
     expect(r.text()).toContain(AGENTS_EMPTY);
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
     expect(r.press('', ENTER).kind).toBe('state');
     expect(r.press('', DOWN).kind).toBe('state');
   });
@@ -344,7 +350,7 @@ describe('the Defined tab lists the project’s agents, one row per file', () =>
       expect(r.state.agents).toBeUndefined();
       expect(r.text()).toContain(AGENTS_UNREADABLE);
       expect(r.text()).not.toContain('PRIVATE_FAULT_TEXT');
-      expect(r.legendText()).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
+      expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
       expect(r.press('', ESC).kind, 'Esc still closes it').toBe('close');
     }
   });
@@ -432,16 +438,9 @@ describe('the agent detail page is read-only, sanitized, and nothing else', () =
 describe('the legends name exactly the keys each page answers to, and every one is pressed', () => {
   it('Defined list: select and open with the tab keys and Esc last, each doing what it says', () => {
     const r = rig();
-    expect(tabHostLegendItems(r.state).map((item) => item.keys)).toEqual([
-      '←/→',
-      'Tab',
-      '↑/↓',
-      'Enter',
-      'Ctrl+C',
-      'Esc',
-    ]);
+    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', 'Ctrl+C', 'Esc']);
     expect(r.legendText()).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ select · Enter open · Ctrl+C close · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · Enter open · [Ctrl+C] close · Esc close',
     );
     expect(AGENTS_KEYS.select.keys).toBe('↑/↓');
     expect(AGENTS_KEYS.open.keys).toBe('Enter');
@@ -470,13 +469,15 @@ describe('the legends name exactly the keys each page answers to, and every one 
   it('Defined detail: the tab keys, [c] chat and Esc back; the list’s legend names no `c`', () => {
     const r = rig();
     // The list names no chat key: the chat is started from an agent's page, which is where its tool grant is read.
-    for (const item of tabHostLegendItems(r.state)) expect(item.keys, 'the list').not.toBe('[c]');
+    for (const keys of legendKeys(r.state)) expect(keys, 'the list').not.toBe('c');
     expect(r.legendText()).not.toContain('chat');
     r.press('', ENTER);
-    const items = tabHostLegendItems(r.state);
-    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', '[c]', 'Ctrl+C', 'Esc']);
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [c] chat · Ctrl+C close · Esc back');
-    expect(AGENTS_KEYS.chat).toEqual({ keys: '[c]', verb: 'chat' });
+    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', 'c', 'Ctrl+C', 'Esc']);
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [c] chat · [Ctrl+C] close · Esc back');
+    expect(AGENTS_KEYS.chat).toEqual({ keys: 'c', verb: 'chat' });
+    // the way back is the detail's own `Esc`: one level, the Step class
+    expect(tabHostLegend(r.state).exit).toBe(AGENTS_KEYS.back);
+    expect(AGENTS_KEYS.back.class).toBe('step');
     // Esc backs out to the list on the row it came from, and a second Esc closes the screen.
     expect(r.press('', ESC).kind).toBe('state');
     expect(r.state.agents?.detail).toBeUndefined();
@@ -585,16 +586,9 @@ describe('the legends name exactly the keys each page answers to, and every one 
 
   it('Sessions: select and resume with the tab keys and Esc last, each doing what it says', () => {
     const r = rig({ tab: 'sessions' });
-    expect(tabHostLegendItems(r.state).map((item) => item.keys)).toEqual([
-      '←/→',
-      'Tab',
-      '↑/↓',
-      'Enter',
-      'Ctrl+C',
-      'Esc',
-    ]);
+    expect(legendKeys(r.state)).toEqual(['←/→', 'Tab', '↑/↓', 'Enter', 'Ctrl+C', 'Esc']);
     expect(r.legendText()).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ select · Enter resume · Ctrl+C close · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · Enter resume · [Ctrl+C] close · Esc close',
     );
     expect(SESSIONS_KEYS.select.keys).toBe('↑/↓');
     expect(SESSIONS_KEYS.resume.keys).toBe('Enter');
@@ -690,7 +684,7 @@ describe('the Sessions tab lists this project’s conversations', () => {
   it('says there is none, names no row key and resumes nothing when the project has no conversation', () => {
     const r = rig({ tab: 'sessions', sessions: [] });
     expect(r.text()).toContain('No saved conversations in this project yet.');
-    expect(r.legendText()).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
+    expect(r.legendText()).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
     expect(r.press('', ENTER).kind).toBe('state');
   });
 

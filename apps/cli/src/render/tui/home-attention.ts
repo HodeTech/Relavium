@@ -26,6 +26,7 @@ import {
 } from '../../home/run-gates.js';
 import { sanitizeInline } from '../sanitize.js';
 import { expiryLabel, shortId } from './home-projection.js';
+import { keyLabel, type LegendKey } from './legend.js';
 import { clipLine } from './sheet-frame.js';
 import { displayWidth, sliceDisplayColumns } from './viewport.js';
 
@@ -116,18 +117,27 @@ export function readParkedRuns(
 /**
  * What `Enter` does on the focused row of each kind, in the row's own words: a gate or a budget gate opens its card, a media park asks
  * whether to continue the run here (nothing is continued without a Yes), and a run with nothing to answer says why. An input gate's card
- * cannot take its value, so its key says what the card does: it shows how to answer.
+ * cannot take its value, so its key says what the card does: it shows how to answer. Each is a legend item (ADR-0145 §3), so the key is
+ * written by the bracket rule and the verb is the imperative of the action the key performs.
  */
-const FOCUSED_CUE: Readonly<Record<ParkedRunKind, string>> = {
-  approval: 'Enter opens',
+const FOCUSED_CUE: Readonly<Record<ParkedRunKind, LegendKey>> = {
+  approval: { keys: 'Enter', verb: 'open' },
   // The card of an input gate takes no typed value: it shows the shell command that does, and offers a rejection. `Enter` shows how.
-  input: 'Enter shows how to answer',
-  review: 'Enter opens',
-  budget: 'Enter opens',
-  several: 'Enter opens',
-  media: 'Enter asks to continue',
-  none: 'Enter says why',
+  input: { keys: 'Enter', verb: 'show how to answer' },
+  review: { keys: 'Enter', verb: 'open' },
+  budget: { keys: 'Enter', verb: 'open' },
+  several: { keys: 'Enter', verb: 'open' },
+  media: { keys: 'Enter', verb: 'ask to continue' },
+  none: { keys: 'Enter', verb: 'say why' },
 };
+
+/** What an unfocused row names instead: `↓` moves onto it, and only the focused row can be opened. */
+const UNFOCUSED_CUE: LegendKey = { keys: '↓', verb: 'select' };
+
+/** One legend item as the row writes it: its key by the bracket rule, then its verb. */
+function cueText(item: LegendKey): string {
+  return `${keyLabel(item.keys)} ${item.verb}`;
+}
 
 function wordsFor(row: ParkedRunRow): string {
   switch (row.kind) {
@@ -187,7 +197,7 @@ export function parkedRunLabel(
   maxColumns = Number.POSITIVE_INFINITY,
   nowMs?: number,
 ): string {
-  const key = focused ? FOCUSED_CUE[row.kind] : '↓ selects';
+  const key = cueText(focused ? FOCUSED_CUE[row.kind] : UNFOCUSED_CUE);
   const id = sanitizeInline(row.runId);
   const workflow =
     row.workflow === undefined || row.workflow === ''

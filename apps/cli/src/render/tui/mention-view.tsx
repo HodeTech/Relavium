@@ -2,12 +2,22 @@ import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
 import { colorProps, dimProps } from './projection.js';
 
 /** The most candidate rows shown at once — a directory with hundreds of entries scrolls a window around the
  *  selection rather than flooding the terminal (the palette renders all; a directory listing can be far larger). */
 const MENTION_WINDOW = 8;
+
+/** The hint under the candidates (ADR-0145 §3): `Esc` closes the completion and the `@` comes back into the draft; nothing else changes. */
+const MENTION_LEGEND = legend(
+  [
+    { keys: '↑/↓', verb: 'select' },
+    { keys: 'Enter', verb: 'open/insert' },
+  ],
+  exitKey.close(),
+);
 
 /**
  * The `@`-mention completion overlay (2.5.D step 4, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
@@ -81,7 +91,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       </Text>
       {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">
-        ↑/↓ select · Enter open/insert · Esc cancel
+        {MENTION_LEGEND}
       </Text>
     </Box>
   );

@@ -165,25 +165,25 @@ describe('the legend golden', () => {
     const golden = readGolden();
     const row = (id: string, state: string): string | undefined => golden[id]?.[state];
     expect(row('approval-host', 'card: a change colour=off [1]')).toBe(
-      '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+      '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
     );
     expect(row('approval-host', 'card: a command colour=off [1]')).toBe(
-      '[Ctrl+Y] Allow once   [Ctrl+G] Allow this session   [Ctrl+O] Allow + remember',
+      '[Ctrl+Y] Allow once · [Ctrl+G] Allow this session · [Ctrl+O] Allow + remember',
     );
     expect(row('approval-host', 'full view colour=off [4]')).toBe(
-      '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn',
+      '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back',
     );
     expect(row('question-card-view', 'size=80x24 colour=off [2]')).toBe(
-      'Esc or Ctrl+C stops the turn',
+      'Esc / [Ctrl+C] stops the turn',
     );
     expect(row('checkpoint-card-view', 'size=80x24 colour=off [1]')).toBe(
-      '[Ctrl+Y] Continue   [Ctrl+N] Stop here',
+      '[Ctrl+Y] Continue · [Ctrl+N] Stop here',
     );
     expect(row('home-view-hint', 'idle, nothing to continue colour=off [1]')).toBe(
-      '/ for commands · type a message to start a chat · Ctrl+C twice to exit',
+      '[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)',
     );
     expect(row('chat-idle-hint', 'armed=false emptyDraft=false')).toBe(
-      'Enter to send · Ctrl+J newline · Ctrl+C clears the draft',
+      'Enter send · [Ctrl+J] newline · [Ctrl+C] clear the draft',
     );
   });
 

@@ -16,6 +16,7 @@ import { shortRunId } from '../history/run-detail-model.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { keyToken } from '../render/tui/legend.js';
 import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 import { workflowSourceDigest } from '../run-core/source-digest.js';
 import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
@@ -874,7 +875,7 @@ export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
   const runId = snapshot.active?.runId;
   return runId === undefined
     ? 'A run is already starting.'
-    : `A run is already executing (${shortRunId(runId)}). Enter on its ▶ row opens it.`;
+    : `A run is already executing (${shortRunId(runId)}). ${keyToken('Enter')} on its ▶ row opens it.`;
 }
 
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {

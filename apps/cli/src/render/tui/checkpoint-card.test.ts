@@ -42,8 +42,8 @@ describe('the checkpoint card text (ADR-0136 §4)', () => {
     expect(view.rule).toContain(' Checkpoint ');
     expect(view.fact).toBe('This turn has used 32 tool rounds in 3m12s. Continue for 32 more?');
     expect(view.keys).toEqual([
-      '[Ctrl+Y] Continue   [Ctrl+N] Stop here',
-      'Esc or Ctrl+C stops the turn',
+      '[Ctrl+Y] Continue · [Ctrl+N] Stop here',
+      'Esc / [Ctrl+C] stops the turn',
     ]);
   });
 

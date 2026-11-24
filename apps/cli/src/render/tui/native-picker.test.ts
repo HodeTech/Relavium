@@ -189,7 +189,7 @@ describe('owned searchable session picker', () => {
     );
     h.controller.start();
     await h.controller.whenSettled();
-    expect(h.snapshot().error).toContain('Enter retries');
+    expect(h.snapshot().error).toBe('Session history could not be read · Enter retry · Esc close');
     expect(JSON.stringify(h.snapshot())).not.toContain('PRIVATE');
     h.controller.input('', { return: true });
     await h.controller.whenSettled();

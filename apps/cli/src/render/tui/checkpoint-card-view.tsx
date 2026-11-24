@@ -9,7 +9,8 @@ import {
 } from 'react';
 
 import type { ChatStoreController } from './chat-store.js';
-import { projectCheckpointCard } from './checkpoint-card.js';
+import { CHECKPOINT_STOP, projectCheckpointCard } from './checkpoint-card.js';
+import { legend } from './legend.js';
 import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
@@ -87,12 +88,17 @@ export function CheckpointCardHost(
   if (!reviewTerminalFits(props.size))
     return (
       <Text>
-        Checkpoint: terminal too small — resize to at least 80×24. Esc or Ctrl+C stops the turn.
+        {legend(
+          [{ text: 'Checkpoint: terminal too small — resize to at least 80×24' }],
+          CHECKPOINT_STOP,
+        )}
       </Text>
     );
   if (blocked === shown)
     return (
-      <Text>Checkpoint unavailable — enlarge the terminal. Esc or Ctrl+C stops the turn.</Text>
+      <Text>
+        {legend([{ text: 'Checkpoint unavailable — enlarge the terminal' }], CHECKPOINT_STOP)}
+      </Text>
     );
   const color = props.color === true;
   const view = projectCheckpointCard(card, props.size.cols);

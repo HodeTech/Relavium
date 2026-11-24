@@ -6,6 +6,7 @@ import {
   type PreparedConfigWrite,
 } from '../config/write.js';
 import type { NoticeFlush } from '../engine/effect-retention.js';
+import { keyToken } from '../render/tui/legend.js';
 import {
   startingModePreference,
   startingModeConfigObserver,
@@ -14,8 +15,7 @@ import {
   type StartingModePreference,
 } from './starting-mode.js';
 
-const HINT =
-  'You started in ask mode. Shift+Tab or /mode changes the current mode. Use /mode to configure the startup default.';
+export const STARTING_MODE_HINT = `You started in ask mode. ${keyToken('Shift+Tab')} or /mode changes the current mode. Use /mode to configure the startup default.`;
 const REWRITE =
   'Recording this hint rewrites the global config and removes its comments and ordering.';
 const FAILED = 'The startup mode hint could not be recorded. Chat remains available.';
@@ -94,7 +94,7 @@ async function deliver(
     assertCurrent(options);
     await options.flushNotice(() => {
       assertCurrent(options);
-      options.notice(HINT);
+      options.notice(STARTING_MODE_HINT);
     });
     const assertDisplayed = (): void => {
       assertCurrent(options);

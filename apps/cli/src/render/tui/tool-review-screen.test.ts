@@ -36,7 +36,6 @@ import {
   fullNavLegend,
   fullStatusRow,
   fullWarnings,
-  keyLabelParts,
   type CallListEntry,
   type FullChromeInput,
   type InspectionPending,
@@ -1154,7 +1153,7 @@ describe('fullStatusRow — how far down the page reaches, which changes are off
 // fullNavLegend
 // Mutation: drop any `if (input.has…)` guard (an item appears that does nothing); swap `revealed ? … : …`; change `<=` in
 // `packRows` to `<`; pack `[...move, ...tools]` as one list (the groups share a row); push '[b] Back…' into the legend;
-// change KEY_GAP.
+// change the legend separator.
 // ---------------------------------------------------------------------------------------------------------------------
 describe('fullNavLegend — the card’s `[key] words` style, two groups, only the keys that do something here', () => {
   const ALL: NavLegendInput = {
@@ -1165,17 +1164,17 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     numeric: false,
     columns: 140,
   };
-  const GAP = '   ';
-  const MOVE_ROW = '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end   [Tab/Shift+Tab] changes';
-  const TOOLS_ROW = '[/] search   [r] reveal masked   [p] Unicode codes   [c] copy page';
+  const GAP = ' · ';
+  const MOVE_ROW = '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab / Shift+Tab changes';
+  const TOOLS_ROW = '[/] search · [r] reveal masked · [p] Unicode codes · [c] copy page';
   const items = (over: Partial<NavLegendInput> = {}): readonly string[] =>
     fullNavLegend({ ...ALL, ...over }).flatMap((row) => row.split(GAP));
   /** The movement group the contract spells out, built from the flags alone. */
   const moveItems = (flags: NavLegendInput): readonly string[] => [
-    '[↑↓] scroll',
-    '[PgUp/PgDn] page',
-    '[Home/End] top/end',
-    ...(flags.hasChanges ? ['[Tab/Shift+Tab] changes'] : []),
+    '↑/↓ scroll',
+    'PgUp/PgDn page',
+    'Home/End top/end',
+    ...(flags.hasChanges ? ['Tab / Shift+Tab changes'] : []),
   ];
   /** The inspection group, likewise. */
   const toolItems = (flags: NavLegendInput): readonly string[] => [
@@ -1198,10 +1197,10 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
   });
 
   it('offers Tab only when there is a change to go to', () => {
-    expect(items({ hasChanges: false })).not.toContain('[Tab/Shift+Tab] changes');
-    expect(items({ hasChanges: true })).toContain('[Tab/Shift+Tab] changes');
+    expect(items({ hasChanges: false })).not.toContain('Tab / Shift+Tab changes');
+    expect(items({ hasChanges: true })).toContain('Tab / Shift+Tab changes');
     expect(fullNavLegend({ ...ALL, hasChanges: false })[0]).toBe(
-      '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
+      '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
     );
   });
 
@@ -1238,9 +1237,9 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
 
   it('always offers scrolling, paging, the ends, search and the code-point switch', () => {
     expect(items({ hasChanges: false, hasMasks: false, canCopy: false })).toEqual([
-      '[↑↓] scroll',
-      '[PgUp/PgDn] page',
-      '[Home/End] top/end',
+      '↑/↓ scroll',
+      'PgUp/PgDn page',
+      'Home/End top/end',
       '[/] search',
       '[p] Unicode codes',
     ]);
@@ -1250,7 +1249,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
     const rows = fullNavLegend({ ...ALL, columns: 400 });
     expect(rows).toHaveLength(2);
     expect(rows[0]).not.toContain('[/]');
-    expect(rows[1]).not.toContain('[↑↓]');
+    expect(rows[1]).not.toContain('↑/↓');
   });
 
   it('packs into more rows on a narrow terminal than on a wide one', () => {
@@ -1258,9 +1257,9 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
       fullNavLegend({ ...ALL, columns: 140 }).length,
     );
     expect(fullNavLegend({ ...ALL, columns: 60 })).toEqual([
-      '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
-      '[Tab/Shift+Tab] changes',
-      '[/] search   [r] reveal masked   [p] Unicode codes',
+      '↑/↓ scroll · PgUp/PgDn page · Home/End top/end',
+      'Tab / Shift+Tab changes',
+      '[/] search · [r] reveal masked · [p] Unicode codes',
       '[c] copy page',
     ]);
   });
@@ -1351,7 +1350,7 @@ describe('fullNavLegend — the card’s `[key] words` style, two groups, only t
 // rows on the wrong flag; return one row; reword the second row; give the locked row the card's wording.
 // ---------------------------------------------------------------------------------------------------------------------
 describe('fullAnswerRows — the card’s two rows, without the keys only the card has', () => {
-  const DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+  const DENY_ROW = '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back';
   const scopes = [
     'file writes',
     'file edits',
@@ -1361,7 +1360,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
   it('keeps the card’s grants row and replaces the second row with the refusals and the way back that exist here', () => {
     const input: CardKeyInput = { inspected: true, cacheable: true, scope: 'file edits' };
     expect(fullAnswerRows(input)).toEqual([
-      '[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session',
+      '[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session',
       DENY_ROW,
     ]);
     expect(fullAnswerRows(input)[0]).toBe(cardKeyRows(input)[0]);
@@ -1410,15 +1409,15 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         const second = fullAnswerRows({ inspected, cacheable, scope: 'file writes' })[1];
         expect(second).not.toContain('Ctrl+R');
         expect(second).not.toContain('[v]');
-        expect(second).not.toContain('Full diff');
+        expect(second).not.toContain('full diff');
       }
   });
 
-  it('names `[b] Back to the card` in the second row, whether or not Allow is offered: back is never locked', () => {
+  it('names `[b] back to the card` in the second row, whether or not Allow is offered: back is never locked', () => {
     for (const inspected of [true, false])
       for (const cacheable of [true, false])
         expect(fullAnswerRows({ inspected, cacheable, scope: 'file writes' })[1]).toContain(
-          '[b] Back to the card',
+          '[b] back to the card',
         );
   });
 
@@ -1467,7 +1466,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
         }),
       ).toEqual([
         'Press Enter to allow all file writes this session',
-        'Any other key cancels · Esc back · Ctrl+C stops the turn',
+        'Any other key cancels · [Ctrl+C] stops the turn · Esc back',
       ]);
     });
 
@@ -1483,7 +1482,7 @@ describe('fullAnswerRows — the card’s two rows, without the keys only the ca
           });
           expect(rows[1], JSON.stringify({ confirm, command })).not.toContain('Esc stops');
           expect(rows[1]).toContain('Esc back');
-          expect(rows[1]).toContain('Ctrl+C stops the turn');
+          expect(rows[1]).toContain('[Ctrl+C] stops the turn');
         }
       // an Enter confirms a command's question, and any key a tool's
       expect(
@@ -1732,15 +1731,15 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     expect(approval.note).toBe(FULL_PROTECTED_NOTE);
     expect(approval.answers).toHaveLength(2);
     expect(approval.answers[1], 'the way back sits with the answers').toContain(
-      '[b] Back to the card',
+      '[b] back to the card',
     );
     expect(approval.nav.join('\n'), 'and not in the legend').not.toContain('[b]');
 
     const details = fullChrome({ ...base, kind: 'details', title: 'Details', keys: undefined });
-    expect(details.note).toBe('[b] Back to the list   Esc closes · viewing never executes a tool');
+    expect(details.note).toBe('[b] back to the list · viewing never executes a tool · Esc close');
     expect(details.note).toBe(DETAILS_CLOSE_NOTE);
     expect(details.answers).toEqual([]);
-    expect(details.note, 'the way back sits with the close note').toContain('[b] Back to the list');
+    expect(details.note, 'the way back sits with the close note').toContain('[b] back to the list');
     expect(details.nav.join('\n'), 'and not in the legend').not.toContain('[b]');
     expect(details.header[0]).toMatch(/^Details/u);
   });
@@ -1752,7 +1751,7 @@ describe('fullChrome — the rows the screen spends outside the body, counted on
     });
     expect(waiting.answers).toEqual([
       'Press Enter to allow all file edits this session',
-      'Any other key cancels · Esc back · Ctrl+C stops the turn',
+      'Any other key cancels · [Ctrl+C] stops the turn · Esc back',
     ]);
     expect(waiting.rows).toBe(fullChrome(base).rows);
   });
@@ -2796,14 +2795,14 @@ describe('callListCapacity — how many calls fit', () => {
 
 describe('callListView — the list of a conversation’s tool calls (ADR-0134 §6)', () => {
   describe('an empty list', () => {
-    it('says why there is nothing, and that Esc closes', () => {
+    it('says why there is nothing, and that Esc closes it', () => {
       const empty = view([]);
       expect(empty.title).toBe('Tool calls');
       expect(empty.rows).toEqual([]);
       expect(empty.empty).toBe('No tool calls yet. Earlier sessions keep no previews.');
       expect(displayWidth(empty.empty ?? '')).toBeLessThanOrEqual(usable(FLOOR));
       expect(empty.status).toBe('');
-      expect(empty.hint).toBe('Esc closes');
+      expect(empty.hint).toBe('Esc close');
       expect(empty.height).toBe(3);
     });
     it('has no `empty` text once there is a call', () => {
@@ -3190,7 +3189,7 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
       const list = view([call(0)]);
       expect(list.title).toBe('Tool calls');
       expect(list.hint).toBe(
-        '↑↓ PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc closes',
+        '↑/↓, PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc close',
       );
     });
 
@@ -3281,93 +3280,5 @@ describe('callListView — the list of a conversation’s tool calls (ADR-0134 �
         none();
       },
     );
-  });
-});
-
-/**
- * `keyLabelParts` splits a key legend into its `[key]` labels, `Esc`, `Ctrl+C` and the words between, in one pass. The regular expression
- * it replaced (`/(\[[^\]]+\]|Esc|Ctrl\+C)/u`) is the oracle here, and a long run of `[` is the input that made it quadratic (100,000 of them took
- * 3.4 s). Mutation: put the oracle back, and the time bound fails; drop the `close > index + 1` test, and `[]` is a label.
- */
-describe('keyLabelParts — a key legend in labels and words, in one pass', () => {
-  const oracle = (row: string): string[] =>
-    row.split(/(\[[^\]]+\]|Esc|Ctrl\+C)/u).filter((part) => part.length > 0);
-
-  it('equals the regular expression on every string of up to six pieces', () => {
-    const pieces = ['[', ']', 'Esc', 'x', ' '];
-    let checked = 0;
-    const walk = (prefix: string, depth: number): void => {
-      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
-      checked++;
-      if (depth === 0) return;
-      for (const piece of pieces) walk(prefix + piece, depth - 1);
-    };
-    walk('', 6);
-    expect(checked).toBe(19_531);
-  });
-
-  it('equals the regular expression on every string of up to four pieces, `Ctrl+C` among them', () => {
-    const pieces = ['[', ']', 'Esc', 'Ctrl+C', 'Ctrl+', 'x', ' '];
-    let checked = 0;
-    const walk = (prefix: string, depth: number): void => {
-      expect(keyLabelParts(prefix)).toEqual(oracle(prefix));
-      checked++;
-      if (depth === 0) return;
-      for (const piece of pieces) walk(prefix + piece, depth - 1);
-    };
-    walk('', 4);
-    expect(checked).toBe(2_801);
-  });
-
-  it('finds the stop key at the start of a row, as a row of the search box begins with it', () => {
-    expect(keyLabelParts('Ctrl+C stops the turn')).toEqual(['Ctrl+C', ' stops the turn']);
-    expect(keyLabelParts('Ctrl+N is not the stop key')).toEqual(['Ctrl+N is not the stop key']);
-  });
-
-  it('is lossless: the parts put back together are the row, whatever the row holds', () => {
-    for (const row of [
-      '',
-      '[',
-      ']',
-      '[]',
-      '[[]',
-      '[a[b]c]',
-      'Esc',
-      'EscEsc',
-      '[Ctrl+Y] Allow  [Esc]',
-      'é[ü]ß',
-    ]) {
-      expect(keyLabelParts(row).join('')).toBe(row);
-    }
-  });
-
-  it('finds the labels the real legend rows hold', () => {
-    expect(
-      keyLabelParts('[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn'),
-    ).toEqual([
-      '[Ctrl+N]',
-      ' Deny   ',
-      '[b]',
-      ' Back to the card   ',
-      'Esc',
-      ' back   ',
-      'Ctrl+C',
-      ' stops the turn',
-    ]);
-  });
-
-  it('treats a `[` with no `]` after it, and an empty `[]`, as plain text', () => {
-    expect(keyLabelParts('a [ b')).toEqual(['a [ b']);
-    expect(keyLabelParts('[]')).toEqual(['[]']);
-    expect(keyLabelParts('[] [x]')).toEqual(['[] ', '[x]']);
-  });
-
-  it('takes a long run of `[` (and a run of `[a` closed late) in linear time', () => {
-    for (const row of ['['.repeat(150_000), '[a'.repeat(100_000) + ']', '[]'.repeat(100_000)]) {
-      const started = performance.now();
-      keyLabelParts(row);
-      // Linear takes a few milliseconds; the quadratic expression took 3.4 s at 100,000.
-      expect(performance.now() - started).toBeLessThan(1_000);
-    }
   });
 });

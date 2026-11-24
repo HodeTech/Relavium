@@ -136,6 +136,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
+import { exitKey, keyToken, legend } from '../render/tui/legend.js';
 import { overlayOwnsKeyboard } from '../render/tui/overlay-flags.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
@@ -290,6 +291,19 @@ export interface OnboardingTerminalLifecycle {
   /** Transfer raw-mode ownership between Clack and the user's shell. */
   readonly setRawMode: (enabled: boolean) => void;
 }
+
+/**
+ * What the Home says to a message sent in a chat whose provider has no usable key, and what a resume says to a session of another directory,
+ * and the note a restore shows while it runs. Sentences that name a key write it by the legend's bracket rule
+ * ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §3); exported so the legend golden records what the host shows.
+ */
+export const NO_USABLE_KEY_NOTICE = `This session’s provider has no usable key. Go back to the Home (${keyToken('Ctrl+C')} twice) and use /providers to connect it, or use /models to switch provider.`;
+export const ANOTHER_DIRECTORY_NOTICE = `This session belongs to another directory. Open Home there, or use /resume and ${keyToken('Tab')} to browse all directories.`;
+/** The restore is cancelled by `Esc` (the card under the note says the same), so the note states the consequence as a fact (ADR-0145 §2, decide). */
+export const RESTORING_NOTE = legend(
+  [{ text: 'Restoring session…' }],
+  exitKey.decide('cancels it'),
+);
 
 /** Production terminal bridge for the real Clack prompt, intentionally kept out of the generic `CliIo` seam. */
 export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
@@ -1051,9 +1065,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const sendGuard = (): string | undefined => {
           built.workOwner?.assertAdmitting();
           ownership?.surface.work.assertAdmitting();
-          return providerHasKey(providers, built.agent.provider)
-            ? undefined
-            : 'This session’s provider has no usable key. Go back to the Home (Ctrl+C twice) and use /providers to connect it, or use /models to switch provider.';
+          return providerHasKey(providers, built.agent.provider) ? undefined : NO_USABLE_KEY_NOTICE;
         };
         const initialKeyRefusal = sendGuard();
         if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
@@ -1644,8 +1656,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       // Discovery scope never grants authority. Check the canonical context, not the indexed picker column.
       if (loaded.session.context.workingDir !== fsPolicyWorkspace(fsPolicy))
         return {
-          notice:
-            'This session belongs to another directory. Open Home there, or use /resume and Tab to browse all directories.',
+          notice: ANOTHER_DIRECTORY_NOTICE,
         };
       const transcript = await prepareRestoredHistory({
         messages: loaded.messages,
@@ -1658,7 +1669,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       if (transcript === undefined) return undefined;
       assertHomeAdmitting();
       const signal = promptFlow.begin();
-      promptFlow.note('Restoring session… Esc to return.');
+      promptFlow.note(RESTORING_NOTE);
       try {
         const built = await restoreChat(sessionId, undefined, transcript, true, loaded, signal);
         if (signal.aborted) {

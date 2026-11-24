@@ -197,7 +197,7 @@ async function openCard(m: Mounted): Promise<void> {
   );
   // `Enter` on a row counts only once the frame that shows the focus is on screen: wait for that evidence, not for a count of yields.
   await eventually(
-    () => m.frame().includes('Enter opens') && m.homePainted(),
+    () => m.frame().includes('Enter open') && m.homePainted(),
     'the focused row on screen',
   );
   m.harness.stdin.write(ENTER);
@@ -221,8 +221,8 @@ describe('the Attention rows', () => {
     await settleFrames();
     const frame = m.frame();
     expect(frame).toContain('Attention required');
-    expect(frame).toContain('‖ run-0001  ·  approval gate  ·  ↓ selects');
-    expect(frame).toContain('↓ Open a parked run');
+    expect(frame).toContain('‖ run-0001  ·  approval gate  ·  ↓ select');
+    expect(frame).toContain('↓ open a parked run');
     expect(frame.split('\n').filter((line) => line.includes('run-0001'))).toHaveLength(1);
   });
 
@@ -232,7 +232,7 @@ describe('the Attention rows', () => {
     const frame = m.frame();
     expect(frame).not.toContain('‖');
     expect(frame).not.toContain('Attention required');
-    expect(frame).not.toContain('Open a parked run');
+    expect(frame).not.toContain('open a parked run');
     expect(frame).toContain('Welcome to Relavium.');
   });
 
@@ -240,13 +240,13 @@ describe('the Attention rows', () => {
     const m = mount();
     await settleFrames();
     m.harness.stdin.write(DOWN);
-    await eventually(() => m.frame().includes('> ‖ run-0001  ·  approval gate  ·  Enter opens'));
+    await eventually(() => m.frame().includes('> ‖ run-0001  ·  approval gate  ·  Enter open'));
     expect(m.frame()).toContain('Enter open the gate');
     expect(m.controller.getSnapshot().stripFocus?.id).toBe(RUN);
     m.harness.stdin.write(ESC);
     await eventually(() => m.controller.getSnapshot().stripFocus?.id === undefined);
-    await eventually(() => m.frame().includes('↓ selects'));
-    expect(m.frame()).not.toContain('Enter opens');
+    await eventually(() => m.frame().includes('↓ select'));
+    expect(m.frame()).not.toContain('Enter open');
   });
 
   it('a recent run that is also a parked run is listed once, as the parked row, and the other recent runs still are', async () => {
@@ -348,7 +348,7 @@ describe('opening the card', () => {
     expect(frame).toContain('‖ waiting for you  ·  run run-0001');
     expect(frame).toContain('│ Ship the release?');
     expect(frame).toContain('node review-step · approval gate');
-    expect(frame).toContain('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    expect(frame).toContain('[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending');
     expect(frame).not.toContain('Attention required');
     expect(m.controller.getSnapshot().screen).toMatchObject({ kind: 'gate-card', back: 'landing' });
   });
@@ -366,7 +366,7 @@ describe('opening the card', () => {
     expect(m.resume).not.toHaveBeenCalled();
     // Once the frame that shows the focus is on screen, the same key opens it.
     await eventually(
-      () => m.frame().includes('Enter opens') && m.homePainted(),
+      () => m.frame().includes('Enter open') && m.homePainted(),
       'the focused row on screen',
     );
     m.harness.stdin.write(ENTER);
@@ -378,7 +378,7 @@ describe('opening the card', () => {
     await settleFrames();
     m.harness.stdin.write(DOWN);
     await eventually(
-      () => m.frame().includes('Enter opens') && m.homePainted(),
+      () => m.frame().includes('Enter open') && m.homePainted(),
       'the focused row on screen',
     );
     m.harness.stdin.write(ENTER);
@@ -397,7 +397,7 @@ describe('opening the card', () => {
     await settleFrames();
     m.harness.stdin.write(DOWN);
     await eventually(
-      () => m.frame().includes('Enter says why') && m.homePainted(),
+      () => m.frame().includes('Enter say why') && m.homePainted(),
       'the focused row on screen',
     );
     m.harness.stdin.write(ENTER);
@@ -413,8 +413,8 @@ describe('opening the card', () => {
     const m = mount({ host: PARKED_HOST });
     await settleFrames();
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'));
-    expect(m.frame()).toContain('Enter opens the gate · Esc / Ctrl+C close');
+    await eventually(() => m.frame().includes('Enter open the gate'));
+    expect(m.frame()).toContain('Enter open the gate · Esc / [Ctrl+C] close');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card');
     await eventually(() => m.frame().includes('waiting for you'));
@@ -430,14 +430,14 @@ describe('opening the card', () => {
     const m = mount({ host: PARKED_HOST, run: undefined });
     await settleFrames();
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'), 'the key line');
+    await eventually(() => m.frame().includes('Enter open the gate'), 'the key line');
     m.harness.stdin.write(ENTER);
     await eventually(
       () => m.frame().includes('Not parked in this directory any more: run '),
       'the reason in the run view',
     );
     expect(m.frame()).toContain('note: Not parked in this directory any more: run run-0001.');
-    expect(m.frame()).toContain('Enter tries the gate again · Esc / Ctrl+C close');
+    expect(m.frame()).toContain('Enter try the gate again · Esc / [Ctrl+C] close');
     expect(m.controller.getSnapshot().screen, 'the view stays; no card opened').toMatchObject({
       kind: 'run-view',
       runId: RUN,
@@ -461,7 +461,7 @@ describe('opening the card', () => {
     await settleFrames();
     m.controller.openScreen('run-view', { runId: RUN });
     await eventually(() => m.frame().includes('completed'));
-    expect(m.frame()).not.toContain('Enter opens the gate');
+    expect(m.frame()).not.toContain('Enter open the gate');
     m.harness.stdin.write(ENTER);
     await settleFrames();
     expect(m.controller.getSnapshot().screen?.kind).toBe('run-view');
@@ -521,7 +521,7 @@ describe('Ctrl+Y answers the gate once', () => {
     });
     await openCard(m);
     expect(m.frame()).toContain('no priced allowance');
-    expect(m.frame()).toContain('Ctrl+N aborts · Esc leaves it pending');
+    expect(m.frame()).toContain('[Ctrl+N] Abort · Esc leaves it pending');
     expect(m.frame()).not.toContain('Ctrl+Y');
     for (let press = 0; press < 20; press += 1) {
       m.harness.stdin.write(CTRL_Y);
@@ -537,7 +537,7 @@ describe('a card that has not been painted refuses an answer', () => {
     await settleFrames();
     m.harness.stdin.write(DOWN);
     await eventually(
-      () => m.frame().includes('Enter opens') && m.homePainted(),
+      () => m.frame().includes('Enter open') && m.homePainted(),
       'the focused row on screen',
     );
     m.harness.stdin.write(ENTER);
@@ -617,14 +617,14 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     await eventually(() => m.controller.getSnapshot().screen === undefined);
     expect(m.resume).not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().interruptArmed).toBe(false);
-    expect(m.frame()).not.toContain('Press Ctrl+C again to exit');
+    expect(m.frame()).not.toContain('[Ctrl+C] exit (again)');
   });
 
   it('Ctrl+C on a card opened from the run view closes the card AND the view (ADR-0139 §5), arming nothing; Esc is the one step back', async () => {
     const m = mount({ host: PARKED_HOST });
     await settleFrames();
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'), 'the run view');
+    await eventually(() => m.frame().includes('Enter open the gate'), 'the run view');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
     await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
@@ -632,11 +632,11 @@ describe('Esc and Ctrl+C close the card and decide nothing', () => {
     await eventually(() => m.controller.getSnapshot().screen === undefined, 'the landing');
     expect(m.resume, 'a close decides nothing').not.toHaveBeenCalled();
     expect(m.controller.getSnapshot().interruptArmed).toBe(false);
-    expect(m.frame()).not.toContain('Press Ctrl+C again to exit');
+    expect(m.frame()).not.toContain('[Ctrl+C] exit (again)');
 
     // Esc, by contrast, steps back to the view.
     expect(m.controller.openScreen('run-view', { runId: RUN })).toBe(true);
-    await eventually(() => m.frame().includes('Enter opens the gate'), 'the run view');
+    await eventually(() => m.frame().includes('Enter open the gate'), 'the run view');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
     await settleFrames(8);
@@ -741,7 +741,7 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
     expect(m.frame(), 'the tail is not on screen').not.toContain('step 30');
     expect(m.frame()).toContain('The message continues. To read all of it, run:');
     expect(m.frame()).toContain('relavium gate list run-0001');
-    expect(m.frame()).toContain('Ctrl+Y approves · Ctrl+N rejects · Esc leaves it pending');
+    expect(m.frame()).toContain('[Ctrl+Y] Approve · [Ctrl+N] Reject · Esc leaves it pending');
     await answerOnceThePaintLanded(m);
     expect(m.resume).toHaveBeenCalledOnce();
   });
@@ -767,11 +767,11 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
     await settleFrames();
     m.harness.stdin.write(DOWN);
     await eventually(
-      () => m.frame().includes('Enter shows how to answer') && m.homePainted(),
+      () => m.frame().includes('Enter show how to answer') && m.homePainted(),
       'the focused input row, which says what Enter does',
     );
-    expect(m.frame()).toContain('> ‖ run-0001  ·  input gate  ·  Enter shows how to answer');
-    expect(m.frame()).toContain('Enter shows how');
+    expect(m.frame()).toContain('> ‖ run-0001  ·  input gate  ·  Enter show how to answer');
+    expect(m.frame()).toContain('Enter show how');
     m.harness.stdin.write(ENTER);
     await eventually(() => m.controller.getSnapshot().screen?.kind === 'gate-card', 'the card');
     await eventually(() => m.frame().includes('waiting for you'), 'the card`s frame');
@@ -783,8 +783,8 @@ describe('the message and the input gate, at 80×24 through the mounted app', ()
       'relavium gate run-0001 --gate collect-the-token --input <json>',
     );
     expect(frame).toContain('Rejecting does not stop the run: the workflow routes on a rejection.');
-    expect(frame).toContain('Ctrl+N rejects · Esc leaves it pending');
-    expect(frame).not.toContain('Ctrl+Y approves');
+    expect(frame).toContain('[Ctrl+N] Reject · Esc leaves it pending');
+    expect(frame).not.toContain('[Ctrl+Y] Approve');
   });
 });
 
@@ -811,11 +811,11 @@ describe('what an Attention row says of the run it names', () => {
       .split('\n')
       .find((line) => line.includes('‖'));
     expect(row?.trimStart()).toBe(
-      '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ selects',
+      '‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  ↓ select',
     );
     m.harness.stdin.write(DOWN);
     await eventually(
-      () => m.frame().includes('Enter opens') && m.homePainted(),
+      () => m.frame().includes('Enter open') && m.homePainted(),
       'the focused row on screen',
     );
     const focused = m
@@ -823,7 +823,7 @@ describe('what an Attention row says of the run it names', () => {
       .split('\n')
       .find((line) => line.includes('‖'));
     expect(focused?.trimStart()).toBe(
-      '> ‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter opens',
+      '> ‖ 0b8f3a5…  ·  deploy  ·  approval gate  ·  expires in 5m  ·  Enter open',
     );
     expect((focused ?? '').length, 'inside the 80 columns').toBeLessThanOrEqual(80);
   });
@@ -842,8 +842,6 @@ describe('what an Attention row says of the run it names', () => {
       ],
     });
     await settleFrames();
-    expect(m.frame()).toContain(
-      '‖ run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ selects',
-    );
+    expect(m.frame()).toContain('‖ run-0001  ·  deploy  ·  approval gate  ·  expired  ·  ↓ select');
   });
 });

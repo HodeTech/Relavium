@@ -1,5 +1,5 @@
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import type { LegendItem, LegendKey } from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -64,7 +64,7 @@ export type SessionsStep =
 export const SESSIONS_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   resume: { keys: 'Enter', verb: 'resume' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** What the tab says when the project has no saved conversation to list. */
 export const SESSIONS_EMPTY =
@@ -162,12 +162,11 @@ export function sessionsBody(
   return [...list, ...beyond, title, message];
 }
 
-/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). */
+/** The legend's items for the tab: the tab host's own, then the keys that act on a row (only when there is a row to act on). The key that leaves is the host's. */
 export function sessionsLegendItems(
   state: SessionsTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.read.rows.length === 0) return [...tabItems, closeItem];
-  return [...tabItems, SESSIONS_KEYS.select, SESSIONS_KEYS.resume, closeItem];
+  if (state.read.rows.length === 0) return tabItems;
+  return [...tabItems, SESSIONS_KEYS.select, SESSIONS_KEYS.resume];
 }

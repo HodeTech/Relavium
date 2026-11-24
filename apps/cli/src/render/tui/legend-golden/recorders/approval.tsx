@@ -10,6 +10,7 @@ import {
   CARD_ENTER_NOTE,
   CARD_LOCKOUT_NOTE,
   CARD_TYPEAHEAD_NOTE,
+  cardKeyLegend,
   cardKeyRows,
   cardScopePhrase,
   cardWarnings,
@@ -22,16 +23,19 @@ import {
   DETAILS_CLOSE_NOTE,
   FULL_COMMAND_NOTE,
   FULL_CONFIRM_ANY_ROW,
+  FULL_CONFIRM_ENTER_LEGEND,
   FULL_CONFIRM_ENTER_ROW,
+  FULL_DENY_LEGEND,
   FULL_DENY_ROW,
   FULL_PROTECTED_NOTE,
   callListView,
   fullAnswerRows,
   fullNavLegend,
+  fullNavRows,
   fullSearchRows,
   fullWarnings,
-  keyLabelParts,
 } from '../../tool-review-screen.js';
+import { rowSegments, type LegendRow } from '../../legend-row.js';
 import {
   ToolReviewHost,
   keyTone,
@@ -443,44 +447,43 @@ function toneName(tone: Record<string, unknown>): string {
 }
 
 const keyRoles: Recorder = () => {
-  const rows: Record<string, string> = {
-    'card, tool, inspected': cardKeyRows({
+  const rows: Record<string, LegendRow> = {
+    'card, tool, inspected': cardKeyLegend({
       inspected: true,
       cacheable: true,
       scope: SCOPES[0] ?? '',
     })[0],
-    'card, tool, refusals': cardKeyRows({
+    'card, tool, refusals': cardKeyLegend({
       inspected: true,
       cacheable: true,
       scope: SCOPES[0] ?? '',
     })[1],
-    'card, command, remember': cardKeyRows({
+    'card, command, remember': cardKeyLegend({
       inspected: true,
       cacheable: true,
       scope: '',
       command: true,
       remember: true,
     })[0],
-    'full view, nav (all keys)':
-      fullNavLegend({
-        columns: 100,
-        hasChanges: true,
-        hasMasks: true,
-        revealed: false,
-        numeric: false,
-        canCopy: true,
-      })[0] ?? '',
-    'full view, deny row': FULL_DENY_ROW,
-    'full view, confirm row': FULL_CONFIRM_ENTER_ROW,
+    'full view, nav (all keys)': fullNavRows({
+      columns: 100,
+      hasChanges: true,
+      hasMasks: true,
+      revealed: false,
+      numeric: false,
+      canCopy: true,
+    })[0] ?? { text: '', spans: [] },
+    'full view, deny row': FULL_DENY_LEGEND,
+    'full view, confirm row': FULL_CONFIRM_ENTER_LEGEND,
   };
   const out: Record<string, readonly string[]> = {};
   for (const [state, row] of Object.entries(rows)) {
-    out[state] = keyLabelParts(row).map(
-      (part) => `${JSON.stringify(part)} = ${toneName(keyTone(part, true))}`,
+    out[state] = rowSegments(row).map(
+      (part) => `${JSON.stringify(part.text)} = ${toneName(keyTone(part.role, true))}`,
     );
   }
-  out['colour off'] = keyLabelParts(FULL_DENY_ROW).map(
-    (part) => `${JSON.stringify(part)} = ${toneName(keyTone(part, false))}`,
+  out['colour off'] = rowSegments(FULL_DENY_LEGEND).map(
+    (part) => `${JSON.stringify(part.text)} = ${toneName(keyTone(part.role, false))}`,
   );
   return out;
 };

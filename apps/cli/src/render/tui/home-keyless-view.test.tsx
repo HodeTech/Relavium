@@ -66,9 +66,9 @@ describe('keyless Home view', () => {
       />,
     );
     const frame = view.lastFrame() ?? '';
-    expect(frame).toContain('No provider key yet · Enter to connect · /providers');
-    expect(frame).toContain('Enter to connect a provider');
-    expect(frame).not.toContain('↓ Continue');
+    expect(frame).toContain('No provider key yet · Enter connect · /providers');
+    expect(frame).toContain('Enter connect a provider');
+    expect(frame).not.toContain('↓ continue');
     expect(frame.split('\n').length).toBeLessThanOrEqual(24);
     view.unmount();
   });
@@ -118,27 +118,27 @@ describe('the Home hint bar', () => {
   };
 
   it('asks for the second Ctrl+C while the first is armed', () => {
-    expect(frameOf({ interruptArmed: true })).toContain('Press Ctrl+C again to exit');
+    expect(frameOf({ interruptArmed: true })).toContain('[Ctrl+C] exit (again)');
   });
 
   it('names the session picker keys while a session is being continued', () => {
     expect(
       frameOf({ sessions: [session], stripFocus: { kind: 'session', id: 'session-1' } }),
-    ).toContain('↑/↓ select session · Enter resume · Esc return to prompt · Ctrl+C twice to exit');
+    ).toContain('↑/↓ select session · Enter resume · Esc return to prompt · [Ctrl+C] exit (twice)');
   });
 
   it('says how to send once the person is composing', () => {
     expect(frameOf({ text: 'hello', sessions: [session] })).toContain(
-      'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit',
+      'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
     );
   });
 
   it('offers Continue beside the palette at an empty prompt when there are sessions to continue, and does not when there are none', () => {
     expect(frameOf({ sessions: [session] })).toContain(
-      '/ commands · ↓ Continue · type a message to chat · Ctrl+C twice to exit',
+      '[/] commands · ↓ continue · type a message to chat · [Ctrl+C] exit (twice)',
     );
     expect(frameOf({})).toContain(
-      '/ for commands · type a message to start a chat · Ctrl+C twice to exit',
+      '[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)',
     );
   });
 });
@@ -155,7 +155,7 @@ describe('the keyless line and the other things Enter does first', () => {
   };
   const IDLE_HOST: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
   const PARKED = [{ runId: 'run-0002', kind: 'approval' as const, gates: 1 }];
-  const LINE = 'No provider key yet · Enter to connect · /providers';
+  const LINE = 'No provider key yet · Enter connect · /providers';
   const frameOf = (over: {
     hostedRun?: RunHostSnapshot;
     parkedFocus?: string;
@@ -192,15 +192,15 @@ describe('the keyless line and the other things Enter does first', () => {
   it('is shown with nothing else on offer for Enter, and the hint says Enter connects a provider', () => {
     const frame = frameOf({});
     expect(frame).toContain(LINE);
-    expect(frame).toContain('Enter to connect a provider · / commands · Ctrl+C twice to exit');
+    expect(frame).toContain('Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)');
   });
 
   it('is shown while a live run is in the view, where the hint bar says Enter shows the run first', () => {
     const frame = frameOf({ hostedRun: RUNNING_HOST });
     expect(frame).toContain(LINE);
-    expect(frame).toContain('Enter shows it');
+    expect(frame).toContain('Enter show it');
     expect(frame, 'the idle keyless hint does not claim Enter for the setup here').not.toContain(
-      'Enter to connect a provider',
+      'Enter connect a provider',
     );
   });
 
@@ -208,19 +208,19 @@ describe('the keyless line and the other things Enter does first', () => {
     const frame = frameOf({ parkedFocus: 'run-0002' });
     expect(frame).toContain(LINE);
     expect(frame).toContain('Enter open the gate');
-    expect(frame).not.toContain('Enter to connect a provider');
+    expect(frame).not.toContain('Enter connect a provider');
   });
 
   it('is shown once the run has ended and the focus has left the row', () => {
     const frame = frameOf({ hostedRun: IDLE_HOST });
     expect(frame).toContain(LINE);
-    expect(frame).toContain('Enter to connect a provider · / commands');
+    expect(frame).toContain('Enter connect a provider · [/] commands');
   });
 
   it('is absent with a key', () => {
     const frame = frameOf({ keyless: false });
     expect(frame).not.toContain('No provider key yet');
-    expect(frame).not.toContain('Enter to connect a provider');
+    expect(frame).not.toContain('Enter connect a provider');
   });
 });
 
@@ -261,7 +261,7 @@ describe('the hint bar on a focused parked row', () => {
   it('says what Enter does when the focused row has no gate to decide: it says why', () => {
     const frame = frameFor('none');
     const bar = frame.split('\n').find((line) => line.includes('↑/↓ select'));
-    expect(bar).toContain('Enter says why');
+    expect(bar).toContain('Enter say why');
     expect(bar).not.toContain('open the gate');
   });
 });
@@ -297,9 +297,9 @@ describe('the focused parked row at 80 columns', () => {
   };
 
   it.each([
-    ['none', 'Enter says why'],
-    ['approval', 'Enter opens'],
-    ['several', 'Enter opens'],
+    ['none', 'Enter say why'],
+    ['approval', 'Enter open'],
+    ['several', 'Enter open'],
   ] as const)('a %s row with a 36-character id shows its whole cue (%s)', (kind, cue) => {
     const line = rowLine(kind, 80);
     expect(line.trimEnd().endsWith(cue), line).toBe(true);
@@ -347,7 +347,7 @@ describe('the keyless Home hint bar by what the draft is', () => {
   };
 
   it('promises that a message is kept, because Enter opens the setup with it', () => {
-    expect(frameOf('hello')).toContain('Enter to connect a provider · your message is kept');
+    expect(frameOf('hello')).toContain('Enter connect a provider · your message is kept');
   });
 
   // `submit` trims the draft before it reads it, so a command line with blanks before its slash runs, and the hint must say so (round 2, U2).
@@ -356,8 +356,8 @@ describe('the keyless Home hint bar by what the draft is', () => {
     (text) => {
       const frame = frameOf(text);
       expect(frame).not.toContain('your message is kept');
-      expect(frame).not.toContain('Enter to connect a provider ·');
-      expect(frame).toContain('Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit');
+      expect(frame).not.toContain('Enter connect a provider ·');
+      expect(frame).toContain('Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)');
     },
   );
 

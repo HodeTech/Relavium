@@ -49,7 +49,7 @@ describe('ModelPickerView scope', () => {
         <ModelPickerView state={STATE} color={false} nowMs={0} scope="next-chat" />,
       ).lastFrame() ?? '';
     expect(frame).toContain('Default model for new chats');
-    expect(frame).toContain('Enter set default');
+    expect(frame).toContain('↑/↓ select · Enter set default · [Ctrl+R] refresh · Esc close');
     expect(frame).not.toContain('Switch this chat');
   });
 
@@ -59,7 +59,7 @@ describe('ModelPickerView scope', () => {
         <ModelPickerView state={STATE} color={false} nowMs={0} scope="this-chat" />,
       ).lastFrame() ?? '';
     expect(frame).toContain('Switch this chat’s model');
-    expect(frame).toContain('Enter switch');
+    expect(frame).toContain('↑/↓ select · Enter switch · [Ctrl+R] refresh · Esc close');
     expect(frame).not.toContain('default');
     expect(frame).not.toContain('Enter set');
   });

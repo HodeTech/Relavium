@@ -2,6 +2,7 @@ import {
   NATIVE_PROMPT_CANCEL,
   type NativePromptFlow,
 } from '../render/tui/native-prompt-channel.js';
+import { exitKey, legend } from '../render/tui/legend.js';
 import { intro, isCancel, note, outro, password, select, spinner } from '@clack/prompts';
 import type { ProviderStore } from '@relavium/db';
 import type { ProviderId } from '@relavium/llm';
@@ -235,9 +236,14 @@ export function isProviderKeyless(resolver: Pick<ProviderResolver, 'keyFor' | 'h
   return !KNOWN_PROVIDER_IDS.some((id) => providerHasKey(resolver, id));
 }
 
-/** A clack `validate` that rejects an empty/whitespace key (Esc still cancels the whole flow). */
-const requireKey = (value: string | undefined): string | undefined =>
-  (value ?? '').trim() === '' ? 'An API key is required (or press Esc to skip setup).' : undefined;
+/**
+ * A clack `validate` that rejects an empty/whitespace key (Esc still cancels the whole flow). The native card shows its own fixed sentence for a
+ * rejected secret, so this one is the plain terminal's only word on what `Esc` does there: it skips setup.
+ */
+export const requireKey = (value: string | undefined): string | undefined =>
+  (value ?? '').trim() === ''
+    ? legend([{ text: 'An API key is required' }], exitKey.close('Esc', 'skip setup'))
+    : undefined;
 
 /**
  * Run the first-run wizard. Resolves when the user has stored a key OR skipped/failed — the caller (the Home) then

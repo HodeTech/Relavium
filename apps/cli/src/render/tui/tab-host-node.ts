@@ -10,7 +10,7 @@ import { EMPTY_OUTPUT, NOT_RECORDED, NO_OUTPUT, SKIPPED, UNAVAILABLE } from '../
 import { sanitizeInline } from '../sanitize.js';
 import type { ChatKey } from './chat-input.js';
 import { formatDuration } from './format.js';
-import type { LegendItem } from './legend.js';
+import { exitKey, keyToken, type LegendItem, type LegendKey } from './legend.js';
 import {
   clipLine,
   flushRow,
@@ -46,9 +46,10 @@ export type NodeLoader = (request: NodeDetailRequest) => NodeDetailLoad;
 /** The keys the node page's legend names that are its own. The test presses every one of them. */
 export const NODE_KEYS = {
   scroll: { keys: '↑/↓', verb: 'scroll' },
-  firstFailed: { keys: '[n]', verb: 'first failed' },
-  back: { keys: 'Esc', verb: 'back' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  firstFailed: { keys: 'n', verb: 'first failed' },
+  /** `Esc` on the node page returns to the run's detail on the line it left: one level (ADR-0145 §2, Step). */
+  back: exitKey.step(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** How far `PgUp` and `PgDn` move. */
 export const NODE_PAGE_STEP = 8;
@@ -63,7 +64,7 @@ export const NODE_RETRIED_OK =
   'This node was retried and then ended well: no attempt of it is left failed.';
 /** The node page has no `p`: its footer says that nothing here changes a run. The run detail's hint is the one that says `p` marks one. */
 export const NODE_CHANGES_NO_RUN = 'No run is changed here.';
-export const NODE_NOT_A_NODE = 'Enter opens a node: move to one of the node rows.';
+export const NODE_NOT_A_NODE = `${keyToken('Enter')} opens a node: move to one of the node rows.`;
 export const NODE_LOG_PARTIAL =
   'Only the first events of the run were read: the figures here may be partial.';
 
@@ -452,9 +453,9 @@ export function nodeBody(state: NodeTabState, width: number, room: number): read
   return [...shown, footer];
 }
 
-/** The legend's items on the node page: the tab host's tab item, the page's own keys, and the way back last. */
+/** The legend's items on the node page: the tab host's tab item and the page's own keys. The way back ({@link NODE_KEYS.back}) is its key that leaves. */
 export function nodeLegendItems(state: NodeTabState, tabItem: LegendItem): readonly LegendItem[] {
   return state.load.kind === 'ready'
-    ? [tabItem, NODE_KEYS.scroll, NODE_KEYS.firstFailed, NODE_KEYS.back]
-    : [tabItem, NODE_KEYS.scroll, NODE_KEYS.back];
+    ? [tabItem, NODE_KEYS.scroll, NODE_KEYS.firstFailed]
+    : [tabItem, NODE_KEYS.scroll];
 }

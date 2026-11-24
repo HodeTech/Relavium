@@ -1,9 +1,21 @@
 import '../frames.js';
 import { label, type Producer, type Recorder } from '../golden.js';
-import { sourceLiteral } from '../source-literal.js';
 
 import type { RunHostSnapshot } from '../../../../home/run-host.js';
+import {
+  ANOTHER_DIRECTORY_NOTICE,
+  NO_USABLE_KEY_NOTICE,
+  RESTORING_NOTE,
+} from '../../../../home/drive-home.js';
 import { launchBusy } from '../../../../home/run-launch.js';
+import { STARTING_CHAT_LINE } from '../../home-app.js';
+import {
+  PICKER_NO_KEY_REMEDY_IN_A_CHAT,
+  PROVIDER_KEYS_AT_THE_HOME,
+  alreadyOnModelHint,
+} from '../../home-controller.js';
+import { STDIN_PROMPT_NOTE } from '../../../../commands/agent-run.js';
+import { requireKey } from '../../../../onboarding/wizard.js';
 import { DUMP_PROMPT, dumpToScrollback } from '../../../scrollback.js';
 import {
   cardStates,
@@ -68,10 +80,8 @@ const runLaunchBusy: Recorder = () => {
 
 /** The validator message of the wizard's key prompt: a local function of the wizard, only reachable through a clack prompt (source literal). */
 const onboardingKeyRequired: Recorder = () => ({
-  'validate message (source literal)': sourceLiteral(
-    'onboarding/wizard.ts',
-    'An API key is required',
-  ),
+  // The key is the one the golden was recorded under, so the diff reads before and after on one entry.
+  'validate message (source literal)': requireKey('') ?? NO_SENTENCE,
 });
 
 /** The acknowledgement line under the suspended transcript: the constant, and the whole block `dumpToScrollback` writes around it. */
@@ -106,14 +116,10 @@ const scrollbackDumpPrompt: Recorder = () => {
 
 /** The three sentences `driveHome` writes: a chat refused for want of a key, a session of another directory, and the note while one restores. */
 const driveHomeSentences: Recorder = () => {
-  const file = 'home/drive-home.tsx';
-  const restoring = sourceLiteral(file, 'Restoring session');
+  const restoring = RESTORING_NOTE;
   const out: Record<string, readonly string[] | string> = {
-    'chat notice: no usable key (source literal)': sourceLiteral(file, 'has no usable key'),
-    'home notice: another directory (source literal)': sourceLiteral(
-      file,
-      'belongs to another directory',
-    ),
+    'chat notice: no usable key (source literal)': NO_USABLE_KEY_NOTICE,
+    'home notice: another directory (source literal)': ANOTHER_DIRECTORY_NOTICE,
     'resume note (source literal)': restoring,
   };
   // The restoring note is published through the native prompt channel, so a real card draws it above the legend of a busy card.
@@ -139,25 +145,16 @@ const driveHomeSentences: Recorder = () => {
 
 /** The sentences the Home's controller writes: the provider-typo pointer and the two hints of the `/models` picker, which a real view draws. */
 const homeControllerSentences: Recorder = () => {
-  const file = 'render/tui/home-controller.ts';
-  const alreadyOn = sourceLiteral(file, 'pick a different model or Esc').replace(
-    '${…}',
-    'Claude X',
-  );
-  const remedy = sourceLiteral(file, 'go back to the Home (Ctrl+C twice) and use /providers');
+  const alreadyOn = alreadyOnModelHint('Claude X');
+  const remedy = PICKER_NO_KEY_REMEDY_IN_A_CHAT.trim();
   const out: Record<string, readonly string[] | string> = {
-    'provider typo, in a hosted chat (source literal)': sourceLiteral(
-      file,
-      'managed from the Home',
-    ),
-    'picker hint: same model (source literal)': sourceLiteral(
-      file,
-      'pick a different model or Esc',
-    ),
+    'provider typo, in a hosted chat (source literal)': PROVIDER_KEYS_AT_THE_HOME,
+    // The literal of the source wrote the model's name as `${…}`: the recording keeps that placeholder.
+    'picker hint: same model (source literal)': alreadyOnModelHint('${…}'),
     'picker hint: no key, in a hosted chat (source literal)': remedy,
   };
   // `hint` takes the picker's status row: drawn for both scopes (the same-model hint) and for the hosted chat (the no-key remedy).
-  const noKey = `GPT X: no key for ${providerDisplayName('openai')} ${remedy}`;
+  const noKey = `GPT X: no key for ${providerDisplayName('openai')}${PICKER_NO_KEY_REMEDY_IN_A_CHAT}`;
   for (const columns of [80, 100]) {
     for (const scope of ['next-chat', 'this-chat'] as const)
       Object.assign(
@@ -184,15 +181,12 @@ const homeControllerSentences: Recorder = () => {
 
 /** The echo line of the Home while the first chat is built: inline in the Home's app (source literal). */
 const homeAppStartingChat: Recorder = () => ({
-  'echo line (source literal)': sourceLiteral('render/tui/home-app.tsx', 'Starting chat'),
+  'echo line (source literal)': STARTING_CHAT_LINE,
 });
 
 /** What `relavium agent run` says on stderr before it reads a prompt from a terminal: the shell's own line, not a TUI string (source literal). */
 const agentRunStdinNote: Recorder = () => ({
-  'stderr line (source literal)': sourceLiteral(
-    'commands/agent-run.ts',
-    'reading the prompt from stdin',
-  ),
+  'stderr line (source literal)': STDIN_PROMPT_NOTE,
 });
 
 export const HOME_HOST_PRODUCERS: readonly Producer[] = [

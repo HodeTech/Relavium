@@ -2,7 +2,7 @@ import { agentToolsText, NO_TOOLS_DECLARED, type AgentRow } from '../../history/
 import type { HomeAgentRequest } from '../../home/agent-start.js';
 import type { AgentsRead } from '../../home/agents-port.js';
 import type { ChatKey } from './chat-input.js';
-import type { LegendItem } from './legend.js';
+import { exitKey, type LegendItem, type LegendKey } from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -59,9 +59,10 @@ export type AgentsStep =
 export const AGENTS_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   open: { keys: 'Enter', verb: 'open' },
-  chat: { keys: '[c]', verb: 'chat' },
-  back: { keys: 'Esc', verb: 'back' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  chat: { keys: 'c', verb: 'chat' },
+  /** On an agent's detail `Esc` goes back to the list: one level (ADR-0145 §2, Step). The list's `Esc` is the host's. */
+  back: exitKey.step(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** What the tab says when the project has no agent to list. */
 export const AGENTS_EMPTY =
@@ -255,13 +256,15 @@ export function agentsBody(
   return [...list, detail, message];
 }
 
-/** The legend's items for the tab: the tab host's own, then the keys that act (only when there is a row, or a detail, to act on). */
+/**
+ * The legend's items for the tab: the tab host's own, then the keys that act (only when there is a row, or a detail, to act on). The key that
+ * leaves is the host's: {@link AGENTS_KEYS.back} on a detail, the host's `Esc close` on the list.
+ */
 export function agentsLegendItems(
   state: AgentsTabState,
   tabItems: readonly LegendItem[],
-  closeItem: LegendItem,
 ): readonly LegendItem[] {
-  if (state.detail !== undefined) return [...tabItems, AGENTS_KEYS.chat, AGENTS_KEYS.back];
-  if (state.read.model.rows.length === 0) return [...tabItems, closeItem];
-  return [...tabItems, AGENTS_KEYS.select, AGENTS_KEYS.open, closeItem];
+  if (state.detail !== undefined) return [...tabItems, AGENTS_KEYS.chat];
+  if (state.read.model.rows.length === 0) return tabItems;
+  return [...tabItems, AGENTS_KEYS.select, AGENTS_KEYS.open];
 }

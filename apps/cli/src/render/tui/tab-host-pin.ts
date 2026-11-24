@@ -1,4 +1,4 @@
-import type { LegendItem } from './legend.js';
+import type { LegendKey } from './legend.js';
 
 /**
  * The pin toggle of the Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -50,7 +50,7 @@ export interface PinToggle {
 }
 
 /** The key `p` is bound to on a tab that can pin; the test presses it. */
-export const PIN_KEY: LegendItem = { keys: '[p]', verb: 'pin' };
+export const PIN_KEY: LegendKey = { keys: 'p', verb: 'pin' };
 
 /** The most pins the store holds, as the reason says it. The store's own bound is the authority; this is the number the sentence names. */
 export const PIN_LIMIT_WORDS = '50';

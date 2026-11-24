@@ -11,7 +11,7 @@ import { agentSheetLines } from '../../agent-sheet.js';
 import { emptyEditor } from '../../chat-input.js';
 import { helpSheetLines, HELP_TOO_SMALL } from '../../help-sheet.js';
 import { layoutHomeNotice } from '../../home-notice.js';
-import { legend, legendSpans } from '../../legend.js';
+import { keyLabel, legend, legendSpans, type LegendItem } from '../../legend.js';
 import {
   foldPermissionsSheetKey,
   initialPermissionsSheetState,
@@ -234,6 +234,10 @@ function emptyStates(name: string, state: PermissionsSheetState): StateRows {
   });
 }
 
+/** One item as the legend writes it (`keys verb`): a key table's entry recorded by itself. */
+const itemText = (item: LegendItem): string =>
+  'keys' in item ? `${keyLabel(item.keys)} ${item.verb}` : item.text;
+
 /** The legend constants, the row chips and the sentences the sheet's keys answer with, recorded through what builds them. */
 const permissionsSheet: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
@@ -247,10 +251,10 @@ const permissionsSheet: Recorder = () => {
     'constant=SHEET_TYPED_NOTE': SHEET_TYPED_NOTE,
     'constant=SHEET_TOO_SMALL_TEXT': SHEET_TOO_SMALL_TEXT,
     'keys=withdraw confirm keep close alone': [
-      legend([SHEET_KEYS.withdraw]),
-      legend([SHEET_KEYS.confirm]),
-      legend([SHEET_KEYS.keep]),
-      legend([SHEET_KEYS.close]),
+      itemText(SHEET_KEYS.withdraw),
+      itemText(SHEET_KEYS.confirm),
+      itemText(SHEET_KEYS.keep),
+      itemText(SHEET_KEYS.close),
     ],
   };
   // The idle sheet: the hint under the list says what withdrawing the selected row does, by the row it is on.
@@ -315,18 +319,18 @@ const permissionsSheetRoles: Recorder = () => {
   const out: Record<string, string> = {
     'legend=SHEET_LEGEND_IDLE_ITEMS': rolesOf({
       kind: 'legend',
-      text: legend(SHEET_LEGEND_IDLE_ITEMS),
-      spans: legendSpans(SHEET_LEGEND_IDLE_ITEMS),
+      text: legend(SHEET_LEGEND_IDLE_ITEMS, SHEET_KEYS.close),
+      spans: legendSpans(SHEET_LEGEND_IDLE_ITEMS, SHEET_KEYS.close),
     }),
     'legend=SHEET_LEGEND_EMPTY_ITEMS': rolesOf({
       kind: 'legend',
-      text: legend(SHEET_LEGEND_EMPTY_ITEMS),
-      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS),
+      text: legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
+      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
     }),
     'legend=SHEET_LEGEND_ARMED_ITEMS': rolesOf({
       kind: 'legend',
-      text: legend(SHEET_LEGEND_ARMED_ITEMS),
-      spans: legendSpans(SHEET_LEGEND_ARMED_ITEMS),
+      text: legend(SHEET_LEGEND_ARMED_ITEMS, SHEET_KEYS.keep),
+      spans: legendSpans(SHEET_LEGEND_ARMED_ITEMS, SHEET_KEYS.keep),
     }),
   };
   const geometry = GEOMETRIES[0].geometry;
@@ -451,7 +455,7 @@ export const SHEETS_PRODUCERS: readonly Producer[] = [
     id: 'home-notice',
     file: 'render/tui/home-notice.ts',
     describe:
-      'The footer of a Home notice that overflows its rows (`Notice N–M of K · PgUp/PgDn to read`), by page and width, and the absence of one for a notice that fits.',
+      'The footer of a Home notice that overflows its rows (`Notice N–M of K · PgUp/PgDn read`), by page and width, and the absence of one for a notice that fits.',
   },
 ];
 

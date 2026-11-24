@@ -22,14 +22,14 @@ import {
   type HomeController,
   type HomeControllerDeps,
 } from './home-controller.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   withActiveRead,
@@ -232,7 +232,7 @@ describe('every class of run is drawn with a glyph and a word', () => {
         expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(geometry.columns));
     }
     const small = textOf(rig().state, { columns: 60, terminalRows: 20 });
-    expect(small[0]).toBe('Enlarge the terminal — Esc steps back, or closes at the list.');
+    expect(small[0]).toBe('Enlarge the terminal.');
     expect(small.join('\n')).not.toContain(IDS.hosted);
     expect(ROWS).toBe(TAB_HOST_ROWS);
   });
@@ -399,7 +399,7 @@ describe('what a key does', () => {
 
   it('presses every key the legend names, and each does what it says', () => {
     const r = rig();
-    const items = tabHostLegendItems(r.state);
+    const { items } = tabHostLegend(r.state);
     expect(items).toContain(ACTIVE_KEYS.select);
     expect(items).toContain(ACTIVE_KEYS.open);
     const before = active(r.state).cursor;
@@ -414,12 +414,12 @@ describe('what a key does', () => {
   });
 
   it('names no key it does not answer to: an empty list offers neither select nor open, and the way out is last', () => {
-    const full = legend(tabHostLegendItems(rig().state));
-    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Ctrl+C close · Esc close');
-    const empty = legend(tabHostLegendItems(rig(read([])).state));
-    expect(empty).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
-    const loading = legend(tabHostLegendItems(rig(null).state));
-    expect(loading).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
+    const full = tabHostLegendText(rig().state);
+    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · [Ctrl+C] close · Esc close');
+    const empty = tabHostLegendText(rig(read([])).state);
+    expect(empty).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
+    const loading = tabHostLegendText(rig(null).state);
+    expect(loading).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc close');
   });
 });
 

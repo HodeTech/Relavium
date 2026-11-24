@@ -660,8 +660,8 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     const h = render(chatApp(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
-    await waitFor(() => frame().includes('/ for commands')); // the idle hint (live region) renders
-    expect(frame()).toContain('/ for commands'); // no crash; the prompt/footer are shown below the empty viewport
+    await waitFor(() => frame().includes('[/] for commands')); // the idle hint (live region) renders
+    expect(frame()).toContain('[/] for commands'); // no crash; the prompt/footer are shown below the empty viewport
   });
 
   it('a SINGLE entry taller than the window shows its BOTTOM rows (tail), bounded to the terminal', async () => {
@@ -684,7 +684,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
    *
    * The alt screen's root Box is `height: rows`, and ink clips the frame there. An unbounded busy line therefore does
    * not scroll — it COLLIDES with its siblings inside the box. Reproduced at 80x24 with a 900-character answer, well
-   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc to stop" hint and the streamed text landed
+   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc stops the turn" hint and the streamed text landed
    * on the SAME frame row, overwriting each other.
    */
   describe('ChatApp (alt screen) — the live streaming region is bounded', () => {
@@ -707,7 +707,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       store.flush();
     };
 
-    it('the "Esc to stop" hint never shares a row with the streamed text', async () => {
+    it('the "Esc stops the turn" hint never shares a row with the streamed text', async () => {
       const store = seed(30);
       const h = render(chatApp(store));
       setWindowSize(h.stdout, 80, 24);
@@ -716,9 +716,9 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       await settleFrames();
 
       const rows = (h.lastFrame() ?? '').split('\n');
-      const hintRow = rows.find((r) => r.includes('Esc to stop'));
+      const hintRow = rows.find((r) => r.includes('Esc stops the turn'));
       expect(hintRow).toBeDefined();
-      expect(hintRow?.trim()).toMatch(/Esc to stop$/); // …and nothing else on it
+      expect(hintRow?.trim()).toMatch(/Esc stops the turn$/); // …and nothing else on it
       expect(rows.length).toBeLessThanOrEqual(24);
     });
 

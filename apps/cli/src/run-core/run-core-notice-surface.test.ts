@@ -179,7 +179,7 @@ describe('the warnings of a run leg, by the surface that reads them', () => {
       throw new Error(`expected a started leg: ${JSON.stringify(launched)}`);
     await launched.ended;
     const notices = host.notices.snapshot().join('\n');
-    expect(notices).toContain('Open /models and press Ctrl+R');
+    expect(notices).toContain('Open /models and press [Ctrl+R]');
     expect(notices).toContain('Price it from the Home with /pricing');
     expect(notices).not.toMatch(SHELL_COMMAND);
     expect(stderr(), 'nothing reaches the Home’s own stderr').toBe('');
@@ -210,7 +210,7 @@ describe('the warnings of a run leg, by the surface that reads them', () => {
       throw new Error(`expected a started leg: ${JSON.stringify(launched)}`);
     await launched.ended;
     const notices = host.notices.snapshot().join('\n');
-    expect(notices).toContain('Open /models and press Ctrl+R');
+    expect(notices).toContain('Open /models and press [Ctrl+R]');
     expect(notices).toContain('Price it from the Home with /pricing');
     expect(notices).not.toMatch(SHELL_COMMAND);
   });

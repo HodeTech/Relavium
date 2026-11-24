@@ -18,7 +18,6 @@ import type {
 import { buildRunDetailModel } from '../../history/run-detail-model.js';
 import type { RunDetailLoad, RunDetailRead } from '../../history/run-detail-source.js';
 import type { ChatKey } from './chat-input.js';
-import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
@@ -26,7 +25,8 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
+  tabHostLegendText,
   tabHostLines,
   tabHostMemory,
   withHistoryLoad,
@@ -360,7 +360,7 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
     expect(text).toContain('Events (3)');
     expect(text).toContain('#0  node:started build');
     expect(text, 'no run is changed here, and p says that it only marks one').toContain(
-      'No run is changed here; p only marks one.',
+      'No run is changed here; [p] only marks one.',
     );
   });
 
@@ -410,7 +410,7 @@ describe('Enter opens the run, Esc comes back, and Esc again closes the screen',
       r.press('', ENTER);
       r.state = withHistoryLoad(r.state, summary(0, 'completed').id, load);
       expect(r.text()).toContain(words);
-      expect(tabHostLegendItems(r.state).at(-1)).toEqual(HISTORY_KEYS.back);
+      expect(tabHostLegend(r.state).exit).toBe(HISTORY_KEYS.back);
     }
   });
 
@@ -528,25 +528,21 @@ describe('the run detail says what it could not read, and keeps what identifies 
       r.press('', ENTER);
       if (phase !== 'loading')
         r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: phase });
-      const items = legend(tabHostLegendItems(r.state));
-      expect(items, phase).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc back');
+      const items = tabHostLegendText(r.state);
+      expect(items, phase).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc back');
       expect(items).not.toContain('scroll');
     }
   });
 
   it('names Tab where the legend still fits the floor, and leaves it out of the two that would not', () => {
     const r = rig({ total: 3 });
-    expect(legend(tabHostLegendItems(r.state)), 'the list is full').not.toContain('Tab cycle');
+    expect(tabHostLegendText(r.state), 'the list is full').not.toContain('Tab cycle');
     const empty = rig({ total: 0 });
-    expect(legend(tabHostLegendItems(empty.state))).toContain('Tab cycle');
+    expect(tabHostLegendText(empty.state)).toContain('Tab cycle');
     const detail = opened(detailRead());
-    expect(legend(tabHostLegendItems(detail.state)), 'the detail is full').not.toContain(
-      'Tab cycle',
-    );
+    expect(tabHostLegendText(detail.state), 'the detail is full').not.toContain('Tab cycle');
     for (const state of [r.state, empty.state, detail.state])
-      expect(displayWidth(legend(tabHostLegendItems(state)))).toBeLessThanOrEqual(
-        usableColumns(80),
-      );
+      expect(displayWidth(tabHostLegendText(state))).toBeLessThanOrEqual(usableColumns(80));
   });
 });
 
@@ -823,13 +819,16 @@ describe('the keys of the list', () => {
 
   it('names exactly the keys it answers to, with the way out last', () => {
     const r = rig({ total: 3 });
-    const items = tabHostLegendItems(r.state);
-    expect(legend(items)).toBe(
+    expect(tabHostLegendText(r.state)).toBe(
       '←/→ tab · ↑/↓ move · Enter open · [p] pin · [a] all · [f] filter · Esc close',
     );
-    expect(items.at(-1)).toEqual({ keys: 'Esc', verb: 'close' });
+    expect(tabHostLegend(r.state).exit).toMatchObject({
+      keys: 'Esc',
+      verb: 'close',
+      class: 'close',
+    });
     r.press('a');
-    expect(legend(tabHostLegendItems(r.state))).toContain('[a] here');
+    expect(tabHostLegendText(r.state)).toContain('[a] here');
     // Each key named does what it says.
     expect(r.press('', DOWN).kind).toBe('state');
     expect(r.cursor()).toBe(1);
@@ -842,9 +841,7 @@ describe('the keys of the list', () => {
       ...r.state,
       history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0, pinned: false } },
     };
-    expect(legend(tabHostLegendItems(inDetail))).toBe(
-      '←/→ tab · Tab cycle · Ctrl+C close · Esc back',
-    );
+    expect(tabHostLegendText(inDetail)).toBe('←/→ tab · Tab cycle · [Ctrl+C] close · Esc back');
   });
 
   it('a chord or a meta key moves nothing, and an unnamed key is nothing', () => {

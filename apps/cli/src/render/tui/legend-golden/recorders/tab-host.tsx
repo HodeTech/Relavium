@@ -29,7 +29,7 @@ import type {
   PermissionsSnapshot,
 } from '../../../../permissions/chat-permissions.js';
 import type { ChatKey } from '../../chat-input.js';
-import { legend, type LegendItem } from '../../legend.js';
+import { keyLabel, legend, type LegendItem } from '../../legend.js';
 import {
   initialPermissionsSheetState,
   SHEET_SETTLE_MS,
@@ -72,7 +72,7 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
-  tabHostLegendItems,
+  tabHostLegend,
   tabHostLines,
   TAB_HOST_KEYS,
   TAB_HOST_LEGEND_PLAIN_ITEMS,
@@ -881,12 +881,16 @@ function sessionsCases(): readonly Case[] {
 
 // ---- Recorders --------------------------------------------------------------------------------------------------------------
 
+/** One item as the legend writes it (`keys verb`): a key table's entry recorded by itself. */
+const itemText = (item: LegendItem): string =>
+  'keys' in item ? `${keyLabel(item.keys)} ${item.verb}` : item.text;
+
 /** The tab strip's own items and the legends it builds for the Permissions tab, with the roles their keys take. */
 const legendRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
-    'items=TAB_HOST_LEGEND_PLAIN_ITEMS': legend(TAB_HOST_LEGEND_PLAIN_ITEMS),
-    'items=TAB_HOST_LEGEND_ROWS_ITEMS': legend(TAB_HOST_LEGEND_ROWS_ITEMS),
-    'items=TAB_HOST_KEYS': Object.values(TAB_HOST_KEYS).map((item: LegendItem) => legend([item])),
+    'items=TAB_HOST_LEGEND_PLAIN_ITEMS': legend(TAB_HOST_LEGEND_PLAIN_ITEMS, TAB_HOST_KEYS.close),
+    'items=TAB_HOST_LEGEND_ROWS_ITEMS': legend(TAB_HOST_LEGEND_ROWS_ITEMS, TAB_HOST_KEYS.close),
+    'items=TAB_HOST_KEYS': Object.values(TAB_HOST_KEYS).map(itemText),
     'constant=TAB_HOST_TOO_SMALL': TAB_HOST_TOO_SMALL,
   };
   const cases = permissionsCases();
@@ -914,9 +918,11 @@ const interruptRecorder: Recorder = () => {
   ];
   const floor = usableColumns(GEOMETRIES[0].geometry.columns);
   for (const { name, state } of everything) {
-    const items = tabHostLegendItems(state);
-    const named = items.some((item) => item.keys === TAB_HOST_KEYS.interrupt.keys);
-    const text = legend(items);
+    const { items, exit } = tabHostLegend(state);
+    const named = items.some(
+      (item) => 'keys' in item && item.keys === TAB_HOST_KEYS.interrupt.keys,
+    );
+    const text = legend(items, exit);
     out[name] =
       `${named ? 'Ctrl+C named' : 'Ctrl+C left out'} (${String(displayWidth(text))} of ${String(floor)} columns): ${text}`;
   }
@@ -1049,7 +1055,7 @@ const permissionsSheetViewRecorder: Recorder = () => {
 const definedRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
     'constant=DEFINED_NO_DETAIL': DEFINED_NO_DETAIL,
-    'items=DEFINED_KEYS': Object.values(DEFINED_KEYS).map((item: LegendItem) => legend([item])),
+    'items=DEFINED_KEYS': Object.values(DEFINED_KEYS).map(itemText),
   };
   return Object.assign(out, footStates(definedCases()));
 };
@@ -1058,7 +1064,7 @@ const activeRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
     'constant=ACTIVE_FOCUS_LEFT': ACTIVE_FOCUS_LEFT,
     'constant=ACTIVE_SELECT_FIRST': ACTIVE_SELECT_FIRST,
-    'items=ACTIVE_KEYS': Object.values(ACTIVE_KEYS).map((item: LegendItem) => legend([item])),
+    'items=ACTIVE_KEYS': Object.values(ACTIVE_KEYS).map(itemText),
   };
   return Object.assign(out, footStates(activeCases()));
 };
@@ -1074,7 +1080,7 @@ const historyRecorder: Recorder = () => {
     'constant=HISTORY_UNREADABLE': HISTORY_UNREADABLE,
     'constant=HISTORY_COST_FAULT': HISTORY_COST_FAULT,
     'constant=HISTORY_MISSING_RUN': HISTORY_MISSING_RUN,
-    'items=HISTORY_KEYS': Object.values(HISTORY_KEYS).map((item: LegendItem) => legend([item])),
+    'items=HISTORY_KEYS': Object.values(HISTORY_KEYS).map(itemText),
   };
   // The node page and the `Enter` that opens it are the node recorder's.
   Object.assign(
@@ -1087,7 +1093,7 @@ const historyRecorder: Recorder = () => {
 const nodeRecorder: Recorder = () => {
   const out: Record<string, string | readonly string[]> = {
     'constant=NODE_NOT_A_NODE': NODE_NOT_A_NODE,
-    'items=NODE_KEYS': Object.values(NODE_KEYS).map((item: LegendItem) => legend([item])),
+    'items=NODE_KEYS': Object.values(NODE_KEYS).map(itemText),
   };
   // The node page's legend and the footer under it, by what the loader answered; and `Enter` on a line of the run detail that is no node.
   return Object.assign(
@@ -1097,19 +1103,19 @@ const nodeRecorder: Recorder = () => {
 };
 
 const agentsRecorder: Recorder = () => ({
-  'items=AGENTS_KEYS': Object.values(AGENTS_KEYS).map((item: LegendItem) => legend([item])),
+  'items=AGENTS_KEYS': Object.values(AGENTS_KEYS).map(itemText),
   ...footStates(agentsCases()),
 });
 
 const sessionsRecorder: Recorder = () => ({
   'constant=SESSIONS_RESUME_UNAVAILABLE': SESSIONS_RESUME_UNAVAILABLE,
-  'items=SESSIONS_KEYS': Object.values(SESSIONS_KEYS).map((item: LegendItem) => legend([item])),
+  'items=SESSIONS_KEYS': Object.values(SESSIONS_KEYS).map(itemText),
   ...footStates(sessionsCases()),
 });
 
 /** Where `[p] pin` joins a legend: asked of the items each state builds, never written by hand. */
 const pinRecorder: Recorder = () => {
-  const out: Record<string, string> = { 'item=PIN_KEY': legend([PIN_KEY]) };
+  const out: Record<string, string> = { 'item=PIN_KEY': itemText(PIN_KEY) };
   const cases: readonly Case[] = [
     ...definedCases().filter(
       (c) => c.name === 'tab=defined rows=3 row=ready' || c.name === 'tab=defined rows=0',
@@ -1128,8 +1134,8 @@ const pinRecorder: Recorder = () => {
     ...activeCases().slice(0, 1),
   ];
   for (const { name, state } of cases) {
-    const joins = tabHostLegendItems(state).some(
-      (item) => item.keys === PIN_KEY.keys && item.verb === PIN_KEY.verb,
+    const joins = tabHostLegend(state).items.some(
+      (item) => 'keys' in item && item.keys === PIN_KEY.keys && item.verb === PIN_KEY.verb,
     );
     out[`${name} legend names [p] pin`] = joins ? 'yes' : 'no';
   }

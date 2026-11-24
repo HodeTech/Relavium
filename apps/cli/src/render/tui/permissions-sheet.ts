@@ -7,7 +7,15 @@ import type {
 } from '../../permissions/chat-permissions.js';
 import type { ChatKey } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
-import { legend, legendSpans, type LegendItem } from './legend.js';
+import {
+  exitKey,
+  keyToken,
+  legend,
+  legendSpans,
+  type LegendExit,
+  type LegendItem,
+  type LegendKey,
+} from './legend.js';
 import {
   clampSpans,
   clipLine,
@@ -35,8 +43,8 @@ import { displayWidth, wrapWords } from './viewport.js';
  * holds (the store is read again there) and then {@link reloadPermissionsSheet}s with the answer.
  *
  * What a person sees. The action is on the thing it acts on: the selected row carries its own `[d] withdraw`, the row under the list says
- * what withdrawing it will do before it is done, the legend names the key in brackets and in danger (a key that changes something is
- * bracketed, as the card's answers are), and the answer comes back with a glyph and a tone (`✓` done, `✗` failed, a yellow note).
+ * what withdrawing it will do before it is done, the legend names the key in danger (a letter is bracketed, as the card's answers are:
+ * ADR-0145 §3), and the answer comes back with a glyph and a tone (`✓` done, `✗` failed, a yellow note).
  *
  * Two steps, and no typing. Withdrawing only ever makes the chat ask more, but a person who types `/permissions`, `Enter` and goes on typing
  * must not withdraw a grant by accident, and a typed line that ends in `d` followed by `Enter` is two steps. A gap between keys does not
@@ -48,37 +56,35 @@ import { displayWidth, wrapWords } from './viewport.js';
 
 /**
  * The keys the sheet's legend names. The legend is built from these; the test presses every one of them and checks it does what its verb
- * says, which is what keeps a hint and its handler from drifting (the handler matches the keys themselves, not these labels). A key that
- * changes something is bracketed and coloured (`[d / Del]`, `[Enter]`), as the card's answers are; a key that only moves or leaves is not.
+ * says, which is what keeps a hint and its handler from drifting (the handler matches the keys themselves, not these labels). The legend
+ * builder brackets a letter and a Ctrl chord and writes the universal keys plain (`[d] / Del withdraw`, `Enter withdraw`: ADR-0145 §3),
+ * and draws a key in its role (the withdrawal in danger, its confirmation as a warning). The key that leaves is an exit of its class
+ * (ADR-0145 §2): `Esc close` changes nothing; while a withdrawal's question is up `Esc` goes one level back and the permission stays.
  */
 export const SHEET_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
-  withdraw: { keys: '[d / Del]', verb: 'withdraw', role: 'danger' },
-  confirm: { keys: '[Enter]', verb: 'withdraw', role: 'warn' },
-  keep: { keys: 'Esc', verb: 'keep' },
-  close: { keys: 'Esc', verb: 'close' },
-} as const satisfies Readonly<Record<string, LegendItem>>;
+  withdraw: { keys: ['d', 'Del'], verb: 'withdraw', role: 'danger' },
+  confirm: { keys: 'Enter', verb: 'withdraw', role: 'warn' },
+  keep: exitKey.step('Esc', 'keep'),
+  close: exitKey.close(),
+} as const satisfies Readonly<Record<string, LegendKey>>;
 
-/** The legend while no withdrawal is asked: navigation, the action, the leaving key last. */
+/** The legend while no withdrawal is asked: navigation and the action; the leaving key ({@link SHEET_KEYS.close}) goes last. */
 export const SHEET_LEGEND_IDLE_ITEMS: readonly LegendItem[] = [
   SHEET_KEYS.select,
   SHEET_KEYS.withdraw,
-  SHEET_KEYS.close,
 ];
-export const SHEET_LEGEND_IDLE = legend(SHEET_LEGEND_IDLE_ITEMS);
+export const SHEET_LEGEND_IDLE = legend(SHEET_LEGEND_IDLE_ITEMS, SHEET_KEYS.close);
 /** The legend of a sheet with nothing to select: only the way out. */
-export const SHEET_LEGEND_EMPTY_ITEMS: readonly LegendItem[] = [SHEET_KEYS.close];
-export const SHEET_LEGEND_EMPTY = legend(SHEET_LEGEND_EMPTY_ITEMS);
-/** The legend while a withdrawal waits for its `Enter`. */
-export const SHEET_LEGEND_ARMED_ITEMS: readonly LegendItem[] = [
-  SHEET_KEYS.confirm,
-  SHEET_KEYS.keep,
-];
-export const SHEET_LEGEND_ARMED = legend(SHEET_LEGEND_ARMED_ITEMS);
+export const SHEET_LEGEND_EMPTY_ITEMS: readonly LegendItem[] = [];
+export const SHEET_LEGEND_EMPTY = legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close);
+/** The legend while a withdrawal waits for its `Enter`; its leaving key is {@link SHEET_KEYS.keep}. */
+export const SHEET_LEGEND_ARMED_ITEMS: readonly LegendItem[] = [SHEET_KEYS.confirm];
+export const SHEET_LEGEND_ARMED = legend(SHEET_LEGEND_ARMED_ITEMS, SHEET_KEYS.keep);
 
-/** What the selected row carries at its right edge, and what it carries while its question is up. */
-export const SHEET_CHIP_IDLE = '[d] withdraw';
-export const SHEET_CHIP_ARMED = '[Enter] withdraw';
+/** What the selected row carries at its right edge, and what it carries while its question is up: the key of the grammar and the legend's verb. */
+export const SHEET_CHIP_IDLE = `${keyToken('d')} ${SHEET_KEYS.withdraw.verb}`;
+export const SHEET_CHIP_ARMED = `${keyToken('Enter')} ${SHEET_KEYS.confirm.verb}`;
 
 /** The sheet must have been open this long before `d` arms a row: a person has had time to read the list. */
 export const SHEET_SETTLE_MS = 400;
@@ -87,12 +93,11 @@ export const SHEET_CONFIRM_DWELL_MS = 800;
 /** ...and no longer than this: a question left up (the terminal was suspended, the person walked away) is not answered by a stray Enter. */
 export const SHEET_CONFIRM_WINDOW_MS = 10_000;
 /** What an `Enter` outside that window says; the question is dropped and nothing is withdrawn. */
-export const SHEET_ENTER_NOTE =
-  'Too early or too late for Enter — nothing was withdrawn. Press d again.';
+export const SHEET_ENTER_NOTE = `Too early or too late for ${keyToken('Enter')} — nothing was withdrawn. Press ${keyToken('d')} again.`;
 /** What a `d` refused because the sheet has just opened says. */
-export const SHEET_WAIT_NOTE = 'Wait a moment, then press d.';
+export const SHEET_WAIT_NOTE = `Wait a moment, then press ${keyToken('d')}.`;
 /** What a `d` refused because keys were typed since the sheet opened says. */
-export const SHEET_TYPED_NOTE = 'Typed keys are ignored here. Select a row with ↑/↓, then press d.';
+export const SHEET_TYPED_NOTE = `Typed keys are ignored here. Select a row with ${keyToken('↑/↓')}, then press ${keyToken('d')}.`;
 
 /** The most body lines (headings, rows and markers) the sheet shows at once, the bound the model picker uses for its rows. */
 export const SHEET_WINDOW = 8;
@@ -359,10 +364,10 @@ export function sheetNote(state: PermissionsSheetState): string {
 /** What an empty project list says, by surface (`plan` has no cards, so it has nothing to point at). */
 function emptyProjectText(state: PermissionsSheetState): string {
   if (state.surface !== 'chat')
-    return 'Nothing is remembered for this project. A command is remembered from its card in a chat (Ctrl+O, then Enter).';
+    return `Nothing is remembered for this project. A command is remembered from its card in a chat (${keyToken('Ctrl+O')}, then ${keyToken('Enter')}).`;
   return state.mode === 'plan'
     ? 'Nothing is remembered for this project.'
-    : 'Nothing is remembered for this project. Press Ctrl+O on a command card, then Enter, to remember one.';
+    : `Nothing is remembered for this project. Press ${keyToken('Ctrl+O')} on a command card, then ${keyToken('Enter')}, to remember one.`;
 }
 
 const EMPTY_SESSION_TEXT = 'Nothing is approved for this session.';
@@ -383,7 +388,7 @@ interface BodyLine {
 /**
  * One row: the marker and the label on the left; on the right the value (a date, or `(also remembered)`) flush to the edge, so the dates stay
  * in one column however the selection moves, and, on the selected row only, its action just before the value (`[d] withdraw`, or
- * `[Enter] withdraw` while its question is up) with the key in its role. A row too narrow for the right-hand side keeps the label alone.
+ * `Enter withdraw` while its question is up) with the key in its role. A row too narrow for the right-hand side keeps the label alone.
  */
 function rowLine(
   label: string,
@@ -405,7 +410,7 @@ function rowLine(
   };
 }
 
-/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `[Enter] withdraw`. */
+/** The action chip a row carries: none unless it is the selected one, then `[d] withdraw` or, while its question is up, `Enter withdraw`. */
 function rowChip(selected: boolean, armed: boolean): string {
   if (!selected) return '';
   return armed ? SHEET_CHIP_ARMED : SHEET_CHIP_IDLE;
@@ -434,8 +439,9 @@ function rowSpans(
   const spans: SheetSpan[] = [];
   if (right === '' || !text.endsWith(right)) return spans;
   const at = text.length - right.length;
+  // the chip is the key (which has no space in it) and then the verb
   if (chip !== '')
-    spans.push({ from: at, to: at + chip.indexOf(']') + 1, role: armed ? 'warn' : 'danger' });
+    spans.push({ from: at, to: at + chip.indexOf(' '), role: armed ? 'warn' : 'danger' });
   if (tail !== '') {
     const tailAt = at + (chip === '' ? 0 : chip.length + CHIP_GAP.length);
     spans.push({ from: tailAt, to: tailAt + tail.length, role: 'dim' });
@@ -467,8 +473,10 @@ function projectLines(state: PermissionsSheetState, width: number): BodyLine[] {
     text: `This project · remembered (${String(project.rows.length)})`,
   });
   if (project.rows.length === 0) {
+    // `wrapWords` keeps every character, so a word that ends at the last column leaves the space after it at the START of the next row: a
+    // sheet is read, not selected, and that row begins at its word (the sentence's key in brackets lands on exactly this column at 80).
     for (const text of wrapWords(emptyProjectText(state), width))
-      lines.push({ kind: 'text', text: text.trimEnd() });
+      lines.push({ kind: 'text', text: text.trim() });
   }
   project.rows.forEach((item, entry) => {
     lines.push(rowLine(escaped(item.label), escaped(item.remembered), entry, state, width));
@@ -506,8 +514,8 @@ function ruleLine(state: PermissionsSheetState, width: number): SheetLine {
   return titleRule(sheetTitle(state), width);
 }
 
-/** The text a sheet shows below the floor, whatever the sheet is: why, and the way out. */
-export const SHEET_TOO_SMALL_TEXT = 'Enlarge the terminal to use this screen — Esc closes.';
+/** The text a sheet shows below the floor, whatever the sheet is: why. The way out is the legend under it, which names the key and its effect. */
+export const SHEET_TOO_SMALL_TEXT = 'Enlarge the terminal to use this screen.';
 
 /** The lines of a sheet titled `title` when the terminal is below the floor: the title, why, and the way out. */
 export function tooSmallSheetLines(title: string): readonly SheetLine[] {
@@ -516,8 +524,8 @@ export function tooSmallSheetLines(title: string): readonly SheetLine[] {
     { kind: 'text', text: SHEET_TOO_SMALL_TEXT },
     {
       kind: 'legend',
-      text: legend(SHEET_LEGEND_EMPTY_ITEMS),
-      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS),
+      text: legend(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
+      spans: legendSpans(SHEET_LEGEND_EMPTY_ITEMS, SHEET_KEYS.close),
     },
   ];
 }
@@ -588,8 +596,8 @@ export function permissionsSheetChrome(
   geometry: SheetGeometry,
 ): PermissionsSheetChrome {
   const bodyWidth = usableColumns(geometry.columns);
-  const items = legendItems(state);
-  const legendText = clipLine(legend(items), bodyWidth);
+  const { items, exit } = sheetLegend(state);
+  const legendText = clipLine(legend(items, exit), bodyWidth);
   return {
     head: [ruleLine(state, bodyWidth)],
     foot: [
@@ -598,7 +606,7 @@ export function permissionsSheetChrome(
       {
         kind: 'legend',
         text: legendText,
-        spans: clampSpans(legendSpans(items), legendText.length),
+        spans: clampSpans(legendSpans(items, exit), legendText.length),
       },
     ],
     bodyWidth,
@@ -682,35 +690,45 @@ export function permissionsSheetBody(
   return body;
 }
 
-/** The legend's items: the armed question's, or the idle list's, or the empty list's. */
-function legendItems(state: PermissionsSheetState): readonly LegendItem[] {
-  if (state.armed) return SHEET_LEGEND_ARMED_ITEMS;
-  return sheetEntries(state.snapshot).length > 0
-    ? SHEET_LEGEND_IDLE_ITEMS
-    : SHEET_LEGEND_EMPTY_ITEMS;
+/** The legend: the armed question's (its `Esc` keeps the permission), or the idle list's, or the empty list's (its `Esc` closes). */
+function sheetLegend(state: PermissionsSheetState): {
+  readonly items: readonly LegendItem[];
+  readonly exit: LegendExit;
+} {
+  if (state.armed) return { items: SHEET_LEGEND_ARMED_ITEMS, exit: SHEET_KEYS.keep };
+  return {
+    items:
+      sheetEntries(state.snapshot).length > 0 ? SHEET_LEGEND_IDLE_ITEMS : SHEET_LEGEND_EMPTY_ITEMS,
+    exit: SHEET_KEYS.close,
+  };
 }
+
+/** The lead of the hint under the selected row, and the key it names (the one thing on the line that is not dimmed). */
+const HINT_LEAD = 'Press ';
+const HINT_KEY = keyToken('d');
 
 /** What withdrawing the entry would mean, in one sentence. */
 function withdrawHint(entry: SheetEntry): string {
   if (entry.kind === 'project')
-    return 'Press d to withdraw it: auto mode will ask about this command again.';
+    return `${HINT_LEAD}${HINT_KEY} to withdraw it: auto mode will ask about this command again.`;
   return entry.row.alsoRemembered
-    ? 'Press d to withdraw the session approval; the project still remembers it.'
-    : 'Press d to withdraw it: this command will need approval again.';
+    ? `${HINT_LEAD}${HINT_KEY} to withdraw the session approval; the project still remembers it.`
+    : `${HINT_LEAD}${HINT_KEY} to withdraw it: this command will need approval again.`;
 }
 
 /** What withdrawing the selected row will do, said before it is done: the row under the list while nothing else needs saying. */
 function hintLine(entry: SheetEntry, width: number): SheetLine {
   const shown = clipLine(withdrawHint(entry), width);
+  const keyEnd = HINT_LEAD.length + HINT_KEY.length;
   // The key is the one thing on the line that is not dimmed: it is what the line is about.
   return {
     kind: 'hint',
     text: shown,
     spans: clampSpans(
       [
-        { from: 0, to: 6, role: 'dim' },
-        { from: 6, to: 7, role: 'danger' },
-        { from: 7, to: shown.length, role: 'dim' },
+        { from: 0, to: HINT_LEAD.length, role: 'dim' },
+        { from: HINT_LEAD.length, to: keyEnd, role: 'danger' },
+        { from: keyEnd, to: shown.length, role: 'dim' },
       ],
       shown.length,
     ),

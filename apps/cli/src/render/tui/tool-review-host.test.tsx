@@ -66,7 +66,7 @@ const CTRL_G = '\x07'; // ask for the session-wide grant (ENTER confirms)
 const CTRL_N = '\x0e'; // deny
 const CTRL_R = '\x12'; // deny with a reason (opens the reason box on the card)
 /** The full view's refusals row (ADR-0134): the card's refusals minus the card-only keys, plus the way back. */
-const FULL_DENY_ROW = '[Ctrl+N] Deny   [b] Back to the card   Esc back   Ctrl+C stops the turn';
+const FULL_DENY_ROW = '[Ctrl+N] Deny · [b] back to the card · [Ctrl+C] stops the turn · Esc back';
 
 /**
  * The suite drives the approval card with keys pressed right after a frame, as fast as the harness can. The product's
@@ -603,9 +603,9 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     expect(frame).not.toContain('<LF>');
     expect(frame).not.toContain('Inspection requirements met');
     expect(frame).not.toContain('hidden lines');
-    expect(frame).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+    expect(frame).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
     expect(frame).toContain(
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
   });
 
@@ -653,7 +653,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
     expect(frame).toMatch(/1 masked value in this change/u);
     expect(frame).toContain('(Allow is locked until you inspect the change)');
     expect(frame).toContain(
-      '[Ctrl+N] Deny [Ctrl+R] Deny + reason [v] Full diff Esc stops the turn',
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn',
     );
     expect(frame).not.toContain('[Ctrl+Y] Allow');
     expect(frame).not.toContain('[Ctrl+G]');
@@ -1064,7 +1064,7 @@ describe.each(['chat', 'home'] as const)('docked approval card %s (ADR-0129)', (
       expect(rows.find((row) => row.startsWith('\u2500'))).toMatch(
         /^\u2500 \d+% \u00b7 every changed line is on this page \u2500+$/u,
       );
-      expect(rows).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session');
+      expect(rows).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session');
       expect(rows).toContain(FULL_DENY_ROW);
       f.input.push(CTRL_G);
       await vi.waitFor(() => expect(answered()).toBe(true));
@@ -1111,7 +1111,7 @@ describe.each(['chat', 'home'] as const)('shared review host %s', (host) => {
     const text = f.text().replace(/\s+/gu, ' ');
     expect(text).toContain('Your reason may appear in session and redirected output.');
     expect(text).toContain('This is not a private note.');
-    expect(f.text()).toContain('Enter denies and continues');
+    expect(f.text()).toContain('Enter deny and continue');
     expect(f.store.getSnapshot().review?.denial).toBe('');
     await new Promise<void>((resolve) => setTimeout(resolve, 40));
     f.input.push('\r');
@@ -1238,7 +1238,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     });
     await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
     const frame = (f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ');
-    expect(frame).toContain('narrow change, or [v] full view / [p] code points.');
+    expect(frame).toContain('narrow change, or [v] full view / [p] code points');
     expect(frame).not.toContain('A command is waiting');
     expect(f.errors).toEqual([]);
   });
@@ -1279,7 +1279,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       await settle();
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
-      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.');
+      expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 Esc stops the turn');
       f.input.push(CTRL_N);
       expect(await answer).toEqual({ outcome: 'reject' });
     });
@@ -1304,8 +1304,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
-      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
-      expect(hint(f)).not.toContain('[Ctrl+N] denies');
+      expect(hint(f)).toContain('[Ctrl+C] stops the turn · Esc close the box');
+      expect(hint(f)).not.toContain('[Ctrl+N] Deny');
       f.input.push(CTRL_N);
       await settle();
       expect(answered, 'what the hint does not promise, the key does not do').toBe(false);
@@ -1334,8 +1334,8 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // A box is open: Esc closes the box, and Ctrl+C is what stops the turn (ADR-0115 §3).
-      expect(hint(f)).toContain('Esc closes the box · Ctrl+C stops the turn.');
-      expect(hint(f)).not.toContain('[Ctrl+N] denies');
+      expect(hint(f)).toContain('[Ctrl+C] stops the turn · Esc close the box');
+      expect(hint(f)).not.toContain('[Ctrl+N] Deny');
       f.input.push(CTRL_N);
       await settle();
       expect(answered).toBe(false);
@@ -1361,16 +1361,14 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
       f.resize(79, 23);
       await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
       // The full view cannot be read, but Esc still leaves it without stopping the turn: no acknowledged frame is needed to step back.
-      expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc back \u00b7 Ctrl+C stops the turn.');
+      expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(hint(f)).not.toContain('Esc stops the turn');
       f.input.push('\x1b');
       await vi.waitFor(() => expect(f.store.getSnapshot().review?.screen).toBe('card'));
       await settle();
       expect(answered, 'stepping back stops nothing').toBe(false);
       // Now on the card, whose own hint is unchanged: Esc stops the turn here.
-      await vi.waitFor(() =>
-        expect(hint(f)).toContain('[Ctrl+N] denies \u00b7 Esc stops the turn.'),
-      );
+      await vi.waitFor(() => expect(hint(f)).toContain('[Ctrl+N] Deny \u00b7 Esc stops the turn'));
       f.input.push(CTRL_N);
       await settle();
       expect(answered).toBe(true);
@@ -1381,7 +1379,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
   // view's answer rows are the card's grants row and its own refusals row; since ADR-0137 §4 the second says `Esc back` (Esc steps
   // back to the card) and `Ctrl+C stops the turn`.
   it.each([
-    [true, '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session'],
+    [true, '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session'],
     [false, '[Ctrl+Y] Allow'],
   ])(
     'the full view says Esc goes back and Ctrl+C stops the turn, not "abort" (cacheable=%s)',
@@ -1612,9 +1610,9 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     f.store.openDetails();
     await vi.waitFor(() => expect(f.text()).toContain('Terminal too small'));
     const frame = (f.lastFrameWith('Terminal too small') ?? '').replace(/\s+/gu, ' ');
-    expect(frame).toContain('Esc closes.');
+    expect(frame).toContain('Esc close');
     expect(frame).not.toContain('stops the turn');
-    expect(frame).not.toContain('[Ctrl+N] denies');
+    expect(frame).not.toContain('[Ctrl+N] Deny');
   });
   it('opens retained summary-only details with selected identity and outcome', async () => {
     const f = fixture(host, true, false);
@@ -2086,7 +2084,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
         (frame ?? '').split('\n').map((row) => row.trimEnd());
       const before = rowsOf(f.lastFrameWith('Review \u00b7 tool'));
       const grantsAt = before.indexOf(
-        '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+        '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
       );
       expect(grantsAt, 'the full view offers the session-wide grant').toBeGreaterThan(0);
       vi.advanceTimersByTime(1000);
@@ -2102,7 +2100,7 @@ describe.each(['chat', 'home'] as const)('approval guard on the real host %s (E1
       expect(
         asking[grantsAt + 1],
         'and says what any other key does, and what Esc and Ctrl+C do',
-      ).toBe('Any other key cancels \u00b7 Esc back \u00b7 Ctrl+C stops the turn');
+      ).toBe('Any other key cancels \u00b7 [Ctrl+C] stops the turn \u00b7 Esc back');
       expect(asking.length, 'the screen has the same number of rows').toBe(before.length);
       expect(asking.findIndex((row) => row.startsWith('\u2500'))).toBe(
         before.findIndex((row) => row.startsWith('\u2500')),
@@ -2205,7 +2203,7 @@ describe('answer chords in the real host', () => {
       return [rows[last - 1], rows[last]];
     };
     const KEYS_ROW_2 =
-      '[Ctrl+N] Deny   [Ctrl+R] Deny + reason   [v] Full diff   Esc stops the turn';
+      '[Ctrl+N] Deny · [Ctrl+R] Deny + reason · [v] full diff · Esc stops the turn';
     const editRequest = { ...request, toolId: 'edit_file' };
 
     describe('a bare letter answers nothing (typing at a card)', () => {
@@ -2227,7 +2225,7 @@ describe('answer chords in the real host', () => {
         // The frame the person is looking at is still the card, with its answers.
         const rows = cardRows(f);
         expect(rows.join('\n')).not.toContain('Reason to deny');
-        expect(rows).toContain('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+        expect(rows).toContain('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
         expect(rows).toContain(KEYS_ROW_2);
         // The card is still answerable by the real key, once.
         f.input.push(CTRL_Y);
@@ -2270,7 +2268,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         await open(f, request, poemPreview(2), 'rows-write');
         const [grants, rest] = keyRows(f);
-        expect(grants).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session');
+        expect(grants).toBe('[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session');
         expect(rest).toBe(KEYS_ROW_2);
       });
 
@@ -2283,9 +2281,9 @@ describe('answer chords in the real host', () => {
         await pause(30);
         await press(f, '/');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.searching).toBe(true));
-        await vi.waitFor(() => expect(f.lastFrameWith('Esc closes the search box')).toBeDefined());
-        const frame = f.lastFrameWith('Esc closes the search box') ?? '';
-        expect(frame).toContain('Ctrl+C stops the turn');
+        await vi.waitFor(() => expect(f.lastFrameWith('Esc close the search box')).toBeDefined());
+        const frame = f.lastFrameWith('Esc close the search box') ?? '';
+        expect(frame).toContain('[Ctrl+C] stops the turn');
         expect(frame, 'the card’s legend would name keys that do nothing in the box').not.toContain(
           'Esc stops the turn',
         );
@@ -2302,7 +2300,7 @@ describe('answer chords in the real host', () => {
                 // eslint-disable-next-line no-control-regex -- stripping terminal control sequences from a captured frame
                 .map((frame) => frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/gu, ''))
                 .join(''),
-            ).toContain('Esc back   Ctrl+C stops the turn'), // the full view's own legend: the box is closed, Esc now steps back
+            ).toContain('[Ctrl+C] stops the turn · Esc back'), // the full view's own legend: the box is closed, Esc now steps back
         );
       });
 
@@ -2311,7 +2309,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         await open(f, editRequest, editedFilePreview(8, { 4: 'four' }), 'rows-edit');
         const [grants, rest] = keyRows(f);
-        expect(grants).toBe('[Ctrl+Y] Allow   [Ctrl+G] Allow all file edits this session');
+        expect(grants).toBe('[Ctrl+Y] Allow · [Ctrl+G] Allow all file edits this session');
         expect(rest).toBe(KEYS_ROW_2);
       });
 
@@ -2342,7 +2340,7 @@ describe('answer chords in the real host', () => {
           const { outcome } = await open(f, longRequest, poemPreview(2), 'rows-long');
           const [grants, rest] = keyRows(f);
           expect(grants).toBe(
-            '[Ctrl+Y] Allow   [Ctrl+G] Allow all run_remote_buil… calls this session',
+            '[Ctrl+Y] Allow · [Ctrl+G] Allow all run_remote_buil… calls this session',
           );
           expect(rest).toBe(KEYS_ROW_2);
           // The card draws in 78 columns at 80: every key row must fit it whole.
@@ -2387,7 +2385,7 @@ describe('answer chords in the real host', () => {
           expect(f.store.getSnapshot().alwaysConfirm, 'the key withdrew the question').toBe(false);
           await vi.waitFor(() =>
             expect(keyRows(f)[0]).toBe(
-              '[Ctrl+Y] Allow   [Ctrl+G] Allow all file writes this session',
+              '[Ctrl+Y] Allow · [Ctrl+G] Allow all file writes this session',
             ),
           );
           // The question is gone: an Enter now, well inside the confirmation window, grants nothing.
@@ -2433,7 +2431,7 @@ describe('answer chords in the real host', () => {
         await f.ready();
         f.resize(79, 23);
         const { outcome } = await open(f, request, poemPreview(2), 'tiny', 'Terminal too small');
-        expect(hint(f)).toContain('[Ctrl+N] denies · Esc stops the turn.');
+        expect(hint(f)).toContain('[Ctrl+N] Deny · Esc stops the turn');
         // Nothing to inspect, so only the unseen frame stands between these keys and an answer.
         for (const key of [CTRL_Y, CTRL_G, CTRL_R, 'n', 'y', 'a', 'c', '\r']) {
           await press(f, key);
@@ -2466,7 +2464,7 @@ describe('answer chords in the real host', () => {
           });
         await vi.waitFor(() => expect(f.text()).toContain('Review unavailable'));
         expect((f.lastFrameWith('Review unavailable') ?? '').replace(/\s+/gu, ' ')).toContain(
-          '[Ctrl+N] denies · Esc stops the turn.',
+          '[Ctrl+N] Deny · Esc stops the turn',
         );
         for (const key of ['n', 'y', CTRL_Y, CTRL_G]) {
           await press(f, key);
@@ -2521,7 +2519,7 @@ describe('answer chords in the real host', () => {
         await vi.waitFor(() => expect(f.lastFrameWith('Reason to deny:')).toBeDefined());
         const opened = f.lastFrameWith('Reason to deny:') ?? '';
         expect(opened).toContain('Approval needed');
-        expect(opened).toContain('Enter denies and continues');
+        expect(opened).toContain('Enter deny and continue');
         // Letters — the answer letters included — are text, and a chord is not an answer in here.
         for (const key of ['y', CTRL_Y, 'n', CTRL_N, 'a', CTRL_G, CTRL_R]) {
           await press(f, key);
@@ -2547,8 +2545,8 @@ describe('answer chords in the real host', () => {
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBe(''));
         await type(f, 'later');
         const boxed = f.lastFrameWith('Reason to deny:') ?? '';
-        expect(boxed, 'the box says what Esc does in it').toContain('Esc closes this box');
-        expect(boxed, '...and that Ctrl+C is the stop here').toContain('Ctrl+C stops the turn');
+        expect(boxed, 'the box says what Esc does in it').toContain('Esc close this box');
+        expect(boxed, '...and that Ctrl+C is the stop here').toContain('[Ctrl+C] stops the turn');
         expect(outcome()).toBeUndefined();
         await press(f, '\x1b');
         await vi.waitFor(() => expect(f.store.getSnapshot().review?.denial).toBeUndefined());
@@ -2666,7 +2664,8 @@ describe.each(['chat', 'home'] as const)(
       return match === null ? undefined : Number(match[1]);
     };
     /** The details screen's closing note: only that screen draws it, whatever its header looks like (the identity may sit on its own row). */
-    const DETAILS_NOTE = '[b] Back to the list   Esc closes \u00b7 viewing never executes a tool';
+    const DETAILS_NOTE =
+      '[b] back to the list \u00b7 viewing never executes a tool \u00b7 Esc close';
     const details = (f: Fixture): FullView | undefined =>
       read(f.lastFrameWith(DETAILS_NOTE), DETAILS_NOTE);
 
@@ -2774,10 +2773,10 @@ describe.each(['chat', 'home'] as const)(
       // The message row is kept (blank here) under the rule, so the body's height never depends on whether there is a message.
       expect(rows[screen.rule + 1], 'the message row, kept blank').toBe('');
       expect(rows[screen.rule + 2], 'movement keys').toBe(
-        '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end   [Tab/Shift+Tab] changes',
+        '↑/↓ scroll · PgUp/PgDn page · Home/End top/end · Tab / Shift+Tab changes',
       );
       expect(rows[screen.rule + 3], 'inspection keys: no mask, no clipboard').toBe(
-        '[/] search   [p] Unicode codes',
+        '[/] search · [p] Unicode codes',
       );
       expect(rows.slice(screen.rule + 2, screen.rule + 4).join('\n')).not.toContain('[b]');
       // Two answer rows (the second names the way back), then the protected-path note, which is the last row of the screen.
@@ -2884,11 +2883,11 @@ describe.each(['chat', 'home'] as const)(
       await vi.waitFor(() => expect(outcome()).toEqual({ outcome: 'approve', scope: 'once' }));
     });
 
-    it('names [b] Back to the card in the answer row, and b goes back with the approval still pending', async () => {
+    it('names [b] back to the card in the answer row, and b goes back with the approval still pending', async () => {
       const { f, outcome } = await openFull(SIXTY());
       const screen = view(f);
       if (screen === undefined) throw new Error('no full view');
-      expect(screen.rows[screen.note - 1]).toContain('[b] Back to the card');
+      expect(screen.rows[screen.note - 1]).toContain('[b] back to the card');
       expect(
         screen.rows.slice(screen.rule + 2, screen.rule + 4).join('\n'),
         'it is an answer-row key, not a navigation key',
@@ -2961,11 +2960,11 @@ describe.each(['chat', 'home'] as const)(
       const bound = await openFull(SIXTY(), { clipboard: true });
       const withCopy = view(bound.f);
       expect(withCopy?.rows[(withCopy?.rule ?? 0) + 3]).toBe(
-        '[/] search   [p] Unicode codes   [c] copy page',
+        '[/] search · [p] Unicode codes · [c] copy page',
       );
       const unbound = await openFull(SIXTY());
       const without = view(unbound.f);
-      expect(without?.rows[(without?.rule ?? 0) + 3]).toBe('[/] search   [p] Unicode codes');
+      expect(without?.rows[(without?.rule ?? 0) + 3]).toBe('[/] search · [p] Unicode codes');
     });
 
     describe('keys (real stdin)', () => {
@@ -3172,7 +3171,7 @@ describe.each(['chat', 'home'] as const)(
         ).toHaveLength(1);
         expect(rows[4]).toBe('call 3 of 3');
         expect(rows[5], 'the key hint').toBe(
-          '↑↓ PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc closes',
+          '↑/↓, PgUp/PgDn select · Enter open · Home/End oldest/newest · Esc close',
         );
         expect(
           rows.join('\n'),
@@ -3800,7 +3799,7 @@ describe.each(['chat', 'home'] as const)(
         expect(rows[1], 'the whole sentence, not cut').toBe(
           'No tool calls yet. Earlier sessions keep no previews.',
         );
-        expect(rows).toContain('Esc closes');
+        expect(rows).toContain('Esc close');
         for (const row of rows) expect(stringWidth(row)).toBeLessThanOrEqual(78);
       });
 
@@ -4028,13 +4027,11 @@ describe.each(['chat', 'home'] as const)(
         expect(screen.rows[screen.rows.indexOf('Preview unavailable') + 1]).toBe(
           '  Not retained for this call.',
         );
-        expect(screen.rows[screen.rule + 2]).toBe(
-          '[↑↓] scroll   [PgUp/PgDn] page   [Home/End] top/end',
-        );
+        expect(screen.rows[screen.rule + 2]).toBe('↑/↓ scroll · PgUp/PgDn page · Home/End top/end');
         expect(
           screen.rows[screen.rule + 3],
           'no [r], no [c]: nothing is masked and no clipboard is bound',
-        ).toBe('[/] search   [p] Unicode codes');
+        ).toBe('[/] search · [p] Unicode codes');
       });
     });
 

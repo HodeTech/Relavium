@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 
 import { stripTerminalControls } from './tui/chat-projection.js';
+import { keyToken } from './tui/legend.js';
 
 /**
  * The `/scrollback` half of the ADR-0068 §e copy-and-search escape hatches (2.6.F Step 5d): print the transcript to
@@ -28,7 +29,7 @@ export const DUMP_HEADER = '───── relavium transcript ─────'
 /** The banner printed below the dump. */
 export const DUMP_FOOTER = '───── end of transcript ─────';
 /** The acknowledgement line. The dump is useless if the full-screen view repaints over it before the user looks. */
-export const DUMP_PROMPT = 'Press Enter to return to Relavium.';
+export const DUMP_PROMPT = `Press ${keyToken('Enter')} to return to Relavium.`;
 
 /** The SIGINT source {@link nodeWaitForContinue} listens on. `process` in production; a fake in tests, so a suite
  *  never has to raise a real signal at its own runner. */

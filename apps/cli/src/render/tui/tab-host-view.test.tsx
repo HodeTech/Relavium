@@ -299,7 +299,8 @@ describe('TabHostView on the History tab', () => {
     const drawn = frame(historyHost(), true);
     expect(lineWith(drawn, '› ? missing')).toContain(CYAN);
     expect(lineWith(drawn, '⊘ cancelled')).toContain(DIM);
-    expect(lineWith(drawn, '[p]'), 'the legend: the keys apart from the words').toContain(
+    // the legend is the line with the filter key: a sentence under the list names `[p]` too (the missing run's)
+    expect(lineWith(drawn, '[f]'), 'the legend: the keys apart from the words').toContain(
       `${BOLD}[p]`,
     );
   });
@@ -361,7 +362,7 @@ describe('TabHostView on the Active tab', () => {
     ])
       expect(drawn, word).toContain(word);
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
-    expect(lines.at(-1)).toContain('↑/↓ select · Enter open · Ctrl+C close · Esc close');
+    expect(lines.at(-1)).toContain('↑/↓ select · Enter open · [Ctrl+C] close · Esc close');
   });
 
   it('draws the selected row in cyan, a quiet reason dimmed, and the word of a stalled or held run in attention', () => {
@@ -478,9 +479,7 @@ describe('TabHostView on the node page', () => {
       expect(drawn, word).toContain(word);
     expect(drawn).not.toContain('sk-ant-api03');
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected line').toBe(1);
-    expect(lines.at(-1)).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
-    );
+    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back');
   });
 
   it('draws the heading bold, the error in red and the key of the action in its own style when colour is on', () => {
@@ -508,7 +507,7 @@ describe('TabHostView below the minimum', () => {
     'at %i×%i it says to enlarge, names the way out, and draws nothing of the screen',
     (columns, rows) => {
       expect(text(hostOn('permissions'), columns, rows).split('\n')).toEqual([
-        'Enlarge the terminal — Esc steps back, or closes at the list.',
+        'Enlarge the terminal.',
         'Esc close',
       ]);
     },
@@ -562,9 +561,9 @@ describe('TabHostView with colour off (NO_COLOR)', () => {
         'a waiting question',
         permissions(() => ({ armed: true })),
         [
-          '[Enter] withdraw',
+          'Enter withdraw',
           'Withdraw npm, 1 argument (2026-11-19 12:00Z)? Any other key keeps it.',
-          '[Enter] withdraw · Esc keep',
+          'Enter withdraw · Esc keep',
         ],
       ],
       [
@@ -695,9 +694,9 @@ describe.each([
     expect(lines.length).toBeLessThanOrEqual(23);
     expect(m.frame()).toContain('This project · remembered (2)');
     expect(m.frame()).toContain(
-      '←/→ tab · Tab cycle · ↑/↓ select · [d / Del] withdraw · Esc close',
+      '←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc close',
     );
-    expect(m.frame(), 'no prompt behind the screen').not.toContain('/ for commands');
+    expect(m.frame(), 'no prompt behind the screen').not.toContain('[/] for commands');
   });
 
   it('moves between tabs with the keys a person presses, and Esc leaves for the landing', async () => {
@@ -710,7 +709,7 @@ describe.each([
     await until(() => m.frame().includes('▸ Permissions'));
     m.harness.stdin.write(ESC);
     await until(() => m.controller.getSnapshot().screen === undefined);
-    await until(() => m.frame().includes('/ for commands'));
+    await until(() => m.frame().includes('[/] for commands'));
   });
 
   it('drops a paste: it reaches neither the screen nor the prompt behind it', async () => {
@@ -728,10 +727,7 @@ describe.each([
   it('below 80×24 draws the one-line hint and takes only Esc and Ctrl+C', async () => {
     const m = mountTabHost({ alternateScreen, size: { cols: 70, rows: 20 } });
     await until(() => m.frame().includes('Enlarge the terminal'));
-    expect(m.frame().split('\n')).toEqual([
-      'Enlarge the terminal — Esc steps back, or closes at the list.',
-      'Esc close',
-    ]);
+    expect(m.frame().split('\n')).toEqual(['Enlarge the terminal.', 'Esc close']);
     m.harness.stdin.write(`${ESC}[D`);
     await settleFrames();
     const screen = m.controller.getSnapshot().screen;

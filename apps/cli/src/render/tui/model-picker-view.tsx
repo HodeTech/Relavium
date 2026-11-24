@@ -5,6 +5,7 @@ import { datedPinBase, type ModelCatalogEntry } from '@relavium/llm';
 
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
+import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import {
   formatContextWindow,
   formatModelPrice,
@@ -50,11 +51,35 @@ export interface ModelPickerViewProps {
 export type ModelPickerScope = 'next-chat' | 'this-chat';
 
 const SCOPE_WORDS: Readonly<
-  Record<ModelPickerScope, { readonly title: string; readonly enter: string }>
+  Record<ModelPickerScope, { readonly title: string; readonly enter: LegendItem }>
 > = {
-  'next-chat': { title: 'Default model for new chats', enter: 'Enter set default' },
-  'this-chat': { title: 'Switch this chat’s model', enter: 'Enter switch' },
+  'next-chat': {
+    title: 'Default model for new chats',
+    enter: { keys: 'Enter', verb: 'set default' },
+  },
+  'this-chat': { title: 'Switch this chat’s model', enter: { keys: 'Enter', verb: 'switch' } },
 };
+
+/** The footer of the model list: `Esc` closes it and writes nothing (`Ctrl+C` does the same). */
+function listFooter(scope: ModelPickerScope): string {
+  return legend(
+    [
+      { keys: '↑/↓', verb: 'select' },
+      SCOPE_WORDS[scope].enter,
+      { keys: 'Ctrl+R', verb: 'refresh' },
+    ],
+    exitKey.close(),
+  );
+}
+
+/** The footer of the effort sub-step: `Esc` backs out to the model list (`Ctrl+C` is the hard cancel). */
+export const EFFORT_STEP_FOOTER = legend(
+  [
+    { keys: '↑/↓', verb: 'select' },
+    { keys: 'Enter', verb: 'apply' },
+  ],
+  exitKey.step(),
+);
 
 /** The window of row indices to render around `selected` (a `[start, end)` slice), keeping the selection visible and
  *  never exceeding {@link MODEL_WINDOW} rows. Pure so the scroll math is unit-checkable. */
@@ -102,7 +127,7 @@ function EffortSubList(props: Readonly<{ state: ModelPickerState; color: boolean
       selected={state.effortSelected}
       current={state.currentEffort}
       labelSuffix={state.pending?.displayName}
-      footer="↑/↓ select · Enter apply · Esc back"
+      footer={EFFORT_STEP_FOOTER}
       color={color}
     />
   );
@@ -144,7 +169,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
     if (state.entries.length === 0) {
       return (
         <Text {...dimProps(color)} wrap="truncate-end">
-          no models yet — connect one with /providers on the Home, then Ctrl+R to refresh
+          {`no models yet — connect one with /providers on the Home, then ${keyToken('Ctrl+R')} refresh`}
         </Text>
       );
     }
@@ -193,7 +218,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       </Text>
       {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">
-        {`↑/↓ select · ${SCOPE_WORDS[props.scope].enter} · Ctrl+R refresh · Esc cancel`}
+        {listFooter(props.scope)}
       </Text>
     </Box>
   );

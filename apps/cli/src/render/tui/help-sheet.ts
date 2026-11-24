@@ -16,7 +16,7 @@
  */
 
 import { HOME_PALETTE_COMMANDS, type ReplCommand } from '../../commands/repl-commands.js';
-import { legend, legendSpans, type LegendItem } from './legend.js';
+import { exitKey, legend, legendSpans, type LegendItem, type LegendKey } from './legend.js';
 import { displayWidth } from './viewport.js';
 import { sheetCanArm } from './permissions-sheet.js';
 import {
@@ -43,7 +43,7 @@ export interface HelpKeyPress {
 }
 
 /** A key the sheet names: how it is written, what it does, and the presses that do it. */
-export interface HelpKey extends LegendItem {
+export interface HelpKey extends LegendKey {
   readonly presses: readonly HelpKeyPress[];
 }
 
@@ -51,13 +51,13 @@ export interface HelpKey extends LegendItem {
 export const HELP_SHEET_ROWS = 23;
 
 /**
- * The keys of the sheet itself. Both close it and nothing else is bound, so the legend names exactly these; the test presses each press
- * and checks that the sheet is gone, and presses every key of {@link HOME_KEYS} and checks that the sheet stays.
+ * The keys of the sheet itself. Both close it and nothing else is bound, so the legend names exactly these, as the one key that leaves
+ * (`Esc / [Ctrl+C] close`: ADR-0145 §2, Close, with two keys); the test presses each press and checks that the sheet is gone, and presses
+ * every key of {@link HOME_KEYS} and checks that the sheet stays.
  */
 export const HELP_SHEET_KEYS = {
   close: {
-    keys: 'Esc / Ctrl+C',
-    verb: 'close',
+    ...exitKey.close(['Esc', 'Ctrl+C']),
     presses: [
       { input: '', key: { escape: true } },
       { input: 'c', key: { ctrl: true } },
@@ -108,10 +108,11 @@ export const HOME_KEYS = {
   },
 } as const satisfies Readonly<Record<string, HelpKey>>;
 
-/** The hint below the floor: the sheet cannot be drawn, and says how to get rid of it. */
-export const HELP_TOO_SMALL = 'Enlarge the terminal — Esc closes.';
+/** The hint below the floor: the sheet cannot be drawn. The way out is the legend under it, which names the keys and their effect. */
+export const HELP_TOO_SMALL = 'Enlarge the terminal.';
 
-const LEGEND_ITEMS: readonly LegendItem[] = [HELP_SHEET_KEYS.close];
+/** The sheet's legend names no key but the one that leaves. */
+const LEGEND_ITEMS: readonly LegendItem[] = [];
 
 const INDENT = '  ';
 const GAP = '  ';
@@ -130,8 +131,12 @@ function labelled(label: string, labelWidth: number, words: string, width: numbe
 }
 
 function legendLine(width: number): SheetLine {
-  const text = clipLine(legend(LEGEND_ITEMS), width);
-  return { kind: 'legend', text, spans: clampSpans(legendSpans(LEGEND_ITEMS), text.length) };
+  const text = clipLine(legend(LEGEND_ITEMS, HELP_SHEET_KEYS.close), width);
+  return {
+    kind: 'legend',
+    text,
+    spans: clampSpans(legendSpans(LEGEND_ITEMS, HELP_SHEET_KEYS.close), text.length),
+  };
 }
 
 /** One row of command names with no description (several to a row), and how many names it holds. */

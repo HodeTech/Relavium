@@ -271,8 +271,8 @@ const ENDED_LAST: RunHostSnapshot = {
 
 describe('the run row of the strip (ADR-0139 §3)', () => {
   it('shows the active run’s id and its state as a word, behind a glyph, in one line', () => {
-    expect(hostedRunLabel(running(false))).toBe(`▶ ${RUN_ID}  ·  running  ·  Enter shows it`);
-    expect(hostedRunLabel(running(true))).toBe(`▶ ${RUN_ID}  ·  cancelling  ·  Enter shows it`);
+    expect(hostedRunLabel(running(false))).toBe(`▶ ${RUN_ID}  ·  running  ·  Enter show it`);
+    expect(hostedRunLabel(running(true))).toBe(`▶ ${RUN_ID}  ·  cancelling  ·  Enter show it`);
     expect(hostedRunLabel(running(false))).not.toContain('\n');
   });
 
@@ -319,7 +319,7 @@ describe('the exit-guard card text (ADR-0139 §6)', () => {
     const lines = exitGuardLines('confirm', running(false), 10);
     expect(lines[0]).toBe(`${EXIT_GUARD_GLYPH.warning} A workflow run is executing: ${RUN_ID}.`);
     expect(lines.join('\n')).toContain('a stopped run cannot be resumed');
-    expect(lines.at(-1)).toBe('Ctrl+Y stop the run and leave · Esc, Ctrl+C or Ctrl+N stay');
+    expect(lines.at(-1)).toBe('[Ctrl+Y] stop the run and leave · Esc / [Ctrl+C] / [Ctrl+N] stay');
     for (const line of lines) expect(line.length, line).toBeLessThanOrEqual(78);
   });
 
