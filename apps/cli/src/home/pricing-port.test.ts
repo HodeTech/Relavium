@@ -10,6 +10,7 @@
 import {
   createClient,
   createModelCatalogStore,
+  createModelMetadataStore,
   createProviderStore,
   runMigrations,
   type DbClient,
@@ -17,7 +18,12 @@ import {
   type ModelCatalogStore,
   type ProviderStore,
 } from '@relavium/db';
-import type { ModelCatalogEntry } from '@relavium/llm';
+import {
+  catalogModel,
+  clearCatalogRefresh,
+  type CatalogModel,
+  type ModelCatalogEntry,
+} from '@relavium/llm';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +31,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildModelsPricingArgs, type CommandInput } from '../commands/dispatch.js';
+import { persistCatalogToDb } from '../engine/catalog-metadata.js';
 import {
   commitPricing,
   modelsPricingCommand,
@@ -33,6 +40,7 @@ import {
 } from '../commands/models-pricing.js';
 import {
   PRICING_FIELDS,
+  modelIdFault,
   pairingSentence,
   pricingField,
   usdTextOfMicrocents,
@@ -43,6 +51,7 @@ import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import {
   PRICING_MODEL_ID_FAULTS,
+  pricingModelIdFault,
   type PricingPort,
   type PricingPrepared,
 } from '../render/tui/pricing-card.js';
@@ -214,13 +223,19 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(prepared('acme-custom-1', all).offer.keeps).toBe(false);
   });
 
-  it('shows the amount the store will hold, not the digits that were typed', () => {
-    // Nine decimals do not fit a micro-cent: what is recorded is the rounded integer, and the card says THAT.
-    const result = prepared('acme-custom-1', { input: '0.123456789', output: '1' });
-    expect(result.offer.prices[0]?.amount).toBe('$0.12345679/Mtok');
-    expect(result.offer.prices[0]?.microcents).toBe(12_345_679);
-    result.commit();
-    expect(rowsFor('acme-custom-1')[0]?.inputCostPerMtokMicrocents).toBe(12_345_679);
+  it('shows the amount the store will hold: eight decimals are exact, and the written sentence says the stored price', () => {
+    const result = prepared('acme-custom-1', { input: '0.12345679', output: '1e-8' });
+    expect(result.offer.prices.map((price) => [price.amount, price.microcents])).toEqual([
+      ['$0.12345679/Mtok', 12_345_679],
+      ['$0.00000001/Mtok', 1],
+    ]);
+    const attempt = result.commit();
+    if (!attempt.ok) throw new Error(`expected a write, got a refusal: ${attempt.reason}`);
+    expect(attempt.written).toContain('input $0.12345679/Mtok, output $0.00000001/Mtok.');
+    const [row] = rowsFor('acme-custom-1');
+    expect([row?.inputCostPerMtokMicrocents, row?.outputCostPerMtokMicrocents]).toEqual([
+      12_345_679, 1,
+    ]);
   });
 
   it('names the catalog price a token price replaces, and not when only a media price is given', () => {
@@ -398,6 +413,223 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
         expect(rowsFor(model)).toHaveLength(0);
       },
     );
+  });
+
+  describe('a price is stored as exactly what was typed (one conversion, read by both)', () => {
+    /** What the shell prints for an accepted invocation. */
+    function shellOutput(modelId: string, options: CommandInput['options'], json = false): string {
+      const { io, out } = captureIo();
+      const args = buildModelsPricingArgs({
+        positionals: [modelId],
+        options: { provider: 'openai', ...options },
+      });
+      modelsPricingCommand(args, { io, global: global(json), catalog, providers });
+      return out();
+    }
+
+    /** The smallest price, in the unit of `field`, as the refusals name it. */
+    const step = (field: PricingField): string =>
+      `$0.00000001 per ${field.unit === 'mtok' ? 'million tokens' : 'billed unit'}`;
+    const belowSmallest = (name: string, field: PricingField): string =>
+      `${name} is below the smallest price that can be stored, ${step(field)}. Enter 0 to record it as free.`;
+    const tooPrecise = (name: string, field: PricingField): string =>
+      `${name} has more than 8 decimal places, and a price is stored in whole steps of ${step(field)}. Enter it to the nearest step.`;
+
+    const EVERY_FIELD = PRICING_FIELDS.map((field) => [field.id, field] as const);
+
+    it.each(EVERY_FIELD)(
+      '%s: a positive price below one micro-cent is refused, never stored as the 0 that means free',
+      (_id, field) => {
+        const model = modelFor(field);
+        // 5e-9 and 4e-9 are the two sides of the old rounding line: `Math.round` made the first 1 and the second 0.
+        for (const text of ['0.000000005', '0.000000004', '1e-9', '4E-9', '1e-999']) {
+          const options = { ...beside(field), [field.id]: text };
+          expect(shellRefusal(model, options), `shell ${text}`).toBe(
+            belowSmallest(field.flag, field),
+          );
+          expect(refused(model, options), `form ${text}`).toBe(belowSmallest(field.label, field));
+        }
+        expect(rowsFor(model), 'nothing was written').toHaveLength(0);
+      },
+    );
+
+    it.each(EVERY_FIELD)(
+      '%s: a price with more decimal places than a micro-cent is refused, not rounded',
+      (_id, field) => {
+        const model = modelFor(field);
+        // `0.000000015` times 1e8 is 1.4999999999999998 in binary floating point: the old code stored 1 where the decimal says 1.5;
+        // `1.0000000000000001` is the double 1, which the old code stored as exactly $1.
+        for (const text of ['0.123456789', '0.000000015', '1.000000001', '1.0000000000000001']) {
+          const options = { ...beside(field), [field.id]: text };
+          expect(shellRefusal(model, options), `shell ${text}`).toBe(tooPrecise(field.flag, field));
+          expect(refused(model, options), `form ${text}`).toBe(tooPrecise(field.label, field));
+        }
+        expect(rowsFor(model), 'nothing was written').toHaveLength(0);
+      },
+    );
+
+    it.each(EVERY_FIELD)(
+      '%s: the smallest price (1e-8, written four ways) and an exact fraction are stored as typed, the same by both',
+      (_id, field) => {
+        const model = modelFor(field);
+        for (const text of ['0.00000001', '1e-8', '1E-8', '.00000001', '0.0000000100']) {
+          const options = { ...beside(field), [field.id]: text };
+          const form = prepared(model, options);
+          expect(
+            form.offer.prices.find((price) => price.id === field.id)?.microcents,
+            `form ${text}`,
+          ).toBe(1);
+          form.commit();
+          const viaForm = rowsFor(model);
+          client.sqlite.exec('DELETE FROM model_catalog');
+          expect(shellRefusal(model, options), `shell ${text}`).toBeUndefined();
+          expect(rowsFor(model), `the same row for ${text}`).toEqual(viaForm);
+          client.sqlite.exec('DELETE FROM model_catalog');
+        }
+      },
+    );
+
+    it('stores the largest price exactly, and any whole or decimal spelling of the same number as one integer', () => {
+      expect(
+        prepared('acme-custom-1', { input: '99999.99999999', output: '1' }).offer.prices,
+      ).toEqual([
+        {
+          id: 'input',
+          label: 'Input price',
+          amount: '$99999.99999999/Mtok',
+          microcents: 9_999_999_999_999,
+        },
+        { id: 'output', label: 'Output price', amount: '$1/Mtok', microcents: 100_000_000 },
+      ]);
+      const spellings = ['3', '3.0', '3.', '+3', '03', '0.3e1', '30e-1', '3E0', ' 3 '];
+      for (const text of spellings)
+        expect(
+          prepared('acme-custom-1', { input: text, output: '1' }).offer.prices[0]?.microcents,
+          text,
+        ).toBe(300_000_000);
+    });
+
+    it('says the stored price on every line the shell prints, and never the digits as typed', () => {
+      expect(shellOutput('acme-custom-1', { input: '1e-8', output: ' 0.50 ' })).toContain(
+        'input $0.00000001/Mtok, output $0.5/Mtok.',
+      );
+      expect(shellOutput('gpt-4', { image: '4E-2', audio: '0.0010', video: '+.5' })).toContain(
+        'image $0.04/image, audio $0.001/s, video $0.5/s.',
+      );
+      // The `--json` record carries the same stored integers.
+      client.sqlite.exec('DELETE FROM model_catalog');
+      const record: unknown = JSON.parse(
+        shellOutput('acme-custom-1', { input: '1e-8', output: '2' }, true),
+      );
+      expect(record).toMatchObject({
+        inputCostPerMtokMicrocents: 1,
+        outputCostPerMtokMicrocents: 200_000_000,
+      });
+    });
+
+    it('is the shell sentence and the form sentence for the same stored price, on a catalog override too', () => {
+      const viaShell = shellOutput('gpt-5.5', { input: '0.30000000', output: '9' });
+      client.sqlite.exec('DELETE FROM model_catalog');
+      const viaForm = prepared('gpt-5.5', { input: '0.30000000', output: '9' }).commit();
+      expect(viaForm.ok && viaShell.startsWith(viaForm.written)).toBe(true);
+    });
+
+    it('refuses a hexadecimal, binary, octal or separated number, which a bare Number() would have read', () => {
+      for (const text of ['0x10', '0b101', '0o7', '1_000', '1,5', '1 5', '١٢']) {
+        expect(shellRefusal('acme-custom-1', { input: text, output: '1' }), text).toBe(
+          '--input must be a finite number of USD per million tokens.',
+        );
+        expect(refused('acme-custom-1', { input: text, output: '1' }), text).toBe(
+          'Input price must be a finite number of USD per million tokens.',
+        );
+      }
+    });
+
+    it('believes a stated 0 in every spelling: free is a price somebody said', () => {
+      for (const text of ['0', '0.0', '0e5', '-0', '.0']) {
+        const form = prepared('acme-custom-1', { input: text, output: '1' });
+        expect(form.offer.prices[0]?.microcents, text).toBe(0);
+        expect(form.offer.prices[0]?.amount, text).toBe('$0/Mtok');
+      }
+    });
+  });
+
+  describe('the model id: one rule, the field table, for the shell and the form', () => {
+    const HIDDEN: ReadonlyArray<readonly [string, string]> = [
+      ['a zero-width space', 'gpt-5​'],
+      ['a byte-order mark', 'gpt﻿-5'],
+      ['a soft hyphen', 'gpt­-5'],
+      ['a word joiner', 'gpt⁠-5'],
+      ['a tag character', 'gpt-5\u{e0041}'],
+      ['a variation selector', 'gpt-5️'],
+      ['a right-to-left mark', 'gpt-5‏'],
+      // Format characters (Unicode `Cf`) that are NOT default-ignorable: only the `Cf` half of the rule catches these.
+      ['an Arabic number sign', 'gpt؀-5'],
+      ['an interlinear annotation anchor', 'gpt-5￹'],
+    ];
+
+    it.each(HIDDEN)(
+      '%s: refused by the shell in its own words and by the form in its',
+      (_name, id) => {
+        const prices = { input: '3', output: '9' };
+        expect(shellRefusal(id, prices)).toBe(
+          'the model id has invisible or formatting characters, so it would be recorded as one id and shown as another. Nothing written.',
+        );
+        const form = port.prepare({ modelId: id, provider: 'openai' }, { action: 'set', prices });
+        expect(form).toEqual({ ok: false, reason: PRICING_MODEL_ID_FAULTS.invisible });
+        expect(rowsFor(id), 'nothing was written').toHaveLength(0);
+      },
+    );
+
+    it.each(HIDDEN)('%s: the card and the shell core name the same fault', (_name, id) => {
+      expect(modelIdFault(id)).toBe('invisible');
+      expect(pricingModelIdFault(id)).toBe('invisible');
+    });
+
+    it('refuses an empty id and an id with a space at either end, on both', () => {
+      const prices = { input: '3', output: '9' };
+      expect(shellRefusal('', prices)).toBe('the model id is empty. Nothing written.');
+      expect(refused('', prices)).toBe(PRICING_MODEL_ID_FAULTS.empty);
+      for (const id of [' acme-custom-1', 'acme-custom-1 ', '\tacme-custom-1']) {
+        expect(shellRefusal(id, prices), JSON.stringify(id)).toBe(
+          'the model id starts or ends with a space, so it would be recorded as one id and shown as another. Nothing written.',
+        );
+        expect(refused(id, prices), JSON.stringify(id)).toBe(PRICING_MODEL_ID_FAULTS.padded);
+      }
+      expect(catalog.listAll()).toHaveLength(0);
+    });
+
+    it('names the invisible fault before the padded one, as the form always did (a BOM is both)', () => {
+      expect(modelIdFault('﻿gpt-5')).toBe('invisible');
+      expect(modelIdFault(' gpt-5')).toBe('padded');
+    });
+
+    it('accepts an ordinary id, including the punctuation real ids carry', () => {
+      for (const id of [
+        'gpt-5.5',
+        'claude-opus-4-8',
+        'org/model:latest@v2',
+        'ünïcode-ok',
+        '模型-1',
+      ]) {
+        expect(modelIdFault(id), id).toBeUndefined();
+      }
+    });
+
+    it('never refuses a CLEAR for its id: a price stored before the rule can still be removed', () => {
+      const id = 'gpt-5​';
+      const providerId = providers.list().find((provider) => provider.name === 'openai')?.id ?? '';
+      catalog.upsert({
+        providerId,
+        modelId: id,
+        source: 'user',
+        inputCostPerMtokMicrocents: 1,
+        outputCostPerMtokMicrocents: 2,
+      });
+      expect(rowsFor(id)).toHaveLength(1);
+      expect(shellRefusal(id, { clear: true })).toBeUndefined();
+      expect(rowsFor(id), 'the shell removed it').toHaveLength(0);
+    });
   });
 
   describe('the refusals that do not depend on how a field is named', () => {
@@ -885,5 +1117,64 @@ describe('the lists the form offers', () => {
     expect(port.models()).toEqual([]);
     entries = [entry('late')];
     expect(port.models().map((choice) => choice.modelId)).toEqual(['late']);
+  });
+});
+
+describe('the catalog the form reads is the database-backed one, as the shell reads it', () => {
+  afterEach(() => {
+    clearCatalogRefresh(); // the overlay is process-wide: a leaked install would price the next test's models
+  });
+
+  const TAIL: CatalogModel = {
+    modelId: 'tail-xyz-9',
+    provider: 'anthropic',
+    displayName: 'tail',
+    contextWindowTokens: 100_000,
+    maxOutputTokens: 10_000,
+    inputPerMtokMicrocents: 100_000_000,
+    outputPerMtokMicrocents: 200_000_000,
+  };
+
+  function refreshOnlyInTheDatabase(): void {
+    clearCatalogRefresh();
+    providers.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    });
+    persistCatalogToDb(
+      createModelMetadataStore(client.db, { now: () => 1_700_000_000_000 }),
+      { [TAIL.modelId]: TAIL },
+      1_700_000_000_000,
+    );
+    // A fresh process whose file cache has not heard of the model: only the database has.
+    expect(catalogModel(TAIL.modelId)).toBeUndefined();
+  }
+
+  it('refuses a price under a provider the catalog anchors a refresh-only model away from', () => {
+    refreshOnlyInTheDatabase();
+    expect(refused(TAIL.modelId, { input: '1', output: '2' }, 'openai')).toContain(
+      "anthropic's model, not openai's",
+    );
+    expect(rowsFor(TAIL.modelId)).toHaveLength(0);
+  });
+
+  it('prices a refresh-only model for tokens, so a media price stands alone on it', () => {
+    refreshOnlyInTheDatabase();
+    expect(prepared(TAIL.modelId, { image: '0.04' }, 'anthropic').offer.prices).toHaveLength(1);
+  });
+
+  it('a database that cannot be read for the catalog is not a reason to refuse a price: the snapshot still answers', () => {
+    clearCatalogRefresh();
+    client.sqlite.exec('DROP TABLE model_metadata');
+    const result = prepared('gpt-5.5', { input: '3', output: '9' });
+    expect(result.offer.replaces).toBe('input $5/Mtok, output $30/Mtok');
+  });
+
+  it('reads nothing when the database has no refreshed model, and leaves the snapshot answering', () => {
+    clearCatalogRefresh();
+    expect(prepared('gpt-5.5', { input: '3', output: '9' }).offer.replaces).toBe(
+      'input $5/Mtok, output $30/Mtok',
+    );
   });
 });

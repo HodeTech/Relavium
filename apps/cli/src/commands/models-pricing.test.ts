@@ -7,14 +7,20 @@ import {
   type ModelCatalogStore,
   type ProviderStore,
 } from '@relavium/db';
-import { priceModel } from '@relavium/llm';
+import { cost, priceModel, type ModelPricing } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { buildUserPricing } from '../engine/model-catalog-view.js';
 import { captureIo, parseNdjson } from '../test-support.js';
-import { modelsPricingCommand, type ModelsPricingCommandArgs } from './models-pricing.js';
+import {
+  catalogTokenRates,
+  modelsPricingCommand,
+  preparePricing,
+  type ModelsPricingCommandArgs,
+} from './models-pricing.js';
 
 /**
  * `relavium models pricing` command-core tests (2.5.G S10, ADR-0065 §1/§2). A REAL `:memory:` db + the real
@@ -189,6 +195,85 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
     expect(listing?.inputCostPerMtokMicrocents).toBe(15_000_000);
     expect(listing?.outputCostPerMtokMicrocents).toBe(60_000_000);
+  });
+
+  describe('a price is the integer that is stored, in every line and in the cost the cap sees', () => {
+    /** What the cost path charges for one million tokens in and out, through the overlay the rows build (what the cap reads). */
+    function costOfAMillionEach(model: string): number {
+      const overlay = buildUserPricing({ rows: catalog.listAll(), providerSlug: () => 'openai' });
+      return cost(model, { inputTokens: 1_000_000, outputTokens: 1_000_000 }, overlay).microcents;
+    }
+
+    it('a stored 0 is believed by the cost path, so a positive price must never be stored as one', () => {
+      // The evidence behind the refusal below: the user tier takes a stated 0 as "free" ("STATED => their numbers, zero included"),
+      // so a price that rounded to 0 would charge nothing and a cost cap on the model would never be reached.
+      run({ ...baseArgs, inputUsdPerMtok: 0, outputUsdPerMtok: 0 });
+      expect(costOfAMillionEach('acme-custom-1')).toBe(0);
+      client.sqlite.exec('DELETE FROM model_catalog');
+      // One micro-cent per million tokens is the smallest price that charges anything at all.
+      run({ ...baseArgs, inputUsdPerMtok: 1e-8, outputUsdPerMtok: 1e-8 });
+      expect(costOfAMillionEach('acme-custom-1')).toBe(2);
+    });
+
+    it('REFUSES a positive price below one micro-cent, naming the smallest price, and writes nothing', () => {
+      for (const below of [4e-9, 5e-9, 1e-9, Number.MIN_VALUE]) {
+        const err = runThrows({ ...baseArgs, inputUsdPerMtok: below });
+        expect(err, String(below)).toEqual({
+          code: 'invalid_invocation',
+          message:
+            '--input is below the smallest price that can be stored, $0.00000001 per million tokens. Enter 0 to record it as free.',
+        });
+      }
+      expect(runThrows({ ...baseArgs, imageUsdPerCount: 1e-9 }).message).toBe(
+        '--image is below the smallest price that can be stored, $0.00000001 per billed unit. Enter 0 to record it as free.',
+      );
+      expect(catalog.listAll()).toHaveLength(0);
+    });
+
+    it('REFUSES a price that is not a whole number of micro-cents instead of rounding it', () => {
+      const err = runThrows({ ...baseArgs, inputUsdPerMtok: 0.123456789 });
+      expect(err.message).toBe(
+        '--input has more than 8 decimal places, and a price is stored in whole steps of $0.00000001 per million tokens. Enter it to the nearest step.',
+      );
+      // A sum of two decimals is not the decimal that was meant, and is refused for it.
+      expect(runThrows({ ...baseArgs, outputUsdPerMtok: 0.1 + 0.2 }).message).toContain(
+        'more than 8 decimal places',
+      );
+      expect(catalog.listAll()).toHaveLength(0);
+    });
+
+    it('prints the stored price, never the digits as typed (one micro-cent is not "1e-8")', () => {
+      const { out } = run({ ...baseArgs, inputUsdPerMtok: 1e-8, outputUsdPerMtok: 0.5 });
+      expect(out).toContain('(openai): input $0.00000001/Mtok, output $0.5/Mtok.');
+      expect(out).not.toMatch(/\de-\d/u); // no exponent form
+    });
+
+    it('plans only what is stored: each price is its integer micro-cents, with no second copy of the typed number', () => {
+      const plan = preparePricing(
+        { ...baseArgs, inputUsdPerMtok: 1e-8, cachedInputUsdPerMtok: 0.03 },
+        { catalog, providers },
+      );
+      if (plan.kind !== 'set') throw new Error('a SET was expected');
+      expect(plan.prices).toEqual([
+        { id: 'input', microcents: 1 },
+        { id: 'output', microcents: 900_000_000 },
+        { id: 'cached', microcents: 3_000_000 },
+      ]);
+    });
+
+    it('names a catalog price in exact decimals, without an exponent, however small', () => {
+      const shipped: ModelPricing = {
+        provider: 'openai',
+        nativeId: 'tiny',
+        displayName: 'tiny',
+        contextWindowTokens: 1,
+        maxOutputTokens: 1,
+        inputPerMtokMicrocents: 1,
+        outputPerMtokMicrocents: 12_345_678,
+        cachedInputPerMtokMicrocents: 1,
+      };
+      expect(catalogTokenRates(shipped)).toBe('input $0.00000001/Mtok, output $0.12345678/Mtok');
+    });
   });
 
   it('stores an explicit --cached price', () => {

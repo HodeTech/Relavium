@@ -12,12 +12,18 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { openLocalDb } from '../db/open.js';
+import { syncCatalogFromDb } from '../engine/catalog-metadata.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import { captureIo } from '../test-support.js';
 import { executeCommand, type CommandInput, type DispatchContext } from './dispatch.js';
 
 // The history file is an in-memory db: `models pricing` opens it through the one opener every command uses.
 vi.mock('../db/open.js', () => ({ openLocalDb: vi.fn() }));
+// The real sync, wrapped so a test can see that the executor ran it (and over which database).
+vi.mock('../engine/catalog-metadata.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../engine/catalog-metadata.js')>();
+  return { ...actual, syncCatalogFromDb: vi.fn(actual.syncCatalogFromDb) };
+});
 
 /**
  * `models pricing` through the dispatch path the CLI itself takes (`executeCommand`, over the uniform `CommandInput` the Commander
@@ -84,9 +90,18 @@ describe('models pricing through the dispatch path', () => {
     const spy = vi.spyOn(client.db, 'transaction');
     const { io } = captureIo();
     await executeCommand('models.pricing', input({ input: '3', output: '9' }), context(io));
+    // Three transactions, in this order: the catalog sync's own (it runs first), then the executor's, then the store's inside it.
+    // Without the executor's there are two, and the re-check and the write could be split.
     const configs = spy.mock.calls.map((call) => call[1]);
-    // The executor's, then the store's inside it. Without the executor's there is one.
-    expect(configs).toHaveLength(2);
-    expect(configs[0]).toEqual({ behavior: 'immediate' });
+    expect(configs).toHaveLength(3);
+    expect(configs[1]).toEqual({ behavior: 'immediate' });
+  });
+
+  it("reads the database's own catalog before it checks a price, as the Home's form does", async () => {
+    const { io } = captureIo();
+    await executeCommand('models.pricing', input({ input: '3', output: '9' }), context(io));
+    // A model only the database holds would otherwise be called unknown, or taken under the wrong provider.
+    expect(vi.mocked(syncCatalogFromDb)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(syncCatalogFromDb).mock.calls[0]?.[0]).toBe(client.db);
   });
 });

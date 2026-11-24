@@ -305,6 +305,10 @@ describe('the form asks one question per row of the field table', () => {
         ],
         ['-1', /must be a finite, non-negative number/u],
         ['abc', /must be a finite number of/u],
+        // A positive price below one micro-cent would be stored as the `0` that means "free"; one with more decimals than a micro-cent
+        // has would be stored as another number than the one typed. Neither is recorded, and neither is rounded.
+        ['0.000000004', /is below the smallest price that can be stored, \$0\.00000001 per /u],
+        ['0.123456789', /has more than 8 decimal places/u],
       ] as const) {
         r.type(bad);
         await vi.waitFor(() => expect(r.snap().error, `${field.id} ${bad}`).toMatch(expected), {
@@ -365,7 +369,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
   it("is built from the plan: the card's text is the offer's, and the row read back holds the offer's integers", async () => {
     const r = rig();
     await r.start(PRICING_ACTION_SET, 'acme-custom-1');
-    await r.fill({ input: '0.123456789', output: '9', video: '0.5' });
+    await r.fill({ input: '0.12345679', output: '9', video: '0.5' });
     await r.cardUp();
     const offer = r.offers.at(-1);
     if (offer === undefined) throw new Error('no plan was prepared');
@@ -378,7 +382,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(r.snap().details).toContain('A price you left empty keeps what is stored now.');
     r.ui.input('y', ctrl);
     expect(await r.result).toContain(
-      'Set user pricing for acme-custom-1 (openai): input $0.123456789/Mtok',
+      'Set user pricing for acme-custom-1 (openai): input $0.12345679/Mtok',
     );
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {

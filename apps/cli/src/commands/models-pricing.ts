@@ -8,23 +8,20 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
-  MICROCENTS_PER_USD,
   PRICING_FIELDS,
+  modelIdFault,
+  modelIdSentence,
   noTokenPriceSentence,
   pairingIssue,
   pairingSentence,
   priceToMicrocents,
   pricingField,
+  usdTextOfMicrocents,
   type PriceArgs,
   type PriceColumn,
   type PricingFieldId,
   type PricingNaming,
 } from './pricing-fields.js';
-
-/** Integer micro-cents/MTok → a USD string, for echoing the catalog price an override replaces (ADR-0071 §5). */
-function microcentsToUsd(microcents: number): string {
-  return (microcents / MICROCENTS_PER_USD).toString();
-}
 
 /**
  * SET a price, or CLEAR one — a discriminated union, so a `--clear` invocation cannot carry a price and a set
@@ -98,10 +95,12 @@ export interface CommitPricingDeps {
   readonly atomically?: <T>(work: () => T) => T;
 }
 
-/** One price a SET states: the field, the USD as it was typed, and the integer micro-cents that will be stored. */
+/**
+ * One price a SET states: the field and the integer micro-cents that will be stored. The USD as it was typed is not kept: every line
+ * that names a price says the stored integer ({@link usdTextOfMicrocents}), so no sentence can say a price the database does not hold.
+ */
 export interface PlannedPrice {
   readonly id: PricingFieldId;
-  readonly usd: number;
   readonly microcents: number;
 }
 
@@ -216,6 +215,12 @@ function prepareSet(
   providerId: string,
   naming: PricingNaming,
 ): SetPricingPlan {
+  // The model id is the first thing a price is recorded under: an id the terminal would show as another id is refused before anything
+  // else is read (the field table's rule, which the Home's form reads as well). A CLEAR is never refused by it, so an id stored before
+  // the rule can still be removed.
+  const idFault = modelIdFault(args.model);
+  if (idFault !== undefined) throw new CliError('invalid_invocation', modelIdSentence(idFault));
+
   // The pairing rule is the field table's, and it lives here as well as in the shell's parser: whatever calls the core — the shell, the
   // Home's form, a test — gets the same refusal, and a half-stated pair can never reach the store.
   const issue = pairingIssue((id) => args[pricingField(id).arg] !== undefined);
@@ -230,7 +235,7 @@ function prepareSet(
   for (const field of PRICING_FIELDS) {
     const usd = args[field.arg];
     if (usd !== undefined)
-      prices.push({ id: field.id, usd, microcents: priceToMicrocents(field, usd, naming) });
+      prices.push({ id: field.id, microcents: priceToMicrocents(field, usd, naming) });
   }
   const states = (id: PricingFieldId): boolean => prices.some((price) => price.id === id);
 
@@ -388,11 +393,15 @@ function pricingJsonRecord(plan: SetPricingPlan): Record<string, unknown> {
  * The prices a SET states, as one list, joined ONCE. Every part is independently optional now that a media-only (and cache-only)
  * invocation is legal, so no part may carry its own separator and none may assume another precedes it. Media parts are echoed in the
  * canonical BILLED unit, not USD/Mtok (ADR-0044 §3) — a user reading back "image $0.04/Mtok" would have every reason to think they had
- * priced it wrong.
+ * priced it wrong. Each amount is the STORED integer, printed exactly: the sentence says the price the database holds, never the digits
+ * that were typed.
  */
 export function pricingPriceNote(plan: SetPricingPlan): string {
   return plan.prices
-    .map((price) => `${price.id} $${price.usd}${pricingField(price.id).suffix}`)
+    .map(
+      (price) =>
+        `${price.id} $${usdTextOfMicrocents(price.microcents)}${pricingField(price.id).suffix}`,
+    )
     .join(', ');
 }
 
@@ -420,7 +429,7 @@ export function catalogDivergence(plan: SetPricingPlan): { readonly shipped: str
 
 /** `input $5/Mtok, output $30/Mtok`: what the catalog charges. */
 export function catalogTokenRates(shipped: ModelPricing): string {
-  return `input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok`;
+  return `input $${usdTextOfMicrocents(shipped.inputPerMtokMicrocents)}/Mtok, output $${usdTextOfMicrocents(shipped.outputPerMtokMicrocents)}/Mtok`;
 }
 
 /** The sentence for a CLEAR, as a flat if/else so no nested ternary decides the message. */

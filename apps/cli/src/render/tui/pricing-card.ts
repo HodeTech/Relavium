@@ -1,7 +1,9 @@
 import {
   PRICING_FIELDS,
+  modelIdFault,
   priceTextIssue,
   pricingField,
+  type ModelIdFault,
   type PricingField,
   type PricingFieldId,
 } from '../../commands/pricing-fields.js';
@@ -178,31 +180,23 @@ export function pricingFieldMessage(field: PricingField, model: string): string 
   return `${field.label} for '${clipLine(model, MODEL_COLUMNS)}', ${field.unitWords}. Empty: not set.${together}`;
 }
 
-/**
- * Invisible and formatting characters (Unicode `Cf`, and the default-ignorable code points: zero-width space and joiners, the word
- * joiner, the byte-order mark, the soft hyphen, the tag characters, variation selectors). The terminal draws none of them, so `gpt-5`
- * and `gpt-5` + U+200B are two model ids that look the same: a card that showed one would record the other.
- */
-const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
-
 /** Why the card cannot state a model id as it is stored. */
-export type PricingModelIdFault = 'empty' | 'padded' | 'invisible' | 'too-long' | 'unsafe';
+export type PricingModelIdFault = ModelIdFault | 'too-long' | 'unsafe';
 
 /**
- * Whether the card can show `id` exactly as it would be stored, or why it cannot. It is the form's own rule: the card says which model
- * it records, so an id the card cannot say faithfully is refused (the shell, which prints nothing it vouches for, still takes it).
+ * Whether the card can show `id` exactly as it would be stored, or why it cannot. The card says which model it records, so an id it
+ * cannot say faithfully is refused. The first three faults are the field table's rule ({@link modelIdFault}), which `relavium models
+ * pricing` applies to a SET as well: the shell and the form cannot disagree about which ids are priced. The last two belong to a card.
  *
- * - `padded`: a space at either end is invisible inside the card's quotes, so `gpt-5` and `gpt-5 ` would read the same.
- * - `invisible`: a format or default-ignorable character (see {@link INVISIBLE_CHARACTER}).
+ * - `empty`, `invisible` and `padded`: nothing, a format or default-ignorable character, or a space at either end that hides inside
+ *   the card's quotes (so `gpt-5` and `gpt-5 ` would read the same).
  * - `too-long`: more than {@link PRICING_MODEL_ID_LIMIT} code units, or more columns than the card gives the id
  *   ({@link MODEL_COLUMNS}). The card shows the id in full or not at all: it never cuts it short with an ellipsis.
  * - `unsafe`: the sanitizer would change it (a control byte, a bidirectional override, a key-shaped string).
  */
 export function pricingModelIdFault(id: string): PricingModelIdFault | undefined {
-  if (id === '') return 'empty';
-  // Invisible first: `trim()` also strips U+FEFF, which is a format character before it is padding.
-  if (INVISIBLE_CHARACTER.test(id)) return 'invisible';
-  if (id !== id.trim()) return 'padded';
+  const shared = modelIdFault(id);
+  if (shared !== undefined) return shared;
   if (id.length > PRICING_MODEL_ID_LIMIT || clipLine(id, MODEL_COLUMNS) !== id) return 'too-long';
   if (sanitizeUntrustedInline(id) !== id) return 'unsafe';
   return undefined;
@@ -405,6 +399,54 @@ async function showRefusal(
   return answer === 'edit';
 }
 
+/** What the person asked for, as the port takes it: a CLEAR, or a SET with the text of each price they gave. */
+function valuesOf(action: 'set' | 'clear', draft: Draft): PricingValues {
+  return action === 'clear'
+    ? { action: 'clear' }
+    : { action: 'set', prices: Object.fromEntries(draft.prices) };
+}
+
+/**
+ * Show the card of a prepared plan and write it only on a Yes. The default is No: only an `allow` the chord guard let through is a Yes,
+ * never "anything that is not a `deny`".
+ */
+async function confirmAndCommit(
+  deps: PricingCardDeps,
+  prepared: Extract<PricingPrepared, { readonly ok: true }>,
+  signal: AbortSignal,
+): Promise<string> {
+  const text = pricingCardText(prepared.offer);
+  const answer = await deps.flow.chord({ ...text, escape: 'cancel', signal });
+  if (answer !== 'allow') return PRICING_NOT_RECORDED;
+  const attempt = prepared.commit();
+  return attempt.ok ? attempt.written : pricingRefused(attempt.reason);
+}
+
+/**
+ * Walk the steps, prepare what was asked, and either confirm it or, on a refusal, offer to change the prices (back to the first
+ * price's step) until the person writes, declines or leaves.
+ */
+async function askAndWrite(
+  deps: PricingCardDeps,
+  steps: readonly Step[],
+  signal: AbortSignal,
+): Promise<string> {
+  const draft: Draft = { action: undefined, target: undefined, prices: new Map() };
+  // The first field's step: where a person who is refused returns to change the prices.
+  const firstField = steps.length - PRICING_FIELDS.length;
+  let from = 0;
+  for (;;) {
+    if ((await walk(steps, draft, from)) === 'stopped') return PRICING_NOT_RECORDED;
+    const { action, target } = draft;
+    if (action === undefined || target === undefined) return PRICING_NOT_RECORDED;
+    const prepared = deps.port.prepare(target, valuesOf(action, draft));
+    if (prepared.ok) return confirmAndCommit(deps, prepared, signal);
+    if (!(await showRefusal(deps, prepared.reason, action === 'set')))
+      return pricingRefused(prepared.reason);
+    from = firstField;
+  }
+}
+
 /**
  * Ask what to price, prepare the plan, show it, and write it only on a Yes. Resolves with the sentence the Home shows; a refusal and a
  * No are sentences, not faults. The flow is begun here and ended here, whatever the answer.
@@ -414,33 +456,7 @@ export async function runPricingCard(deps: PricingCardDeps): Promise<string> {
   const choices = deps.port.models();
   const signal = deps.flow.begin();
   try {
-    const steps = stepsOf(deps, choices);
-    const draft: Draft = { action: undefined, target: undefined, prices: new Map() };
-    // The first field's step: where a person who is refused returns to change the prices.
-    const firstField = steps.length - PRICING_FIELDS.length;
-    let from = 0;
-    for (;;) {
-      if ((await walk(steps, draft, from)) === 'stopped') return PRICING_NOT_RECORDED;
-      const { action, target } = draft;
-      if (action === undefined || target === undefined) return PRICING_NOT_RECORDED;
-      const prepared = deps.port.prepare(
-        target,
-        action === 'clear'
-          ? { action: 'clear' }
-          : { action: 'set', prices: Object.fromEntries(draft.prices) },
-      );
-      if (prepared.ok) {
-        const text = pricingCardText(prepared.offer);
-        const answer = await deps.flow.chord({ ...text, escape: 'cancel', signal });
-        // The default is No: only an `allow` the chord guard let through is a Yes, never "anything that is not a `deny`".
-        if (answer !== 'allow') return PRICING_NOT_RECORDED;
-        const attempt = prepared.commit();
-        return attempt.ok ? attempt.written : pricingRefused(attempt.reason);
-      }
-      if (!(await showRefusal(deps, prepared.reason, action === 'set')))
-        return pricingRefused(prepared.reason);
-      from = firstField;
-    }
+    return await askAndWrite(deps, stepsOf(deps, choices), signal);
   } finally {
     await deps.flow.end();
   }

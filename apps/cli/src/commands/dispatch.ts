@@ -723,6 +723,9 @@ const executeModelsPricing: CommandExecutor = (input, ctx) => {
   );
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    // The anchor a price is checked against must be the database's own catalog, as in the Home's form: a model that only the database
+    // holds would otherwise be called unknown, or taken under the wrong provider (best effort; a fault leaves the process overlay as it was).
+    syncCatalogFromDb(db, storeDeps.now);
     return Promise.resolve(
       modelsPricingCommand(args, {
         io: ctx.io,

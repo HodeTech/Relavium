@@ -1,5 +1,6 @@
 import {
   createModelCatalogStore,
+  createModelMetadataStore,
   createProviderStore,
   isOwnedStorageFailure,
   type Db,
@@ -22,6 +23,7 @@ import {
   usdTextOfMicrocents,
   type PricingFieldId,
 } from '../commands/pricing-fields.js';
+import { installCatalogFromDb } from '../engine/catalog-metadata.js';
 import { isCliError } from '../process/errors.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
@@ -154,6 +156,22 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
   const storeDeps = { uuid: deps.uuid, now: deps.now };
   const catalog = createModelCatalogStore(deps.db, storeDeps);
   const providers = createProviderStore(deps.db, storeDeps);
+  const metadata = createModelMetadataStore(deps.db, { now: deps.now });
+
+  /**
+   * The catalog the core reads (`catalogModel`, `catalogPricing`) is the process's: the snapshot, and the overlay a refresh installed.
+   * The database is that overlay's durable backing ([ADR-0072](../../../../docs/decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)
+   * point 7), so before a plan is decided the overlay is read from it: a model only a refresh has seen is anchored to its provider and
+   * priced for tokens here as everywhere else, and a price cannot be stored under a provider the catalog would never apply it for.
+   * Read only (`prepare` writes nothing), and best-effort: a database fault leaves the file cache and the snapshot answering.
+   */
+  const readCatalogFromDb = (): void => {
+    try {
+      installCatalogFromDb(metadata);
+    } catch {
+      // Not a reason to refuse a price: the overlay already installed, and under it the snapshot floor, still answer.
+    }
+  };
 
   const commitOf = (plan: PricingPlan) => (): PricingAttempt => {
     let sentence: string;
@@ -193,6 +211,7 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
       // a hand-typed id and for one the catalog lists.
       const fault = pricingModelIdFault(target.modelId);
       if (fault !== undefined) return { ok: false, reason: PRICING_MODEL_ID_FAULTS[fault] };
+      readCatalogFromDb();
       let plan: PricingPlan;
       try {
         plan = preparePricing(argsOf(target, values), { catalog, providers }, 'label');

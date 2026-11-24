@@ -9,10 +9,13 @@
  * command was split into `preparePricing` and `commitPricing` and before its flags moved into one field table, and its expected
  * values were not edited by that change: a difference here is a change of the shell's behaviour.
  *
- * The expected values live in `models-pricing-characterization.expected.json`, beside this file. They were produced by running the
- * unmodified command (`CHARACTERIZE_DUMP=<path>` writes the observations) and are never regenerated to make a refactor pass.
+ * The expected values live in `models-pricing-characterization.expected.json`, beside this file. They were produced once, by running the
+ * unmodified command, and are never regenerated to make a refactor pass. Nothing in this file can write them: a run only reads and
+ * compares, and a change to the expectations is a hand edit that a reviewer reads as a change of the shell's behaviour. (A run used to
+ * skip every assertion and write the observations to a path named by an environment variable; a test run that can rewrite its own
+ * oracle, or pass without comparing, is not an oracle.)
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -295,7 +298,6 @@ describe('models pricing: the shell, byte for byte (characterization)', () => {
   let client: DbClient;
   let catalog: ModelCatalogStore;
   let providers: ProviderStore;
-  const dump: Record<string, Observed> = {};
 
   beforeEach(() => {
     client = createClient(':memory:');
@@ -372,17 +374,17 @@ describe('models pricing: the shell, byte for byte (characterization)', () => {
     }
     for (const call of testCase.before ?? []) invoke(call);
     const observed = invoke(testCase.run);
-    dump[name] = observed;
-    const target = process.env['CHARACTERIZE_DUMP'];
-    if (target !== undefined) {
-      writeFileSync(target, `${JSON.stringify(dump, null, 2)}\n`);
-      return;
-    }
     expect(observed).toEqual(readExpected()[name]);
   });
 
+  it('can neither skip a comparison nor rewrite its own expectations', () => {
+    const source = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    // The needles are assembled, so this test's own text does not contain them.
+    expect(source).not.toContain(['process', 'env'].join('.'));
+    expect(source).not.toContain(['write', 'FileSync'].join(''));
+  });
+
   it('pins one expectation per case, and no stale one', () => {
-    if (process.env['CHARACTERIZE_DUMP'] !== undefined) return;
     expect(Object.keys(readExpected()).sort()).toEqual(CASES.map((c) => c.name).sort());
     expect(new Set(CASES.map((c) => c.name)).size).toBe(CASES.length);
   });
