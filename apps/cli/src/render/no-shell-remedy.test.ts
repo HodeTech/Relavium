@@ -572,13 +572,24 @@ function scanSource(file: string, source: string): Scan {
   return { literals, calls };
 }
 
+/**
+ * Directories that hold test harnesses and no product string: they are imported only by `*.test.ts` files, so nothing in them reaches a
+ * terminal (the surface matrix and the legend golden mount and record the real surfaces; the words they carry are comments and
+ * fixture text about those surfaces, not remedies).
+ */
+const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([
+  'node_modules',
+  'fixtures',
+  'surface-matrix',
+  'legend-golden',
+]);
+
 function sourceFiles(dir: string): string[] {
   const found: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== 'node_modules' && entry.name !== 'fixtures')
-        found.push(...sourceFiles(full));
+      if (!HARNESS_DIRECTORIES.has(entry.name)) found.push(...sourceFiles(full));
     } else if (
       /\.tsx?$/u.test(entry.name) &&
       !/\.d\.ts$/u.test(entry.name) &&
@@ -701,6 +712,19 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
       )
       .sort();
     expect(exempt).toEqual(['chat/resume-hint.ts', 'render/tui/final-summary.ts']);
+  });
+
+  it('leaves out the test harness directories only because no product source imports them', () => {
+    const importers = [...FILES.keys()].filter((file) =>
+      [...HARNESS_DIRECTORIES]
+        .filter((name) => name !== 'node_modules' && name !== 'fixtures')
+        .some((name) =>
+          new RegExp(`from\\s+['"][^'"]*/${name}/`, 'u').test(
+            readFileSync(join(SRC, ...file.split('/')), 'utf8'),
+          ),
+        ),
+    );
+    expect(importers).toEqual([]);
   });
 });
 
