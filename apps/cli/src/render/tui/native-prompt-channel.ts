@@ -168,6 +168,21 @@ export interface NativePromptChannelOptions {
   readonly history?: ChordHistory;
 }
 
+/** Index of the first byte that ends or cancels an edit (a return, a newline, an escape or an ETX); `-1` when there is none. */
+function firstBoundary(input: string): number {
+  let boundary = -1;
+  for (const marker of ['\r', '\n', '\x1b', '\x03']) {
+    const index = input.indexOf(marker);
+    if (index >= 0 && (boundary < 0 || index < boundary)) boundary = index;
+  }
+  return boundary;
+}
+
+/** `Esc`, any meta chord, or `Ctrl+C`: the keys that leave a prompt (what `dismiss` then decides is a step back or a cancel). */
+function cancelsPrompt(input: string, key: Key): boolean {
+  return key.escape || key.meta || (key.ctrl && input.toLowerCase() === 'c');
+}
+
 /** Only the flow port can receive an answer; the UI port never exposes the private editor. */
 export function createNativePromptChannel(options?: NativePromptChannelOptions): {
   readonly ui: NativePromptUi;
@@ -306,6 +321,9 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       settle = resolve;
     });
   };
+  /** What a text or password prompt shows of what is typed: bullets (at most 32) for a secret, the sanitized text otherwise. */
+  const shownText = (): string =>
+    snapshot.kind === 'password' ? '•'.repeat(Math.min(secret.length, 32)) : sanitizeInline(secret);
   const append = (text: string): void => {
     if (snapshot.kind === 'picker') {
       picker?.paste(text);
@@ -339,32 +357,99 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       return;
     }
     secret += text;
-    publish({
-      ...snapshot,
-      display:
-        snapshot.kind === 'password'
-          ? '•'.repeat(Math.min(secret.length, 32))
-          : sanitizeInline(secret),
-      error: '',
-    });
+    publish({ ...snapshot, display: shownText(), error: '' });
+  };
+  /**
+   * The bytes before a boundary are an edit; an escape or an ETX AT the boundary leaves the prompt. `true` when it left, which is the
+   * whole key's answer. A return or a newline at the boundary leaves the rest to the submit rules of the caller.
+   */
+  const takeBoundary = (input: string, key: Key, boundary: number): boolean => {
+    const before = input.slice(0, boundary);
+    if (before) append(before);
+    const marker = input[boundary];
+    if (marker !== '\x1b' && marker !== '\x03') return false;
+    dismiss(input, key);
+    return true;
+  };
+  /** A lone Ctrl+Y or Ctrl+N answers a chord card; anything else is a key the card has no use for, which is typing as far as the guard goes. */
+  const routeChord = (input: string, key: Key, stamp: ChordStamp, boundary: number): void => {
+    const answer = boundary >= 0 ? undefined : reduceChordKey(input, key);
+    if (answer === undefined) {
+      // A chord soon after such a key is refused.
+      chord.foreign(stamp);
+      return;
+    }
+    const decided = chord.decide(stamp, answer, visibility?.(snapshot) === true);
+    if (decided !== undefined) finish(decided);
+  };
+  /** The arrows wrap. */
+  const moveCursor = (up: boolean): void => {
+    const count = snapshot.options.length;
+    if (count)
+      publish({ ...snapshot, selected: (snapshot.selected + (up ? count - 1 : 1)) % count });
+  };
+  /**
+   * A page moves the cursor by the rows of the window the card draws and stops at the ends (the arrows wrap, a page never does). A card
+   * drawn whole has no window, so the keys do nothing there, as they never did.
+   */
+  const pageCursor = (up: boolean): void => {
+    const step = pageRows?.();
+    const last = snapshot.options.length - 1;
+    if (step === undefined || last < 0) return;
+    const to = Math.max(0, Math.min(last, snapshot.selected + (up ? -step : step)));
+    if (to !== snapshot.selected) publish({ ...snapshot, selected: to });
+  };
+  /** `Enter` answers the option under the cursor. */
+  const answerSelected = (): void => {
+    const option = snapshot.options[snapshot.selected];
+    if (option) finish(option.value);
+  };
+  const routeSelect = (key: Key, submitted: boolean): void => {
+    if (key.upArrow || key.downArrow) moveCursor(key.upArrow);
+    else if (key.pageUp || key.pageDown) pageCursor(key.pageUp);
+    else if (submitted) answerSelected();
+  };
+  /** A submit of a text or password prompt: the caller's validator decides, and a rejection stays visible until the person edits. */
+  const submitEditor = (): void => {
+    if (invalid) return;
+    let error: string | undefined;
+    try {
+      error = validate?.(secret);
+    } catch {
+      error = 'Input could not be validated.';
+    }
+    if (error)
+      publish({
+        ...snapshot,
+        error: snapshot.kind === 'password' ? 'A valid value is required.' : sanitizeInline(error),
+      });
+    else finish(secret);
+  };
+  const routeEditor = (input: string, key: Key, submitted: boolean): void => {
+    if (submitted) {
+      submitEditor();
+      return;
+    }
+    if (key.backspace || key.delete) {
+      secret = Array.from(secret).slice(0, -1).join('');
+      invalid = false;
+      publish({ ...snapshot, display: shownText(), error: '' });
+      return;
+    }
+    if (!key.ctrl && !key.meta) append(input);
+  };
+  /** A key for the picker, a select, or a text or password editor: whichever prompt is open takes it. */
+  const routeOpenPrompt = (input: string, key: Key, boundary: number, submitted: boolean): void => {
+    if (snapshot.kind === 'picker')
+      picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
+    else if (snapshot.kind === 'select') routeSelect(key, submitted);
+    else routeEditor(input, key, submitted);
   };
   /** Route one key the prompt's host delivered; `stamp` is the guard's evidence from just before it. */
   const route = (input: string, key: Key, stamp: ChordStamp): boolean => {
-    let boundary = -1;
-    for (const marker of ['\r', '\n', '\x1b', '\x03']) {
-      const index = input.indexOf(marker);
-      if (index >= 0 && (boundary < 0 || index < boundary)) boundary = index;
-    }
-    if (boundary >= 0) {
-      const before = input.slice(0, boundary);
-      const marker = input[boundary];
-      if (before) append(before);
-      if (marker === '\x1b' || marker === '\x03') {
-        dismiss(input, key);
-        return true;
-      }
-    }
-    if (key.escape || key.meta || (key.ctrl && input.toLowerCase() === 'c')) {
+    const boundary = firstBoundary(input);
+    if (boundary >= 0 && takeBoundary(input, key, boundary)) return true;
+    if (cancelsPrompt(input, key)) {
       dismiss(input, key);
       return true;
     }
@@ -375,67 +460,11 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
     }
     const submitted = key.return || boundary >= 0;
     if (snapshot.kind === 'chord') {
-      // Only a lone Ctrl+Y or Ctrl+N answers. Anything else is a key the card has no use for, which is typing as far as the guard
-      // is concerned: a chord soon after it is refused.
-      const answer = boundary >= 0 ? undefined : reduceChordKey(input, key);
-      if (answer === undefined) chord.foreign(stamp);
-      else {
-        const decided = chord.decide(stamp, answer, visibility?.(snapshot) === true);
-        if (decided !== undefined) finish(decided);
-      }
+      routeChord(input, key, stamp, boundary);
       return true;
     }
     chord.foreign(stamp);
-    if (snapshot.kind === 'picker') {
-      picker?.input(boundary >= 0 ? '' : input, submitted ? { ...key, return: true } : key);
-    } else if (snapshot.kind === 'select') {
-      if (key.upArrow || key.downArrow) {
-        const count = snapshot.options.length;
-        if (count)
-          publish({
-            ...snapshot,
-            selected: (snapshot.selected + (key.upArrow ? count - 1 : 1)) % count,
-          });
-      } else if (key.pageUp || key.pageDown) {
-        // A page moves the cursor by the rows of the window the card draws and stops at the ends (the arrows wrap, a page never does). A
-        // card drawn whole has no window, so the keys do nothing there, as they never did.
-        const step = pageRows?.();
-        const last = snapshot.options.length - 1;
-        if (step !== undefined && last >= 0) {
-          const to = Math.max(0, Math.min(last, snapshot.selected + (key.pageUp ? -step : step)));
-          if (to !== snapshot.selected) publish({ ...snapshot, selected: to });
-        }
-      } else if (submitted) {
-        const option = snapshot.options[snapshot.selected];
-        if (option) finish(option.value);
-      }
-    } else if (submitted) {
-      if (invalid) return true;
-      let error: string | undefined;
-      try {
-        error = validate?.(secret);
-      } catch {
-        error = 'Input could not be validated.';
-      }
-      if (error)
-        publish({
-          ...snapshot,
-          error:
-            snapshot.kind === 'password' ? 'A valid value is required.' : sanitizeInline(error),
-        });
-      else finish(secret);
-    } else if (key.backspace || key.delete) {
-      secret = Array.from(secret).slice(0, -1).join('');
-      invalid = false;
-      publish({
-        ...snapshot,
-        display:
-          snapshot.kind === 'password'
-            ? '•'.repeat(Math.min(secret.length, 32))
-            : sanitizeInline(secret),
-        error: '',
-      });
-    } else if (!key.ctrl && !key.meta) append(input);
+    routeOpenPrompt(input, key, boundary, submitted);
     return true;
   };
   const ui: NativePromptUi = {

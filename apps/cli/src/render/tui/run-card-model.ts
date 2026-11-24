@@ -602,7 +602,7 @@ function foldAuthorText(text: string): string {
 }
 
 /** One line of author text, safe to put behind the gutter: untrusted-text floor, folded, no host glyph, no answer chord. */
-function authorLine(text: string): string {
+export function authorLine(text: string): string {
   return foldAuthorText(sanitizeUntrustedInline(text))
     .replace(HOST_GLYPHS, ' ')
     .replace(CHORD_TOKENS, '[chord]');

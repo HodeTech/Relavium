@@ -1,5 +1,6 @@
 import type { ConsentPrompter, ConsentSubject } from '../engine/mcp-consent-gate.js';
 import type { NativeChordPort, NativePromptEscape } from '../render/tui/native-prompt-channel.js';
+import { authorLine } from '../render/tui/run-card-model.js';
 
 /**
  * The MCP consent card of a hosted leg
@@ -19,6 +20,13 @@ import type { NativeChordPort, NativePromptEscape } from '../render/tui/native-p
  *
  * Every field of the subject arrives sanitized and bounded by the gate (`subjectOf`); each becomes its own row, never a joined
  * shell string, so an argument boundary is a row boundary.
+ *
+ * **What a server's author wrote cannot pass for the card's own keys.** The text the declaration authors (the server's id and where it
+ * is declared, the command as written, every argument, each environment name and value) is the text a hostile artifact controls, and
+ * it sits on the same screen as the answer keys. It goes through the same scrub the run card's gate message does (`authorLine`: the
+ * untrusted-text floor, folded so a chord cannot be spelled past the match, host glyphs and answer-chord tokens made inert), so no row
+ * can read `Ctrl+Y refuses`. The text that IS the decision is shown as the gate composed it: the executable that will run, its
+ * directory and the digest are paths and hex, and a path is never rewritten on its way to a consent.
  */
 
 export type ConsentDecision = 'allow' | 'refuse';
@@ -48,22 +56,25 @@ export function consentCardText(subject: ConsentSubject): ConsentCardText {
     subject.total > 1
       ? `Program ${String(subject.index)} of ${String(subject.total)}`
       : 'This artifact wants to start a local program.',
-    `${label('server')}${subject.serverId} (${subject.provenance})`,
+    `${label('server')}${authorLine(subject.serverId)} (${authorLine(subject.provenance)})`,
   ];
-  if (subject.artifact !== undefined) details.push(`${label('declared in')}${subject.artifact}`);
+  if (subject.artifact !== undefined)
+    details.push(`${label('declared in')}${authorLine(subject.artifact)}`);
   details.push(`${label('executable')}${subject.resolvedCommand}`);
   if (subject.authoredCommand !== undefined)
-    details.push(`${label('as written')}${subject.authoredCommand}`);
+    details.push(`${label('as written')}${authorLine(subject.authoredCommand)}`);
   details.push(
-    ...subject.args.map((argument) => `${label('argument')}${argument}`),
-    ...subject.env.map(([name, value]) => `${label('env')}${name}=${value}`),
+    ...subject.args.map((argument) => `${label('argument')}${authorLine(argument)}`),
+    ...subject.env.map(
+      ([name, value]) => `${label('env')}${authorLine(name)}=${authorLine(value)}`,
+    ),
     `${label('directory')}${subject.cwd}`,
     `${label('digest')}${subject.digest}`,
   );
   if (subject.previouslyApprovedIn !== undefined)
     details.push(`(you approved this same program in ${subject.previouslyApprovedIn})`);
   return {
-    message: `Allow MCP server '${subject.serverId}' to run this program on this machine?`,
+    message: `Allow MCP server '${authorLine(subject.serverId)}' to run this program on this machine?`,
     details,
     allow: CONSENT_ALLOW_LABEL,
     deny: CONSENT_REFUSE_LABEL,

@@ -188,6 +188,36 @@ export function gatesOfRun(
   return { ...read.value, degraded: read.degraded };
 }
 
+/** What one scan of the parked runs has gathered so far. */
+interface GatesScan {
+  readonly runs: RunGates[];
+  readonly degradedRunIds: string[];
+  truncated: boolean;
+}
+
+/**
+ * Fold one page of run summaries into the scan: a run of another directory is skipped whatever the reader handed back, a run past
+ * `maxRuns` marks the scan truncated and ends the page, and a run whose log is damaged is kept degraded and named.
+ */
+function foldPage(
+  scan: GatesScan,
+  reader: RunGatesReader,
+  page: ReturnType<RunGatesReader['listRunSummaries']>,
+  projectRoot: string,
+  maxRuns: number,
+): void {
+  for (const run of page) {
+    if (run.projectRoot !== projectRoot) continue;
+    if (scan.runs.length >= maxRuns) {
+      scan.truncated = true;
+      return;
+    }
+    const read = gatesOfRun(reader, run);
+    scan.runs.push(read);
+    if (read.degraded) scan.degradedRunIds.push(run.id);
+  }
+}
+
 /**
  * Every parked run of `projectRoot` with the gates it is waiting on, newest run first. A run of another directory is never
  * returned, whatever the reader hands back.
@@ -198,10 +228,8 @@ export function readProjectRunGates(
   options?: { readonly maxRuns?: number },
 ): ProjectRunGates {
   const maxRuns = Math.min(Math.max(1, options?.maxRuns ?? RUN_GATES_MAX_RUNS), RUN_GATES_MAX_RUNS);
-  const runs: RunGates[] = [];
-  const degradedRunIds: string[] = [];
+  const scan: GatesScan = { runs: [], degradedRunIds: [], truncated: false };
   let before: { readonly createdAt: number; readonly id: string } | undefined;
-  let truncated = false;
   // One row more than the call may keep is enough to know it was truncated: a Home that shows eight parked runs reads nine summaries, not a chunk.
   const limit = Math.min(RUN_GATES_CHUNK, maxRuns + 1);
   for (;;) {
@@ -211,21 +239,12 @@ export function readProjectRunGates(
       projectRoot,
       ...(before === undefined ? {} : { before }),
     });
-    for (const run of page) {
-      if (run.projectRoot !== projectRoot) continue;
-      if (runs.length >= maxRuns) {
-        truncated = true;
-        break;
-      }
-      const read = gatesOfRun(reader, run);
-      runs.push(read);
-      if (read.degraded) degradedRunIds.push(run.id);
-    }
+    foldPage(scan, reader, page, projectRoot, maxRuns);
     const last = page.at(-1);
-    if (truncated || page.length < limit || last === undefined) break;
+    if (scan.truncated || page.length < limit || last === undefined) break;
     before = { createdAt: Date.parse(last.createdAt), id: last.id };
   }
-  return { runs, degradedRunIds, truncated };
+  return { runs: scan.runs, degradedRunIds: scan.degradedRunIds, truncated: scan.truncated };
 }
 
 /**

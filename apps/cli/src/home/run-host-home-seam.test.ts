@@ -12,15 +12,16 @@
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { createClient, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine } from '../engine/build-engine.js';
+import { approvalDecision } from '../gate/decision.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
 import { captureIo } from '../test-support.js';
-import { RunHost, type HostedLaunch } from './run-host.js';
+import { RunHost, type HostedLaunch, type RunHostOptions } from './run-host.js';
 
 // The net under the seam: anything that asks the OS for the home directory instead of being handed one is a leak.
 vi.mock('node:os', async (importOriginal) => {
@@ -64,15 +65,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function hostFor(homeDir: string | undefined) {
+function hostFor(homeDir: string, cwd: string = root) {
   const f = invocationFixture();
   const builds = vi.fn();
   const host = new RunHost({
     invocation: f.invocation,
     io: captureIo().io,
-    global: { json: false, color: false, cwd: root, configPath: undefined, verbosity: 'normal' },
+    global: { json: false, color: false, cwd, configPath: undefined, verbosity: 'normal' },
     db: client.db,
-    ...(homeDir === undefined ? {} : { homeDir }),
+    homeDir,
     buildEngine: (options) => {
       builds();
       return buildEngine(options);
@@ -88,18 +89,44 @@ const messageOf = (launch: HostedLaunch): string =>
   launch.kind === 'refused' ? launch.message : `(${launch.kind})`;
 
 describe('a start leg loads its configuration from the home the host was handed', () => {
-  it('reads the marker config of that home: a global config that does not parse refuses the start, naming that file', async () => {
+  it('reads the marker config of that home: a global config that does not parse refuses the start, naming that file without its absolute path (P1-13)', async () => {
     const marker = join(home, '.relavium', 'config.toml');
     writeFileSync(marker, 'this is = not [valid toml');
+    // The project is the directory the operator home sits in, so the marker is named from the project, as a transcript names it.
     const r = hostFor(home);
     const launch = await r.host.start({ workflow: r.path, rawInputs: { n: '3' } });
     expect(launch.kind).toBe('refused');
     expect(launch).toMatchObject({ reason: 'rejected' });
     expect(messageOf(launch), 'the refusal names the temporary home`s own config').toContain(
-      marker,
+      join('operator-home', '.relavium', 'config.toml'),
     );
+    expect(messageOf(launch), 'and never by its absolute path').not.toContain(marker);
+    expect(messageOf(launch)).not.toContain(root);
     expect(messageOf(launch)).not.toContain('real operator home');
     expect(r.builds, 'nothing past the config load ran').not.toHaveBeenCalled();
+    expect(r.f.registry.activeOwners).toBe(0);
+  });
+
+  it('names a config file of the operator home from `~` when the project is elsewhere, on a start and on a resume (P1-13)', async () => {
+    const marker = join(home, '.relavium', 'config.toml');
+    writeFileSync(marker, 'this is = not [valid toml');
+    const project = join(root, 'project');
+    mkdirSync(project);
+    const r = hostFor(home, project);
+    const started = await r.host.start({ workflow: r.path, rawInputs: { n: '3' } });
+    expect(messageOf(started)).toContain(`~${sep}.relavium${sep}config.toml`);
+    expect(messageOf(started)).not.toContain(marker);
+    expect(messageOf(started)).not.toContain(root);
+    // The resume leg loads the same configuration before it looks at the run: its refusal is as path-free.
+    const resumed = await r.host.resume({
+      runId: 'a-run',
+      kind: 'human',
+      decision: approvalDecision(),
+    });
+    expect(resumed).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(messageOf(resumed)).toContain(`~${sep}.relavium${sep}config.toml`);
+    expect(messageOf(resumed)).not.toContain(marker);
+    expect(messageOf(resumed)).not.toContain(root);
     expect(r.f.registry.activeOwners).toBe(0);
   });
 
@@ -112,10 +139,11 @@ describe('a start leg loads its configuration from the home the host was handed'
     expect(r.builds).toHaveBeenCalledOnce();
   });
 
-  it('is the net that matters: with no home handed over, the leg would ask the OS, and the guard says so', async () => {
-    const r = hostFor(undefined);
-    const launch = await r.host.start({ workflow: r.path, rawInputs: { n: '3' } });
-    expect(launch.kind).toBe('refused');
-    expect(r.builds).not.toHaveBeenCalled();
+  it('a host with no home does not compile: `homeDir` is required, so no leg can fall back to the OS home (H1)', () => {
+    // The guard is the type. `Omit<..., 'homeDir'>` is assignable to the options only while `homeDir` is optional, in which case this
+    // is `false` and the assignment below is a compile error (the project's typecheck covers test files).
+    type HomeDirIsRequired = Omit<RunHostOptions, 'homeDir'> extends RunHostOptions ? false : true;
+    const required: HomeDirIsRequired = true;
+    expect(required).toBe(true);
   });
 });

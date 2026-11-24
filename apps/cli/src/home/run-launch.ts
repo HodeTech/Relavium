@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 
 import {
+  BUILTIN_TOOLS,
   parseWorkflow,
   resolveAndValidateWorkflowInputs,
   WorkflowParseError,
@@ -8,6 +9,8 @@ import {
 } from '@relavium/core';
 
 import { inputAdmissionMessage, resolveInputs } from '../commands/inputs.js';
+import { loadResolvedConfig, type LoadedConfig } from '../config/load.js';
+import { shortRunId } from '../history/run-detail-model.js';
 import { CliError, isCliError } from '../process/errors.js';
 import { sourceLabel } from '../process/source-label.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
@@ -15,7 +18,7 @@ import { NATIVE_PROMPT_BACK, type NativePromptFlow } from '../render/tui/native-
 import { workflowSourceDigest } from '../run-core/source-digest.js';
 import { discoverCatalog, fileStem, type CatalogEntry } from '../workflows/catalog.js';
 import { resolveWorkflowSource } from '../workflows/resolve.js';
-import type { HostedLaunch, HostedSecretPort, RunHost } from './run-host.js';
+import type { HostedLaunch, HostedSecretPort, RunHost, RunHostSnapshot } from './run-host.js';
 
 /**
  * Launch a workflow from the Home
@@ -74,6 +77,8 @@ interface LaunchForm {
   readonly fields: readonly LaunchField[];
   readonly values: Readonly<Record<string, string>>;
   readonly sourceDigest: string;
+  /** The file scope the confirmation names, as read with the same file: the start refuses when the project's has changed since. */
+  readonly fsScope: LaunchFsScope | undefined;
 }
 
 export type LaunchState =
@@ -109,6 +114,8 @@ export type LaunchEvent =
       readonly fields: readonly LaunchField[];
       /** The digest of the file text `fields` were built from, carried to the start. */
       readonly sourceDigest: string;
+      /** The file scope read with it (`undefined` when the configuration could not be read: the start then reads it and refuses). */
+      readonly fsScope?: LaunchFsScope | undefined;
     }
   /** The answer to the field being asked. `undefined` for a masked field (its value is in the hold, not here) or an omitted one. */
   | { readonly kind: 'answered'; readonly turn: number; readonly value: string | undefined }
@@ -119,7 +126,9 @@ export type LaunchEvent =
    * Leave the flow: `Ctrl+C`, a refusal, the Home closing, an aborted flow. In every state it closes the flow with the notice, `starting`
    * included: a flow that found its start already aborted would otherwise never settle, and `/run` and `r` would join a dead promise. A
    * stop that reaches `starting` BEFORE the driver called the host starts nothing; one that arrives after the host has the start closes
-   * the flow and wipes what is held, and the host's late answer is ignored (it has no handle to cancel; a started run is the run view's).
+   * the flow and wipes what is held, and the host's late answer is ignored. The abort of the flow's signal is that stop, and the same
+   * signal is the host's: it stops the host's leg while it prepares, so the start that was in flight cannot start a run afterwards
+   * (a started run is the run view's to cancel).
    */
   | { readonly kind: 'stop'; readonly notice?: string | undefined };
 
@@ -287,56 +296,81 @@ function reduceBack(state: Extract<LaunchState, { kind: 'asking' | 'confirming' 
   return toField(state, state.choices, form, index - 1, [previous.name]);
 }
 
+type EventOf<Kind extends LaunchEvent['kind']> = Extract<LaunchEvent, { readonly kind: Kind }>;
+
+function reduceOpened(state: LaunchState, event: EventOf<'opened'>): LaunchStep {
+  if (state.kind !== 'idle') return IGNORED(state);
+  if (event.choices.length === 0) return closeWith(state, LAUNCH_NO_WORKFLOWS);
+  const turn = state.turn + 1;
+  return {
+    state: { kind: 'picking', turn, choices: event.choices },
+    effects: [{ kind: 'pick', turn, choices: event.choices }],
+  };
+}
+
+function reducePicked(state: LaunchState, event: EventOf<'picked'>): LaunchStep {
+  if (state.kind !== 'picking' || event.turn !== state.turn) return IGNORED(state);
+  const form: LaunchForm = {
+    choice: event.choice,
+    fields: event.fields,
+    values: Object.create(null) as Record<string, string>,
+    sourceDigest: event.sourceDigest,
+    fsScope: event.fsScope,
+  };
+  return toField(state, state.choices, form, 0, []);
+}
+
+function reduceAnswered(state: LaunchState, event: EventOf<'answered'>): LaunchStep {
+  if (state.kind !== 'asking' || event.turn !== state.turn) return IGNORED(state);
+  return reduceAnswer(state, event.value);
+}
+
+function reduceBackEvent(state: LaunchState, event: EventOf<'back'>): LaunchStep {
+  if ((state.kind !== 'asking' && state.kind !== 'confirming') || event.turn !== state.turn)
+    return IGNORED(state);
+  return reduceBack(state);
+}
+
+function reduceConfirmed(state: LaunchState, event: EventOf<'confirmed'>): LaunchStep {
+  // THE LATCH (ADR-0139 §2): only the current confirmation answers, and answering moves the machine on. A second `Enter` in the
+  // same tick finds `starting` here, and emits nothing.
+  if (state.kind !== 'confirming' || event.turn !== state.turn) return IGNORED(state);
+  if (!event.yes) return closeWith(state, LAUNCH_CANCELLED);
+  const turn = state.turn + 1;
+  return {
+    state: { kind: 'starting', turn, choice: state.form.choice, form: state.form },
+    effects: [{ kind: 'start', turn, form: state.form }],
+  };
+}
+
+function reduceLaunched(state: LaunchState, event: EventOf<'launched'>): LaunchStep {
+  if (state.kind !== 'starting' || event.turn !== state.turn) return IGNORED(state);
+  return closeWith(state, event.notice);
+}
+
 /**
  * The whole launch flow as a pure function: a state and an event in, the next state and the effects to run out. Nothing here reads a
- * clock, a prompt, a file or a host. An event for a prompt that is no longer the current one is ignored.
+ * clock, a prompt, a file or a host. An event for a prompt that is no longer the current one is ignored. Each event has its own small
+ * reducer above, so what one answers is read in one place.
  */
 export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep {
   if (state.kind === 'closed') return IGNORED(state);
   switch (event.kind) {
-    case 'opened': {
-      if (state.kind !== 'idle') return IGNORED(state);
-      if (event.choices.length === 0) return closeWith(state, LAUNCH_NO_WORKFLOWS);
-      const turn = state.turn + 1;
-      return {
-        state: { kind: 'picking', turn, choices: event.choices },
-        effects: [{ kind: 'pick', turn, choices: event.choices }],
-      };
-    }
+    case 'opened':
+      return reduceOpened(state, event);
     case 'stop':
       // `starting` is no exception: an ignored stop left `done` pending for good when the flow was aborted before the host was called.
       return closeWith(state, event.notice ?? LAUNCH_CANCELLED);
-    case 'picked': {
-      if (state.kind !== 'picking' || event.turn !== state.turn) return IGNORED(state);
-      const form: LaunchForm = {
-        choice: event.choice,
-        fields: event.fields,
-        values: Object.create(null) as Record<string, string>,
-        sourceDigest: event.sourceDigest,
-      };
-      return toField(state, state.choices, form, 0, []);
-    }
+    case 'picked':
+      return reducePicked(state, event);
     case 'answered':
-      if (state.kind !== 'asking' || event.turn !== state.turn) return IGNORED(state);
-      return reduceAnswer(state, event.value);
+      return reduceAnswered(state, event);
     case 'back':
-      if ((state.kind !== 'asking' && state.kind !== 'confirming') || event.turn !== state.turn)
-        return IGNORED(state);
-      return reduceBack(state);
-    case 'confirmed': {
-      // THE LATCH (ADR-0139 §2): only the current confirmation answers, and answering moves the machine on. A second `Enter` in the
-      // same tick finds `starting` here, and emits nothing.
-      if (state.kind !== 'confirming' || event.turn !== state.turn) return IGNORED(state);
-      if (!event.yes) return closeWith(state, LAUNCH_CANCELLED);
-      const turn = state.turn + 1;
-      return {
-        state: { kind: 'starting', turn, choice: state.form.choice, form: state.form },
-        effects: [{ kind: 'start', turn, form: state.form }],
-      };
-    }
+      return reduceBackEvent(state, event);
+    case 'confirmed':
+      return reduceConfirmed(state, event);
     case 'launched':
-      if (state.kind !== 'starting' || event.turn !== state.turn) return IGNORED(state);
-      return closeWith(state, event.notice);
+      return reduceLaunched(state, event);
   }
 }
 
@@ -344,11 +378,26 @@ export function reduceLaunch(state: LaunchState, event: LaunchEvent): LaunchStep
 // The catalog the picker offers, and the one-line reasons for what it does not.
 // ---------------------------------------------------------------------------------------------------------------------
 
+/** The tiers of `[defaults].fs_scope`, as the run host's tool environment reads them (`sandboxed` when the config names none). */
+export type LaunchFsTier = NonNullable<LoadedConfig['config']['fsScope']>;
+
+/**
+ * The file scope a start would run under, read when the workflow was picked: the tier, and whether a repository's own configuration set it.
+ * The only layers that carry `fs_scope` are the project and workspace files, so a tier that is not the default always came from the
+ * repository (`.relavium/project.toml` or `workspace.toml`).
+ */
+export interface LaunchFsScope {
+  readonly tier: LaunchFsTier;
+  readonly fromRepository: boolean;
+}
+
 /** A workflow file read once: what it parsed to, and the digest of the exact text that was parsed. */
 export interface LoadedWorkflow {
   readonly definition: WorkflowDefinition;
   /** `workflowSourceDigest` of the text `definition` was parsed from: the one the start is later checked against. */
   readonly sourceDigest: string;
+  /** The file scope the same pick found, or `undefined` when the configuration could not be read (the start will say why). */
+  readonly fsScope?: LaunchFsScope | undefined;
 }
 
 /** The project's workflow files and their parsed definitions, behind a port so the flow is testable without a project. */
@@ -370,6 +419,8 @@ export function createProjectCatalog(options: {
   readonly cwd: string;
   readonly projectConfigDir: () => string | undefined;
   readonly homeDir: string;
+  /** The global `--config` override, as a start loads its configuration (so the scope shown is the scope a start reads). */
+  readonly configPath?: string | undefined;
 }): LaunchCatalog {
   const { cwd, homeDir } = options;
   return {
@@ -388,7 +439,11 @@ export function createProjectCatalog(options: {
       try {
         const definition = parseWorkflow(source.yaml, { source: sourceLabel(cwd, source.path) });
         // The digest is of the very string the parse was given. The host digests the string IT reads the same way, before it parses.
-        return { definition, sourceDigest: workflowSourceDigest(source.yaml) };
+        return {
+          definition,
+          sourceDigest: workflowSourceDigest(source.yaml),
+          fsScope: readFsScope(cwd, homeDir, options.configPath),
+        };
       } catch (cause) {
         if (cause instanceof WorkflowParseError)
           throw new CliError('invalid_invocation', cause.message, { cause });
@@ -396,6 +451,23 @@ export function createProjectCatalog(options: {
       }
     },
   };
+}
+
+/**
+ * The file scope a start from `cwd` would use, read the way the start reads it. `undefined` when the configuration cannot be read: the
+ * start loads it again and refuses with the file named, so the confirmation has nothing to add to that.
+ */
+function readFsScope(
+  cwd: string,
+  homeDir: string,
+  configPath: string | undefined,
+): LaunchFsScope | undefined {
+  try {
+    const { config } = loadResolvedConfig({ cwd, configPath, home: homeDir });
+    return { tier: config.fsScope ?? 'sandboxed', fromRepository: config.fsScope !== undefined };
+  } catch {
+    return undefined;
+  }
 }
 
 const LABEL_LIMIT = 60;
@@ -527,19 +599,141 @@ function formIssue(
 const SUMMARY_VALUE_LIMIT = 24;
 const SUMMARY_LIMIT = 200;
 
-/** The confirmation's question: the workflow and each input, a masked one by name only. */
-function confirmation(form: LaunchForm, masked: ReadonlySet<string>): string {
-  const given = form.fields
+/**
+ * The confirmation's question: the workflow and each input, a masked one by name only. When the inputs do not all fit
+ * {@link SUMMARY_LIMIT}, as many whole `name=value` entries as fit are shown and the rest are counted (`and 3 more`), so a later input is
+ * never silently out of the question (M-3). Even the first may not fit (a long label): the count then stands alone.
+ */
+/** One `name=value` per input that was given (or is secret): a masked one by name only, never its value. */
+function givenInputs(form: LaunchForm, masked: ReadonlySet<string>): readonly string[] {
+  return form.fields
     .filter((field) => field.secret || Object.hasOwn(form.values, field.name))
-    .map((field) =>
-      field.secret
-        ? masked.has(field.name)
-          ? `${field.name}=••••`
-          : `${field.name}=(none)`
-        : `${field.name}=${bounded(form.values[field.name] ?? '', SUMMARY_VALUE_LIMIT)}`,
-    );
-  const inputs = given.length === 0 ? '' : ` with ${given.join(', ')}`;
-  return bounded(`Run ${form.choice.label}${inputs}?`, SUMMARY_LIMIT);
+    .map((field) => {
+      if (!field.secret)
+        return `${field.name}=${bounded(form.values[field.name] ?? '', SUMMARY_VALUE_LIMIT)}`;
+      return masked.has(field.name) ? `${field.name}=••••` : `${field.name}=(none)`;
+    });
+}
+
+/** ` with a=1, b=2`, with what did not fit counted: ` with a=1 and 3 more`, or ` with 4 inputs` when not even one entry fits. */
+function inputsClause(given: readonly string[], shown: number): string {
+  const hidden = given.length - shown;
+  if (given.length === 0) return '';
+  if (shown === 0) return ` with ${String(hidden)} input${hidden === 1 ? '' : 's'}`;
+  const listed = given.slice(0, shown).join(', ');
+  return hidden === 0 ? ` with ${listed}` : ` with ${listed} and ${String(hidden)} more`;
+}
+
+function confirmationQuestion(form: LaunchForm, masked: ReadonlySet<string>): string {
+  const given = givenInputs(form, masked);
+  const head = `Run ${form.choice.label}`;
+  for (let shown = given.length; shown > 0; shown -= 1) {
+    const question = `${head}${inputsClause(given, shown)}?`;
+    if (sanitizeUntrustedInline(question).length <= SUMMARY_LIMIT)
+      return bounded(question, SUMMARY_LIMIT);
+  }
+  return bounded(`${head}${inputsClause(given, 0)}?`, SUMMARY_LIMIT);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// What the run can do: the sentence that stands above the question.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const AUTHORITY_LIMIT = 200;
+const SERVER_NAME_LIMIT = 24;
+const SERVERS_SHOWN = 3;
+
+/** The built-in tools' own classification, by id: the one place a tool is known to write, so no list of names is kept here. */
+const TOOL_POLICY = new Map(BUILTIN_TOOLS.map((tool) => [tool.id, tool.policy]));
+
+/**
+ * The tools the workflow's agent nodes may call: a node's own `tools` (which only narrows) or else its inline agent's. A `$ref` agent
+ * is not read by the launch (the CLI reads no agent file while it prepares), so a node bound to one adds nothing here.
+ */
+function grantedTools(def: WorkflowDefinition): ReadonlySet<string> {
+  const inline = new Map<string, readonly string[] | undefined>();
+  for (const agent of def.workflow.agents ?? [])
+    if ('id' in agent) inline.set(agent.id, agent.tools);
+  const granted = new Set<string>();
+  for (const node of def.workflow.nodes)
+    if (node.type === 'agent')
+      for (const tool of node.tools ?? inline.get(node.agent_ref) ?? []) granted.add(tool);
+  return granted;
+}
+
+/** The MCP servers the workflow's inline agents declare, by the name each is known by (a registration name, or the inline id), once each. */
+function declaredServers(def: WorkflowDefinition): readonly string[] {
+  const names = new Set<string>();
+  for (const agent of def.workflow.agents ?? [])
+    if ('id' in agent)
+      for (const server of agent.mcp_servers ?? []) {
+        const name = server.ref ?? server.id;
+        if (name !== undefined) names.add(name);
+      }
+  return [...names];
+}
+
+function commandsClause(def: WorkflowDefinition, granted: ReadonlySet<string>): string | undefined {
+  const exact = def.workflow.tools?.allowedCommands?.length ?? 0;
+  const patterns = def.workflow.tools?.allowedCommandGlobs?.length ?? 0;
+  // With no allowlist the tool is disabled (ADR-0029): a grant alone lets nothing run.
+  if (!granted.has('run_command') || exact + patterns === 0) return undefined;
+  const parts = [
+    ...(exact > 0 ? [`${String(exact)} allowed`] : []),
+    ...(patterns > 0 ? [`${String(patterns)} pattern${patterns === 1 ? '' : 's'}`] : []),
+  ];
+  return `run commands (${parts.join(', ')})`;
+}
+
+function serversClause(def: WorkflowDefinition): string | undefined {
+  const servers = declaredServers(def);
+  if (servers.length === 0) return undefined;
+  const shown = servers.slice(0, SERVERS_SHOWN).map((name) => bounded(name, SERVER_NAME_LIMIT));
+  const rest = servers.length - shown.length;
+  return `use MCP ${servers.length === 1 ? 'server' : 'servers'} ${shown.join(', ')}${rest > 0 ? ` and ${String(rest)} more` : ''}`;
+}
+
+/**
+ * What a Yes lets the run do, in one bounded sentence, from the SAME bytes the confirmation binds: the definition read at the pick (its
+ * digest goes to the start) and the file scope read with it (which the start checks again). The run is unattended: nothing asks again.
+ *
+ * - The file scope comes FIRST and is shown whenever it is not the default (`sandboxed`): a repository's own configuration can widen
+ *   it, and the person confirming a workflow has not read that file.
+ * - Then what the workflow's own definition grants: running commands (with the size of the allowlist), writing files, and the MCP
+ *   servers it starts (a local program still meets its own consent card).
+ *
+ * `undefined` when there is nothing to say, so a workflow that can only read inside its workspace is asked about as it always was.
+ */
+export function launchAuthorityNote(
+  def: WorkflowDefinition,
+  fsScope: LaunchFsScope | undefined,
+): string | undefined {
+  const granted = grantedTools(def);
+  const clauses = [
+    commandsClause(def, granted),
+    [...granted].some((tool) => TOOL_POLICY.get(tool)?.fsWrite === true)
+      ? 'write files'
+      : undefined,
+    serversClause(def),
+  ].filter((clause): clause is string => clause !== undefined);
+  const sentences = [
+    fsScope === undefined || fsScope.tier === 'sandboxed'
+      ? undefined
+      : `File scope: ${fsScope.tier}${fsScope.fromRepository ? ', set by this repository' : ''}.`,
+    clauses.length === 0 ? undefined : `This run can ${clauses.join('; ')}.`,
+  ].filter((sentence): sentence is string => sentence !== undefined);
+  return sentences.length === 0 ? undefined : bounded(sentences.join(' '), AUTHORITY_LIMIT);
+}
+
+/** The whole confirmation: what the run can do (when there is something to say), then the question. */
+function confirmation(
+  def: WorkflowDefinition,
+  form: LaunchForm,
+  masked: ReadonlySet<string>,
+): string {
+  const authority = launchAuthorityNote(def, form.fsScope);
+  const question = confirmationQuestion(form, masked);
+  return authority === undefined ? question : `${authority} ${question}`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -595,7 +789,12 @@ export interface RunLaunchDeps {
     NativePromptFlow,
     'begin' | 'end' | 'note' | 'busy' | 'select' | 'text' | 'password' | 'confirm'
   >;
-  readonly host: Pick<RunHost, 'start'>;
+  /**
+   * `snapshot` is read once, before the form opens: with a leg preparing or executing the host refuses every start, so asking the
+   * person for a workflow, its inputs and a confirmation only to say so at the end wastes the form (and a typed secret).
+   * Absent, the host's refusal at the end is the only one.
+   */
+  readonly host: Pick<RunHost, 'start'> & { readonly snapshot?: () => RunHostSnapshot };
   readonly catalog: LaunchCatalog;
   /** Throws when the Home is closing; called before anything is asked. */
   readonly assertAdmitting?: (() => void) | undefined;
@@ -630,6 +829,18 @@ export interface RunLaunch {
   readonly session: () => LaunchSession | undefined;
 }
 
+/**
+ * What `open` says, before it opens anything, when the host is already hosting a leg: which run, and where it is. The id is cut and put
+ * through the one-line floor (`shortRunId`); the remedy is the strip's own row, which `Enter` reopens ([ADR-0139] §3).
+ */
+export function launchBusy(snapshot: RunHostSnapshot): string | undefined {
+  if (!snapshot.launching && snapshot.active === undefined) return undefined;
+  const runId = snapshot.active?.runId;
+  return runId === undefined
+    ? 'A run is already starting.'
+    : `A run is already executing (${shortRunId(runId)}). Enter on its ▶ row opens it.`;
+}
+
 function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {
   if (launch.kind === 'started')
     return `Started ${choice.label} as run ${sanitizeUntrustedInline(launch.runId)}. It runs in the background.`;
@@ -638,31 +849,66 @@ function launchNotice(choice: LaunchChoice, launch: HostedLaunch): string {
 
 const FIELD_PROMPT_ESCAPE = 'back';
 
+/** What `open` has settled before it begins a flow: the notice that ends it, or the offered workflows (and what was skipped) to begin on. */
+type Admission =
+  | { readonly kind: 'refused'; readonly notice: string }
+  | {
+      readonly kind: 'admitted';
+      readonly choices: readonly LaunchChoice[];
+      readonly skipped: string | undefined;
+    };
+
+/**
+ * A slug that names no offered workflow starts no flow at all: nothing is begun, asked or loaded for it. Two files that declare it are
+ * refused too, naming both: the first of them is not the one the person meant. With a `path` the row was listed from, a slug whose file
+ * is another one now is refused as well. `undefined` when the slug (or no slug) may begin a flow.
+ */
+function slugRefusal(
+  choices: readonly LaunchChoice[],
+  slug: string | undefined,
+  path: string | undefined,
+): string | undefined {
+  if (slug === undefined) return undefined;
+  const [first, second] = choices.filter((choice) => choice.slug === slug);
+  if (first === undefined) return launchNotOffered(slug);
+  if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
+  return path !== undefined && first.path !== path ? launchMoved(slug, first.path) : undefined;
+}
+
+/** The catalog read and its refusals, before anything is asked: an unreadable catalog, nothing to run, or a slug that cannot begin. */
+function admit(deps: RunLaunchDeps, slug: string | undefined, path: string | undefined): Admission {
+  let entries: readonly CatalogEntry[];
+  try {
+    entries = deps.catalog.list();
+  } catch (cause) {
+    if (isCliError(cause))
+      return { kind: 'refused', notice: sanitizeUntrustedInline(cause.message) };
+    throw cause;
+  }
+  const { choices, skipped } = offeredWorkflows(entries);
+  if (choices.length === 0)
+    return {
+      kind: 'refused',
+      notice: skipped === undefined ? LAUNCH_NO_WORKFLOWS : `${LAUNCH_NO_WORKFLOWS} ${skipped}`,
+    };
+  const refusal = slugRefusal(choices, slug, path);
+  return refusal === undefined
+    ? { kind: 'admitted', choices, skipped }
+    : { kind: 'refused', notice: refusal };
+}
+
 export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
-  const { flow, catalog } = deps;
+  const { flow } = deps;
   let current: { readonly session: LaunchSession; readonly done: Promise<string> } | undefined;
 
   const open = async (slug?: string, path?: string): Promise<string> => {
     if (current !== undefined) return current.done;
     deps.assertAdmitting?.();
-    let entries: readonly CatalogEntry[];
-    try {
-      entries = catalog.list();
-    } catch (cause) {
-      if (isCliError(cause)) return sanitizeUntrustedInline(cause.message);
-      throw cause;
-    }
-    const { choices, skipped } = offeredWorkflows(entries);
-    if (choices.length === 0)
-      return skipped === undefined ? LAUNCH_NO_WORKFLOWS : `${LAUNCH_NO_WORKFLOWS} ${skipped}`;
-    // A slug that names no offered workflow starts no flow at all: nothing is begun, asked or loaded for it. Two files that declare it
-    // are refused too, naming both: the first of them is not the one the person meant.
-    if (slug !== undefined) {
-      const [first, second] = choices.filter((choice) => choice.slug === slug);
-      if (first === undefined) return launchNotOffered(slug);
-      if (second !== undefined) return launchAmbiguous(slug, first.path, second.path);
-      if (path !== undefined && first.path !== path) return launchMoved(slug, first.path);
-    }
+    const busy = deps.host.snapshot === undefined ? undefined : launchBusy(deps.host.snapshot());
+    if (busy !== undefined) return busy;
+    const admission = admit(deps, slug, path);
+    if (admission.kind === 'refused') return admission.notice;
+    const { choices, skipped } = admission;
 
     const signal = flow.begin();
     const hold = createSecretHold();
@@ -806,6 +1052,7 @@ function runSession(options: {
       choice: named,
       fields: launchFields(fresh.definition),
       sourceDigest: fresh.sourceDigest,
+      fsScope: fresh.fsScope,
     });
   }
 
@@ -858,7 +1105,7 @@ function runSession(options: {
     }
     // No is the default: an `Enter` typed ahead, or pressed twice, answers No.
     const answer = await flow.confirm(
-      confirmation(effect.form, hold.names()),
+      confirmation(def, effect.form, hold.names()),
       false,
       FIELD_PROMPT_ESCAPE,
     );
@@ -874,15 +1121,31 @@ function runSession(options: {
       return;
     }
     flow.busy('Starting the run…');
-    const { choice, values, sourceDigest } = effect.form;
-    const launch = await host.start({
-      workflow: choice.path,
-      rawInputs: values,
-      secrets: hold.port,
-      // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
-      expectedSourceDigest: sourceDigest,
-    });
-    dispatch({ kind: 'launched', turn: effect.turn, notice: launchNotice(choice, launch) });
+    const { choice, values, sourceDigest, fsScope } = effect.form;
+    // **`Esc` and `Ctrl+C` while the leg prepares (P1-4).** The screen says `Esc cancel`, and the engine build, the reconcile and an MCP
+    // connect can take up to two minutes. The abort does two things at once: it closes THIS flow (the keyboard is the Home's again, the
+    // held values are wiped) and, through the request's signal, stops the host's leg, so the connect and the consent card close and the run
+    // core's next checkpoint throws before a run exists. The host's late answer is ignored by the closed machine. The listener lives only
+    // until the host has answered: a started run is the run view's to cancel.
+    const leave = (): void => {
+      dispatch({ kind: 'stop' });
+    };
+    signal.addEventListener('abort', leave, { once: true });
+    try {
+      const launch = await host.start({
+        workflow: choice.path,
+        rawInputs: values,
+        secrets: hold.port,
+        // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
+        expectedSourceDigest: sourceDigest,
+        // The file scope the confirmation named: the start refuses, before anything is asked, when the project now sets another.
+        ...(fsScope === undefined ? {} : { expectedFsScope: fsScope.tier }),
+        signal,
+      });
+      dispatch({ kind: 'launched', turn: effect.turn, notice: launchNotice(choice, launch) });
+    } finally {
+      signal.removeEventListener('abort', leave);
+    }
   }
 
   return run;

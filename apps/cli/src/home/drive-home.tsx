@@ -152,7 +152,12 @@ import { createActiveReader } from '../history/active-source.js';
 import { createHistorySource } from '../history/history-source.js';
 import { createNodeDetailLoader } from '../history/node-detail-source.js';
 import { createRunDetailLoader } from '../history/run-detail-source.js';
-import { createChangeProbe, dataVersionOf, type ChangeToken } from '../history/change-probe.js';
+import {
+  createChangeProbe,
+  dataVersionOf,
+  readSnapshotOf,
+  type ChangeToken,
+} from '../history/change-probe.js';
 import { createFileTerminalOutbox, terminalOutboxStamp } from '../engine/terminal-outbox.js';
 import { terminalOutboxPath } from '../history/open.js';
 import { createRunViewFeed } from '../render/tui/run-view-feed.js';
@@ -722,7 +727,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
       io: deps.io,
       global: deps.global,
       db: opened.db,
-      homeDir: deps.homeDir,
+      // The home the Home's own configuration was loaded from (the override, or the OS's), so a hosted leg reads the same files.
+      homeDir,
       providers,
       mcpSecretResolver,
       consent: createNativeConsentPrompter(promptFlow),
@@ -1924,6 +1930,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         cwd: deps.global.cwd,
         projectConfigDir: currentProjectConfigDir,
         homeDir,
+        // The configuration a start loads, so the file scope the confirmation names is the one the start resolves.
+        configPath: deps.global.configPath,
       });
       const runLaunch = createRunLaunch({
         flow: promptFlow,
@@ -2030,6 +2038,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             isClosed: () => dbClosed,
             now,
             leaseTtlMs: RUN_LEASE_TTL_MS,
+            // The three reads of one tick (the page, the gate states, the leases) are one snapshot of the database.
+            snapshot: readSnapshotOf(opened.db),
           }),
           isClosed: () => dbClosed,
         },

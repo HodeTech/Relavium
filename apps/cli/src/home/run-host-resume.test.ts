@@ -780,7 +780,11 @@ describe('a resumed leg that finds the run taken over by another process', () =>
    * engine had buffered before it found the fence), the disposition is `uncertain`, and nothing durable was written by this process. A real
    * run cannot be put there on demand, so the handle is scripted and the run core, the host and the run store around it are real.
    */
-  function fencedHandle(runId: string, stream: readonly RunEvent[]): RunHandle {
+  function fencedHandle(
+    runId: string,
+    stream: readonly RunEvent[],
+    depart: RunHandle['depart'] = () => Promise.resolve(DETACHED),
+  ): RunHandle {
     return {
       runId,
       events: (async function* (): AsyncGenerator<RunEvent> {
@@ -789,7 +793,7 @@ describe('a resumed leg that finds the run taken over by another process', () =>
       })(),
       subscribe: () => () => undefined,
       cancel: () => undefined,
-      depart: () => Promise.resolve(DETACHED),
+      depart,
       whenConsumersReady: () => Promise.resolve(),
       highWaterMark: 256,
       bufferedCount: 0,
@@ -808,7 +812,10 @@ describe('a resumed leg that finds the run taken over by another process', () =>
   });
 
   /** A parked run, and a host whose NEXT engine answers `resumeFromCheckpoint` with the fenced handle (the park itself is a real leg). */
-  async function parkedThenFenced(stream: (runId: string) => readonly RunEvent[]) {
+  async function parkedThenFenced(
+    stream: (runId: string) => readonly RunEvent[],
+    depart?: RunHandle['depart'],
+  ) {
     let fenced = false;
     const seen: RunEvent[] = [];
     const sealed = vi.fn();
@@ -824,7 +831,7 @@ describe('a resumed leg that finds the run taken over by another process', () =>
         const engine = await buildEngine(options);
         if (fenced)
           vi.spyOn(engine, 'resumeFromCheckpoint').mockImplementation((params) =>
-            Promise.resolve(fencedHandle(params.runId, stream(params.runId))),
+            Promise.resolve(fencedHandle(params.runId, stream(params.runId), depart)),
           );
         return engine;
       },
@@ -884,4 +891,37 @@ describe('a resumed leg that finds the run taken over by another process', () =>
       expect(runStatus(client, runId)).toBe('paused');
     },
   );
+
+  it('a departure that cannot be read again does not turn the takeover into an unexpected end (M-Ho1)', async () => {
+    // The drive and `finishLeg` each ask the handle to depart (and `finishLeg` then refuses the taken-over run); the host asks once more
+    // for the departure it shows. The first two are answered and the third is not: the disposition is already known, and it is the one
+    // the Home shows.
+    let calls = 0;
+    const { r, runId } = await parkedThenFenced(
+      () => [],
+      () => {
+        calls += 1;
+        return calls <= 2
+          ? Promise.resolve(DETACHED)
+          : Promise.reject(new Error('PRIVATE_LATE_DEPARTURE_FAULT'));
+      },
+    );
+    const end = await started(
+      r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
+    );
+
+    expect(calls, 'the host asked a third time, and was refused').toBeGreaterThanOrEqual(3);
+    expect(end.terminal).toMatchObject({ disposition: 'taken_over', safety: 6 });
+    expect(end.terminal.headline).toContain('taken over by another process');
+    expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+    expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
+    expect(JSON.stringify([end, r.host.notices.snapshot()])).not.toContain(
+      'PRIVATE_LATE_DEPARTURE_FAULT',
+    );
+    expect(r.registry.observations.exitCode(), 'the safety fact is still published as exit 6').toBe(
+      6,
+    );
+    expect(end.retirement).toBe('retired');
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+  });
 });

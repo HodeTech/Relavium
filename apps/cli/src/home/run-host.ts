@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 
-import type { RunHandle, WorkflowDefinition, WorkflowEngine } from '@relavium/core';
+import type { RunDeparture, RunHandle, WorkflowDefinition, WorkflowEngine } from '@relavium/core';
 import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
 import { MaskedSecretSchema, type GateDecision } from '@relavium/shared';
 
 import { driveRun, type RunOutcome } from '../commands/drive.js';
+import { faultForTranscript } from '../config/config-error-text.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createConsentGate, type ConsentPrompter } from '../engine/mcp-consent-gate.js';
 import type { StdioConsentGate } from '../engine/mcp-servers.js';
@@ -22,7 +23,11 @@ import type { RunJobControl } from '../render/run-job-control.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { finishLeg, type LegKind } from '../run-core/finish-leg.js';
-import { prepareRun, type PrepareRunDeps } from '../run-core/prepare-run.js';
+import {
+  prepareRun,
+  type PrepareRunDeps,
+  type PrepareRunRequest,
+} from '../run-core/prepare-run.js';
 import type { RunLifetime, RunTerminalView } from '../run-core/run-lifetime.js';
 import { resumeRun } from '../run-core/resume-run.js';
 import { RunResources } from '../run-core/run-resources.js';
@@ -30,6 +35,9 @@ import type { RendererCreationOwner } from '../commands/workflow-terminal.js';
 import { HostedRunLifetime, type HostedLegRetirement } from './hosted-run-lifetime.js';
 import {
   describeHostedRunTerminal,
+  displayRunId,
+  relaviumRunCommand,
+  takenOverTerminal,
   type HostedRunTerminal,
   type HostedRunTerminalInput,
 } from './hosted-run-terminal.js';
@@ -59,6 +67,18 @@ export interface HostedStartRequest {
    * bound. It binds the workflow file only (see `PrepareRunRequest.expectedSourceDigest` for what it does not).
    */
   readonly expectedSourceDigest?: string | undefined;
+  /**
+   * The file scope tier the confirmation named (`PrepareRunRequest.expectedFsScope`): the start is refused, before anything else, when
+   * the project's configuration resolves another one now. Absent, nothing is bound.
+   */
+  readonly expectedFsScope?: PrepareRunRequest['expectedFsScope'];
+  /**
+   * The cancel of the flow that asked for this start (Esc or Ctrl+C on `Starting the run…`). When it aborts BEFORE the engine has
+   * started the run, the leg's lifetime is stopped: the connect and the consent card close, the next checkpoint of the run core throws,
+   * and the launch settles as `refused` / `stopped` with no run created. Once the start has answered it governs nothing: a started run
+   * is the run view's to cancel.
+   */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /** Answer a parked run: the next leg, on a fresh engine, through the one resume core. */
@@ -70,6 +90,8 @@ export interface HostedResumeRequest {
   readonly decision: GateDecision;
   /** Asked for the masked slots of a run that carries secrets; absent means the host supplies none. */
   readonly secrets?: HostedSecretPort | undefined;
+  /** The cancel of the flow that asked for this answer; it stops the leg while it prepares, as {@link HostedStartRequest.signal} does. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /**
@@ -82,6 +104,8 @@ export interface HostedMediaResumeRequest {
   readonly kind: 'media';
   /** Asked for the masked slots of a run that carries secrets (the engine needs them to continue); absent means the host supplies none. */
   readonly secrets?: HostedSecretPort | undefined;
+  /** The cancel of the flow that asked for this continue; it stops the leg while it prepares, as {@link HostedStartRequest.signal} does. */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /** Why a request was turned away before it cost anything. */
@@ -158,8 +182,12 @@ export interface RunHostOptions {
    * does nothing: the Home closes it, once, last.
    */
   readonly db: Db;
-  /** The operator home override of the Home's own config load (tests); the run core reads its own. */
-  readonly homeDir?: string | undefined;
+  /**
+   * The operator home every leg's configuration is loaded from, and the one a notice names a config file from. REQUIRED: a host that
+   * was not handed one would load `~/.relavium` from the OS, so a caller that forgot it (a test above all) would silently read the
+   * operator's real files. The Home passes the home its own config load resolved.
+   */
+  readonly homeDir: string;
   /**
    * The Home's MCP consent card ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4,
    * [ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §7): asked, through the native prompt channel,
@@ -323,14 +351,42 @@ function declaredSecretNames(def: WorkflowDefinition): readonly string[] {
     .map((decl) => decl.name);
 }
 
+/** What a leg's drive found (see `RunHost.#runLeg`). */
+interface LegResult {
+  readonly facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
+  readonly fault: unknown;
+  /** A resume leg refused the run because another process holds it. */
+  readonly takenOver: boolean;
+}
+
+/**
+ * The departure the card is read from. `finishLeg` departed already (the handle answers the same fact again), so a departure that
+ * throws HERE for a leg already known to be taken over must not rewrite that disposition into an unexpected end (M-Ho1): it is `undefined`
+ * and the caller still has the disposition. For any other leg it is a fault, as before.
+ */
+async function readDeparture(
+  handle: RunHandle,
+  takenOver: boolean,
+): Promise<Exclude<RunDeparture, { readonly kind: 'continue' }> | undefined> {
+  try {
+    const departure = await handle.depart();
+    if (departure.kind === 'continue')
+      throw new CliError('internal', 'run departure was not acknowledged');
+    return departure;
+  } catch (cause) {
+    if (!takenOver) throw cause;
+    return undefined;
+  }
+}
+
 /** What a leg that ended with no usable disposition shows: the closed vocabulary of the terminal card. */
 function unexpectedTerminal(runId: string): HostedRunTerminal {
-  const id = sanitizeInline(runId);
+  const id = displayRunId(runId);
   return Object.freeze({
     disposition: 'failed',
     safety: undefined,
     headline: `Run ${id} ended unexpectedly.`,
-    remedy: `Read \`relavium logs ${id}\`.`,
+    remedy: `Read ${relaviumRunCommand('logs', runId)}.`,
   });
 }
 
@@ -364,7 +420,7 @@ export class RunHost {
   readonly #global: GlobalOptions;
   readonly #db: Db;
   readonly #projectRoot: string;
-  readonly #homeDir: string | undefined;
+  readonly #homeDir: string;
   readonly #consent: ConsentPrompter | undefined;
   readonly #services: Services;
   readonly #renderer: RunHostOptions['renderer'];
@@ -436,7 +492,7 @@ export class RunHost {
     if (this.#launching?.kind === 'start') return this.#launching.promise;
     const turnedAway = this.#admission();
     if (turnedAway !== undefined) return turnedAway;
-    return this.#launch('start', (context) => this.#acquireStart(request, context));
+    return this.#launch('start', (context) => this.#acquireStart(request, context), request.signal);
   }
 
   /**
@@ -449,7 +505,11 @@ export class RunHost {
     if (turnedAway !== undefined) return turnedAway;
     const otherProject = this.#otherProjectRefusal(request.runId);
     if (otherProject !== undefined) return Promise.resolve(otherProject);
-    return this.#launch('resume', (context) => this.#acquireResume(request, context));
+    return this.#launch(
+      'resume',
+      (context) => this.#acquireResume(request, context),
+      request.signal,
+    );
   }
 
   /** Request the cooperative cancel of the leg that is preparing or executing. `false` when there is none. */
@@ -499,15 +559,15 @@ export class RunHost {
       );
     const abandoned = this.#abandoned;
     if (abandoned !== undefined) {
-      const id = abandoned.runId === undefined ? undefined : sanitizeInline(abandoned.runId);
+      const raw = abandoned.runId;
       facts.push(
         Object.freeze({
           kind: 'abandoned',
-          runId: id ?? '',
+          runId: raw === undefined ? '' : displayRunId(raw),
           line:
-            id === undefined
+            raw === undefined
               ? 'A workflow run was still starting when the Home left. Its lease expires within a minute; read `relavium status`.'
-              : `Run ${id} was still stopping when the Home left. Its lease expires within a minute and the next start settles it; read \`relavium logs ${id}\`.`,
+              : `Run ${displayRunId(raw)} was still stopping when the Home left. Its lease expires within a minute and the next start settles it; read ${relaviumRunCommand('logs', raw)}.`,
         }),
       );
     }
@@ -586,7 +646,7 @@ export class RunHost {
     try {
       recorded = loadRunSnapshot(this.#db, runId)?.projectRoot;
     } catch (cause) {
-      return refused('rejected', sanitizeUntrustedInline(toUserFacing(cause).message));
+      return refused('rejected', this.#faultMessage(cause));
     }
     // A run that does not exist is the resume core's refusal to word; one recorded elsewhere is ours.
     if (recorded === undefined || recorded === this.#projectRoot) return undefined;
@@ -605,8 +665,9 @@ export class RunHost {
   #launch(
     kind: LegKind,
     acquire: (context: LegContext) => Promise<Acquisition>,
+    signal: AbortSignal | undefined,
   ): Promise<HostedLaunch> {
-    const promise: Promise<HostedLaunch> = this.#hostLeg(kind, acquire).finally(() => {
+    const promise: Promise<HostedLaunch> = this.#hostLeg(kind, acquire, signal).finally(() => {
       if (this.#launching?.promise === promise) this.#launching = undefined;
     });
     this.#launching = { kind, promise };
@@ -616,6 +677,7 @@ export class RunHost {
   async #hostLeg(
     kind: LegKind,
     acquire: (context: LegContext) => Promise<Acquisition>,
+    signal: AbortSignal | undefined,
   ): Promise<HostedLaunch> {
     const invocation = this.#invocation;
     if (invocation === undefined)
@@ -639,6 +701,10 @@ export class RunHost {
       done: Promise.resolve(),
     };
     this.#active = leg;
+    // The flow that asked for this leg may be cancelled while the leg prepares (Esc or Ctrl+C on `Starting the run…`): the cancel
+    // stops THIS leg's lifetime, so the connect and the consent card close and the run core's next checkpoint throws before any run
+    // exists. It governs the preparation only; it is let go the moment `acquire` answers.
+    const untie = this.#stopWhenAborted(signal, lifetime);
     let acquired: Acquisition;
     try {
       acquired = await acquire({ lifetime, resources, io });
@@ -648,7 +714,9 @@ export class RunHost {
       await this.#release(leg, resources);
       return stopped
         ? refused('stopped', 'The run was stopped before it started.')
-        : refused('rejected', sanitizeUntrustedInline(toUserFacing(cause).message));
+        : refused('rejected', this.#faultMessage(cause));
+    } finally {
+      untie();
     }
     if ('settled' in acquired) {
       await this.#release(leg, resources);
@@ -660,12 +728,43 @@ export class RunHost {
     return { kind: 'started', leg: kind, runId: acquired.runId, ended };
   }
 
+  /** Stop `lifetime` when `signal` aborts (now, if it already has); returns what lets go of the signal. */
+  #stopWhenAborted(signal: AbortSignal | undefined, lifetime: HostedRunLifetime): () => void {
+    if (signal === undefined) return () => undefined;
+    const stop = (): void => {
+      lifetime.stop();
+    };
+    if (signal.aborted) {
+      stop();
+      return () => undefined;
+    }
+    signal.addEventListener('abort', stop, { once: true });
+    return () => {
+      signal.removeEventListener('abort', stop);
+    };
+  }
+
+  /**
+   * The words a fault is shown in: the user-facing message through the sanitize floor, with a config file named from the project or
+   * from `~` and never by its absolute path (RUNCORE-3): a notice is drawn into a transcript that a screen share carries away.
+   */
+  #faultMessage(cause: unknown): string {
+    const pathFree = faultForTranscript(cause, { cwd: this.#projectRoot, homeDir: this.#homeDir });
+    return sanitizeUntrustedInline(toUserFacing(pathFree).message);
+  }
+
   /** The teardown tail of a leg that never ran: what it acquired is released and its owner retires. */
   async #release(leg: ActiveLeg, resources: RunResources): Promise<void> {
-    await resources.releaseMcp();
-    resources.closeHistoryDb();
-    await leg.lifetime.finish();
-    if (this.#active === leg) this.#active = undefined;
+    try {
+      await resources.releaseMcp();
+      resources.closeHistoryDb();
+    } catch (cause) {
+      // A step that throws (a host bug: the one-use guards) must not leave the host holding a leg that never ran, nor its owner.
+      leg.lifetime.failure(cause);
+    } finally {
+      await leg.lifetime.finish();
+      if (this.#active === leg) this.#active = undefined;
+    }
   }
 
   /**
@@ -680,9 +779,39 @@ export class RunHost {
     io: CliIo,
   ): Promise<HostedLegEnd> {
     const { kind, lifetime } = leg;
+    const { runId } = acquired;
+    const result = await this.#runLeg(leg, acquired, io);
+    const tailFault = await this.#cleanupTail(leg, resources);
+    const retirement = await lifetime.finish();
+    const terminal = this.#terminalOf({ kind, runId, ...result });
+    const end: HostedLegEnd = Object.freeze({
+      leg: kind,
+      runId,
+      terminal,
+      handedOff: terminal.disposition === 'paused',
+      retirement,
+      // The leg's own fault first; a tail fault is named only when the leg had none (the terminal card still describes the run).
+      fault:
+        result.fault === undefined && tailFault === undefined
+          ? undefined
+          : this.#faultMessage(result.fault ?? tailFault),
+    });
+    this.#last = end;
+    if (
+      end.terminal.safety !== undefined &&
+      safetyRank(end.terminal.safety) > safetyRank(this.#safetyEnd?.terminal.safety)
+    )
+      this.#safetyEnd = end;
+    if (this.#active === leg) this.#active = undefined;
+    return end;
+  }
+
+  /** What a leg's drive found: the facts its handle holds after the departure, or the fault that ended it (never both). */
+  async #runLeg(leg: ActiveLeg, acquired: Acquired, io: CliIo): Promise<LegResult> {
+    const { kind, lifetime } = leg;
     const { engine, handle, runId } = acquired;
-    let facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
-    let fault: unknown;
+    /** A resume leg refused the run because another process holds it: already the disposition, whatever follows. */
+    let takenOver = false;
     try {
       const outcome: RunOutcome | undefined = await driveRun({
         lifetime,
@@ -701,66 +830,90 @@ export class RunHost {
         io,
         json: false,
       });
-      try {
-        await finishLeg({
-          leg: kind,
-          runId,
-          lifetime,
-          io,
-          json: false,
-          handle,
-          outcome,
-          db: acquired.db,
-          mediaCasRoot: acquired.mediaCasRoot,
-          mediaGcGraceMs: acquired.mediaGcGraceMs,
-          sweepMedia: this.#sweepMedia,
-        });
-      } catch (cause) {
-        // A resume leg refuses a taken-over run with a typed error; here that is a disposition, not a fault.
-        if (!(kind === 'resume' && isCliError(cause) && cause.code === 'run_owned_elsewhere'))
-          throw cause;
-      }
-      const departure = await handle.depart();
-      if (departure.kind === 'continue')
-        throw new CliError('internal', 'run departure was not acknowledged');
+      takenOver = await this.#finish(leg, acquired, outcome, io);
+      const departure = await readDeparture(handle, takenOver);
+      if (departure === undefined) return { facts: undefined, fault: undefined, takenOver };
       // Read off the HANDLE, after the departure; never from a subscription or the last event.
-      facts = {
+      const facts = {
         outcome,
         durability: handle.durability(),
         terminalError: handle.terminalError(),
         departure,
       };
+      return { facts, fault: undefined, takenOver };
     } catch (cause) {
       if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
-      fault = cause;
+      return { facts: undefined, fault: cause, takenOver };
     }
-    // The cleanup tail: the leg's MCP clients and work, the (no-op) history close, and only then the owner.
-    await resources.releaseMcp();
+  }
+
+  /** The shared epilogue of the leg. `true` when it refused the run as taken over, which is a disposition and not a fault. */
+  async #finish(
+    leg: ActiveLeg,
+    acquired: Acquired,
+    outcome: RunOutcome | undefined,
+    io: CliIo,
+  ): Promise<boolean> {
+    try {
+      await finishLeg({
+        leg: leg.kind,
+        runId: acquired.runId,
+        lifetime: leg.lifetime,
+        io,
+        json: false,
+        handle: acquired.handle,
+        outcome,
+        db: acquired.db,
+        mediaCasRoot: acquired.mediaCasRoot,
+        mediaGcGraceMs: acquired.mediaGcGraceMs,
+        sweepMedia: this.#sweepMedia,
+      });
+      return false;
+    } catch (cause) {
+      // A resume leg refuses a taken-over run with a typed error; here that is a disposition, not a fault.
+      if (leg.kind === 'resume' && isCliError(cause) && cause.code === 'run_owned_elsewhere')
+        return true;
+      throw cause;
+    }
+  }
+
+  /**
+   * The cleanup tail: the leg's MCP clients and work, the renderer's frame loop, the (no-op) history close. EVERY step is guarded on its
+   * own: a step that throws is a fault of the leg (recorded on the owner and returned for the end), and the steps after it still run,
+   * so the leg is always no longer active, its owner always finishes and a later leg is never refused `busy` for a leg that is over
+   * (P02a-2). Returns the first fault, if any.
+   */
+  async #cleanupTail(leg: ActiveLeg, resources: RunResources): Promise<unknown> {
+    let fault: unknown;
+    const step = async (run: () => unknown): Promise<void> => {
+      try {
+        await run();
+      } catch (cause) {
+        if (!leg.lifetime.isStoppedFailure(cause)) leg.lifetime.failure(cause);
+        fault ??= cause;
+      }
+    };
+    await step(() => resources.releaseMcp());
     // A leg that failed, or that ended while the Home was closing, never reaches the renderer's own `finalize`: seal it here so the
     // frame loop it holds stops with the leg (`seal` is idempotent, and a renderer that has no loop has no `seal`).
-    leg.renderer?.seal?.();
-    resources.closeHistoryDb();
-    const retirement = await lifetime.finish();
-    const terminal =
-      fault === undefined && facts !== undefined
-        ? describeHostedRunTerminal({ leg: kind, runId, ...facts })
-        : unexpectedTerminal(runId);
-    const end: HostedLegEnd = Object.freeze({
-      leg: kind,
-      runId,
-      terminal,
-      handedOff: terminal.disposition === 'paused',
-      retirement,
-      fault: fault === undefined ? undefined : sanitizeUntrustedInline(toUserFacing(fault).message),
-    });
-    this.#last = end;
-    if (
-      end.terminal.safety !== undefined &&
-      safetyRank(end.terminal.safety) > safetyRank(this.#safetyEnd?.terminal.safety)
-    )
-      this.#safetyEnd = end;
-    if (this.#active === leg) this.#active = undefined;
-    return end;
+    await step(() => leg.renderer?.seal?.());
+    await step(() => resources.closeHistoryDb());
+    return fault;
+  }
+
+  /** What the Home shows of a leg that ended: the card the facts describe, or what is known of it when they could not be read. */
+  #terminalOf(leg: {
+    readonly kind: LegKind;
+    readonly runId: string;
+    readonly fault: unknown;
+    readonly facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
+    readonly takenOver: boolean;
+  }): HostedRunTerminal {
+    if (leg.fault === undefined && leg.facts !== undefined)
+      return describeHostedRunTerminal({ leg: leg.kind, runId: leg.runId, ...leg.facts });
+    // The run was taken over and its departure could not be read a second time: the disposition is still known.
+    if (leg.fault === undefined && leg.takenOver) return takenOverTerminal(leg.runId);
+    return unexpectedTerminal(leg.runId);
   }
 
   /** The io a leg writes to: nothing reaches the Home's terminal, every line becomes a notice. */
@@ -849,12 +1002,15 @@ export class RunHost {
         ...(request.expectedSourceDigest === undefined
           ? {}
           : { expectedSourceDigest: request.expectedSourceDigest }),
+        ...(request.expectedFsScope === undefined
+          ? {}
+          : { expectedFsScope: request.expectedFsScope }),
       },
       {
         io,
         global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
-        // The same home a resume loads from: with none injected the load falls back to the OS home, as the shell's does.
-        ...(this.#homeDir === undefined ? {} : { home: this.#homeDir }),
+        // The same home a resume loads from, never the OS's: the host is always handed one.
+        home: this.#homeDir,
         ...this.#services,
         openRunStore: (workflow, homeDir, projectRoot) =>
           this.#historyOverHome(workflow, homeDir, projectRoot),
@@ -885,7 +1041,7 @@ export class RunHost {
     const host = loadResolvedConfig({
       cwd: this.#projectRoot,
       configPath: this.#global.configPath,
-      ...(this.#homeDir === undefined ? {} : { home: this.#homeDir }),
+      home: this.#homeDir,
     });
     // The Home may offer a secret port for every answer, because it cannot know what the run holds: it is asked only for a run
     // whose record carries a masked slot, and a run with none is resumed as the shell resumes it, with nothing to re-supply.

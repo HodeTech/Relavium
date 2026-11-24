@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { approvalDecision } from '../gate/decision.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
+import { FS_SCOPE_CHANGED } from '../run-core/prepare-run.js';
 import { captureIo } from '../test-support.js';
 import {
   RunHost,
@@ -157,5 +158,63 @@ describe('control: a tier the project chose is the tier both legs get', () => {
     expect(r.engineOptions).toHaveLength(2);
     expect(r.engineOptions[0]?.toolEnv?.fsScopeTier, 'the prepared leg').toBe('project');
     expect(r.engineOptions[1]?.toolEnv?.fsScopeTier, 'the resumed leg').toBe('project');
+  });
+});
+
+describe('a start bound to the file scope a person confirmed (P1-7)', () => {
+  const tier = (name: string): void =>
+    writeFileSync(join(project, '.relavium', 'project.toml'), `[defaults]\nfs_scope = "${name}"\n`);
+
+  it.each([
+    ['sandboxed', 'full'],
+    ['project', 'full'],
+    ['full', 'sandboxed'],
+    ['full', 'project'],
+  ] as const)(
+    'confirmed %s while the project now sets %s: refused before any engine exists, and nothing starts',
+    async (confirmed, nowSets) => {
+      tier(nowSets);
+      const r = rig();
+      const launch = await r.host.start({
+        workflow: r.path,
+        rawInputs: { n: '3' },
+        expectedFsScope: confirmed,
+      });
+      expect(launch).toEqual({ kind: 'refused', reason: 'rejected', message: FS_SCOPE_CHANGED });
+      expect(r.engineOptions, 'no engine was built').toEqual([]);
+      expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+      expect(
+        client.sqlite.prepare('SELECT COUNT(*) AS n FROM runs').get(),
+        'no run was created',
+      ).toEqual({ n: 0 });
+    },
+  );
+
+  it('starts when the project sets the tier that was confirmed, and with no tier named nothing is bound', async () => {
+    tier('project');
+    const matching = rig();
+    const bound = await ended(
+      matching.host.start({
+        workflow: matching.path,
+        rawInputs: { n: '3' },
+        expectedFsScope: 'project',
+      }),
+    );
+    expect(bound.terminal.disposition).toBe('paused');
+    expect(matching.engineOptions[0]?.toolEnv?.fsScopeTier, 'the tier that was confirmed').toBe(
+      'project',
+    );
+
+    const unbound = rig();
+    const free = await ended(unbound.host.start({ workflow: unbound.path, rawInputs: { n: '3' } }));
+    expect(free.terminal.disposition).toBe('paused');
+  });
+
+  it('the default tier is a tier too: `sandboxed` confirmed and a project that names none is the same scope', async () => {
+    const r = rig();
+    const bound = await ended(
+      r.host.start({ workflow: r.path, rawInputs: { n: '3' }, expectedFsScope: 'sandboxed' }),
+    );
+    expect(bound.terminal.disposition).toBe('paused');
   });
 });

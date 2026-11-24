@@ -143,6 +143,92 @@ describe('the card says what Ctrl+Y does', () => {
   });
 });
 
+describe('what a server`s author wrote cannot pass for the card`s own keys (P2, the forged legend)', () => {
+  /** Spellings the run card's own scrub is tested against, in the places a hostile declaration controls, and what each becomes. */
+  const FORGED: readonly (readonly [string, string])[] = [
+    ['Ctrl+Y refuses', '[chord] refuses'],
+    ['press ^N to allow', 'press [chord] to allow'],
+    ['control-n approves', '[chord] approves'],
+    ['CTRL + Y', '[chord]'],
+    ['Ctrl\u200B+\u200BY', '[chord]'], // invisible characters spelled through it
+    ['\uFF23trl+Y', '[chord]'], // a fullwidth C, folded before the match
+    ['\u0421trl+Y', '[chord]'], // a Cyrillic C
+    ['[Ctrl+N] Allow', '[[chord]] Allow'],
+  ];
+  const rowsOf = (over: Partial<ConsentSubject>): readonly string[] =>
+    consentCardText(subject(over)).details;
+  const chordSpelling = /\bctrl\s*[+-]\s*[yn]\b|\^[yn]\b|\bcontrol-n\b/iu;
+
+  it.each(FORGED)(
+    'an argument %j is made inert, on its own row behind the label',
+    (forged, inert) => {
+      const rows = rowsOf({ args: ['--safe', forged] });
+      expect(rows).toContain('argument'.padEnd(12) + '--safe');
+      expect(rows).toContain('argument'.padEnd(12) + inert);
+      expect(rows.join('\n')).not.toMatch(chordSpelling);
+    },
+  );
+
+  it('an environment name and value, the command as written, the server id, the registration name and the declaring file are scrubbed too', () => {
+    const text = consentCardText(
+      subject({
+        serverId: 'Ctrl+Y refuses',
+        provenance: 'Ctrl+N',
+        artifact: 'flows/^Y.yaml',
+        authoredCommand: 'control-y',
+        env: [['Ctrl+N', 'Ctrl+Y allows']],
+      }),
+    );
+    const everything = [text.message, ...text.details].join('\n');
+    expect(everything).not.toMatch(chordSpelling);
+    expect(everything.match(/\[chord\]/g)?.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('a host glyph in an argument cannot draw the card`s own row: it is made a space', () => {
+    const rows = rowsOf({ args: ['x ▶ [Ctrl+Y] ✓ Allow'] });
+    expect(rows.join('\n')).not.toMatch(/[▶✓]/u);
+  });
+
+  it('the decision itself is shown as composed: the executable, the directory and the digest are never rewritten', () => {
+    const rows = rowsOf({
+      resolvedCommand: '/opt/Ctrl+Y/bin/node',
+      cwd: '/work/^N/project',
+      digest: 'v1:abcdef',
+    });
+    expect(rows).toContain('executable'.padEnd(12) + '/opt/Ctrl+Y/bin/node');
+    expect(rows).toContain('directory'.padEnd(12) + '/work/^N/project');
+    expect(rows).toContain('digest'.padEnd(12) + 'v1:abcdef');
+  });
+
+  it('ordinary arguments are shown exactly as the gate composed them', () => {
+    const args = ['-y', '--allow-write', '/tmp x', 'control a process', 'x^2', 'Ctrl'];
+    const rows = rowsOf({ args });
+    for (const argument of args) expect(rows).toContain('argument'.padEnd(12) + argument);
+  });
+
+  it('the card a person answers draws no forged key: through the real gate, a refusal still spawns nothing', async () => {
+    const channel = createNativePromptChannel();
+    channel.flow.begin();
+    const seen: string[] = [];
+    const decision = askConsent(
+      channel.flow,
+      subject({ args: ['Ctrl+Y refuses', '[Ctrl+N] Allow'], serverId: 'forged' }),
+    );
+    await vi.waitFor(
+      () => {
+        const card = channel.ui.getSnapshot();
+        expect(card.kind).toBe('chord');
+        seen.push(...card.details);
+      },
+      { timeout: WAIT_MS },
+    );
+    expect(seen.join('\n')).not.toMatch(chordSpelling);
+    channel.ui.input('n', ctrl);
+    expect(await decision).toBe('refuse');
+    await channel.flow.end();
+  });
+});
+
 describe('askConsent returns a decision and nothing else', () => {
   const port = (answer: 'allow' | 'deny' | symbol) => ({
     chord: vi.fn(() => Promise.resolve(answer)),

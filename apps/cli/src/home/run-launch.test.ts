@@ -19,6 +19,7 @@ import type { Key } from 'ink';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
+import { appendGrant, fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import { mcpConsentPath } from '../engine/mcp-consent-gate.js';
 import { approvalDecision } from '../gate/decision.js';
 import { invocationFixture } from '../process/invocation.test-support.js';
@@ -30,6 +31,7 @@ import {
 import { selectLayout, selectPageRows } from '../render/tui/native-select-window.js';
 import { captureIo } from '../test-support.js';
 import { createGateResumer } from '../render/tui/run-card-model.js';
+import { FS_SCOPE_CHANGED } from '../run-core/prepare-run.js';
 import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import { createNativeConsentPrompter } from './consent-card.js';
 import { RunHost, type HostedLaunch, type HostedStartRequest } from './run-host.js';
@@ -41,6 +43,8 @@ import {
   LAUNCH_CANCELLED,
   LAUNCH_NO_WORKFLOWS,
   launchAmbiguous,
+  launchAuthorityNote,
+  launchBusy,
   launchChanged,
   launchMoved,
   launchNotOffered,
@@ -164,6 +168,70 @@ workflow:
     - { from: g, to: out }
 `;
 
+/**
+ * A workflow whose own definition carries authority: an inline agent that can run two allowed commands and write files, and declares two
+ * MCP servers (one inline, one a registration by name). Nothing runs it in these tests: the confirmation is what they read.
+ */
+const AUTHORITY = `schema_version: '1.0'
+workflow:
+  id: host-authority
+  inputs:
+    - { name: n, type: number, required: true }
+  tools:
+    allowedCommands: ['npm test', 'git status']
+    allowedCommandGlobs: ['make *']
+  agents:
+    - id: worker
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: [run_command, write_file, read_file]
+      mcp_servers:
+        - { id: local, transport: stdio, command: ${JSON.stringify(process.execPath)} }
+        - { ref: shared-registry }
+  nodes:
+    - { id: start, type: input }
+    - { id: work, type: agent, agent_ref: worker }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: work }
+    - { from: work, to: out }
+`;
+
+/** An agent that only reads, no allowlist, no server: there is nothing to add to the question. */
+const READ_ONLY = `schema_version: '1.0'
+workflow:
+  id: host-read-only
+  inputs:
+    - { name: n, type: number, required: true }
+  agents:
+    - id: reader
+      model: claude-sonnet-4-6
+      provider: anthropic
+      system_prompt: synthetic
+      tools: [read_file]
+  nodes:
+    - { id: start, type: input }
+    - { id: read, type: agent, agent_ref: reader }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: read }
+    - { from: read, to: out }
+`;
+
+/** Twelve optional text inputs, so the question cannot name them all in its row. */
+const MANY_INPUTS = `schema_version: '1.0'
+workflow:
+  id: host-many
+  inputs:
+${Array.from({ length: 12 }, (_, index) => `    - { name: field${String(index + 1).padStart(2, '0')}, type: string }`).join('\n')}
+  nodes:
+    - { id: start, type: input }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: out }
+`;
+
 /** Not a workflow: the catalog flags it, the launch does not offer it. */
 const BROKEN = `schema_version: '1.0'
 workflow:
@@ -173,6 +241,11 @@ workflow:
 
 function writeWorkflow(name: string, yaml: string): void {
   writeFileSync(join(root, '.relavium', 'workflows', name), yaml);
+}
+
+/** The repository's own configuration: `[defaults]` of `.relavium/project.toml`. */
+function writeProjectDefaults(defaults: string): void {
+  writeFileSync(join(root, '.relavium', 'project.toml'), `[defaults]\n${defaults}\n`);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -225,6 +298,8 @@ function rig(
     readonly catalog?: (real: LaunchCatalog) => LaunchCatalog;
     /** Answers the host's `start` in place of the real host, so a test holds the run at the moment the host has it. */
     readonly start?: (request: HostedStartRequest) => Promise<HostedLaunch>;
+    /** Holds the engine's build (the window the leg spends on `Starting the run…`) until it settles. */
+    readonly holdBuild?: Promise<void>;
   } = {},
 ): Rig {
   const f = invocationFixture();
@@ -247,8 +322,9 @@ function rig(
     global: { json: false, color: false, cwd: root, configPath: undefined, verbosity: 'normal' },
     db: client.db,
     homeDir: home,
-    buildEngine: (options?: BuildEngineOptions) => {
+    buildEngine: async (options?: BuildEngineOptions) => {
       builds();
+      await over.holdBuild;
       return buildEngine(options);
     },
     sweepMedia: vi.fn(() => Promise.resolve(undefined)),
@@ -780,6 +856,96 @@ describe('a stop that reaches a run that is starting ends the flow (LAUNCH-2)', 
     ).toEqual(['picking', 'confirming', 'starting', 'closed']);
     expect(r.startCalls, 'and nothing started twice').toHaveLength(1);
   });
+
+  it('Esc or Ctrl+C on `Starting the run…` closes the flow at once, stops the leg, and the run never starts (P1-4)', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = rig({ holdBuild: held });
+    const k = keys(r);
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.enter();
+    await shows(r, 'select', 'Run ');
+    k.up(); // a deliberate move to Yes
+    k.enter();
+    // The leg is preparing: the engine is being built and the screen says so.
+    await vi.waitFor(() => {
+      expect(r.builds, 'the engine build is the held window').toHaveBeenCalledTimes(1);
+    }, WAIT);
+    expect(r.channel.ui.getSnapshot()).toMatchObject({
+      kind: 'busy',
+      message: 'Starting the run…',
+      escape: 'cancel',
+    });
+    expect(r.host.snapshot().launching).toBe(true);
+
+    k.ctrlC();
+
+    expect(await settledWithin(opened), 'the keyboard is the Home`s again').toBe(LAUNCH_CANCELLED);
+    expect(r.host.snapshot().active?.cancelling, 'the host leg was told to stop').toBe(true);
+    // The build that was in flight finishes AFTER the stop: nothing may start from it.
+    release();
+    await idle(r);
+    expect(runCount(), 'no run was created').toBe(0);
+    expect(r.registry.activeOwners, 'the leg`s owner retired').toBe(0);
+    expect(r.host.snapshot().last, 'a stopped start is no leg').toBeUndefined();
+  });
+
+  it.each([
+    ['Esc', (k: ReturnType<typeof keys>) => k.esc()],
+    ['Ctrl+C', (k: ReturnType<typeof keys>) => k.ctrlC()],
+  ])(
+    '%s while an approved MCP server connects stops the connect, and no grant is asked for or recorded (P1-4)',
+    async (_name, cancel) => {
+      writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+      const r = rig();
+      // The grant this machine already holds, so no card opens: the leg goes straight to the connect, which hangs until it is aborted.
+      const spawn = await resolveStdioSpawn(
+        {
+          serverId: 'local',
+          provenance: { kind: 'inline' },
+          command: process.execPath,
+        },
+        root,
+      );
+      appendGrant(mcpConsentPath(r.home), {
+        v: 1,
+        digest: fingerprint(spawn),
+        command: spawn.resolvedCommand,
+        args: [...spawn.args],
+        envNames: [],
+        cwd: spawn.cwd,
+        grantedAt: '2026-11-24T00:00:00.000Z',
+      });
+      let connectSignal: AbortSignal | undefined;
+      r.startMcpClient.mockImplementation(
+        (_configs: unknown, signal?: AbortSignal) =>
+          new Promise<never>((_resolve, reject) => {
+            connectSignal = signal;
+            signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+          }),
+      );
+      const k = keys(r);
+      const opened = r.launch.open();
+      await toConfirmation(r);
+      k.up();
+      k.enter();
+      await vi.waitFor(() => {
+        expect(r.startMcpClient, 'the leg is connecting').toHaveBeenCalledTimes(1);
+      }, WAIT);
+
+      cancel(k);
+
+      expect(await settledWithin(opened)).toBe(LAUNCH_CANCELLED);
+      expect(connectSignal?.aborted, 'the connect was told to stop').toBe(true);
+      await idle(r);
+      expect(runCount(), 'no run was created').toBe(0);
+      expect(r.registry.activeOwners).toBe(0);
+    },
+  );
 
   it('an Enter and a Ctrl+C in one read: the flow is cancelled, the host is never asked, and /run does not hang', async () => {
     writeWorkflow('none.relavium.yaml', NO_INPUTS);
@@ -1395,6 +1561,299 @@ describe('what the host says is what the person reads', () => {
   });
 });
 
+describe('the confirmation says what the run can do (P1-7)', () => {
+  /** Pick the one workflow and answer its number field; the confirmation card is up. */
+  async function confirmationOf(r: Rig): Promise<NativePromptSnapshot> {
+    return toConfirmation(r);
+  }
+  const rows = (text: string): number => Math.ceil(text.length / 80);
+
+  it('names the file scope first when the repository sets it, then what the definition grants, then the question', async () => {
+    writeWorkflow('authority.relavium.yaml', AUTHORITY);
+    writeProjectDefaults('fs_scope = "full"');
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message).toBe(
+      'File scope: full, set by this repository. This run can run commands (2 allowed, 1 pattern); write files; use MCP servers local, shared-registry. Run host-authority with n=3?',
+    );
+    expect(
+      rows(card.message),
+      'the whole card stays far inside 24 rows at 80 columns',
+    ).toBeLessThanOrEqual(6);
+    expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
+    expect(card.options[card.selected]?.label, 'the cursor is still on No').toBe('No');
+    keys(r).enter();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+    expect(r.startCalls).toHaveLength(0);
+    expect(runCount()).toBe(0);
+  });
+
+  it('names only the scope when the definition grants nothing, and only the grants when the scope is the default', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    writeProjectDefaults('fs_scope = "project"');
+    const scoped = rig();
+    const first = scoped.launch.open();
+    const card = await confirmationOf(scoped);
+    expect(card.message).toBe(
+      'File scope: project, set by this repository. Run host-read-only with n=3?',
+    );
+    keys(scoped).enter();
+    await first;
+
+    rmSync(join(root, '.relavium', 'project.toml'));
+    rmSync(join(root, '.relavium', 'workflows', 'read.relavium.yaml'));
+    writeWorkflow('authority.relavium.yaml', AUTHORITY);
+    const plain = rig();
+    const second = plain.launch.open();
+    const grants = await confirmationOf(plain);
+    expect(grants.message).toBe(
+      'This run can run commands (2 allowed, 1 pattern); write files; use MCP servers local, shared-registry. Run host-authority with n=3?',
+    );
+    keys(plain).enter();
+    await second;
+  });
+
+  it('adds nothing for a workflow that only reads inside its workspace, and nothing for a scope the repository set to the default', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    writeProjectDefaults('fs_scope = "sandboxed"');
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message, 'the question is exactly what it always was').toBe(
+      'Run host-read-only with n=3?',
+    );
+    keys(r).enter();
+    await opened;
+  });
+
+  it('does not say a grant that cannot run: run_command with no allowlist is disabled, so it is not named', async () => {
+    writeWorkflow(
+      'authority.relavium.yaml',
+      AUTHORITY.replace(
+        "  tools:\n    allowedCommands: ['npm test', 'git status']\n    allowedCommandGlobs: ['make *']\n",
+        '  tools: {}\n',
+      ),
+    );
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message).not.toContain('run commands');
+    expect(card.message).toContain('write files');
+    keys(r).enter();
+    await opened;
+  });
+
+  it('shows no scope when the configuration cannot be read, and the start then refuses it with the file named from the project', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    writeFileSync(join(root, '.relavium', 'project.toml'), 'this is = not [valid toml');
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message).toBe('Run host-read-only with n=3?');
+    k.up();
+    k.enter();
+    const notice = await opened;
+    expect(notice).toContain(join('.relavium', 'project.toml'));
+    expect(notice).not.toContain(root);
+    expect(runCount()).toBe(0);
+  });
+
+  it('is bounded: the sentence never passes 200 characters, however much the definition grants', () => {
+    const commands = Array.from({ length: 120 }, (_, index) => `'cmd-${String(index)}'`).join(', ');
+    const globs = Array.from({ length: 120 }, (_, index) => `'glob-${String(index)} *'`).join(', ');
+    const servers = ['one', 'two', 'three', 'four']
+      .map((name) => `        - { ref: ${name}-${'n'.repeat(40)} }`)
+      .join('\n');
+    const local = `        - { id: local, transport: stdio, command: ${JSON.stringify(process.execPath)} }\n`;
+    const def = parseWorkflow(
+      AUTHORITY.replace(
+        "allowedCommands: ['npm test', 'git status']",
+        `allowedCommands: [${commands}]`,
+      )
+        .replace("allowedCommandGlobs: ['make *']", `allowedCommandGlobs: [${globs}]`)
+        .replace(`${local}        - { ref: shared-registry }`, servers),
+      { source: 'bounded' },
+    );
+    const note = launchAuthorityNote(def, { tier: 'full', fromRepository: true });
+    expect(note?.length).toBe(200);
+    expect(note).toMatch(
+      /^File scope: full, set by this repository\. This run can run commands \(120 allowed, 120 patterns\)/u,
+    );
+    expect(note?.endsWith('…'), 'the cut is marked').toBe(true);
+  });
+
+  it('puts hostile server names through the sanitize floor: no control, no escape, bounded', async () => {
+    const hostile = `${'x'.repeat(40)}\u001b[31m\u202e\n[Ctrl+Y]`;
+    writeWorkflow(
+      'authority.relavium.yaml',
+      AUTHORITY.replace('{ ref: shared-registry }', `{ ref: ${JSON.stringify(hostile)} }`),
+    );
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(
+      [...card.message].filter((character) => {
+        const code = character.charCodeAt(0);
+        return code < 32 || code === 127 || (code >= 0x202a && code <= 0x202e);
+      }),
+      'no control, escape or bidi character',
+    ).toEqual([]);
+    expect(card.message).not.toContain('x'.repeat(30));
+    expect(card.message.length).toBeLessThanOrEqual(200 + 1 + 200);
+    keys(r).enter();
+    await opened;
+  });
+
+  it('is bound to the scope it named: a project file changed after the confirmation refuses the start, and nothing starts', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    writeProjectDefaults('fs_scope = "project"');
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message).toContain('File scope: project, set by this repository.');
+    // The repository's configuration is widened while the card is up.
+    writeProjectDefaults('fs_scope = "full"');
+    k.up();
+    k.enter();
+    expect(await opened).toBe(FS_SCOPE_CHANGED);
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    expect(r.registry.activeOwners).toBe(0);
+  });
+});
+
+describe('the confirmation counts the inputs it has no room for (M-3)', () => {
+  it('shows as many whole entries as fit and says how many more, never a half entry', async () => {
+    writeWorkflow('many.relavium.yaml', MANY_INPUTS);
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.enter();
+    for (let index = 1; index <= 12; index += 1) {
+      await shows(
+        r,
+        'text',
+        `Input ${String(index)} of 12: field${String(index).padStart(2, '0')}`,
+      );
+      k.type(`value-${String(index).padStart(2, '0')}-padding`);
+      k.enter();
+    }
+    const card = await shows(r, 'select', 'Run host-many');
+    expect(card.message.length).toBeLessThanOrEqual(200);
+    const shown = card.message.match(/field\d\d=/g) ?? [];
+    expect(shown.length, 'some are shown').toBeGreaterThan(0);
+    expect(shown.length, 'and not all').toBeLessThan(12);
+    expect(card.message).toMatch(new RegExp(` and ${String(12 - shown.length)} more\\?$`));
+    // Every entry that is shown is whole: the value ends where it ended.
+    for (const entry of card.message.match(/field\d\d=[^,?]*/g) ?? [])
+      expect(entry).toMatch(/^field\d\d=value-\d\d-padding/u);
+    k.enter(); // No
+    await opened;
+  });
+
+  it('keeps the question exactly as it was while every input fits', async () => {
+    writeWorkflow('happy.relavium.yaml', HAPPY);
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await toConfirmation(r, '4');
+    expect(card.message).toBe('Run host-happy with n=4?');
+    keys(r).enter();
+    await opened;
+  });
+});
+
+describe('a request while the host already hosts a leg is answered before the form opens (M-2)', () => {
+  const executing = {
+    launching: false,
+    active: { leg: 'start', runId: '0123456789abcdef-synthetic', cancelling: false },
+    last: undefined,
+  } as const;
+
+  function stubbed(snapshot: () => ReturnType<RunHost['snapshot']>) {
+    const r = rig();
+    const list = vi.fn(() => []);
+    const begin = vi.spyOn(r.channel.flow, 'begin');
+    const start = vi.fn(
+      (): Promise<HostedLaunch> =>
+        Promise.resolve({ kind: 'refused', reason: 'busy', message: 'x' }),
+    );
+    const launch = createRunLaunch({
+      flow: r.channel.flow,
+      host: { start, snapshot },
+      catalog: {
+        list,
+        load: () => {
+          throw new Error('never read');
+        },
+      },
+    });
+    return { r, launch, list, begin, start };
+  }
+
+  it('names the hosted run by its first characters and where it is, opens no prompt and reads no catalog', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    const { r, launch, list, begin, start } = stubbed(() => executing);
+    const notice = await launch.open();
+    expect(notice).toBe('A run is already executing (01234567). Enter on its ▶ row opens it.');
+    expect(notice.length, 'one row of the notice line').toBeLessThanOrEqual(78);
+    expect(begin, 'no flow was begun').not.toHaveBeenCalled();
+    expect(r.channel.ui.getSnapshot().active).toBe(false);
+    expect(list, 'the catalog was not read').not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    // The same for `r` on a workflow of the Defined tab: the slug is not even looked at.
+    expect(await launch.open('no-inputs', '.relavium/workflows/none.relavium.yaml')).toBe(notice);
+  });
+
+  it('a leg that is still starting is named as starting, and a host with nothing hosted opens the form as before', async () => {
+    const starting = stubbed(() => ({ launching: true, active: undefined, last: undefined }));
+    expect(await starting.launch.open()).toBe('A run is already starting.');
+    expect(starting.begin).not.toHaveBeenCalled();
+
+    const idle = stubbed(() => ({ launching: false, active: undefined, last: undefined }));
+    expect(await idle.launch.open()).toBe(LAUNCH_NO_WORKFLOWS); // the (empty) catalog was read: the flow went on
+    expect(idle.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('a forged run id is cut and put through the one-line floor', () => {
+    const forged = launchBusy({
+      launching: false,
+      active: { leg: 'start', runId: '\u001b[2Jrun\nrow', cancelling: false },
+      last: undefined,
+    });
+    expect([...(forged ?? '')].some((character) => character.charCodeAt(0) < 32)).toBe(false);
+    expect(forged).toContain('A run is already executing');
+  });
+
+  it('with the real host: a leg that is starting turns /run away at once, and the form opens again when it is over', async () => {
+    writeWorkflow('none.relavium.yaml', NO_INPUTS);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const r = rig({ holdBuild: held });
+    const first = r.host.start({
+      workflow: '.relavium/workflows/none.relavium.yaml',
+      rawInputs: {},
+    });
+    await vi.waitFor(() => {
+      expect(r.builds, 'the leg is inside its build').toHaveBeenCalledTimes(1);
+    }, WAIT);
+    expect(await r.launch.open()).toBe('A run is already starting.');
+    expect(r.snapshots, 'no prompt ever opened').toEqual([]);
+    release();
+    expect((await first).kind).toBe('started');
+    await idle(r);
+    const opened = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    keys(r).esc();
+    expect(await opened).toBe(LAUNCH_CANCELLED);
+  });
+});
+
 describe('the MCP consent card of a hosted leg', () => {
   /** Walk the launch of the MCP workflow to its start, leaving the leg preparing and the consent card up. */
   async function toConsentCard(r: Rig): Promise<{
@@ -1428,23 +1887,28 @@ describe('the MCP consent card of a hosted leg', () => {
   });
 
   it.each([
-    ['Ctrl+N', (k: ReturnType<typeof keys>) => k.ctrlN()],
-    ['Esc', (k: ReturnType<typeof keys>) => k.esc()],
-    ['Ctrl+C', (k: ReturnType<typeof keys>) => k.ctrlC()],
-  ])('a refusal (%s) spawns nothing, records nothing and starts no run', async (_name, refuse) => {
-    writeWorkflow('mcp.relavium.yaml', MCP_GATED);
-    const r = rig();
-    const { opened } = await toConsentCard(r);
-    refuse(keys(r));
-    const notice = await opened;
-    expect(notice).toContain('was not approved');
-    expect(r.startMcpClient, 'the server was never started').not.toHaveBeenCalled();
-    expect(existsSync(mcpConsentPath(r.home)), 'no grant was written').toBe(false);
-    expect(runCount(), 'no run was created').toBe(0);
-    expect(r.registry.activeOwners).toBe(0);
-    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
-    expect(r.channel.ui.getSnapshot().active).toBe(false);
-  });
+    // `Ctrl+N` answers the card: the gate words the refusal. `Esc` and `Ctrl+C` leave the whole flow (the legend says `Esc cancel`), which
+    // since P1-4 is one cancel of the launch that also stops the leg: the notice is the launch's, and the effect is the same refusal.
+    ['Ctrl+N', (k: ReturnType<typeof keys>) => k.ctrlN(), 'was not approved'],
+    ['Esc', (k: ReturnType<typeof keys>) => k.esc(), LAUNCH_CANCELLED],
+    ['Ctrl+C', (k: ReturnType<typeof keys>) => k.ctrlC(), LAUNCH_CANCELLED],
+  ])(
+    'a refusal (%s) spawns nothing, records nothing and starts no run',
+    async (_name, refuse, words) => {
+      writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+      const r = rig();
+      const { opened } = await toConsentCard(r);
+      refuse(keys(r));
+      const notice = await opened;
+      expect(notice).toContain(words);
+      expect(r.startMcpClient, 'the server was never started').not.toHaveBeenCalled();
+      expect(existsSync(mcpConsentPath(r.home)), 'no grant was written').toBe(false);
+      expect(runCount(), 'no run was created').toBe(0);
+      expect(r.registry.activeOwners).toBe(0);
+      expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+      expect(r.channel.ui.getSnapshot().active).toBe(false);
+    },
+  );
 
   it('is asked at a resume too: a grant the machine no longer holds is asked about again, through the same card', async () => {
     writeWorkflow('mcp.relavium.yaml', MCP_GATED);

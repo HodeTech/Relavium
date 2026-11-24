@@ -61,6 +61,32 @@ export interface HostedRunTerminal {
 }
 
 /**
+ * A run id the shell takes as one plain word: letters, digits and `_ . : -`, never a leading dash, bounded. It is the predicate of
+ * `resumeCommandBase` (`gate/budget.ts`) for the one identifier this module names: the run ids the Home mints are UUIDs, but a hosted
+ * leg also names runs it read from a database row, and an id with a space, a `;`, a backtick or a `$(` is not a word.
+ */
+const SHELL_INERT_ID = /^[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,159}$/;
+
+/**
+ * A run id as a card names it in prose: through the one-line floor, and with no backtick, because a backticked run of text in a card is
+ * what a person copies as a command (an id of `` `touch x` `` would otherwise read as one). A UUID has none, so a real id is unchanged.
+ */
+export function displayRunId(runId: string): string {
+  return sanitizeInline(runId).replaceAll('`', "'");
+}
+
+/**
+ * The command that reads a run, written as text the person may copy: `relavium logs <id>` or `relavium status <id>` for an id that is
+ * shell-inert, and for any other id the bare command with the id in prose, so a card never offers a command line that carries
+ * a hostile id (a copied `relavium logs x; rm -rf ~` would run it).
+ */
+export function relaviumRunCommand(command: 'logs' | 'status', runId: string): string {
+  return SHELL_INERT_ID.test(runId)
+    ? `\`relavium ${command} ${runId}\``
+    : `\`relavium ${command}\` (for run ${displayRunId(runId)})`;
+}
+
+/**
  * Turn a departed leg's facts into the text and the Home-side disposition of its card.
  *
  * The mapping reuses `outcomeToExitCode`, the one owner of the outcome-to-exit contract, so a card can never
@@ -70,7 +96,7 @@ export interface HostedRunTerminal {
  * hostile workflow or a secret to ride in on.
  */
 export function describeHostedRunTerminal(input: HostedRunTerminalInput): HostedRunTerminal {
-  const id = sanitizeInline(input.runId);
+  const id = displayRunId(input.runId);
   const exit = outcomeToExitCode(
     input.outcome,
     input.durability,
@@ -78,7 +104,7 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
     input.departure,
     input.leg === 'resume',
   );
-  const logs = `\`relavium logs ${id}\``;
+  const logs = relaviumRunCommand('logs', input.runId);
   const effectRemedy = 'Do not retry; inspect the target and resolve the effect record.';
   switch (exit) {
     case EXIT_CODES.moneyDurabilityUncertain: {
@@ -103,15 +129,10 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
         'uncertain',
         5,
         `Run ${id} finished, but its record may not have been written.`,
-        `The result is held and retried the next time relavium starts; read \`relavium status ${id}\` for the durable outcome.`,
+        `The result is held and retried the next time relavium starts; read ${relaviumRunCommand('status', input.runId)} for the durable outcome.`,
       );
     case EXIT_CODES.runOwnedElsewhere:
-      return card(
-        'taken_over',
-        6,
-        `Run ${id} was taken over by another process; this one stopped without recording an outcome.`,
-        `Read ${logs} for what actually happened.`,
-      );
+      return takenOverTerminal(input.runId);
     case EXIT_CODES.gatePaused:
       return card(
         'paused',
@@ -145,6 +166,20 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
       // `outcomeToExitCode` returns none of 2, 4 or 9; a new code must be named above, not shown as a failure.
       return card('failed', undefined, `Run ${id} ended unexpectedly.`, `Read ${logs}.`);
   }
+}
+
+/**
+ * The card of a run another process took over. It needs no fact beyond the run's id, so the host can still show it when the departure it
+ * would read the other facts from cannot be read a second time (the leg was already refused as taken over).
+ */
+export function takenOverTerminal(runId: string): HostedRunTerminal {
+  const id = displayRunId(runId);
+  return card(
+    'taken_over',
+    6,
+    `Run ${id} was taken over by another process; this one stopped without recording an outcome.`,
+    `Read ${relaviumRunCommand('logs', runId)} for what actually happened.`,
+  );
 }
 
 function card(

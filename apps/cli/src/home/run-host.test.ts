@@ -9,7 +9,7 @@
  * is a stale pause, a leg held open until cancelled, an ordered teardown) script the handle and keep everything
  * else real.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -948,6 +948,152 @@ describe('the consent card closes with the leg that asked', () => {
   });
 });
 
+describe('a start is cancelled by the flow that asked for it while it prepares (P1-4)', () => {
+  /** The MCP workflow with a secret input, so the leg waits on the secret port BEFORE it reaches the consent gate. */
+  const MCP_SECRET = MCP_GATED.replace(
+    '    - { name: n, type: number }',
+    '    - { name: n, type: number }\n    - { name: token, type: secret }',
+  ).replace('id: host-mcp', 'id: host-mcp-secret');
+
+  it('a cancel while the leg waits for a secret ends it as stopped: the consent card never opens, nothing is spawned, no run exists, and the refusal is not "not approved"', async () => {
+    const consent = vi.fn(() => Promise.resolve(true));
+    const startMcpClient = vi.fn(() => realStartMcpClient([]));
+    const r = rig({ startMcpClient, consent });
+    const path = writeWorkflow('mcp-secret.relavium.yaml', MCP_SECRET);
+    const controller = new AbortController();
+    let supply: () => void = () => undefined;
+    const supplied = new Promise<void>((resolve) => {
+      supply = resolve;
+    });
+    let asked = false;
+    const secrets: HostedSecretPort = async () => {
+      asked = true;
+      await supplied;
+      return { token: 'a-synthetic-secret' };
+    };
+    const launching = r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      secrets,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(asked, 'the leg is waiting for the secret').toBe(true), {
+      timeout: WAIT_MS,
+    });
+
+    controller.abort();
+    expect(r.host.snapshot().active?.cancelling, 'the abort stopped the leg').toBe(true);
+    supply();
+
+    expect(await launching).toEqual({
+      kind: 'refused',
+      reason: 'stopped',
+      message: 'The run was stopped before it started.',
+    });
+    expect(
+      consent,
+      'no card was asked, so no decision the person never saw',
+    ).not.toHaveBeenCalled();
+    expect(startMcpClient, 'nothing was spawned').not.toHaveBeenCalled();
+    expect(existsSync(mcpConsentPath(r.home)), 'no grant was recorded').toBe(false);
+    expect(r.builds, 'no engine was built').not.toHaveBeenCalled();
+    expect(runCount(), 'no run was created').toBe(0);
+    expect(r.f.registry.activeOwners, 'the leg`s owner retired').toBe(0);
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+  });
+
+  it('a cancel while the engine is being built ends it as stopped, and the build that finishes afterwards starts nothing', async () => {
+    let finishBuild: () => void = () => undefined;
+    const building = new Promise<void>((resolve) => {
+      finishBuild = resolve;
+    });
+    const r = rig({
+      buildEngine: async (options?: BuildEngineOptions) => {
+        await building;
+        return buildEngine(options);
+      },
+    });
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const controller = new AbortController();
+    const launching = r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(r.host.snapshot().active, 'the leg is preparing').toBeDefined(), {
+      timeout: WAIT_MS,
+    });
+    await turn(); // past the synchronous part: the leg is inside the held build
+
+    controller.abort();
+    finishBuild();
+
+    expect(await launching).toMatchObject({ kind: 'refused', reason: 'stopped' });
+    expect(runCount(), 'the engine that was built after the cancel never started a run').toBe(0);
+    expect(r.f.registry.activeOwners).toBe(0);
+    expect(r.host.snapshot()).toMatchObject({
+      launching: false,
+      active: undefined,
+      last: undefined,
+    });
+  });
+
+  it('a signal that has already aborted stops the leg before it does anything', async () => {
+    const r = rig();
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const controller = new AbortController();
+    controller.abort();
+    const launch = await r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      signal: controller.signal,
+    });
+    expect(launch).toMatchObject({ kind: 'refused', reason: 'stopped' });
+    expect(r.builds).not.toHaveBeenCalled();
+    expect(runCount()).toBe(0);
+    expect(r.f.registry.activeOwners).toBe(0);
+  });
+
+  it('once the start has answered, the signal governs nothing: aborting it later does not cancel the started run', async () => {
+    const s = scriptedRig({ terminal: 'cancelled', holdUntilCancel: true });
+    const controller = new AbortController();
+    const launch = await s.host.start({
+      workflow: s.path,
+      rawInputs: { n: '3' },
+      signal: controller.signal,
+    });
+    if (launch.kind !== 'started') throw new Error('the leg did not start');
+
+    controller.abort();
+    await turn();
+
+    expect(s.cancel, 'a started run is the run view`s to cancel').not.toHaveBeenCalled();
+    expect(s.host.snapshot().active).toMatchObject({ runId: 'run-scripted', cancelling: false });
+    s.host.cancel();
+    expect((await launch.ended).terminal.disposition).toBe('cancelled');
+  });
+
+  it('a resume answer is stopped by its signal in the same way', async () => {
+    const r = rig();
+    const path = writeWorkflow('gated.relavium.yaml', GATED);
+    const parked = await started(r.host.start({ workflow: path, rawInputs: { n: '3' } }));
+    expect(parked.handedOff).toBe(true);
+    const buildsBefore = r.builds.mock.calls.length;
+    const controller = new AbortController();
+    controller.abort();
+    const answer = await r.host.resume({
+      runId: parked.runId,
+      kind: 'human',
+      decision: approvalDecision(),
+      signal: controller.signal,
+    });
+    expect(answer).toMatchObject({ kind: 'refused', reason: 'stopped' });
+    expect(r.builds.mock.calls.length, 'no engine for a stopped answer').toBe(buildsBefore);
+    expect(runStatus(parked.runId), 'the gate is still pending').toBe('paused');
+    expect(r.f.registry.activeOwners).toBe(0);
+  });
+});
+
 describe('the live view holds no frame loop once its leg is over', () => {
   /** The feed's frame timer, counted: how many intervals were started and not stopped. */
   function countedFeed() {
@@ -1024,6 +1170,79 @@ describe('a fault that ends a leg', () => {
     expect(s.f.registry.observations.hasInfrastructureFailure()).toBe(true);
     expect(s.f.registry.activeOwners).toBe(0);
     expect(s.host.snapshot()).toMatchObject({ active: undefined, last: end });
+  });
+});
+
+describe('the cleanup tail of a leg (P02a-2) and its departure (M-Ho1)', () => {
+  it('a renderer whose seal throws still ends the leg: the host is idle, the owner retired, a later leg may start, and the terminal card is the run`s', async () => {
+    const s = scriptedRig(
+      { terminal: 'completed' },
+      {
+        renderer: () => ({
+          onEvent: () => undefined,
+          seal: () => {
+            throw new Error('PRIVATE_SEAL_FAULT');
+          },
+        }),
+      },
+    );
+    const end = await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
+
+    expect(end.terminal.disposition, 'the run completed: the card says so').toBe('completed');
+    expect(end.fault, 'the seal fault is the leg`s own fault').toBeDefined();
+    expect(JSON.stringify([end, s.host.notices.snapshot()])).not.toContain('PRIVATE_SEAL_FAULT');
+    expect(s.host.snapshot(), 'the leg is over').toMatchObject({
+      launching: false,
+      active: undefined,
+      last: end,
+    });
+    expect(end.retirement).toBe('retired');
+    expect(s.f.registry.activeOwners, 'the owner finished').toBe(0);
+    expect(
+      s.f.registry.observations.hasInfrastructureFailure(),
+      'the fault is the Home`s fact',
+    ).toBe(true);
+    // A later leg is not refused `busy` for a leg that is over.
+    const next = await s.host.start({ workflow: s.path, rawInputs: { n: '3' } });
+    expect(next).not.toMatchObject({ kind: 'refused', reason: 'busy' });
+  });
+
+  it('every step of the tail runs even when an earlier one throws: the MCP release throwing does not skip the seal or the owner', async () => {
+    const sealed = vi.fn();
+    const s = scriptedRig(
+      { terminal: 'completed' },
+      {
+        renderer: () => ({ onEvent: () => undefined, seal: sealed }),
+        createResources: (lifetime, io) => {
+          const resources = new RunResources(lifetime, io);
+          vi.spyOn(resources, 'releaseMcp').mockRejectedValue(new Error('PRIVATE_RELEASE_FAULT'));
+          return resources;
+        },
+      },
+    );
+    const end = await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
+    expect(end.fault).toBeDefined();
+    expect(sealed, 'the renderer was still sealed').toHaveBeenCalled();
+    expect(s.host.snapshot()).toMatchObject({ active: undefined, last: end });
+    expect(s.f.registry.activeOwners).toBe(0);
+  });
+
+  it('a departure that fails for a leg that was not taken over is a fault, not a disposition', async () => {
+    const s = scriptedRig({ terminal: 'completed' });
+    let calls = 0;
+    const depart = s.handle.depart.bind(s.handle);
+    // The drive and `finishLeg` are answered; the host's own read after them is not.
+    vi.spyOn(s.handle, 'depart').mockImplementation(() => {
+      calls += 1;
+      return calls <= 2 ? depart() : Promise.reject(new Error('PRIVATE_LATE_DEPARTURE_FAULT'));
+    });
+    const end = await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
+    expect(calls).toBeGreaterThanOrEqual(3);
+    expect(end.terminal.disposition).toBe('failed');
+    expect(end.fault).toBeDefined();
+    expect(JSON.stringify(end)).not.toContain('PRIVATE_LATE_DEPARTURE_FAULT');
+    expect(s.f.registry.activeOwners).toBe(0);
+    expect(s.host.snapshot()).toMatchObject({ launching: false, active: undefined });
   });
 });
 

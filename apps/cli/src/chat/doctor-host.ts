@@ -46,7 +46,8 @@ export interface DoctorHostInputs {
 
 export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
   return {
-    globalArtifacts: () => globalArtifactsNotice(),
+    // The invocation's own operator home when it was handed one (a test, an embedding), never `os.homedir()` behind its back.
+    globalArtifacts: () => globalArtifactsNotice(inputs.operatorHomeDir),
     keychain: () => {
       // Reachability only: read a never-set account. `null` ⇒ reachable; a `KeychainUnavailableError` ⇒ down.
       const store = inputs.keychain ?? createOsKeychainStore();
@@ -61,6 +62,7 @@ export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
         loadResolvedConfig({
           cwd: inputs.cwd,
           ...(inputs.configPath === undefined ? {} : { configPath: inputs.configPath }),
+          ...(inputs.operatorHomeDir === undefined ? {} : { home: inputs.operatorHomeDir }),
         });
       } catch (err) {
         // The report is drawn into the transcript: a broken config file is named from the project or `~`, never by its absolute path

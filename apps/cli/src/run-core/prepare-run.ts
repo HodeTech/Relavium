@@ -82,6 +82,13 @@ function parseOrRefuse(yaml: string, source: string): WorkflowDefinition {
   }
 }
 
+/**
+ * What a start says when the project's file scope is not the one the person confirmed. It carries no path and no value, and names the
+ * remedy the digest refusal names: the confirmation is built again from what is there now.
+ */
+export const FS_SCOPE_CHANGED =
+  "The project's file scope changed after you confirmed. Open the list again.";
+
 /** What a host asks `prepareRun` to start: the workflow to resolve and the raw `name=value` inputs. */
 export interface PrepareRunRequest {
   /** A path, an id or a slug, resolved against the project and the home exactly as `relavium run` does. */
@@ -101,6 +108,13 @@ export interface PrepareRunRequest {
    * the MCP tool lists discovered at connect time. A changed MCP command still meets the consent gate: consent is fingerprinted on the declaration.
    */
   readonly expectedSourceDigest?: string | undefined;
+  /**
+   * The file scope tier (`[defaults].fs_scope`, `sandboxed` when none is set) a person confirmed before this start, because it was named
+   * in what they confirmed. Absent, nothing is bound. Present, the tier THIS start resolves must be the same one, or the start is refused
+   * ({@link FS_SCOPE_CHANGED}) before the workflow is parsed and before the first workflow-related effect, as the digest is. It binds the
+   * tier only: the rest of the project files stay as {@link expectedSourceDigest} describes.
+   */
+  readonly expectedFsScope?: NonNullable<ResolvedConfig['fsScope']> | undefined;
 }
 
 /** The injectable services a start uses. Every member is the one `RunCommandDeps` already carries. */
@@ -167,6 +181,153 @@ export interface PreparedRun {
 }
 
 /**
+ * **A confirmed start runs the file that was confirmed** (LAUNCH-5), under the file scope that was named. Checked on the very text parsed
+ * after it, so there is no second read between the check and the parse. What precedes it: the host's leg owner (registered by the host
+ * before `prepareRun`, and retired on a refusal) and the configuration load (which may tighten the global config file's mode). What
+ * follows it, and so does not happen for a refused start: the parse, the secret port, key resolution, the MCP consent card and spawn,
+ * opening the history, the engine, `reconcile` and the lease.
+ */
+function assertConfirmedStart(
+  request: PrepareRunRequest,
+  config: ResolvedConfig,
+  yaml: string,
+): void {
+  if (request.expectedSourceDigest !== undefined)
+    assertWorkflowSourceDigest(request.expectedSourceDigest, yaml);
+  // The scope named in the confirmation is the scope this start runs under: a project file that changed in between is a different run.
+  if (
+    request.expectedFsScope !== undefined &&
+    (config.fsScope ?? 'sandboxed') !== request.expectedFsScope
+  )
+    throw new CliError('invalid_invocation', FS_SCOPE_CHANGED);
+}
+
+/**
+ * Open the durable history behind the lifetime's checkpoints, classifying only this open operation as a storage fault (engine and work
+ * faults keep their own boundary). `undefined` when the deps carry no store opener (the in-memory embedding path).
+ */
+function openHistory(
+  deps: PrepareRunDeps,
+  lifetime: RunLifetime,
+  resources: RunResources,
+  runWorkflow: WorkflowDefinition,
+  homeDir: string,
+): OpenedHistory | undefined {
+  const openRunStore = deps.openRunStore;
+  if (openRunStore === undefined) return undefined;
+  try {
+    return acquireNativeResource(
+      (captureClose) =>
+        openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose, {
+          io: deps.io,
+          invocation: lifetime.invocation,
+        }),
+      {
+        assertAdmitting: () => lifetime.checkpoint(),
+        captureClose: (close) => {
+          resources.captureHistoryClose(close);
+        },
+        cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
+        isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
+      },
+    );
+  } catch (err) {
+    // Classify only this open operation; engine/work faults retain their own boundary.
+    throw storageBoundaryError(err);
+  }
+}
+
+/** What `durableEngineOptions` is built from. */
+interface DurableWiringInput {
+  /** The options of a run with no durable history: the providers, the tool environment, the notices and the MCP arm. */
+  readonly base: BuildEngineOptions;
+  readonly history: OpenedHistory;
+  readonly def: WorkflowDefinition;
+  readonly config: ResolvedConfig;
+  readonly homeDir: string;
+  readonly cwd: string;
+  readonly lifetime: RunLifetime;
+  readonly io: CliIo;
+}
+
+/**
+ * The engine options of a run whose history is durable: the effect journal and its read half, the durable host with its lease and
+ * outbox, the media wiring and the user-pricing overlay, over the base options. `mediaCasRoot` is hoisted for the run-end host media GC
+ * the host runs.
+ *
+ * Media host-wiring (2.S): the SAME `~/.relavium/history.db` connection backs the `model_catalog` reader (→ `resolveMediaSurface`
+ * routing) + the `media_references` retention junction, and the host gets the global CAS root (`~/.relavium/media/`) + the
+ * project-relative `save_to` root (`.relavium/runs/`). Absent (the in-memory unit/harness path) ⇒ no media ports, so a media-producing
+ * run fails loud — never a silent leak. The per-modality `media_cost_estimate` default folds in from config.
+ */
+function durableEngineOptions(input: DurableWiringInput): {
+  readonly engineOptions: BuildEngineOptions;
+  readonly mediaCasRoot: string | undefined;
+} {
+  const { base, history, def, config, homeDir, cwd, lifetime, io } = input;
+  const wiring = buildMediaEngineWiring(
+    history.db,
+    homeDir,
+    cwd,
+    config,
+    lifetime.notification((m: string) => io.writeErr(`${m}\n`)),
+  );
+  // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
+  // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
+  // (drive.ts), so a fresh run and a resume reject consistently.
+  // Validated against `def`, not `runWorkflow`, and that is still correct: MCP augmentation rewrites only
+  // each inline agent's `tools` grant, which this check does not read — so the verdict is identical
+  // either way. Said here because the sentence that used to carry it covered the store too, and the store
+  // moved to `runWorkflow` a few lines up.
+  assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
+  // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
+  // realized cost (the agent node). Only wired on this durable-history branch: the in-memory unit/harness
+  // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing). Non-fatal:
+  // a corrupt provider/catalog row degrades to an empty overlay, never failing the run over a pricing read.
+  const resolvePrice = readUserPricingOverlay(history.db);
+  return {
+    mediaCasRoot: wiring.media.casRoot,
+    engineOptions: {
+      ...base,
+      // The durable effect journal (ADR-0080), built per node from the run correlation the engine supplies.
+      // A FACTORY because the correlation differs per node and per retry attempt, and only the run loop
+      // knows both — the same reason the realized-cost ledger is threaded this way.
+      effectJournal: (correlation: EffectCorrelation) =>
+        createEffectJournalPort(
+          createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
+          correlation,
+          { providerAttempt: 1, toolCallId: 'run' },
+        ),
+      // …and its READ half. `relavium run` reaches the gate through its own budget-approval resume, so a
+      // write-only wiring here would record effects it could never enforce.
+      effectResume: createEffectResumePort(
+        createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
+      ),
+      host: createCliHost(history.store, {
+        operatorHomeDir: homeDir,
+        media: wiring.media,
+        // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
+        // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
+        // reference the host defaults to survives nothing, which is fatal in a one-shot CLI process.
+        terminalOutboxPath: history.terminalOutboxPath,
+        // ADR-0079: the DURABLE lease, built from the same store the run persists to — the in-memory
+        // reference the host defaults to guards nothing across processes, which is the whole point here.
+        runLeases: createRunLeasePort(history.store),
+      }),
+      resolveMediaSurface: wiring.resolveMediaSurface,
+      ...(wiring.maxTokensEstimate === undefined
+        ? {}
+        : { maxTokensEstimate: wiring.maxTokensEstimate }),
+      ...(wiring.mediaCostEstimate === undefined
+        ? {}
+        : { mediaCostEstimate: wiring.mediaCostEstimate }),
+      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+    },
+  };
+}
+
+/**
  * The part of `relavium run` that does not depend on how the process is hosted
  * ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §1): resolve and
  * validate the workflow, admit the inputs and secrets, pre-flight the keys and the catalog, connect the MCP
@@ -201,13 +362,7 @@ export async function prepareRun(
     homeDir,
   });
 
-  // **A confirmed start runs the file that was confirmed** (LAUNCH-5). Checked on the very text parsed below, so there is no second
-  // read between the check and the parse. What precedes it: the host's leg owner (registered by the host before this call, and retired
-  // on a refusal) and the configuration load above (which may tighten the global config file's mode). What follows it, and so does not
-  // happen for a refused start: the parse, the secret port, key resolution, the MCP consent card and spawn, opening the history, the
-  // engine, `reconcile` and the lease.
-  if (request.expectedSourceDigest !== undefined)
-    assertWorkflowSourceDigest(request.expectedSourceDigest, source.yaml);
+  assertConfirmedStart(request, config, source.yaml);
 
   const def = parseOrRefuse(source.yaml, sourceLabel(deps.global.cwd, source.path));
   assertOrdinaryInputsAllowed(def, rawInputs);
@@ -287,30 +442,7 @@ export async function prepareRun(
   // workflow identity: a server that returns a different tool set on resume IS a divergence, and it can
   // only be seen if what was frozen is what was executed.
   lifetime.checkpoint();
-  let opened: OpenedHistory | undefined;
-  try {
-    const openRunStore = deps.openRunStore;
-    if (openRunStore !== undefined) {
-      opened = acquireNativeResource(
-        (captureClose) =>
-          openRunStore(runWorkflow, homeDir, deps.global.cwd, captureClose, {
-            io: deps.io,
-            invocation: lifetime.invocation,
-          }),
-        {
-          assertAdmitting: () => lifetime.checkpoint(),
-          captureClose: (close) => {
-            resources.captureHistoryClose(close);
-          },
-          cleanupUncertain: (cause) => lifetime.cleanupFailed(cause),
-          isStoppedFailure: (cause) => lifetime.isStoppedFailure(cause),
-        },
-      );
-    }
-  } catch (err) {
-    // Classify only this open operation; engine/work faults retain their own boundary.
-    throw storageBoundaryError(err);
-  }
+  const opened = openHistory(deps, lifetime, resources, runWorkflow, homeDir);
 
   const mcpOption =
     mcpRuntime === undefined
@@ -353,81 +485,28 @@ export async function prepareRun(
         `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap', modalities)}\n`,
       ),
   );
-  let engineOptions: BuildEngineOptions = {
+  const baseOptions: BuildEngineOptions = {
     providers,
     toolEnv,
     onEffortWithheld,
     onUnpriced,
     ...mcpOption,
   };
-  let mediaCasRoot: string | undefined;
-  if (opened !== undefined) {
-    // Bound to a `const` so the closures below keep the narrowing: `opened` is a `let` assigned inside
-    // the try above, and TypeScript cannot prove it is still set by the time a callback runs.
-    const history = opened;
-    const wiring = buildMediaEngineWiring(
-      history.db,
-      homeDir,
-      deps.global.cwd,
-      config,
-      lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
-    );
-    mediaCasRoot = wiring.media.casRoot; // hoisted for the run-end host media GC the host runs
-    // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
-    // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
-    // (drive.ts), so a fresh run and a resume reject consistently.
-    // Validated against `def`, not `runWorkflow`, and that is still correct: MCP augmentation rewrites only
-    // each inline agent's `tools` grant, which this check does not read — so the verdict is identical
-    // either way. Said here because the sentence that used to carry it covered the store too, and the store
-    // moved to `runWorkflow` a few lines up.
-    assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
-    // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
-    // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
-    // realized cost (the agent node). Only wired on this durable-history branch: the in-memory unit/harness
-    // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing). Non-fatal:
-    // a corrupt provider/catalog row degrades to an empty overlay, never failing the run over a pricing read.
-    const resolvePrice = readUserPricingOverlay(history.db);
-    engineOptions = {
-      providers,
-      toolEnv,
-      onEffortWithheld,
-      onUnpriced,
-      // The durable effect journal (ADR-0080), built per node from the run correlation the engine supplies.
-      // A FACTORY because the correlation differs per node and per retry attempt, and only the run loop
-      // knows both — the same reason the realized-cost ledger is threaded this way.
-      effectJournal: (correlation: EffectCorrelation) =>
-        createEffectJournalPort(
-          createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
-          correlation,
-          { providerAttempt: 1, toolCallId: 'run' },
-        ),
-      // …and its READ half. `relavium run` reaches the gate through its own budget-approval resume, so a
-      // write-only wiring here would record effects it could never enforce.
-      effectResume: createEffectResumePort(
-        createEffectJournalStore(history.db, { uuid: randomUUID, now: Date.now }),
-      ),
-      host: createCliHost(history.store, {
-        operatorHomeDir: homeDir,
-        media: wiring.media,
-        // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
-        // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
-        // reference the host defaults to survives nothing, which is fatal in a one-shot CLI process.
-        terminalOutboxPath: history.terminalOutboxPath,
-        // ADR-0079: the DURABLE lease, built from the same store the run persists to — the in-memory
-        // reference the host defaults to guards nothing across processes, which is the whole point here.
-        runLeases: createRunLeasePort(history.store),
-      }),
-      resolveMediaSurface: wiring.resolveMediaSurface,
-      ...(wiring.maxTokensEstimate === undefined
-        ? {}
-        : { maxTokensEstimate: wiring.maxTokensEstimate }),
-      ...(wiring.mediaCostEstimate === undefined
-        ? {}
-        : { mediaCostEstimate: wiring.mediaCostEstimate }),
-      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-      ...mcpOption,
-    };
-  }
+  const durable =
+    opened === undefined
+      ? undefined
+      : durableEngineOptions({
+          base: baseOptions,
+          history: opened,
+          def,
+          config,
+          homeDir,
+          cwd: deps.global.cwd,
+          lifetime,
+          io: deps.io,
+        });
+  const engineOptions = durable?.engineOptions ?? baseOptions;
+  const mediaCasRoot = durable?.mediaCasRoot;
   lifetime.checkpoint();
   const engine = await build(engineOptions);
   lifetime.adoptEngine(engine);
