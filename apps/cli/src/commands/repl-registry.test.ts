@@ -1,8 +1,10 @@
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   availabilityOf,
-  CHAT_PALETTE_COMMANDS,
   COMMAND_DEFINITIONS,
   COMMAND_DEFINITIONS_BY_NAME,
   commandDefinitionsOf,
@@ -124,11 +126,12 @@ const CLASSES: Readonly<Record<string, Partial<Record<'home' | 'chat', SurfaceCl
 };
 
 /**
- * The placements whose popup has no opener yet: every `popup` today, because Step 4 builds the popup host. SHRINK it as an opener lands; the
- * test below fails for a popup placement that is not listed (a new one needs an opener or a reasoned entry) and for an entry that no longer
- * names a popup (a stale entry).
+ * The popup placements whose popup is NOT BUILT YET: every `popup` today, because Step 4 builds the popup host (MVP-11 §6). A popup placement
+ * is in exactly one of two places: this list, or {@link POPUP_OPENERS}. A new popup placement is in neither and fails until it is built or
+ * listed here; a built popup leaves this list for the openers (a placement in both fails, so an entry cannot outlive its popup). A command on
+ * the list has an increment that owes it ({@link BUILT_BY}).
  */
-const POPUP_WITHOUT_OPENER: readonly string[] = [
+const POPUP_NOT_BUILT_YET: readonly string[] = [
   'home:doctor',
   'home:mode',
   'home:models',
@@ -163,6 +166,37 @@ const POPUP_WITHOUT_OPENER: readonly string[] = [
   'home-chat:resume',
 ];
 
+/**
+ * The popup placements that HAVE an opener: `surface:name` to the module (relative to `apps/cli/src`) that opens the popup. Empty until the
+ * popup host exists (Step 4a); the first popup built moves its placements here from {@link POPUP_NOT_BUILT_YET}. The module has to exist.
+ */
+const POPUP_OPENERS: Readonly<Record<string, string>> = {};
+
+/** The increment of MVP-11 Step 4 (or Step 5b) that builds each command's popup (`docs/roadmap/phases/mvp-11.md`, Step 4 and Appendix A). */
+const BUILT_BY: Readonly<Record<string, '4b' | '4c' | '4d' | '5b'>> = {
+  // 4b · reports
+  doctor: '4b',
+  agent: '4b',
+  cost: '4b',
+  workflows: '4b',
+  help: '4b',
+  // 4c · settings
+  mode: '4c',
+  effort: '4c',
+  models: '4c',
+  permissions: '4c',
+  // 4d · flows
+  providers: '4d',
+  init: '4d',
+  import: '4d',
+  pricing: '4d',
+  resume: '4d',
+  run: '4d',
+  export: '4d',
+  // 5b · the inspection popup
+  details: '5b',
+};
+
 describe('the command table: one definition per name, with the fields every command declares', () => {
   it('has one definition per name, each with the fields of a definition', () => {
     const all = names(COMMAND_DEFINITIONS);
@@ -172,7 +206,14 @@ describe('the command table: one definition per name, with the fields every comm
       const at = `/${definition.name}`;
       expect(definition.name, at).toMatch(/^[a-z]+$/u);
       expect(['read', 'write', 'destructive'], `${at} effect`).toContain(definition.effect);
-      expect(typeof definition.run, `${at} run`).toBe('function');
+      // Exactly one handler: a `run` over a session's context, or the typed marker that the Home's one table of words opens it.
+      expect(
+        [typeof definition.run, definition.opener],
+        `${at}: a run, or opener: 'home', and not both`,
+      ).toSatisfy(
+        (handler: [string, string | undefined]) =>
+          (handler[0] === 'function') !== (handler[1] === 'home'),
+      );
       expect(Object.keys(definition.placements).length, `${at} has a placement`).toBeGreaterThan(0);
     }
   });
@@ -224,6 +265,40 @@ describe('the command table: one definition per name, with the fields every comm
   });
 });
 
+describe('a command the Home opens carries a typed marker, not an empty handler (ADR-0145 §7)', () => {
+  const OPENED = COMMAND_DEFINITIONS.filter((definition) => definition.opener === 'home');
+
+  it('is exactly the Home’s own words: those that have no handler over a session’s context', () => {
+    expect(names(OPENED).sort()).toEqual(
+      ['agents', 'import', 'init', 'pricing', 'providers', 'resume', 'run'].sort(),
+    );
+    for (const definition of OPENED)
+      expect(definition.run, `/${definition.name} has no handler here`).toBeUndefined();
+  });
+
+  it('is offered on the Home and on no stand-alone chat; the chat the Home hosts has only /resume of them', () => {
+    for (const definition of OPENED) {
+      expect(definition.placements.home, `/${definition.name} is on the Home`).toBeDefined();
+      expect(
+        definition.placements.chat,
+        `/${definition.name} is on no stand-alone chat`,
+      ).toBeUndefined();
+    }
+    const inHomeChat = OPENED.filter(
+      (definition) => definition.placements['home-chat'] !== undefined,
+    );
+    expect(names(inHomeChat)).toEqual(['resume']);
+    // A word the chat’s own dispatch can run is never one the Home opens: its list is the chat placements.
+    for (const definition of OPENED)
+      expect(REPL_COMMANDS_BY_NAME.has(definition.name), `/${definition.name}`).toBe(false);
+  });
+
+  it('is the only kind of command without a run: every other command has one', () => {
+    for (const definition of COMMAND_DEFINITIONS.filter((entry) => entry.opener === undefined))
+      expect(typeof definition.run, `/${definition.name}`).toBe('function');
+  });
+});
+
 describe('the order of each surface is the contract (ADR-0145 §7.3)', () => {
   it('Home: Work, Set up, Check, End (15 entries)', () => {
     expect(names(commandDefinitionsOf('home'))).toEqual(HOME_ORDER);
@@ -233,7 +308,7 @@ describe('the order of each surface is the contract (ADR-0145 §7.3)', () => {
 
   it('a stand-alone chat: Model, Context, Inspect, Take away, End (20 entries)', () => {
     expect(names(commandDefinitionsOf('chat'))).toEqual(CHAT_ORDER);
-    expect(names(CHAT_PALETTE_COMMANDS)).toEqual(CHAT_ORDER);
+    expect(names(REPL_COMMANDS)).toEqual(CHAT_ORDER);
     expect(CHAT_ORDER).toHaveLength(20);
   });
 
@@ -276,19 +351,53 @@ describe('the surface classes are declared data (ADR-0145 §1)', () => {
     expect(Object.keys(CLASSES).sort()).toEqual(names(COMMAND_DEFINITIONS).sort());
   });
 
-  it('has an opener for no popup yet: the allow-list names exactly the popup placements, so it can only shrink', () => {
-    const popups = COMMAND_DEFINITIONS.flatMap((definition) =>
+  /** Every `surface:name` whose placement is a popup. */
+  const popupPlacements = (): string[] =>
+    COMMAND_DEFINITIONS.flatMap((definition) =>
       PALETTE_SURFACES.flatMap((surface) =>
         definition.placements[surface]?.surface === 'popup'
           ? [`${surface}:${definition.name}`]
           : [],
       ),
     );
-    expect(popups.filter((key) => !POPUP_WITHOUT_OPENER.includes(key))).toEqual([]);
+
+  it('every popup placement is built (it has an opener) or is named as not built yet, and never both or neither', () => {
+    const popups = popupPlacements();
+    const opened = Object.keys(POPUP_OPENERS);
     expect(
-      POPUP_WITHOUT_OPENER.filter((key) => !popups.includes(key)),
+      popups.filter((key) => !POPUP_NOT_BUILT_YET.includes(key) && !opened.includes(key)),
+      'a popup that is neither built nor listed: build it or list it with its increment',
+    ).toEqual([]);
+    expect(
+      POPUP_NOT_BUILT_YET.filter((key) => opened.includes(key)),
+      'a popup that is built and still listed as not built',
+    ).toEqual([]);
+    expect(
+      [...POPUP_NOT_BUILT_YET, ...opened].filter((key) => !popups.includes(key)),
       'a stale entry: the placement is gone or is no longer a popup',
     ).toEqual([]);
+    expect(new Set(POPUP_NOT_BUILT_YET).size, 'a placement is listed once').toBe(
+      POPUP_NOT_BUILT_YET.length,
+    );
+  });
+
+  it('names the increment that owes each popup that is not built yet, and no increment for a command that has no popup', () => {
+    for (const key of POPUP_NOT_BUILT_YET) {
+      const name = key.slice(key.indexOf(':') + 1);
+      expect(BUILT_BY[name], `${key} has an increment that builds it`).toBeDefined();
+    }
+    const withPopup = new Set(popupPlacements().map((key) => key.slice(key.indexOf(':') + 1)));
+    expect(Object.keys(BUILT_BY).sort(), 'an increment for a command with no popup').toEqual(
+      [...withPopup].sort(),
+    );
+  });
+
+  it('a popup that has an opener names a module that exists', () => {
+    for (const [key, module] of Object.entries(POPUP_OPENERS))
+      expect(
+        existsSync(fileURLToPath(new URL(`../${module}`, import.meta.url))),
+        `${key} is opened by ${module}`,
+      ).toBe(true);
   });
 });
 
@@ -512,9 +621,9 @@ describe('the exports that were arrays are derived from the one table', () => {
   });
 
   it('keeps one object per (name, surface), so a lookup and a list agree', () => {
-    for (const command of CHAT_PALETTE_COMMANDS)
+    for (const command of REPL_COMMANDS)
       expect(REPL_COMMANDS_BY_NAME.get(command.name)).toBe(command);
-    expect(commandsOf('chat')[0]).toBe(CHAT_PALETTE_COMMANDS[0]);
+    expect(commandsOf('chat')[0]).toBe(REPL_COMMANDS[0]);
   });
 
   it('freezes the table, its placements and the derived lists', () => {

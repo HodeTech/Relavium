@@ -168,6 +168,11 @@ export type SurfaceClass = 'popup' | 'screen' | 'instant';
  * The state a palette row's availability is read from. The host fills it from CACHED state only: never from a port, the keychain or the
  * disk at render time. A field that is `undefined` is unknown, and **an unknown value reads as enabled**: a dim row is advisory, and the
  * handler re-validates when the command runs.
+ *
+ * The context is the one [ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7 names, and the hosts fill all of
+ * it. TODAY the availability functions read only `hasSession` (`/clear`) and `hasSavedSessions` (`/resume`); `hasKey` is read by the
+ * palette's own lead rule (`buildPaletteEntries`: a keyless Home leads with `/providers`) and by no availability function; `surface` and
+ * `turnRunning` are read by none (the hosts fill `turnRunning`; {@link availabilityOf} sets `surface`).
  */
 export interface AvailabilityContext {
   readonly surface: PaletteSurface;
@@ -198,11 +203,11 @@ export interface Placement {
   readonly available?: (ctx: AvailabilityContext) => Availability;
 }
 
-/**
- * One command: what it is and what it runs, and the placements that say where it is offered. **One definition per name**: `/workflows`,
- * `/permissions` and `/help` are the same command on the Home and in a chat, with a placement each.
- */
-export interface CommandDefinition {
+/** What a command runs over the live session's lifecycle capabilities: the validated post-name tokens (empty for a zero-arg command). */
+export type CommandRun = (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
+
+/** What every command declares, whoever handles it. */
+interface CommandBase {
   /** The slash name without the leading `/`. */
   readonly name: string;
   readonly label?: string;
@@ -214,13 +219,34 @@ export interface CommandDefinition {
   readonly rejectHint?: string;
   /** An optional single POSITIONAL value (e.g. `/mode plan`); `values` empty ⇒ any single token. */
   readonly positional?: { readonly name: string; readonly values: readonly string[] };
-  /**
-   * Run the command over the live session's lifecycle capabilities. The Home's own commands (`/providers`, `/run`, …) have a `run` that does
-   * nothing: the Home opens them from its controller, and a test asserts that every command it offers is handled there.
-   */
-  readonly run: (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
   readonly placements: Readonly<Partial<Record<PaletteSurface, Placement>>>;
 }
+
+/**
+ * A command the live session's context runs: `run` over the capabilities of the surface (a chat's handlers, and the few the bare Home runs
+ * over its own context).
+ */
+export interface ContextCommand extends CommandBase {
+  readonly run: CommandRun;
+  readonly opener?: undefined;
+}
+
+/**
+ * A command the Home opens ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7: real open bindings instead of an
+ * empty `run`). It has NO handler here: the Home controller opens it from its one table of words, keyed by this name, whether it was typed or
+ * chosen in the palette. The marker is typed data, so a test holds the commands that carry it to the table, both ways
+ * (`home-registry-dispatch.test.ts`), and a command added without a handler or this marker does not compile.
+ */
+export interface HomeOpenedCommand extends CommandBase {
+  readonly opener: 'home';
+  readonly run?: undefined;
+}
+
+/**
+ * One command: what it is and who handles it, and the placements that say where it is offered. **One definition per name**: `/workflows`,
+ * `/permissions` and `/help` are the same command on the Home and in a chat, with a placement each.
+ */
+export type CommandDefinition = ContextCommand | HomeOpenedCommand;
 
 /**
  * One curated in-REPL command AS ONE SURFACE SEES IT: the definition with that surface's description, derived from {@link COMMAND_TABLE} so
@@ -247,8 +273,9 @@ export interface ReplCommand {
    *  before `run`. The palette still submits the BARE `/<name>` (no positional), so `run` handles the empty arg. */
   readonly positional?: { readonly name: string; readonly values: readonly string[] };
   /** Run the command; receives the validated post-name arg tokens (empty for a zero-arg command). May be async
-   *  (an awaited `Promise<void>`), so `/cost` / `/doctor` are safe. */
-  readonly run: (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
+   *  (an awaited `Promise<void>`), so `/cost` / `/doctor` are safe. A {@link HomeOpenedCommand} has no handler to run: its `run` throws, so
+   *  a route that reached it by mistake fails loudly instead of doing nothing. */
+  readonly run: CommandRun;
   /** The surfaces the command applies to, derived from its placements: `home` (the bare Home) and/or `chat` (a stand-alone or a Home-hosted
    *  chat). A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. */
   readonly availableIn: readonly ('home' | 'chat')[];
@@ -278,8 +305,12 @@ function inChats(
   return { chat: placement, 'home-chat': { ...placement, ...homeChat } };
 }
 
-/** The Home's own command: its handler is in the controller, so `run` has nothing to call. */
-const homeOpens = (): void => undefined;
+/** The `run` of a {@link HomeOpenedCommand} in the flattened view: the Home opens the command itself, so a call here is a routing mistake. */
+const refuseToRun =
+  (name: string): CommandRun =>
+  () => {
+    throw new Error(`/${name} is opened by the Home, not run over a session`);
+  };
 
 /**
  * The commands. Order here is NOT the palette's order: each surface lists its commands by (group, rank) ({@link commandsOf}), so a command is
@@ -628,13 +659,13 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
       surface: 'instant',
     }),
   },
-  // ── The Home's own commands: the controller opens each, so `run` has nothing to call ──────────────────────────────────────
+  // ── The Home's own commands: the controller opens each from its table of words (`opener: 'home'`), so there is no `run` ─────
   {
     name: 'providers',
     label: 'Providers',
     // Project and environment configuration is Home-only (ADR-0145 §7.5, OD-2): both Home surfaces intercept it and open the shared setup.
     effect: 'read',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'setup',
@@ -648,7 +679,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     name: 'init',
     label: 'Initialize project',
     effect: 'write',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'setup',
@@ -663,7 +694,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Import file',
     // The card over `relavium import`'s own core, which writes a file only on a Yes and never overwrites (ADR-0140 §9).
     effect: 'write',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'setup',
@@ -678,7 +709,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Model pricing',
     // The form over the shell's own pricing core, which records a price only on a Yes (ADR-0140 §9).
     effect: 'write',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'setup',
@@ -693,7 +724,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Resume session',
     // The Home and the chat it hosts have it (a stand-alone chat has no Home to go back to). Dim when there is nothing to continue.
     effect: 'read',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'work',
@@ -716,7 +747,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Run workflow',
     // A picker over the project's workflows, the launch form and a confirmation that defaults to No (ADR-0139 §7). Home only.
     effect: 'write',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'work',
@@ -731,7 +762,7 @@ const COMMAND_TABLE: readonly CommandDefinition[] = [
     label: 'Agents',
     // The tab host on its two-tab strip, Defined and Sessions (ADR-0140 §3). A Home command only: a live chat has no `/agents`.
     effect: 'read',
-    run: homeOpens,
+    opener: 'home',
     placements: {
       home: {
         group: 'work',
@@ -835,7 +866,7 @@ function replCommandFor(definition: CommandDefinition, surface: PaletteSurface):
     ...(definition.args === undefined ? {} : { args: definition.args }),
     ...(definition.rejectHint === undefined ? {} : { rejectHint: definition.rejectHint }),
     ...(definition.positional === undefined ? {} : { positional: definition.positional }),
-    run: definition.run,
+    run: definition.run ?? refuseToRun(definition.name),
     availableIn: availableInOf(definition),
   });
   replCommandCache.set(key, command);
@@ -848,9 +879,10 @@ export function commandsOf(surface: PaletteSurface): readonly ReplCommand[] {
 }
 
 /**
- * The curated command set of a stand-alone chat, in its palette's order — the single source for `/help`, the unknown-slash hint and the typed
- * dispatch (the palette's own rows come from {@link commandsOf} through `buildPaletteEntries`). The plain, `--json` and one-shot drivers run
- * the same handlers and print this order in their `/help`, which is accepted and recorded (ADR-0145 §7.7).
+ * The curated command set of a stand-alone chat, in its palette's order — the single source for the typed dispatch of every chat and for a
+ * stand-alone chat's `/help` and unknown-slash hint (the palette's own rows come from {@link commandsOf} through `buildPaletteEntries`). The
+ * plain, `--json` and one-shot drivers run the same handlers and print this order in their `/help`, which is accepted and recorded (ADR-0145
+ * §7.7). The chat the Home hosts runs the same handlers but lists {@link HOME_CHAT_PALETTE_COMMANDS} (`formatReplHelp('home-chat')`).
  */
 export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(commandsOf('chat'));
 
@@ -861,15 +893,10 @@ export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
 );
 
 /**
- * The commands a stand-alone chat's `/` palette offers. `/help` is in it since MVP-11 Step 2.2 (ADR-0145 §7.3): the keys that only `/help`
- * lists, such as `Shift+Tab` and `Ctrl+J`, are otherwise undiscoverable.
+ * The commands the `/` palette of the chat the Home hosts offers: a chat's list plus `/resume`, without `/providers` and `/init` (OD-2). A
+ * stand-alone chat's palette offers {@link REPL_COMMANDS} (with `/help` in it since MVP-11 Step 2.2, ADR-0145 §7.3: the keys that only `/help`
+ * lists, such as `Shift+Tab` and `Ctrl+J`, are otherwise undiscoverable), and the palette builds its rows from {@link commandsOf}.
  */
-export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = REPL_COMMANDS;
-
-/** The base palette set. It was every curated command but `/help`; with `/help` listed it is a stand-alone chat's list. */
-export const PALETTE_COMMANDS: readonly ReplCommand[] = CHAT_PALETTE_COMMANDS;
-
-/** The commands the `/` palette of the chat the Home hosts offers: a chat's list plus `/resume`, without `/providers` and `/init` (OD-2). */
 export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
   commandsOf('home-chat'),
 );
@@ -898,13 +925,25 @@ export function unavailableNotice(name: string, reason: string): string {
   return `/${name} is unavailable: ${reason}.`;
 }
 
-/** The comma-separated slash list for the unknown-slash hint — `/models, /mode, /effort, …`, a stand-alone chat's order. */
-export function replCommandList(): string {
-  return REPL_COMMANDS.map((command) => `/${command.name}`).join(', ');
+/** The two surfaces that print a command list: a stand-alone chat (every non-interactive driver too) and the chat the Home hosts. */
+export type CommandListSurface = Extract<PaletteSurface, 'chat' | 'home-chat'>;
+
+/**
+ * The comma-separated slash list for the unknown-slash hint — `/models, /mode, /effort, …`, in the order the surface's palette lists them. A
+ * stand-alone chat (the default, and what the plain, `--json` and one-shot drivers print) and the chat the Home hosts differ by `/resume`.
+ */
+export function replCommandList(surface: CommandListSurface = 'chat'): string {
+  return commandsOf(surface)
+    .map((command) => `/${command.name}`)
+    .join(', ');
 }
 
-/** The multi-line `/help` body — one line per command (`/name  description`), in a stand-alone chat's palette order. */
-export function formatReplHelp(): string {
-  const rows = REPL_COMMANDS.map((command) => `  /${command.name}  ${command.description}`);
+/**
+ * The multi-line `/help` body — one line per command (`/name  description`), in the surface's palette order and with the surface's words
+ * (`/exit` reads "End the chat session." in a stand-alone chat and "Leave this chat and go back to the Home." in the Home's), so `/help` and
+ * the palette cannot disagree.
+ */
+export function formatReplHelp(surface: CommandListSurface = 'chat'): string {
+  const rows = commandsOf(surface).map((command) => `  /${command.name}  ${command.description}`);
   return `Commands:\n${rows.join('\n')}\n`;
 }

@@ -443,7 +443,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     harness.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
     await settleFrames();
 
-    expect(c.getSnapshot().palette?.query).toBe(''); // the mouse bytes did NOT enter the palette filter
+    expect(c.getSnapshot().palette?.state.query).toBe(''); // the mouse bytes did NOT enter the palette filter
     expect(frame()).toContain('HMSG59'); // …and the transcript did not scroll behind the overlay
   });
 

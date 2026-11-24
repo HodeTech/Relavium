@@ -31,7 +31,7 @@ import {
   type ParkedRunRow,
 } from './home-attention.js';
 import { PaletteView } from './palette-view.js';
-import type { PaletteList, PaletteState } from './palette-reducer.js';
+import type { OpenPalette } from './palette-reducer.js';
 import { PALETTE_MIN_ROWS, paletteGapCount, paletteRowBudget } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
@@ -80,7 +80,7 @@ interface HomeViewProps {
    * landing and the palette together are never taller than the terminal (`paletteRowBudget`, `paletteLines`). Absent ⇒ no palette is drawn
    * here (`paletteOpen` alone only suppresses the prompt, as it does for the model picker, which the host draws).
    */
-  readonly palette?: { readonly list: PaletteList; readonly state: PaletteState };
+  readonly palette?: OpenPalette;
   /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
   readonly showBanner?: boolean | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */

@@ -1104,6 +1104,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           },
           {
             ...deps,
+            surface: 'home-chat', // `/help` and the unknown-slash hint list this chat's own commands, as its palette does
             hatchPorts,
             openModeSettings: (currentMode, onCurrentMode, notice) =>
               runModeSettings({

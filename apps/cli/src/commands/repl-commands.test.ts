@@ -1,11 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  CHAT_PALETTE_COMMANDS,
   formatReplHelp,
   HOME_PALETTE_COMMANDS,
   HOME_CHAT_PALETTE_COMMANDS,
-  PALETTE_COMMANDS,
   replCommandList,
   REPL_COMMANDS,
   REPL_COMMANDS_BY_NAME,
@@ -109,7 +107,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(command?.availableIn).toEqual(['chat']);
     expect(command?.description).toBe('Show the agent this chat is bound to.');
     for (const [name, set] of [
-      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['CHAT', REPL_COMMANDS],
       ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
     ] as const)
       expect(
@@ -172,6 +170,20 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
   });
 
+  it('a command the Home opens has no handler to run: the flattened view refuses a call, and calls no capability', () => {
+    // `opener: 'home'` commands are opened from the Home controller's table, never run over a session's context (ADR-0145 §7); a route that
+    // reached one by mistake used to do nothing, silently. The five words below are exactly the Home's own that the Home palette lists.
+    const spy = spyContext();
+    for (const name of ['providers', 'init', 'import', 'pricing', 'run', 'agents', 'resume']) {
+      const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
+      expect(command, `/${name} is a command of the Home`).toBeDefined();
+      expect(() => command?.run(spy.ctx, []), `/${name}`).toThrow(
+        `/${name} is opened by the Home, not run over a session`,
+      );
+    }
+    expect([...spy.calls().values()].every((count) => count === 0)).toBe(true);
+  });
+
   it('/doctor passes --deep through to runDoctor', async () => {
     const { ctx } = spyContext();
     const doctor = REPL_COMMANDS_BY_NAME.get('doctor');
@@ -190,6 +202,58 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       expect(help).toContain(`/${command.name}`);
       expect(help).toContain(command.description);
     }
+  });
+
+  /**
+   * `/help` and the unknown-slash hint as a stand-alone chat printed them before the surfaces were told apart (the text at commit b2103932). The
+   * plain, `--json` and one-shot drivers print it to standard error, so it is byte for byte what they print now: the default surface is the
+   * stand-alone chat's, and naming no surface changes nothing.
+   */
+  const STAND_ALONE_HELP = `${[
+    'Commands:',
+    '  /models  Switch model (opens the catalog picker).',
+    '  /mode  Choose the mode; Shift+Tab changes this chat only.',
+    '  /effort  Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
+    '  /thinking  Show or hide the reasoning ("thinking") panel (or Ctrl+T to toggle).',
+    '  /permissions  Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
+    '  /trim  Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',
+    '  /compact  Summarise the conversation so far to reclaim context (spends tokens).',
+    "  /cost  Show this session's cumulative cost; --release clears held estimates.",
+    '  /details  Inspect recent tool calls and their available previews.',
+    '  /agent  Show the agent this chat is bound to.',
+    '  /workflows  List the workflows and agents discovered in this project.',
+    '  /doctor  Check your setup; --deep also validates keys and MCP.',
+    '  /help  List the available slash commands.',
+    '  /copy  Copy the whole transcript to the system clipboard (OSC 52).',
+    '  /export  Scaffold the session so far to a .relavium.yaml.',
+    '  /edit  Open the transcript in $EDITOR (read-only — to search or copy).',
+    '  /scrollback  Dump the transcript into the terminal’s native scrollback (to copy or search).',
+    '  /clear  End this conversation (saved + resumable) and start a fresh session.',
+    '  /cancel  Cancel the current turn and end the (resumable) session.',
+    '  /exit  End the chat session.',
+  ].join('\n')}\n`;
+
+  it('a stand-alone chat’s /help and hint are byte for byte what they were, with or without naming the surface', () => {
+    expect(formatReplHelp()).toBe(STAND_ALONE_HELP);
+    expect(formatReplHelp('chat')).toBe(STAND_ALONE_HELP);
+    expect(replCommandList('chat')).toBe(replCommandList());
+  });
+
+  it('the chat the Home hosts prints its own list: its palette’s rows, with its words, and /resume', () => {
+    const help = formatReplHelp('home-chat');
+    const rows = help.split('\n').filter((line) => line.startsWith('  /'));
+    // The rows ARE the palette's: the same commands in the same order with the same words, so /help and the palette cannot disagree.
+    expect(rows).toEqual(
+      HOME_CHAT_PALETTE_COMMANDS.map((command) => `  /${command.name}  ${command.description}`),
+    );
+    expect(help).toContain('  /exit  Leave this chat and go back to the Home.');
+    expect(help).not.toContain('End the chat session.');
+    expect(rows.some((row) => row.startsWith('  /resume  '))).toBe(true);
+    expect(replCommandList('home-chat')).toBe(
+      HOME_CHAT_PALETTE_COMMANDS.map((command) => `/${command.name}`).join(', '),
+    );
+    expect(replCommandList('home-chat')).toContain('/resume');
+    expect(help).not.toBe(STAND_ALONE_HELP);
   });
 
   it('effects are sound: export + compact write, clear destructive, the rest read', () => {
@@ -245,9 +309,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cancel',
       'exit',
     ];
-    // The base palette set is a stand-alone chat's list: `/help` is listed now, so the old "everything but /help" set is gone.
-    expect(PALETTE_COMMANDS.map((c) => c.name)).toEqual(chat);
-    expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual(chat);
+    // A stand-alone chat's palette is its REPL list: `/help` is listed now, so the old "everything but /help" set is gone.
+    expect(REPL_COMMANDS.map((c) => c.name)).toEqual(chat);
     // The chat the Home hosts: a chat's list with /resume first in *End*, and without /providers and /init (OD-2).
     expect(HOME_CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       ...chat.slice(0, chat.indexOf('clear')),
@@ -283,7 +346,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(chat?.description).toBe('List the workflows and agents discovered in this project.');
     expect(home, 'one object per surface: the Home’s words are the Home’s').not.toBe(chat);
     expect(home?.run).toBe(chat?.run);
-    expect(CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
+    expect(REPL_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
     expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
     expect(HOME_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([home]);
   });
@@ -292,8 +355,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     const run = HOME_PALETTE_COMMANDS.find((command) => command.name === 'run');
     expect(run?.availableIn).toEqual(['home']);
     for (const [name, set] of [
-      ['PALETTE', PALETTE_COMMANDS],
-      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['CHAT', REPL_COMMANDS],
       ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
     ] as const) {
       expect(
@@ -312,8 +374,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       // Both write something (a file, a price) and ask first: the registry says `write`, as it does of `/run` and `/init`.
       expect(command?.effect, `/${name}`).toBe('write');
       for (const [setName, set] of [
-        ['PALETTE', PALETTE_COMMANDS],
-        ['CHAT', CHAT_PALETTE_COMMANDS],
+        ['CHAT', REPL_COMMANDS],
         ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
       ] as const) {
         expect(
@@ -345,8 +406,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {
     for (const [name, set] of [
-      ['PALETTE', PALETTE_COMMANDS],
-      ['CHAT', CHAT_PALETTE_COMMANDS],
+      ['CHAT', REPL_COMMANDS],
       ['HOME', HOME_PALETTE_COMMANDS],
       ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
     ] as const) {

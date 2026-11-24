@@ -18,7 +18,7 @@ import {
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { createChatStore } from './chat-store.js';
-import { HELP_SHEET_KEYS, HOME_HELP_COMMANDS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
+import { HELP_SHEET_KEYS, HOME_KEYS, type HelpKeyPress } from './help-sheet.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -259,8 +259,7 @@ describe.each([
   const name = word.slice(1);
 
   it('is a command of the bare Home’s palette and a row of the help sheet, and is not a word of the registry', () => {
-    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name);
-    expect(HOME_HELP_COMMANDS.map((command) => command.name)).toContain(name);
+    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toContain(name); // the sheet lists exactly the palette's commands
     expect(REPL_COMMANDS.map((command) => command.name)).not.toContain(name);
   });
 

@@ -77,6 +77,7 @@ import {
   homeOnlyPointer,
   replCommandList,
   REPL_COMMANDS_BY_NAME,
+  type CommandListSurface,
   type ReplCommand,
   type ReplCommandContext,
 } from './repl-commands.js';
@@ -513,6 +514,12 @@ export interface ChatResumeCommandDeps {
 
 /** The subset the shared {@link runReplLoop} needs — satisfied by both {@link ChatCommandDeps} and {@link ChatResumeCommandDeps}. */
 interface ChatReplDeps {
+  /**
+   * Which chat this handler serves, for the command list it prints (`/help`, the unknown-slash hint): a stand-alone chat, or the chat the Home
+   * hosts, whose palette and `/help` list `/resume` and say where `/exit` goes (ADR-0145 §7). Absent ⇒ a stand-alone chat's, which is what the
+   * plain, `--json` and one-shot drivers print, byte for byte as before.
+   */
+  readonly surface?: CommandListSurface;
   /** The OS keychain seam for the remembered-command digest key (ADR-0118 §2); default the real one. A test injects a fake. */
   readonly keychain?: KeychainStore;
   readonly openModeSettings?: (
@@ -2075,7 +2082,7 @@ export function createChatLineHandler(
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
     help: () => {
-      emitOutput(formatReplHelp().trimEnd());
+      emitOutput(formatReplHelp(deps.surface).trimEnd());
     },
     // `/workflows` (2.5.C S4): the project's disk catalog. A project-less cwd is reported, not an error; the same
     // loader + scanner as `relavium list`.
@@ -2382,7 +2389,7 @@ export function createChatLineHandler(
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
-      emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
+      emitOutput(`unknown command '${safe}'. Available: ${replCommandList(deps.surface)}.`);
       return;
     }
     const rejection = validateSlashTokens(command, tokens);
@@ -2649,8 +2656,8 @@ async function buildFreshChatWiring(
  * Build the `/clear` re-drive rebuild closure (ADR-0062 §7) — SHARED by `chat` and `chat-resume` so the rebuild
  * CONTRACT (the {@link FreshChatWiringDeps} assembly + the {@link buildFreshChatWiring} call) lives in ONE place and
  * cannot drift between them. Given the current session's bound agent + the command's capability inputs, it returns a
- * `(oldSessionId) => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
- * the {@link clearedNotice} naming the prior (still-resumable) session.
+ * `() => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
+ * the {@link clearedNotice} saying the prior (still-resumable) session is saved.
  */
 function createClearRebuild(params: {
   readonly onEffectAttention: NonNullable<BuildChatSessionOptions['onEffectAttention']>;
@@ -2675,7 +2682,7 @@ function createClearRebuild(params: {
   readonly global: GlobalOptions;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/clear` re-drive keeps the render mode. */
   readonly altScreen?: boolean | undefined;
-}): (oldSessionId: string) => Promise<ReplWiring> {
+}): () => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     startingModes: params.startingModes,
     homeDir: params.homeDir,
@@ -2707,11 +2714,11 @@ function createClearRebuild(params: {
     onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
-  return (oldSessionId) =>
+  return () =>
     params.ownership === undefined
-      ? buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId, 'standalone-chat'))
+      ? buildFreshChatWiring(wiringDeps, clearedNotice('standalone-chat'))
       : params.ownership.hosts.construct((host) =>
-          buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId, 'standalone-chat'), host),
+          buildFreshChatWiring(wiringDeps, clearedNotice('standalone-chat'), host),
         );
 }
 
@@ -3348,7 +3355,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
 function resolveSwapRebuild(
   outcome: ChatDriveOutcome,
   oldSessionId: string,
-  rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
+  rebuild: (() => Promise<ReplWiring>) | undefined,
   reseatRebuild:
     | ((
         oldSessionId: string,
@@ -3361,7 +3368,7 @@ function resolveSwapRebuild(
    *  its entire contract is a fresh start, and its `rebuild` path never sees this argument. */
   carriedTranscript: readonly TranscriptEntry[],
 ): (() => Promise<ReplWiring>) | undefined {
-  if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
+  if (outcome.kind === 'clear' && rebuild !== undefined) return rebuild;
   if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
     const target = outcome.target;
     return () => reseatRebuild(oldSessionId, target, carriedTranscript);
@@ -3529,7 +3536,7 @@ export function transcriptBoundFor(altActive: boolean): TranscriptBound {
 export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
-  rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
+  rebuild?: () => Promise<ReplWiring>,
   reseatRebuild?: (
     oldSessionId: string,
     target: ReseatTarget,

@@ -14,9 +14,8 @@ import {
   reducePaletteKey,
   shouldOpenPalette,
   stepPalette,
+  type OpenPalette,
   type PaletteLayout,
-  type PaletteList,
-  type PaletteState,
   type PaletteStep,
 } from './palette-reducer.js';
 
@@ -297,28 +296,24 @@ describe('clampIndex', () => {
   });
 });
 
-/** Open a palette over `entries` (`down` unless said) and read its two halves. */
-function opened(
-  entries: readonly PaletteEntry[],
-  layout: PaletteLayout = 'down',
-): { state: PaletteState; list: PaletteList } {
+/** Open a palette over `entries` (`down` unless said): ONE value, its state and the rows it reads. */
+function opened(entries: readonly PaletteEntry[], layout: PaletteLayout = 'down'): OpenPalette {
   return openPalette(entries, layout);
 }
 
 /** Fold a key and require the palette to stay open with new state. */
 function press(
-  state: PaletteState,
-  list: PaletteList,
+  palette: OpenPalette,
   char: string,
   key: Parameters<typeof foldPaletteKey>[1] = {},
-): { state: PaletteState; list: PaletteList } {
-  const step = foldPaletteKey(char, key, state, list);
+): OpenPalette {
+  const step = foldPaletteKey(char, key, palette);
   if (step.kind !== 'state') throw new Error(`expected the palette to stay open, got ${step.kind}`);
-  return { state: step.state, list: step.list };
+  return step.palette;
 }
 
-const highlighted = (state: PaletteState, list: PaletteList): string | undefined =>
-  list.rows[state.index]?.command.name;
+const highlighted = (palette: OpenPalette): string | undefined =>
+  palette.list.rows[palette.state.index]?.command.name;
 
 describe('openPalette: the highlight starts on the first row that can act, never on row 0 by default', () => {
   it('opens on the first entry when it can act', () => {
@@ -353,8 +348,7 @@ describe('openPalette: the highlight starts on the first row that can act, never
         hasKey: true,
         hasSavedSessions: saved,
       });
-      const { state, list } = opened(entries, 'down');
-      const step = foldPaletteKey('', { return: true }, state, list);
+      const step = foldPaletteKey('', { return: true }, opened(entries, 'down'));
       expect(step.kind === 'run' && step.command?.name).toBe(expected);
     },
   );
@@ -365,18 +359,17 @@ describe('openPalette: the highlight starts on the first row that can act, never
       hasKey: false,
       hasSavedSessions: true,
     });
-    const { state, list } = opened(entries, 'down');
-    const step = foldPaletteKey('', { return: true }, state, list);
+    const step = foldPaletteKey('', { return: true }, opened(entries, 'down'));
     expect(step.kind === 'run' && step.command?.name).toBe('providers');
   });
 
   it('a chat: `/` then Enter runs /models', () => {
     for (const surface of ['chat', 'home-chat'] as const) {
-      const { state, list } = opened(
-        buildPaletteEntries(surface, { hasSession: true, hasKey: true }),
-        'up',
+      const step = foldPaletteKey(
+        '',
+        { return: true },
+        opened(buildPaletteEntries(surface, { hasSession: true, hasKey: true }), 'up'),
       );
-      const step = foldPaletteKey('', { return: true }, state, list);
       expect(step.kind === 'run' && step.command?.name, surface).toBe('models');
     }
   });
@@ -392,32 +385,44 @@ describe('stepPalette', () => {
 
   it('append extends the query and puts the highlight on the first row of the new list that can act', () => {
     const { state, list } = opened([dim('exa'), entry('exb', 'x'), entry('zzz', 'y')]);
-    const step = stepPalette({ query: 'e', index: 2 }, { kind: 'append', char: 'x' }, list);
+    const step = stepPalette(
+      { state: { query: 'e', index: 2 }, list },
+      { kind: 'append', char: 'x' },
+    );
     expect(step.kind).toBe('state');
     if (step.kind !== 'state') return;
-    expect(step.state).toEqual({ query: 'ex', index: 1 }); // `exa` is dim, `exb` is the first that can act
-    expect(names(step.list.rows)).toEqual(['exa', 'exb']);
+    expect(step.palette.state).toEqual({ query: 'ex', index: 1 }); // `exa` is dim, `exb` is the first that can act
+    expect(names(step.palette.list.rows)).toEqual(['exa', 'exb']);
     expect(state.index).toBe(1);
   });
 
   it('builds the rows ONCE per edit: the new list is what the view draws and what the next key reads', () => {
     const { list } = opened(LIST);
-    const step = stepPalette({ query: '', index: 0 }, { kind: 'append', char: 'e' }, list);
+    const step = stepPalette(
+      { state: { query: '', index: 0 }, list },
+      { kind: 'append', char: 'e' },
+    );
     if (step.kind !== 'state') throw new Error('stay open');
-    expect(step.list.rows).toEqual(filterPaletteEntries(LIST, 'e'));
-    expect(step.list.entries, 'the base entries are the same array').toBe(list.entries);
-    expect(step.list.layout).toBe(list.layout);
-    // A key that edits nothing keeps the very same list.
-    const none = stepPalette(step.state, { kind: 'none' }, step.list);
-    expect(none.kind === 'state' && none.list).toBe(step.list);
+    expect(step.palette.list.rows).toEqual(filterPaletteEntries(LIST, 'e'));
+    expect(step.palette.list.entries, 'the base entries are the same array').toBe(list.entries);
+    expect(step.palette.list.layout).toBe(list.layout);
+    // A key that edits nothing keeps the very same palette.
+    const none = stepPalette(step.palette, { kind: 'none' });
+    expect(none.kind === 'state' && none.palette).toBe(step.palette);
   });
 
   it('backspace shortens the query and puts the highlight on the first row that can act', () => {
     const { list } = opened(LIST);
-    const typed = stepPalette({ query: 'e', index: 0 }, { kind: 'append', char: 'x' }, list);
+    const typed = stepPalette(
+      { state: { query: 'e', index: 0 }, list },
+      { kind: 'append', char: 'x' },
+    );
     if (typed.kind !== 'state') throw new Error('stay open');
-    const step = stepPalette({ query: 'ex', index: 1 }, { kind: 'backspace' }, typed.list);
-    expect(step.kind === 'state' && step.state).toEqual({ query: 'e', index: 0 });
+    const step = stepPalette(
+      { state: { query: 'ex', index: 1 }, list: typed.palette.list },
+      { kind: 'backspace' },
+    );
+    expect(step.kind === 'state' && step.palette.state).toEqual({ query: 'e', index: 0 });
   });
 
   it('a typed EXACT NAME that is dim stays highlighted, so Enter says why instead of running what else matched', () => {
@@ -425,19 +430,19 @@ describe('stepPalette', () => {
       dim('clear', 'no conversation to clear'),
       entry('pricing', 'Set or clear a price'),
     ]);
-    let at = { state: { query: '', index: 1 } as PaletteState, list };
-    for (const char of 'clear') at = press(at.state, at.list, char);
+    let at: OpenPalette = { state: { query: '', index: 1 }, list };
+    for (const char of 'clear') at = press(at, char);
     expect(names(at.list.rows)).toEqual(['clear', 'pricing']);
     expect(at.state, 'the dim exact name is highlighted').toEqual({ query: 'clear', index: 0 });
-    expect(foldPaletteKey('', { return: true }, at.state, at.list)).toEqual({
+    expect(foldPaletteKey('', { return: true }, at)).toEqual({
       kind: 'unavailable',
       reason: 'no conversation to clear',
     });
     // A dim row that is only a PREFIX of what was typed is not an exact name: the highlight goes to the first row that can act.
-    let prefix = { state: { query: '', index: 1 } as PaletteState, list };
-    for (const char of 'cle') prefix = press(prefix.state, prefix.list, char);
+    let prefix: OpenPalette = { state: { query: '', index: 1 }, list };
+    for (const char of 'cle') prefix = press(prefix, char);
     expect(prefix.state.index).toBe(1);
-    expect(highlighted(prefix.state, prefix.list)).toBe('pricing');
+    expect(highlighted(prefix)).toBe('pricing');
   });
 
   describe('a short query never highlights a command that ends a session or spends tokens while another row can act (ADR-0145 §7.6)', () => {
@@ -450,8 +455,8 @@ describe('stepPalette', () => {
         hasSavedSessions: true,
       });
       let at = opened(entries, surface === 'home' ? 'down' : 'up');
-      for (const char of query) at = press(at.state, at.list, char);
-      return highlighted(at.state, at.list);
+      for (const char of query) at = press(at, char);
+      return highlighted(at);
     }
 
     it.each([
@@ -493,8 +498,8 @@ describe('stepPalette', () => {
     /** Type `query` into a palette over `list` and read the highlighted row's name. */
     function typedOver(list: readonly PaletteEntry[], query: string): string | undefined {
       let at = opened(list);
-      for (const char of query) at = press(at.state, at.list, char);
-      return highlighted(at.state, at.list);
+      for (const char of query) at = press(at, char);
+      return highlighted(at);
     }
 
     it('prefers a row of a lower tier to an end row of a higher one: /exit by name, /close only by its description', () => {
@@ -529,8 +534,8 @@ describe('stepPalette', () => {
     it('moves to the next row that can act, in both directions', () => {
       const { list } = opened(ENTRIES);
       const next = (index: number, delta: number) => {
-        const step = stepPalette({ query: '', index }, { kind: 'move', delta }, list);
-        return step.kind === 'state' ? step.state.index : -1;
+        const step = stepPalette({ state: { query: '', index }, list }, { kind: 'move', delta });
+        return step.kind === 'state' ? step.palette.state.index : -1;
       };
       expect(next(0, 1), 'a → d, over b and c').toBe(3);
       expect(next(3, 1), 'd → f, over e').toBe(5);
@@ -541,8 +546,8 @@ describe('stepPalette', () => {
     it('clamps at the ends: there is no wrap-around', () => {
       const { list } = opened(ENTRIES);
       const at = (index: number, delta: number) => {
-        const step = stepPalette({ query: '', index }, { kind: 'move', delta }, list);
-        return step.kind === 'state' ? step.state.index : -1;
+        const step = stepPalette({ state: { query: '', index }, list }, { kind: 'move', delta });
+        return step.kind === 'state' ? step.palette.state.index : -1;
       };
       expect(at(5, 1), 'past the last row').toBe(5);
       expect(at(0, -1), 'before the first row').toBe(0);
@@ -550,15 +555,21 @@ describe('stepPalette', () => {
 
     it('stays put when nothing after it can act (a dim tail)', () => {
       const { list } = opened([entry('a', 'x'), dim('b'), dim('c')]);
-      const step = stepPalette({ query: '', index: 0 }, { kind: 'move', delta: 1 }, list);
-      expect(step.kind === 'state' && step.state.index).toBe(0);
+      const step = stepPalette(
+        { state: { query: '', index: 0 }, list },
+        { kind: 'move', delta: 1 },
+      );
+      expect(step.kind === 'state' && step.palette.state.index).toBe(0);
     });
 
     it('keeps the query, and the list, as they were', () => {
       const { list } = opened(ENTRIES);
-      const step = stepPalette({ query: 'q', index: 0 }, { kind: 'move', delta: 1 }, list);
-      expect(step.kind === 'state' && step.state.query).toBe('q');
-      expect(step.kind === 'state' && step.list).toBe(list);
+      const step = stepPalette(
+        { state: { query: 'q', index: 0 }, list },
+        { kind: 'move', delta: 1 },
+      );
+      expect(step.kind === 'state' && step.palette.state.query).toBe('q');
+      expect(step.kind === 'state' && step.palette.list).toBe(list);
     });
   });
 
@@ -566,8 +577,11 @@ describe('stepPalette', () => {
     it('lands on enabled rows only', () => {
       const { list } = opened([dim('a'), entry('b', 'x'), entry('c', 'y'), dim('d')]);
       const to = (where: 'first' | 'last') => {
-        const step = stepPalette({ query: '', index: 2 }, { kind: 'jump', to: where }, list);
-        return step.kind === 'state' ? step.state.index : -1;
+        const step = stepPalette(
+          { state: { query: '', index: 2 }, list },
+          { kind: 'jump', to: where },
+        );
+        return step.kind === 'state' ? step.palette.state.index : -1;
       };
       expect(to('first')).toBe(1);
       expect(to('last')).toBe(2);
@@ -576,60 +590,66 @@ describe('stepPalette', () => {
     it('through the key: End reaches /exit, the last row of every list, and Home the first row that can act', () => {
       for (const [where, surface, entries] of PALETTES) {
         const layout = surface === 'home' ? 'down' : 'up';
-        const { state, list } = opened(entries, layout);
-        const end = press(state, list, '', { end: true });
-        expect(highlighted(end.state, end.list), where).toBe('exit');
-        const home = press(end.state, end.list, '', { home: true });
-        expect(home.state.index, where).toBe(firstEnabledIndex(list.rows));
+        const palette = opened(entries, layout);
+        const end = press(palette, '', { end: true });
+        expect(highlighted(end), where).toBe('exit');
+        const home = press(end, '', { home: true });
+        expect(home.state.index, where).toBe(firstEnabledIndex(palette.list.rows));
       }
     });
   });
 
   describe('layout up: the arrow keys follow the screen', () => {
     it('↑ is the next entry and ↓ the previous; the first entry is the one beside the prompt', () => {
-      const { state, list } = opened(
-        [entry('one', 'a'), entry('two', 'b'), entry('three', 'c')],
-        'up',
-      );
-      expect(highlighted(state, list)).toBe('one');
-      const up = press(state, list, '', { upArrow: true });
-      expect(highlighted(up.state, up.list)).toBe('two');
-      const upAgain = press(up.state, up.list, '', { upArrow: true });
-      expect(highlighted(upAgain.state, upAgain.list)).toBe('three');
-      const down = press(upAgain.state, upAgain.list, '', { downArrow: true });
-      expect(highlighted(down.state, down.list)).toBe('two');
+      const palette = opened([entry('one', 'a'), entry('two', 'b'), entry('three', 'c')], 'up');
+      expect(highlighted(palette)).toBe('one');
+      const up = press(palette, '', { upArrow: true });
+      expect(highlighted(up)).toBe('two');
+      const upAgain = press(up, '', { upArrow: true });
+      expect(highlighted(upAgain)).toBe('three');
+      const down = press(upAgain, '', { downArrow: true });
+      expect(highlighted(down)).toBe('two');
     });
 
     it('does not move past the first entry with ↓, nor past the last with ↑ (no wrap-around)', () => {
-      const { state, list } = opened([entry('one', 'a'), entry('two', 'b')], 'up');
-      expect(press(state, list, '', { downArrow: true }).state.index).toBe(0);
-      const top = press(state, list, '', { upArrow: true });
-      expect(press(top.state, top.list, '', { upArrow: true }).state.index).toBe(1);
+      const palette = opened([entry('one', 'a'), entry('two', 'b')], 'up');
+      expect(press(palette, '', { downArrow: true }).state.index).toBe(0);
+      const top = press(palette, '', { upArrow: true });
+      expect(press(top, '', { upArrow: true }).state.index).toBe(1);
     });
 
     it('skips a dim row in either direction', () => {
-      const { state, list } = opened([entry('one', 'a'), dim('two'), entry('three', 'c')], 'up');
-      const up = press(state, list, '', { upArrow: true });
-      expect(highlighted(up.state, up.list)).toBe('three');
-      const down = press(up.state, up.list, '', { downArrow: true });
-      expect(highlighted(down.state, down.list)).toBe('one');
+      const palette = opened([entry('one', 'a'), dim('two'), entry('three', 'c')], 'up');
+      const up = press(palette, '', { upArrow: true });
+      expect(highlighted(up)).toBe('three');
+      const down = press(up, '', { downArrow: true });
+      expect(highlighted(down)).toBe('one');
     });
   });
 
   describe('select', () => {
     it('reads the highlighted row of the FILTERED list', () => {
       const { list } = opened(LIST);
-      const typed = stepPalette({ query: '', index: 0 }, { kind: 'append', char: 'e' }, list);
+      const typed = stepPalette(
+        { state: { query: '', index: 0 }, list },
+        { kind: 'append', char: 'e' },
+      );
       if (typed.kind !== 'state') throw new Error('stay open');
-      const first = stepPalette({ query: 'e', index: 0 }, { kind: 'select' }, typed.list);
+      const first = stepPalette(
+        { state: { query: 'e', index: 0 }, list: typed.palette.list },
+        { kind: 'select' },
+      );
       expect(first.kind === 'run' && first.command?.name).toBe('export'); // `exit` ends a session: it follows `export`
-      const second = stepPalette({ query: 'e', index: 1 }, { kind: 'select' }, typed.list);
+      const second = stepPalette(
+        { state: { query: 'e', index: 1 }, list: typed.palette.list },
+        { kind: 'select' },
+      );
       expect(second.kind === 'run' && second.command?.name).toBe('exit');
     });
 
     it('on a dim row says why and runs nothing', () => {
       const { list } = opened([dim('clear', 'no conversation to clear'), entry('exit', 'ends')]);
-      expect(stepPalette({ query: '', index: 0 }, { kind: 'select' }, list)).toEqual({
+      expect(stepPalette({ state: { query: '', index: 0 }, list }, { kind: 'select' })).toEqual({
         kind: 'unavailable',
         reason: 'no conversation to clear',
       });
@@ -637,9 +657,17 @@ describe('stepPalette', () => {
 
     it('on an empty filter yields run with no command (a no-op the caller closes on)', () => {
       const { list } = opened(LIST);
-      const typed = stepPalette({ query: '', index: 0 }, { kind: 'append', char: 'z' }, list);
+      const typed = stepPalette(
+        { state: { query: '', index: 0 }, list },
+        { kind: 'append', char: 'z' },
+      );
       if (typed.kind !== 'state') throw new Error('stay open');
-      expect(stepPalette({ query: 'z', index: 0 }, { kind: 'select' }, typed.list)).toEqual({
+      expect(
+        stepPalette(
+          { state: { query: 'z', index: 0 }, list: typed.palette.list },
+          { kind: 'select' },
+        ),
+      ).toEqual({
         kind: 'run',
         command: undefined,
       });
@@ -647,33 +675,35 @@ describe('stepPalette', () => {
   });
 
   it('cancel closes', () => {
-    expect(stepPalette({ query: '', index: 0 }, { kind: 'cancel' }, opened(LIST).list)).toEqual({
-      kind: 'close',
-    });
+    expect(stepPalette(opened(LIST), { kind: 'cancel' })).toEqual({ kind: 'close' });
   });
 });
 
 describe('foldPaletteKey (the shared both-surface fold)', () => {
-  const { state, list } = opened([entry('exit', 'ends it'), entry('export', 'writes it')]);
+  const palette = opened([entry('exit', 'ends it'), entry('export', 'writes it')]);
 
   it('Ctrl-C closes the palette (the always-escapes hatch — never trapping)', () => {
-    expect(foldPaletteKey('c', { ctrl: true }, state, list)).toEqual({ kind: 'close' });
+    expect(foldPaletteKey('c', { ctrl: true }, palette)).toEqual({ kind: 'close' });
   });
 
   it('otherwise delegates to reducePaletteKey + stepPalette (a printable extends the query, Enter runs)', () => {
-    const typed = foldPaletteKey('e', {}, state, list);
-    expect(typed.kind === 'state' && typed.state).toEqual({ query: 'e', index: 0 });
-    const run = foldPaletteKey('', { return: true }, { query: 'exit', index: 0 }, list);
+    const typed = foldPaletteKey('e', {}, palette);
+    expect(typed.kind === 'state' && typed.palette.state).toEqual({ query: 'e', index: 0 });
+    const run = foldPaletteKey(
+      '',
+      { return: true },
+      { state: { query: 'exit', index: 0 }, list: palette.list },
+    );
     expect(run.kind === 'run' && run.command?.name).toBe('exit');
-    expect(foldPaletteKey('', { escape: true }, state, list)).toEqual({ kind: 'close' });
+    expect(foldPaletteKey('', { escape: true }, palette)).toEqual({ kind: 'close' });
   });
 
   it('typed key by key and confirmed with Return, the palette runs the command whose name was typed', () => {
     for (const [where, surface, entries] of PALETTES)
       for (const item of entries) {
         let at = opened(entries, surface === 'home' ? 'down' : 'up');
-        for (const char of item.command.name) at = press(at.state, at.list, char);
-        const run: PaletteStep = foldPaletteKey('', { return: true }, at.state, at.list);
+        for (const char of item.command.name) at = press(at, char);
+        const run: PaletteStep = foldPaletteKey('', { return: true }, at);
         // A dim row (`/clear` on the Home) is the exact name typed too: Enter on it says why, and never runs another command.
         expect(
           run.kind === 'run' ? run.command?.name : run.kind,
@@ -689,15 +719,13 @@ describe('foldPaletteKey (the shared both-surface fold)', () => {
       let at = opened(entries, layout);
       let reached = -1;
       for (let step = 0; step < entries.length + 10; step += 1) {
-        at = press(at.state, at.list, '', key);
-        if (highlighted(at.state, at.list) === 'exit' && reached < 0) reached = step;
+        at = press(at, '', key);
+        if (highlighted(at) === 'exit' && reached < 0) reached = step;
       }
-      expect(highlighted(at.state, at.list), `${where}: still on /exit after extra presses`).toBe(
-        'exit',
-      );
+      expect(highlighted(at), `${where}: still on /exit after extra presses`).toBe('exit');
       expect(reached, `${where}: /exit is reached`).toBeGreaterThan(0);
       // Only the explicit selection of /exit runs it.
-      const run = foldPaletteKey('', { return: true }, at.state, at.list);
+      const run = foldPaletteKey('', { return: true }, at);
       expect(run.kind === 'run' && run.command?.name, where).toBe('exit');
     }
   });

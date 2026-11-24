@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import {
-  CHAT_PALETTE_COMMANDS,
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
+  REPL_COMMANDS,
 } from '../../commands/repl-commands.js';
 import {
   createHomeController,
@@ -44,7 +44,7 @@ describe('Home provider setup', () => {
   it('exposes provider setup in the Home palette only: not in a standalone chat and, since OD-2, not in the chat the Home hosts', () => {
     expect(HOME_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(true);
     expect(HOME_CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
-    expect(CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
+    expect(REPL_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
     expect(HOME_PALETTE_COMMANDS.find((item) => item.name === 'providers')?.description).toContain(
       'keys',
     );

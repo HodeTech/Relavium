@@ -1,10 +1,12 @@
 /**
  * The registry and the Home's dispatch agree ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7, MVP-11
- * Step 2.2). The Home does not dispatch through the registry's `run` (its commands have a `run` that does nothing) but through a chain of
- * regular expressions in the controller, so a registry entry can exist with nothing behind it. This test drives the REAL controller with the
- * line of every command the registry places on the Home (pasted, and typed through the palette) and with the chat the Home hosts, and fails
- * for an entry that is answered as an unknown command or as a word that "works in a chat". It also holds the palette's first row, its dim
- * rows and its direction to what the host does with them: `/` then `Enter` never leaves the application, a dim row says why and runs
+ * Step 2.2). The Home does not dispatch through the registry's `run`: a command it opens itself is marked `opener: 'home'` in the registry and
+ * has an entry in the controller's ONE table of words, which a typed line and a palette selection are both looked up in; the few words that
+ * run over the Home's own context (`/help`, `/exit`, `/doctor`, `/clear`, `/models`) are answered beside it. So a registry entry can exist with
+ * nothing behind it. This test drives the REAL controller with the line of every command the registry places on the Home (pasted, and typed
+ * through the palette, with and without an argument) and with the chat the Home hosts, and fails for an entry that is answered as an unknown
+ * command or as a word that "works in a chat", and for a word of a chat that the Home would open. It also holds the palette's first row,
+ * its dim rows and its direction to what the host does with them: `/` then `Enter` never leaves the application, a dim row says why and runs
  * nothing, and `/exit` is reached and run only by an explicit selection.
  *
  * Through the real Home controller; the ports and the timers are scripted.
@@ -12,6 +14,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  COMMAND_DEFINITIONS,
   commandDefinitionsOf,
   REPL_COMMANDS_BY_NAME,
   unavailableNotice,
@@ -225,6 +228,146 @@ describe('every command the registry places on the Home is handled by the Home�
   });
 });
 
+describe('a word of the Home, with an argument, is refused with its own sentence, typed or chosen in the palette', () => {
+  /**
+   * The sentence of each word of the Home's order when it is given something after its name. The sentences are fixed, per word: some say where
+   * the input is asked instead (`/run`, `/import`, `/resume`), the words that run over the Home's own context share one template, and
+   * `/mode` says there is no conversation to set it for. Written out here, so a word added to the Home has to be given its own.
+   */
+  const REFUSED: Readonly<Record<string, string>> = {
+    resume: '/resume accepts no arguments. Use its picker to select a session.',
+    run: '/run accepts no arguments. Use its picker to choose a workflow.',
+    workflows: '/workflows accepts no arguments.',
+    agents: '/agents accepts no arguments.',
+    providers: '/providers accepts no arguments.',
+    models: '/models accepts no arguments here. Start a chat to use them.',
+    mode: 'No conversation is active. Use /mode to set the startup default.',
+    permissions: '/permissions accepts no arguments.',
+    pricing: '/pricing accepts no arguments.',
+    init: '/init accepts no arguments.',
+    import: '/import accepts no arguments. It asks for the path.',
+    doctor: '/doctor accepts no arguments here. Start a chat to use them.',
+    help: '/help accepts no arguments.',
+    clear: '/clear accepts no arguments here. Start a chat to use them.',
+    exit: '/exit accepts no arguments here. Start a chat to use them.',
+  };
+  const HOME_COMMANDS = commandDefinitionsOf('home').map((definition) => definition.name);
+
+  it('has a sentence for every command of the Home’s order, and for nothing else', () => {
+    expect(Object.keys(REFUSED).sort()).toEqual([...HOME_COMMANDS].sort());
+  });
+
+  const refused = (m: Mounted): string | undefined => {
+    const snapshot = m.controller.getSnapshot();
+    if (m.onExit.mock.calls.length > 0) return 'the Home exited';
+    if (snapshot.screen !== undefined) return `opened the ${snapshot.screen.kind} screen`;
+    if (snapshot.nativeActionBusy) return 'started a native action';
+    return snapshot.notice;
+  };
+
+  it.each(HOME_COMMANDS)('/%s extra, pasted, says its sentence and opens nothing', (name) => {
+    const m = mount({ sessions: 1 });
+    paste(m.controller, `/${name} extra`);
+    expect(m.startChat).not.toHaveBeenCalled();
+    expect(refused(m), `/${name} extra`).toBe(REFUSED[name]);
+    expect(m.controller.getSnapshot().input.text, 'the line left the editor').toBe('');
+  });
+
+  it.each(HOME_COMMANDS)(
+    '/%s extra, typed after the `/` of the palette, says the same sentence (the query matches no row)',
+    (name) => {
+      const m = mount({ sessions: 1 });
+      type(m.controller, `/${name} extra`);
+      m.controller.handleKey('', ENTER);
+      expect(m.startChat).not.toHaveBeenCalled();
+      expect(m.controller.getSnapshot().palette, 'the palette is closed').toBeUndefined();
+      expect(refused(m), `/${name} extra`).toBe(REFUSED[name]);
+    },
+  );
+});
+
+describe('a word that is a chat’s is not the Home’s (the table has no entry for it)', () => {
+  const HOME = new Set(commandDefinitionsOf('home').map((definition) => definition.name));
+  const CHAT_ONLY = COMMAND_DEFINITIONS.map((definition) => definition.name).filter(
+    (name) => !HOME.has(name),
+  );
+
+  it('has chat-only commands to check', () => {
+    expect(CHAT_ONLY).toContain('cost');
+    expect(CHAT_ONLY).toContain('effort');
+    expect(CHAT_ONLY.every((name) => REPL_COMMANDS_BY_NAME.has(name))).toBe(true);
+  });
+
+  it.each(CHAT_ONLY)('/%s at the landing says it works in a chat, and opens nothing', (name) => {
+    const m = mount({ sessions: 1 });
+    paste(m.controller, `/${name}`);
+    const snapshot = m.controller.getSnapshot();
+    expect(snapshot.notice).toBe(
+      `/${name} works in a chat. Start one, then type it. /help lists the commands.`,
+    );
+    expect(snapshot.screen).toBeUndefined();
+    expect(snapshot.nativeActionBusy).toBe(false);
+    expect(m.startChat).not.toHaveBeenCalled();
+  });
+
+  it.each(['workflows', 'permissions', 'mode', 'models', 'doctor', 'help'])(
+    '/%s typed in the chat the Home hosts is the chat’s own: it is handed to the chat, and the Home opens nothing',
+    async (name) => {
+      const m = mount({ sessions: 1 });
+      await intoChat(m);
+      paste(m.controller, `/${name}`);
+      await flush();
+      expect(m.lines, `/${name} reached the chat`).toEqual([`/${name}`]);
+      const snapshot = m.controller.getSnapshot();
+      expect(snapshot.screen).toBeUndefined();
+      expect(snapshot.nativeActionBusy).toBe(false);
+      expect(snapshot.notice).toBeUndefined();
+    },
+  );
+
+  it.each(['workflows', 'permissions', 'mode', 'models', 'doctor', 'help'])(
+    '/%s chosen in the palette of the chat the Home hosts is handed to the chat as the typed line is',
+    async (name) => {
+      const m = mount({ sessions: 1 });
+      await intoChat(m);
+      m.controller.handleKey('/', {});
+      type(m.controller, name);
+      m.controller.handleKey('', ENTER);
+      await flush();
+      expect(m.lines, `/${name} reached the chat`).toEqual([`/${name}`]);
+      expect(m.controller.getSnapshot().screen).toBeUndefined();
+    },
+  );
+
+  it('/resume chosen in the palette of the chat the Home hosts is the Home’s, as the typed line is: its picker opens and the chat is sent nothing', async () => {
+    const pickSession = vi.fn(() => Promise.resolve(undefined));
+    const m = mount({
+      sessions: 1,
+      extra: { pickSession, resumeChat: () => Promise.resolve({ notice: 'unexpected' }) },
+    });
+    await intoChat(m);
+    m.controller.handleKey('/', {});
+    type(m.controller, 'resume');
+    m.controller.handleKey('', ENTER);
+    await flush();
+    expect(pickSession).toHaveBeenCalledOnce();
+    expect(m.lines).toEqual([]);
+  });
+
+  it('/resume with an argument in the chat the Home hosts is refused in the Home’s own words, in the chat too', async () => {
+    const m = mount({ sessions: 1 });
+    await intoChat(m);
+    paste(m.controller, '/resume extra');
+    await flush();
+    const said = 'Use its picker to select a session.';
+    expect(m.controller.getSnapshot().notice).toContain(said);
+    // …and the chat in front is told too, in its warnings channel (`store.note`), where a person looking at the chat reads it.
+    const warnings = m.controller.getSnapshot().session?.store.getSnapshot().state.warnings ?? [];
+    expect(warnings).toContainEqual(expect.stringContaining(said));
+    expect(m.lines).toEqual([]);
+  });
+});
+
 describe('`/` then `Enter` never leaves the application, and /exit runs only on an explicit selection', () => {
   it('on a Home with a saved session, runs /resume (the first row)', async () => {
     const pickSession = vi.fn(() => Promise.resolve(undefined));
@@ -244,7 +387,7 @@ describe('`/` then `Enter` never leaves the application, and /exit runs only on 
     const launchRun = vi.fn(() => Promise.resolve('The launch ran.'));
     const m = mount({ sessions: 0, extra: { launchRun } });
     m.controller.handleKey('/', {});
-    expect(m.controller.getSnapshot().palette?.index).toBe(1);
+    expect(m.controller.getSnapshot().palette?.state.index).toBe(1);
     m.controller.handleKey('', ENTER);
     expect(launchRun).toHaveBeenCalledOnce();
     expect(m.onExit).not.toHaveBeenCalled();
@@ -257,8 +400,8 @@ describe('`/` then `Enter` never leaves the application, and /exit runs only on 
       extra: { providerSetup: { initialKeyless: true, open } },
     });
     m.controller.handleKey('/', {});
-    expect(m.controller.getSnapshot().paletteList?.rows[0]?.command.name).toBe('providers');
-    expect(m.controller.getSnapshot().palette?.index).toBe(0);
+    expect(m.controller.getSnapshot().palette?.list.rows[0]?.command.name).toBe('providers');
+    expect(m.controller.getSnapshot().palette?.state.index).toBe(0);
     m.controller.handleKey('', ENTER);
     expect(open).toHaveBeenCalledOnce();
     expect(m.onExit).not.toHaveBeenCalled();
@@ -269,7 +412,7 @@ describe('`/` then `Enter` never leaves the application, and /exit runs only on 
     await intoChat(m);
     m.controller.handleKey('/', {});
     expect(
-      m.controller.getSnapshot().paletteList?.layout,
+      m.controller.getSnapshot().palette?.list.layout,
       'a chat’s list runs up from the prompt',
     ).toBe('up');
     m.controller.handleKey('', ENTER);
@@ -284,8 +427,8 @@ describe('`/` then `Enter` never leaves the application, and /exit runs only on 
     const m = mount();
     m.controller.handleKey('/', {});
     for (let step = 0; step < 40; step += 1) m.controller.handleKey('', DOWN);
-    const { palette, paletteList } = m.controller.getSnapshot();
-    expect(paletteList?.rows[palette?.index ?? -1]?.command.name).toBe('exit');
+    const { palette } = m.controller.getSnapshot();
+    expect(palette?.list.rows[palette.state.index]?.command.name).toBe('exit');
     expect(m.onExit, 'the highlight alone runs nothing').not.toHaveBeenCalled();
     m.controller.handleKey('', ENTER);
     expect(m.onExit).toHaveBeenCalledOnce();
@@ -296,14 +439,14 @@ describe('`/` then `Enter` never leaves the application, and /exit runs only on 
     await intoChat(m);
     m.controller.handleKey('/', {});
     m.controller.handleKey('', DOWN); // before the first entry: nothing, and no wrap-around
-    expect(m.controller.getSnapshot().palette?.index).toBe(0);
+    expect(m.controller.getSnapshot().palette?.state.index).toBe(0);
     m.controller.handleKey('', UP);
-    expect(m.controller.getSnapshot().palette?.index).toBe(1);
+    expect(m.controller.getSnapshot().palette?.state.index).toBe(1);
     m.controller.handleKey('', DOWN);
-    expect(m.controller.getSnapshot().palette?.index).toBe(0);
+    expect(m.controller.getSnapshot().palette?.state.index).toBe(0);
     for (let step = 0; step < 40; step += 1) m.controller.handleKey('', UP);
-    const { palette, paletteList } = m.controller.getSnapshot();
-    expect(paletteList?.rows[palette?.index ?? -1]?.command.name).toBe('exit');
+    const { palette } = m.controller.getSnapshot();
+    expect(palette?.list.rows[palette.state.index]?.command.name).toBe('exit');
     expect(m.lines, 'the highlight alone sends nothing').toEqual([]);
     m.controller.handleKey('', ENTER);
     await flush();
@@ -316,8 +459,11 @@ describe('a row that cannot act says why and runs nothing', () => {
     const m = mount({ sessions: 1 });
     m.controller.handleKey('/', {});
     type(m.controller, 'clear');
-    expect(m.controller.getSnapshot().paletteList?.rows[0]?.enabled).toBe(false);
-    expect(m.controller.getSnapshot().palette, 'the typed exact name is highlighted').toEqual({
+    expect(m.controller.getSnapshot().palette?.list.rows[0]?.enabled).toBe(false);
+    expect(
+      m.controller.getSnapshot().palette?.state,
+      'the typed exact name is highlighted',
+    ).toEqual({
       query: 'clear',
       index: 0,
     });

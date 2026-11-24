@@ -304,7 +304,7 @@ describe('/agent at the landing (ADR-0140 §3)', () => {
     const { c, startChat } = landing();
     c.handleKey('/', {});
     type(c, 'agent');
-    expect(c.getSnapshot().palette?.query).toBe('agent');
+    expect(c.getSnapshot().palette?.state.query).toBe('agent');
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().chatSheet).toBeUndefined();

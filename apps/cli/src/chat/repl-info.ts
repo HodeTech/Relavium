@@ -198,13 +198,10 @@ export type ClearedNoticeSurface = 'home' | 'standalone-chat';
  * stand-alone chat (which has no Home and no `/resume`) names the Home in words and says `relavium` alone. The shell line that
  * names the saved session's id is printed when the chat has closed (`resumeHint`), never in the transcript.
  *
- * `surface` defaults to the Home because the Home's controller calls this with the session id alone; the stand-alone chat passes
- * its own.
+ * `surface` defaults to the Home because the Home's controller calls this with no argument; the stand-alone chat passes its own.
+ * The notice takes no session id: it names none (above), and a parameter that was never read invited the one thing it must not do.
  */
-export function clearedNotice(
-  _previousSessionId: string,
-  surface: ClearedNoticeSurface = 'home',
-): string {
+export function clearedNotice(surface: ClearedNoticeSurface = 'home'): string {
   return surface === 'home'
     ? '✨ Started a fresh conversation. The previous one is saved; /resume continues it.'
     : '✨ Started a fresh conversation. The previous one is saved; to continue it, start Relavium without arguments and use /resume on the Home.';

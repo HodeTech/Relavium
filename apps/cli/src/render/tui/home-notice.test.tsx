@@ -94,7 +94,7 @@ function mount(alternate: boolean, color: boolean, keyless = false) {
       input.push('/');
       await vi.waitFor(() => expect(controller.getSnapshot().palette).toBeDefined());
       input.push('doctor');
-      await vi.waitFor(() => expect(controller.getSnapshot().palette?.query).toBe('doctor'));
+      await vi.waitFor(() => expect(controller.getSnapshot().palette?.state.query).toBe('doctor'));
       input.push('\r');
     },
     close: async () => {
@@ -184,7 +184,9 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
       h.input.push('/');
       await vi.waitFor(() => expect(h.controller.getSnapshot().palette).toBeDefined());
       h.input.push('resume');
-      await vi.waitFor(() => expect(h.controller.getSnapshot().palette?.query).toBe('resume'));
+      await vi.waitFor(() =>
+        expect(h.controller.getSnapshot().palette?.state.query).toBe('resume'),
+      );
       h.resize(40, 24);
       await vi.waitFor(() => expect(h.frame('Terminal too small')).not.toBe(''));
       expect(h.frame('Terminal too small')).not.toContain('/resume');

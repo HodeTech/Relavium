@@ -15,7 +15,7 @@ import {
  * {@link reduceChatKey} / {@link reduceHomeKey} it is a PURE `(char, key) → action` mapping plus a pure
  * `(state, action, list) → step` fold, so the palette's filter/navigate/select contract is unit-tested
  * without mounting ink. BOTH palette surfaces — the single-tree `HomeController` and the standalone `ChatApp` —
- * drive the SAME reducer; each owns only the `PaletteState | undefined` and {@link PaletteList} storage and renders {@link PaletteView}.
+ * drive the SAME reducer; each owns only the {@link OpenPalette} `| undefined` storage and renders {@link PaletteView}.
  *
  * Ctrl-C is deliberately NOT handled here — it is the always-escapes hatch the outer key router owns (it closes
  * the palette AND breaks any paste latch), so the palette can never trap the user.
@@ -59,13 +59,20 @@ export interface PaletteList {
 }
 
 /**
+ * An open palette: the state AND the rows it reads, as ONE value. The highlighted index is an index into THESE rows, so the two are never
+ * stored apart: a host keeps an `OpenPalette | undefined`, and a state without its rows (or rows without their state) is not a value the
+ * types admit.
+ */
+export interface OpenPalette {
+  readonly state: PaletteState;
+  readonly list: PaletteList;
+}
+
+/**
  * Open a palette over `entries`: an empty query and the highlight on the FIRST ENABLED row, never row 0 by default (so `/` then `Enter` can
  * never leave the application or run a command that is dim).
  */
-export function openPalette(
-  entries: readonly PaletteEntry[],
-  layout: PaletteLayout,
-): { readonly state: PaletteState; readonly list: PaletteList } {
+export function openPalette(entries: readonly PaletteEntry[], layout: PaletteLayout): OpenPalette {
   return {
     state: { query: '', index: firstEnabledIndex(entries) },
     list: { entries, rows: entries, layout },
@@ -130,7 +137,7 @@ export function clampIndex(index: number, count: number): number {
 export type PaletteStep =
   // `run` carries only the command — the palette submits its bare `/<name>` line today (every curated command is
   // zero-arg). S4 (arg-taking commands like `/doctor --deep`) must extend this + the dispatch — see ReplCommand.
-  | { readonly kind: 'state'; readonly state: PaletteState; readonly list: PaletteList }
+  | { readonly kind: 'state'; readonly palette: OpenPalette }
   | { readonly kind: 'run'; readonly command: ReplCommand | undefined }
   // `Enter` on a dim row (a typed exact name that is dim included): the host shows `reason` and keeps the palette open. Never "unknown
   // command", never run.
@@ -143,14 +150,9 @@ export type PaletteStep =
  * {@link reducePaletteKey} + {@link stepPalette}. Both the single-tree `HomeController` and the standalone
  * `ChatApp` call THIS, so the open-palette key contract is tested once and can never diverge.
  */
-export function foldPaletteKey(
-  char: string,
-  key: PaletteKey,
-  state: PaletteState,
-  list: PaletteList,
-): PaletteStep {
+export function foldPaletteKey(char: string, key: PaletteKey, palette: OpenPalette): PaletteStep {
   if (key.ctrl === true && char === 'c') return { kind: 'close' };
-  return stepPalette(state, reducePaletteKey(char, key, list.layout), list);
+  return stepPalette(palette, reducePaletteKey(char, key, palette.list.layout));
 }
 
 /** The next row from `from` in `direction` that can act, or `from` itself when there is none (no wrap-around). */
@@ -162,16 +164,13 @@ function nextEnabled(rows: readonly PaletteEntry[], from: number, direction: 1 |
 }
 
 /**
- * Fold one {@link PaletteKeyAction} against the current state + the rows the host built. An edit re-filters and puts the highlight on the
+ * Fold one {@link PaletteKeyAction} against the open palette (its state and the rows the host built). An edit re-filters and puts the highlight on the
  * first row that can act; a move skips dim rows and clamps at both ends (no wrap-around); `select` reads the highlighted row: a row that can
  * act runs, a dim one answers with its reason (and the palette stays open), and an empty filter is `undefined` — the caller treats that as a
  * no-op close or, at the landing, as a typed line of the person's own.
  */
-export function stepPalette(
-  state: PaletteState,
-  action: PaletteKeyAction,
-  list: PaletteList,
-): PaletteStep {
+export function stepPalette(palette: OpenPalette, action: PaletteKeyAction): PaletteStep {
+  const { state, list } = palette;
   switch (action.kind) {
     case 'cancel':
       return { kind: 'close' };
@@ -187,15 +186,15 @@ export function stepPalette(
       return edited(list, dropLastCodePoint(state.query));
     case 'move': {
       const index = nextEnabled(list.rows, state.index, action.delta > 0 ? 1 : -1);
-      return { kind: 'state', state: { query: state.query, index }, list };
+      return { kind: 'state', palette: { state: { query: state.query, index }, list } };
     }
     case 'jump': {
       const index =
         action.to === 'first' ? firstEnabledIndex(list.rows) : lastEnabledIndex(list.rows);
-      return { kind: 'state', state: { query: state.query, index }, list };
+      return { kind: 'state', palette: { state: { query: state.query, index }, list } };
     }
     case 'none':
-      return { kind: 'state', state, list };
+      return { kind: 'state', palette };
   }
 }
 
@@ -204,7 +203,6 @@ function edited(list: PaletteList, query: string): PaletteStep {
   const rows = filterPaletteEntries(list.entries, query);
   return {
     kind: 'state',
-    state: { query, index: bestMatchIndex(rows, query) },
-    list: { ...list, rows },
+    palette: { state: { query, index: bestMatchIndex(rows, query) }, list: { ...list, rows } },
   };
 }

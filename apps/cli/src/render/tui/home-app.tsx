@@ -78,7 +78,7 @@ import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
-import type { PaletteList, PaletteState } from './palette-reducer.js';
+import type { OpenPalette } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
@@ -161,9 +161,8 @@ function ChatRegion(
     editor: EditorState;
     /** What owns the keyboard, as of this render (`overlay-flags.ts`): the region draws no idle prompt under a submode. */
     overlays: OverlayFlags;
-    palette: PaletteState | undefined;
-    /** The rows the open palette reads, built once per change by the controller: the key fold and this view share them. */
-    paletteList: PaletteList | undefined;
+    /** The open `/` palette: its state and the rows it reads, built once per change by the controller (the key fold and this view share them). */
+    palette: OpenPalette | undefined;
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
@@ -280,10 +279,10 @@ function ChatRegion(
         hasCustody={props.reviewCustody}
         color={color}
       />
-      {props.palette !== undefined && props.paletteList !== undefined && (
+      {props.palette !== undefined && (
         <PaletteView
-          list={props.paletteList}
-          state={props.palette}
+          list={props.palette.list}
+          state={props.palette.state}
           color={color}
           {...(viewport === undefined ? {} : { maxRows: viewport.rows - 1 })}
         />
@@ -900,7 +899,6 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           editor={state.input}
           overlays={flags}
           palette={state.palette}
-          paletteList={state.paletteList}
           search={state.search}
           mention={state.mention}
           modelPicker={state.modelPicker}
@@ -1050,9 +1048,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           rows={size.rows}
           color={color}
           paletteOpen={landingPromptHidden(flags)}
-          {...(state.palette === undefined || state.paletteList === undefined
-            ? {}
-            : { palette: { list: state.paletteList, state: state.palette } })}
+          {...(state.palette === undefined ? {} : { palette: state.palette })}
           showBanner={props.showBanner}
           keyless={state.keyless}
           parkedRuns={state.parkedRuns}

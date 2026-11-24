@@ -5,7 +5,6 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import {
-  CHAT_PALETTE_COMMANDS,
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   REPL_COMMANDS,
@@ -496,11 +495,11 @@ const SURFACE_OVERRIDES: readonly {
 const names = (commands: readonly { readonly name: string }[]): ReadonlySet<string> =>
   new Set(commands.map((command) => command.name));
 
-/** `/help` is typed in a chat (it is in no palette); every other command a surface offers is in its palette list. */
+/** Every command a surface offers is in its palette list (`/help` too, since MVP-11 Step 2.2). */
 const OFFERED: Readonly<Record<Surface, ReadonlySet<string>>> = {
   home: names(HOME_PALETTE_COMMANDS),
-  chat: new Set([...names(CHAT_PALETTE_COMMANDS), 'help']),
-  'home-chat': new Set([...names(HOME_CHAT_PALETTE_COMMANDS), 'help']),
+  chat: names(REPL_COMMANDS),
+  'home-chat': names(HOME_CHAT_PALETTE_COMMANDS),
 };
 
 /** Every command any surface has. */

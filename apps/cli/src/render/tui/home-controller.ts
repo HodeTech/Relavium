@@ -11,6 +11,7 @@ import {
   homeOnlyPointer,
   REPL_COMMANDS_BY_NAME,
   unavailableNotice,
+  type ReplCommand,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
@@ -26,7 +27,6 @@ import {
   type EffortPickerState,
 } from './effort-picker.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
-import { HOME_HELP_COMMANDS } from './help-sheet.js';
 import { disarmPermissionsSheet, sheetCanArm } from './permissions-sheet.js';
 import { AGENT_UNREADABLE, foldAgentSheetKey } from './agent-sheet.js';
 import {
@@ -156,9 +156,8 @@ import {
   foldPaletteKey,
   openPalette,
   shouldOpenPalette,
+  type OpenPalette,
   type PaletteKey,
-  type PaletteList,
-  type PaletteState,
 } from './palette-reducer.js';
 import {
   FORCE_TEARDOWN_MS,
@@ -272,11 +271,10 @@ export interface HomeControllerState {
   readonly input: EditorState;
   readonly session: HomeChatSession | undefined;
   /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
-   *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
-  readonly palette: PaletteState | undefined;
-  /** The rows the open palette reads: built ONCE when it opens and when its query changes, and read by BOTH the key fold and the view, so
-   *  they cannot disagree on the highlighted row (MVP-11 Step 2.2). Stale while the palette is closed; the view reads it only when open. */
-  readonly paletteList: PaletteList | undefined;
+   *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). ONE value: the palette's state
+   *  and the rows it reads, built ONCE when it opens and when its query changes and read by BOTH the key fold and the view, so they cannot
+   *  disagree on the highlighted row (MVP-11 Step 2.2) and cannot be stored apart. */
+  readonly palette: OpenPalette | undefined;
   /** The open Ctrl+R reverse-search submode of the in-Home chat (2.5.D step 3) — `undefined` ⇒ closed. Chat-only
    *  (the bare Home has no history); mutually exclusive with the palette, yields to a pending approval. */
   readonly search: ReverseSearchState | undefined;
@@ -782,6 +780,21 @@ export const KEY_SHAPED_DRAFT_NOTICE =
 export const KEY_SHAPED_LINE_NOTICE =
   'That looked like an API key, so it was not shown or kept. Use /providers to connect a provider and paste it there.';
 
+/**
+ * One word of the Home's own, as the Home opens it ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7). The
+ * controller keeps ONE record of these keyed by command name, and a typed line and a palette selection are applied through it alike.
+ */
+interface HomeWord {
+  /** The fixed refusal for `/word extra`: the word takes no arguments, and the sentence says where its input is asked instead. */
+  readonly argsNotice: string;
+  /** What is said instead of opening when a dependency of the word is not wired here, or `undefined` when the word can open. */
+  readonly unavailable?: () => string | undefined;
+  /** The word is the Home's in a chat it hosts as well (`/resume`); every other word of the table is the landing's only. */
+  readonly inChat?: true;
+  /** Open what the word is for. It never throws for a missing dependency that {@link unavailable} names. */
+  readonly open: () => void;
+}
+
 /** The longest a chat build's failure is drawn: it wraps across rows, and no config text or error body may fill the screen. */
 const FAILURE_NOTICE_MAX = 300;
 
@@ -933,7 +946,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     input: emptyEditor(),
     session: undefined,
     palette: undefined,
-    paletteList: undefined,
     search: undefined,
     mention: undefined,
     shellBusy: false,
@@ -1774,7 +1786,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // while the fresh one builds, so a build failure leaves the user in a working, resumable conversation rather than
   // a dead screen. Input is re-gated (submitBusy) for the whole swap so a message typed mid-swap can't land on the
   // about-to-be-cleared session. On success the old session is torn down (bounded, mirroring endChat) and the fresh
-  // one is swapped in, its transcript opening with the clearedNotice naming the prior (resumable) conversation.
+  // one is swapped in, its transcript opening with the clearedNotice saying the prior (resumable) conversation is saved.
   const clearChat = (old: HomeChatSession): void => {
     if (exiting || tearingDown === old) return; // permanent stop or a double-/clear race
     if (old.clear === undefined) {
@@ -1782,7 +1794,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       old.store.notice('Starting a fresh conversation is unavailable for this bound agent.');
       return;
     }
-    const oldId = old.sessionId;
     set({ submitBusy: true }); // re-gate input for the whole swap (the old chat is still live underneath)
     const build = old.clear();
     buildInFlight = build;
@@ -1812,7 +1823,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           })
           .catch(() => undefined);
         cancelFired = false; // the fresh session starts with a clean cancel latch (parity with endChat)
-        fresh.store.notice(clearedNotice(oldId)); // name the prior (resumable) conversation in the fresh transcript
+        fresh.store.notice(clearedNotice()); // say in the fresh transcript that the prior (resumable) conversation is saved
         set({
           session: fresh,
           mode: 'chat', // STAY in chat (no bare-Home flash) — the defining difference from endChat
@@ -2360,9 +2371,117 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   /**
-   * A registry word typed at the landing (ADR-0140 §3): answered here, never sent to the model. `/help` opens the sheet; a word of the
-   * bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments); any other registry word is a
-   * chat's, and the notice says so. The line is cleared first, as every other command's is.
+   * The Home's own words, ONE record keyed by command name ([ADR-0145](../../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7:
+   * the real open bindings of the commands the registry marks `opener: 'home'`, and of the Home's `/workflows`, `/permissions` and `/mode`).
+   * Both ways to name a word, a line typed at the prompt ({@link managementCommand}) and a row chosen in the `/` palette
+   * ({@link chooseCommand}), look the word up HERE and apply the same preamble ({@link runHomeWord}), so they cannot differ. A new Home
+   * command is a placement in the registry and one entry below. The words of the bare Home that run over the Home's own context instead
+   * (`/help`, `/exit`, `/doctor`, `/clear`, `/models`) are answered by {@link answerLandingWord}; `home-registry-dispatch.test.ts` holds the
+   * two sets to the registry's Home placements, and a word of a chat to its chat.
+   */
+  const homeWords: ReadonlyMap<string, HomeWord> = new Map<string, HomeWord>([
+    [
+      'providers',
+      { argsNotice: '/providers accepts no arguments.', open: () => openProviderSetup() },
+    ],
+    ['init', { argsNotice: '/init accepts no arguments.', open: openProjectInit }],
+    [
+      'import',
+      { argsNotice: '/import accepts no arguments. It asks for the path.', open: openImportCard },
+    ],
+    ['pricing', { argsNotice: '/pricing accepts no arguments.', open: openPricingCard }],
+    [
+      'run',
+      {
+        argsNotice: '/run accepts no arguments. Use its picker to choose a workflow.',
+        open: openRunLaunch,
+      },
+    ],
+    [
+      'agents',
+      {
+        argsNotice: '/agents accepts no arguments.',
+        unavailable: () =>
+          deps.agents === undefined ? 'The project’s agents are not available here.' : undefined,
+        open: () => void openTabHost('agents'),
+      },
+    ],
+    [
+      'workflows',
+      {
+        argsNotice: '/workflows accepts no arguments.',
+        unavailable: () =>
+          deps.defined === undefined
+            ? 'The project’s workflows are not available here.'
+            : undefined,
+        open: () => void openTabHost('defined'),
+      },
+    ],
+    [
+      'permissions',
+      {
+        argsNotice: '/permissions accepts no arguments.',
+        unavailable: () =>
+          deps.permissions === undefined
+            ? 'Remembered commands are not available here.'
+            : undefined,
+        open: () => void openTabHost('permissions'),
+      },
+    ],
+    [
+      'mode',
+      {
+        argsNotice: 'No conversation is active. Use /mode to set the startup default.',
+        unavailable: () =>
+          deps.openModeSettings === undefined
+            ? 'Startup mode settings are unavailable here.'
+            : undefined,
+        open: () => {
+          const settings = deps.openModeSettings;
+          if (settings !== undefined) openNativeAction(settings, 'Startup mode settings');
+        },
+      },
+    ],
+    [
+      'resume',
+      {
+        argsNotice: '/resume accepts no arguments. Use its picker to select a session.',
+        inChat: true,
+        open: () => openResume(),
+      },
+    ],
+  ]);
+
+  /** The table's entry for a word, where the person is: the landing's own words at the landing, and in a chat only the one the chat hosts (`/resume`). */
+  const homeWordFor = (name: string): HomeWord | undefined => {
+    const word = homeWords.get(name);
+    return word !== undefined && (state.session === undefined || word.inChat === true)
+      ? word
+      : undefined;
+  };
+
+  /**
+   * The one preamble of a word of the table, whichever way it was named: the line leaves the editor; arguments are refused with the word's
+   * own sentence (on the landing, and in the chat in front when there is one); a dependency that is not wired is said, and nothing opens;
+   * otherwise the word opens.
+   */
+  const runHomeWord = (word: HomeWord, withArguments: boolean): void => {
+    set({ input: emptyEditor() });
+    if (withArguments) {
+      set({ notice: word.argsNotice });
+      state.session?.store.note(word.argsNotice);
+      return;
+    }
+    const missing = word.unavailable?.();
+    if (missing === undefined) word.open();
+    else set({ notice: missing });
+  };
+
+  /**
+   * A registry word of the bare Home that is not in {@link homeWords}, answered at the landing (ADR-0140 §3): never sent to the model.
+   * `/help` opens the sheet; a word of the bare Home's palette runs as the palette runs it (over the Home's own context, with no arguments);
+   * any other registry word is a chat's, and the notice says so. The line is cleared first, as every other command's is. A typed line and a
+   * palette selection come here alike.
    */
   const answerLandingWord = (word: string, withArguments: boolean): void => {
     set({ input: emptyEditor() });
@@ -2411,7 +2530,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     const nearest = nearestCommandName(
       token,
-      (landing ? HOME_HELP_COMMANDS : HOME_CHAT_PALETTE_COMMANDS).map(
+      (landing ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS).map(
         (command) => `/${command.name}`,
       ),
     );
@@ -2429,110 +2548,51 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
+  /**
+   * A word only the Home has, typed in the chat it hosts (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`): one line that
+   * names the Home, and nothing opens (ADR-0145 §7.4, OD-2). `/resume` has a placement here, so it is not one of them. Whether the word was
+   * answered.
+   */
+  const pointToHome = (name: string): boolean => {
+    const session = state.session;
+    const pointer = session === undefined ? undefined : homeOnlyPointer(name, 'home-chat');
+    if (session === undefined || pointer === undefined) return false;
+    set({ input: emptyEditor() });
+    session.store.notice(pointer); // the channel the chat's own dispatch answers through (`emitOutput`)
+    return true;
+  };
+
+  /**
+   * A near miss of `/providers`. At the landing the word is the one to type; in a chat the Home hosts, `/providers` itself answers with a
+   * pointer only, so the line points at the Home (and `Ctrl+C` twice is the way back to it).
+   */
+  const answerProviderTypo = (): void => {
+    set({ input: emptyEditor() });
+    if (state.session === undefined)
+      set({ notice: 'Use /providers to connect or manage provider keys.' });
+    else
+      state.session.store.notice(
+        'Provider keys are managed from the Home: go back to it (Ctrl+C twice) and use /providers.',
+      ); // the channel the chat's own dispatch answers through, as the pointer above
+  };
+
+  /**
+   * A line typed at the prompt, answered by the Home when it is the Home's: whether it was. The first word decides, in this order: a word only
+   * the Home has, said in a chat ({@link pointToHome}); a word of {@link homeWords}; the near miss of `/providers`; any other slash line
+   * ({@link answerTypedWord}). A line that does not start with a slash is a message, and `false`.
+   */
   const managementCommand = (text: string): boolean => {
-    // A word only the Home has, typed in the chat it hosts (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`): one line that
-    // names the Home, and nothing opens (ADR-0145 §7.4, OD-2). `/resume` has a placement here, so it is not one of them.
-    if (state.session !== undefined && text.startsWith('/')) {
-      const pointer = homeOnlyPointer(text.slice(1).split(/\s/u, 1)[0] ?? '', 'home-chat');
-      if (pointer !== undefined) {
-        set({ input: emptyEditor() });
-        state.session.store.notice(pointer); // the channel the chat's own dispatch answers through (`emitOutput`)
-        return true;
-      }
-    }
-    if (state.session === undefined && /^\/mode(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/mode')
-        set({ notice: 'No conversation is active. Use /mode to set the startup default.' });
-      else if (deps.openModeSettings === undefined)
-        set({ notice: 'Startup mode settings are unavailable here.' });
-      else openNativeAction(deps.openModeSettings, 'Startup mode settings');
+    const word = text.split(/\s/u, 1)[0] ?? '';
+    if (!word.startsWith('/')) return false;
+    const name = word.slice(1);
+    if (pointToHome(name)) return true;
+    const homeWord = homeWordFor(name);
+    if (homeWord !== undefined) {
+      runHomeWord(homeWord, text !== word);
       return true;
     }
-    if (/^\/resume(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/resume') {
-        set({ notice: '/resume accepts no arguments. Use its picker to select a session.' });
-        state.session?.store.note(
-          '/resume accepts no arguments. Use its picker to select a session.',
-        );
-      } else openResume();
-      return true;
-    }
-    if (state.session === undefined && /^\/permissions(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/permissions') set({ notice: '/permissions accepts no arguments.' });
-      else if (deps.permissions === undefined)
-        set({ notice: 'Remembered commands are not available here.' });
-      else openTabHost('permissions');
-      return true;
-    }
-    // `/workflows` at the Home opens the tab host on its Defined tab (ADR-0140 §2, MVP-8 step 4); it no longer starts a chat. With a chat
-    // in front it is the chat's own command, which lists what the project holds, and it is not routed here.
-    if (state.session === undefined && /^\/workflows(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/workflows') set({ notice: '/workflows accepts no arguments.' });
-      else if (deps.defined === undefined)
-        set({ notice: 'The project’s workflows are not available here.' });
-      else openTabHost('defined');
-      return true;
-    }
-    // `/agents` at the Home opens the tab host on the agents strip's Defined tab (ADR-0140 §3, MVP-8 step 5). It is a Home command only: with a
-    // chat in front the pointer block above has already answered the word (one line that names the Home), so it never reaches this line.
-    if (/^\/agents(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/agents') set({ notice: '/agents accepts no arguments.' });
-      else if (deps.agents === undefined)
-        set({ notice: 'The project’s agents are not available here.' });
-      else openTabHost('agents');
-      return true;
-    }
-    // `/run` is a Home command only (ADR-0139 §7): with a chat in front the pointer block above has already answered the word. (The chat
-    // palette does not list it either.)
-    if (/^\/run(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/run')
-        set({ notice: '/run accepts no arguments. Use its picker to choose a workflow.' });
-      else openRunLaunch();
-      return true;
-    }
-    // `/import` and `/pricing` are Home words too (ADR-0140 §9): a card each, opened only at the landing. With a chat in front the pointer
-    // block above has already answered them, as it answers `/run`.
-    if (/^\/import(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/import')
-        set({ notice: '/import accepts no arguments. It asks for the path.' });
-      else openImportCard();
-      return true;
-    }
-    if (/^\/pricing(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/pricing') set({ notice: '/pricing accepts no arguments.' });
-      else openPricingCard();
-      return true;
-    }
-    if (/^\/init(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/init') set({ notice: '/init accepts no arguments.' });
-      else openProjectInit();
-      return true;
-    }
-    if (/^\/providers(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (text !== '/providers') set({ notice: '/providers accepts no arguments.' });
-      else openProviderSetup();
-      return true;
-    }
-    // A near miss of `/providers`. At the landing the word is the one to type; in a chat the Home hosts, `/providers` itself answers with a
-    // pointer only, so the line points at the Home (and `Ctrl+C` twice is the way back to it).
-    if (/^\/provider(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor() });
-      if (state.session === undefined)
-        set({ notice: 'Use /providers to connect or manage provider keys.' });
-      else
-        state.session.store.notice(
-          'Provider keys are managed from the Home: go back to it (Ctrl+C twice) and use /providers.',
-        ); // the channel the chat's own dispatch answers through, as the pointer above
+    if (name === 'provider') {
+      answerProviderTypo();
       return true;
     }
     return answerTypedWord(text);
@@ -3160,15 +3220,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
-  // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
-  // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
-  // (a gentle escape back to the prompt — never trapping the user).
-  // The Home's REPL context (no live session), the one the bare Home's palette and its typed registry words run over. Capabilities for
-  // the commands that have NO `home` placement (cancel, export, cost, effort, thinking, details, compact, trim, scrollback, edit, copy: a
-  // chat's) are inert noops, unreachable from the bare Home's list, which the context's shape requires. A command with a `home` placement
-  // either wires a real implementation below (`/exit`, `/help`, `/doctor`, `/models`, `/mode`; `/clear` answers its unavailable notice) or
-  // is opened by this controller itself (`/providers`, `/init`, `/run`, `/workflows`, `/agents`, `/permissions`, `/import`, `/pricing`,
-  // `/resume`), and its `run` does nothing.
+  // The Home's REPL context (no live session), the one the bare Home's typed registry words and its palette rows run over
+  // ({@link answerLandingWord}). Capabilities for the commands that have NO `home` placement (cancel, export, cost, effort, thinking, details,
+  // compact, trim, scrollback, edit, copy: a chat's) are inert noops, unreachable from the bare Home's list, which the context's shape
+  // requires. A command with a `home` placement is either run over this context (`/exit`, `/help`, `/doctor`, `/models`; `/clear` answers its
+  // unavailable notice) or opened by {@link homeWords}, the controller's one record (`/providers`, `/init`, `/run`, `/workflows`, `/agents`,
+  // `/permissions`, `/import`, `/pricing`, `/resume`, `/mode`); the commands of that second kind have no `run` in the registry, or a
+  // chat's, which this context does not call.
   const homeReplCtx: ReplCommandContext = {
     exit: () => requestExit(),
     cancel: () => undefined,
@@ -3186,9 +3244,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     managePermissions: () => undefined, // the Home opens its own sheet (ADR-0137 §3) from the controller, not through this context; MVP-8 composes it into a tab
     showAgent: () => undefined, // `/agent` is a chat's (ADR-0140 §3): the landing has no session, so it answers the word itself and never runs this
     openDetails: () => undefined,
-    setMode: (argument) => {
-      managementCommand(argument.length === 0 ? '/mode' : `/mode ${argument}`);
-    },
+    setMode: () => undefined, // `/mode` is a chat's here; the bare Home's own opens its startup settings from `homeWords`
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface
     toggleReasoning: () => undefined, // `/thinking` is chat-only (2.5.H); inert in the bare-Home surface (no live session)
     compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
@@ -3253,8 +3309,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    */
   const openPaletteState = (
     active: HomeChatSession | undefined,
-  ): Pick<HomeControllerState, 'palette' | 'paletteList'> => {
-    const opened =
+  ): Pick<HomeControllerState, 'palette'> => ({
+    palette:
       active === undefined
         ? openPalette(
             buildPaletteEntries('home', {
@@ -3272,93 +3328,69 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
               turnRunning: active.store.getSnapshot().state.status === 'running',
             }),
             'up',
-          );
-    return { palette: opened.state, paletteList: opened.list };
+          ),
+  });
+
+  /**
+   * A row chosen in the palette (`Enter` on a row that can act). The word is looked up where a typed line looks it up, so the two routes
+   * cannot differ: a word of {@link homeWords} (where the person is: the landing's, or `/resume` in a chat) goes through {@link runHomeWord};
+   * any other word of the bare Home is {@link answerLandingWord}; in a chat the overlay commands open as the typed line opens them
+   * ({@link overlayCommandFor}) and every other row is submitted as the slash line through the chat's own dispatch (S3a).
+   */
+  const chooseCommand = (command: ReplCommand, active: HomeChatSession | undefined): void => {
+    const homeWord = homeWordFor(command.name);
+    if (homeWord !== undefined) {
+      runHomeWord(homeWord, false); // the palette captures NO args: the bare command runs
+      return;
+    }
+    const line = `/${command.name}`;
+    if (active === undefined) {
+      answerLandingWord(line, false);
+      return;
+    }
+    const open = overlayCommandFor(active, line);
+    if (open === undefined) sendChatLine(active, line);
+    else open();
   };
 
+  // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
+  // highlighted command ({@link chooseCommand}), say why a dim row cannot run, or close. Ctrl-C closes it (a gentle escape back to the prompt
+  // — never trapping the user).
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
-    const palette = state.palette;
-    const list = state.paletteList;
-    if (palette === undefined || list === undefined) return;
+    const open = state.palette;
+    if (open === undefined) return;
     // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
     // the bare Home (no session ⇒ run the command over the Home's own context). The rows are the surface's, built when the palette opened.
     const active = state.session;
-    const step = foldPaletteKey(input, key, palette, list);
-    if (step.kind === 'close') {
-      set({ palette: undefined });
-      return;
-    }
-    if (step.kind === 'unavailable') {
-      // `Enter` on a dim row: its reason is said and the palette stays open. Never "unknown command", never run.
-      const row = list.rows[palette.index];
-      const notice = unavailableNotice(row?.command.name ?? '', step.reason);
-      if (active === undefined) set({ notice });
-      else active.store.note(notice);
-      return;
-    }
-    if (step.kind === 'run') {
-      set({ palette: undefined });
-      // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling, a
-      // sentence), and it is answered as the same line pasted is (ADR-0140 §3): by `managementCommand`, which a submitted line goes through
-      // first, so `/run extra` says `/run accepts no arguments` here as it does for a paste, not that `/run` is unknown. It starts with a
-      // slash, so it is a command line and is always answered: it never starts a chat.
-      if (step.command === undefined && active === undefined && palette.query.trim().length > 0)
-        managementCommand(`/${palette.query.trim()}`);
-      if (step.command !== undefined) {
-        if (step.command.name === 'providers') {
-          openProviderSetup();
-        } else if (step.command.name === 'init') {
-          openProjectInit();
-        } else if (step.command.name === 'resume') {
-          openResume();
-        } else if (step.command.name === 'run') {
-          openRunLaunch();
-        } else if (step.command.name === 'workflows' && active === undefined) {
-          // home: bare `/workflows` opens the tab host on its Defined tab (ADR-0140 §2) — the same as the typed command.
-          if (deps.defined === undefined)
-            set({ notice: 'The project’s workflows are not available here.' });
-          else openTabHost('defined');
-        } else if (step.command.name === 'agents') {
-          // home: bare `/agents` opens the tab host on the agents strip's Defined tab (ADR-0140 §3) — the same as the typed command.
-          if (deps.agents === undefined)
-            set({ notice: 'The project’s agents are not available here.' });
-          else openTabHost('agents');
-        } else if (step.command.name === 'permissions' && active === undefined) {
-          // home: bare `/permissions` opens the tab host on its Permissions tab (ADR-0140 §3).
-          if (deps.permissions === undefined)
-            set({ notice: 'Remembered commands are not available here.' });
-          else openTabHost('permissions');
-        } else if (step.command.name === 'import') {
-          // home: bare `/import` opens the import card (ADR-0140 §9) — the same function the typed command calls.
-          openImportCard();
-        } else if (step.command.name === 'pricing') {
-          // home: bare `/pricing` opens the model pricing form (ADR-0140 §9) — the same function the typed command calls.
-          openPricingCard();
-        } else if (active === undefined) {
-          // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
-          // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
-          void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
-        } else if (step.command.name === 'models' && deps.reseatChat !== undefined) {
-          // chat: `/models` opens the reseat picker (ADR-0059) — parity with the typed-`/models` intercept, so the
-          // palette route + the typed route behave identically (never the "interactive terminal" dispatch hint).
-          openModelPicker();
-        } else if (step.command.name === 'permissions' && active.permissions !== undefined) {
-          // chat: bare `/permissions` opens the sheet (ADR-0137 §2) — parity with the typed intercept below.
-          openPermissionsSheet(active);
-        } else if (step.command.name === 'agent' && active.boundAgent !== undefined) {
-          // chat: bare `/agent` opens the bound agent's sheet (ADR-0140 §3) — parity with the typed intercept below.
-          openAgentSheet(active);
-        } else if (step.command.name === 'effort' && canOpenEffortPicker(active)) {
-          // chat: bare `/effort` on a reasoning-capable model opens the interactive overlay (ADR-0066 §6) — parity
-          // with the typed-`/effort` intercept; a non-reasoning model falls through to the notice below.
-          openEffortPicker(active);
-        } else {
-          sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
-        }
+    const step = foldPaletteKey(input, key, open);
+    switch (step.kind) {
+      case 'close':
+        set({ palette: undefined });
+        return;
+      case 'unavailable': {
+        // `Enter` on a dim row: its reason is said and the palette stays open. Never "unknown command", never run.
+        const row = open.list.rows[open.state.index];
+        const notice = unavailableNotice(row?.command.name ?? '', step.reason);
+        if (active === undefined) set({ notice });
+        else active.store.note(notice);
+        return;
       }
-      return;
+      case 'run':
+        set({ palette: undefined });
+        if (step.command !== undefined) {
+          chooseCommand(step.command, active);
+        } else if (active === undefined && open.state.query.trim().length > 0) {
+          // `Enter` on a query that matches nothing, at the landing: the person typed a line of their own (`/help`, `/cost`, a misspelling,
+          // a sentence), and it is answered as the same line pasted is (ADR-0140 §3): by `managementCommand`, which a submitted line goes
+          // through first, so `/run extra` says `/run accepts no arguments` here as it does for a paste, not that `/run` is unknown. It starts
+          // with a slash, so it is a command line and is always answered: it never starts a chat.
+          managementCommand(`/${open.state.query.trim()}`);
+        }
+        return;
+      case 'state':
+        set({ palette: step.palette });
+        return;
     }
-    set({ palette: step.state, paletteList: step.list });
   };
 
   // The in-Home chat's `@`-mention completion (2.5.D step 4, ADR-0061) — mirrors ChatApp. ASYNC: opening/descending

@@ -113,12 +113,6 @@ export const HELP_TOO_SMALL = 'Enlarge the terminal — Esc closes.';
 
 const LEGEND_ITEMS: readonly LegendItem[] = [HELP_SHEET_KEYS.close];
 
-/**
- * What the sheet lists: the bare Home's palette commands, `/help` among them, in the Home's own order (*Work*, *Set up*, *Check*, *End*:
- * ADR-0145 §7.3), so the sheet and the palette read alike and a command added to the Home's table is listed here with no second edit.
- */
-export const HOME_HELP_COMMANDS: readonly ReplCommand[] = HOME_PALETTE_COMMANDS;
-
 const INDENT = '  ';
 const GAP = '  ';
 
@@ -197,7 +191,7 @@ function fitCommands(
  */
 export function helpSheetLines(
   geometry: SheetGeometry,
-  commands: readonly ReplCommand[] = HOME_HELP_COMMANDS,
+  commands: readonly ReplCommand[] = HOME_PALETTE_COMMANDS,
 ): readonly SheetLine[] {
   const width = usableColumns(geometry.columns);
   if (!sheetCanArm(geometry)) {

@@ -14,7 +14,6 @@ import {
   HELP_SHEET_KEYS,
   HELP_SHEET_ROWS,
   HELP_TOO_SMALL,
-  HOME_HELP_COMMANDS,
   HOME_KEYS,
   helpSheetLines,
 } from './help-sheet.js';
@@ -68,7 +67,7 @@ describe('which commands the sheet lists', () => {
     // The invariant: every command is named, whatever the number of commands is (the rows that are left give up descriptions first).
     expect(namedCommands(lines).sort()).toEqual([...expected].map((name) => `/${name}`).sort());
     let described = 0;
-    for (const command of HOME_HELP_COMMANDS) {
+    for (const command of HOME_PALETTE_COMMANDS) {
       const row = describedRow(lines, command.name);
       if (row === undefined) continue;
       described += 1;
@@ -80,18 +79,18 @@ describe('which commands the sheet lists', () => {
       expect(shown.length, `/${command.name} shows more than its name`).toBeGreaterThan(5);
     }
     expect(described, 'at least the first commands keep their description').toBeGreaterThan(4);
-    expect(new Set(HOME_HELP_COMMANDS.map((command) => command.name))).toEqual(expected);
+    expect(new Set(HOME_PALETTE_COMMANDS.map((command) => command.name))).toEqual(expected);
   });
 
   it('shows a short description whole', () => {
     // The first command of the Home's order keeps its row and its words (the last ones are listed by name when the rows run short).
-    const first = HOME_HELP_COMMANDS[0];
+    const first = HOME_PALETTE_COMMANDS[0];
     expect(first?.name).toBe('resume');
     expect(describedRow(textOf(200), 'resume')).toContain(first?.description);
   });
 
   it('does not list a command that works only in a chat: /cost, /cancel, /export, /effort and the rest', () => {
-    const listed = new Set(HOME_HELP_COMMANDS.map((command) => command.name));
+    const listed = new Set(HOME_PALETTE_COMMANDS.map((command) => command.name));
     const named = new Set(namedCommands(textOf(200)));
     for (const command of REPL_COMMANDS) {
       if (listed.has(command.name)) continue;
@@ -103,7 +102,6 @@ describe('which commands the sheet lists', () => {
 
   it('lists the commands by name, in the Home’s own order (Work, Set up, Check, End), not by alphabet (ADR-0145 §7.3)', () => {
     const names = namedCommands(textOf(200));
-    expect(names).toEqual(HOME_HELP_COMMANDS.map((command) => `/${command.name}`));
     expect(names).toEqual(HOME_PALETTE_COMMANDS.map((command) => `/${command.name}`));
     expect(names).toEqual(
       [
@@ -179,7 +177,7 @@ describe('the frame', () => {
     // The invariant, not a row count: never more rows than the sheet may take, and every command of the Home is named in them.
     expect(lines.length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
     expect(namedCommands(lines).sort()).toEqual(
-      HOME_HELP_COMMANDS.map((command) => `/${command.name}`).sort(),
+      HOME_PALETTE_COMMANDS.map((command) => `/${command.name}`).sort(),
     );
     for (const key of Object.values(HOME_KEYS))
       expect(
@@ -201,10 +199,10 @@ describe('the frame', () => {
     }
     // With the two new commands the 80x24 sheet holds every command of the Home and the rows it takes are the ones it may take.
     const at80 = textOf(80, 24);
-    expect(HOME_HELP_COMMANDS.map((command) => command.name)).toEqual(
+    expect(HOME_PALETTE_COMMANDS.map((command) => command.name)).toEqual(
       expect.arrayContaining(['import', 'pricing']),
     );
-    expect(namedCommands(at80)).toHaveLength(HOME_HELP_COMMANDS.length);
+    expect(namedCommands(at80)).toHaveLength(HOME_PALETTE_COMMANDS.length);
   });
 
   it('keeps every span inside its line', () => {

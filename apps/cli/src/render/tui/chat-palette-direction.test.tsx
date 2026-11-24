@@ -3,7 +3,7 @@ import { useStdout } from 'ink';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { REPL_COMMANDS } from '../../commands/repl-commands.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
@@ -94,7 +94,7 @@ describe('the chat’s palette opens above the prompt, and its first row is the 
       return match?.[1] === undefined ? [] : [match[1]];
     });
     // The window may hide the far end of a 24-row terminal's list; what is drawn is the declared order, reversed, and it starts at /models.
-    const declared = CHAT_PALETTE_COMMANDS.map((command) => command.name);
+    const declared = REPL_COMMANDS.map((command) => command.name);
     expect(shown.at(-1)).toBe('models');
     expect([...shown].reverse()).toEqual(declared.slice(0, shown.length));
   });

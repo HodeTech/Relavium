@@ -1828,6 +1828,74 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('ADR-0145 §7: the chat the Home hosts prints its own commands in /help and in the unknown-slash hint, the rows its palette shows', async () => {
+    // Wired through the REAL `startChat`: the line handler is built with the `home-chat` surface only where the Home's chat is built, and a
+    // handler built with the default would print a stand-alone chat's list (`/exit` reading "End the chat session.", no `/resume`).
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p));
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ the real createChatLineHandler
+    await vi.waitFor(() => expect(props.controller.getSnapshot().mode).toBe('chat'), {
+      timeout: WAIT_MS,
+    });
+    await vi.waitFor(() => expect(props.controller.getSnapshot().submitBusy).toBe(false), {
+      timeout: WAIT_MS,
+    });
+    const notices = (): string[] =>
+      (props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? []).flatMap(
+        (entry) => (entry.role === 'notice' ? [entry.text] : []),
+      );
+
+    props.controller.handleKey('/', {}); // the chat's palette opens: its rows are what `/help` must list
+    const palette = props.controller.getSnapshot().palette;
+    const rows = (palette?.list.rows ?? []).map(
+      (row) => `  /${row.command.name}  ${row.description}`,
+    );
+    expect(rows.length, 'the palette lists the chat’s commands').toBeGreaterThan(10);
+    props.controller.handleKey('', { escape: true });
+
+    props.controller.handlePaste('/help');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () => expect(notices().some((text) => text.startsWith('Commands:'))).toBe(true),
+      {
+        timeout: WAIT_MS,
+      },
+    );
+    const help = notices().find((text) => text.startsWith('Commands:')) ?? '';
+    expect(help.split('\n').slice(1), 'the rows of /help are the rows of the palette').toEqual(
+      rows,
+    );
+    expect(help).toContain('  /exit  Leave this chat and go back to the Home.');
+    expect(help).toContain('  /resume  ');
+    expect(help).not.toContain('End the chat session.');
+    await flush(); // the line is done: the next one is read only when the chat is idle again
+
+    props.controller.handlePaste('/nosuchword');
+    props.controller.handleKey('', ENTER);
+    await vi.waitFor(
+      () => expect(notices().some((text) => text.includes('Available:'))).toBe(true),
+      {
+        timeout: WAIT_MS,
+      },
+    );
+    const hint = notices().find((text) => text.includes('Available:')) ?? '';
+    expect(hint).toBe(
+      `unknown command '/nosuchword'. Available: ${(palette?.list.rows ?? []).map((row) => `/${row.command.name}`).join(', ')}.`,
+    );
+
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('ADR-0137 §3: the bare Home is wired to the Permissions tab over the real store, and a bare `relavium permissions` opens it and ends the run when it is closed', async () => {
     // The wired-but-dead field again: a Home built without the port would answer "not available" and every controller test would
     // still pass. This drives the REAL `driveHome` with `openPermissions` and reads what it built.

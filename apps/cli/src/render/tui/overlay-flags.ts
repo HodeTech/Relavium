@@ -149,8 +149,32 @@ function isOverlayKind(key: string): key is keyof OverlayFlags {
 /** Every flag, read from the table so the list cannot drift from it. */
 const KINDS: readonly (keyof OverlayFlags)[] = Object.keys(GATES).filter(isOverlayKind);
 
+/** The flags that close a gate, computed once from {@link GATES}: a gate is asked about on every key, wheel report and render. */
+function closersOf(gate: Gate): readonly (keyof OverlayFlags)[] {
+  return KINDS.filter((kind) => GATES[kind].includes(gate));
+}
+
+/**
+ * Gate by gate, the flags that close it. A `Record<Gate, ...>` written out in full, so a gate added to {@link Gate} without a line here does
+ * not compile (and a gate no flag closes is an empty list, not a missing key).
+ */
+const CLOSERS: Readonly<Record<Gate, readonly (keyof OverlayFlags)[]>> = {
+  screenSlot: closersOf('screenSlot'),
+  scrollKeys: closersOf('scrollKeys'),
+  pointer: closersOf('pointer'),
+  mouseCapture: closersOf('mouseCapture'),
+  interrupt: closersOf('interrupt'),
+  stripPause: closersOf('stripPause'),
+  activePoll: closersOf('activePoll'),
+  promptHidden: closersOf('promptHidden'),
+  landingPromptHidden: closersOf('landingPromptHidden'),
+  pageNotice: closersOf('pageNotice'),
+  occupiesRows: closersOf('occupiesRows'),
+  revokesCustody: closersOf('revokesCustody'),
+};
+
 function closes(flags: OverlayFlags, gate: Gate): boolean {
-  return KINDS.some((kind) => flags[kind] && GATES[kind].includes(gate));
+  return CLOSERS[gate].some((kind) => flags[kind]);
 }
 
 /** Whether anything owns the keyboard: every flag does, and one added later is covered with no edit here. No site asks for the whole set today. */

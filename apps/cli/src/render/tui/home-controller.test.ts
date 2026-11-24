@@ -1971,7 +1971,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('opens on a literal "/" at an empty chat prompt', async () => {
       const c = await intoChat(makeSession());
       c.handleKey('/', {});
-      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: '', index: 0 });
     });
 
     it('filters as you type and Enter submits the highlighted command as a slash line', async () => {
@@ -1979,12 +1979,12 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const c = await intoChat(made);
       c.handleKey('/', {});
       type(c, 'ex'); // filter → [export, exit]: /exit ends the session, so it follows /export (ADR-0145 §7.6)
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 }); // the best match is the row beside the prompt
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 0 }); // the best match is the row beside the prompt
       // A chat's list is drawn above the prompt, bottom-up: ↑ is the NEXT entry, ↓ the previous one (ADR-0145 §7.1).
       c.handleKey('', UP);
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 1 });
       c.handleKey('', DOWN);
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 0 });
       c.handleKey('', ENTER); // select → submit /export through the chat dispatch
       await flush();
       expect(made.lines).toEqual(['hi', '/export']);
@@ -2039,7 +2039,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       });
       c.handleKey('/', {});
       // This Home has no saved session: /resume (row 0) is dim, so the highlight is /run (row 1), the first row that can act.
-      expect(c.getSnapshot().palette).toEqual({ query: '', index: 1 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: '', index: 1 });
       c.handleKey('', ENTER);
       expect(onExit).not.toHaveBeenCalled();
       expect(c.getSnapshot().palette).toBeUndefined();
@@ -2071,9 +2071,10 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       d.handleKey('/', {});
       for (let step = 0; step < 30; step += 1) d.handleKey('', DOWN); // far past the end: it stops on the last row, never wraps
       expect(walked).not.toHaveBeenCalled(); // the highlight alone runs nothing
-      expect(d.getSnapshot().palette?.index, '/exit is the last row; /clear above it is dim').toBe(
-        14,
-      );
+      expect(
+        d.getSnapshot().palette?.state.index,
+        '/exit is the last row; /clear above it is dim',
+      ).toBe(14);
       d.handleKey('', ENTER);
       expect(walked).toHaveBeenCalledTimes(1);
     });
@@ -2148,7 +2149,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       });
       c.handleKey('/', {});
       type(c, 'ex'); // 'ex' filters to [exit, workflows]; the query updates, and the highlight stays off /exit (ADR-0145 §7.6)
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
+      expect(c.getSnapshot().palette?.state).toEqual({ query: 'ex', index: 1 });
     });
 
     it('selecting /doctor runs the fast tier into the Home notice surface', async () => {
@@ -3219,7 +3220,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     await flush();
     c.handleKey('/', {}); // open the `/` palette
-    type(c, 'effort'); // filter CHAT_PALETTE_COMMANDS → [/effort]
+    type(c, 'effort'); // filter the chat's palette rows → [/effort]
     c.handleKey('', ENTER); // run /effort → the interactive overlay opens (NOT the model picker)
     expect(c.getSnapshot().effortPicker?.current).toBe('low');
     expect(c.getSnapshot().effortPicker?.selected).toBe(REASONING_EFFORTS.indexOf('low'));

@@ -37,6 +37,7 @@ import {
 } from './overlay-flags.js';
 import { INITIAL_REVERSE_SEARCH } from './input-history.js';
 import { permissionsChatSheet } from './chat-sheet.js';
+import { openPalette } from './palette-reducer.js';
 import { initialPermissionsSheetState } from './permissions-sheet.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { stripRefreshPaused } from './strip-pause.js';
@@ -383,7 +384,7 @@ describe("the Home's own record is built from its state in one place", () => {
   });
 
   it.each([
-    ['palette', { palette: { query: '', index: 0 } }],
+    ['palette', { palette: openPalette([], 'down') }],
     ['search', { search: INITIAL_REVERSE_SEARCH }],
     ['mention', { mention: { dir: '', filter: '', candidates: [], selected: 0, loading: false } }],
     ['modelPicker', { modelPicker: MODEL_PICKER }],

@@ -161,8 +161,7 @@ import {
   foldPaletteKey,
   openPalette,
   shouldOpenPalette,
-  type PaletteList,
-  type PaletteState,
+  type OpenPalette,
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
@@ -838,21 +837,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
   // A ref SHADOW (like `editorRef`) keeps the latest value across a COALESCED stdin chunk — ink fires every event
   // in one chunk synchronously with no render flush, so reading the render-closure `palette` would be stale (a
-  // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette`
-  // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
-  const [palette, setPalette] = useState<PaletteState | undefined>(undefined);
-  const paletteRef = useRef<PaletteState | undefined>(undefined);
-  // The rows the open palette reads (MVP-11 Step 2.2): built once per change and shared by the key fold and the view, shadowed by a ref
-  // for the same coalesced-chunk reason. `applyPalette` keeps the three in lockstep.
-  const [paletteList, setPaletteList] = useState<PaletteList | undefined>(undefined);
-  const paletteListRef = useRef<PaletteList | undefined>(undefined);
-  const applyPalette = (
-    next: { readonly state: PaletteState; readonly list: PaletteList } | undefined,
-  ): void => {
-    paletteRef.current = next?.state;
-    paletteListRef.current = next?.list;
-    setPalette(next?.state);
-    setPaletteList(next?.list);
+  // close/select in event A would not be seen by a same-chunk event B, re-opening the palette). `applyPalette` keeps the ref in
+  // lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`. The palette is ONE value, its state and the
+  // rows that state reads (MVP-11 Step 2.2: built once per change, shared by the key fold and the view), so the two cannot be stored apart.
+  const [palette, setPalette] = useState<OpenPalette | undefined>(undefined);
+  const paletteRef = useRef<OpenPalette | undefined>(undefined);
+  const applyPalette = (next: OpenPalette | undefined): void => {
+    paletteRef.current = next;
+    setPalette(next);
   };
   // Per-session command history (2.5.D step 3): Up/Down recall, Ctrl+R reverse-searches. History is a ref (not
   // rendered directly); the reverse-search submode is React-local + ref-shadowed like the palette (it renders a
@@ -1762,9 +1754,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
     const paletteNow = paletteRef.current;
-    const listNow = paletteListRef.current;
-    if (paletteNow !== undefined && listNow !== undefined) {
-      const step = foldPaletteKey(char, key, paletteNow, listNow);
+    if (paletteNow !== undefined) {
+      const step = foldPaletteKey(char, key, paletteNow);
       if (step.kind === 'close') {
         applyPalette(undefined);
         return;
@@ -1777,11 +1768,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       if (step.kind === 'unavailable') {
         // `Enter` on a dim row: its reason is said (the chat's own line) and the palette stays open. Never "unknown command", never run.
         props.store.note(
-          unavailableNotice(listNow.rows[paletteNow.index]?.command.name ?? '', step.reason),
+          unavailableNotice(
+            paletteNow.list.rows[paletteNow.state.index]?.command.name ?? '',
+            step.reason,
+          ),
         );
         return;
       }
-      applyPalette({ state: step.state, list: step.list });
+      applyPalette(step.palette);
       return;
     }
     // A pending approval OWNS the keyboard (never opens the palette): the card has taken every key before this point.
@@ -2073,10 +2067,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
           color={color}
         />
-        {palette !== undefined && paletteList !== undefined && (
+        {palette !== undefined && (
           <PaletteView
-            list={paletteList}
-            state={palette}
+            list={palette.list}
+            state={palette.state}
             color={color}
             maxRows={windowSize.rows - 1}
           />
