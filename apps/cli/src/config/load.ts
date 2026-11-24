@@ -30,6 +30,15 @@ import { assertProjectArtifactPath } from './project-directory.js';
 const MAX_CONFIG_BYTES = 256 * 1024;
 
 /**
+ * How one layer is read. A PROJECT layer is admitted against the operator home (it must not read global state through a child alias),
+ * so that arm carries the home as a REQUIRED field: the type refuses a project-layer read that names no home, rather than a default
+ * to the process's real home that a test or an embedding host would silently inherit. An operator-owned file needs no home.
+ */
+export type LoadConfigFileOptions =
+  | { readonly selfHealMode?: boolean; readonly projectLayer?: false }
+  | { readonly selfHealMode?: boolean; readonly projectLayer: true; readonly home: string };
+
+/**
  * Read + parse + validate a single TOML config layer against `schema`. An **absent** file
  * returns `undefined` (a missing layer is normal, not an error). Every failure — unreadable,
  * over-size, malformed TOML, or schema-invalid — becomes a typed, file-attributed
@@ -39,15 +48,11 @@ const MAX_CONFIG_BYTES = 256 * 1024;
 export function loadConfigFile<T>(
   filePath: string,
   schema: ZodType<T>,
-  opts?: {
-    readonly selfHealMode?: boolean;
-    readonly projectLayer?: boolean;
-    readonly home?: string;
-  },
+  opts?: LoadConfigFileOptions,
 ): T | undefined {
   // Automatic project layers must not read global state through child aliases.
   // Explicit operator config reads retain their selected-file contract.
-  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home ?? homedir());
+  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home);
   const text = readConfigText(filePath, opts?.selfHealMode === true);
   if (text === undefined) return undefined; // an absent layer is not an error
 

@@ -8,7 +8,6 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { byCodeUnit } from '@relavium/shared';
 
@@ -108,7 +107,7 @@ export function discoverCatalog(opts: {
   readonly projectConfigDir: string;
   readonly cwd: string;
   readonly kind: CatalogKind;
-  readonly homeDir?: string;
+  readonly homeDir: string;
 }): CatalogEntry[] {
   const scan = scanCatalogDirectory(opts);
   if (scan === undefined) return []; // no workflows/ (or agents/) directory — an empty catalog, not an error
@@ -135,7 +134,7 @@ export interface AgentCatalogItem {
 export function discoverAgentDefinitions(opts: {
   readonly projectConfigDir: string;
   readonly cwd: string;
-  readonly homeDir?: string;
+  readonly homeDir: string;
 }): AgentCatalogItem[] {
   const scan = scanCatalogDirectory({ ...opts, kind: 'agents' });
   if (scan === undefined) return [];
@@ -192,10 +191,10 @@ function newScanBudget(kind: CatalogKind): ScanBudget {
 function scanCatalogDirectory(opts: {
   readonly projectConfigDir: string;
   readonly kind: CatalogKind;
-  readonly homeDir?: string;
+  readonly homeDir: string;
 }): CatalogScan | undefined {
   const dir = join(opts.projectConfigDir, opts.kind);
-  assertProjectArtifactPath(dir, opts.homeDir ?? homedir());
+  assertProjectArtifactPath(dir, opts.homeDir);
   let names: readonly string[];
   let root: string;
   try {
@@ -241,16 +240,11 @@ function scanCatalogDirectory(opts: {
 export function takenWorkflowIds(
   projectConfigDir: string,
   cwd: string,
-  homeDir?: string,
+  homeDir: string,
 ): ReadonlySet<string> {
   const taken = new Set<string>();
   for (const kind of ['workflows', 'agents'] as const) {
-    for (const entry of discoverCatalog({
-      projectConfigDir,
-      cwd,
-      kind,
-      ...(homeDir === undefined ? {} : { homeDir }),
-    })) {
+    for (const entry of discoverCatalog({ projectConfigDir, cwd, kind, homeDir })) {
       for (const id of [entry.slug, fileStem(basename(entry.path))]) {
         taken.add(id);
         taken.add(id.toLowerCase());
@@ -299,7 +293,7 @@ function readCatalogText(
   cwd: string,
   root: string,
   budget: ScanBudget,
-  homeDir?: string,
+  homeDir: string,
 ): CatalogText {
   const rel = sourceLabel(cwd, path);
   if (budget.spent()) return refused(path, rel, budget.reason);
@@ -307,7 +301,7 @@ function readCatalogText(
   try {
     const canonical = realpathSync.native(path);
     try {
-      assertProjectArtifactPath(canonical, homeDir ?? homedir());
+      assertProjectArtifactPath(canonical, homeDir);
     } catch {
       return refused(path, rel, 'not an admitted project artifact; check global catalog links');
     }
@@ -386,7 +380,7 @@ function readEntry(
   kind: CatalogKind,
   root: string,
   budget: ScanBudget,
-  homeDir?: string,
+  homeDir: string,
 ): CatalogEntry {
   if (kind === 'agents') return readAgentItem(path, cwd, root, budget, homeDir).entry;
   const text = readCatalogText(path, cwd, root, budget, homeDir);
@@ -412,7 +406,7 @@ function readAgentItem(
   cwd: string,
   root: string,
   budget: ScanBudget,
-  homeDir?: string,
+  homeDir: string,
 ): AgentCatalogItem {
   const text = readCatalogText(path, cwd, root, budget, homeDir);
   if (!text.ok) return { entry: text.entry, agent: undefined };
@@ -447,7 +441,7 @@ export function readAgentFile(opts: {
   readonly path: string;
   readonly cwd: string;
   readonly projectConfigDir: string;
-  readonly homeDir?: string;
+  readonly homeDir: string;
 }): AgentFileRead {
   // The root is the AGENTS directory's real path, not the project configuration directory's: a file elsewhere under `.relavium/` (the
   // workflows, a note, a copy) is not an agent the catalog listed, and a directory `agents` that is itself a link out of the project must

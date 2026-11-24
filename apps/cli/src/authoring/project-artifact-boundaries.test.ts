@@ -139,12 +139,17 @@ describe('actual project catalog targets exclude global state', () => {
           resolveChatAgentSource('sample', {
             cwd,
             projectConfigDir: marker,
+            homeDir: home,
             defaultModel: undefined,
           }),
         ).toThrow('global configuration');
         expect(
-          resolveChatAgentSource(alias, { cwd, projectConfigDir: marker, defaultModel: undefined })
-            .agent.id,
+          resolveChatAgentSource(alias, {
+            cwd,
+            projectConfigDir: marker,
+            homeDir: home,
+            defaultModel: undefined,
+          }).agent.id,
         ).toBe('sample');
       } else
         expect(() =>
@@ -190,7 +195,12 @@ describe('actual project catalog targets exclude global state', () => {
       discoverCatalog({ projectConfigDir: marker, cwd, kind: 'agents', homeDir: home }),
     ).toThrow('global configuration');
     expect(() =>
-      resolveChatAgentSource('sample', { cwd, projectConfigDir: marker, defaultModel: undefined }),
+      resolveChatAgentSource('sample', {
+        cwd,
+        projectConfigDir: marker,
+        homeDir: home,
+        defaultModel: undefined,
+      }),
     ).toThrow('global configuration');
     const source = join(root, 'source.agent.yaml');
     writeFileSync(source, yaml());

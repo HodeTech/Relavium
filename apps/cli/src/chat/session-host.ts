@@ -1019,6 +1019,8 @@ function bindChatAgent(
   return resolveChatAgentSource(opts.agentRef, {
     cwd: opts.cwd,
     projectConfigDir: opts.projectConfigDir,
+    // The operator home the surface resolved once; absent only in a hermetic embedding, which then cannot resolve an `--agent` reference.
+    homeDir: opts.operatorHomeDir,
     defaultModel: opts.chat.defaultModel,
     // MVP-A4: with no configured default, the default agent's model comes from a provider that has a key.
     hasKey,

@@ -3595,6 +3595,8 @@ describe('what the /agent sheet is told of the session: the tools the host wires
 
   it('agentSourceLabel is the catalog-relative label of the file, whether the agent was named by path or by id', async () => {
     const { workspace, file, configDir } = project(['read_file']);
+    // A bare id is admitted against the operator home, which the surface supplies: a fresh directory, never the real one.
+    const operatorHomeDir = mkdtempSync(join(tmpdir(), 'relavium-sheet-home-'));
     try {
       const byPath = await build({ cwd: workspace, agentRef: file });
       expect(byPath.agentSourceLabel).toBe(LABEL);
@@ -3602,6 +3604,7 @@ describe('what the /agent sheet is told of the session: the tools the host wires
         cwd: workspace,
         agentRef: 'checker',
         projectConfigDir: configDir,
+        operatorHomeDir,
       });
       expect(byId.agentSourceLabel).toBe(LABEL);
       for (const built of [byPath, byId]) {
@@ -3610,6 +3613,7 @@ describe('what the /agent sheet is told of the session: the tools the host wires
       }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
+      rmSync(operatorHomeDir, { recursive: true, force: true });
     }
   });
 

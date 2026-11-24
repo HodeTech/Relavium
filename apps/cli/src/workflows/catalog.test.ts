@@ -75,15 +75,19 @@ workflow:
 describe('discoverCatalog', () => {
   let proj: string;
   let configDir: string;
+  // The operator home every read is admitted against: a fresh directory, never the real one (it is a required argument).
+  let home: string;
 
   beforeEach(() => {
     proj = mkdtempSync(join(tmpdir(), 'relavium-catalog-'));
+    home = mkdtempSync(join(tmpdir(), 'relavium-catalog-home-'));
     configDir = join(proj, '.relavium');
     mkdirSync(configDir);
     vi.clearAllMocks();
   });
   afterEach(() => {
     rmSync(proj, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   });
 
   function write(kind: 'workflows' | 'agents', name: string, body: string): void {
@@ -96,7 +100,12 @@ describe('discoverCatalog', () => {
     write('workflows', 'hello.relavium.yaml', VALID_WORKFLOW);
     write('workflows', 'broken.relavium.yaml', INVALID_WORKFLOW);
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(entries.map((e) => e.slug)).toEqual(['broken', 'hello']); // sorted by slug
 
     const hello = entries.find((e) => e.slug === 'hello');
@@ -113,7 +122,12 @@ describe('discoverCatalog', () => {
   it('parses agents (no tags) under the agents kind', () => {
     write('agents', 'summarizer.agent.yaml', VALID_AGENT);
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'agents',
+    });
     expect(entries).toHaveLength(1);
     expect(entries[0]?.slug).toBe('summarizer');
     expect(entries[0]?.name).toBe('Summarizer');
@@ -123,15 +137,20 @@ describe('discoverCatalog', () => {
 
   it('returns an empty catalog for a missing directory', () => {
     // No `workflows/` was created under .relavium/.
-    expect(discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' })).toEqual(
-      [],
-    );
+    expect(
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind: 'workflows' }),
+    ).toEqual([]);
   });
 
   it('flags an invalid agent file (only valid agents are listed clean)', () => {
     write('agents', 'broken.agent.yaml', 'id: Not_Kebab\nmodel: m\n'); // missing required fields + bad id
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'agents',
+    });
     const broken = entries.find((e) => e.slug === 'broken'); // slug falls back to the filename stem
     expect(broken?.valid).toBe(false);
     expect(broken?.error).toBeTruthy();
@@ -140,7 +159,12 @@ describe('discoverCatalog', () => {
   it('surfaces the YAML syntax line/column in a broken agent entry (Step 13, end-to-end via parseReason)', () => {
     write('agents', 'syntax.agent.yaml', 'id: x\n  : : :'); // a genuine YAML SYNTAX fault (not a schema miss)
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'agents',
+    });
     const broken = entries.find((e) => e.slug === 'syntax');
     expect(broken?.valid).toBe(false);
     // parseReason passes the AgentParseError.message through — so the position Step 13 attached is visible on
@@ -154,7 +178,7 @@ describe('discoverCatalog', () => {
     writeFileSync(join(configDir, 'workflows'), 'not a directory', 'utf8');
 
     try {
-      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind: 'workflows' });
       expect.unreachable('should have thrown');
     } catch (err) {
       expect(isCliError(err)).toBe(true);
@@ -169,7 +193,12 @@ describe('discoverCatalog', () => {
   it('flags a secret-taint workflow as invalid, surfacing only the taint path (no value)', () => {
     write('workflows', 'leaky.relavium.yaml', SECRET_LEAK_WORKFLOW);
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     const leaky = entries.find((e) => e.slug === 'leaky'); // slug falls back to the filename stem
     expect(leaky?.valid).toBe(false);
     // The reason is the field-named WorkflowSecretLeakError message — a taint PATH (`inputs.api_key`), the
@@ -196,6 +225,7 @@ describe('discoverCatalog', () => {
       const entries = discoverCatalog({
         projectConfigDir: configDir,
         cwd: proj,
+        homeDir: home,
         kind: 'workflows',
       });
       expect(entries).toHaveLength(MAX_CATALOG_FILES);
@@ -207,7 +237,12 @@ describe('discoverCatalog', () => {
       vi.mocked(openSync).mockClear();
       let caught: unknown;
       try {
-        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+        discoverCatalog({
+          projectConfigDir: configDir,
+          cwd: proj,
+          homeDir: home,
+          kind: 'workflows',
+        });
       } catch (error) {
         caught = error;
       }
@@ -226,13 +261,18 @@ describe('discoverCatalog', () => {
       for (let n = 0; n < MAX_CATALOG_FILES + 1; n += 1)
         write('agents', `a-${String(n).padStart(4, '0')}.agent.yaml`, VALID_AGENT);
       expect(() =>
-        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' }),
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind: 'agents' }),
       ).toThrow(/too many agent files/);
       // A directory full of other files is not a big catalog.
       for (let n = 0; n < MAX_CATALOG_FILES + 1; n += 1)
         write('workflows', `n-${String(n)}.txt`, 'x');
       expect(
-        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }),
+        discoverCatalog({
+          projectConfigDir: configDir,
+          cwd: proj,
+          homeDir: home,
+          kind: 'workflows',
+        }),
       ).toEqual([]);
     });
   });
@@ -259,7 +299,7 @@ describe('discoverCatalog', () => {
       writeFileSync(join(configDir, 'workflows', name), body);
     }
     const scan = () =>
-      discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind: 'workflows' });
 
     it('is 16 MiB, the number the skipped files name', () => {
       expect(MAX_CATALOG_SCAN_BYTES).toBe(16 * 1024 * 1024);
@@ -379,7 +419,12 @@ describe('discoverCatalog', () => {
           ]),
         );
       }
-      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        homeDir: home,
+        kind: 'agents',
+      });
       expect(entries.filter((e) => e.valid)).toHaveLength(8);
       expect(entries.filter((e) => !e.valid).map((e) => e.error)).toEqual([
         SKIPPED.replace('/workflows/', '/agents/'),
@@ -392,7 +437,12 @@ describe('discoverCatalog', () => {
     write('workflows', 'hello.relavium.yaml', VALID_WORKFLOW);
     write('workflows', 'README.md', '# not a workflow');
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(entries.map((e) => e.slug)).toEqual(['hello']);
   });
 
@@ -401,14 +451,24 @@ describe('discoverCatalog', () => {
     // `.relavium.yml` to `review` (not `review.relavium`) and that `.yml` is a discovered extension.
     write('workflows', 'review.relavium.yml', INVALID_WORKFLOW);
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(entries.map((e) => e.slug)).toEqual(['review']);
     expect(entries[0]?.valid).toBe(false);
   });
 
   it('refuses an oversized file from its admitting stat before reading a byte', () => {
     write('workflows', 'big.yaml', 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1));
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(entries.map((entry) => ({ valid: entry.valid, error: entry.error }))).toEqual([
       { valid: false, error: 'exceeds the size limit' },
     ]);
@@ -439,7 +499,12 @@ describe('discoverCatalog', () => {
       ['an encoded surrogate', [0xed, 0xa0, 0x80]],
     ])('lists %s as a refused file with a fixed reason, not as a valid entry', (_label, bytes) => {
       writeBuffer('agents', 'bad.agent.yaml', agentWithPromptBytes(bytes));
-      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        homeDir: home,
+        kind: 'agents',
+      });
       expect(
         entries.map((entry) => ({ slug: entry.slug, valid: entry.valid, error: entry.error })),
       ).toEqual([{ slug: 'bad', valid: false, error: 'not valid UTF-8' }]);
@@ -459,6 +524,7 @@ describe('discoverCatalog', () => {
       const entries = discoverCatalog({
         projectConfigDir: configDir,
         cwd: proj,
+        homeDir: home,
         kind: 'workflows',
       });
       expect(entries.map((entry) => [entry.slug, entry.valid, entry.error])).toEqual([
@@ -474,15 +540,20 @@ describe('discoverCatalog', () => {
         Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(VALID_WORKFLOW)]),
       );
       expect(
-        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' }).map((entry) => [
-          entry.slug,
-          entry.valid,
-        ]),
+        discoverCatalog({
+          projectConfigDir: configDir,
+          cwd: proj,
+          homeDir: home,
+          kind: 'agents',
+        }).map((entry) => [entry.slug, entry.valid]),
       ).toEqual([['summarizer', true]]);
       expect(
-        discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' }).map(
-          (entry) => [entry.slug, entry.valid],
-        ),
+        discoverCatalog({
+          projectConfigDir: configDir,
+          cwd: proj,
+          homeDir: home,
+          kind: 'workflows',
+        }).map((entry) => [entry.slug, entry.valid]),
       ).toEqual([['hello', true]]);
     });
   });
@@ -490,7 +561,12 @@ describe('discoverCatalog', () => {
   it('admits a dense multibyte file over the character cap in bytes but within it in characters', () => {
     // Three bytes per character: half the cap in characters is one and a half times it in bytes.
     write('workflows', 'dense.yaml', `# ${'€'.repeat(MAX_SOURCE_CHARS / 2)}\n${VALID_WORKFLOW}`);
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     expect(entries.map((entry) => ({ slug: entry.slug, valid: entry.valid }))).toEqual([
       { slug: 'hello', valid: true },
     ]);
@@ -502,7 +578,12 @@ describe('discoverCatalog', () => {
     // symlink to a FIFO/character device (e.g. /dev/zero) BEFORE readFileSync — which would otherwise block.
     symlinkSync(configDir, join(configDir, 'workflows', 'loop.yaml'), 'junction');
 
-    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'workflows' });
+    const entries = discoverCatalog({
+      projectConfigDir: configDir,
+      cwd: proj,
+      homeDir: home,
+      kind: 'workflows',
+    });
     const loop = entries.find((e) => e.slug === 'loop');
     expect(loop?.valid).toBe(false);
     expect(loop?.error).toBe('not a regular file');
@@ -517,9 +598,9 @@ describe('discoverCatalog', () => {
       symlinkSync(outside, join(configDir, kind), 'junction');
       vi.clearAllMocks();
 
-      expect(() => discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind })).toThrow(
-        /could not read the .* catalog directory/,
-      );
+      expect(() =>
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind }),
+      ).toThrow(/could not read the .* catalog directory/);
       expect(readdirSync).not.toHaveBeenCalled();
       expect(openSync).not.toHaveBeenCalled();
       expect(readSync).not.toHaveBeenCalled();
@@ -535,7 +616,9 @@ describe('discoverCatalog', () => {
       symlinkSync(outside, join(configDir, kind, 'escaped.yaml'), 'file');
       vi.clearAllMocks();
 
-      expect(discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind })).toEqual([
+      expect(
+        discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind }),
+      ).toEqual([
         {
           slug: 'escaped',
           name: undefined,
@@ -559,7 +642,12 @@ describe('discoverCatalog', () => {
       symlinkSync(target, join(configDir, kind, 'alias.yaml'), 'file');
       vi.clearAllMocks();
 
-      const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind });
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        homeDir: home,
+        kind,
+      });
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({
         slug: kind === 'workflows' ? 'hello' : 'summarizer',

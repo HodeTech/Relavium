@@ -6,7 +6,7 @@ import { MAX_SOURCE_CHARS, parseWorkflow, parseAgent } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
-import { resolveYamlSource, resolveWorkflowSource } from './resolve.js';
+import { BARE_ID_WITHOUT_HOME, resolveYamlSource, resolveWorkflowSource } from './resolve.js';
 
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
@@ -16,25 +16,37 @@ vi.mock('node:fs', async (original) => {
 const YAML = 'schema_version: "1.0"\n';
 
 let root: string;
+// The operator home a bare id is admitted against: a fresh directory, never the real one (it is a required argument).
+let home: string;
 beforeEach(() => {
   vi.clearAllMocks();
   root = mkdtempSync(join(tmpdir(), 'relavium-resolve-'));
+  home = mkdtempSync(join(tmpdir(), 'relavium-resolve-home-'));
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
+  rmSync(home, { recursive: true, force: true });
 });
 
 describe('resolveWorkflowSource', () => {
   it('reads an explicit absolute path', () => {
     const path = join(root, 'flow.relavium.yaml');
     writeFileSync(path, YAML);
-    const src = resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+    const src = resolveWorkflowSource(path, {
+      cwd: root,
+      homeDir: home,
+      projectConfigDir: undefined,
+    });
     expect(src).toEqual({ path, yaml: YAML });
   });
 
   it('reads an explicit relative path against the cwd', () => {
     writeFileSync(join(root, 'flow.yaml'), YAML);
-    const src = resolveWorkflowSource('./flow.yaml', { cwd: root, projectConfigDir: undefined });
+    const src = resolveWorkflowSource('./flow.yaml', {
+      cwd: root,
+      homeDir: home,
+      projectConfigDir: undefined,
+    });
     expect(src.path).toBe(join(root, 'flow.yaml'));
     expect(src.yaml).toBe(YAML);
   });
@@ -45,6 +57,7 @@ describe('resolveWorkflowSource', () => {
     writeFileSync(join(dir, 'greet.relavium.yaml'), YAML);
     const src = resolveWorkflowSource('greet', {
       cwd: root,
+      homeDir: home,
       projectConfigDir: join(root, '.relavium'),
     });
     expect(src.path).toBe(join(dir, 'greet.relavium.yaml'));
@@ -56,6 +69,7 @@ describe('resolveWorkflowSource', () => {
     writeFileSync(join(dir, 'greet.yaml'), YAML);
     const src = resolveWorkflowSource('greet', {
       cwd: root,
+      homeDir: home,
       projectConfigDir: join(root, '.relavium'),
     });
     expect(src.path).toBe(join(dir, 'greet.yaml'));
@@ -64,7 +78,11 @@ describe('resolveWorkflowSource', () => {
   it('throws a clean exit-2 miss listing the candidate paths', () => {
     let caught: unknown;
     try {
-      resolveWorkflowSource('absent', { cwd: root, projectConfigDir: join(root, '.relavium') });
+      resolveWorkflowSource('absent', {
+        cwd: root,
+        homeDir: home,
+        projectConfigDir: join(root, '.relavium'),
+      });
     } catch (err) {
       caught = err;
     }
@@ -78,7 +96,7 @@ describe('resolveWorkflowSource', () => {
   it('reports no project when a bare id is given without a project config dir', () => {
     let caught: unknown;
     try {
-      resolveWorkflowSource('absent', { cwd: root, projectConfigDir: undefined });
+      resolveWorkflowSource('absent', { cwd: root, homeDir: home, projectConfigDir: undefined });
     } catch (err) {
       caught = err;
     }
@@ -86,12 +104,55 @@ describe('resolveWorkflowSource', () => {
     if (isCliError(caught)) expect(caught.message).toContain('no project');
   });
 
+  it('refuses a bare id when the caller holds no operator home, before reading anything', () => {
+    // A bare id is admitted against the operator home; with none it is refused, never judged by the process's own home.
+    const dir = join(root, '.relavium', 'workflows');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'greet.relavium.yaml'), YAML);
+    vi.mocked(readFileSync).mockClear();
+    let caught: unknown;
+    try {
+      resolveYamlSource('greet', {
+        cwd: root,
+        homeDir: undefined,
+        kind: 'workflow',
+        subdir: 'workflows',
+        projectConfigDir: join(root, '.relavium'),
+        idSuffixes: ['.relavium.yaml'],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+    if (isCliError(caught)) {
+      expect(caught.code).toBe('internal');
+      expect(caught.message).toBe(BARE_ID_WITHOUT_HOME);
+      expect(caught.message).not.toContain(root);
+    }
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('still reads an explicit path when the caller holds no operator home: a path is not admitted against it', () => {
+    const path = join(root, 'flow.relavium.yaml');
+    writeFileSync(path, YAML);
+    expect(
+      resolveYamlSource(path, {
+        cwd: root,
+        homeDir: undefined,
+        kind: 'workflow',
+        subdir: 'workflows',
+        projectConfigDir: undefined,
+        idSuffixes: ['.relavium.yaml'],
+      }),
+    ).toEqual({ path, yaml: YAML });
+  });
+
   it('rejects an existing path that is not a regular file (a directory) rather than reporting "not found"', () => {
     const dir = join(root, 'flow.relavium.yaml');
     mkdirSync(dir); // a directory where a workflow file was named
     let caught: unknown;
     try {
-      resolveWorkflowSource(dir, { cwd: root, projectConfigDir: undefined });
+      resolveWorkflowSource(dir, { cwd: root, homeDir: home, projectConfigDir: undefined });
     } catch (err) {
       caught = err;
     }
@@ -120,6 +181,7 @@ describe('resolveWorkflowSource', () => {
       try {
         resolveYamlSource(path, {
           cwd: root,
+          homeDir: home,
           kind,
           subdir: kind,
           projectConfigDir: undefined,
@@ -142,6 +204,7 @@ describe('resolveWorkflowSource', () => {
     writeFileSync(path, `\uFEFFid: wide\nname: 日本語 €\n`);
     const source = resolveYamlSource(path, {
       cwd: root,
+      homeDir: home,
       kind: 'agent',
       subdir: 'agent',
       projectConfigDir: undefined,
@@ -155,7 +218,7 @@ describe('resolveWorkflowSource', () => {
     writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1)); // above the actual byte ceiling
     let caught: unknown;
     try {
-      resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+      resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined });
     } catch (err) {
       caught = err;
     }
@@ -180,6 +243,7 @@ describe('resolveWorkflowSource', () => {
       writeFileSync(path, yaml);
       const source = resolveYamlSource(path, {
         cwd: root,
+        homeDir: home,
         kind,
         subdir: kind,
         projectConfigDir: undefined,
@@ -194,16 +258,20 @@ describe('resolveWorkflowSource', () => {
   it('leaves the authoritative ASCII character overflow to the parser', () => {
     const path = join(root, 'long.yaml');
     writeFileSync(path, `#${'a'.repeat(MAX_SOURCE_CHARS)}`);
-    const source = resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+    const source = resolveWorkflowSource(path, {
+      cwd: root,
+      homeDir: home,
+      projectConfigDir: undefined,
+    });
     expect(() => parseWorkflow(source.yaml)).toThrow(/limit/i);
   });
 
   it('refuses true byte overflow before any file read', () => {
     const path = join(root, 'huge.yaml');
     writeFileSync(path, 'a'.repeat(MAX_SOURCE_CHARS * 4 + 1));
-    expect(() => resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined })).toThrow(
-      /size limit/,
-    );
+    expect(() =>
+      resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined }),
+    ).toThrow(/size limit/);
     expect(readFileSync).not.toHaveBeenCalled();
   });
 
@@ -222,7 +290,7 @@ describe('resolveWorkflowSource', () => {
           throw cause;
         });
       try {
-        resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+        resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined });
         expect.fail('native fault must refuse');
       } catch (error) {
         expect(isCliError(error)).toBe(true);
@@ -238,7 +306,7 @@ describe('resolveWorkflowSource', () => {
   it('labels both the absolute argument and searched candidates in a miss', () => {
     const path = join(root, 'missing.yaml');
     try {
-      resolveWorkflowSource(path, { cwd: root, projectConfigDir: undefined });
+      resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined });
       expect.fail('missing source must refuse');
     } catch (error) {
       expect(isCliError(error)).toBe(true);

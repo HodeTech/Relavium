@@ -99,6 +99,7 @@ describe('resolveHomeChatAgent', () => {
     const viaChat = resolveChatAgentSource(REF, {
       cwd,
       projectConfigDir: join(cwd, '.relavium'),
+      homeDir: home,
       defaultModel: undefined,
     });
     expect(resolved.agent).toEqual(viaChat.agent);
@@ -284,6 +285,7 @@ describe('resolveHomeChatAgent', () => {
       resolveChatAgentSource('reviewer', {
         cwd,
         projectConfigDir: join(cwd, '.relavium'),
+        homeDir: home,
         defaultModel: undefined,
       }).agent.id,
     ).toBe('reviewer');

@@ -1,5 +1,4 @@
 import { readFileSync, statSync, type Stats } from 'node:fs';
-import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { MAX_SOURCE_CHARS } from '@relavium/core';
@@ -11,6 +10,10 @@ import { assertProjectArtifactPath } from '../config/project-directory.js';
 /** UTF-8 uses at most four bytes per source character. Match the sibling catalog precheck;
  *  the pure parser remains authoritative for the character ceiling after decoding. */
 const MAX_YAML_SOURCE_BYTES = MAX_SOURCE_CHARS * 4;
+
+/** The refusal of a bare id from a surface that holds no operator home: a fixed sentence, no path. */
+export const BARE_ID_WITHOUT_HOME =
+  'A bare id cannot be resolved without the operator home; name the file.';
 
 export interface WorkflowSource {
   /** The absolute path the YAML was read from (also the parse-error label, made cwd-relative). */
@@ -29,7 +32,7 @@ export function resolveWorkflowSource(
   opts: {
     readonly cwd: string;
     readonly projectConfigDir: string | undefined;
-    readonly homeDir?: string;
+    readonly homeDir: string;
   },
 ): WorkflowSource {
   return resolveYamlSource(workflowArg, {
@@ -38,7 +41,7 @@ export function resolveWorkflowSource(
     subdir: 'workflows',
     projectConfigDir: opts.projectConfigDir,
     idSuffixes: ['.relavium.yaml', '.yaml'],
-    ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
+    homeDir: opts.homeDir,
   });
 }
 
@@ -58,12 +61,20 @@ export function resolveYamlSource(
     readonly subdir: string;
     readonly projectConfigDir: string | undefined;
     readonly idSuffixes: readonly string[];
-    readonly homeDir?: string;
+    /**
+     * The operator home a bare id is admitted against. The key is required and never defaulted: a caller states the home it
+     * already resolved, or `undefined` when it holds none (a hermetic embedding), in which case a bare id is refused rather than
+     * judged by the process's real home. An explicit file path is never admitted against the home, so it reads either way.
+     */
+    readonly homeDir: string | undefined;
   },
 ): WorkflowSource {
   const candidates = candidatePaths(arg, opts);
   for (const candidate of candidates) {
-    if (!explicitYamlPath(arg)) assertProjectArtifactPath(candidate, opts.homeDir ?? homedir());
+    if (!explicitYamlPath(arg)) {
+      if (opts.homeDir === undefined) throw new CliError('internal', BARE_ID_WITHOUT_HOME);
+      assertProjectArtifactPath(candidate, opts.homeDir);
+    }
     const yaml = tryRead(candidate, opts.kind, opts.cwd);
     if (yaml !== undefined) {
       return { path: candidate, yaml };
