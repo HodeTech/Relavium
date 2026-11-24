@@ -141,7 +141,7 @@ test('required and local CI share all workspace tasks and uncached per-invocatio
   assert.equal(workspace.run, 'pnpm ci:workspaces');
   assert.equal(workspace.if, undefined);
   assert.equal(workspace['continue-on-error'], undefined);
-  assert.equal(ci['timeout-minutes'], 25);
+  assert.equal(ci['timeout-minutes'], 30);
   // It starts with the control jobs, after the native component only; a skipped or failed native build skips it, and the
   // aggregate refuses the skip.
   assert.equal(ci.needs, 'native-fs-assets');
@@ -632,7 +632,7 @@ function checkWorkspaceSteps(workflow) {
   assert.ok(checkout.uses.startsWith('actions/checkout@'));
   // The replay check verifies frozen blobs against a predecessor commit, so the whole history is needed.
   assert.deepEqual(checkout.with, { 'persist-credentials': false, 'fetch-depth': 0 });
-  assert.equal(work['timeout-minutes'], 25);
+  assert.equal(work['timeout-minutes'], 30);
   for (const command of WORKSPACE_COMMANDS) {
     const steps = work.steps.filter((step) => step.run === command);
     assert.equal(steps.length, 1, `${command} must be exactly one step of the workspace job`);

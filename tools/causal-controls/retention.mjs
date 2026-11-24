@@ -21,6 +21,9 @@ const maxFiles = 2000,
   // Packed PID/thread journals are input segments, not retained physical files.
   // The full native cohort exceeds the old shared 2,000-file count; byte caps stay fixed.
   maxRawReceiptFiles = 4096,
+  // The captured source graph is every tracked source file plus the dependency packages' entry files: 1,987 files at the MVP-8
+  // step-5 head, past the old shared 2,000 once the pull request's own files were added (PR #102). The byte caps stay fixed.
+  maxSourceFiles = 4096,
   maxBytes = 64 * 1024 * 1024,
   maxReceiptPathBytes = 1024;
 // UTF-8 takes at most three bytes per UTF-16 code unit. The process cap remains
@@ -730,7 +733,7 @@ export function verifyRetainedSourceManifests(destination) {
     const manifest = JSON.parse(sourceText);
     exactKeys(manifest, ['sourceRoot', 'files']);
     assert.ok(typeof manifest.sourceRoot === 'string' && isAbsolute(manifest.sourceRoot));
-    assert.ok(Array.isArray(manifest.files) && manifest.files.length <= maxFiles);
+    assert.ok(Array.isArray(manifest.files) && manifest.files.length <= maxSourceFiles);
     const sourceFiles = new Set();
     for (const file of manifest.files) {
       exactKeys(file, ['path', 'bytes', 'sha256']);
