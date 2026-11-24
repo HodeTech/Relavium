@@ -187,6 +187,56 @@ class PreviewSink {
   }
 }
 
+/** The array `items` at `depth`, one item to a line (see {@link writePretty}). */
+function writePrettyArray(
+  items: readonly unknown[],
+  depth: number,
+  sink: PreviewSink,
+  onMask: () => void,
+): void {
+  if (items.length === 0) {
+    sink.push('[]');
+    return;
+  }
+  const inner = `\n${'  '.repeat(depth + 1)}`;
+  sink.push('[');
+  for (const [index, item] of items.entries()) {
+    if (sink.full) {
+      sink.dropped = true;
+      return;
+    }
+    sink.push(index === 0 ? inner : `,${inner}`);
+    writePretty(item, depth + 1, sink, onMask);
+  }
+  sink.push(`\n${'  '.repeat(depth)}]`);
+}
+
+/** The object `value` at `depth`, one member to a line, its key scrubbed and its value read by the summary's own member rule (see {@link writePretty}). */
+function writePrettyObject(
+  value: object,
+  depth: number,
+  sink: PreviewSink,
+  onMask: () => void,
+): void {
+  const entries = Object.entries(value);
+  if (entries.length === 0) {
+    sink.push('{}');
+    return;
+  }
+  const inner = `\n${'  '.repeat(depth + 1)}`;
+  sink.push('{');
+  for (const [index, [key, item]] of entries.entries()) {
+    if (sink.full) {
+      sink.dropped = true;
+      return;
+    }
+    sink.push(`${index === 0 ? '' : ','}${inner}${JSON.stringify(scrubKey(key, onMask))}: `);
+    // The final summary's own rule: a member whose NAME labels a credential has its value masked whole.
+    writePretty(maskedAsMember(key, item, onMask), depth + 1, sink, onMask);
+  }
+  sink.push(`\n${'  '.repeat(depth)}}`);
+}
+
 /**
  * Write a parsed JSON value into `sink` exactly as `JSON.stringify(value, null, 2)` would — with every string and
  * every key scrubbed on its own — and stop as soon as the sink is full. The input came from `JSON.parse`, so it
@@ -206,42 +256,12 @@ function writePretty(value: unknown, depth: number, sink: PreviewSink, onMask: (
     sink.push(JSON.stringify(value));
     return;
   }
-  const closing = `\n${'  '.repeat(depth)}`;
-  const inner = `\n${'  '.repeat(depth + 1)}`;
   if (Array.isArray(value)) {
     const items: readonly unknown[] = value;
-    if (items.length === 0) {
-      sink.push('[]');
-      return;
-    }
-    sink.push('[');
-    for (const [index, item] of items.entries()) {
-      if (sink.full) {
-        sink.dropped = true;
-        return;
-      }
-      sink.push(index === 0 ? inner : `,${inner}`);
-      writePretty(item, depth + 1, sink, onMask);
-    }
-    sink.push(`${closing}]`);
+    writePrettyArray(items, depth, sink, onMask);
     return;
   }
-  const entries = Object.entries(value);
-  if (entries.length === 0) {
-    sink.push('{}');
-    return;
-  }
-  sink.push('{');
-  for (const [index, [key, item]] of entries.entries()) {
-    if (sink.full) {
-      sink.dropped = true;
-      return;
-    }
-    sink.push(`${index === 0 ? '' : ','}${inner}${JSON.stringify(scrubKey(key, onMask))}: `);
-    // The final summary's own rule: a member whose NAME labels a credential has its value masked whole.
-    writePretty(maskedAsMember(key, item, onMask), depth + 1, sink, onMask);
-  }
-  sink.push(`${closing}}`);
+  writePrettyObject(value, depth, sink, onMask);
 }
 
 /** The fixed sentence for a stored output that is too large to read: only its size is said, never its content. */

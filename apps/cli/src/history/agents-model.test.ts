@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGENT_PROMPT_HEAD_CHARS,
   AGENT_TOOLS_MAX,
+  agentDetailOf,
   buildAgentsModel,
   type AgentFields,
   type AgentRow,
@@ -311,5 +312,47 @@ describe('buildAgentsModel', () => {
       const refusal = rowOf(refused('b', `bogus: unknown key: ${KEY}`));
       expect(JSON.stringify(refusal)).not.toContain(KEY);
     });
+  });
+});
+
+describe('the detail of a row is built when it is read, not when the list is built', () => {
+  /** An agent whose prompt counts how many times the model looked at it: the scrub of a prompt starts with that read. */
+  function counted(slug: string, reads: string[]): AgentsModelItem {
+    const item = ready(slug);
+    const agent = definition();
+    Object.defineProperty(agent, 'system_prompt', {
+      enumerable: true,
+      get: (): string => {
+        reads.push(slug);
+        return 'You review code.';
+      },
+    });
+    return { ...item, agent };
+  }
+
+  it('reads no prompt for a list of 500 agents, reads one when its detail is read, and reads it once however often it is asked for', () => {
+    const reads: string[] = [];
+    const items = Array.from({ length: 500 }, (_, index) => counted(`agent-${index}`, reads));
+    const model = buildAgentsModel(items);
+    expect(model.rows).toHaveLength(500);
+    expect(reads, 'the list is built without scrubbing a single prompt').toEqual([]);
+    const row = model.rows[7];
+    expect(row?.detail?.promptHead).toBe('You review code.');
+    expect(row?.detail).toBe(row?.detail);
+    expect(reads, 'one prompt, once').toEqual(['agent-7']);
+  });
+
+  it('shows the same detail an eager build would: the one function the chat sheet also uses, enumerable like any field', () => {
+    const agent = definition({ tools: ['read_file'], temperature: 0.2 });
+    const row = rowOf({ ...ready('a'), agent });
+    expect(row.detail).toEqual(agentDetailOf(agent));
+    expect(Object.keys(row)).toContain('detail');
+    expect(JSON.parse(JSON.stringify(row))).toMatchObject({ detail: { provider: 'anthropic' } });
+  });
+
+  it('gives a refused file no detail at all, and reads nothing of it', () => {
+    const row = rowOf(refused('bad', 'a workflow must declare at least one node'));
+    expect(row.detail).toBeUndefined();
+    expect('detail' in row).toBe(false);
   });
 });

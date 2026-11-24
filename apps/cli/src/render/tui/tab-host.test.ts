@@ -241,6 +241,9 @@ describe('every key the legend names, pressed', () => {
     [`${TAB_HOST_KEYS.close.keys} ${TAB_HOST_KEYS.close.verb}`]: (r) => {
       expect(r.press('', ESC).kind, 'Esc closes').toBe('close');
     },
+    [`${TAB_HOST_KEYS.interrupt.keys} ${TAB_HOST_KEYS.interrupt.verb}`]: (r) => {
+      expect(r.press('c', { ctrl: true }).kind, 'Ctrl+C closes').toBe('close');
+    },
     'Esc keep': (r) => {
       expect(r.press('', ESC).kind, 'Esc keeps the screen').toBe('state');
       expect(sheetOf(r.state).armed, 'and drops the question').toBe(false);
@@ -265,9 +268,13 @@ describe('every key the legend names, pressed', () => {
     [
       'an unreadable History tab',
       () => rig(snapshotOf(3), 'history'),
-      '←/→ tab,Tab cycle,Esc close',
+      '←/→ tab,Tab cycle,Ctrl+C close,Esc close',
     ],
-    ['Permissions with nothing to select', () => rig(snapshotOf(0)), '←/→ tab,Tab cycle,Esc close'],
+    [
+      'Permissions with nothing to select',
+      () => rig(snapshotOf(0)),
+      '←/→ tab,Tab cycle,Ctrl+C close,Esc close',
+    ],
     ['Permissions while a withdrawal waits', asked, '[Enter] withdraw,Esc keep'],
   ] as const)(
     '%s: each key named does what it says, and the leaving key is last',

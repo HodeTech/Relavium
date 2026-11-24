@@ -4,6 +4,7 @@ import type { RunStatus } from '@relavium/shared';
 
 import { formatCostShort } from '../render/tui/format.js';
 import { buildHistoryRows, type HistoryRow } from './history-model.js';
+import { keysetCursorOf, type KeysetCursor } from './keyset-cursor.js';
 import { readPerRunOrDegrade } from './per-run-read.js';
 import { isFinishedRun, scrubbedBounded } from './run-detail-model.js';
 import { readRunUsageCoverage } from './usage-coverage.js';
@@ -90,6 +91,11 @@ export type HistoryCost =
 export interface HistorySource {
   readonly read: (query: HistoryQuery) => HistoryRead;
   readonly cost: (row: HistoryRow) => HistoryCost;
+  /**
+   * Whether the run is pinned, asked of the pin store by the run's id: a run of another directory is not on the page of this project's
+   * scope, so the page cannot say. May throw (the store could not be read); the caller then falls back to what it knew.
+   */
+  readonly isRunPinned?: ((runId: string) => boolean) | undefined;
 }
 
 /** The reads the source needs. */
@@ -118,10 +124,7 @@ export interface HistorySourceDeps {
   readonly readCoverage?: ((runId: string) => ReturnType<typeof readRunUsageCoverage>) | undefined;
 }
 
-interface Cursor {
-  readonly createdAt: number;
-  readonly id: string;
-}
+type Cursor = KeysetCursor;
 
 /** What one fetch kept: the raw records of the page and where the next one starts. */
 interface PageSlot {
@@ -134,14 +137,9 @@ interface PageSlot {
 const sameCursor = (a: Cursor | undefined, b: Cursor | undefined): boolean =>
   a === b || (a !== undefined && b !== undefined && a.createdAt === b.createdAt && a.id === b.id);
 
-/** The keyset cursor of a record, or `undefined` when its time cannot be one (an unusable cursor ends the list rather than guess). */
-function cursorOf(record: RunSummaryRecord | undefined): Cursor | undefined {
-  if (record === undefined) return undefined;
-  const createdAt = Date.parse(record.createdAt);
-  return Number.isSafeInteger(createdAt) ? { createdAt, id: record.id } : undefined;
-}
-
-export function createHistorySource(deps: HistorySourceDeps): HistorySource {
+export function createHistorySource(
+  deps: HistorySourceDeps,
+): HistorySource & { readonly isRunPinned: (runId: string) => boolean } {
   const { reader } = deps;
   const readCoverage = deps.readCoverage ?? ((runId) => readRunUsageCoverage(reader, runId));
   let key = '';
@@ -170,9 +168,9 @@ export function createHistorySource(deps: HistorySourceDeps): HistorySource {
     const finished = status === undefined ? raw.filter((run) => isFinishedRun(run.status)) : raw;
     const records = finished.slice(0, HISTORY_VIEW_ROWS);
     let next: Cursor | undefined;
-    if (finished.length > HISTORY_VIEW_ROWS) next = cursorOf(records.at(-1));
+    if (finished.length > HISTORY_VIEW_ROWS) next = keysetCursorOf(records.at(-1));
     // The raw page was full and everything in it was consumed: more may lie past it, even if this page is short.
-    else if (raw.length >= limit) next = cursorOf(raw.at(-1));
+    else if (raw.length >= limit) next = keysetCursorOf(raw.at(-1));
     return {
       records,
       labels: reader.loadWorkflowSlugs([...new Set(records.map((run) => run.workflowId))]),
@@ -182,7 +180,7 @@ export function createHistorySource(deps: HistorySourceDeps): HistorySource {
 
   /** Drop every kept page that lies past `page`: its cursor came from a walk that no longer holds. */
   function dropPagesAfter(page: number): void {
-    for (const index of [...pages.keys()]) if (index > page) pages.delete(index);
+    for (const index of pages.keys()) if (index > page) pages.delete(index);
   }
 
   /**
@@ -289,6 +287,8 @@ export function createHistorySource(deps: HistorySourceDeps): HistorySource {
         hasNext: slot.next !== undefined,
       };
     },
+
+    isRunPinned: (runId) => deps.listRunPins().some((pin) => !pin.oversized && pin.ref === runId),
 
     cost: (row) => {
       // A run that is not finished can still change, and a held end has no durable total: nothing is folded or kept for it.

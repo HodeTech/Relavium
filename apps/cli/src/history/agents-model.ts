@@ -125,6 +125,21 @@ export function agentToolsText(detail: AgentDetail): string {
     : names;
 }
 
+/**
+ * `row` with its {@link AgentRow.detail} built the first time it is read, and kept. The detail scrubs the WHOLE system prompt before it
+ * cuts (see {@link agentDetailOf}), and the list is drawn from the rows alone: building every detail when the tab is entered was a scrub of
+ * every prompt in the catalog (up to 500 files, up to 16 MiB of file text) on the render thread, for a page that shows one agent's. Read
+ * once, the detail is the same value an eager build gave, so a caller cannot tell the difference except by the time it did not spend.
+ */
+function withLazyDetail(row: AgentRow, agent: AgentFields): AgentRow {
+  let built: AgentDetail | undefined;
+  Object.defineProperty(row, 'detail', {
+    enumerable: true,
+    get: (): AgentDetail => (built ??= agentDetailOf(agent)),
+  });
+  return row;
+}
+
 function rowOf(item: AgentsModelItem, entryIndex: number): AgentRow {
   const { entry, agent } = item;
   const base = {
@@ -134,9 +149,7 @@ function rowOf(item: AgentsModelItem, entryIndex: number): AgentRow {
     path: scrubbedBounded(entry.path, MAX_DETAIL_CHARS),
   };
   // A file is ready only with its definition in hand: a `valid` entry with none is refused, not shown as an agent with no detail.
-  if (entry.valid && agent !== undefined) {
-    return { state: 'ready', ...base, detail: agentDetailOf(agent) };
-  }
+  if (entry.valid && agent !== undefined) return withLazyDetail({ state: 'ready', ...base }, agent);
   return {
     state: 'invalid',
     ...base,
@@ -144,7 +157,7 @@ function rowOf(item: AgentsModelItem, entryIndex: number): AgentRow {
   };
 }
 
-/** The agents list: one row per agent file, in the order given (the catalog's, by slug), each ready one with its detail. */
+/** The agents list: one row per agent file, in the order given (the catalog's, by slug), each ready one with its detail (built when it is first read). */
 export function buildAgentsModel(items: readonly AgentsModelItem[]): AgentsModel {
   const rows = items.map((item, index) => rowOf(item, index));
   return { rows, total: rows.length };

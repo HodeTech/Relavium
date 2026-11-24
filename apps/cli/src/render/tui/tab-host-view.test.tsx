@@ -279,7 +279,8 @@ describe('TabHostView on the History tab', () => {
     const drawn = lines.join('\n');
     for (const word of [
       '✓ completed',
-      '? unreadable',
+      '✗ failed',
+      '1h ago  unreadable',
       '⊘ cancelled',
       '? missing',
       '★ pinned',
@@ -360,7 +361,7 @@ describe('TabHostView on the Active tab', () => {
     ])
       expect(drawn, word).toContain(word);
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected row').toBe(1);
-    expect(lines.at(-1)).toContain('↑/↓ select · Enter open · Esc close');
+    expect(lines.at(-1)).toContain('↑/↓ select · Enter open · Ctrl+C close · Esc close');
   });
 
   it('draws the selected row in cyan, a quiet reason dimmed, and the word of a stalled or held run in attention', () => {
@@ -449,7 +450,10 @@ const nodeHost = (): TabHostState => {
   if (list.history === undefined) throw new Error('the History tab was read');
   return {
     ...list,
-    history: { ...list.history, detail: { runId: run.id, phase: 'ready', read, cursor: 0, node } },
+    history: {
+      ...list.history,
+      detail: { runId: run.id, phase: 'ready', read, cursor: 0, pinned: false, node },
+    },
   };
 };
 
@@ -473,7 +477,9 @@ describe('TabHostView on the node page', () => {
       expect(drawn, word).toContain(word);
     expect(drawn).not.toContain('sk-ant-api03');
     expect(lines.filter((line) => line.startsWith('› ')).length, 'one selected line').toBe(1);
-    expect(lines.at(-1)).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back');
+    expect(lines.at(-1)).toBe(
+      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
+    );
   });
 
   it('draws the heading bold, the error in red and the key of the action in its own style when colour is on', () => {

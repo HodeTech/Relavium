@@ -39,12 +39,15 @@ import {
 } from './tab-host.js';
 import {
   ACTIVE_EMPTY,
+  ACTIVE_FOCUS_LEFT,
   ACTIVE_FRESHNESS,
   ACTIVE_HELD_UNREAD,
   ACTIVE_KEYS,
   ACTIVE_LOADING,
+  ACTIVE_SELECT_FIRST,
   ACTIVE_STALE_READ,
   ACTIVE_UNREADABLE,
+  activeDisplayOrder,
   activeGroupOf,
 } from './tab-host-active.js';
 import { displayWidth } from './viewport.js';
@@ -412,11 +415,11 @@ describe('what a key does', () => {
 
   it('names no key it does not answer to: an empty list offers neither select nor open, and the way out is last', () => {
     const full = legend(tabHostLegendItems(rig().state));
-    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Esc close');
+    expect(full).toBe('←/→ tab · Tab cycle · ↑/↓ select · Enter open · Ctrl+C close · Esc close');
     const empty = legend(tabHostLegendItems(rig(read([])).state));
-    expect(empty).toBe('←/→ tab · Tab cycle · Esc close');
+    expect(empty).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
     const loading = legend(tabHostLegendItems(rig(null).state));
-    expect(loading).toBe('←/→ tab · Tab cycle · Esc close');
+    expect(loading).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc close');
   });
 });
 
@@ -445,16 +448,75 @@ describe('the cursor follows the run', () => {
     expect(active(next).rows[active(next).cursor]?.runId).toBe(IDS.gate);
   });
 
-  it('keeps its position, inside the rows, when the run left the list', () => {
+  it('keeps its position, inside the rows, when the run left the list, and selects nothing', () => {
     const r = rig();
     while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
     const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
     const next = withActiveRead(r.state, read(without));
     expect(active(next).cursor).toBe(without.length - 1);
-    expect(active(next).focus).toBe(active(next).rows.at(-1)?.runId);
+    // The row that now stands at the old number is NOT the run the person had selected: nothing is selected until a key says so.
+    expect(active(next).focus).toBeUndefined();
+    expect(active(next).message).toBe(ACTIVE_FOCUS_LEFT);
     const emptied = withActiveRead(r.state, read([]));
     expect(active(emptied).cursor).toBe(0);
     expect(active(emptied).focus).toBeUndefined();
+    expect(
+      active(emptied).message,
+      'an empty list says it is empty, not that a run left',
+    ).toBeUndefined();
+  });
+
+  it('never opens the card of the neighbour that took the place of the run that left (ADR-0140 §2)', () => {
+    const order = activeDisplayOrder(EVERY_CLASS);
+    const gateAt = order.findIndex((row) => row.runId === IDS.gate);
+    const above = order[gateAt - 1];
+    if (above === undefined) throw new Error('the gate row has no row above it in this fixture');
+    const r = rig();
+    while (focusedId(r.state) !== above.runId) r.press('', DOWN);
+    // The run under the cursor ends; the gate row below it moves up and now stands at the very number the cursor is on.
+    r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== above.runId)));
+    expect(
+      active(r.state).rows[active(r.state).cursor]?.runId,
+      'the precondition: the gate row is the neighbour',
+    ).toBe(IDS.gate);
+    const step = r.press('', ENTER);
+    expect(step, 'Enter asks the host to open nothing').toMatchObject({ kind: 'state' });
+    expect(active(r.state).message).toBe(ACTIVE_SELECT_FIRST);
+    // Once a key has chosen the gate row on purpose, Enter opens it.
+    r.press('', UP);
+    r.press('', DOWN);
+    expect(focusedId(r.state)).toBe(IDS.gate);
+    expect(r.press('', ENTER)).toMatchObject({ kind: 'open-gate', runId: IDS.gate });
+  });
+
+  it('draws no selected row while nothing is selected, and the first arrow selects one, even at an end', () => {
+    const r = rig();
+    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    r.state = withActiveRead(r.state, read(EVERY_CLASS.filter((row) => row.runId !== IDS.held)));
+    const lines = tabHostLines(r.state, SIZE);
+    expect(
+      lines.some((line) => line.kind === 'selected'),
+      'no pointer on a run nobody chose',
+    ).toBe(false);
+    expect(lines.map((line) => line.text).join('\n')).toContain(ACTIVE_FOCUS_LEFT);
+    // The cursor is at the last row; ↓ cannot move it, and still selects.
+    r.press('', DOWN);
+    expect(focusedId(r.state)).toBe(active(r.state).rows.at(-1)?.runId);
+    expect(active(r.state).message).toBeUndefined();
+    expect(tabHostLines(r.state, SIZE).some((line) => line.kind === 'selected')).toBe(true);
+  });
+
+  it('keeps nothing selected through further reads until a key selects, and says why only once', () => {
+    const r = rig();
+    while (focusedId(r.state) !== IDS.held) r.press('', DOWN);
+    const without = EVERY_CLASS.filter((row) => row.runId !== IDS.held);
+    r.state = withActiveRead(r.state, read(without));
+    r.press('', ENTER); // "No run is selected": the key's own sentence
+    r.state = withActiveRead(r.state, read(without));
+    expect(focusedId(r.state)).toBeUndefined();
+    expect(active(r.state).message, 'the key’s sentence is not overwritten by every tick').toBe(
+      ACTIVE_SELECT_FIRST,
+    );
   });
 
   it('is remembered by the tab host as a row and as a run, and the tab is entered there again', () => {

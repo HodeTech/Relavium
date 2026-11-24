@@ -3,6 +3,8 @@ import type { RunStatus } from '@relavium/shared';
 
 import { gatesOfRun, type RunGatesReader } from '../home/run-gates.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
+import type { ReadSnapshot } from './change-probe.js';
+import { keysetCursorOf } from './keyset-cursor.js';
 
 /**
  * The read behind the Home's Active tab ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -92,26 +94,34 @@ export interface ActiveSourceInput {
   readonly leaseTtlMs: number;
 }
 
-/** `items` in consecutive chunks of at most `size`, in order. */
+/**
+ * `items` in consecutive chunks of at most `size`, in order. A `size` that is not a positive safe integer is refused: a chunk of nothing
+ * never advances (the loop would not end), and quietly returning no chunks would drop every item the caller asked about, so a lease read
+ * would report "no lease" for runs it never asked after.
+ */
 export function chunksOf<T>(items: readonly T[], size: number): T[][] {
+  if (!Number.isSafeInteger(size) || size <= 0) {
+    throw new RangeError('chunksOf needs a chunk size that is a positive integer');
+  }
   const chunks: T[][] = [];
   for (let at = 0; at < items.length; at += size) chunks.push(items.slice(at, at + size));
   return chunks;
 }
 
-/** One status: its first page, and when the page is full one count of what lies past it. */
+/**
+ * One status: its first page, and when the page is full one count of what lies past it. A full page whose last row has no usable keyset
+ * position (an unparseable `createdAt`) cannot be counted past: the store refuses such a cursor with `invalid_cursor`, which would take the
+ * whole tab down for one damaged row, so the page is shown as it is and says nothing about what lies beyond it.
+ */
 function readStatus(
   reader: ActiveSourceReader,
   status: ActiveReadStatus,
 ): { readonly rows: readonly RunSummaryRecord[]; readonly more: ActiveMore | undefined } {
   const rows = reader.listRunSummaries({ limit: ACTIVE_STATUS_LIMIT, status });
-  const last = rows.at(-1);
-  if (rows.length < ACTIVE_STATUS_LIMIT || last === undefined) return { rows, more: undefined };
-  const beyond = reader.listRunSummaries({
-    limit: ACTIVE_STATUS_LIMIT,
-    status,
-    before: { createdAt: Date.parse(last.createdAt), id: last.id },
-  });
+  if (rows.length < ACTIVE_STATUS_LIMIT) return { rows, more: undefined };
+  const before = keysetCursorOf(rows.at(-1));
+  if (before === undefined) return { rows, more: undefined };
+  const beyond = reader.listRunSummaries({ limit: ACTIVE_STATUS_LIMIT, status, before });
   if (beyond.length === 0) return { rows, more: undefined };
   return {
     rows,
@@ -140,6 +150,34 @@ export interface ActiveParkCounts {
   readonly media: Map<string, number>;
 }
 
+/** What the park read says of one run: its open gates and its media jobs in flight, `undefined` for each when its log could not be read. */
+function readParkEntry(
+  reader: ActiveSourceReader,
+  run: RunSummaryRecord,
+): Pick<GateCountEntry, 'count' | 'media'> {
+  const read = gatesOfRun(reader, run);
+  if (read.degraded) return { count: undefined, media: undefined };
+  return {
+    count: read.gates.length + read.budgetGates.length,
+    media: read.pendingMediaJobNodeIds?.length ?? 0,
+  };
+}
+
+/** One run's entry: the kept one while its row has not moved and it is younger than `maxAgeMs`, else a read, kept in `cache` when there is one. */
+function parkEntryOf(
+  reader: ActiveSourceReader,
+  run: RunSummaryRecord,
+  cache: GateCountCache | undefined,
+  clock: { readonly nowMs: number; readonly maxAgeMs: number },
+): GateCountEntry {
+  const key = gateKeyOf(run);
+  const kept = cache?.get(run.id);
+  if (kept !== undefined && kept.key === key && clock.nowMs - kept.at < clock.maxAgeMs) return kept;
+  const entry: GateCountEntry = { key, ...readParkEntry(reader, run), at: clock.nowMs };
+  cache?.set(run.id, entry);
+  return entry;
+}
+
 /**
  * The pending gate count and the in-flight media job count of each paused run of this project whose log could be read. A run whose log
  * could not be read is absent from both, which the model reads as "gate state not read": counting it as zero would call a damaged log
@@ -163,31 +201,20 @@ export function readActiveParkCounts(
     cache?.clear();
     return undefined;
   }
-  const nowMs = options.nowMs ?? 0;
-  const maxAgeMs = options.maxAgeMs ?? 0;
+  const clock = { nowMs: options.nowMs ?? 0, maxAgeMs: options.maxAgeMs ?? 0 };
   const counts: ActiveParkCounts = {
     gates: new Map<string, number>(),
     media: new Map<string, number>(),
   };
   for (const run of here) {
-    const key = gateKeyOf(run);
-    const kept = cache?.get(run.id);
-    let count: number | undefined;
-    let media: number | undefined;
-    if (kept !== undefined && kept.key === key && nowMs - kept.at < maxAgeMs) {
-      ({ count, media } = kept);
-    } else {
-      const read = gatesOfRun(reader, run);
-      count = read.degraded ? undefined : read.gates.length + read.budgetGates.length;
-      media = read.degraded ? undefined : (read.pendingMediaJobNodeIds?.length ?? 0);
-      cache?.set(run.id, { key, count, media, at: nowMs });
-    }
-    if (count !== undefined) counts.gates.set(run.id, count);
-    if (media !== undefined) counts.media.set(run.id, media);
+    const entry = parkEntryOf(reader, run, cache, clock);
+    if (entry.count !== undefined) counts.gates.set(run.id, entry.count);
+    if (entry.media !== undefined) counts.media.set(run.id, entry.media);
   }
   if (cache !== undefined) {
+    // A run no longer listed leaves the cache, so it is read when it comes back.
     const listed = new Set(here.map((run) => run.id));
-    for (const runId of [...cache.keys()]) if (!listed.has(runId)) cache.delete(runId);
+    for (const runId of cache.keys()) if (!listed.has(runId)) cache.delete(runId);
   }
   return counts;
 }
@@ -261,11 +288,17 @@ export interface ActiveReaderDeps {
   /** Epoch milliseconds. */
   readonly now: () => number;
   readonly leaseTtlMs: number;
+  /**
+   * Runs the database reads as ONE snapshot (`readSnapshotOf(db)`): the three status pages, the leases and the gate reads are then of one
+   * moment, so another process's run is never listed twice or missing for a tick because it changed state between two of them. Absent, the
+   * reads are separate statements (a test over a scripted reader needs no transaction).
+   */
+  readonly snapshot?: ReadSnapshot | undefined;
 }
 
 /**
- * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch, so the rows
- * of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
+ * The tab's read as one asynchronous call: the outbox first (a file), then every database read in one synchronous stretch and, with
+ * {@link ActiveReaderDeps.snapshot}, in one read transaction, so the rows of one read were all taken at the same moment. An outbox that cannot be read leaves the held set empty and says so in the result,
  * as `status` degrades: it never fails the tab.
  */
 export function createActiveReader(deps: ActiveReaderDeps): () => Promise<ActiveRead> {
@@ -299,15 +332,18 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
     }
     // The poll asked `isClosed` before it started this read, and the outbox was awaited since: a database closed meanwhile is not read.
     if (deps.isClosed?.() === true) throw new Error('the history database is closed');
-    return readActive({
-      reader: deps.reader,
-      projectRoot: deps.projectRoot,
-      hostedRunId: deps.hostedRunId(),
-      heldRunIds,
-      heldUnread,
-      nowMs: deps.now(),
-      leaseTtlMs: deps.leaseTtlMs,
-      gateCache,
-    });
+    const snapshot = deps.snapshot ?? ((read) => read());
+    return snapshot(() =>
+      readActive({
+        reader: deps.reader,
+        projectRoot: deps.projectRoot,
+        hostedRunId: deps.hostedRunId(),
+        heldRunIds,
+        heldUnread,
+        nowMs: deps.now(),
+        leaseTtlMs: deps.leaseTtlMs,
+        gateCache,
+      }),
+    );
   };
 }

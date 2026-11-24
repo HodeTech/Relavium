@@ -76,8 +76,9 @@ import { displayWidth } from './viewport.js';
  *   frozen workflow that have no record (`history/run-detail-source.ts`). `Enter` on a node row opens the node page (`tab-host-node.ts`, read
  *   now through {@link HistoryPort.loadNode}); `n` puts the cursor on the first node whose LAST attempt failed; `p` pins or unpins the run by
  *   the list's own toggle and reads the list again behind the detail; a sentence a key leaves is dropped by the next.
- * - **Every state has a glyph and a word.** `✓ completed`, `✗ failed`, `⊘ cancelled`, `◐ running`, `◇ held`, `? unreadable`,
- *   `? missing`, `★ pinned`; colour only repeats what the words say.
+ * - **Every state has a glyph and a word.** `✓ completed`, `✗ failed`, `⊘ cancelled`, `◐ running`, `◇ held`, `? missing`, `★ pinned`;
+ *   colour only repeats what the words say. A run whose log cannot be read keeps its own status glyph and word, and says `unreadable` in
+ *   the cost slot only.
  * - **Every string from the history file is sanitized** (labels, ids, project roots, node ids, error text) before it is drawn.
  */
 
@@ -115,6 +116,11 @@ export interface HistoryDetailState {
   readonly phase: 'loading' | 'ready' | 'missing' | 'unreadable';
   readonly read?: RunDetailRead | undefined;
   readonly cursor: number;
+  /**
+   * Whether the run is pinned, as the pin store said when the detail was opened and as `p` changed it since. It is the detail's own, not
+   * the list's: a run of another directory is not on this project's page, and a list that does not hold the run cannot say it is pinned.
+   */
+  readonly pinned: boolean;
   /** One sentence the last key left on the detail; the next key drops it. */
   readonly message?: string | undefined;
   /** The node page open over this detail (`Enter` on a node row); `Esc` returns to the detail on the line it left. */
@@ -159,6 +165,15 @@ export const HISTORY_KEYS = {
 
 export const HISTORY_UNREADABLE = 'The run history could not be read.';
 export const HISTORY_HINT = 'Finished runs, newest first. Enter opens a run.';
+/**
+ * The hint while more lies past this page. A page can hold fewer than twenty finished runs (or none) and still not be the last: the store
+ * is read 200 raw rows at a time, and the active runs among them belong to the Active tab, so the list cannot show a `▼ more` for rows it
+ * has not read.
+ */
+export const HISTORY_HINT_MORE =
+  'Newest first. Enter opens a run. ↓ at the end reads the next page.';
+/** What a page with no finished run says when the next page may hold some. */
+export const HISTORY_EMPTY_PAGE = 'No finished run on this page. ↓ reads the next page.';
 export const HISTORY_LOADING = 'Reading the run…';
 export const HISTORY_DETAIL_MISSING = 'That run is not in the history any more. Esc goes back.';
 export const HISTORY_DETAIL_UNREADABLE =
@@ -346,8 +361,25 @@ export function historyMemoryOf(state: HistoryTabState): HistoryMemory | undefin
  * run…`, and the host's load lands on it as it lands on a detail opened from a row ({@link withHistoryDetail}). A list that could not be
  * read still shows the detail: the tab is then `ready` with no page, so `Esc` goes back to the line that says the history could not be read.
  */
-export function withHistoryDetailLoading(state: HistoryTabState, runId: string): HistoryTabState {
-  return { ...state, phase: 'ready', detail: { runId, phase: 'loading', cursor: 0 } };
+export function withHistoryDetailLoading(
+  state: HistoryTabState,
+  runId: string,
+  pinned: boolean,
+): HistoryTabState {
+  return { ...state, phase: 'ready', detail: { runId, phase: 'loading', cursor: 0, pinned } };
+}
+
+/** Whether the pin store says `runId` is pinned (`fallback` when the port has no pin store or it could not be read). */
+export function runPinnedIn(
+  port: Pick<HistorySource, 'isRunPinned'>,
+  runId: string,
+  fallback: boolean,
+): boolean {
+  try {
+    return port.isRunPinned?.(runId) ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /** `state` with a sentence the next key drops. */
@@ -366,10 +398,11 @@ export function withHistoryDetail(
 ): HistoryTabState {
   const detail = state.detail;
   if (detail?.runId !== runId || detail.phase !== 'loading') return state;
+  const { pinned } = detail;
   const next: HistoryDetailState =
     load.kind === 'ready'
-      ? { runId, phase: 'ready', read: load.detail, cursor: 0 }
-      : { runId, phase: load.kind, cursor: 0 };
+      ? { runId, phase: 'ready', read: load.detail, cursor: 0, pinned }
+      : { runId, phase: load.kind, cursor: 0, pinned };
   return { ...state, detail: next };
 }
 
@@ -384,13 +417,6 @@ export function failHistoryDetail(state: HistoryTabState, runId: string): Histor
 /** How many lines the detail has: the head, then the events with their heading. */
 function detailLineCount(read: RunDetailRead): number {
   return detailHead(read, false).length + (read.events.length > 0 ? 1 + read.events.length : 0);
-}
-
-/** The run is pinned, as the list the detail was opened from says (the list is read again after every pin). */
-function isRunPinned(read: HistoryRead | undefined, runId: string): boolean {
-  return entriesOf(read).some(
-    (entry) => entry.kind === 'run' && entry.row.id === runId && entry.row.pinned,
-  );
 }
 
 /** `state` with a sentence on the detail, which the next key drops. */
@@ -461,6 +487,16 @@ function foldNodeStep(
     : { kind: 'state', state: { ...state, detail: { ...detail, node: step.state } } };
 }
 
+/** Where a scroll key puts the detail's cursor (`last` is the final line), or `undefined` for a key that scrolls nothing. */
+function scrolledTo(cursor: number, last: number, key: ChatKey): number | undefined {
+  if (key.upArrow === true) return clamp(cursor - 1, last);
+  if (key.downArrow === true) return clamp(cursor + 1, last);
+  if (key.pageUp === true) return clamp(cursor - HISTORY_PAGE_STEP, last);
+  if (key.pageDown === true) return clamp(cursor + HISTORY_PAGE_STEP, last);
+  if (key.home === true) return 0;
+  return key.end === true ? clamp(last, last) : undefined;
+}
+
 function foldDetailKey(
   state: HistoryTabState,
   detail: HistoryDetailState,
@@ -484,17 +520,8 @@ function foldDetailKey(
   if (letter === 'p') return { kind: 'state', state: pinDetail(held, cleared, context) };
   if (letter === 'n') return { kind: 'state', state: jumpToFirstFailed(held, cleared, read) };
   if (key.return === true) return { kind: 'state', state: openNode(held, cleared, read, context) };
-  const last = detailLineCount(read) - 1;
-  let to = detail.cursor;
-  if (key.upArrow === true) to -= 1;
-  else if (key.downArrow === true) to += 1;
-  else if (key.pageUp === true) to -= HISTORY_PAGE_STEP;
-  else if (key.pageDown === true) to += HISTORY_PAGE_STEP;
-  else if (key.home === true) to = 0;
-  else if (key.end === true) to = last;
-  else return { kind: 'state', state: held };
-  to = clamp(to, last);
-  return to === cleared.cursor
+  const to = scrolledTo(detail.cursor, detailLineCount(read) - 1, key);
+  return to === undefined || to === cleared.cursor
     ? { kind: 'state', state: held }
     : { kind: 'state', state: { ...state, detail: { ...cleared, cursor: to } } };
 }
@@ -562,9 +589,17 @@ function pinSelected(
   );
 }
 
+/** What the store holds after a toggle: a pin made or found is pinned, one removed or found missing is not, and a fault leaves what was shown. */
+function pinnedAfter(toggled: PinToggle, before: boolean): boolean {
+  if (toggled.outcome === 'pinned') return true;
+  return toggled.outcome === 'unpinned' || toggled.outcome === 'absent' ? false : before;
+}
+
 /**
- * `p` on a run's detail: the same pin toggle as on its row, under the run's canonical key. The list the detail was opened from is read again, so
- * its pinned section and its row's mark are the store's, and the cursor stays on the run.
+ * `p` on a run's detail: the same pin toggle as on its row, under the run's canonical key. Whether the run is pinned is asked of the pin
+ * store by the run's id, never read off the list: a run of another directory is not on this project's page, so the page cannot say, and a
+ * toggle that took the page's silence for "not pinned" said `Pinned` at every press and could never unpin. The list the detail was opened
+ * from is read again, so its pinned section and its row's mark are the store's, and the cursor stays on the run.
  */
 function pinDetail(
   state: HistoryTabState,
@@ -576,7 +611,7 @@ function pinDetail(
   const toggled: PinToggle = toggleRunPin(context.pins, {
     label: shortRunId(detail.runId),
     runId: detail.runId,
-    pinned: isRunPinned(list, detail.runId),
+    pinned: runPinnedIn(context.history, detail.runId, detail.pinned),
     rowid: undefined,
   });
   // The cap changed nothing, so there is nothing to read again; the reason names what the store holds, which this list does not all show.
@@ -586,7 +621,8 @@ function pinDetail(
       detail,
       runPinFullMessage(context.pins, shortRunId(detail.runId)),
     );
-  if (list === undefined) return withDetailMessage(state, detail, toggled.message);
+  const marked: HistoryDetailState = { ...detail, pinned: pinnedAfter(toggled, detail.pinned) };
+  if (list === undefined) return withDetailMessage(state, marked, toggled.message);
   const again = reread(
     state,
     context.history,
@@ -596,9 +632,101 @@ function pinDetail(
   );
   return withDetailMessage(
     again ?? state,
-    detail,
+    marked,
     again === undefined ? `${toggled.message} ${HISTORY_REREAD_FAILED}` : toggled.message,
   );
+}
+
+/** What a key on the list works over: the state as it was, the state with its message dropped, the page read and the ports. */
+interface ListKeyView {
+  readonly state: HistoryTabState;
+  readonly cleared: HistoryTabState;
+  readonly read: HistoryRead;
+  readonly context: HistoryContext;
+}
+
+/** A key that moves nothing still asks again for a cost that could not be read: the fault line says "press a key to retry", and a one-row list has no move to make. A window whose costs are known reads nothing here. */
+function listStay({ state, cleared, read, context }: ListKeyView): HistoryStep {
+  return {
+    kind: 'state',
+    state: { ...cleared, costs: costsAround(cleared.costs, read, context.history, state.cursor) },
+  };
+}
+
+/** The cursor to `to`; the rows that scroll into view are read now (the source keeps each fold, and a row already read is not read again). */
+function listMove(view: ListKeyView, to: number): HistoryStep {
+  const { state, cleared, read, context } = view;
+  if (to === state.cursor) return listStay(view);
+  return {
+    kind: 'state',
+    state: {
+      ...cleared,
+      cursor: to,
+      focus: keyOf(read, to),
+      costs: costsAround(cleared.costs, read, context.history, to),
+    },
+  };
+}
+
+/**
+ * Another page of the same walk. On the next page the cursor starts on its first row (past the pinned section, which stays above every
+ * page); on the previous page it starts at the very end, so the walk back reads as the walk forward in reverse.
+ */
+function listChangePage(view: ListKeyView, page: number, onRows: 'first' | 'last'): HistoryStep {
+  const { cleared, read, context } = view;
+  const again = reread(cleared, context.history, { ...read.query, page }, [], (next) => {
+    const entries = next.pinned.length + next.rows.length;
+    return onRows === 'first' ? Math.min(next.pinned.length, entries - 1) : entries - 1;
+  });
+  return { kind: 'state', state: again ?? withHistoryMessage(cleared, HISTORY_REREAD_FAILED) };
+}
+
+/** The keys that move over the list and across its pages: the arrows (which read the next or previous page at an end), the page keys, `Home` and `End`. */
+function listNavigate(view: ListKeyView, key: ChatKey): HistoryStep | undefined {
+  const { state, read } = view;
+  const last = read.pinned.length + read.rows.length - 1;
+  if (key.downArrow === true) {
+    if (state.cursor >= last && read.hasNext)
+      return listChangePage(view, read.query.page + 1, 'first');
+    return listMove(view, clamp(state.cursor + 1, last));
+  }
+  if (key.upArrow === true) {
+    if (state.cursor <= 0 && read.hasPrev) return listChangePage(view, read.query.page - 1, 'last');
+    return listMove(view, clamp(state.cursor - 1, last));
+  }
+  if (key.pageDown === true) return listMove(view, clamp(state.cursor + HISTORY_PAGE_STEP, last));
+  if (key.pageUp === true) return listMove(view, clamp(state.cursor - HISTORY_PAGE_STEP, last));
+  if (key.home === true) return listMove(view, 0);
+  if (key.end === true) return listMove(view, clamp(last, last));
+  return undefined;
+}
+
+/** `Enter` on the list: the detail of the selected run (the host loads it), or why a pin whose run is gone has none. */
+function listOpen(view: ListKeyView): HistoryStep {
+  const { state, cleared, read } = view;
+  const entry = entriesOf(read)[state.cursor];
+  if (entry === undefined) return listStay(view);
+  if (entry.kind === 'missing')
+    return { kind: 'state', state: withHistoryMessage(cleared, HISTORY_MISSING_RUN) };
+  const detail: HistoryDetailState = {
+    runId: entry.row.id,
+    phase: 'loading',
+    cursor: 0,
+    pinned: entry.row.pinned,
+  };
+  return { kind: 'open-detail', runId: entry.row.id, state: { ...cleared, detail } };
+}
+
+/** `a` (this project's runs, or every project's) and `f` (the next status filter): a new walk from the first page. */
+function listRewalk(view: ListKeyView, letter: 'a' | 'f'): HistoryStep {
+  const { cleared, read, context } = view;
+  const { scope, status } = read.query;
+  const query: HistoryQuery =
+    letter === 'a'
+      ? { scope: scope === 'project' ? 'all' : 'project', status, page: 0 }
+      : { scope, status: nextStatusFilter(status), page: 0 };
+  const again = reread(cleared, context.history, query, [], 0);
+  return { kind: 'state', state: again ?? withHistoryMessage(cleared, HISTORY_REREAD_FAILED) };
 }
 
 /** One key into the list: move, page, widen, filter, pin, open. */
@@ -611,83 +739,17 @@ function foldListKey(
   const read = state.read;
   const cleared: HistoryTabState =
     state.message === undefined ? state : { ...state, message: undefined };
-  const plain: HistoryStep = { kind: 'state', state: cleared };
-  if (read === undefined || key.ctrl === true || key.meta === true) return plain;
-  const count = read.pinned.length + read.rows.length;
-  // A key that moves nothing still asks again for a cost that could not be read: the fault line says "press a key to retry", and a
-  // one-row list has no move to make. A window whose costs are known reads nothing here.
-  const stay = (): HistoryStep => ({
-    kind: 'state',
-    state: { ...cleared, costs: costsAround(cleared.costs, read, context.history, state.cursor) },
-  });
-  const move = (to: number): HistoryStep =>
-    to === state.cursor
-      ? stay()
-      : {
-          kind: 'state',
-          state: {
-            ...cleared,
-            cursor: to,
-            focus: keyOf(read, to),
-            // The rows that scroll into view are read now; the source keeps each fold, and a row already read is not read again.
-            costs: costsAround(cleared.costs, read, context.history, to),
-          },
-        };
-  // On the next page the cursor starts on its first row (past the pinned section, which stays above every page); on the previous page it
-  // starts at the very end, so the walk back reads as the walk forward in reverse.
-  const changePage = (page: number, onRows: 'first' | 'last'): HistoryStep => {
-    const again = reread(cleared, context.history, { ...read.query, page }, [], (next) => {
-      const entries = next.pinned.length + next.rows.length;
-      return onRows === 'first' ? Math.min(next.pinned.length, entries - 1) : entries - 1;
-    });
-    return {
-      kind: 'state',
-      state: again ?? withHistoryMessage(cleared, HISTORY_REREAD_FAILED),
-    };
-  };
-  if (key.downArrow === true) {
-    if (state.cursor >= count - 1 && read.hasNext) return changePage(read.query.page + 1, 'first');
-    return move(clamp(state.cursor + 1, count - 1));
-  }
-  if (key.upArrow === true) {
-    if (state.cursor <= 0 && read.hasPrev) return changePage(read.query.page - 1, 'last');
-    return move(clamp(state.cursor - 1, count - 1));
-  }
-  if (key.pageDown === true) return move(clamp(state.cursor + HISTORY_PAGE_STEP, count - 1));
-  if (key.pageUp === true) return move(clamp(state.cursor - HISTORY_PAGE_STEP, count - 1));
-  if (key.home === true) return move(0);
-  if (key.end === true) return move(clamp(count - 1, count - 1));
-  if (key.return === true) {
-    const entry = entriesOf(read)[state.cursor];
-    if (entry === undefined) return stay();
-    if (entry.kind === 'missing')
-      return { kind: 'state', state: withHistoryMessage(cleared, HISTORY_MISSING_RUN) };
-    const detail: HistoryDetailState = { runId: entry.row.id, phase: 'loading', cursor: 0 };
-    return {
-      kind: 'open-detail',
-      runId: entry.row.id,
-      state: { ...cleared, detail },
-    };
-  }
+  if (read === undefined || key.ctrl === true || key.meta === true)
+    return { kind: 'state', state: cleared };
+  const view: ListKeyView = { state, cleared, read, context };
+  const navigated = listNavigate(view, key);
+  if (navigated !== undefined) return navigated;
+  if (key.return === true) return listOpen(view);
   // A bare letter is the same key with Caps Lock on.
   const letter = input.toLowerCase();
   if (letter === 'p') return { kind: 'state', state: pinSelected(cleared, read, context) };
-  if (letter === 'a' || letter === 'f') {
-    const query: HistoryQuery =
-      letter === 'a'
-        ? {
-            scope: read.query.scope === 'project' ? 'all' : 'project',
-            status: read.query.status,
-            page: 0,
-          }
-        : { scope: read.query.scope, status: nextStatusFilter(read.query.status), page: 0 };
-    const again = reread(cleared, context.history, query, [], 0);
-    return {
-      kind: 'state',
-      state: again ?? withHistoryMessage(cleared, HISTORY_REREAD_FAILED),
-    };
-  }
-  return stay();
+  if (letter === 'a' || letter === 'f') return listRewalk(view, letter);
+  return listStay(view);
 }
 
 /** Fold one key (already past the tab host's own tab keys, and its `Esc` when the list is in front) into the tab. */
@@ -730,12 +792,6 @@ function costWords(cost: CostSlot | undefined): string {
   return cost.kind === 'not-final' ? 'not final' : 'unreadable';
 }
 
-/** The glyph and the word of a run row: its status, or `unreadable` when its log could not be read. */
-function stateOf(row: HistoryRow, cost: CostSlot | undefined): { glyph: string; word: string } {
-  if (cost?.kind === 'unreadable') return { glyph: '?', word: 'unreadable' };
-  return { glyph: row.glyph, word: row.word };
-}
-
 function entryLine(
   entry: HistoryEntry,
   selected: boolean,
@@ -750,10 +806,9 @@ function entryLine(
     return { kind: selected ? 'selected' : 'row', text, spans: tailSpan(text, tail, selected) };
   }
   const { row } = entry;
-  const cost = costOf(state, row);
-  const { glyph, word } = stateOf(row, cost);
-  const left = `${lead}${glyph} ${word.padEnd(WORD_WIDTH)} ${row.shortId}  ${row.label}`;
-  const tail = [row.ageText, costWords(cost), row.pinned ? '★ pinned' : '']
+  // The run's own status stays: a log that cannot be read says so in the cost slot, which is where the figure it replaces would be.
+  const left = `${lead}${row.glyph} ${row.word.padEnd(WORD_WIDTH)} ${row.shortId}  ${row.label}`;
+  const tail = [row.ageText, costWords(costOf(state, row)), row.pinned ? '★ pinned' : '']
     .filter((part) => part !== '')
     .join('  ');
   const text = flushRow(left, tail, width);
@@ -766,6 +821,22 @@ function tailSpan(text: string, tail: string, selected: boolean): readonly Sheet
     [{ from: text.length - tail.length, to: text.length, role: 'dim' }],
     text.length,
   );
+}
+
+/** What a run's cost slot says in words, for the line under the list: the whole figure, or why there is none. Empty before the cost was read. */
+function costSentence(cost: CostSlot | undefined, row: HistoryRow): string {
+  switch (cost?.kind) {
+    case 'text':
+      return `cost ${cost.text}`;
+    case 'unreadable':
+      return `its event log could not be read (it was ${row.word})`;
+    case 'fault':
+      return HISTORY_COST_FAULT;
+    case 'not-final':
+      return 'not finished: its cost is not final';
+    default:
+      return '';
+  }
 }
 
 /** What the selected entry says about itself, under the list: the whole id and project, and the whole cost text. */
@@ -781,17 +852,7 @@ function detailLine(
       text: clipLine('No run has this id any more; p removes the pin.', width),
     };
   const { row } = entry;
-  const cost = costOf(state, row);
-  const money =
-    cost?.kind === 'text'
-      ? `cost ${cost.text}`
-      : cost?.kind === 'unreadable'
-        ? `its event log could not be read (it was ${row.word})`
-        : cost?.kind === 'fault'
-          ? HISTORY_COST_FAULT
-          : cost?.kind === 'not-final'
-            ? 'not finished: its cost is not final'
-            : '';
+  const money = costSentence(costOf(state, row), row);
   // What the run cost (or why it has no figure) comes first, so a long id or project path is the part a narrow terminal cuts.
   const parts = [money, scrubbedBounded(row.id), row.projectRoot ?? ''].filter(
     (part) => part !== '',
@@ -831,6 +892,7 @@ function entriesIn(lines: readonly ListLine[], from: number, to: number): number
 
 function emptyText(read: HistoryRead): string {
   const { scope, status } = read.query;
+  if (read.hasNext) return HISTORY_EMPTY_PAGE;
   if (status !== undefined) return `No ${status} run here. f changes the filter.`;
   return scope === 'project'
     ? 'No finished run in this project yet. Run a workflow from the Defined tab.'
@@ -848,7 +910,7 @@ function listBody(state: HistoryTabState, width: number, room: number): readonly
   const status: SheetLine = { kind: 'hint', text: clipLine(statusLine(read), width) };
   const footer: SheetLine =
     state.message === undefined
-      ? { kind: 'hint', text: clipLine(HISTORY_HINT, width) }
+      ? { kind: 'hint', text: clipLine(read.hasNext ? HISTORY_HINT_MORE : HISTORY_HINT, width) }
       : { kind: 'notice', text: clipLine(state.message, width) };
   const count = read.pinned.length + read.rows.length;
   if (count === 0) {
@@ -917,12 +979,9 @@ function headerState(read: RunDetailRead): { glyph: string; word: string } {
     : { glyph: RUN_STATUS_GLYPH[read.status], word: read.status };
 }
 
-/**
- * The detail's lines before the events: the header, its notes, the node table. Width-independent; the draw clips. `pinned` only adds the
- * `★ pinned` mark to the header, so the lines a key counts are the same whether or not the run is pinned.
- */
-function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[] {
-  const { header, rows, unattributedRow } = read.model;
+/** The run's own lines: the heading, when it started and how long it took, its tokens and cost, and its error. */
+function headerLines(read: RunDetailRead, pinned: boolean): DetailLine[] {
+  const { header } = read.model;
   const { glyph, word } = headerState(read);
   // The workflow's name is the part of the heading a narrow terminal cuts: the short id and the pin mark are flushed right and keep their
   // columns (`flushRow` clips the label first), so a run stays identifiable and its pin stays visible at 78 columns.
@@ -933,12 +992,9 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
       right: `${header.shortId}${pinned ? '  ★ pinned' : ''}`,
     },
   ];
-  const duration =
-    header.durationMs !== undefined
-      ? formatDuration(header.durationMs)
-      : read.terminalHeld
-        ? 'end held'
-        : 'not finished';
+  let duration = 'not finished';
+  if (header.durationMs !== undefined) duration = formatDuration(header.durationMs);
+  else if (read.terminalHeld) duration = 'end held';
   lines.push({
     kind: 'text',
     left: `Started ${header.startedAt ?? NOT_RECORDED}  ·  took ${duration}`,
@@ -947,11 +1003,15 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
   if (header.error !== undefined) {
     const { code, message, nodeId } = header.error;
     const where = nodeId === undefined ? '' : ` (node ${nodeId})`;
-    lines.push({
-      kind: 'failed',
-      left: `${code === undefined ? 'Error' : `Error ${code}`}: ${message ?? NO_MESSAGE_RECORDED}${where}`,
-    });
+    const label = code === undefined ? 'Error' : `Error ${code}`;
+    lines.push({ kind: 'failed', left: `${label}: ${message ?? NO_MESSAGE_RECORDED}${where}` });
   }
+  return lines;
+}
+
+/** What the read could not say whole: an end held in the outbox, an outbox that could not be read, a log read in part, rows from a newer version. */
+function noteLines(read: RunDetailRead): DetailLine[] {
+  const lines: DetailLine[] = [];
   if (read.terminalHeld) lines.push({ kind: 'notice', left: HISTORY_HELD_NOTE });
   if (read.heldUnread) lines.push({ kind: 'notice', left: HISTORY_HELD_UNREAD });
   // Two rows, not one: the remedy is a row of its own, so a narrow terminal cannot clip it away.
@@ -967,7 +1027,13 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
       kind: 'notice',
       left: `${String(read.skippedRows)} ${read.skippedRows === 1 ? 'row was' : 'rows were'} written by a newer version and skipped.`,
     });
-  lines.push({ kind: 'heading', left: `Nodes (${String(rows.length)})` });
+  return lines;
+}
+
+/** The node table: its heading, a row per node (or the sentence that none was recorded) and the `unattributed` row when the run has one. */
+function nodeTableLines(read: RunDetailRead): DetailLine[] {
+  const { rows, unattributedRow } = read.model;
+  const lines: DetailLine[] = [{ kind: 'heading', left: `Nodes (${String(rows.length)})` }];
   if (rows.length === 0) lines.push({ kind: 'text', left: `  ${NO_NODE_RECORDED}` });
   for (const row of rows) lines.push(nodeLine(row));
   if (unattributedRow !== undefined)
@@ -975,9 +1041,53 @@ function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[]
   return lines;
 }
 
+/**
+ * The detail's lines before the events: the header, its notes, the node table. Width-independent; the draw clips. `pinned` only adds the
+ * `★ pinned` mark to the header, so the lines a key counts are the same whether or not the run is pinned.
+ */
+function detailHead(read: RunDetailRead, pinned: boolean): readonly DetailLine[] {
+  return [...headerLines(read, pinned), ...noteLines(read), ...nodeTableLines(read)];
+}
+
 function eventLine(event: DetailEvent): DetailLine {
   const node = event.nodeId === undefined ? '' : ` ${scrubbedBounded(event.nodeId)}`;
   return { kind: 'row', left: `  #${String(event.seq)}  ${event.type}${node}` };
+}
+
+/** The line at `index` of the whole detail: the head, then the events' own heading, then the events. */
+function detailLineAt(read: RunDetailRead, head: readonly DetailLine[], index: number): DetailLine {
+  const inHead = head[index];
+  if (inHead !== undefined) return inHead;
+  if (index === head.length)
+    return {
+      kind: 'heading',
+      left: `Events (${String(read.events.length)}${read.eventsComplete ? '' : '+'})`,
+    };
+  const event = read.events[index - head.length - 1];
+  return event === undefined ? { kind: 'text', left: '' } : eventLine(event);
+}
+
+/** The lines `[start, end)` of the detail drawn as rows, the selected one marked, and a `▲`/`▼` marker standing for the lines each end hides. */
+function detailWindow(
+  lineAt: (index: number) => DetailLine,
+  cursor: number,
+  window: { readonly start: number; readonly end: number; readonly total: number },
+  width: number,
+): SheetLine[] {
+  const { start, end, total } = window;
+  const lines: SheetLine[] = [];
+  for (let index = start; index < end; index += 1) {
+    const line = lineAt(index);
+    const selected = index === cursor;
+    const left = `${selected ? POINTER : INDENT}${line.left}`;
+    const right = line.parts === undefined ? (line.right ?? '') : fitParts(left, line.parts, width);
+    lines.push({ kind: selected ? 'selected' : line.kind, text: flushRow(left, right, width) });
+  }
+  if (start > 0 && lines.length > 0)
+    lines[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
+  if (end < total && lines.length > 0)
+    lines[lines.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
+  return lines;
 }
 
 function detailBody(
@@ -993,34 +1103,16 @@ function detailBody(
   if (detail.phase === 'unreadable' || read === undefined)
     return [{ kind: 'failed', text: clipLine(HISTORY_DETAIL_UNREADABLE, width) }];
   if (detail.node !== undefined) return nodeBody(detail.node, width, room);
-  const head = detailHead(read, isRunPinned(state.read, detail.runId));
+  const head = detailHead(read, detail.pinned);
   const total = detailLineCount(read);
-  const lineAt = (index: number): DetailLine => {
-    const inHead = head[index];
-    if (inHead !== undefined) return inHead;
-    if (index === head.length)
-      return {
-        kind: 'heading',
-        left: `Events (${String(read.events.length)}${read.eventsComplete ? '' : '+'})`,
-      };
-    const event = read.events[index - head.length - 1];
-    return event === undefined ? { kind: 'text', left: '' } : eventLine(event);
-  };
   const height = Math.max(3, room - 1);
   const { start, end } = windowBody(total, detail.cursor, height);
-  const lines: SheetLine[] = [];
-  for (let index = start; index < end; index += 1) {
-    const line = lineAt(index);
-    const selected = index === detail.cursor;
-    const lead = selected ? POINTER : INDENT;
-    const left = `${lead}${line.left}`;
-    const right = line.parts === undefined ? (line.right ?? '') : fitParts(left, line.parts, width);
-    lines.push({ kind: selected ? 'selected' : line.kind, text: flushRow(left, right, width) });
-  }
-  if (start > 0 && lines.length > 0)
-    lines[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
-  if (end < total && lines.length > 0)
-    lines[lines.length - 1] = { kind: 'marker', text: `▼ ${String(total - end + 1)} more` };
+  const lines = detailWindow(
+    (index) => detailLineAt(read, head, index),
+    detail.cursor,
+    { start, end, total },
+    width,
+  );
   const footer: SheetLine =
     detail.message === undefined
       ? { kind: 'hint', text: clipLine('No run is changed here; p only marks one.', width) }
@@ -1039,6 +1131,53 @@ export function historyBody(
   return listBody(state, width, room);
 }
 
+/** The legend's own items after the tab item, with the cycle item between them when the whole fits the floor (see {@link historyLegendItems}). */
+type NamedLegend = (...rest: readonly LegendItem[]) => readonly LegendItem[];
+
+/** The detail's legend: the node page's own, the way back alone while the detail is not ready, or the scroll, open, first-failed and pin keys. */
+function detailLegendItems(
+  detail: HistoryDetailState,
+  named: NamedLegend,
+  tabItem: LegendItem,
+): readonly LegendItem[] {
+  if (detail.node !== undefined) {
+    const [, ...rest] = nodeLegendItems(detail.node, tabItem);
+    return named(...rest);
+  }
+  // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
+  if (detail.phase !== 'ready') return named(HISTORY_KEYS.back);
+  return named(
+    HISTORY_KEYS.scroll,
+    HISTORY_KEYS.open,
+    HISTORY_KEYS.firstFailed,
+    HISTORY_KEYS.pin,
+    HISTORY_KEYS.back,
+  );
+}
+
+/** The list's legend; a page with no run still names the move keys while another page lies past it or before it. */
+function listLegendItems(
+  read: HistoryRead | undefined,
+  named: NamedLegend,
+  closeItem: LegendItem,
+): readonly LegendItem[] {
+  const scope = read?.query.scope === 'all' ? HISTORY_KEYS.narrow : HISTORY_KEYS.widen;
+  if (read === undefined || read.pinned.length + read.rows.length === 0) {
+    // A page with no run can still be walked: `↓` reads the next page and `↑` the previous one, so the legend names the keys that do it.
+    return read?.hasNext === true || read?.hasPrev === true
+      ? named(HISTORY_KEYS.select, scope, HISTORY_KEYS.filter, closeItem)
+      : named(scope, HISTORY_KEYS.filter, closeItem);
+  }
+  return named(
+    HISTORY_KEYS.select,
+    HISTORY_KEYS.open,
+    HISTORY_KEYS.pin,
+    scope,
+    HISTORY_KEYS.filter,
+    closeItem,
+  );
+}
+
 /**
  * The legend's items: the detail's, or the list's (the tab host's tab item first, the way out last). A tab that could not be read names
  * the tab keys the other tabs without a list name. `Tab` (cycle) is named wherever the legend still fits the 80-column floor with it, so a
@@ -1051,8 +1190,7 @@ export function historyLegendItems(
 ): readonly LegendItem[] {
   const [tabItem, cycleItem] = tabItems;
   if (state.phase !== 'ready' || tabItem === undefined) return [...tabItems, closeItem];
-  /** `rest` after the tab item, with the cycle item between them when the whole fits the floor. */
-  const named = (...rest: readonly LegendItem[]): readonly LegendItem[] => {
+  const named: NamedLegend = (...rest) => {
     const plain: readonly LegendItem[] = [tabItem, ...rest];
     if (cycleItem === undefined) return plain;
     const withCycle: readonly LegendItem[] = [tabItem, cycleItem, ...rest];
@@ -1060,29 +1198,7 @@ export function historyLegendItems(
       ? withCycle
       : plain;
   };
-  if (state.detail?.node !== undefined) {
-    const [, ...rest] = nodeLegendItems(state.detail.node, tabItem);
-    return named(...rest);
-  }
-  // A detail that is still loading, missing or unreadable answers only to the way back: its scroll keys have nothing to move.
-  if (state.detail !== undefined && state.detail.phase !== 'ready') return named(HISTORY_KEYS.back);
-  if (state.detail !== undefined)
-    return named(
-      HISTORY_KEYS.scroll,
-      HISTORY_KEYS.open,
-      HISTORY_KEYS.firstFailed,
-      HISTORY_KEYS.pin,
-      HISTORY_KEYS.back,
-    );
-  const scope = state.read?.query.scope === 'all' ? HISTORY_KEYS.narrow : HISTORY_KEYS.widen;
-  if (state.read === undefined || state.read.pinned.length + state.read.rows.length === 0)
-    return named(scope, HISTORY_KEYS.filter, closeItem);
-  return named(
-    HISTORY_KEYS.select,
-    HISTORY_KEYS.open,
-    HISTORY_KEYS.pin,
-    scope,
-    HISTORY_KEYS.filter,
-    closeItem,
-  );
+  return state.detail === undefined
+    ? listLegendItems(state.read, named, closeItem)
+    : detailLegendItems(state.detail, named, tabItem);
 }

@@ -20,6 +20,7 @@ import {
   buildToolActivity,
   buildToolActivityForAttempt,
   clipCodePoints,
+  foldUsageFacts,
   indexNodeEvents,
   readStoredError,
   scrubbedBounded,
@@ -1745,5 +1746,34 @@ describe('scrubbedBounded scrubs a value whole, or does not show it (ADR-0122 §
     expect(shown).toBe(tooLarge(straddling.length));
     expect(shown).not.toContain('sk-ant');
     expect(shown).not.toContain('xxxx');
+  });
+});
+
+describe('foldUsageFacts: the in-memory fold shares the one accumulator with the streaming read (ADR-0104)', () => {
+  const unpriced = (sequenceNumber: number, cumulative: number | undefined): RunEvent => ({
+    ...settled(sequenceNumber, 'n1', 0, { priced: false }),
+    ...(cumulative === undefined ? {} : { cumulativeUnpricedCalls: cumulative }),
+  });
+
+  it('counts unpriced calls as the larger of the ledger rows and the run-level counter, never their sum', () => {
+    const events = [coverageStarted(1), started(2, 'n1')];
+    // One ledger row, a counter that is ahead of it: the counter is the figure.
+    expect(foldUsageFacts([...events, unpriced(3, 2)]).unpricedCalls).toBe(2);
+    // Two ledger rows, a counter behind them: the ledger is the figure.
+    expect(foldUsageFacts([...events, unpriced(3, 1), unpriced(4, 1)]).unpricedCalls).toBe(2);
+    // No counter at all: the ledger rows.
+    expect(foldUsageFacts([...events, unpriced(3, undefined)]).unpricedCalls).toBe(1);
+  });
+
+  it('keeps a log with no basis unverified, orders by sequence number, and degrades a contradictory log instead of throwing', () => {
+    const verified = foldUsageFacts([started(2, 'n1'), coverageStarted(1), settled(3, 'n1', 5)]);
+    expect(verified.run.unverified).toBe(false);
+    expect(verified.nodes.get('n1')?.unverified).toBe(false);
+    expect(foldUsageFacts([started(1, 'n1'), settled(2, 'n1', 5)]).run.unverified).toBe(true);
+    // Two bases are a contradiction the fold refuses; the display model says `unverified` and counts nothing.
+    const contradictory = foldUsageFacts([coverageStarted(1), coverageStarted(2)]);
+    expect(contradictory).toMatchObject({ unpricedCalls: 0 });
+    expect(contradictory.run.unverified).toBe(true);
+    expect(contradictory.nodes.size).toBe(0);
   });
 });

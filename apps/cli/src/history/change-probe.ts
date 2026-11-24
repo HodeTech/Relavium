@@ -67,3 +67,19 @@ export function dataVersionOf(db: Pick<Db, '$client'>): () => number {
     return value;
   };
 }
+
+/**
+ * Run `read` as ONE read transaction on the connection behind `db`: a snapshot, so every statement `read` makes sees the database as it
+ * stood when the first one ran, however many other processes commit in between (the history database is in WAL mode, where a reader neither
+ * blocks nor is blocked by a writer). Without it, the Active tab's three status pages are three separate reads: a run another process moves
+ * from `running` to `paused` between them is listed twice, and one moved the other way is listed not at all until the next tick. The
+ * transaction is a deferred `BEGIN` with no write in it and it ends (a commit, or a rollback when `read` throws, which then propagates) before
+ * this returns, so nothing here can hold a lock past the call. It runs synchronously on the Home's own connection, so the Home's own writes
+ * (the engine's, on the same connection) cannot interleave with it.
+ */
+export function readSnapshotOf(db: Pick<Db, '$client'>): ReadSnapshot {
+  return <T>(read: () => T): T => db.$client.transaction(read)();
+}
+
+/** Run a synchronous read as one snapshot of the database ({@link readSnapshotOf}). */
+export type ReadSnapshot = <T>(read: () => T) => T;

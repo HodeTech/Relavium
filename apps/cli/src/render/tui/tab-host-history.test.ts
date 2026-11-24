@@ -22,6 +22,7 @@ import { legend } from './legend.js';
 import { usableColumns } from './sheet-frame.js';
 import {
   TAB_HOST_ROWS,
+  enterHistoryAtDetail,
   enterTab,
   foldTabHostKey,
   freshTabMemory,
@@ -38,13 +39,17 @@ import {
   HISTORY_BODY_ROOM_MAX,
   HISTORY_COST_FAULT,
   HISTORY_COST_REACH,
+  HISTORY_EMPTY_PAGE,
   HISTORY_HELD_NOTE,
+  HISTORY_HINT,
+  HISTORY_HINT_MORE,
   HISTORY_HELD_UNREAD,
   HISTORY_KEYS,
   HISTORY_LOADING,
   HISTORY_UNREADABLE,
   type HistoryPort,
 } from './tab-host-history.js';
+import type { PinPort } from './tab-host-pin.js';
 import { displayWidth } from './viewport.js';
 
 const UP: ChatKey = { upArrow: true };
@@ -93,6 +98,28 @@ interface Script {
   /** Run ids whose cost read throws (a fault that is not about the run: the source degrades a damaged log itself). */
   readonly costThrows?: ReadonlySet<string>;
   readonly detail?: RunDetailLoad;
+  /**
+   * The run ids the PIN STORE holds (the store, not the page). Given, the port answers `isRunPinned` from it and the context carries a pin
+   * port that writes to it, so a run of another directory can be pinned without being on the page.
+   */
+  readonly pinStore?: Set<string>;
+  /** `isRunPinned` throws: the pin store could not be read. */
+  readonly pinStoreThrows?: boolean;
+}
+
+/** A pin port over a set of run ids, answering as the real store does (`already-pinned` for a second pin of one run). */
+function pinPortOver(store: Set<string>): PinPort {
+  return {
+    pinWorkflow: () => 'pinned',
+    unpinWorkflow: () => false,
+    pinRun: (runId) => {
+      if (store.has(runId)) return 'already-pinned';
+      store.add(runId);
+      return 'pinned';
+    },
+    unpinRun: (runId) => store.delete(runId),
+    unpinRow: () => false,
+  };
 }
 
 /** A port over a scripted history: `total` finished runs (a status each in turn), twenty to a page. */
@@ -127,6 +154,14 @@ function scripted(script: Script = {}) {
     },
     cost: (row) => costFor(row.id, FINISHED.includes(row.status)),
     loadDetail,
+    ...(script.pinStore === undefined
+      ? {}
+      : {
+          isRunPinned: (runId: string): boolean => {
+            if (script.pinStoreThrows === true) throw new Error('PRIVATE-PIN-FAULT');
+            return script.pinStore?.has(runId) === true;
+          },
+        }),
   };
   return { port, reads, costFor, loadDetail, records };
 }
@@ -192,6 +227,7 @@ function rig(script: Script = {}) {
   const context = (): TabHostContext => ({
     port: undefined,
     history: fake.port,
+    ...(script.pinStore === undefined ? {} : { pins: pinPortOver(script.pinStore) }),
     now: 10_000,
     canArm: true,
   });
@@ -246,11 +282,14 @@ describe('the rows say what they are, in a glyph and a word', () => {
       pinned: [{ kind: 'missing', label: 'no-such-run', pinRowid: 7 }],
     });
     const text = r.text();
-    expect(text).toContain('? unreadable');
     expect(text).toContain('? missing');
     expect(text).toContain('no-such-run');
-    // The damaged run keeps its row and its id.
-    expect(r.lines().find((line) => line.includes('? unreadable'))).toContain('00000001');
+    // The damaged run keeps its row, its id and ITS OWN status (it failed); `unreadable` is said once, where its cost would be.
+    const row = r.lines().find((line) => line.includes('00000001'));
+    expect(row).toMatch(/^ {2}✗ failed {5}00000001 /u);
+    expect(row).toMatch(/ago\s+unreadable$/u);
+    expect(row?.match(/unreadable/gu), 'said once, not twice').toHaveLength(1);
+    expect(text).not.toContain('? unreadable');
     r.press('', DOWN);
     r.press('', DOWN);
     expect(r.text(), 'the line under the list says what happened to it').toContain(
@@ -477,7 +516,7 @@ describe('the run detail says what it could not read, and keeps what identifies 
       if (phase !== 'loading')
         r.state = withHistoryLoad(r.state, summary(0, 'completed').id, { kind: phase });
       const items = legend(tabHostLegendItems(r.state));
-      expect(items, phase).toBe('←/→ tab · Tab cycle · Esc back');
+      expect(items, phase).toBe('←/→ tab · Tab cycle · Ctrl+C close · Esc back');
       expect(items).not.toContain('scroll');
     }
   });
@@ -788,9 +827,11 @@ describe('the keys of the list', () => {
     if (history === undefined) throw new Error('the History tab was read');
     const inDetail: TabHostState = {
       ...r.state,
-      history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0 } },
+      history: { ...history, detail: { runId: 'x', phase: 'loading', cursor: 0, pinned: false } },
     };
-    expect(legend(tabHostLegendItems(inDetail))).toBe('←/→ tab · Tab cycle · Esc back');
+    expect(legend(tabHostLegendItems(inDetail))).toBe(
+      '←/→ tab · Tab cycle · Ctrl+C close · Esc back',
+    );
   });
 
   it('a chord or a meta key moves nothing, and an unnamed key is nothing', () => {
@@ -860,5 +901,132 @@ describe('the 80×24 budget', () => {
     expect(lines.at(-1)?.kind).toBe('legend');
     const small = tabHostLines(r.state, { columns: 79, terminalRows: 23 }).map((l) => l.text);
     expect(small.join('\n')).toContain('Enlarge the terminal');
+  });
+});
+
+describe('the pin state of a run belongs to the detail and the pin store, not to the page (a run of another directory)', () => {
+  /** A run the page of this project does not list (another directory's, reached from the strip), whose detail is `ready`. */
+  const FOREIGN = 'ffffffff-0000-0000-0000-000000000000';
+  function foreignDetail(script: Script) {
+    const r = rig({ total: 2, ...script });
+    r.state = enterHistoryAtDetail(freshTabMemory('history'), r.context(), FOREIGN);
+    r.state = withHistoryLoad(r.state, FOREIGN, { kind: 'ready', detail: detailRead() });
+    return r;
+  }
+  const message = (r: ReturnType<typeof rig>): string | undefined =>
+    r.state.history?.detail?.message;
+
+  it('shows `★ pinned` for a pinned run the page does not list, and `p` unpins it, then pins it again', () => {
+    const store = new Set([FOREIGN]);
+    const r = foreignDetail({ pinStore: store });
+    expect(r.text(), 'the header says it is pinned').toContain('★ pinned');
+    r.press('p');
+    expect(store.has(FOREIGN), 'the store lost the pin').toBe(false);
+    expect(message(r)).toBe('Unpinned ffffffff.');
+    expect(r.text()).not.toContain('★ pinned');
+    r.press('p');
+    expect(store.has(FOREIGN)).toBe(true);
+    expect(message(r)).toBe('Pinned ffffffff.');
+    expect(r.text()).toContain('★ pinned');
+  });
+
+  it('shows no star for an unpinned foreign run and pins it on the first `p`', () => {
+    const store = new Set<string>();
+    const r = foreignDetail({ pinStore: store });
+    expect(r.text()).not.toContain('★ pinned');
+    r.press('p');
+    expect([...store]).toEqual([FOREIGN]);
+    expect(r.text()).toContain('★ pinned');
+  });
+
+  it('asks the store when the key is pressed, so a pin another process removed or made meanwhile is not toggled blind', () => {
+    const store = new Set([FOREIGN]);
+    const r = foreignDetail({ pinStore: store });
+    store.delete(FOREIGN); // another process unpinned it after the detail opened
+    r.press('p');
+    expect(store.has(FOREIGN), 'it pins: it was not pinned any more').toBe(true);
+    expect(message(r)).toBe('Pinned ffffffff.');
+  });
+
+  it('falls back to what the detail knew when the pin store cannot be read, and says nothing of the fault', () => {
+    const r = foreignDetail({ pinStore: new Set<string>(), pinStoreThrows: true });
+    r.press('p');
+    expect(message(r)).toBe('Pinned ffffffff.');
+    expect(r.text()).not.toContain('PRIVATE-PIN-FAULT');
+  });
+});
+
+describe('a page can be short, or empty, and still not be the last (the store is read 200 raw rows at a time)', () => {
+  /** A port whose first page holds `first` finished runs and says more lies past it; the second page holds one run and is the last. */
+  function pagedPort(first: number) {
+    const fake = scripted({ total: 0 });
+    const reads: number[] = [];
+    const port: HistoryPort = {
+      ...fake.port,
+      read: (query): HistoryRead => {
+        reads.push(query.page);
+        const rows =
+          query.page === 0
+            ? rowsOf(Array.from({ length: first }, (_, index) => summary(index, 'completed')))
+            : rowsOf([summary(99, 'failed')]);
+        return {
+          query: { scope: query.scope, status: query.status, page: query.page },
+          pinned: [],
+          rows,
+          hasPrev: query.page > 0,
+          hasNext: query.page === 0,
+        };
+      },
+    };
+    const context = (): TabHostContext => ({
+      port: undefined,
+      history: port,
+      now: 10_000,
+      canArm: true,
+    });
+    let state: TabHostState = enterTab(freshTabMemory('history'), 'history', context());
+    const press = (input: string, key: ChatKey = {}): TabHostStep => {
+      const step = foldTabHostKey(state, input, key, context());
+      if (step.kind !== 'close') state = step.state;
+      return step;
+    };
+    const text = (): string =>
+      tabHostLines(state, { columns: 80, terminalRows: 24 })
+        .map((line) => line.text)
+        .join('\n');
+    return { press, text, reads, state: (): TabHostState => state };
+  }
+
+  it('an empty first page with more behind it says so and names the key, instead of "No finished run", and `↓` reads the next page', () => {
+    const r = pagedPort(0);
+    expect(r.text()).toContain(HISTORY_EMPTY_PAGE);
+    expect(r.text()).not.toContain('No finished run in this project yet');
+    expect(r.text(), 'the status line does not claim the page is the last').not.toContain('(last)');
+    const legendLine = r.text().split('\n').at(-1) ?? '';
+    expect(legendLine, 'the legend names the keys that walk it').toContain('↑/↓ move');
+    r.press('', DOWN);
+    expect(r.reads).toEqual([0, 1]);
+    expect(r.text()).toContain('00000099');
+    expect(r.text()).not.toContain(HISTORY_EMPTY_PAGE);
+  });
+
+  it('a short page with more behind it says `↓ at the end reads the next page` where a full page would show a marker, and `↓` at the end reads it', () => {
+    const r = pagedPort(3);
+    expect(r.text()).toContain(HISTORY_HINT_MORE);
+    expect(r.text()).not.toContain(HISTORY_HINT);
+    r.press('', DOWN);
+    r.press('', DOWN);
+    expect(r.reads, 'not yet: the cursor is on the third row').toEqual([0]);
+    r.press('', DOWN);
+    expect(r.reads, 'at the end the next page is read').toEqual([0, 1]);
+  });
+
+  it('the last page keeps the plain hint, and an empty last page says "No finished run"', () => {
+    const fake = rig({ total: 3 });
+    expect(fake.text()).toContain(HISTORY_HINT);
+    expect(fake.text()).not.toContain(HISTORY_HINT_MORE);
+    const none = rig({ total: 0 });
+    expect(none.text()).toContain('No finished run in this project yet');
+    expect(none.text().split('\n').at(-1)).not.toContain('↑/↓');
   });
 });

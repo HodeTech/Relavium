@@ -34,6 +34,7 @@ import {
 import {
   DEFINED_EMPTY,
   DEFINED_KEYS,
+  DEFINED_NO_DETAIL,
   DEFINED_UNREADABLE,
   type DefinedPort,
 } from './tab-host-workflows.js';
@@ -255,11 +256,24 @@ describe('↑ and ↓ move the cursor and stop at the ends', () => {
     expect(r.cursor()).toBe(0);
   });
 
-  it('Enter is nothing yet (the detail is a later increment), and so are the other keys', () => {
+  it('Enter says there is no workflow detail yet and names the keys that act, and asks the host for nothing', () => {
     const r = rig(READY);
-    const before = r.state;
     const step = r.press('', ENTER);
-    expect(step).toEqual({ kind: 'state', state: before });
+    expect(step.kind, 'a state, never a request').toBe('state');
+    expect(r.state.defined?.message).toBe(DEFINED_NO_DETAIL);
+    expect(r.lines().join('\n')).toContain(DEFINED_NO_DETAIL);
+    // The sentence names exactly the keys the legend names.
+    for (const key of ['r', 'x', 'p']) expect(DEFINED_NO_DETAIL).toContain(`${key} `);
+    // The next key drops it, as every message of the tab.
+    r.press('', DOWN);
+    expect(r.state.defined?.message).toBeUndefined();
+  });
+
+  it('Enter on a tab with no row has nothing to say about, so it says nothing; the other keys are nothing too', () => {
+    const empty = rig([]);
+    expect(empty.press('', ENTER)).toEqual({ kind: 'state', state: empty.state });
+    expect(empty.state.defined?.message).toBeUndefined();
+    const r = rig(READY);
     for (const letter of ['a', 'd', 'z', ' ']) {
       expect(r.press(letter).kind, letter).toBe('state');
     }
@@ -517,7 +531,7 @@ describe('the legend names exactly the keys the tab answers to', () => {
 
   it('names no row key when there is no row', () => {
     const items = tabHostLegendItems(rig([]).state);
-    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', 'Esc']);
+    expect(items.map((item) => item.keys)).toEqual(['←/→', 'Tab', 'Ctrl+C', 'Esc']);
   });
 });
 

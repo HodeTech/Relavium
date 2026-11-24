@@ -311,10 +311,8 @@ function noAttemptLines(
       ? (row.nodeType ?? UNAVAILABLE)
       : scrubbedBounded(load.authoredType);
   const absence = row.tokens.source === 'none' ? row.tokens.text : NOT_RECORDED;
-  const why =
-    row.status === 'skipped'
-      ? `${SKIPPED}${row.skippedReason === undefined ? '' : `: ${row.skippedReason}`}`
-      : absence;
+  const skippedWhy = row.skippedReason === undefined ? SKIPPED : `${SKIPPED}: ${row.skippedReason}`;
+  const why = row.status === 'skipped' ? skippedWhy : absence;
   return [
     { kind: 'heading', left: `${row.glyph} ${row.status}  ${row.label}` },
     { kind: 'text', left: `${positionText(load.position)}  ·  type ${type}` },

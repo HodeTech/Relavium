@@ -27,7 +27,9 @@ import {
  *   A step carries the run id of the row the model classified; the host re-reads the run before it opens anything, so a stale or crafted id
  *   opens no card.
  * - **The cursor follows the run, not the row number.** The list is read again while the tab is in front, so the focused run is kept by
- *   its id: a run that moves up or down the list keeps the cursor, and one that left the list leaves it where it was.
+ *   its id: a run that moves up or down the list keeps the cursor. A run that LEFT the list does not hand the cursor to whichever row now
+ *   stands at its number: the focus is cleared and the tab says so ({@link ACTIVE_FOCUS_LEFT}), no row is marked, and `Enter` does nothing
+ *   until `↑` or `↓` picks a row, because an `Enter` aimed at a run that is gone must never open the card of its neighbour.
  * - **Bounded.** At most 200 rows a status (the source's limit) and a marker line for what lies past them: `… N more running not listed`.
  * - **The freshness is stated.** The list is as of each node boundary: streamed output is never stored, and the last row says so until a
  *   message or a warning takes its place.
@@ -77,7 +79,10 @@ export interface ActiveTabState {
   readonly rows: readonly ActiveRow[];
   /** The selected row, as an index into {@link rows}; `0` when the list is empty. */
   readonly cursor: number;
-  /** The run the cursor is on: it survives a re-read that moves the run. */
+  /**
+   * The run the cursor is on: it survives a re-read that moves the run. `undefined` with rows listed means the run it was on left the list
+   * and nothing is selected yet; with no rows it means there is nothing to select.
+   */
   readonly focus: string | undefined;
   /** One sentence the last key (or a refused open) left; the next key drops it. */
   readonly message?: string | undefined;
@@ -101,6 +106,8 @@ export const ACTIVE_EMPTY = 'No run is active. Start one from the Defined tab wi
 export const ACTIVE_FRESHNESS = 'Shown as of each node boundary: streamed output is not stored.';
 export const ACTIVE_HELD_UNREAD = 'Outbox unreadable: a run whose end is held may show as running.';
 export const ACTIVE_STALE_READ = 'The runs could not be read again: this is the last list read.';
+export const ACTIVE_FOCUS_LEFT = 'The run you had selected left the list. ↑/↓ select another.';
+export const ACTIVE_SELECT_FIRST = 'No run is selected. ↑/↓ select one.';
 
 const clamp = (value: number, last: number): number => Math.max(0, Math.min(value, last));
 
@@ -134,21 +141,32 @@ export function unreadableActiveTab(): ActiveTabState {
 }
 
 /**
- * `state` with a newer read: the rows in display order, the cursor on the run it was on (or, if that run left the list, at the same
- * position, kept inside the rows). A message the person has not dismissed stays.
+ * `state` with a newer read: the rows in display order and the cursor on the run it was on. A run that left the list is NOT replaced by
+ * the row that now stands at its number: the cursor stays inside the rows, the focus is cleared and a sentence says so, so a following
+ * `Enter` cannot open the card of a run the person never selected. A cleared focus stays cleared across reads until a key selects a row;
+ * the first read of a tab, and a list that was empty, focus the row under the cursor as before. A message the person has not dismissed
+ * stays.
  */
 export function applyActiveRead(state: ActiveTabState, read: ActiveRead): ActiveTabState {
   const rows = activeDisplayOrder(read.rows);
   const found = state.focus === undefined ? -1 : rows.findIndex((row) => row.runId === state.focus);
+  const unlisted = rows.length > 0 && found < 0;
+  // The focus was set and its run is gone now, or an earlier read already cleared it and nothing was selected since.
+  const newlyLeft = unlisted && state.focus !== undefined;
+  const stillLeft =
+    unlisted && state.focus === undefined && state.phase === 'ready' && state.rows.length > 0;
+  const left = newlyLeft || stillLeft;
   const cursor = found >= 0 ? found : clamp(state.cursor, rows.length - 1);
-  // A read that worked ends "this is the last list read"; a sentence a key left stays until the next key.
-  const message = state.message === ACTIVE_STALE_READ ? undefined : state.message;
+  // A read that worked ends "this is the last list read"; a sentence a key left stays until the next key. What just happened to the
+  // selection is newer than any of them.
+  const kept = state.message === ACTIVE_STALE_READ ? undefined : state.message;
+  const message = newlyLeft ? ACTIVE_FOCUS_LEFT : kept;
   return {
     phase: 'ready',
     read,
     rows,
     cursor,
-    focus: rows[cursor]?.runId,
+    focus: left ? undefined : rows[cursor]?.runId,
     ...(message === undefined ? {} : { message }),
   };
 }
@@ -200,6 +218,24 @@ function readOnlyMessage(row: ActiveRow): string {
   return `Read-only: ${row.reason ?? 'this run cannot be answered here'}.`;
 }
 
+/** `↑`/`↓`: the cursor one row, or (with nothing selected) a selection even at an end where the cursor cannot move. */
+function moveCursor(state: ActiveTabState, cleared: ActiveTabState, key: ChatKey): ActiveStep {
+  const to = clamp(state.cursor + (key.upArrow === true ? -1 : 1), state.rows.length - 1);
+  const nothingSelected = state.focus === undefined && state.rows.length > 0;
+  if (to === state.cursor && !nothingSelected) return { kind: 'state', state: cleared };
+  return { kind: 'state', state: withCursor(cleared, to) };
+}
+
+/** `Enter` on a row: ask the host to reopen the hosted view or open the gate card, or say why the row is read-only. */
+function enterRow(cleared: ActiveTabState, row: ActiveRow): ActiveStep {
+  if (row.enter === 'reopen-view') return { kind: 'open-view', runId: row.runId, state: cleared };
+  // A media park that can be continued is opened by the same request as a gate park: the host re-reads the run when it opens, and it
+  // is the host that tells a gate card from the question a media park gets (it asks, and nothing is continued without a Yes).
+  if (row.enter === 'open-gate-card' || row.enter === 'continue-media')
+    return { kind: 'open-gate', runId: row.runId, state: cleared };
+  return { kind: 'state', state: { ...cleared, message: readOnlyMessage(row) } };
+}
+
 /** Fold one key (already past the tab host's own tab keys and `Esc`) into the tab. */
 export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
   const cleared: ActiveTabState =
@@ -207,19 +243,12 @@ export function foldActiveKey(state: ActiveTabState, key: ChatKey): ActiveStep {
   const stay: ActiveStep = { kind: 'state', state: cleared };
   // A chord (`Ctrl+X`, a meta key) is never one of these keys.
   if (key.ctrl === true || key.meta === true) return stay;
-  if (key.upArrow === true || key.downArrow === true) {
-    const to = clamp(state.cursor + (key.upArrow === true ? -1 : 1), state.rows.length - 1);
-    return to === state.cursor ? stay : { kind: 'state', state: withCursor(cleared, to) };
-  }
+  if (key.upArrow === true || key.downArrow === true) return moveCursor(state, cleared, key);
   if (key.return !== true) return stay;
+  if (state.focus === undefined && state.rows.length > 0)
+    return { kind: 'state', state: { ...cleared, message: ACTIVE_SELECT_FIRST } };
   const row = state.rows[state.cursor];
-  if (row === undefined) return stay;
-  if (row.enter === 'reopen-view') return { kind: 'open-view', runId: row.runId, state: cleared };
-  // A media park that can be continued is opened by the same request as a gate park: the host re-reads the run when it opens, and it
-  // is the host that tells a gate card from the question a media park gets (it asks, and nothing is continued without a Yes).
-  if (row.enter === 'open-gate-card' || row.enter === 'continue-media')
-    return { kind: 'open-gate', runId: row.runId, state: cleared };
-  return { kind: 'state', state: { ...cleared, message: readOnlyMessage(row) } };
+  return row === undefined ? stay : enterRow(cleared, row);
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
@@ -275,6 +304,14 @@ function moreLines(read: ActiveRead | undefined, width: number): readonly SheetL
   );
 }
 
+/** The row under the list: a sentence a key left, else the warning that the outbox could not be read, else what the list is as of. */
+function footerLine(state: ActiveTabState, width: number): SheetLine {
+  if (state.message !== undefined) return { kind: 'notice', text: clipLine(state.message, width) };
+  if (state.read?.heldUnread === true)
+    return { kind: 'notice', text: clipLine(ACTIVE_HELD_UNREAD, width) };
+  return { kind: 'hint', text: clipLine(ACTIVE_FRESHNESS, width) };
+}
+
 /**
  * The tab's lines between the strip and the legend, at most `room` of them: the list windowed around the cursor (a `▲`/`▼` marker standing
  * for the rows it hides), a marker per status that has runs past the limit, the selected row's sentence, and the message row. The sentence
@@ -287,12 +324,7 @@ export function activeBody(
 ): readonly SheetLine[] {
   if (state.phase === 'loading') return [{ kind: 'text', text: ACTIVE_LOADING }];
   if (state.phase === 'unreadable') return [{ kind: 'failed', text: ACTIVE_UNREADABLE }];
-  const footer: SheetLine =
-    state.message !== undefined
-      ? { kind: 'notice', text: clipLine(state.message, width) }
-      : state.read?.heldUnread === true
-        ? { kind: 'notice', text: clipLine(ACTIVE_HELD_UNREAD, width) }
-        : { kind: 'hint', text: clipLine(ACTIVE_FRESHNESS, width) };
+  const footer = footerLine(state, width);
   const beyond = moreLines(state.read, width);
   if (state.rows.length === 0) {
     const empty: SheetLine = { kind: 'text', text: clipLine(ACTIVE_EMPTY, width) };
@@ -302,7 +334,9 @@ export function activeBody(
   const { start, end } = windowBody(state.rows.length, state.cursor, height);
   const list: SheetLine[] = state.rows
     .slice(start, end)
-    .map((row, at) => rowLine(row, start + at === state.cursor, width));
+    .map((row, at) =>
+      rowLine(row, start + at === state.cursor && state.focus !== undefined, width),
+    );
   if (start > 0 && list.length > 0)
     list[0] = { kind: 'marker', text: `▲ ${String(start + 1)} more` };
   if (end < state.rows.length && list.length > 0)
@@ -310,7 +344,7 @@ export function activeBody(
       kind: 'marker',
       text: `▼ ${String(state.rows.length - end + 1)} more`,
     };
-  const selected = state.rows[state.cursor];
+  const selected = state.focus === undefined ? undefined : state.rows[state.cursor];
   const detail: SheetLine =
     selected === undefined
       ? { kind: 'text', text: '' }

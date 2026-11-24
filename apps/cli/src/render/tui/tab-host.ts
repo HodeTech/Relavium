@@ -69,6 +69,7 @@ import {
   historyLegendItems,
   historyMemoryOf,
   openHistoryTab,
+  runPinnedIn,
   unreadableHistoryTab,
   withHistoryDetail,
   withHistoryDetailLoading,
@@ -88,6 +89,7 @@ import {
   type SessionsTabState,
 } from './tab-host-sessions.js';
 import { escapeReviewCharacter } from './tool-review-projection.js';
+import { displayWidth } from './viewport.js';
 
 /**
  * The Home's tab host ([ADR-0140](../../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
@@ -165,6 +167,8 @@ export const TAB_HOST_KEYS = {
   tab: { keys: '←/→', verb: 'tab' },
   cycle: { keys: 'Tab', verb: 'cycle' },
   close: { keys: 'Esc', verb: 'close' },
+  /** The chord that closes the screen from any depth; named in the legend only where the keys of the screen leave it room. */
+  interrupt: { keys: 'Ctrl+C', verb: 'close' },
 } as const satisfies Readonly<Record<string, LegendItem>>;
 
 /** The legend of a tab with nothing to select. */
@@ -509,7 +513,12 @@ export function enterHistoryAtDetail(
     entry,
   );
   if (entry.history === undefined || host.history === undefined) return keeping(host, memory);
-  return keeping({ ...host, history: withHistoryDetailLoading(host.history, runId) }, memory);
+  // The run may be of another directory, which the project's page does not list: the pin store says whether it is pinned.
+  const pinned = runPinnedIn(entry.history, runId, false);
+  return keeping(
+    { ...host, history: withHistoryDetailLoading(host.history, runId, pinned) },
+    memory,
+  );
 }
 
 /** The Active tab entered on the last read the host kept; a host with nothing to feed it leaves the tab saying it cannot be read. */
@@ -588,6 +597,87 @@ function foldSheet(
   return { kind: 'state', state: { ...state, sheet: result.sheet } };
 }
 
+/** One key on the Defined tab. `p` is carried out here, through the pin port, and answered with a state: a pin is a mark and never a request to the host. */
+function foldDefinedTab(
+  state: TabHostState,
+  defined: DefinedTabState,
+  input: string,
+  key: ChatKey,
+  context: TabHostContext,
+): TabHostStep {
+  const step = foldDefinedKey(defined, input, key);
+  if (step.kind === 'pin')
+    return {
+      kind: 'state',
+      state: {
+        ...state,
+        defined: pinOnDefined(step.state, step.row, context.pins, context.defined),
+      },
+    };
+  const next = step.state === defined ? state : { ...state, defined: step.state };
+  return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+}
+
+function foldActiveTab(state: TabHostState, active: ActiveTabState, key: ChatKey): TabHostStep {
+  const step = foldActiveKey(active, key);
+  const next = step.state === active ? state : { ...state, active: step.state };
+  return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+}
+
+function foldAgentsTab(
+  state: TabHostState,
+  agents: AgentsTabState,
+  input: string,
+  key: ChatKey,
+): TabHostStep {
+  const step = foldAgentsKey(agents, input, key);
+  const next = step.state === agents ? state : { ...state, agents: step.state };
+  return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+}
+
+function foldSessionsTab(
+  state: TabHostState,
+  sessions: SessionsTabState,
+  key: ChatKey,
+): TabHostStep {
+  const step = foldSessionsKey(sessions, key);
+  const next = step.state === sessions ? state : { ...state, sessions: step.state };
+  return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+}
+
+function foldHistoryTab(
+  state: TabHostState,
+  history: HistoryTabState,
+  input: string,
+  key: ChatKey,
+  context: TabHostContext,
+): TabHostStep {
+  // A history that was read has its port: a host that lost it leaves the keys inert rather than freeze the keyboard.
+  if (context.history === undefined) return { kind: 'state', state };
+  const step = foldHistoryKey(history, input, key, {
+    history: context.history,
+    pins: context.pins,
+  });
+  const next = step.state === history ? state : { ...state, history: step.state };
+  return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
+}
+
+/** One key into whichever tab is open: the list's of Defined, Active, Defined agents, Sessions and History, else the Permissions sheet's. */
+function foldTabKey(
+  state: TabHostState,
+  input: string,
+  key: ChatKey,
+  context: TabHostContext,
+): TabHostStep {
+  if (state.defined !== undefined) return foldDefinedTab(state, state.defined, input, key, context);
+  if (state.active !== undefined) return foldActiveTab(state, state.active, key);
+  if (state.agents !== undefined) return foldAgentsTab(state, state.agents, input, key);
+  if (state.sessions !== undefined) return foldSessionsTab(state, state.sessions, key);
+  if (state.history !== undefined) return foldHistoryTab(state, state.history, input, key, context);
+  if (state.sheet === undefined) return { kind: 'state', state };
+  return foldSheet(state, state.sheet, input, key, context);
+}
+
 /**
  * Fold one keystroke into the open tab host. `Ctrl+C` closes from any state and never withdraws. A withdrawal's question owns the keyboard
  * until it is answered or dropped: every key goes to the sheet's ladder, a tab key included, so a key typed ahead moves nothing. Past that,
@@ -610,54 +700,9 @@ export function foldTabHostKey(
     return { kind: 'state', state: enterTab(tabHostMemory(state), to, context) };
   }
   // `Esc` closes a tab that has no detail to go back from; a detail (a run's, an agent's) takes its own `Esc`.
-  if (
-    key.escape === true &&
-    sheet === undefined &&
-    state.history?.detail === undefined &&
-    state.agents?.detail === undefined
-  )
-    return { kind: 'close' };
-  if (state.defined !== undefined) {
-    const step = foldDefinedKey(state.defined, input, key);
-    // `p` is carried out here, through the pin port, and answered with a state: a pin is a mark and never a request to the host.
-    if (step.kind === 'pin')
-      return {
-        kind: 'state',
-        state: {
-          ...state,
-          defined: pinOnDefined(step.state, step.row, context.pins, context.defined),
-        },
-      };
-    const next = step.state === state.defined ? state : { ...state, defined: step.state };
-    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
-  }
-  if (state.active !== undefined) {
-    const step = foldActiveKey(state.active, key);
-    const next = step.state === state.active ? state : { ...state, active: step.state };
-    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
-  }
-  if (state.agents !== undefined) {
-    const step = foldAgentsKey(state.agents, input, key);
-    const next = step.state === state.agents ? state : { ...state, agents: step.state };
-    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
-  }
-  if (state.sessions !== undefined) {
-    const step = foldSessionsKey(state.sessions, key);
-    const next = step.state === state.sessions ? state : { ...state, sessions: step.state };
-    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
-  }
-  if (state.history !== undefined) {
-    // A history that was read has its port: a host that lost it leaves the keys inert rather than freeze the keyboard.
-    if (context.history === undefined) return { kind: 'state', state };
-    const step = foldHistoryKey(state.history, input, key, {
-      history: context.history,
-      pins: context.pins,
-    });
-    const next = step.state === state.history ? state : { ...state, history: step.state };
-    return step.kind === 'state' ? { kind: 'state', state: next } : { ...step, state: next };
-  }
-  if (sheet === undefined) return { kind: 'state', state };
-  return foldSheet(state, sheet, input, key, context);
+  const inDetail = state.history?.detail !== undefined || state.agents?.detail !== undefined;
+  if (key.escape === true && sheet === undefined && !inDetail) return { kind: 'close' };
+  return foldTabKey(state, input, key, context);
 }
 
 /** A paste is typing, and nothing the tab host answers to: it drops a waiting question and withdraws nothing. The same object when nothing was waiting. */
@@ -669,8 +714,30 @@ export function disarmTabHost(state: TabHostState): TabHostState {
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------
 
-/** The legend's items: the withdrawal question's while one is up, else the tab's. */
+/** The terminal width the legend must fit: the Home's 80-column floor. */
+const LEGEND_FLOOR_COLUMNS = 80;
+
+/**
+ * `items` with `Ctrl+C close` just before the way out, when the whole legend still fits the 80-column floor. `Ctrl+C` closes the screen from
+ * any tab and any depth (ADR-0140 §1) and every state answers to it, so a person who has gone down a level reads that there is a way
+ * out of all of them; where the keys of a screen already fill the floor (the History list's), it is left out for room, as `Shift+Tab`
+ * and `PgUp` are, and the way out stays last and whole.
+ */
+function withInterruptItem(items: readonly LegendItem[]): readonly LegendItem[] {
+  const last = items.at(-1);
+  if (last === undefined) return items;
+  const named: readonly LegendItem[] = [...items.slice(0, -1), TAB_HOST_KEYS.interrupt, last];
+  return displayWidth(legend(named)) <= usableColumns(LEGEND_FLOOR_COLUMNS) ? named : items;
+}
+
+/** The legend's items: the withdrawal question's while one is up, else the tab's with `Ctrl+C close` named where it fits. */
 export function tabHostLegendItems(state: TabHostState): readonly LegendItem[] {
+  const items = tabLegendItems(state);
+  // A withdrawal's question names its own two answers, and any other key drops it: the chord is not offered as a third.
+  return state.sheet?.armed === true ? items : withInterruptItem(items);
+}
+
+function tabLegendItems(state: TabHostState): readonly LegendItem[] {
   const sheet = state.sheet;
   if (state.defined !== undefined)
     return definedLegendItems(

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { createClient, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createChangeProbe, dataVersionOf, tokensEqual } from './change-probe.js';
+import { createChangeProbe, dataVersionOf, readSnapshotOf, tokensEqual } from './change-probe.js';
 
 describe('the token is a value', () => {
   it('two reads with nothing between them are the same token, so a poll that compares them reads nothing', () => {
@@ -121,5 +121,37 @@ describe('PRAGMA data_version, over two connections to one file', () => {
     expect(typeof read()).toBe('number');
     closing.sqlite.close();
     expect(() => read()).toThrow();
+  });
+});
+
+describe('readSnapshotOf', () => {
+  it('runs the read inside one transaction, gives back its value, and has ended the transaction when it returns', () => {
+    const client = createClient(':memory:');
+    try {
+      const inside: boolean[] = [];
+      const value = readSnapshotOf(client.db)(() => {
+        inside.push(client.sqlite.inTransaction);
+        return 42;
+      });
+      expect(value).toBe(42);
+      expect(inside, 'the read ran inside a transaction').toEqual([true]);
+      expect(client.sqlite.inTransaction, 'and it is over').toBe(false);
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
+  it('ends the transaction and passes the error on when the read throws', () => {
+    const client = createClient(':memory:');
+    try {
+      expect(() =>
+        readSnapshotOf(client.db)(() => {
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+      expect(client.sqlite.inTransaction).toBe(false);
+    } finally {
+      client.sqlite.close();
+    }
   });
 });

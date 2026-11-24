@@ -14,6 +14,7 @@ import {
   type RunHistoryReader,
   type RunPinStore,
 } from '@relavium/db';
+import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -441,5 +442,92 @@ describe('the cost cache: at most HISTORY_COST_CACHE_MAX runs, and the run asked
       HISTORY_COST_CACHE_MAX + 2,
     );
     expect(folds).toHaveBeenLastCalledWith(second.id);
+  });
+});
+
+describe('where a page ends: `finished > 20` and `raw >= limit` are each load-bearing', () => {
+  /** A raw summary `index` ms before T0, newest first as the store lists them. */
+  const raw = (index: number, status: RunStatus, createdAt?: string): RunSummaryRecord => {
+    const at = new Date(T0 - index).toISOString();
+    return {
+      id: `r-${String(index).padStart(4, '0')}`,
+      workflowId: 'wf',
+      status,
+      executionMode: 'local',
+      triggerType: 'manual',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      createdAt: createdAt ?? at,
+      updatedAt: at,
+    };
+  };
+  /** A source over one scripted raw page, recording what was asked. */
+  function over(page: readonly RunSummaryRecord[]) {
+    const asked: Parameters<RunHistoryReader['listRunSummaries']>[0][] = [];
+    const source = createHistorySource({
+      reader: {
+        ...reader,
+        listRunSummaries: (options) => {
+          asked.push(options);
+          return page.slice(0, options.limit);
+        },
+        loadWorkflowSlugs: () => new Map(),
+      },
+      listRunPins: () => [],
+      projectRoot: HERE,
+      now: () => NOW,
+    });
+    return { source, asked };
+  }
+  /** `finished` completed runs among `total` raw rows, the active ones last (so the raw page ends on an active row). */
+  const mixed = (total: number, finished: number): RunSummaryRecord[] =>
+    Array.from({ length: total }, (_, index) =>
+      raw(index, index < finished ? 'completed' : 'running'),
+    );
+
+  it('without a status: 20 finished runs in a short raw page are the end; 21 are not', () => {
+    expect(readPage(over(mixed(20, 20)).source, 0).hasNext, '20 finished, raw 20').toBe(false);
+    expect(readPage(over(mixed(21, 21)).source, 0).hasNext, '21 finished: one more exists').toBe(
+      true,
+    );
+  });
+
+  it('without a status: a FULL raw page may continue however few of its rows are finished (the `>=` side)', () => {
+    for (const finished of [0, 1, 15, 20]) {
+      const { source, asked } = over(mixed(HISTORY_FETCH_ROWS, finished));
+      const page = readPage(source, 0);
+      expect(page.rows, `${String(finished)} finished`).toHaveLength(finished);
+      expect(page.hasNext, `${String(finished)} finished in a full raw page`).toBe(true);
+      // The next page starts after the LAST raw row, not after the last finished one: every row between them was an active run.
+      readPage(source, 1);
+      expect(asked[1]?.before, `${String(finished)} finished`).toEqual({
+        createdAt: T0 - (HISTORY_FETCH_ROWS - 1),
+        id: `r-${String(HISTORY_FETCH_ROWS - 1).padStart(4, '0')}`,
+      });
+    }
+  });
+
+  it('without a status: a raw page one short of full with few finished rows is the end', () => {
+    expect(readPage(over(mixed(HISTORY_FETCH_ROWS - 1, 15)).source, 0).hasNext).toBe(false);
+  });
+
+  it('with a status: 20 rows are the end and a twenty-first only says there is more (a fetch is 21)', () => {
+    const rows = (count: number): RunSummaryRecord[] =>
+      Array.from({ length: count }, (_, index) => raw(index, 'failed'));
+    expect(readPage(over(rows(20)).source, 0, 'failed').hasNext).toBe(false);
+    const { source, asked } = over(rows(21));
+    const page = readPage(source, 0, 'failed');
+    expect(page.hasNext).toBe(true);
+    expect(page.rows).toHaveLength(HISTORY_VIEW_ROWS);
+    expect(asked[0]?.limit).toBe(HISTORY_VIEW_ROWS + 1);
+  });
+
+  it('a full raw page whose last row has no usable time ends the list there: no read throws, and nothing past it is promised', () => {
+    const page = mixed(HISTORY_FETCH_ROWS, 5);
+    page[HISTORY_FETCH_ROWS - 1] = raw(HISTORY_FETCH_ROWS - 1, 'running', 'not a date');
+    const read = readPage(over(page).source, 0);
+    expect(read.rows).toHaveLength(5);
+    expect(read.hasNext).toBe(false);
   });
 });

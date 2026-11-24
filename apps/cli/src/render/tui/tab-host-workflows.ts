@@ -30,7 +30,9 @@ import {
  * - **Keys.** `↑`/`↓` move and stop at the ends. `r` asks to run the row's workflow and `x` to export it (the host opens the launch flow
  *   and the export card; neither does anything by itself). `p` pins the row's workflow, or unpins it (the tab host carries the toggle out
  *   through its pin port and reads the list again, see {@link pinOnDefined}; pinned rows sort first, so the cursor follows the row to
- *   its new place). `Enter` is nothing yet: the row's detail is a later increment. Every other key is nothing. A key that follows a
+ *   its new place). `Enter` opens no detail yet ({@link DEFINED_NO_DETAIL}): ADR-0140 §2 promises a workflow detail page (description,
+ *   declared inputs, the three latest runs) that the catalog entry this tab holds does not carry, so the key SAYS so, on the row it was
+ *   pressed on, instead of doing nothing and leaving it to look like a dead key. Every other key is nothing. A key that follows a
  *   message drops it.
  * - **A row names its entry by index, not by its slug.** {@link DefinedRow.slug} is a label (a pin's ref comes from `history.db`, which
  *   accepts any string); the slug a request carries is what {@link DefinedRead.slugOf} returns for the row's `entryIndex`, which only a
@@ -100,6 +102,8 @@ export const DEFINED_EMPTY =
   'No workflows in this project. Add one under .relavium/workflows (see /init).';
 /** What the tab says when its port cannot be read, or the Home has none. */
 export const DEFINED_UNREADABLE = 'The workflows of this project could not be listed.';
+/** What `Enter` says on a row: the workflow detail of ADR-0140 §2 is not built, and these are the keys that are. */
+export const DEFINED_NO_DETAIL = 'No workflow detail yet. r runs it, x exports it, p pins it.';
 
 /** The tab opened on `read`, the cursor where it was (kept inside the rows there are now). */
 export function openDefinedTab(read: DefinedRead, cursor: number): DefinedTabState {
@@ -140,6 +144,23 @@ function requestSlug(
   return { slug, path: state.read.pathOf(row.entryIndex) };
 }
 
+/** `r` (run) and `x` (export) on a row: the request, or the sentence that says why the row makes none. */
+function requestFor(
+  verb: 'run' | 'export',
+  state: DefinedTabState,
+  cleared: DefinedTabState,
+  row: DefinedRow,
+): DefinedStep {
+  const request = requestSlug(verb, state, row);
+  if ('message' in request)
+    return { kind: 'state', state: { ...cleared, message: request.message } };
+  if (verb === 'export') return { kind: 'export', slug: request.slug, state: cleared };
+  // A run is asked for by the file the row was listed from as well as by its slug: with no file there is nothing to compare, so no request.
+  if (request.path === undefined)
+    return { kind: 'state', state: { ...cleared, message: goneFromCatalog(verb, row) } };
+  return { kind: 'run', slug: request.slug, path: request.path, state: cleared };
+}
+
 /** Fold one key (already past the tab host's own tab keys and `Esc`) into the tab. */
 export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatKey): DefinedStep {
   const rows = state.read.model.rows;
@@ -155,21 +176,15 @@ export function foldDefinedKey(state: DefinedTabState, input: string, key: ChatK
     );
     return to === state.cursor ? stay : { kind: 'state', state: { ...cleared, cursor: to } };
   }
-  // A bare letter is the same key with Caps Lock on.
-  const letter = input.toLowerCase();
-  if (letter !== 'r' && letter !== 'x' && letter !== 'p') return stay;
   const row = rows[state.cursor];
   if (row === undefined) return stay;
+  if (key.return === true)
+    return { kind: 'state', state: { ...cleared, message: DEFINED_NO_DETAIL } };
+  // A bare letter is the same key with Caps Lock on.
+  const letter = input.toLowerCase();
   if (letter === 'p') return { kind: 'pin', row, state: cleared };
-  const verb = letter === 'r' ? 'run' : 'export';
-  const request = requestSlug(verb, state, row);
-  if ('message' in request)
-    return { kind: 'state', state: { ...cleared, message: request.message } };
-  if (verb === 'export') return { kind: 'export', slug: request.slug, state: cleared };
-  // A run is asked for by the file the row was listed from as well as by its slug: with no file there is nothing to compare, so no request.
-  if (request.path === undefined)
-    return { kind: 'state', state: { ...cleared, message: goneFromCatalog(verb, row) } };
-  return { kind: 'run', slug: request.slug, path: request.path, state: cleared };
+  if (letter === 'r') return requestFor('run', state, cleared, row);
+  return letter === 'x' ? requestFor('export', state, cleared, row) : stay;
 }
 
 /**

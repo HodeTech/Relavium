@@ -1,7 +1,6 @@
 import type { RunDetailRecord, StepSummaryRecord } from '@relavium/db';
 import {
   isCorruptRunEventError,
-  UsageCoverageFold,
   type CostAttemptSettledEvent,
   type NodeCompletedEvent,
   type NodeFailedEvent,
@@ -34,7 +33,7 @@ import {
   formatReportedCost,
   formatTokens,
 } from '../render/tui/format.js';
-import { UNVERIFIED_USAGE } from './usage-coverage.js';
+import { UNVERIFIED_USAGE, createUsageAccumulator } from './usage-coverage.js';
 
 /**
  * The pure view model of ONE run's detail page — the header and the node table of ADR-0140 §2 (MVP-8 step 1).
@@ -290,43 +289,16 @@ export interface UsageFacts {
  */
 export function foldUsageFacts(events: readonly RunEvent[]): UsageFacts {
   const ordered = [...events].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  const fold = new UsageCoverageFold();
-  const nodes = new Map<string, UsageCoverageFold>();
-  let ledgerUnpriced = 0;
-  let snapshotUnpriced = 0;
+  const facts = createUsageAccumulator();
   try {
-    for (const event of ordered) {
-      fold.apply(event);
-      if (
-        'nodeId' in event &&
-        (event.type === 'node:started' ||
-          event.type === 'cost:usage_pending' ||
-          event.type === 'cost:usage_disposition' ||
-          event.type === 'cost:attempt_settled')
-      ) {
-        let node = nodes.get(event.nodeId);
-        if (node === undefined) {
-          node = new UsageCoverageFold();
-          node.start(fold.snapshot().coverage.unverified ? 'legacy_unverified' : 'complete');
-          nodes.set(event.nodeId, node);
-        }
-        node.apply(event);
-      }
-      if (event.type === 'cost:attempt_settled' && event.priced === false) ledgerUnpriced++;
-      snapshotUnpriced = Math.max(snapshotUnpriced, event.cumulativeUnpricedCalls ?? 0);
-    }
+    for (const event of ordered) facts.apply(event);
   } catch (cause) {
     if (isCorruptRunEventError(cause)) {
       return { run: UNVERIFIED_USAGE, nodes: new Map(), unpricedCalls: 0 };
     }
     throw cause;
   }
-  return {
-    run: fold.snapshot().coverage,
-    nodes: new Map([...nodes].map(([id, node]) => [id, node.snapshot().coverage])),
-    // A queued boundary may already carry a later counter: never add ledger rows to that snapshot.
-    unpricedCalls: Math.max(ledgerUnpriced, snapshotUnpriced),
-  };
+  return { run: facts.coverage(), nodes: facts.nodes(), unpricedCalls: facts.unpricedCalls() };
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -928,6 +900,61 @@ function runTokens(
   return { ...totals, text: finished ? NOT_RECORDED : IN_PROGRESS };
 }
 
+/** What the model reads of the run, shared by every node row. */
+interface RunRowContext {
+  readonly input: RunDetailInput;
+  readonly runFinished: boolean;
+  readonly logs: ReadonlyMap<string, NodeEventLog>;
+  readonly facts: UsageFacts;
+  readonly stepsByNode: ReadonlyMap<string, readonly StepSummaryRecord[]>;
+}
+
+/** One node of the table: its last attempt's status, the attempt count, duration, tokens, cost and tool activity. */
+function nodeRowOf(nodeId: string, context: RunRowContext): NodeRow {
+  const { input, runFinished, logs, facts, stepsByNode } = context;
+  const storedSteps = stepsByNode.get(nodeId) ?? [];
+  // One row per attempt number before any per-attempt or fallback use: a re-dispatched node can hold two rows
+  // under one number, and the tokens fallback would add one attempt's tokens to themselves.
+  const nodeSteps = collapseAttemptRows(storedSteps);
+  const log = logs.get(nodeId);
+  const last = lastAttemptRow(nodeSteps);
+  const status = resolveNodeStatus({ step: last, log, runFinished });
+  const nodeType = last?.nodeType ?? input.nodeTypes?.get(nodeId);
+  // Every non-zero boundary figure on a node's rows is the node-wide cost at that boundary (the writer stores
+  // `nodeSettledCost`, not a per-attempt delta), so the rows are never summed: the largest one is the node's. It
+  // is read over every stored row, a collapsed duplicate included: a maximum is not a per-attempt figure.
+  const boundaryMicrocents = storedSteps.reduce(
+    (max, step) => Math.max(max, step.costMicrocents),
+    0,
+  );
+  const skipped = log?.skipped;
+  const absence = absenceText(status, runFinished);
+  return {
+    nodeId,
+    label: scrubbedBounded(nodeId),
+    ...(nodeType === undefined ? {} : { nodeType: scrubbedBounded(nodeType) }),
+    status,
+    glyph: NODE_ROW_GLYPH[status],
+    attemptCount: log !== undefined && log.groups.length > 0 ? log.groups.length : nodeSteps.length,
+    ...(last?.durationMs === undefined ? {} : { durationMs: last.durationMs }),
+    tokens: buildNodeTokens({
+      settled: allSettled(log),
+      completedStep: completedStepTokens(nodeSteps, status),
+      absence,
+    }),
+    cost: buildNodeCost({
+      settled: allSettled(log),
+      boundaryMicrocents,
+      coverage: facts.nodes.get(nodeId) ?? facts.run,
+      absence,
+    }),
+    ...(status === 'skipped' && skipped !== undefined
+      ? { skippedReason: SKIP_REASON_TEXT[skipped.reason] }
+      : {}),
+    toolActivity: buildToolActivity(log?.lastTerminal, absence),
+  };
+}
+
 /** Build the run detail page's model. See the module note for the cost and attempt rules. */
 export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const { run, steps, events } = input;
@@ -936,52 +963,10 @@ export function buildRunDetailModel(input: RunDetailInput): RunDetailModel {
   const logs = indexNodeEvents(events);
   const facts = foldUsageFacts(events);
   const stepsByNode = groupSteps(steps);
+  const context: RunRowContext = { input, runFinished, logs, facts, stepsByNode };
 
   const rows = executionOrder({ stepsByNode, logs, authored: input.workflowNodeOrder }).map(
-    (nodeId): NodeRow => {
-      const storedSteps = stepsByNode.get(nodeId) ?? [];
-      // One row per attempt number before any per-attempt or fallback use: a re-dispatched node can hold two rows
-      // under one number, and the tokens fallback would add one attempt's tokens to themselves.
-      const nodeSteps = collapseAttemptRows(storedSteps);
-      const log = logs.get(nodeId);
-      const last = lastAttemptRow(nodeSteps);
-      const status = resolveNodeStatus({ step: last, log, runFinished });
-      const nodeType = last?.nodeType ?? input.nodeTypes?.get(nodeId);
-      // Every non-zero boundary figure on a node's rows is the node-wide cost at that boundary (the writer stores
-      // `nodeSettledCost`, not a per-attempt delta), so the rows are never summed: the largest one is the node's. It
-      // is read over every stored row, a collapsed duplicate included: a maximum is not a per-attempt figure.
-      const boundaryMicrocents = storedSteps.reduce(
-        (max, step) => Math.max(max, step.costMicrocents),
-        0,
-      );
-      const skipped = log?.skipped;
-      const absence = absenceText(status, runFinished);
-      return {
-        nodeId,
-        label: scrubbedBounded(nodeId),
-        ...(nodeType === undefined ? {} : { nodeType: scrubbedBounded(nodeType) }),
-        status,
-        glyph: NODE_ROW_GLYPH[status],
-        attemptCount:
-          log !== undefined && log.groups.length > 0 ? log.groups.length : nodeSteps.length,
-        ...(last?.durationMs === undefined ? {} : { durationMs: last.durationMs }),
-        tokens: buildNodeTokens({
-          settled: allSettled(log),
-          completedStep: completedStepTokens(nodeSteps, status),
-          absence,
-        }),
-        cost: buildNodeCost({
-          settled: allSettled(log),
-          boundaryMicrocents,
-          coverage: facts.nodes.get(nodeId) ?? facts.run,
-          absence,
-        }),
-        ...(status === 'skipped' && skipped !== undefined
-          ? { skippedReason: SKIP_REASON_TEXT[skipped.reason] }
-          : {}),
-        toolActivity: buildToolActivity(log?.lastTerminal, absence),
-      };
-    },
+    (nodeId) => nodeRowOf(nodeId, context),
   );
 
   let attributed = 0;

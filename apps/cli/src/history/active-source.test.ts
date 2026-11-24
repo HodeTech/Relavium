@@ -4,8 +4,14 @@
  * scripted reader (450 runs cost nothing to build, and the reader refuses an over-long lease list exactly as the real one does); the
  * classification claims run over a real in-memory `history.db`, so a damaged log is a damaged log.
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   MAX_RUN_LEASE_IDS,
+  RunHistoryReadError,
+  UnreadableRunEventLogError,
   createClient,
   createRunHistoryReader,
   runEvents,
@@ -30,6 +36,7 @@ import {
   readActiveParkCounts,
   type ActiveSourceReader,
 } from './active-source.js';
+import { readSnapshotOf } from './change-probe.js';
 
 const HERE = '/work/here';
 const THERE = '/work/there';
@@ -103,6 +110,13 @@ function scripted(runs: readonly RunSummaryRecord[]) {
   const read: ActiveSourceReader = {
     ...reader,
     listRunSummaries: vi.fn((opts: Parameters<RunHistoryReader['listRunSummaries']>[0]) => {
+      // The real store refuses a keyset position that is not a safe integer; the scripted one must, or a NaN cursor would pass unseen.
+      if (opts.before !== undefined && !Number.isSafeInteger(opts.before.createdAt)) {
+        throw new RunHistoryReadError(
+          'invalid_cursor',
+          'before must be a (createdAt, id) position',
+        );
+      }
       const matching = runs.filter(
         (run) =>
           (opts.status === undefined || run.status === opts.status) &&
@@ -152,6 +166,16 @@ describe('chunks of 200', () => {
     expect(chunksOf([], 200)).toEqual([]);
   });
 
+  it('chunksOf refuses a size that cannot advance, so a lease read never loops or drops its runs', () => {
+    // A size of zero used to loop for ever (the position never moved); each of these must refuse at once, before any loop starts.
+    for (const size of [0, -1, -200, 0.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => chunksOf(['a', 'b'], size), `size ${String(size)}`).toThrow(RangeError);
+    }
+    // Even for no items: the refusal is of the argument, not of what it would have chunked.
+    expect(() => chunksOf([], 0)).toThrow(RangeError);
+    expect(chunksOf(['a', 'b', 'c'], 1)).toEqual([['a'], ['b'], ['c']]);
+  });
+
   it('asks no lease question for a Home with nothing active', () => {
     const { read, leaseChunks } = scripted([]);
     expect(readActive(input({ reader: read })).rows).toEqual([]);
@@ -180,6 +204,24 @@ describe('bounded at 200 runs a status', () => {
       pages.filter((page) => page.status === 'pending'),
       'a count page after the kept one, and no third',
     ).toHaveLength(2);
+  });
+
+  it('a full page whose last row has an unusable time is shown as it is, with nothing counted past it, and the tab does not fail', () => {
+    const runs = Array.from({ length: ACTIVE_STATUS_LIMIT + 50 }, (_, i) =>
+      summary('run', i, 'running'),
+    );
+    // The 200th (the last the first page keeps) has a time nobody can parse: no cursor can start after it.
+    const damaged = runs[ACTIVE_STATUS_LIMIT - 1];
+    if (damaged === undefined) throw new Error('no run');
+    runs[ACTIVE_STATUS_LIMIT - 1] = { ...damaged, createdAt: 'not a date' };
+    const { read, pages } = scripted(runs);
+    const result = readActive(input({ reader: read }));
+    expect(result.rows.filter((row) => row.status === 'running')).toHaveLength(ACTIVE_STATUS_LIMIT);
+    expect(result.more, 'no count: there is no position to count from').toEqual([]);
+    expect(
+      pages.filter((page) => page.status === 'running'),
+      'and no second page was asked for',
+    ).toHaveLength(1);
   });
 
   it('says nothing is beyond a status that holds exactly a page, and reads no second page for a short one', () => {
@@ -463,6 +505,74 @@ describe('a paused run’s gate count is kept per run, so a tick does not read e
     ]);
   });
 
+  it('an error that is not a damaged log is never kept: nothing is cached, and the next tick reads again and recovers', async () => {
+    const scriptedRead = scripted(pausedRuns(2));
+    let failing = true;
+    const reads: string[] = [];
+    const flaky: ActiveSourceReader = {
+      ...scriptedRead.read,
+      loadRunStateEvents: (runId: string) => {
+        reads.push(runId);
+        // A busy or closing database is a thrown error, not a per-run damage verdict: it leaves the read, and the poll retries.
+        if (failing) throw new Error('database is locked');
+        return [];
+      },
+    };
+    const read = createActiveReader({
+      reader: flaky,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => Promise.resolve([]),
+      now: () => NOW,
+      leaseTtlMs: TTL,
+    });
+    await expect(read()).rejects.toThrow('database is locked');
+    failing = false;
+    const result = await read();
+    expect(
+      reads.length,
+      'the failed run was read again on the very next call, not kept as unread',
+    ).toBe(3);
+    for (const row of result.rows) expect(row.reason).not.toBe('gate state not read');
+  });
+
+  it('a damaged log is a fact about the stored rows: it is kept for the row’s key and re-read when the row moves or a TTL passes', async () => {
+    const runs = pausedRuns(1);
+    const scriptedRead = scripted(runs);
+    let damaged = true;
+    const reads: string[] = [];
+    const flawed: ActiveSourceReader = {
+      ...scriptedRead.read,
+      loadRunStateEvents: (runId: string) => {
+        reads.push(runId);
+        if (damaged) throw new UnreadableRunEventLogError(runId, [3]);
+        return [];
+      },
+    };
+    let now = NOW;
+    const read = createActiveReader({
+      reader: flawed,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => Promise.resolve([]),
+      now: () => now,
+      leaseTtlMs: TTL,
+    });
+    expect((await read()).rows[0]?.reason).toBe('gate state not read');
+    damaged = false;
+    now += TTL - 1;
+    expect((await read()).rows[0]?.reason, 'inside the TTL the verdict stands').toBe(
+      'gate state not read',
+    );
+    expect(reads).toHaveLength(1);
+    now += 1;
+    expect(
+      (await read()).rows[0]?.reason,
+      'a TTL later the log is read again and found whole',
+    ).not.toBe('gate state not read');
+    expect(reads).toHaveLength(2);
+  });
+
   it('keeps nothing when the caller passes no cache: every read is whole', () => {
     const scriptedRead = scripted(pausedRuns(2));
     const paused = pausedRuns(2);
@@ -685,5 +795,111 @@ describe('the asynchronous read', () => {
       leaseTtlMs: TTL,
     });
     await expect(read()).resolves.toMatchObject({ rows: [], more: [] });
+  });
+});
+
+describe('one read, one snapshot (ADR-0140 §2)', () => {
+  /** The Home's connection and another process's, on one file: `:memory:` has one connection and cannot show a commit between two reads. */
+  let dir: string;
+  let home: DbClient;
+  let other: DbClient;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'relavium-active-snapshot-'));
+    const file = join(dir, 'history.db');
+    home = createClient(file);
+    runMigrations(home.db);
+    other = createClient(file);
+  });
+  afterEach(() => {
+    home.sqlite.close();
+    other.sqlite.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A Home reader over the shared file that, right after it served the page of `status`, lets another process move `runId` to `to`. */
+  function racing(runId: string, afterStatus: RunStatus, to: RunStatus) {
+    const real = createRunHistoryReader(home.db);
+    let moved = false;
+    const reader: ActiveSourceReader = {
+      ...real,
+      listRunSummaries: (opts) => {
+        const page = real.listRunSummaries(opts);
+        if (!moved && opts.status === afterStatus) {
+          moved = true;
+          other.sqlite
+            .prepare('UPDATE runs SET status = ?, updated_at = ? WHERE id = ?')
+            .run(to, T0 + 5, runId);
+        }
+        return page;
+      },
+    };
+    return reader;
+  }
+  const mediaRead = (reader: ActiveSourceReader, snapshot?: ReturnType<typeof readSnapshotOf>) =>
+    createActiveReader({
+      reader,
+      projectRoot: HERE,
+      hostedRunId: () => undefined,
+      listHeld: () => Promise.resolve([]),
+      now: () => NOW,
+      leaseTtlMs: TTL,
+      snapshot,
+    });
+
+  it('lists a run once even when another process moves it between the status pages (it was listed twice without the snapshot)', async () => {
+    await seedRun(home.db, { slug: 'wf', runId: 'run-moving', state: 'running', atMs: T0 });
+    home.sqlite.prepare('UPDATE runs SET project_root = ? WHERE id = ?').run(HERE, 'run-moving');
+    // Control: with separate statements the run is read as `running`, then as `paused`: two rows for one run.
+    const loose = await mediaRead(racing('run-moving', 'running', 'paused'))();
+    expect(
+      loose.rows.filter((row) => row.runId === 'run-moving'),
+      'the control: the race is real on these reads',
+    ).toHaveLength(2);
+    other.sqlite.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run('run-moving');
+    const snap = await mediaRead(
+      racing('run-moving', 'running', 'paused'),
+      readSnapshotOf(home.db),
+    )();
+    const rows = snap.rows.filter((row) => row.runId === 'run-moving');
+    expect(rows, 'one snapshot: the run is one row').toHaveLength(1);
+    expect(rows[0]?.status, 'and it is the state the snapshot began with').toBe('running');
+  });
+
+  it('keeps a run another process moves the other way (paused to running) listed, not missing for a tick', async () => {
+    await seedRun(home.db, { slug: 'wf', runId: 'run-resumed', state: 'running', atMs: T0 });
+    const park = (): void => {
+      other.sqlite
+        .prepare("UPDATE runs SET status = 'paused', project_root = ? WHERE id = ?")
+        .run(HERE, 'run-resumed');
+    };
+    park();
+    // The run is paused when the first page (running) is read and running when the third (paused) is: it falls between the two pages.
+    const loose = await mediaRead(racing('run-resumed', 'running', 'running'))();
+    expect(
+      loose.rows.filter((row) => row.runId === 'run-resumed'),
+      'the control: without a snapshot the run is on neither page',
+    ).toHaveLength(0);
+    park();
+    const snap = await mediaRead(
+      racing('run-resumed', 'running', 'running'),
+      readSnapshotOf(home.db),
+    )();
+    const rows = snap.rows.filter((row) => row.runId === 'run-resumed');
+    expect(rows, 'one snapshot: the run is listed, once').toHaveLength(1);
+    expect(rows[0]?.status).toBe('paused');
+  });
+
+  it('ends the transaction when the read throws, so no lock outlives the call', async () => {
+    const failing: ActiveSourceReader = {
+      ...createRunHistoryReader(home.db),
+      loadRunLeases: () => {
+        throw new Error('boom');
+      },
+    };
+    await seedRun(home.db, { slug: 'wf', runId: 'run-x', state: 'running', atMs: T0 });
+    await expect(mediaRead(failing, readSnapshotOf(home.db))()).rejects.toThrow('boom');
+    expect(home.sqlite.inTransaction, 'rolled back, not left open').toBe(false);
+    // And another process can still write.
+    other.sqlite.prepare("UPDATE runs SET status = 'paused' WHERE id = ?").run('run-x');
   });
 });

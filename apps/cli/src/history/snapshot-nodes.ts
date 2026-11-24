@@ -45,6 +45,47 @@ function inlineAgentModels(agents: unknown): ReadonlyMap<string, string> {
   return models;
 }
 
+/** The model a node authored: its own `model`, else the one of the inline agent it names. */
+function authoredModelOf(
+  model: unknown,
+  agent: string | undefined,
+  models: ReadonlyMap<string, string>,
+): string | undefined {
+  if (typeof model === 'string') return model;
+  return agent === undefined ? undefined : models.get(agent);
+}
+
+/** One entry of the workflow's `nodes` list as a node; `undefined` when it is not a `{ id, type }` record (the whole snapshot is then not read). */
+function snapshotNodeOf(
+  entry: unknown,
+  models: ReadonlyMap<string, string>,
+): SnapshotNode | undefined {
+  if (!isRecord(entry)) return undefined;
+  const { id, type, agent_ref: agentRef, model } = entry;
+  if (typeof id !== 'string' || id === '' || typeof type !== 'string') return undefined;
+  const agent = typeof agentRef === 'string' ? agentRef : undefined;
+  const authoredModel = authoredModelOf(model, agent, models);
+  return {
+    id,
+    type,
+    ...(agent === undefined ? {} : { agent }),
+    ...(authoredModel === undefined ? {} : { model: authoredModel }),
+  };
+}
+
+/** The workflow's `nodes` list of a parsed snapshot, or `undefined` when there is none a page can order. */
+function listedNodes(
+  parsed: unknown,
+): { workflow: Record<string, unknown>; listed: readonly unknown[] } | undefined {
+  if (!isRecord(parsed)) return undefined;
+  const workflow = parsed['workflow'];
+  if (!isRecord(workflow)) return undefined;
+  const listed = workflow['nodes'];
+  if (!Array.isArray(listed) || listed.length > MAX_SNAPSHOT_NODES) return undefined;
+  const entries: readonly unknown[] = listed;
+  return { workflow, listed: entries };
+}
+
 /**
  * The nodes of a frozen workflow snapshot, in authored order; `undefined` when the text cannot be used (see the module note). A node id the
  * document names twice is listed once, at its first place.
@@ -57,30 +98,17 @@ export function readSnapshotNodes(json: string | undefined): readonly SnapshotNo
   } catch {
     return undefined;
   }
-  if (!isRecord(parsed)) return undefined;
-  const workflow = parsed['workflow'];
-  if (!isRecord(workflow)) return undefined;
-  const listed = workflow['nodes'];
-  if (!Array.isArray(listed) || listed.length > MAX_SNAPSHOT_NODES) return undefined;
-  const models = inlineAgentModels(workflow['agents']);
-  const entries: readonly unknown[] = listed;
+  const found = listedNodes(parsed);
+  if (found === undefined) return undefined;
+  const models = inlineAgentModels(found.workflow['agents']);
   const nodes: SnapshotNode[] = [];
   const seen = new Set<string>();
-  for (const entry of entries) {
-    if (!isRecord(entry)) return undefined;
-    const { id, type, agent_ref: agentRef, model } = entry;
-    if (typeof id !== 'string' || id === '' || typeof type !== 'string') return undefined;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const agent = typeof agentRef === 'string' ? agentRef : undefined;
-    const authoredModel =
-      typeof model === 'string' ? model : agent === undefined ? undefined : models.get(agent);
-    nodes.push({
-      id,
-      type,
-      ...(agent === undefined ? {} : { agent }),
-      ...(authoredModel === undefined ? {} : { model: authoredModel }),
-    });
+  for (const entry of found.listed) {
+    const node = snapshotNodeOf(entry, models);
+    if (node === undefined) return undefined;
+    if (seen.has(node.id)) continue;
+    seen.add(node.id);
+    nodes.push(node);
   }
   return nodes;
 }

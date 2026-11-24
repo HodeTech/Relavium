@@ -93,27 +93,28 @@ function noChat(row: AgentRow): string {
   return `${row.slug} cannot be started: its file is not in the catalog.`;
 }
 
-/** Fold one key (already past the tab host's own tab keys and `Esc` on the list) into the tab. */
-export function foldAgentsKey(state: AgentsTabState, input: string, key: ChatKey): AgentsStep {
-  const cleared: AgentsTabState =
-    state.message === undefined ? state : { ...state, message: undefined };
+/** One key on an open detail: `Esc` and `Backspace` back to the list, `c` asks the host to start a chat bound to the agent the page showed. */
+function foldDetailKey(
+  state: AgentsTabState,
+  detail: AgentRow,
+  cleared: AgentsTabState,
+  input: string,
+  key: ChatKey,
+): AgentsStep {
+  if (key.escape === true || key.backspace === true)
+    return { kind: 'state', state: { ...cleared, detail: undefined } };
+  // A bare letter is the same key with Caps Lock on. Only a READY agent has a detail, so there is no `c` for an invalid one.
+  if (input.toLowerCase() !== 'c') return { kind: 'state', state: cleared };
+  const path = state.read.pathOf(detail.entryIndex);
+  const listed = state.read.definitionOf(detail.entryIndex);
+  if (path === undefined || listed === undefined)
+    return { kind: 'state', state: { ...cleared, detail: undefined, message: noChat(detail) } };
+  return { kind: 'chat', agent: { path, listed }, state: cleared };
+}
+
+/** One key on the list: `↑`/`↓` move and stop at the ends, `Enter` opens a ready agent's detail or says why an invalid one has none. */
+function foldListKey(state: AgentsTabState, cleared: AgentsTabState, key: ChatKey): AgentsStep {
   const stay: AgentsStep = { kind: 'state', state: cleared };
-  // A chord (`Ctrl+X`, a meta key) is never one of these keys: `c` is a bare letter, and `Ctrl+C` is the tab host's own close.
-  if (key.ctrl === true || key.meta === true) return stay;
-  if (state.detail !== undefined) {
-    if (key.escape === true || key.backspace === true)
-      return { kind: 'state', state: { ...cleared, detail: undefined } };
-    // A bare letter is the same key with Caps Lock on. Only a READY agent has a detail, so there is no `c` for an invalid one.
-    if (input.toLowerCase() !== 'c') return stay;
-    const path = state.read.pathOf(state.detail.entryIndex);
-    const listed = state.read.definitionOf(state.detail.entryIndex);
-    if (path === undefined || listed === undefined)
-      return {
-        kind: 'state',
-        state: { ...cleared, detail: undefined, message: noChat(state.detail) },
-      };
-    return { kind: 'chat', agent: { path, listed }, state: cleared };
-  }
   const rows = state.read.model.rows;
   if (key.upArrow === true || key.downArrow === true) {
     const to = Math.max(
@@ -128,6 +129,17 @@ export function foldAgentsKey(state: AgentsTabState, input: string, key: ChatKey
   if (row.state !== 'ready' || row.detail === undefined)
     return { kind: 'state', state: { ...cleared, message: noDetail(row) } };
   return { kind: 'state', state: { ...cleared, detail: row } };
+}
+
+/** Fold one key (already past the tab host's own tab keys and `Esc` on the list) into the tab. */
+export function foldAgentsKey(state: AgentsTabState, input: string, key: ChatKey): AgentsStep {
+  const cleared: AgentsTabState =
+    state.message === undefined ? state : { ...state, message: undefined };
+  // A chord (`Ctrl+X`, a meta key) is never one of these keys: `c` is a bare letter, and `Ctrl+C` is the tab host's own close.
+  if (key.ctrl === true || key.meta === true) return { kind: 'state', state: cleared };
+  return state.detail === undefined
+    ? foldListKey(state, cleared, key)
+    : foldDetailKey(state, state.detail, cleared, input, key);
 }
 
 // ---- What is drawn --------------------------------------------------------------------------------------------------------

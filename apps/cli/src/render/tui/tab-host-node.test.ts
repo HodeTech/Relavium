@@ -156,7 +156,7 @@ function rig(options: RigOptions = {}) {
     if (host.history === undefined) throw new Error('the History tab was read');
     const loading: TabHostState = {
       ...host,
-      history: { ...host.history, detail: { runId, phase: 'loading', cursor: 0 } },
+      history: { ...host.history, detail: { runId, phase: 'loading', cursor: 0, pinned: false } },
     };
     state = withHistoryLoad(loading, runId, await history.loadDetail(runId));
     if (state.history?.detail?.phase !== 'ready') throw new Error('the detail is not ready');
@@ -280,7 +280,7 @@ describe('what the node page shows', () => {
         expect(displayWidth(line.text), line.text).toBeLessThanOrEqual(usableColumns(80));
       expect(lines.at(-1)?.kind).toBe('legend');
       expect(lines.at(-1)?.text).toBe(
-        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
+        '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
       );
       expect(lines.filter((line) => line.kind === 'selected')).toHaveLength(1);
       r.press('', DOWN);
@@ -345,7 +345,7 @@ describe('what the node page shows', () => {
     expect(r.selected()).toContain('review');
     r.press('', ENTER);
     expect(legend(tabHostLegendItems(r.state))).toBe(
-      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Esc back',
+      '←/→ tab · Tab cycle · ↑/↓ scroll · [n] first failed · Ctrl+C close · Esc back',
     );
     r.press('n');
     expect(r.node()?.message).toBe(nodeShowingFirstFailed(1));
@@ -372,7 +372,9 @@ describe('what the node page shows', () => {
     const rows = r.text().split('\n');
     expect(rows).toContain('  The record of this node is unavailable.');
     expect(rows).toContain("  Its attempt, or the run's event log, could not be read.");
-    expect(legend(tabHostLegendItems(r.state))).toBe('←/→ tab · Tab cycle · ↑/↓ scroll · Esc back');
+    expect(legend(tabHostLegendItems(r.state))).toBe(
+      '←/→ tab · Tab cycle · ↑/↓ scroll · Ctrl+C close · Esc back',
+    );
     r.press('n');
     expect(r.node()?.message).toBe(NODE_NO_ATTEMPT);
   });
