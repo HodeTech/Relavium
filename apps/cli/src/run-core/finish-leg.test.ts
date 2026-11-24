@@ -135,6 +135,7 @@ function harness(
     readonly db?: Db | undefined;
     readonly remainingMs?: number | undefined;
     readonly json?: boolean;
+    readonly runId?: string;
   } = {},
 ): Harness {
   const captured = captureIo();
@@ -146,7 +147,7 @@ function harness(
     finish: () =>
       finishLeg({
         leg,
-        runId: RUN_ID,
+        runId: options.runId ?? RUN_ID,
         lifetime: {
           invocation: { registry: { budget: budgetOf(options.remainingMs) } },
           effectNoticeOwner: NOTICE_OWNER,
@@ -328,6 +329,48 @@ describe('finishLeg — a run another process took over', () => {
       `this process could not confirm ownership of run ${RUN_ID} during the resume and stopped — read \`relavium logs ${RUN_ID}\` for its real outcome, then retry if the gate is still pending`,
     );
     expect(run.out() + run.err()).toBe('');
+  });
+
+  describe('a run id that is not one plain word is never inside a command line (L6)', () => {
+    const HOSTILE = [
+      'x; rm -rf ~',
+      '$(touch pwned)',
+      '`touch pwned`',
+      'a b',
+      '--help',
+      "x'y",
+      'x|y',
+      'x\ny',
+    ];
+    /** Every backticked run of text: the commands a person may copy. */
+    const commandsOf = (text: string): string[] =>
+      [...text.matchAll(/`([^`]*)`/g)].map((match) => match[1] ?? '');
+
+    it.each(HOSTILE)(
+      'id %j: a start leg`s stderr line offers only the bare command',
+      async (id) => {
+        const run = harness('start', 'paused', { handle: FENCED(), runId: id });
+        expect(await run.finish()).toBe(EXIT_CODES.runOwnedElsewhere);
+        expect(commandsOf(run.err())).toEqual(['relavium logs']);
+        expect(run.out()).toBe('');
+      },
+    );
+
+    it.each(HOSTILE)('id %j: a resume leg`s refusal offers only the bare command', async (id) => {
+      const run = harness('resume', 'paused', { handle: FENCED(), runId: id });
+      const refusal = await refusalOf(run.finish);
+      expect(refusal.code).toBe('run_owned_elsewhere');
+      expect(commandsOf(refusal.message)).toEqual(['relavium logs']);
+    });
+
+    it('an ordinary id reads exactly as it always did', async () => {
+      const run = harness('start', 'paused', {
+        handle: FENCED(),
+        runId: 'a1b2c3d4-0000-4000-8000-000000000001',
+      });
+      await run.finish();
+      expect(run.err()).toContain('`relavium logs a1b2c3d4-0000-4000-8000-000000000001`');
+    });
   });
 
   it('a start leg that ended with no outcome and a fence also says so', async () => {

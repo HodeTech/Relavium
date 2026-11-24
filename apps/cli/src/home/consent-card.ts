@@ -1,4 +1,5 @@
 import type { ConsentPrompter, ConsentSubject } from '../engine/mcp-consent-gate.js';
+import { CliError } from '../process/errors.js';
 import type { NativeChordPort, NativePromptEscape } from '../render/tui/native-prompt-channel.js';
 import { authorLine } from '../render/tui/run-card-model.js';
 
@@ -27,6 +28,15 @@ import { authorLine } from '../render/tui/run-card-model.js';
  * untrusted-text floor, folded so a chord cannot be spelled past the match, host glyphs and answer-chord tokens made inert), so no row
  * can read `Ctrl+Y refuses`. The text that IS the decision is shown as the gate composed it: the executable that will run, its
  * directory and the digest are paths and hex, and a path is never rewritten on its way to a consent.
+ *
+ * **A path that cannot be shown as it is, is refused, not rewritten (M1).** A repository ships the program it names, so the path of the
+ * executable (or the directory it runs in, or the directory of an earlier approval) is as hostile as any argument: `./tools/Ctrl+Y
+ * refuses this - Ctrl+N allows/srv` is a real path. Rewriting it would show the person a different program than the one that runs, and
+ * showing it would put a forged key legend on the card. So a path the scrub would change (a control or invisible character, a host
+ * glyph such as a box-drawing line, `✓` or `▶`, or an answer-chord token) is never put on a card at all: the card is not built, the
+ * program is not offered, and the run is refused in fixed words that carry no path ({@link CONSENT_PATH_REFUSED}). A program that holds
+ * a grant already is not asked about, so this never reaches it, and the shell's own question is a plain yes or no that a path cannot
+ * forge.
  */
 
 export type ConsentDecision = 'allow' | 'refuse';
@@ -43,6 +53,19 @@ export interface ConsentCardText {
   readonly deny: string;
 }
 
+/** What a start says when a program's path cannot be put on the card: fixed words, no path, and where it can be approved. */
+export const CONSENT_PATH_REFUSED =
+  'Not started: a local program has a path the card cannot show safely. Approve it with relavium run.';
+
+/**
+ * Whether the scrub would change `path`, ignoring only the normalization every comparison shares: a path the scrub leaves alone is one
+ * the card shows exactly as it is (spaces, accents in either composition and compatibility forms included), and any other (a control or
+ * invisible character, a host glyph, an answer-chord token) is one a hostile repository could use to draw its own key row.
+ */
+function wouldBeRewritten(path: string): boolean {
+  return authorLine(path) !== path.normalize('NFKC');
+}
+
 /** The label column of a detail row: wide enough for the longest label plus a space, so the values line up. */
 const label = (name: string): string => name.padEnd(12);
 
@@ -52,6 +75,13 @@ const label = (name: string): string => name.padEnd(12);
  * digest, an earlier approval elsewhere).
  */
 export function consentCardText(subject: ConsentSubject): ConsentCardText {
+  // Before a single row is built: a card with a forged path is never made (M1).
+  if (
+    [subject.resolvedCommand, subject.cwd, subject.previouslyApprovedIn].some(
+      (path) => path !== undefined && wouldBeRewritten(path),
+    )
+  )
+    throw new CliError('invalid_invocation', CONSENT_PATH_REFUSED);
   const details = [
     subject.total > 1
       ? `Program ${String(subject.index)} of ${String(subject.total)}`

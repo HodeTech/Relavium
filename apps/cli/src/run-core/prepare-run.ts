@@ -160,6 +160,13 @@ export interface PrepareRunPorts {
   ) => Promise<Readonly<Record<string, string>>>;
   /** The MCP stdio consent gate, built at the point the connector's options are assembled. */
   readonly consentGate: (homeDir: string) => StdioConsentGate;
+  /**
+   * The commit point of the leg, called once by {@link PreparedRun.start} after its last checkpoint and immediately before the engine
+   * starts the run, with no await between. A host that ties a flow's cancel to the leg lets go of it here (see
+   * `ResumeRunPorts.commit`, where the point is not optional in effect: a resume's engine takes the run before it returns). The shell
+   * passes none.
+   */
+  readonly commit?: (() => void) | undefined;
 }
 
 /** A start that is ready: the engine is built and reconciled, and nothing has been started yet. */
@@ -539,6 +546,7 @@ export async function prepareRun(
       // check correct here (ADR-0094) — a node listing a tool its agent lacks is refused before the run id
       // exists, rather than partway through, after upstream nodes have spent money.
       lifetime.checkpoint();
+      ports.commit?.();
       const handle = engine.start({
         workflow: runWorkflow,
         eventConsumption: 'iterated',

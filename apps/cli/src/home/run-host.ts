@@ -73,10 +73,10 @@ export interface HostedStartRequest {
    */
   readonly expectedFsScope?: PrepareRunRequest['expectedFsScope'];
   /**
-   * The cancel of the flow that asked for this start (Esc or Ctrl+C on `Starting the run…`). When it aborts BEFORE the engine has
-   * started the run, the leg's lifetime is stopped: the connect and the consent card close, the next checkpoint of the run core throws,
-   * and the launch settles as `refused` / `stopped` with no run created. Once the start has answered it governs nothing: a started run
-   * is the run view's to cancel.
+   * The cancel of the flow that asked for this start (Esc or Ctrl+C on `Starting the run…`). When it aborts BEFORE the leg's commit point
+   * (the run core's last checkpoint, just before the engine starts the run), the leg's lifetime is stopped: the connect and the consent
+   * card close, the next checkpoint of the run core throws, and the launch settles as `refused` / `stopped` with no run created. From
+   * the commit point on it governs nothing: a started run is the run view's to cancel.
    */
   readonly signal?: AbortSignal | undefined;
 }
@@ -90,7 +90,14 @@ export interface HostedResumeRequest {
   readonly decision: GateDecision;
   /** Asked for the masked slots of a run that carries secrets; absent means the host supplies none. */
   readonly secrets?: HostedSecretPort | undefined;
-  /** The cancel of the flow that asked for this answer; it stops the leg while it prepares, as {@link HostedStartRequest.signal} does. */
+  /**
+   * The cancel of the flow that asked for this answer (Esc or Ctrl+C on `Answering the gate…`). It stops the leg while it prepares
+   * (the secrets, the consent card, the connect, the engine build and its reconcile) and the launch settles as `refused` / `stopped`
+   * with the run exactly as it was: the gate is still pending. It does NOT reach the engine: from the leg's commit point (the run core's
+   * last checkpoint, just before `resumeFromCheckpoint`) it governs nothing, because a cancel that arrives while the engine prepares the
+   * resume writes `run:cancelled`, which nothing can undo, and one Esc on a card decides nothing (ADR-0139 §4, §5). The leg that started
+   * is a started leg; cancelling it takes the run view's two presses.
+   */
   readonly signal?: AbortSignal | undefined;
 }
 
@@ -104,7 +111,11 @@ export interface HostedMediaResumeRequest {
   readonly kind: 'media';
   /** Asked for the masked slots of a run that carries secrets (the engine needs them to continue); absent means the host supplies none. */
   readonly secrets?: HostedSecretPort | undefined;
-  /** The cancel of the flow that asked for this continue; it stops the leg while it prepares, as {@link HostedStartRequest.signal} does. */
+  /**
+   * The cancel of the flow that asked for this continue (Esc or Ctrl+C on `Continuing the run…`): the same as
+   * {@link HostedResumeRequest.signal}. Before the leg's commit point it stops the leg and the run stays parked, its jobs untouched;
+   * from it on it governs nothing, because cancelling the run would leave the jobs already paid for unfetched for good.
+   */
   readonly signal?: AbortSignal | undefined;
 }
 
@@ -237,6 +248,12 @@ interface LegContext {
   readonly lifetime: HostedRunLifetime;
   readonly resources: RunResources;
   readonly io: CliIo;
+  /**
+   * The leg's commit point (H1): lets go of the flow's cancel. The run core calls it after its last checkpoint and just before the engine
+   * takes the run, so a cancel that lands later closes the flow and nothing else: a run the engine has taken is a started run, and
+   * cancelling it takes the run view's two presses (ADR-0139 §5), never the one Esc on "Answering the gate…". Idempotent.
+   */
+  readonly commit: () => void;
 }
 
 interface ActiveLeg {
@@ -292,6 +309,16 @@ class HostedRunView implements RunTerminalView {
     return Promise.resolve().then(factory);
   }
 }
+
+/** What a start says when it was stopped before the engine took the run. */
+export const HOSTED_START_STOPPED = 'The run was stopped before it started.';
+
+/**
+ * What an answer or a continue says when a cancel stopped it before the engine took the run (the leg's commit point, H1): the person
+ * pressed `Esc` or `Ctrl+C` while it was being prepared (a secret asked, a card open, an MCP server connecting). A cancel, not a refusal
+ * nobody made (`was not approved`), and the run is exactly as it was: the gate is still pending, or the jobs are still parked.
+ */
+export const HOSTED_RESUME_CANCELLED = 'Cancelled. The run is as it was.';
 
 function refused(reason: HostedRefusal, message: string): HostedLaunch {
   return { kind: 'refused', reason, message };
@@ -351,6 +378,15 @@ function declaredSecretNames(def: WorkflowDefinition): readonly string[] {
     .map((decl) => decl.name);
 }
 
+/** Run one step of a leg's teardown on its own: what it throws goes to `onFault`, and the step after it still runs. */
+async function guarded(step: () => unknown, onFault: (cause: unknown) => void): Promise<void> {
+  try {
+    await step();
+  } catch (cause) {
+    onFault(cause);
+  }
+}
+
 /** What a leg's drive found (see `RunHost.#runLeg`). */
 interface LegResult {
   readonly facts: Omit<HostedRunTerminalInput, 'leg' | 'runId'> | undefined;
@@ -361,22 +397,25 @@ interface LegResult {
 
 /**
  * The departure the card is read from. `finishLeg` departed already (the handle answers the same fact again), so a departure that
- * throws HERE for a leg already known to be taken over must not rewrite that disposition into an unexpected end (M-Ho1): it is `undefined`
- * and the caller still has the disposition. For any other leg it is a fault, as before.
+ * THROWS here for a leg already known to be taken over must not rewrite that disposition into an unexpected end (M-Ho1): it is `undefined`
+ * and the caller still has the disposition. For any other leg it is a fault, as before. Only a thrown error is excused: a departure that
+ * answers `continue` is not acknowledged, which ADR-0139 §6 calls an internal fault whatever else is known of the leg, and it is thrown
+ * so the leg's owner records it.
  */
 async function readDeparture(
   handle: RunHandle,
   takenOver: boolean,
 ): Promise<Exclude<RunDeparture, { readonly kind: 'continue' }> | undefined> {
+  let departure: RunDeparture;
   try {
-    const departure = await handle.depart();
-    if (departure.kind === 'continue')
-      throw new CliError('internal', 'run departure was not acknowledged');
-    return departure;
+    departure = await handle.depart();
   } catch (cause) {
     if (!takenOver) throw cause;
     return undefined;
   }
+  if (departure.kind === 'continue')
+    throw new CliError('internal', 'run departure was not acknowledged');
+  return departure;
 }
 
 /** What a leg that ended with no usable disposition shows: the closed vocabulary of the terminal card. */
@@ -702,18 +741,19 @@ export class RunHost {
     };
     this.#active = leg;
     // The flow that asked for this leg may be cancelled while the leg prepares (Esc or Ctrl+C on `Starting the run…`): the cancel
-    // stops THIS leg's lifetime, so the connect and the consent card close and the run core's next checkpoint throws before any run
-    // exists. It governs the preparation only; it is let go the moment `acquire` answers.
+    // stops THIS leg's lifetime, so the connect and the consent card close and the run core's next checkpoint throws before the engine
+    // takes the run. It governs the preparation only: the run core lets go of it at the leg's COMMIT POINT (`context.commit`, after its
+    // last checkpoint and just before the engine starts or resumes the run, H1), and `finally` lets go of it on every path out.
     const untie = this.#stopWhenAborted(signal, lifetime);
     let acquired: Acquisition;
     try {
-      acquired = await acquire({ lifetime, resources, io });
+      acquired = await acquire({ lifetime, resources, io, commit: untie });
     } catch (cause) {
       const stopped = lifetime.isStoppedFailure(cause);
       if (!stopped) lifetime.failure(cause);
       await this.#release(leg, resources);
       return stopped
-        ? refused('stopped', 'The run was stopped before it started.')
+        ? refused('stopped', kind === 'resume' ? HOSTED_RESUME_CANCELLED : HOSTED_START_STOPPED)
         : refused('rejected', this.#faultMessage(cause));
     } finally {
       untie();
@@ -755,12 +795,14 @@ export class RunHost {
 
   /** The teardown tail of a leg that never ran: what it acquired is released and its owner retires. */
   async #release(leg: ActiveLeg, resources: RunResources): Promise<void> {
+    // Each release on its own: one that throws (a host bug: the one-use guards) is a release nobody acknowledged (`retained`, L5), and
+    // must not skip the other, nor leave the host holding a leg that never ran.
+    const unreleased = (cause: unknown): void => {
+      leg.lifetime.cleanupFailed(cause);
+    };
     try {
-      await resources.releaseMcp();
-      resources.closeHistoryDb();
-    } catch (cause) {
-      // A step that throws (a host bug: the one-use guards) must not leave the host holding a leg that never ran, nor its owner.
-      leg.lifetime.failure(cause);
+      await guarded(() => resources.releaseMcp(), unreleased);
+      await guarded(() => resources.closeHistoryDb(), unreleased);
     } finally {
       await leg.lifetime.finish();
       if (this.#active === leg) this.#active = undefined;
@@ -885,19 +927,21 @@ export class RunHost {
    */
   async #cleanupTail(leg: ActiveLeg, resources: RunResources): Promise<unknown> {
     let fault: unknown;
-    const step = async (run: () => unknown): Promise<void> => {
-      try {
-        await run();
-      } catch (cause) {
-        if (!leg.lifetime.isStoppedFailure(cause)) leg.lifetime.failure(cause);
-        fault ??= cause;
-      }
+    // An owned release that threw could not be acknowledged: `cleanupFailed` keeps the owner registered (`retained`) and arms the
+    // Home's finite exit, as the resources' own unacknowledged closes do (L5). A renderer that cannot be sealed is a fault of the leg.
+    const unreleased = (cause: unknown): void => {
+      leg.lifetime.cleanupFailed(cause);
+      fault ??= cause;
     };
-    await step(() => resources.releaseMcp());
+    const faulted = (cause: unknown): void => {
+      if (!leg.lifetime.isStoppedFailure(cause)) leg.lifetime.failure(cause);
+      fault ??= cause;
+    };
+    await guarded(() => resources.releaseMcp(), unreleased);
     // A leg that failed, or that ended while the Home was closing, never reaches the renderer's own `finalize`: seal it here so the
     // frame loop it holds stops with the leg (`seal` is idempotent, and a renderer that has no loop has no `seal`).
-    await step(() => leg.renderer?.seal?.());
-    await step(() => resources.closeHistoryDb());
+    await guarded(() => leg.renderer?.seal?.(), faulted);
+    await guarded(() => resources.closeHistoryDb(), unreleased);
     return fault;
   }
 
@@ -1018,6 +1062,7 @@ export class RunHost {
       {
         secretInputs: (def) => refuseBlankSecrets(request.secrets, declaredSecretNames(def)),
         consentGate: (homeDir) => this.#consentGate(context, homeDir),
+        commit: context.commit,
       },
       lifetime,
       resources,
@@ -1064,6 +1109,7 @@ export class RunHost {
         openDb: () => ({ db: this.#db, close: () => undefined }),
         secretInputs: ({ maskedSlots }) => refuseBlankSecrets(request.secrets, maskedSlots),
         consentGate: (homeDir) => this.#consentGate(context, homeDir),
+        commit: context.commit,
       },
       lifetime,
       resources,

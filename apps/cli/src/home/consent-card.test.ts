@@ -8,7 +8,7 @@
  * reads and writes is a temporary directory.
  */
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,6 +21,7 @@ import {
   mcpConsentPath,
   type ConsentSubject,
 } from '../engine/mcp-consent-gate.js';
+import { fingerprint, resolveStdioSpawn } from '../engine/mcp-consent.js';
 import { connectWorkflowMcp } from '../engine/mcp-servers.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -36,6 +37,7 @@ import {
   consentCardText,
   createNativeConsentPrompter,
   CONSENT_ALLOW_LABEL,
+  CONSENT_PATH_REFUSED,
 } from './consent-card.js';
 
 /** The one named bound of every `vi.waitFor` in this file: a wait that needs it is a defect, not a slow machine. */
@@ -189,15 +191,161 @@ describe('what a server`s author wrote cannot pass for the card`s own keys (P2, 
     expect(rows.join('\n')).not.toMatch(/[▶✓]/u);
   });
 
-  it('the decision itself is shown as composed: the executable, the directory and the digest are never rewritten', () => {
-    const rows = rowsOf({
-      resolvedCommand: '/opt/Ctrl+Y/bin/node',
-      cwd: '/work/^N/project',
-      digest: 'v1:abcdef',
+  it('a path the card can show is shown exactly as it is: spaces, accents in either composition, a Windows drive, hex digest', () => {
+    for (const path of [
+      '/opt/node/bin/node',
+      '/Users/Müller Ünal/My Tools/srv',
+      '/Users/mu\u0308ller/bin/node', // an accent in decomposed form, as a Mac volume can hand it back
+      'C:\\Program Files\\nodejs\\node.exe',
+      '/work/x^2/control a process/node',
+    ]) {
+      const rows = rowsOf({ resolvedCommand: path, cwd: path, previouslyApprovedIn: path });
+      expect(rows).toContain('executable'.padEnd(12) + path);
+      expect(rows).toContain('directory'.padEnd(12) + path);
+      expect(rows).toContain(`(you approved this same program in ${path})`);
+      expect(rows).toContain('digest'.padEnd(12) + 'v1:abcdef');
+    }
+  });
+
+  describe('a path the scrub would change is refused, never shown and never rewritten (M1)', () => {
+    const HOSTILE_PATHS = [
+      '/repo/tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
+      '/repo/^Y/srv',
+      '/repo/control-n/srv',
+      '/repo/\uFF23trl+Y/srv', // a fullwidth C
+      '/repo/\u0421trl+Y/srv', // a Cyrillic C
+      '/repo/Ctrl\u200B+\u200BY/srv', // an invisible character spelled through it
+      '/repo/\u2502 [Ctrl+Y] Allow/srv', // a box-drawing line, the gutter of the card's own rows
+      '/repo/\u2713 approved/srv',
+      '/repo/\u25B6 run/srv',
+      '/repo/\u001b[2Jsrv',
+      '/repo/\u202Eevil/srv', // a bidi override
+      '/repo/tab\tsrv',
+    ];
+    const FIELDS = ['resolvedCommand', 'cwd', 'previouslyApprovedIn'] as const;
+
+    it.each(HOSTILE_PATHS.flatMap((path) => FIELDS.map((field) => [path, field] as const)))(
+      'path %j in %s: no card text is built, with fixed words that carry no path',
+      (path, field) => {
+        let thrown: unknown;
+        try {
+          consentCardText(subject({ [field]: path }));
+        } catch (cause) {
+          thrown = cause;
+        }
+        expect(isCliError(thrown), 'a typed refusal').toBe(true);
+        const message = isCliError(thrown) ? thrown.message : '';
+        expect(message).toBe(CONSENT_PATH_REFUSED);
+        expect(message).not.toContain('/repo');
+        expect(message).not.toContain('Ctrl');
+        expect(isCliError(thrown) && thrown.code).toBe('invalid_invocation');
+      },
+    );
+
+    it('the real case: a repository executable named like a legend resolves, and is refused before a card opens, with nothing started', async () => {
+      if (process.platform === 'win32') return; // an executable bit and these characters are POSIX facts
+      const repo = mkdtempSync(join(tmpdir(), 'relavium-consent-forged-path-'));
+      try {
+        const dir = join(repo, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
+        mkdirSync(dir, { recursive: true });
+        const exe = join(dir, 'srv');
+        writeFileSync(exe, '#!/bin/sh\nexit 0\n');
+        chmodSync(exe, 0o755);
+        const spawn = await resolveStdioSpawn(
+          {
+            serverId: 'docs',
+            provenance: { kind: 'inline' },
+            command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
+          },
+          repo,
+        );
+        const forged = subject({
+          serverId: 'docs',
+          resolvedCommand: spawn.resolvedCommand,
+          authoredCommand: spawn.command,
+          cwd: spawn.cwd,
+          digest: fingerprint(spawn),
+        });
+        const channel = createNativePromptChannel();
+        channel.flow.begin();
+        const kinds: string[] = [];
+        channel.ui.subscribe(() => kinds.push(channel.ui.getSnapshot().kind));
+        await expect(createNativeConsentPrompter(channel.flow)(forged)).rejects.toMatchObject({
+          code: 'invalid_invocation',
+          message: CONSENT_PATH_REFUSED,
+        });
+        expect(kinds, 'no chord card was ever published').not.toContain('chord');
+        await channel.flow.end();
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
     });
-    expect(rows).toContain('executable'.padEnd(12) + '/opt/Ctrl+Y/bin/node');
-    expect(rows).toContain('directory'.padEnd(12) + '/work/^N/project');
-    expect(rows).toContain('digest'.padEnd(12) + 'v1:abcdef');
+
+    it('through the real gate and connect path: refused with those words, nothing spawned, no grant written, no card published', async () => {
+      if (process.platform === 'win32') return; // an executable bit and these characters are POSIX facts
+      const dir = join(home, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
+      mkdirSync(dir, { recursive: true });
+      const exe = join(dir, 'srv');
+      writeFileSync(exe, '#!/bin/sh\nexit 0\n');
+      chmodSync(exe, 0o755);
+      const channel = createNativePromptChannel();
+      channel.flow.begin();
+      const kinds: string[] = [];
+      channel.ui.subscribe(() => kinds.push(channel.ui.getSnapshot().kind));
+      const start = vi.fn(() => Promise.reject(new Error('the server was started')));
+      const gate = createConsentGate({
+        io: { ...captureIo().io, stdoutIsTty: true, stdinIsTty: true, env: {} },
+        global: {
+          json: false,
+          color: false,
+          cwd: home,
+          configPath: undefined,
+          verbosity: 'normal',
+        },
+        homeDir: home,
+        allowedDigests: [],
+        prompt: createNativeConsentPrompter(channel.flow),
+      });
+      const workflow = parseWorkflow(
+        JSON.stringify({
+          schema_version: '1.0',
+          workflow: {
+            id: 'forged-path',
+            agents: [
+              {
+                id: 'worker',
+                provider: 'openai',
+                model: 'gpt-4o',
+                system_prompt: 'offline',
+                mcp_servers: [
+                  {
+                    id: 'docs',
+                    transport: 'stdio',
+                    command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
+                  },
+                ],
+              },
+            ],
+            nodes: [
+              { id: 'input', type: 'input' },
+              { id: 'agent', type: 'agent', agent_ref: 'worker' },
+              { id: 'output', type: 'output' },
+            ],
+            edges: [
+              { from: 'input', to: 'agent' },
+              { from: 'agent', to: 'output' },
+            ],
+          },
+        }),
+      );
+      await expect(
+        connectWorkflowMcp(workflow, { cwd: home, startMcpClient: start, consentGate: gate }),
+      ).rejects.toMatchObject({ code: 'invalid_invocation', message: CONSENT_PATH_REFUSED });
+      expect(kinds, 'no chord card was ever published').not.toContain('chord');
+      expect(start, 'nothing was started').not.toHaveBeenCalled();
+      expect(existsSync(mcpConsentPath(home)), 'no grant was written').toBe(false);
+      await channel.flow.end();
+    });
   });
 
   it('ordinary arguments are shown exactly as the gate composed them', () => {

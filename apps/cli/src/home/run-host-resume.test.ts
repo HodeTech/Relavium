@@ -892,6 +892,32 @@ describe('a resumed leg that finds the run taken over by another process', () =>
     },
   );
 
+  it('a late departure that answers `continue` is an internal fault even for a taken-over leg: only a thrown error is excused (L4)', async () => {
+    let calls = 0;
+    const { r, runId } = await parkedThenFenced(
+      () => [],
+      () => {
+        calls += 1;
+        return calls <= 2
+          ? Promise.resolve(DETACHED)
+          : Promise.resolve<RunDeparture>({ kind: 'continue' });
+      },
+    );
+    const end = await started(
+      r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
+    );
+
+    expect(calls, 'the host asked a third time, and was told to continue').toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(end.terminal.disposition, 'no facts could be read, so no card claims one').toBe(
+      'failed',
+    );
+    expect(end.fault).toBe('run departure was not acknowledged');
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    expect(r.registry.activeOwners).toBe(0);
+  });
+
   it('a departure that cannot be read again does not turn the takeover into an unexpected end (M-Ho1)', async () => {
     // The drive and `finishLeg` each ask the handle to depart (and `finishLeg` then refuses the taken-over run); the host asks once more
     // for the departure it shows. The first two are answered and the third is not: the disposition is already known, and it is the one
@@ -923,5 +949,77 @@ describe('a resumed leg that finds the run taken over by another process', () =>
     );
     expect(end.retirement).toBe('retired');
     expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+  });
+});
+
+describe('a cancel that lands while the engine prepares a resume never cancels the parked run (H1)', () => {
+  /**
+   * A parked run, and a host whose NEXT engine's `resumeFromCheckpoint` calls `abort` at the named moment: right before the engine is
+   * asked, or just after it was (the engine has registered the preparing run by then, so a cancel that arrives now is "inside" it).
+   */
+  async function parkedWithCancelAt(when: 'before' | 'inside' | 'build') {
+    const controller = new AbortController();
+    let armed = false;
+    const r = rig({
+      buildEngine: async (options?: BuildEngineOptions) => {
+        if (armed && when === 'build') controller.abort();
+        const engine = await buildEngine(options);
+        const original = engine.resumeFromCheckpoint.bind(engine);
+        engine.resumeFromCheckpoint = (input) => {
+          if (armed && when === 'before') controller.abort();
+          const pending = original(input);
+          if (armed && when === 'inside') controller.abort();
+          return pending;
+        };
+        return engine;
+      },
+    });
+    const runId = await park(r, GATED, 'cancel-window.relavium.yaml');
+    expect(runStatus(r.db, runId)).toBe('paused');
+    armed = true;
+    return { r, runId, controller };
+  }
+
+  it.each(['before', 'inside'] as const)(
+    'an Esc that lands %s resumeFromCheckpoint leaves the run answered, not cancelled: a started leg is a started leg',
+    async (when) => {
+      const { r, runId, controller } = await parkedWithCancelAt(when);
+      const launch = await r.host.resume({
+        runId,
+        kind: 'human',
+        decision: approvalDecision(),
+        signal: controller.signal,
+      });
+      expect(controller.signal.aborted, 'the cancel did land').toBe(true);
+      expect(launch.kind, 'the leg started').toBe('started');
+      const end = await started(launch);
+      expect(end.terminal.disposition).toBe('completed');
+      expect(runStatus(r.db, runId), 'the gate was answered, and nothing cancelled the run').toBe(
+        'completed',
+      );
+      expect(
+        events(r.db, runId).some((event) => event.type === 'run:cancelled'),
+        'no run:cancelled was ever written',
+      ).toBe(false);
+      expect(r.registry.activeOwners).toBe(0);
+    },
+  );
+
+  it('an Esc that lands while the engine is still being built stops the leg before it touches the run: the gate stays pending and answerable', async () => {
+    const { r, runId, controller } = await parkedWithCancelAt('build');
+    const launch = await r.host.resume({
+      runId,
+      kind: 'human',
+      decision: approvalDecision(),
+      signal: controller.signal,
+    });
+    expect(launch).toMatchObject({ kind: 'refused', reason: 'stopped' });
+    expect(runStatus(r.db, runId), 'the run is parked, not cancelled').toBe('paused');
+    // Still answerable: the same answer, without the cancel, completes it.
+    const again = await started(
+      r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
+    );
+    expect(again.terminal.disposition).toBe('completed');
+    expect(runStatus(r.db, runId)).toBe('completed');
   });
 });

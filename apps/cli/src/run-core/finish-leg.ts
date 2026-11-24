@@ -8,6 +8,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { RemainingBudget } from '../process/invocation-registry.js';
 import type { CliIo } from '../process/io.js';
+import { displayRunId, relaviumRunCommand } from '../render/run-command-text.js';
 import { sanitizeInline } from '../render/sanitize.js';
 
 /**
@@ -103,7 +104,7 @@ export async function finishLeg(input: FinishLegInput): Promise<ExitCode> {
     if (exitCode === EXIT_CODES.runOwnedElsewhere) {
       throw new CliError(
         'run_owned_elsewhere',
-        `this process could not confirm ownership of run ${runId} during the resume and stopped — read \`relavium logs ${runId}\` for its real outcome, then retry if the gate is still pending`,
+        `this process could not confirm ownership of run ${displayRunId(runId)} during the resume and stopped — read ${relaviumRunCommand('logs', runId)} for its real outcome, then retry if the gate is still pending`,
       );
     }
     if (outcome === undefined && exitCode === EXIT_CODES.success) {
@@ -146,7 +147,7 @@ export async function finishLeg(input: FinishLegInput): Promise<ExitCode> {
   // why their run stopped. stderr, so `--json` stdout stays a clean stream.
   if (leg === 'start' && exitCode === EXIT_CODES.runOwnedElsewhere) {
     io.writeErr(
-      `run ${runId} was taken over by another process; this one stopped without recording an outcome — read \`relavium logs ${runId}\` for what actually happened\n`,
+      `run ${displayRunId(runId)} was taken over by another process; this one stopped without recording an outcome — read ${relaviumRunCommand('logs', runId)} for what actually happened\n`,
     );
   }
   return exitCode;

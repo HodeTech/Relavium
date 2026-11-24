@@ -1038,6 +1038,33 @@ describe('a start is cancelled by the flow that asked for it while it prepares (
     });
   });
 
+  it('an abort that lands at the commit point, as the engine starts the run, closes nothing but the flow: the run that started is a started run (H1, the start side)', async () => {
+    const controller = new AbortController();
+    const r = rig({
+      buildEngine: async (options?: BuildEngineOptions) => {
+        const engine = await buildEngine(options);
+        const original = engine.start.bind(engine);
+        engine.start = (input) => {
+          // The cancel arrives in the very call that starts the run: past the last checkpoint, so past the point it may stop the leg.
+          controller.abort();
+          return original(input);
+        };
+        return engine;
+      },
+    });
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const launch = await r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      signal: controller.signal,
+    });
+    expect(controller.signal.aborted).toBe(true);
+    expect(launch.kind).toBe('started');
+    const end = await started(launch);
+    expect(end.terminal.disposition, 'the run ran to its end, uncancelled').toBe('completed');
+    expect(runStatus(end.runId)).toBe('completed');
+  });
+
   it('a signal that has already aborted stops the leg before it does anything', async () => {
     const r = rig();
     const path = writeWorkflow('happy.relavium.yaml', HAPPY);
@@ -1207,7 +1234,7 @@ describe('the cleanup tail of a leg (P02a-2) and its departure (M-Ho1)', () => {
     expect(next).not.toMatchObject({ kind: 'refused', reason: 'busy' });
   });
 
-  it('every step of the tail runs even when an earlier one throws: the MCP release throwing does not skip the seal or the owner', async () => {
+  it('a release that throws is one nobody acknowledged: every later step still runs, the host is idle, and the owner is RETAINED, not retired (L5)', async () => {
     const sealed = vi.fn();
     const s = scriptedRig(
       { terminal: 'completed' },
@@ -1222,9 +1249,42 @@ describe('the cleanup tail of a leg (P02a-2) and its departure (M-Ho1)', () => {
     );
     const end = await started(s.host.start({ workflow: s.path, rawInputs: { n: '3' } }));
     expect(end.fault).toBeDefined();
+    expect(JSON.stringify([end, s.host.notices.snapshot()])).not.toContain('PRIVATE_RELEASE_FAULT');
     expect(sealed, 'the renderer was still sealed').toHaveBeenCalled();
-    expect(s.host.snapshot()).toMatchObject({ active: undefined, last: end });
-    expect(s.f.registry.activeOwners).toBe(0);
+    expect(s.host.snapshot(), 'the host is idle: a later leg is not refused busy').toMatchObject({
+      active: undefined,
+      last: end,
+    });
+    expect(end.retirement, 'a cleanup nobody acknowledged is not a retirement').toBe('retained');
+    expect(s.f.registry.activeOwners, 'the owner stays registered').toBe(1);
+    expect(
+      s.f.registry.observations.hasInfrastructureFailure(),
+      'and the Home`s finite exit is armed, so the retention has a bound',
+    ).toBe(true);
+  });
+
+  it('the same for a leg that never ran: a release that throws on a refused start is retained, and the other release still runs', async () => {
+    const closed = vi.fn();
+    const r = rig({
+      createResources: (lifetime, io) => {
+        const resources = new RunResources(lifetime, io);
+        vi.spyOn(resources, 'releaseMcp').mockRejectedValue(new Error('PRIVATE_RELEASE_FAULT'));
+        vi.spyOn(resources, 'closeHistoryDb').mockImplementation(closed);
+        return resources;
+      },
+    });
+    const path = writeWorkflow('happy.relavium.yaml', HAPPY);
+    const launch = await r.host.start({
+      workflow: path,
+      rawInputs: { n: '3' },
+      expectedSourceDigest: workflowSourceDigest('another file'),
+    });
+    expect(launch).toMatchObject({ kind: 'refused', reason: 'rejected' });
+    expect(JSON.stringify(launch)).not.toContain('PRIVATE_RELEASE_FAULT');
+    expect(closed, 'the history close still ran').toHaveBeenCalledOnce();
+    expect(r.host.snapshot()).toMatchObject({ launching: false, active: undefined });
+    expect(r.f.registry.activeOwners, 'the owner was not retired').toBe(1);
+    expect(r.f.registry.observations.hasInfrastructureFailure()).toBe(true);
   });
 
   it('a departure that fails for a leg that was not taken over is a fault, not a disposition', async () => {

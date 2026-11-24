@@ -30,14 +30,14 @@ workflow:
   inputs:
 ${Array.from({ length: INPUTS }, (_, index) => `    - { name: field-${String(index + 1)}, type: string }`).join('\n')}
   tools:
-    allowedCommands: ['npm test', 'git status']
+    allowedCommands: ['a-long-allowed-command-name-one --with --flags', 'a-long-allowed-command-name-two --with --flags', 'three']
     allowedCommandGlobs: ['make *']
   agents:
     - id: worker
       model: claude-sonnet-4-6
       provider: anthropic
       system_prompt: synthetic
-      tools: [run_command, write_file]
+      tools: [run_command, git_status, git_commit, write_file]
       mcp_servers:
         - { ref: ${SERVER}-one }
         - { ref: ${SERVER}-two }
@@ -118,14 +118,18 @@ describe('the longest confirmation at 80x24', () => {
       input.push(`value-${String(index)}-padding-padding\r`);
     }
     await vi.waitFor(() => {
-      expect(channel.ui.getSnapshot().message).toContain(
-        'File scope: full, set by this repository.',
-      );
+      expect(channel.ui.getSnapshot().note).toContain('File scope: full, set by this repository.');
     });
     const card = channel.ui.getSnapshot();
     expect(card.kind).toBe('select');
-    expect(card.message.length, 'two bounded sentences').toBeLessThanOrEqual(401);
+    // The host's row and the question are two rows of text, each bounded: 280 and 200 characters.
+    expect(card.note.length, 'the host`s row, near its bound').toBeGreaterThan(240);
+    expect(card.note.length).toBeLessThanOrEqual(280);
+    expect(card.note).toContain('"a-long-allowed-comman…"');
+    expect(card.note).toContain('start processes (git_commit, git_status)');
+    expect(card.message.length).toBeLessThanOrEqual(200);
     expect(card.message).toContain(' more?');
+    expect(card.message, 'nothing of the host in the question').not.toContain('File scope');
 
     await vi.waitFor(() => {
       expect(
@@ -134,7 +138,7 @@ describe('the longest confirmation at 80x24', () => {
       ).not.toThrow();
     });
     expect(output.frames.join('')).not.toContain('Prompt does not fit');
-    expect(output.frames.join('')).toContain('Run commands'.toLowerCase());
+    expect(output.frames.join('')).toContain('does not limit');
 
     // `Enter` on the default (No) leaves the card: nothing starts.
     input.push('\r');

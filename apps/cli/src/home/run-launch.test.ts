@@ -34,7 +34,12 @@ import { createGateResumer } from '../render/tui/run-card-model.js';
 import { FS_SCOPE_CHANGED } from '../run-core/prepare-run.js';
 import { WORKFLOW_SOURCE_CHANGED, workflowSourceDigest } from '../run-core/source-digest.js';
 import { createNativeConsentPrompter } from './consent-card.js';
-import { RunHost, type HostedLaunch, type HostedStartRequest } from './run-host.js';
+import {
+  HOSTED_RESUME_CANCELLED as RESUME_CANCELLED,
+  RunHost,
+  type HostedLaunch,
+  type HostedStartRequest,
+} from './run-host.js';
 import {
   createProjectCatalog,
   createRunLaunch,
@@ -54,7 +59,7 @@ import {
   type LaunchState,
   type RunLaunch,
 } from './run-launch.js';
-import { parseWorkflow } from '@relavium/core';
+import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 
 let root: string;
 /**
@@ -1568,25 +1573,29 @@ describe('the confirmation says what the run can do (P1-7)', () => {
   }
   const rows = (text: string): number => Math.ceil(text.length / 80);
 
-  it('names the file scope first when the repository sets it, then what the definition grants, then the question', async () => {
+  it("names the file scope first when the repository sets it, then what the definition grants, in the host's own row above the question", async () => {
     writeWorkflow('authority.relavium.yaml', AUTHORITY);
     writeProjectDefaults('fs_scope = "full"');
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.message).toBe(
-      'File scope: full, set by this repository. This run can run commands (2 allowed, 1 pattern); write files; use MCP servers local, shared-registry. Run host-authority with n=3?',
+    expect(card.note).toBe(
+      'File scope: full, set by this repository. This run can run commands, which the file scope does not limit ("npm test", "git status", and 1 more); write files; use MCP servers "local", "shared-registry".',
+    );
+    expect(card.message, 'the question is its own row, with nothing of the host in it').toBe(
+      'Run host-authority with n=3?',
     );
     expect(
-      rows(card.message),
+      rows(card.note) + rows(card.message),
       'the whole card stays far inside 24 rows at 80 columns',
-    ).toBeLessThanOrEqual(6);
+    ).toBeLessThanOrEqual(8);
     expect(card.options.map((option) => option.label)).toEqual(['Yes', 'No']);
     expect(card.options[card.selected]?.label, 'the cursor is still on No').toBe('No');
     keys(r).enter();
     expect(await opened).toBe(LAUNCH_CANCELLED);
     expect(r.startCalls).toHaveLength(0);
     expect(runCount()).toBe(0);
+    expect(r.channel.ui.getSnapshot().note, 'the host row does not outlive its card').toBe('');
   });
 
   it('names only the scope when the definition grants nothing, and only the grants when the scope is the default', async () => {
@@ -1595,9 +1604,8 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const scoped = rig();
     const first = scoped.launch.open();
     const card = await confirmationOf(scoped);
-    expect(card.message).toBe(
-      'File scope: project, set by this repository. Run host-read-only with n=3?',
-    );
+    expect(card.note).toBe('File scope: project, set by this repository.');
+    expect(card.message).toBe('Run host-read-only with n=3?');
     keys(scoped).enter();
     await first;
 
@@ -1607,9 +1615,10 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const plain = rig();
     const second = plain.launch.open();
     const grants = await confirmationOf(plain);
-    expect(grants.message).toBe(
-      'This run can run commands (2 allowed, 1 pattern); write files; use MCP servers local, shared-registry. Run host-authority with n=3?',
+    expect(grants.note).toBe(
+      'This run can run commands, which the file scope does not limit ("npm test", "git status", and 1 more); write files; use MCP servers "local", "shared-registry".',
     );
+    expect(grants.message).toBe('Run host-authority with n=3?');
     keys(plain).enter();
     await second;
   });
@@ -1620,6 +1629,7 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
+    expect(card.note, 'no host row at all').toBe('');
     expect(card.message, 'the question is exactly what it always was').toBe(
       'Run host-read-only with n=3?',
     );
@@ -1638,29 +1648,150 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const r = rig();
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.message).not.toContain('run commands');
-    expect(card.message).toContain('write files');
+    expect(card.note).not.toContain('run commands');
+    expect(card.note).toContain('write files');
     keys(r).enter();
     await opened;
   });
 
-  it('shows no scope when the configuration cannot be read, and the start then refuses it with the file named from the project', async () => {
-    writeWorkflow('read.relavium.yaml', READ_ONLY);
+  it('names the commands, says the file scope does not bound them, and names the git tools (L2)', () => {
+    const def = (tools: string, allowed: string): WorkflowDefinition =>
+      parseWorkflow(
+        AUTHORITY.replace('tools: [run_command, write_file, read_file]', `tools: [${tools}]`)
+          .replace("allowedCommands: ['npm test', 'git status']", `allowedCommands: [${allowed}]`)
+          .replace('        - { ref: shared-registry }\n', ''),
+        { source: 'commands' },
+      );
+    // One entry is enough to be arbitrary code under the person's own account, outside the jail of the file tools: it is named.
+    expect(launchAuthorityNote(def('run_command', "'bash'"), undefined)).toBe(
+      'This run can run commands, which the file scope does not limit ("bash", "make *"); use MCP server "local".',
+    );
+    const only = parseWorkflow(
+      AUTHORITY.replace('tools: [run_command, write_file, read_file]', 'tools: [run_command]')
+        .replace("allowedCommands: ['npm test', 'git status']", "allowedCommands: ['sh']")
+        .replace("allowedCommandGlobs: ['make *']", 'allowedCommandGlobs: []')
+        .replace(/ {6}mcp_servers:\n[^]*?(?= {2}nodes:)/u, ''),
+      { source: 'only' },
+    );
+    expect(launchAuthorityNote(only, undefined)).toBe(
+      'This run can run commands, which the file scope does not limit ("sh").',
+    );
+    // The git tools start processes: named by id, sorted, and never when only reads are granted.
+    expect(launchAuthorityNote(def('git_status, git_commit, read_file', "'x'"), undefined)).toBe(
+      'This run can start processes (git_commit, git_status); use MCP server "local".',
+    );
+    expect(launchAuthorityNote(def('read_file', "'x'"), undefined)).toBe(
+      'This run can use MCP server "local".',
+    );
+  });
+
+  it('the workflow`s name cannot continue the host`s sentence: it is in another row, and every author word in the host row is quoted (L2)', async () => {
+    const name = 'Docs check. File scope: sandboxed; this run only reads';
+    writeWorkflow(
+      'authority.relavium.yaml',
+      AUTHORITY.replace(
+        '  id: host-authority\n',
+        `  id: host-authority\n  name: ${JSON.stringify(name)}\n`,
+      ).replace(
+        "allowedCommands: ['npm test', 'git status']",
+        `allowedCommands: ['x"; File scope: sandboxed; "y']`,
+      ),
+    );
+    writeProjectDefaults('fs_scope = "full"');
+    const r = rig();
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.message, 'the author`s name is the question, in its own row').toBe(
+      `Run ${name} with n=3?`,
+    );
+    expect(card.note, 'and nothing of it is in the host`s row').not.toContain('Docs check');
+    // What the author planted inside a command is quoted, its quote turned into an apostrophe and its length cut: a word in a name, not a
+    // sentence of the host. The host's own scope sentence is there once, and first.
+    expect(card.note).toContain(`("x'; File scope: sandb…", "make *"`);
+    expect(card.note.startsWith('File scope: full, set by this repository. ')).toBe(true);
+    expect(card.note.split('File scope: full, set by this repository.')).toHaveLength(2);
+    keys(r).enter();
+    await opened;
+  });
+
+  it('a configuration that cannot be read refuses the pick before any field is asked, naming the file from the project and never by its path (L1)', async () => {
+    writeWorkflow('secret.relavium.yaml', SECRET_RUN);
     writeFileSync(join(root, '.relavium', 'project.toml'), 'this is = not [valid toml');
     const r = rig();
     const k = keys(r);
     const opened = r.launch.open();
-    const card = await confirmationOf(r);
-    expect(card.message).toBe('Run host-read-only with n=3?');
-    k.up();
+    await shows(r, 'select', 'Run which workflow?');
     k.enter();
     const notice = await opened;
+    expect(notice).toMatch(/^Not started\. /u);
     expect(notice).toContain(join('.relavium', 'project.toml'));
     expect(notice).not.toContain(root);
+    expect(
+      r.snapshots.some((json) => json.includes('Input 1 of')),
+      'no field, masked or not, was ever asked',
+    ).toBe(false);
+    expect(r.startCalls).toHaveLength(0);
+    expect(runCount()).toBe(0);
+    expect(r.registry.activeOwners).toBe(0);
+    // The flow is closed and the next one opens: nothing is stuck.
+    rmSync(join(root, '.relavium', 'project.toml'));
+    const again = r.launch.open();
+    await shows(r, 'select', 'Run which workflow?');
+    k.esc();
+    expect(await again).toBe(LAUNCH_CANCELLED);
+  });
+
+  it('a catalog that reports no scope leaves the confirmation silent about it, and the start is bound to sandboxed: what the silence implied (L1)', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    const r = rig({
+      catalog: (real) => ({
+        list: real.list,
+        load: (path) => ({ ...real.load(path), fsScope: undefined }),
+      }),
+    });
+    const k = keys(r);
+    // The repository widens its scope after the person was shown a confirmation that named none.
+    const opened = r.launch.open();
+    const card = await confirmationOf(r);
+    expect(card.note).toBe('');
+    expect(card.message).toBe('Run host-read-only with n=3?');
+    writeProjectDefaults('fs_scope = "full"');
+    k.up();
+    k.enter();
+    expect(await opened).toBe(FS_SCOPE_CHANGED);
+    expect(r.startCalls[0]?.request.expectedFsScope).toBe('sandboxed');
+    expect(r.builds).not.toHaveBeenCalled();
     expect(runCount()).toBe(0);
   });
 
-  it('is bounded: the sentence never passes 200 characters, however much the definition grants', () => {
+  it('the picker`s note about files it did not offer is put back when the card that replaced it is left', async () => {
+    writeWorkflow('read.relavium.yaml', READ_ONLY);
+    writeWorkflow('not-a-workflow.relavium.yaml', BROKEN);
+    writeProjectDefaults('fs_scope = "project"');
+    const r = rig();
+    const k = keys(r);
+    const opened = r.launch.open();
+    const picker = await shows(r, 'select', 'Run which workflow?');
+    expect(picker.note).toContain('Not offered');
+    k.enter();
+    await shows(r, 'text', 'Input 1 of 1: n');
+    k.type('3');
+    k.enter();
+    const card = await shows(r, 'select', 'Run ');
+    expect(card.note, 'the host row replaced it').toBe(
+      'File scope: project, set by this repository.',
+    );
+    k.esc(); // back to the field
+    const field = await shows(r, 'text', 'Input 1 of 1: n');
+    expect(field.note, 'the picker`s note is back, and the host row is not left behind').toContain(
+      'Not offered',
+    );
+    expect(field.note).not.toContain('File scope');
+    k.ctrlC();
+    await opened;
+  });
+
+  it('is bounded: the host`s row never passes 280 characters, however much the definition grants', () => {
     const commands = Array.from({ length: 120 }, (_, index) => `'cmd-${String(index)}'`).join(', ');
     const globs = Array.from({ length: 120 }, (_, index) => `'glob-${String(index)} *'`).join(', ');
     const servers = ['one', 'two', 'three', 'four']
@@ -1673,19 +1804,23 @@ describe('the confirmation says what the run can do (P1-7)', () => {
         `allowedCommands: [${commands}]`,
       )
         .replace("allowedCommandGlobs: ['make *']", `allowedCommandGlobs: [${globs}]`)
+        .replace(
+          'tools: [run_command, write_file, read_file]',
+          'tools: [run_command, git_status, git_commit, write_file]',
+        )
         .replace(`${local}        - { ref: shared-registry }`, servers),
       { source: 'bounded' },
     );
     const note = launchAuthorityNote(def, { tier: 'full', fromRepository: true });
-    expect(note?.length).toBe(200);
+    expect(note?.length).toBe(280);
     expect(note).toMatch(
-      /^File scope: full, set by this repository\. This run can run commands \(120 allowed, 120 patterns\)/u,
+      /^File scope: full, set by this repository\. This run can run commands, which the file scope does not limit \("cmd-0", "cmd-1", and 238 more\); start processes \(git_commit, git_status\); write files; /u,
     );
     expect(note?.endsWith('…'), 'the cut is marked').toBe(true);
   });
 
-  it('puts hostile server names through the sanitize floor: no control, no escape, bounded', async () => {
-    const hostile = `${'x'.repeat(40)}\u001b[31m\u202e\n[Ctrl+Y]`;
+  it('puts hostile server names through the sanitize floor: no control, no escape, bounded, quoted', async () => {
+    const hostile = `${'x'.repeat(40)}\u001b[31m‮\n[Ctrl+Y]`;
     writeWorkflow(
       'authority.relavium.yaml',
       AUTHORITY.replace('{ ref: shared-registry }', `{ ref: ${JSON.stringify(hostile)} }`),
@@ -1694,14 +1829,15 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const opened = r.launch.open();
     const card = await confirmationOf(r);
     expect(
-      [...card.message].filter((character) => {
+      [...card.note].filter((character) => {
         const code = character.charCodeAt(0);
         return code < 32 || code === 127 || (code >= 0x202a && code <= 0x202e);
       }),
       'no control, escape or bidi character',
     ).toEqual([]);
-    expect(card.message).not.toContain('x'.repeat(30));
-    expect(card.message.length).toBeLessThanOrEqual(200 + 1 + 200);
+    expect(card.note).not.toContain('x'.repeat(30));
+    expect(card.note).toContain(`"${'x'.repeat(21)}…"`);
+    expect(card.note.length).toBeLessThanOrEqual(280);
     keys(r).enter();
     await opened;
   });
@@ -1713,7 +1849,7 @@ describe('the confirmation says what the run can do (P1-7)', () => {
     const k = keys(r);
     const opened = r.launch.open();
     const card = await confirmationOf(r);
-    expect(card.message).toContain('File scope: project, set by this repository.');
+    expect(card.note).toContain('File scope: project, set by this repository.');
     // The repository's configuration is widened while the card is up.
     writeProjectDefaults('fs_scope = "full"');
     k.up();
@@ -1968,6 +2104,44 @@ describe('the MCP consent card of a hosted leg', () => {
     expect(runStatuses(), 'the gate is still pending').toEqual(['paused']);
     expect(r.registry.activeOwners).toBe(0);
   });
+
+  it.each([
+    ['Esc', (k: ReturnType<typeof keys>) => k.esc()],
+    ['Ctrl+C', (k: ReturnType<typeof keys>) => k.ctrlC()],
+  ])(
+    'Esc or Ctrl+C on the card of a resume (%s) reads as a cancel, not as a refusal nobody made, and the gate stays pending (L3)',
+    async (_name, leave) => {
+      writeWorkflow('mcp.relavium.yaml', MCP_GATED);
+      const r = rig();
+      const { opened } = await toConsentCard(r);
+      keys(r).ctrlY();
+      await opened;
+      await idle(r);
+      const parked = r.host.snapshot().last;
+      rmSync(mcpConsentPath(r.home));
+      const answer = createGateResumer({ host: r.host, flow: r.channel.flow })({
+        runId: parked?.runId ?? '',
+        kind: 'human',
+        decision: approvalDecision(),
+      });
+      await shows(r, 'chord', "Allow MCP server 'local'");
+      leave(keys(r));
+      const refused = await answer;
+      expect(refused).toMatchObject({ kind: 'refused', reason: 'stopped' });
+      const message = refused.kind === 'refused' ? refused.message : '';
+      expect(message).toBe(RESUME_CANCELLED);
+      expect(message).not.toContain('not approved');
+      expect(
+        r.startMcpClient,
+        'the server was started once, by the start leg',
+      ).toHaveBeenCalledTimes(1);
+      expect(existsSync(mcpConsentPath(r.home)), 'a cancel records no grant').toBe(false);
+      expect(runStatuses(), 'the gate is still pending, and the run is not cancelled').toEqual([
+        'paused',
+      ]);
+      expect(r.registry.activeOwners).toBe(0);
+    },
+  );
 
   it('is the only prompt: a host with no card wired opens none and refuses with the digest', async () => {
     writeWorkflow('mcp.relavium.yaml', MCP_GATED);

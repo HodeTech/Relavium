@@ -236,6 +236,15 @@ export interface ResumeRunPorts {
   }) => Promise<Readonly<Record<string, string>>>;
   /** The MCP stdio consent gate, built at the point the connector's options are assembled. */
   readonly consentGate: (homeDir: string) => StdioConsentGate;
+  /**
+   * The commit point of the leg ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §4, §5), called
+   * once, after the last checkpoint and immediately before the engine is asked to resume the run, with no await between. Up to here a
+   * stop is a refusal that leaves the run exactly as it was; from here the engine has taken the run (a cancel during its preparation
+   * writes `run:cancelled`, which nothing can undo), so a host that ties a flow's cancel to this leg lets go of it HERE: the flow that
+   * asked may close, and the leg that started is a started leg. A stop of the leg itself (the Home leaving) is not a cancel of a flow
+   * and still reaches the engine. The shell passes none.
+   */
+  readonly commit?: (() => void) | undefined;
 }
 
 export type ResumeRunResult =
@@ -520,6 +529,8 @@ export async function resumeRun(
   lifetime.checkpoint();
   await engine.reconcile().catch(() => undefined);
   lifetime.checkpoint();
+  // THE COMMIT POINT (H1): the last checkpoint is behind us and the engine is next, so nothing may stop the leg between the two.
+  ports.commit?.();
   const handle = await resumeOrFail(engine, {
     runId,
     eventConsumption: 'iterated',

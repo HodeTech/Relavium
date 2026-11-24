@@ -478,6 +478,43 @@ describe('a run parked on a media job alone is continued with no decision', () =
 // 2. What a continue refuses, before it costs anything.
 // ---------------------------------------------------------------------------------------------------------------------
 
+describe('a cancel that lands while the engine prepares a continue never cancels the run (H1)', () => {
+  it.each(['before', 'inside'] as const)(
+    'an Esc that lands %s resumeFromCheckpoint leaves the parked jobs to be fetched: the run completes, it is not cancelled',
+    async (when) => {
+      const provider = jobProvider([DONE]);
+      const controller = new AbortController();
+      let armed = false;
+      const r = rig(provider, {
+        buildEngine: async (options?: BuildEngineOptions) => {
+          const engine = await buildEngine(options);
+          const original = engine.resumeFromCheckpoint.bind(engine);
+          engine.resumeFromCheckpoint = (input) => {
+            if (armed && when === 'before') controller.abort();
+            const pending = original(input);
+            if (armed && when === 'inside') controller.abort();
+            return pending;
+          };
+          return engine;
+        },
+      });
+      const runId = await park(r, MEDIA_ONLY, 'cancel-window.relavium.yaml');
+      armed = true;
+
+      const end = await started(r.host.resume({ kind: 'media', runId, signal: controller.signal }));
+
+      expect(controller.signal.aborted, 'the cancel did land').toBe(true);
+      expect(end.terminal.disposition).toBe('completed');
+      expect(runStatus(runId), 'the paid job was fetched, and the run was never cancelled').toBe(
+        'completed',
+      );
+      expect(provider.polled()).toEqual(['job-1']);
+      expect(eventsOf(runId).some((event) => event.type === 'run:cancelled')).toBe(false);
+    },
+    RESUMED_LEG_MS,
+  );
+});
+
 describe('a continue is refused before an engine, a key or a card', () => {
   it('for a run that also waits on a human gate: it needs a decision, and the gate stays answerable', async () => {
     const provider = jobProvider([DONE]);

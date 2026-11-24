@@ -4,7 +4,7 @@ import type { ErrorCode, RunDurability } from '@relavium/shared';
 import { outcomeToExitCode, type RunOutcome } from '../commands/drive.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { WorkflowSafetyExit } from '../process/exit-observations.js';
-import { sanitizeInline } from '../render/sanitize.js';
+import { displayRunId, relaviumRunCommand } from '../render/run-command-text.js';
 import type { LegKind } from '../run-core/finish-leg.js';
 
 /**
@@ -60,39 +60,15 @@ export interface HostedRunTerminal {
   readonly remedy: string | undefined;
 }
 
-/**
- * A run id the shell takes as one plain word: letters, digits and `_ . : -`, never a leading dash, bounded. It is the predicate of
- * `resumeCommandBase` (`gate/budget.ts`) for the one identifier this module names: the run ids the Home mints are UUIDs, but a hosted
- * leg also names runs it read from a database row, and an id with a space, a `;`, a backtick or a `$(` is not a word.
- */
-const SHELL_INERT_ID = /^[A-Za-z0-9_.:][A-Za-z0-9_.:-]{0,159}$/;
-
-/**
- * A run id as a card names it in prose: through the one-line floor, and with no backtick, because a backticked run of text in a card is
- * what a person copies as a command (an id of `` `touch x` `` would otherwise read as one). A UUID has none, so a real id is unchanged.
- */
-export function displayRunId(runId: string): string {
-  return sanitizeInline(runId).replaceAll('`', "'");
-}
-
-/**
- * The command that reads or continues a run, written as text the person may copy: `relavium logs <id>`, `relavium status <id>` or
- * `relavium gate <id>` for an id that is shell-inert, and for any other id the bare command with the id in prose, so a card never offers
- * a command line that carries a hostile id (a copied `relavium logs x; rm -rf ~` would run it). The one definition of that check: the
- * final summary the terminal prints after a run uses this too (PR #102 review).
- */
-export function relaviumRunCommand(command: 'logs' | 'status' | 'gate', runId: string): string {
-  return SHELL_INERT_ID.test(runId)
-    ? `\`relavium ${command} ${runId}\``
-    : `\`relavium ${command}\` (for run ${displayRunId(runId)})`;
-}
+// The one rule lives in `render/run-command-text.ts`, shared with the shell's epilogue and the final summary; the cards import it from here.
+export { displayRunId, relaviumRunCommand };
 
 /**
  * Turn a departed leg's facts into the text and the Home-side disposition of its card.
  *
  * The mapping reuses `outcomeToExitCode`, the one owner of the outcome-to-exit contract, so a card can never
  * disagree with what the shell's own `run` and `gate` would have exited with for the same leg. The wording is a
- * closed vocabulary: the only interpolated value is the run id, passed through `sanitizeInline`. No stored
+ * closed vocabulary: the only interpolated value is the run id, passed through `displayRunId`. No stored
  * value, no event text, no error message and no stderr line reaches a string here, so there is nothing for a
  * hostile workflow or a secret to ride in on.
  */

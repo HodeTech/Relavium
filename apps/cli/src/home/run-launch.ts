@@ -9,6 +9,8 @@ import {
 } from '@relavium/core';
 
 import { inputAdmissionMessage, resolveInputs } from '../commands/inputs.js';
+import { faultForTranscript } from '../config/config-error-text.js';
+import { ConfigError } from '../config/errors.js';
 import { loadResolvedConfig, type LoadedConfig } from '../config/load.js';
 import { shortRunId } from '../history/run-detail-model.js';
 import { CliError, isCliError } from '../process/errors.js';
@@ -396,7 +398,10 @@ export interface LoadedWorkflow {
   readonly definition: WorkflowDefinition;
   /** `workflowSourceDigest` of the text `definition` was parsed from: the one the start is later checked against. */
   readonly sourceDigest: string;
-  /** The file scope the same pick found, or `undefined` when the configuration could not be read (the start will say why). */
+  /**
+   * The file scope the same pick found. A catalog that reports none (a stub) leaves the confirmation naming no scope, which reads as the
+   * default, so the start is bound to `sandboxed`: the scope the confirmation implied.
+   */
   readonly fsScope?: LaunchFsScope | undefined;
 }
 
@@ -454,19 +459,20 @@ export function createProjectCatalog(options: {
 }
 
 /**
- * The file scope a start from `cwd` would use, read the way the start reads it. `undefined` when the configuration cannot be read: the
- * start loads it again and refuses with the file named, so the confirmation has nothing to add to that.
+ * The file scope a start from `cwd` would use, read the way the start reads it. A configuration that cannot be read REFUSES the pick
+ * (L1), with the file named from the project or `~` and never by its absolute path: the start would refuse it anyway, and a
+ * confirmation that named no scope because none could be read would read as `sandboxed`, which is a claim nobody checked. The refusal
+ * comes before the form, so no input (a masked one above all) is typed for a start that cannot happen.
  */
-function readFsScope(
-  cwd: string,
-  homeDir: string,
-  configPath: string | undefined,
-): LaunchFsScope | undefined {
+function readFsScope(cwd: string, homeDir: string, configPath: string | undefined): LaunchFsScope {
   try {
     const { config } = loadResolvedConfig({ cwd, configPath, home: homeDir });
     return { tier: config.fsScope ?? 'sandboxed', fromRepository: config.fsScope !== undefined };
-  } catch {
-    return undefined;
+  } catch (cause) {
+    const shown = faultForTranscript(cause, { cwd, homeDir });
+    if (shown instanceof ConfigError)
+      throw new CliError('invalid_invocation', `Not started. ${shown.message}`, { cause: shown });
+    throw cause;
   }
 }
 
@@ -639,9 +645,13 @@ function confirmationQuestion(form: LaunchForm, masked: ReadonlySet<string>): st
 // What the run can do: the sentence that stands above the question.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const AUTHORITY_LIMIT = 200;
-const SERVER_NAME_LIMIT = 24;
+/** The most characters the host's sentence takes: four rows at 80 columns, so the whole card stays far inside 24 rows. */
+const AUTHORITY_LIMIT = 280;
+/** How many allowed commands and MCP servers are named before the rest are counted, and how much of each name is shown. */
+const COMMANDS_SHOWN = 2;
+const COMMAND_NAME_LIMIT = 22;
 const SERVERS_SHOWN = 3;
+const SERVER_NAME_LIMIT = 22;
 
 /** The built-in tools' own classification, by id: the one place a tool is known to write, so no list of names is kept here. */
 const TOOL_POLICY = new Map(BUILTIN_TOOLS.map((tool) => [tool.id, tool.policy]));
@@ -673,34 +683,64 @@ function declaredServers(def: WorkflowDefinition): readonly string[] {
   return [...names];
 }
 
+/**
+ * Author text inside the host's sentence: through the sanitize floor, bounded, and in double quotes (a quote inside it becomes an
+ * apostrophe), so what the workflow's author wrote reads as a quoted name and can never continue the sentence it stands in.
+ */
+function quoted(text: string, limit: number): string {
+  return `"${bounded(text, limit).replaceAll('"', "'")}"`;
+}
+
+/**
+ * `run commands` with the first allowed ones NAMED (the exact entries, then the patterns), because a count says nothing about what
+ * runs: one `bash` or `npm run x` is arbitrary code under the person's own account. It says the file scope does not limit them, because
+ * the scope is the jail of the file tools and a command is not inside it. With no allowlist the tool is disabled (ADR-0029): a grant
+ * alone lets nothing run, and nothing is said.
+ */
 function commandsClause(def: WorkflowDefinition, granted: ReadonlySet<string>): string | undefined {
-  const exact = def.workflow.tools?.allowedCommands?.length ?? 0;
-  const patterns = def.workflow.tools?.allowedCommandGlobs?.length ?? 0;
-  // With no allowlist the tool is disabled (ADR-0029): a grant alone lets nothing run.
-  if (!granted.has('run_command') || exact + patterns === 0) return undefined;
-  const parts = [
-    ...(exact > 0 ? [`${String(exact)} allowed`] : []),
-    ...(patterns > 0 ? [`${String(patterns)} pattern${patterns === 1 ? '' : 's'}`] : []),
+  const allowed = [
+    ...(def.workflow.tools?.allowedCommands ?? []),
+    ...(def.workflow.tools?.allowedCommandGlobs ?? []),
   ];
-  return `run commands (${parts.join(', ')})`;
+  if (!granted.has('run_command') || allowed.length === 0) return undefined;
+  const shown = allowed
+    .slice(0, COMMANDS_SHOWN)
+    .map((command) => quoted(command, COMMAND_NAME_LIMIT));
+  const rest = allowed.length - shown.length;
+  return `run commands, which the file scope does not limit (${shown.join(', ')}${rest > 0 ? `, and ${String(rest)} more` : ''})`;
+}
+
+/**
+ * The built-in tools that start a process of their own (the git tools) are named by id: they run whatever git does with the working
+ * tree, outside what the file scope bounds, and `run_command` has its own clause. Only the ids of tools the host itself ships are
+ * named, so nothing an author wrote is put in this clause.
+ */
+function processToolsClause(granted: ReadonlySet<string>): string | undefined {
+  const names = [...granted]
+    .filter((tool) => tool !== 'run_command' && TOOL_POLICY.get(tool)?.spawnsProcess === true)
+    .sort();
+  return names.length === 0 ? undefined : `start processes (${names.join(', ')})`;
 }
 
 function serversClause(def: WorkflowDefinition): string | undefined {
   const servers = declaredServers(def);
   if (servers.length === 0) return undefined;
-  const shown = servers.slice(0, SERVERS_SHOWN).map((name) => bounded(name, SERVER_NAME_LIMIT));
+  const shown = servers.slice(0, SERVERS_SHOWN).map((name) => quoted(name, SERVER_NAME_LIMIT));
   const rest = servers.length - shown.length;
   return `use MCP ${servers.length === 1 ? 'server' : 'servers'} ${shown.join(', ')}${rest > 0 ? ` and ${String(rest)} more` : ''}`;
 }
 
 /**
- * What a Yes lets the run do, in one bounded sentence, from the SAME bytes the confirmation binds: the definition read at the pick (its
- * digest goes to the start) and the file scope read with it (which the start checks again). The run is unattended: nothing asks again.
+ * What a Yes lets the run do, in one bounded passage that is the HOST's: it is drawn as its own row above the question (the card's
+ * note), so the workflow's name, which the question carries, cannot continue it, and every author word inside it is quoted. It is
+ * built from the SAME bytes the confirmation binds: the definition read at the pick (its digest goes to the start) and the file scope
+ * read with it (which the start checks again). The run is unattended: nothing asks again.
  *
  * - The file scope comes FIRST and is shown whenever it is not the default (`sandboxed`): a repository's own configuration can widen
  *   it, and the person confirming a workflow has not read that file.
- * - Then what the workflow's own definition grants: running commands (with the size of the allowlist), writing files, and the MCP
- *   servers it starts (a local program still meets its own consent card).
+ * - Then what the workflow's own definition grants: running commands (the first allowed ones named, and the words that the file scope
+ *   does not limit them), the git tools by id, writing files, and the MCP servers it starts (a local program still meets its own
+ *   consent card).
  *
  * `undefined` when there is nothing to say, so a workflow that can only read inside its workspace is asked about as it always was.
  */
@@ -711,6 +751,7 @@ export function launchAuthorityNote(
   const granted = grantedTools(def);
   const clauses = [
     commandsClause(def, granted),
+    processToolsClause(granted),
     [...granted].some((tool) => TOOL_POLICY.get(tool)?.fsWrite === true)
       ? 'write files'
       : undefined,
@@ -723,17 +764,6 @@ export function launchAuthorityNote(
     clauses.length === 0 ? undefined : `This run can ${clauses.join('; ')}.`,
   ].filter((sentence): sentence is string => sentence !== undefined);
   return sentences.length === 0 ? undefined : bounded(sentences.join(' '), AUTHORITY_LIMIT);
-}
-
-/** The whole confirmation: what the run can do (when there is something to say), then the question. */
-function confirmation(
-  def: WorkflowDefinition,
-  form: LaunchForm,
-  masked: ReadonlySet<string>,
-): string {
-  const authority = launchAuthorityNote(def, form.fsScope);
-  const question = confirmationQuestion(form, masked);
-  return authority === undefined ? question : `${authority} ${question}`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -912,7 +942,7 @@ export function createRunLaunch(deps: RunLaunchDeps): RunLaunch {
 
     const signal = flow.begin();
     const hold = createSecretHold();
-    const running = runSession({ deps, hold, signal, preselect: slug });
+    const running = runSession({ deps, hold, signal, preselect: slug, skipped });
     current = { session: running.session, done: running.done };
     try {
       if (skipped !== undefined) flow.note(skipped, 'Run workflow');
@@ -943,8 +973,10 @@ function runSession(options: {
   readonly signal: AbortSignal;
   /** The slug the picker is skipped for, once; the picker opens on it when the person steps back to it. */
   readonly preselect?: string | undefined;
+  /** The line the picker showed about the files it did not offer: put back when a card that replaced it is left. */
+  readonly skipped?: string | undefined;
 }): SessionRun {
-  const { deps, hold, signal, preselect } = options;
+  const { deps, hold, signal, preselect, skipped } = options;
   const { flow, host, catalog } = deps;
   let preselected = preselect !== undefined; // the picker is skipped only the first time
   let state: LaunchState = { kind: 'idle', turn: 0 };
@@ -966,6 +998,12 @@ function runSession(options: {
       deps.observe?.(state);
     }
     for (const effect of step.effects) execute(effect);
+  }
+
+  /** The note the flow carried before a card put its own row there: the skipped files the picker named, or none. */
+  function restoreNote(): void {
+    if (skipped === undefined) flow.note('');
+    else flow.note(skipped, 'Run workflow');
   }
 
   function fail(cause: unknown): void {
@@ -1103,12 +1141,21 @@ function runSession(options: {
       dispatch({ kind: 'stop', notice: `Not started. ${refusal}` });
       return;
     }
-    // No is the default: an `Enter` typed ahead, or pressed twice, answers No.
-    const answer = await flow.confirm(
-      confirmation(def, effect.form, hold.names()),
-      false,
-      FIELD_PROMPT_ESCAPE,
-    );
+    // What the run can do is the HOST's own row above the question (the card's note): the workflow's name, which the question carries,
+    // is in another row and cannot continue it. It stays only while this card is up, and the picker's note is put back after it.
+    const authority = launchAuthorityNote(def, effect.form.fsScope);
+    if (authority !== undefined) flow.note(authority);
+    let answer: boolean | symbol;
+    try {
+      // No is the default: an `Enter` typed ahead, or pressed twice, answers No.
+      answer = await flow.confirm(
+        confirmationQuestion(effect.form, hold.names()),
+        false,
+        FIELD_PROMPT_ESCAPE,
+      );
+    } finally {
+      if (authority !== undefined) restoreNote();
+    }
     if (answer === NATIVE_PROMPT_BACK) dispatch({ kind: 'back', turn: effect.turn });
     else if (typeof answer === 'boolean')
       dispatch({ kind: 'confirmed', turn: effect.turn, yes: answer });
@@ -1139,7 +1186,7 @@ function runSession(options: {
         // The host reads the file again; it must find the text this confirmation was built from, or it starts nothing.
         expectedSourceDigest: sourceDigest,
         // The file scope the confirmation named: the start refuses, before anything is asked, when the project now sets another.
-        ...(fsScope === undefined ? {} : { expectedFsScope: fsScope.tier }),
+        expectedFsScope: fsScope?.tier ?? 'sandboxed',
         signal,
       });
       dispatch({ kind: 'launched', turn: effect.turn, notice: launchNotice(choice, launch) });
