@@ -5,6 +5,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { writeRecordLines } from '../render/records.js';
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
@@ -413,7 +414,7 @@ export function pricingPriceNote(plan: SetPricingPlan): string {
  */
 export function pricingSetSentence(
   plan: SetPricingPlan,
-  surface: 'shell' | 'tui' = 'shell',
+  surface: NoticeSurface = 'shell',
   /** What the sentence calls the provider: the id in the shell, the Home's display name (`OpenAI`) in the card. */
   providerName: string = plan.provider,
 ): string {

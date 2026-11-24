@@ -1181,7 +1181,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // pre-existing "not on your key" note.
   const blockedHint = (step: Extract<ModelPickerStep, { kind: 'blocked' }>): string =>
     step.reason === 'no-key'
-      ? `${step.displayName}: no key for ${providerDisplayName(step.provider)} — restart this chat to open provider setup`
+      ? `${step.displayName}: no key for ${providerDisplayName(step.provider)} — connect it from the Home (start Relavium without arguments)`
       : `${step.displayName} is not available on your key — pick another`;
 
   // Act on an accepted pick. A SAME-model pick is an effort-only change (ADR-0066 §5) — a per-turn SESSION override
@@ -2093,6 +2093,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             color={color}
             nowMs={Date.now()}
             providerName={providerDisplayName}
+            scope="this-chat"
           />
         )}
         {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}

@@ -78,12 +78,12 @@ export interface ReplCommandContext {
   /** `/trim [n]` (ADR-0062) — deterministically drop older messages to the last `n` (default `[chat].max_messages`),
    *  no LLM call. Receives the raw `n` token (empty ⇒ use the config default). */
   readonly trimHistory: (nArg: string) => void | Promise<void>;
-  /** `/clear` (ADR-0062 §7) — end THIS conversation (persisted + still resumable via `chat-resume`) and start a
+  /** `/clear` (ADR-0062 §7) — end THIS conversation (persisted, and continued with `/resume` on the Home) and start a
    *  FRESH session under a new `sessionId`. A destructive HOST-LEVEL lifecycle swap (no engine primitive), so its
    *  effect on the running REPL differs by surface: a live chat (standalone or in-Home) tears the current session
-   *  down and swaps in a fresh one; the BARE Home (no live session) surfaces an inert "nothing to clear" notice.
+   *  down and swaps in a fresh one; the BARE Home (no live session) is dim, with the reason, and a typed `/clear` answers the same words.
    *  Interactive-only — a `--json` / plain non-TTY session rejects it (one machine stream is one session lifecycle).
-   *  Its notice surfaces the OLD sessionId + `relavium chat-resume <id>` so the prior conversation is discoverable. */
+   *  Its notice says the previous conversation is saved and where `/resume` is (`clearedNotice`), and names no id or shell command. */
   readonly clearSession: () => void | Promise<void>;
   /** `/models` (2.5.G S7, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10 · ADR-0059) — open the
    *  in-tree model picker over the merged live/static catalog. `availableIn: ['home','chat']`, with a surface-specific
@@ -235,8 +235,10 @@ export interface ReplCommand {
   /** A forward annotation, shared with the shell manifest ({@link CommandEffect}): `read` (no data change) /
    *  `write` (creates a file) / `destructive` (irreversibly removes — e.g. `/clear`, which ends the current session). */
   readonly effect: CommandEffect;
-  /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any token not
-   *  listed here, so a zero-arg command still rejects `/exit now`. */
+  /** The flags this command accepts after its name (omitted ⇒ zero-arg), e.g. `/doctor --deep`. The in-REPL dispatch
+   *  (`createChatLineHandler`) splits the slash line into a name and tokens, rejects any token not listed here (so a
+   *  zero-arg command still rejects `/exit now`) and passes the validated tokens to `run`. The `/` palette captures NO
+   *  args: selecting a command submits the bare `/<name>`, so a flag is opt-in by typing it. Flags only, no positionals. */
   readonly args?: readonly ReplArg[];
   /** A sentence appended to the dispatch's rejection of a token this command does not accept: where a removed or mistyped form's job went. */
   readonly rejectHint?: string;
@@ -251,15 +253,6 @@ export interface ReplCommand {
    *  chat). A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. */
   readonly availableIn: readonly ('home' | 'chat')[];
 }
-
-/**
- * **Args (the prior S4 obligation, discharged in S5).** A command MAY declare {@link ReplCommand.args} — the
- * flags it accepts after its name (`/doctor --deep`). The in-REPL dispatch (createChatLineHandler) splits the
- * slash line into `name + tokens`, REJECTS a token not in the command's declared flags (so a zero-arg command
- * still rejects `/exit now`), and passes the validated tokens to `run(ctx, args)`. The `/` palette captures NO
- * args: selecting a command submits the BARE `/<name>` (its default / fast behavior) — a flag like `--deep` is
- * opt-in by TYPING it. The set stays flags-only (no positionals).
- */
 
 const ENABLED: Availability = Object.freeze({ enabled: true });
 const unavailable = (reason: string): Availability => Object.freeze({ enabled: false, reason });
@@ -887,15 +880,17 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(comma
 /**
  * The one line a chat answers to a command that only the Home has (ADR-0145 §7.4): it names the surface that has the command, opens
  * nothing and is not "unknown command". `undefined` when the surface offers the command, when no command has that name and when no surface
- * but a chat has it (the Home answers a chat's word itself, with its own sentence). The stand-alone chat has no Home to go back to, and the
- * line is the same for it: the chat handler is the one both chats share.
+ * but a chat has it (the Home answers a chat's word itself, with its own sentence). A stand-alone chat (`chat`) is not inside the Home, so its
+ * line also says how to reach it; the chat the Home hosts (`home-chat`) is, and its line only names it.
  */
 export function homeOnlyPointer(name: string, surface: PaletteSurface): string | undefined {
   if (surface === 'home') return undefined;
   const definition = COMMAND_DEFINITIONS_BY_NAME.get(name);
   if (definition === undefined || definition.placements[surface] !== undefined) return undefined;
   if (definition.placements.home === undefined) return undefined;
-  return `/${name} is available from the Home.`;
+  return surface === 'chat'
+    ? `/${name} is available from the Home: start Relavium without arguments.`
+    : `/${name} is available from the Home.`;
 }
 
 /** What a host says when the palette's Enter lands on a dim row: the row's own reason, as a sentence, never "unknown command". */

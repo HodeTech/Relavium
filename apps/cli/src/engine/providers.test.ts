@@ -169,7 +169,7 @@ describe('providerRowHint (MVP-11 Step 2.4: the hint inside the list that connec
   it('says what Enter does on a row with no key, an environment key that is not allowed yet, a locked keychain and a custom endpoint', () => {
     expect(providerRowHint({ ...health, status: 'missing' })).toBe('no key yet · Enter to add one');
     expect(providerRowHint(standard('ANTHROPIC_API_KEY'))).toBe(
-      'ANTHROPIC_API_KEY is set · Enter to allow it',
+      'ANTHROPIC_API_KEY is set · Enter to review it',
     );
     expect(providerRowHint({ ...health, status: 'unavailable' })).toBe(
       'the OS keychain is unavailable · Enter for options',

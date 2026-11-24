@@ -146,6 +146,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
   createHatches,
@@ -857,6 +858,7 @@ async function chatCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
@@ -1367,6 +1369,7 @@ async function chatResumeCommandBody(
           // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
           // why the knob they set did nothing.
           onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+          noticeSurface: chatNoticeSurface(deps.io, deps.global),
           onEffectAttention: effectAttention.note,
           onListenerError: (note: string) => emitLiveNotice(deps.io, note),
           onUnpriced: (note) => emitLiveNotice(deps.io, note),
@@ -1559,7 +1562,11 @@ async function chatResumeCommandBody(
 
 /** The in-view notice a resumed session whose provider has no key opens with, and repeats at each refused send. */
 function resumeMissingKeyNotice(providers: ProviderResolver, provider: ProviderId): string {
-  return `${missingKeyMessage(provider, providers.credentialSurface)} Or switch to a model whose provider has a key with /models.`;
+  // This notice is always read inside a live chat. The Home's resolver speaks for the Home's landing (`/providers`), which a chat the Home
+  // hosts answers with a pointer only, so there the remedy is the way back to the Home.
+  const surface =
+    providers.credentialSurface === 'home' ? 'home-chat' : providers.credentialSurface;
+  return `${missingKeyMessage(provider, surface)} Or switch to a model whose provider has a key with /models.`;
 }
 
 /**
@@ -1666,6 +1673,17 @@ export function chatIsInteractive(
   );
 }
 
+/**
+ * The wording of the notices a chat session composes (unpriced model, withheld tier): the interactive chat's remedies name its own commands,
+ * and a plain or `--json` chat is scripted output that reads the shell wording (it has no `/models` to open).
+ */
+export function chatNoticeSurface(
+  io: Pick<CliIo, 'stdoutIsTty' | 'env'>,
+  global: Pick<GlobalOptions, 'json'>,
+): NoticeSurface {
+  return chatIsInteractive(io, global) ? 'tui' : 'shell';
+}
+
 export function createChatModeControl(
   built: Pick<
     BuiltChatSession,
@@ -1736,7 +1754,9 @@ export function createChatModeControl(
     // the default model, and the tier stays behind. It is inert now, and being inert SILENTLY is the expensive
     // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
     // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
-    store.notice(effortRejectedNote(built.agent.model, seeded, tiers, 'tui'));
+    store.notice(
+      effortRejectedNote(built.agent.model, seeded, tiers, interactive ? 'tui' : 'shell'),
+    );
   }
   return {
     commandApprovals: modeEnv.cache,
@@ -2195,7 +2215,9 @@ export function createChatLineHandler(
         // the palette submits this bare form), marking the active one.
         const current = store.getSnapshot().reasoningEffort;
         if (offered.length === 0) {
-          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model, 'tui')}`);
+          emitOutput(
+            `reasoning effort: ${effortUnavailableNote(built.agent.model, interactive ? 'tui' : 'shell')}`,
+          );
           return;
         }
         // Label + mark through the SAME projection the picker uses, so a budget model reads "on" and a bound tier
@@ -2231,7 +2253,9 @@ export function createChatLineHandler(
       if (!offered.includes(tier)) {
         // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
         // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
-        emitOutput(effortRejectedNote(built.agent.model, tier, offered, 'tui'));
+        emitOutput(
+          effortRejectedNote(built.agent.model, tier, offered, interactive ? 'tui' : 'shell'),
+        );
         return;
       }
       modeControl.onSetEffort(tier);
@@ -2346,9 +2370,11 @@ export function createChatLineHandler(
     const command =
       name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
     if (command === undefined) {
-      // A word only the Home has (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`): one line that names the Home, and
-      // nothing opens (ADR-0145 §7.4). It is not an unknown command.
-      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'home-chat');
+      // A word only the Home has (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`, and `/resume`, which a stand-alone chat
+      // has no list for): one line that names the Home, and nothing opens (ADR-0145 §7.4). It is not an unknown command. This handler
+      // is a stand-alone chat's (and a plain or `--json` driver's): the chat the Home hosts answers those words in its controller first,
+      // with its own sentence, so this is the `chat` surface, which also says how to reach the Home.
+      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'chat');
       if (pointer !== undefined) {
         emitOutput(pointer);
         return;
@@ -2357,14 +2383,6 @@ export function createChatLineHandler(
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
       emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
-      return;
-    }
-    // Surface-scope guard (2.5.G S7): a command not `availableIn` this (chat) surface — e.g. the HOME-ONLY `/models`
-    // — is rejected with an actionable pointer, never dispatched. The palette already filters by surface
-    // (CHAT_PALETTE_COMMANDS); this covers a command TYPED directly, keeping the home-only next-session `/models`
-    // config action distinct from the Phase-2.6 mid-chat `/models` live reseat (ADR-0059).
-    if (!command.availableIn.includes('chat')) {
-      emitOutput(`Open the Home to use /${command.name}: start Relavium without arguments.`);
       return;
     }
     const rejection = validateSlashTokens(command, tokens);
@@ -2523,6 +2541,7 @@ async function buildFreshChatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      noticeSurface: chatNoticeSurface(deps.io, deps.global),
       onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,
@@ -2884,6 +2903,7 @@ async function buildReseatWiring(
         ? {}
         : { onCompactionStart: deps.onCompactionStart }),
       onEffortWithheld: deps.onEffortWithheld,
+      noticeSurface: chatNoticeSurface(deps.io, deps.global),
       onEffectAttention: deps.onEffectAttention,
       onListenerError: deps.onListenerError,
       onUnpriced: deps.onUnpriced,

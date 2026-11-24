@@ -2,10 +2,10 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import { secretMaskRanges } from '@relavium/llm/scrub-secrets';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import {
+  availabilityOf,
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   homeOnlyPointer,
@@ -188,10 +188,11 @@ import type { RunStore } from './run-store.js';
 import { runScreenLeg, runScreenPhase } from './run-screen.js';
 import { nearestCommandName } from './command-typo.js';
 import { hostedEndNotice, type ParkedRunRow } from './home-attention.js';
-import { createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
+import { authorLine, createRunCard, type RunCard, type RunCardSnapshot } from './run-card-model.js';
 import { createChordGuard, createChordHistory, type ChordHistory } from './chord-guard.js';
 import { resolveApprovalGuard, type ApprovalGuard } from './tool-review-model.js';
-import { sanitizeInline, sanitizeUntrusted } from '../sanitize.js';
+import { looksLikeProviderKey } from '../provider-key-shape.js';
+import { sanitizeInline } from '../sanitize.js';
 
 /**
  * The Home session state machine, extracted from the ink view as a plain external store (2.5.B / ADR-0054) so the
@@ -771,7 +772,32 @@ export interface HomeController {
  * recorded, and the key belongs in the setup that has just opened. Fixed text: it never echoes the draft.
  */
 export const KEY_SHAPED_DRAFT_NOTICE =
-  'That looked like an API key, so it was not kept. Paste it in the setup that just opened; it is stored in your OS keychain.';
+  'That looked like an API key, so it was not kept. Choose a provider in the setup that just opened and paste it there.';
+
+/**
+ * What a slash-led line that looks like a provider key is answered with (a key pasted after a stray `/`): no setup opens for it, so the
+ * sentence names where a key goes instead. Fixed text; the line is cleared and never echoed (the unknown-command notice would have shown
+ * up to 64 of its characters).
+ */
+export const KEY_SHAPED_LINE_NOTICE =
+  'That looked like an API key, so it was not shown or kept. Use /providers to connect a provider and paste it there.';
+
+/** The longest a chat build's failure is drawn: it wraps across rows, and no config text or error body may fill the screen. */
+const FAILURE_NOTICE_MAX = 300;
+
+/**
+ * A chat build's failure as ONE logical line that is safe to draw (ADR-0145 §5): the untrusted-text floor with secrets scrubbed, the line
+ * ends collapsed, the host's own glyphs (a `━━ Approval needed ━━` rule, a `✓`) blanked so the text cannot pose as the Home's own rows, and a
+ * length bound. The error can carry configuration text (`formatZodError` names raw config keys) and the configuration is read again on every
+ * chat build.
+ */
+function failureLine(error: unknown): string {
+  const line = authorLine(error instanceof Error ? error.message : String(error));
+  const characters = Array.from(line);
+  return characters.length <= FAILURE_NOTICE_MAX
+    ? line
+    : `${characters.slice(0, FAILURE_NOTICE_MAX).join('')}…`;
+}
 
 /** What `Enter` on a failed or recent run says when the Home has no run history to open it from. */
 const RUN_HISTORY_UNAVAILABLE = 'The run history is not available here.';
@@ -2372,6 +2398,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (!word.startsWith('/')) return false;
     const token = word.slice(0, 65); // the word as it is shown: a longer one is cut, and still answered
     const landing = state.session === undefined;
+    if (landing && looksLikeProviderKey(text)) {
+      // A key typed after a stray `/` (`/sk-ant-...`, or `/Foo` and the key on the next line): the unknown-command notice below would show up
+      // to 64 characters of it. It is cleared, not echoed, and nothing records it (the caller returns before the history).
+      set({ input: emptyEditor(), notice: KEY_SHAPED_LINE_NOTICE });
+      return true;
+    }
     if (REPL_COMMANDS_BY_NAME.has(token.slice(1))) {
       if (!landing) return false; // a chat's own command: the dispatch takes it
       answerLandingWord(token, text.length > token.length);
@@ -2446,8 +2478,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return true;
     }
     // `/agents` at the Home opens the tab host on the agents strip's Defined tab (ADR-0140 §3, MVP-8 step 5). It is a Home command only: with a
-    // chat in front it is not routed here, so it reaches the chat as the unknown slash it is and starts nothing, as `/run` does.
-    if (state.session === undefined && /^\/agents(?:\s|$)/u.test(text)) {
+    // chat in front the pointer block above has already answered the word (one line that names the Home), so it never reaches this line.
+    if (/^\/agents(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/agents') set({ notice: '/agents accepts no arguments.' });
       else if (deps.agents === undefined)
@@ -2455,25 +2487,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       else openTabHost('agents');
       return true;
     }
-    // `/run` is a Home command only (ADR-0139 §7): with a chat in front it is not routed here, so it reaches the chat as the unknown
-    // slash it is and starts nothing. (The chat palette does not list it either.)
-    if (state.session === undefined && /^\/run(?:\s|$)/u.test(text)) {
+    // `/run` is a Home command only (ADR-0139 §7): with a chat in front the pointer block above has already answered the word. (The chat
+    // palette does not list it either.)
+    if (/^\/run(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/run')
         set({ notice: '/run accepts no arguments. Use its picker to choose a workflow.' });
       else openRunLaunch();
       return true;
     }
-    // `/import` and `/pricing` are Home words too (ADR-0140 §9): a card each, opened only at the landing. With a chat in front they are not
-    // routed here, and the chat's own dispatch answers the line as the unknown slash it is, as it answers `/run`.
-    if (state.session === undefined && /^\/import(?:\s|$)/u.test(text)) {
+    // `/import` and `/pricing` are Home words too (ADR-0140 §9): a card each, opened only at the landing. With a chat in front the pointer
+    // block above has already answered them, as it answers `/run`.
+    if (/^\/import(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/import')
         set({ notice: '/import accepts no arguments. It asks for the path.' });
       else openImportCard();
       return true;
     }
-    if (state.session === undefined && /^\/pricing(?:\s|$)/u.test(text)) {
+    if (/^\/pricing(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/pricing') set({ notice: '/pricing accepts no arguments.' });
       else openPricingCard();
@@ -2481,23 +2513,26 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     if (/^\/init(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
-      if (text !== '/init') {
-        set({ notice: '/init accepts no arguments.' });
-        state.session?.store.note('/init accepts no arguments.');
-      } else openProjectInit();
+      if (text !== '/init') set({ notice: '/init accepts no arguments.' });
+      else openProjectInit();
       return true;
     }
     if (/^\/providers(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
-      if (text !== '/providers') {
-        set({ notice: '/providers accepts no arguments.' });
-        state.session?.store.note('/providers accepts no arguments.');
-      } else openProviderSetup();
+      if (text !== '/providers') set({ notice: '/providers accepts no arguments.' });
+      else openProviderSetup();
       return true;
     }
+    // A near miss of `/providers`. At the landing the word is the one to type; in a chat the Home hosts, `/providers` itself answers with a
+    // pointer only, so the line points at the Home (and `Ctrl+C` twice is the way back to it).
     if (/^\/provider(?:\s|$)/u.test(text)) {
-      set({ input: emptyEditor(), notice: 'Use /providers to connect or manage provider keys.' });
-      state.session?.store.note('Use /providers to connect or manage provider keys.');
+      set({ input: emptyEditor() });
+      if (state.session === undefined)
+        set({ notice: 'Use /providers to connect or manage provider keys.' });
+      else
+        state.session.store.notice(
+          'Provider keys are managed from the Home: go back to it (Ctrl+C twice) and use /providers.',
+        ); // the channel the chat's own dispatch answers through, as the pointer above
       return true;
     }
     return answerTypedWord(text);
@@ -2537,12 +2572,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * not sent (sending it on success would send it to a model the person did not look at). Nothing is recorded in the input history: the
    * message was not sent.
    *
-   * The exception is a draft that looks like a provider key (what the secret scrubber would mask). It is never kept and never recorded: the
+   * The exception is a draft that looks like a provider key ({@link looksLikeProviderKey}: the four providers' formats). It is never kept and never recorded: the
    * history database is unencrypted and cannot be deleted, so a pasted key must not survive there or in the prompt. The editor is cleared
    * in the same state change that opens the setup, and the notice says why and where the key goes.
    */
   const connectProviderKeepingDraft = (): void => {
-    if (secretMaskRanges(state.input.text).length === 0) {
+    if (!looksLikeProviderKey(state.input.text)) {
       openProviderSetup();
       return;
     }
@@ -2568,7 +2603,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     // The message as it was typed, before the editor is cleared: a build that fails gives it back (G6).
     const draft = state.input.text;
-    history = recordHistory(history, trimmed); // the message that starts the chat is recallable via Up in it
+    // The message that starts the chat is recallable via Up in it, unless it looks like a provider key: the history is an unencrypted database
+    // that cannot be deleted from, and a build that then fails does not give such a draft back, so Up must not either (ADR-0146 §6).
+    const keyShaped = looksLikeProviderKey(draft);
+    if (!keyShaped) history = recordHistory(history, trimmed);
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
     doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
@@ -2594,9 +2632,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       (err) => {
         // The message comes back to the prompt and the failure is shown WHOLE, in the notice area that wraps and pages: the one-row line it
         // used to be cut the remedy off at 80 columns (observed). A draft that looks like a key is not given back (ADR-0146 §6).
-        const restorable = state.input.text === '' && secretMaskRanges(draft).length === 0;
+        const restorable = state.input.text === '' && !keyShaped;
         set({
-          notice: `Couldn’t start the chat: ${sanitizeUntrusted(err instanceof Error ? err.message : String(err))}`,
+          notice: `Couldn’t start the chat: ${failureLine(err)}`,
           ...(restorable ? { input: editorFromText(draft) } : {}),
           pendingMessage: '',
           mode: 'home', // route a build failure back to Home
@@ -2948,8 +2986,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
         // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
         // The remedy is the Home's own: `/providers`. With no setup port wired it would answer that setup is unavailable, so no remedy is named.
+        // The same picker is the live reseat picker of a chat the Home hosts, and that chat answers `/providers` with a pointer only: there the
+        // remedy is the way back to the Home (ADR-0145 §7.4).
         const noKeyRemedy =
-          deps.providerSetup === undefined ? '' : ' — open /providers to connect a key';
+          deps.providerSetup === undefined
+            ? ''
+            : state.session === undefined
+              ? ' — open /providers to connect a key'
+              : ' — go back to the Home (Ctrl+C twice) and use /providers';
         const hint =
           step.reason === 'no-key'
             ? `${step.displayName}: no key for ${providerDisplayName(step.provider)}${noKeyRemedy}`
@@ -3119,12 +3163,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
   // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
   // (a gentle escape back to the prompt — never trapping the user).
-  // The Home's own REPL context (no live session): only `/exit` applies in HOME_PALETTE_COMMANDS, and it ends the
-  // Home cleanly; the chat-lifecycle capabilities are unreachable from the Home palette (cancel/export are
-  // chat-only) but the context shape requires them, so they are inert here.
-  // The Home's REPL context. Capabilities for CHAT-ONLY commands (cancel/export/cost/workflows — `availableIn`
-  // excludes the Home) are inert noops, unreachable from HOME_PALETTE_COMMANDS. A genuinely home-applicable command
-  // wires a REAL impl: `/doctor` (availableIn ['home','chat']) runs the fast tier into the Home `notice` surface.
+  // The Home's REPL context (no live session), the one the bare Home's palette and its typed registry words run over. Capabilities for
+  // the commands that have NO `home` placement (cancel, export, cost, effort, thinking, details, compact, trim, scrollback, edit, copy: a
+  // chat's) are inert noops, unreachable from the bare Home's list, which the context's shape requires. A command with a `home` placement
+  // either wires a real implementation below (`/exit`, `/help`, `/doctor`, `/models`, `/mode`; `/clear` answers its unavailable notice) or
+  // is opened by this controller itself (`/providers`, `/init`, `/run`, `/workflows`, `/agents`, `/permissions`, `/import`, `/pricing`,
+  // `/resume`), and its `run` does nothing.
   const homeReplCtx: ReplCommandContext = {
     exit: () => requestExit(),
     cancel: () => undefined,
@@ -3149,18 +3193,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     toggleReasoning: () => undefined, // `/thinking` is chat-only (2.5.H); inert in the bare-Home surface (no live session)
     compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
     trimHistory: () => undefined, // `/trim` is chat-only (ADR-0062); inert in the Home surface
-    // `/clear` (ADR-0062 §7) IS offered in the Home palette (availableIn ['home','chat']), but the BARE Home has no
-    // live session to clear — surface an honest notice rather than a silent no-op. An ACTIVE in-Home chat routes
-    // `/clear` through the chat handler's REAL clearSession (via sendChatLine → the swap), never through this ctx.
-    clearSession: () =>
-      set({ notice: 'No active conversation to clear — type a message to start one.' }),
+    // `/clear` (ADR-0062 §7) has a `home` placement, where it is DIM (there is no conversation to clear), and a typed `/clear` at the bare
+    // Home answers with the very words `Enter` on that dim row does (`unavailableNotice` over the registry's own reason), not a second
+    // wording of one fact. An ACTIVE in-Home chat routes `/clear` through the chat handler's REAL clearSession (via sendChatLine → the
+    // swap), never through this ctx.
+    clearSession: () => {
+      const clear = availabilityOf('clear', 'home', { hasSession: false });
+      set({ notice: clear.enabled ? undefined : unavailableNotice('clear', clear.reason) });
+    },
 
-    // `/models` (2.5.G S7, ADR-0064 §10) IS a real Home capability (availableIn ['home']): open the in-tree picker
+    // `/models` (2.5.G S7, ADR-0064 §10) IS a real Home capability (it is placed on the Home and in both chats): open the in-tree picker
     // over the merged catalog. Unlike the inert chat-only noops above, this wires the live picker.
     openModels: () => openModelPicker(),
 
-    // `/scrollback` + `/edit` (ADR-0068 §e) are chat-only (`availableIn: ['chat']`), so they never appear in
-    // HOME_PALETTE_COMMANDS and are unreachable from the bare Home — there is no transcript to dump or edit. An
+    // `/scrollback` + `/edit` (ADR-0068 §e) are chat-only (no `home` placement), so they never appear in the bare Home's palette and are
+    // unreachable from it — there is no transcript to dump or edit. An
     // ACTIVE in-Home chat routes them through the chat handler's REAL capabilities (sendChatLine → the slash
     // dispatch → `createChatLineHandler`'s hatches), never through this ctx. Inert here, like the other chat-only
     // capabilities above.
@@ -3264,14 +3311,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           openProjectInit();
         } else if (step.command.name === 'resume') {
           openResume();
-        } else if (step.command.name === 'run' && active === undefined) {
+        } else if (step.command.name === 'run') {
           openRunLaunch();
         } else if (step.command.name === 'workflows' && active === undefined) {
           // home: bare `/workflows` opens the tab host on its Defined tab (ADR-0140 §2) — the same as the typed command.
           if (deps.defined === undefined)
             set({ notice: 'The project’s workflows are not available here.' });
           else openTabHost('defined');
-        } else if (step.command.name === 'agents' && active === undefined) {
+        } else if (step.command.name === 'agents') {
           // home: bare `/agents` opens the tab host on the agents strip's Defined tab (ADR-0140 §3) — the same as the typed command.
           if (deps.agents === undefined)
             set({ notice: 'The project’s agents are not available here.' });
@@ -3281,10 +3328,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           if (deps.permissions === undefined)
             set({ notice: 'Remembered commands are not available here.' });
           else openTabHost('permissions');
-        } else if (step.command.name === 'import' && active === undefined) {
+        } else if (step.command.name === 'import') {
           // home: bare `/import` opens the import card (ADR-0140 §9) — the same function the typed command calls.
           openImportCard();
-        } else if (step.command.name === 'pricing' && active === undefined) {
+        } else if (step.command.name === 'pricing') {
           // home: bare `/pricing` opens the model pricing form (ADR-0140 §9) — the same function the typed command calls.
           openPricingCard();
         } else if (active === undefined) {

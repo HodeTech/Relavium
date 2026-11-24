@@ -8,11 +8,12 @@ import { windowBody } from './sheet-frame.js';
  * off the rows that stand for hidden entries, and a `▲`/`▼` marker on the first or last drawn line for the entries it hides (the entry under
  * the marker included, as the native select's markers count them).
  *
- * **Group gaps are the first thing to give way** (ADR-0145 §7.1, [ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
- * §3). A blank row separates the groups when the rows allow: all of them when every entry and every gap fits, the ones nearest the prompt
- * when only some do, and none once the entries themselves must be windowed, so a gap never costs an entry its row and never windows the
- * last entry (`/exit`) away. The Home's 15 entries and three gaps need 21 rows besides the prompt's own, and an 80×24 terminal leaves 23: two
- * of the three gaps fit.
+ * **Group gaps are the first thing to give way, all or none** (ADR-0145 §7.1, [ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md)
+ * §3). A blank row separates the groups when the rows allow: every gap when every entry and every gap fits, and none otherwise, so a gap
+ * never costs an entry its row and never windows the last entry (`/exit`) away. Some of the gaps and not the others read as a list with
+ * one group blank-separated and the rest run together (observed at 80×28: one blank after `/providers` and no other), which says nothing
+ * about the groups. The Home's 15 entries and three gaps need 21 rows besides the prompt's own: a terminal that leaves fewer than that
+ * draws the entries without any gap.
  *
  * **Direction.** `down` draws the first entry at the top (the Home: the list opens under the prompt). `up` draws the first entry at the
  * BOTTOM, next to the query line (a chat: the list opens above the prompt), so the lines come back reversed and the markers point the way the
@@ -83,8 +84,8 @@ function listLines(
   };
   if (maxRows === undefined) return withGaps(new Set(gaps));
   const spare = Math.trunc(maxRows) - PALETTE_CHROME_ROWS - total;
-  // Every entry fits: the gaps take the spare rows, the ones nearest the prompt first.
-  if (spare >= 0) return withGaps(new Set(gaps.slice(0, spare)));
+  // Every entry fits: the gaps are drawn when they ALL fit in the spare rows, and not at all otherwise (never some of them).
+  if (spare >= 0) return withGaps(new Set(spare >= gaps.length ? gaps : []));
   const room = Math.max(1, Math.trunc(maxRows) - PALETTE_CHROME_ROWS);
   const cursor = Math.max(0, Math.min(selected, total - 1));
   const { start, end } = windowBody(total, cursor, room);

@@ -131,10 +131,12 @@ import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/sess
 import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
+  homeOverlayFlags,
   type HomeChatSession,
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
+import { overlayOwnsKeyboard } from '../render/tui/overlay-flags.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
@@ -1037,7 +1039,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
           ownership?.surface.work.assertAdmitting();
           return providerHasKey(providers, built.agent.provider)
             ? undefined
-            : 'This session’s provider has no usable key. Use /providers to connect it or /models to switch provider.';
+            : 'This session’s provider has no usable key. Go back to the Home (Ctrl+C twice) and use /providers to connect it, or use /models to switch provider.';
         };
         const initialKeyRefusal = sendGuard();
         if (!opts.open && initialKeyRefusal !== undefined) store.notice(initialKeyRefusal);
@@ -1408,6 +1410,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+            noticeSurface: 'tui', // the Home's chat has /models and /pricing: its remedies name them, never a shell command
             onEffectAttention: noteEffectAttention,
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
@@ -1557,6 +1560,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
+            noticeSurface: 'tui',
             onEffectAttention: noteEffectAttention,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,
@@ -2248,6 +2252,19 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             };
       let automaticSetupStarted = false;
       let waitingForRoom = false;
+      /**
+       * The first-run setup that opens by itself opens over an empty Home and nothing else (ADR-0146 §6): no chat or build, no draft in the
+       * composer, and nothing that owns the keyboard (a palette, a picker, a screen, a card, a setup the person opened). A terminal that
+       * grows while the person is already typing or in a screen must not have a popup land on that.
+       */
+      const homeIsClearForSetup = (): boolean => {
+        const state = actualController.getSnapshot();
+        return (
+          state.mode === 'home' &&
+          state.input.text === '' &&
+          !overlayOwnsKeyboard(homeOverlayFlags(state))
+        );
+      };
       const openAutomaticSetup = (): void => {
         automaticSetupStarted = true;
         const operation = () => openProviders('automatic');
@@ -2292,6 +2309,8 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
                 return;
               }
               if (!nativePromptFits(getSize())) return;
+              // Room, but the Home is not clear: the offer stays unspent and waits for the next resize.
+              if (!homeIsClearForSetup()) return;
               unsubscribe();
               stopWaitingForRoom = undefined;
               waitingForRoom = false;

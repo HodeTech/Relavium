@@ -1,5 +1,13 @@
 import { createClient, createProviderStore, runMigrations, type DbClient } from '@relavium/db';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,6 +39,19 @@ const INERT_JOB = {
   suspendSelf: () => undefined,
 };
 const credential = ['synthetic', 'credential', 'no-suffix-display'].join('-');
+
+/**
+ * The consent card opens on `Not now` (ADR-0146 §6, the interim before Step 6's input guards), so a test that means `Use it` moves there:
+ * one Down arrow wraps from the last row to the first, and the key after it is read only once the card has drawn the row it moved to.
+ */
+async function chooseUseIt(f: {
+  readonly stdin: { push(chunk: string): boolean };
+  text(): string;
+}): Promise<void> {
+  expect(f.text()).toContain('❯ Not now');
+  f.stdin.push('\x1b[B');
+  await until(() => f.text().includes('❯ Use it'));
+}
 
 async function until(check: () => boolean): Promise<void> {
   await vi.waitFor(() => expect(check()).toBe(true), { interval: 10, timeout: 3000 });
@@ -151,6 +172,7 @@ describe('standalone native provider setup lifecycle', () => {
     const running = f.run();
     await until(() => f.text().includes('Allow this source?'));
     expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
+    await chooseUseIt(f);
     f.stdin.push('\rtrailing-secret');
     expect(await running).toBe(0);
     expect(f.resolver.keyFor('openai')).toBe(credential);
@@ -171,6 +193,26 @@ describe('standalone native provider setup lifecycle', () => {
     expect(f.keychain.set).not.toHaveBeenCalled();
   });
 
+  it('a bare Enter on the environment-key consent grants nothing: the card opens on Not now, and the config is never written', async () => {
+    const f = fixture({ OPENAI_API_KEY: credential });
+    const before = existsSync(f.loaded.globalConfigPath)
+      ? readFileSync(f.loaded.globalConfigPath, 'utf8')
+      : undefined;
+    const running = f.run();
+    await until(() => f.text().includes('Allow this source?'));
+    expect(f.text()).toContain('❯ Not now');
+    f.stdin.push('\r');
+    expect(await running).toBe(0);
+    expect(f.outcome()?.status).toBe('deferred');
+    expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');
+    expect(
+      existsSync(f.loaded.globalConfigPath)
+        ? readFileSync(f.loaded.globalConfigPath, 'utf8')
+        : undefined,
+    ).toBe(before);
+    expect(f.keychain.set).not.toHaveBeenCalled();
+  });
+
   it('requires independent explicit invocation choices for source consent and model defaults after symlink refusal', async () => {
     const target = join(root, 'target.toml');
     writeFileSync(target, '# Keep this file\n');
@@ -178,6 +220,7 @@ describe('standalone native provider setup lifecycle', () => {
     const f = fixture({ OPENAI_API_KEY: credential });
     const running = f.run();
     await until(() => f.text().includes('Allow this source?'));
+    await chooseUseIt(f); // the consent opens on `Not now`; this test means `Use it`
     f.stdin.push('\r');
     await until(() => f.text().includes('Use for this invocation only'));
     expect(() => f.resolver.keyFor('openai')).toThrow('has not been allowed');

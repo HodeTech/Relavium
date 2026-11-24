@@ -85,6 +85,7 @@ import {
   type FsPathPolicy,
 } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import {
   effortWithheldNote,
@@ -236,6 +237,12 @@ export interface BuildChatSessionOptions {
    * Absent ⇒ a no-op, and the tier is still withheld (never guessed at).
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /**
+   * Where the notices this host composes are READ (`onUnpriced`, `onEffortWithheld`): `tui` names an action of the surface (`/models`,
+   * `/pricing`), `shell` a subcommand ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §6, OD-20). Absent ⇒
+   * `shell`, the scripted wording, which is what `agent run` and a plain or `--json` chat read; the interactive chat and the Home say `tui`.
+   */
+  readonly noticeSurface?: NoticeSurface;
   /** Required production disclosure after an aborted turn's actual effect producers have joined. */
   readonly onEffectAttention?: (note: string) => void;
   /**
@@ -412,6 +419,7 @@ type SessionRuntimeOptions = Pick<
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
+  | 'noticeSurface'
   | 'onEffectAttention'
   | 'onListenerError'
   | 'resolvePrice'
@@ -461,6 +469,8 @@ function buildSessionRuntime(
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
+  // The wording of the notices this host composes: the scripted one unless the surface says it is a TUI.
+  const noticeSurface: NoticeSurface = opts.noticeSurface ?? 'shell';
   // Bind once to this actual host, including callbacks captured before fresh/resume/rebuild publication.
   // Only a callback's own failure is observed: reporting an existing passive error is still supported.
   const onBudgetWarning =
@@ -610,6 +620,7 @@ function buildSessionRuntime(
     providers.endpointKind,
     onUnpriced,
     opts.maxTokensEstimate,
+    noticeSurface,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -850,7 +861,7 @@ function buildSessionRuntime(
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            onEffortWithheld(effortWithheldNote(result, model, 'tui'));
+            onEffortWithheld(effortWithheldNote(result, model, noticeSurface));
           },
         }),
     registry,
@@ -1446,6 +1457,8 @@ export interface BuildResumedChatSessionOptions extends Pick<
    * with, and the catalog may have moved under it since.
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Where the notices are read — see {@link BuildChatSessionOptions.noticeSurface}. Absent ⇒ the scripted wording. */
+  readonly noticeSurface?: NoticeSurface;
   /** Required production disclosure after an aborted turn's actual effect producers have joined. */
   readonly onEffectAttention?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
@@ -1715,6 +1728,7 @@ export function buildGovernorWiring(
   endpointKind?: (id: ProviderId) => EndpointKind,
   onUnpriced?: (note: string) => void,
   maxTokensEstimate?: number,
+  surface: NoticeSurface = 'shell',
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -1745,7 +1759,13 @@ export function buildGovernorWiring(
             modalities?: readonly MediaBilledModality[],
           ) =>
             onUnpriced(
-              unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap', modalities, 'tui'),
+              unpricedModelNote(
+                model,
+                capMicrocents,
+                '[chat] strict_cost_cap',
+                modalities,
+                surface,
+              ),
             ),
         }),
     emit: (event) => {

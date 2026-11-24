@@ -440,6 +440,82 @@ describe('stepPalette', () => {
     expect(highlighted(prefix.state, prefix.list)).toBe('pricing');
   });
 
+  describe('a short query never highlights a command that ends a session or spends tokens while another row can act (ADR-0145 §7.6)', () => {
+    const END_OR_SPEND = new Set(['clear', 'cancel', 'compact', 'exit']);
+    /** Type `query` into a palette opened over the live registry and read the highlighted row's name. */
+    function typed(surface: PaletteSurface, query: string): string | undefined {
+      const entries = buildPaletteEntries(surface, {
+        hasSession: surface !== 'home',
+        hasKey: true,
+        hasSavedSessions: true,
+      });
+      let at = opened(entries, surface === 'home' ? 'down' : 'up');
+      for (const char of query) at = press(at.state, at.list, char);
+      return highlighted(at.state, at.list);
+    }
+
+    it.each([
+      ['home', 'e'],
+      ['home', 'ex'],
+      ['chat', 'e'],
+      ['chat', 'ex'],
+      ['chat', 'cl'],
+      ['chat', 'co'],
+      ['home-chat', 'e'],
+      ['home-chat', 'ex'],
+      ['home-chat', 'cl'],
+    ] as const)('%s: /%s lands on a row that does neither', (surface, query) => {
+      const name = typed(surface, query);
+      expect(name).toBeDefined();
+      expect(END_OR_SPEND.has(name ?? ''), `${surface} /${query} highlighted /${name}`).toBe(false);
+    });
+
+    it.each([
+      ['home', 'exit'],
+      ['chat', 'exit'],
+      ['chat', 'clear'],
+      ['chat', 'cancel'],
+      ['chat', 'compact'],
+      ['home-chat', 'clear'],
+    ] as const)('%s: the exact name /%s still wins', (surface, query) => {
+      expect(typed(surface, query)).toBe(query);
+    });
+
+    it('when every row that can act is one of them, the first of those is highlighted', () => {
+      expect(typed('chat', 'can'), 'only /cancel matches').toBe('cancel');
+      expect(
+        typed('chat', 'res'),
+        'a stand-alone chat has no /resume: /clear and /cancel are all there is',
+      ).toBe('clear');
+      expect(typed('home', 'exi'), 'only /exit matches').toBe('exit');
+    });
+
+    /** Type `query` into a palette over `list` and read the highlighted row's name. */
+    function typedOver(list: readonly PaletteEntry[], query: string): string | undefined {
+      let at = opened(list);
+      for (const char of query) at = press(at.state, at.list, char);
+      return highlighted(at.state, at.list);
+    }
+
+    it('prefers a row of a lower tier to an end row of a higher one: /exit by name, /close only by its description', () => {
+      const list = [entry('exit', 'ends it'), entry('close', 'the exit door')];
+      expect(names(filterPaletteEntries(list, 'exi'))).toEqual(['exit', 'close']);
+      expect(typedOver(list, 'exi')).toBe('close');
+      expect(typedOver(list, 'exit'), 'the whole name is the exact name').toBe('exit');
+    });
+
+    it('with a dim row ahead of the only end row that can act, the highlight is that end row and not the dim one', () => {
+      const list = [dim('clearly'), entry('clear', 'wipes the screen')];
+      expect(names(filterPaletteEntries(list, 'cl'))).toEqual(['clearly', 'clear']);
+      expect(typedOver(list, 'cl')).toBe('clear');
+    });
+
+    it('a dim row that is not an end row does not take the highlight from the first row that can act', () => {
+      const list = [dim('later'), entry('exit', 'ends it'), entry('else', 'something else')];
+      expect(typedOver(list, 'e')).toBe('else');
+    });
+  });
+
   describe('move: arrows skip the dim rows and stop at both ends (no wrap-around)', () => {
     const ENTRIES = [
       entry('a', 'x'),

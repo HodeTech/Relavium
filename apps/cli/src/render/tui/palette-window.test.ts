@@ -131,7 +131,7 @@ describe('the rows the landing keeps for its palette', () => {
   });
 });
 
-describe('the blank rows between the groups are the first thing to give way (ADR-0145 §7.1)', () => {
+describe('the blank rows between the groups are the first thing to give way, all or none (ADR-0145 §7.1, MVP-11 Step 2 review C9c)', () => {
   const lines = (maxRows: number | undefined, selected = 0) =>
     paletteLines(15, selected, maxRows, HOME_GROUP_STARTS);
 
@@ -155,19 +155,23 @@ describe('the blank rows between the groups are the first thing to give way (ADR
     }
   });
 
-  it('keeps two of three when two rows are spare (the Home at 80×24: 21 rows of 23): the groups nearest the prompt keep theirs', () => {
-    const drawn = lines(3 + 15 + 2);
-    expect(entries(drawn)).toEqual(Array.from({ length: 15 }, (_, index) => index));
-    expect(gapsBefore(drawn)).toEqual([4, 11]);
-    expect(drawn.length + PALETTE_CHROME_ROWS).toBe(3 + 15 + 2);
+  it('draws NO gap, not some of them, when the spare rows do not hold all three: two spare, one spare and none', () => {
+    // Two of three used to be drawn at 80×28 and 80×29: a list with one group set apart and the others run together.
+    for (const spare of [2, 1, 0]) {
+      const drawn = lines(3 + 15 + spare);
+      expect(entries(drawn), `${String(spare)} spare`).toEqual(
+        Array.from({ length: 15 }, (_, index) => index),
+      );
+      expect(gapsBefore(drawn), `${String(spare)} spare`).toEqual([]);
+      expect(markers(drawn)).toEqual([]);
+      expect(drawn.length + PALETTE_CHROME_ROWS).toBe(3 + 15);
+    }
   });
 
-  it('keeps one of three with one spare row and none with no spare row, and still draws every entry', () => {
-    expect(gapsBefore(lines(3 + 15 + 1))).toEqual([4]);
-    const none = lines(3 + 15);
-    expect(gapsBefore(none)).toEqual([]);
-    expect(entries(none)).toEqual(Array.from({ length: 15 }, (_, index) => index));
-    expect(markers(none)).toEqual([]);
+  it('draws all three the moment three rows are spare', () => {
+    const drawn = lines(3 + 15 + 3);
+    expect(gapsBefore(drawn)).toEqual([4, 11, 13]);
+    expect(drawn.length + PALETTE_CHROME_ROWS).toBe(3 + 15 + 3);
   });
 
   it('draws no gap once the entries themselves must be windowed, and a gap never costs an entry its row', () => {

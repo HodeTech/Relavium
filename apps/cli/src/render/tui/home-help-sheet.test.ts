@@ -145,8 +145,9 @@ const ANSWERS: Readonly<Record<string, (home: Home) => void | Promise<void>>> = 
     expect(home.controller.getSnapshot().notice).toContain('doctor:');
   },
   clear: (home) => {
+    // The words `Enter` on the dim /clear row says (C8): one fact, one wording.
     expect(home.controller.getSnapshot().notice).toBe(
-      'No active conversation to clear — type a message to start one.',
+      '/clear is unavailable: no conversation to clear.',
     );
   },
   models: (home) => {

@@ -50,6 +50,11 @@ vi.mock('../engine/providers.js', async (original) => {
   };
 });
 
+/** A journey step that has to finish: the default `vi.waitFor` gives it one second, which a loaded gate run does not always leave (the siblings use 5 s). */
+const WAIT_MS = 5000;
+const settled = <T>(callback: () => T | Promise<T>): Promise<T> =>
+  vi.waitFor(callback, { timeout: WAIT_MS });
+
 const key = {
   upArrow: false,
   downArrow: false,
@@ -74,15 +79,23 @@ const key = {
 };
 const SKIP_NOTE = 'Setup skipped · /providers connects a provider any time';
 const SYNTHETIC_KEY = 'synthetic-journey-credential-5521';
-/** A draft the scrubber would mask: shaped like an Anthropic key. */
-const KEY_SHAPED = 'sk-ant-api03-journeyfakefakefakefake0123456789';
+/** A draft shaped like a key of each of the four providers (each long enough to be one). */
+const KEY_SHAPED_DRAFTS = [
+  ['Anthropic', 'sk-ant-api03-journeyfakefakefakefake0123456789'],
+  ['OpenAI', 'sk-proj-journeyfakefakefakefake0123456789'],
+  ['DeepSeek', 'sk-journeyfake0123456789abcdef01234567'],
+  ['Gemini', 'AIzajourneyfakefakefakefake0123456789_-x'],
+] as const;
 const baseline = '# a clean home\n[preferences]\ntheme = "dark"\n';
 const paths: string[] = [];
 afterEach(() => {
   for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
-function journey(startSize: { cols: number; rows: number } = { cols: 80, rows: 24 }) {
+function journey(
+  startSize: { cols: number; rows: number } = { cols: 80, rows: 24 },
+  env: Record<string, string | undefined> = {},
+) {
   const cwd = mkdtempSync(join(tmpdir(), 'relavium-keyless-journey-'));
   paths.push(cwd);
   const path = join(cwd, 'global.toml');
@@ -101,7 +114,7 @@ function journey(startSize: { cols: number; rows: number } = { cols: 80, rows: 2
     stdin: Readable.from([]),
     stdinIsTty: true,
     stdoutIsTty: true,
-    env: {}, // a clean environment: no key of any kind
+    env, // a clean environment by default: no key of any kind
     writeOut: (text) => outputs.push(text),
     writeErr: (text) => outputs.push(text),
     writeOutAcknowledged: async () => {},
@@ -178,7 +191,7 @@ function journey(startSize: { cols: number; rows: number } = { cols: 80, rows: 2
     outputs,
     stored,
     async ready(): Promise<RootAppProps> {
-      await vi.waitFor(() => expect(props).toBeDefined());
+      await settled(() => expect(props).toBeDefined());
       if (props === undefined) throw new Error('missing Home mount');
       // The Home is mounted and painted: the automatic first-run setup may open.
       props.onRendererReady?.(async (publish) => {
@@ -203,7 +216,7 @@ const type = (p: RootAppProps, text: string): void => {
 };
 async function choose(p: RootAppProps, value: string): Promise<void> {
   const card = ui(p);
-  await vi.waitFor(() =>
+  await settled(() =>
     expect(card.getSnapshot().options.some((option) => option.value === value)).toBe(true),
   );
   const snapshot = card.getSnapshot();
@@ -217,9 +230,9 @@ async function choose(p: RootAppProps, value: string): Promise<void> {
   card.input('\r', { ...key, return: true });
 }
 async function skipFirstRun(p: RootAppProps): Promise<void> {
-  await vi.waitFor(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+  await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
   ui(p).input('', { ...key, escape: true });
-  await vi.waitFor(() => expect(ui(p).getSnapshot().active).toBe(false));
+  await settled(() => expect(ui(p).getSnapshot().active).toBe(false));
 }
 
 describe('the keyless journey', () => {
@@ -228,7 +241,7 @@ describe('the keyless journey', () => {
     const p = await j.ready();
     try {
       // 1. The first-run card opens by itself; `Esc` skips, and the notice says so (it was the first-run sentence).
-      await vi.waitFor(() => expect(ui(p).getSnapshot().active).toBe(true));
+      await settled(() => expect(ui(p).getSnapshot().active).toBe(true));
       expect(ui(p).getSnapshot().note).toContain('First-run setup');
       await skipFirstRun(p);
       expect(p.controller.getSnapshot().keyless).toBe(true);
@@ -239,7 +252,7 @@ describe('the keyless journey', () => {
       // 2. Type a message and press Enter: the explicit setup opens, the draft is still in the prompt, and nothing is started.
       type(p, 'hello');
       p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
       expect(p.controller.getSnapshot().nativeActionBusy).toBe(true);
       expect(p.controller.getSnapshot().input.text).toBe('hello');
       expect(p.controller.getSnapshot().historyEntries).toEqual([]);
@@ -258,7 +271,7 @@ describe('the keyless journey', () => {
 
       // 3. Close the setup (Esc): the draft is still `hello`, still unsent.
       ui(p).input('', { ...key, escape: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(p.controller.getSnapshot().input.text).toBe('hello');
       expect(p.controller.getSnapshot().notice).toBe(SKIP_NOTE);
       expect(p.controller.getSnapshot().keyless).toBe(true);
@@ -266,16 +279,16 @@ describe('the keyless journey', () => {
 
       // 4. Enter again; this time store a key (the check is offline and passes).
       p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
       await choose(p, 'anthropic');
-      await vi.waitFor(() => expect(ui(p).getSnapshot().kind).toBe('password'));
+      await settled(() => expect(ui(p).getSnapshot().kind).toBe('password'));
       expect(ui(p).getSnapshot().note, 'a first run still says what it is').toContain(
         'Provider destination',
       );
       ui(p).paste(SYNTHETIC_KEY);
       ui(p).input('\r', { ...key, return: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().keyless).toBe(false));
-      await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+      await settled(() => expect(p.controller.getSnapshot().keyless).toBe(false));
+      await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
       expect(j.stored.get(keychainAccount('anthropic'))).toBe(SYNTHETIC_KEY);
       expect(p.controller.getSnapshot().notice).toContain('Verified and stored your Anthropic key');
       expect(readFileSync(j.path, 'utf8')).toContain(KNOWN_PROVIDERS.anthropic.testModel);
@@ -286,10 +299,10 @@ describe('the keyless journey', () => {
 
       // 6. The last Enter starts the chat with that message (the fake build refuses, so the failure shows whole and the message is back).
       p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(j.built).toHaveLength(1));
+      await settled(() => expect(j.built).toHaveLength(1));
       expect(j.built[0]?.model).toBe(KNOWN_PROVIDERS.anthropic.testModel);
       expect(j.built[0]?.provider).toBe('anthropic');
-      await vi.waitFor(() => expect(p.controller.getSnapshot().mode).toBe('home'));
+      await settled(() => expect(p.controller.getSnapshot().mode).toBe('home'));
       expect(p.controller.getSnapshot().notice?.startsWith('Couldn’t start the chat: ')).toBe(true);
       expect(
         p.controller.getSnapshot().input.text,
@@ -308,45 +321,48 @@ describe('the keyless journey', () => {
     }
   });
 
-  it('a draft that is a key never lands in the editor or the history, and the setup that opens says why', async () => {
-    const j = journey();
-    const p = await j.ready();
-    try {
-      await vi.waitFor(() => expect(ui(p).getSnapshot().active).toBe(true));
-      await skipFirstRun(p);
+  it.each(KEY_SHAPED_DRAFTS)(
+    'a %s key typed as a draft never lands in the editor or the history, and the setup that opens says why',
+    async (_provider, keyShaped) => {
+      const j = journey();
+      const p = await j.ready();
+      try {
+        await settled(() => expect(ui(p).getSnapshot().active).toBe(true));
+        await skipFirstRun(p);
 
-      p.controller.handlePaste(KEY_SHAPED);
-      expect(p.controller.getSnapshot().input.text).toBe(KEY_SHAPED);
-      p.controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
-      const state = p.controller.getSnapshot();
-      expect(state.input.text, 'cleared in the same change that opened the setup').toBe('');
-      expect(state.historyEntries).toEqual([]);
-      expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
-      expect(ui(p).getSnapshot().note, 'the card says it where the person is looking').toBe(
-        KEY_SHAPED_DRAFT_NOTICE,
-      );
-      expect(j.built).toEqual([]);
+        p.controller.handlePaste(keyShaped);
+        expect(p.controller.getSnapshot().input.text).toBe(keyShaped);
+        p.controller.handleKey('', { return: true });
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+        const state = p.controller.getSnapshot();
+        expect(state.input.text, 'cleared in the same change that opened the setup').toBe('');
+        expect(state.historyEntries).toEqual([]);
+        expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+        expect(ui(p).getSnapshot().note, 'the card says it where the person is looking').toBe(
+          KEY_SHAPED_DRAFT_NOTICE,
+        );
+        expect(j.built).toEqual([]);
 
-      // Close it: nothing of the key is left to recall.
-      ui(p).input('', { ...key, escape: true });
-      await vi.waitFor(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
-      p.controller.handleKey('', { upArrow: true });
-      expect(p.controller.getSnapshot().input.text).toBe('');
-      expect(
-        [...j.frames, ...j.outputs, JSON.stringify(p.controller.getSnapshot())].join(' '),
-      ).not.toContain('journeyfake');
-    } finally {
-      await j.end(p);
-    }
-  });
+        // Close it: nothing of the key is left to recall.
+        ui(p).input('', { ...key, escape: true });
+        await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+        p.controller.handleKey('', { upArrow: true });
+        expect(p.controller.getSnapshot().input.text).toBe('');
+        expect(
+          [...j.frames, ...j.outputs, JSON.stringify(p.controller.getSnapshot())].join(' '),
+        ).not.toContain('journeyfake');
+      } finally {
+        await j.end(p);
+      }
+    },
+  );
 
   it('below the 80x24 floor the first-run offer waits, unspent: Esc there spends nothing, and growing the terminal opens it', async () => {
     const j = journey({ cols: 70, rows: 20 });
     const p = await j.ready();
     try {
       // The card is not opened over a message that says "Esc cancels"; the Home shows its own resize line.
-      await vi.waitFor(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+      await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
       expect(ui(p).getSnapshot().active).toBe(false);
       // Whatever `Esc` does here, it does not spend the offer.
       p.controller.handleKey('', { escape: true });
@@ -358,7 +374,7 @@ describe('the keyless journey', () => {
       expect(ui(p).getSnapshot().active).toBe(false);
       // Room: the offer opens, once, and the wait is over.
       j.resize({ cols: 80, rows: 24 });
-      await vi.waitFor(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
       expect(j.resizeListeners.size, 'the wait ended with the offer').toBe(0);
       j.resize({ cols: 100, rows: 30 });
       expect(ui(p).getSnapshot().message, 'not opened a second time').toBe('Which provider?');
@@ -368,10 +384,106 @@ describe('the keyless journey', () => {
     }
   });
 
+  describe('the offer that waited for room opens over an empty Home and nothing else (ADR-0146 §6)', () => {
+    it('does not open over a draft: the terminal grows, the composer holds text, the offer stays unspent until the next resize finds it empty', async () => {
+      const j = journey({ cols: 70, rows: 20 });
+      const p = await j.ready();
+      try {
+        await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+        type(p, 'hello');
+        j.resize({ cols: 80, rows: 24 });
+        expect(ui(p).getSnapshot().active, 'a popup does not land on a draft').toBe(false);
+        expect(p.controller.getSnapshot().input.text, 'the draft is untouched').toBe('hello');
+        expect(j.resizeListeners.size, 'the offer is unspent: it still waits').toBeGreaterThan(0);
+        for (let i = 0; i < 5; i += 1) p.controller.handleKey('', { backspace: true });
+        j.resize({ cols: 81, rows: 24 });
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+        expect(j.resizeListeners.size, 'spent now').toBe(0);
+      } finally {
+        ui(p).input('', { ...key, escape: true });
+        await j.end(p);
+      }
+    });
+
+    it('does not open over the palette: it waits, and opens at the first resize after the palette is closed', async () => {
+      const j = journey({ cols: 70, rows: 20 });
+      const p = await j.ready();
+      try {
+        await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+        p.controller.handleKey('/', {});
+        expect(p.controller.getSnapshot().palette, 'the palette is open').toBeDefined();
+        j.resize({ cols: 80, rows: 24 });
+        expect(ui(p).getSnapshot().active).toBe(false);
+        expect(j.resizeListeners.size).toBeGreaterThan(0);
+        p.controller.handleKey('', { escape: true });
+        expect(p.controller.getSnapshot().palette).toBeUndefined();
+        j.resize({ cols: 81, rows: 24 });
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Which provider?'));
+      } finally {
+        ui(p).input('', { ...key, escape: true });
+        await j.end(p);
+      }
+    });
+
+    it('does not open over a screen (the help sheet), either', async () => {
+      const j = journey({ cols: 70, rows: 20 });
+      const p = await j.ready();
+      try {
+        await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+        type(p, '/help');
+        p.controller.handleKey('', { return: true }); // the palette is open over the typed word: Enter runs its row
+        expect(p.controller.getSnapshot().screen?.kind, 'the help sheet is in front').toBe('help');
+        j.resize({ cols: 80, rows: 24 });
+        expect(ui(p).getSnapshot().active).toBe(false);
+        expect(j.resizeListeners.size, 'still waiting').toBeGreaterThan(0);
+      } finally {
+        p.controller.handleKey('', { escape: true }); // the screen first: Ctrl+C would close it, not leave
+        await j.end(p);
+      }
+    });
+  });
+
+  describe('an environment key is a consent, and a reflex Enter does not grant it (ADR-0146 §6, the interim before the Step 6 guards)', () => {
+    it('three Enters, each after its card was drawn, leave the source un-granted and the config as it was', async () => {
+      const j = journey(
+        { cols: 80, rows: 24 },
+        { ANTHROPIC_API_KEY: 'synthetic-env-credential-7731' },
+      );
+      const p = await j.ready();
+      try {
+        // The first-run card is the consent; its highlighted row is `Not now`.
+        await settled(() => expect(ui(p).getSnapshot().message).toContain('Allow this source?'));
+        const first = ui(p).getSnapshot();
+        expect(first.options[first.selected]?.value, 'it opens on Not now').toBe('defer');
+        ui(p).input('\r', { ...key, return: true }); // Enter 1
+        await settled(() => expect(ui(p).getSnapshot().active).toBe(false));
+        expect(readFileSync(j.path, 'utf8'), 'nothing was written').toBe(baseline);
+
+        // A message and Enter opens the explicit list, whose first row is Anthropic with the key set.
+        type(p, 'hello');
+        p.controller.handleKey('', { return: true }); // Enter 2
+        await settled(() => expect(ui(p).getSnapshot().message).toBe('Providers'));
+        expect(ui(p).getSnapshot().options[0]?.value).toBe('anthropic');
+        ui(p).input('\r', { ...key, return: true }); // Enter 3: the row, which asks for the consent again
+        await settled(() => expect(ui(p).getSnapshot().message).toContain('Allow this source?'));
+        const again = ui(p).getSnapshot();
+        expect(again.options[again.selected]?.value, 'again on Not now').toBe('defer');
+        expect(readFileSync(j.path, 'utf8'), 'the config is unwritten').toBe(baseline);
+        expect(p.controller.getSnapshot().keyless, 'no key became usable').toBe(true);
+        ui(p).input('', { ...key, escape: true });
+        await settled(() => expect(p.controller.getSnapshot().nativeActionBusy).toBe(false));
+        expect(readFileSync(j.path, 'utf8')).toBe(baseline);
+        expect(j.built, 'the draft was never sent').toEqual([]);
+      } finally {
+        await j.end(p);
+      }
+    });
+  });
+
   it('a Home that closes while the offer waits for room leaves no listener behind', async () => {
     const j = journey({ cols: 70, rows: 20 });
     const p = await j.ready();
-    await vi.waitFor(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
+    await settled(() => expect(j.resizeListeners.size).toBeGreaterThan(0));
     await j.end(p);
     expect(j.resizeListeners.size).toBe(0);
   });

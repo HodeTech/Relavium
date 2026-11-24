@@ -2147,8 +2147,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         onError: vi.fn(),
       });
       c.handleKey('/', {});
-      type(c, 'ex'); // 'ex' filters [exit, doctor] → [exit]; the query updates
-      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 });
+      type(c, 'ex'); // 'ex' filters to [exit, workflows]; the query updates, and the highlight stays off /exit (ADR-0145 §7.6)
+      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
     });
 
     it('selecting /doctor runs the fast tier into the Home notice surface', async () => {
@@ -2898,6 +2898,42 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     expect(c.getSnapshot().modelPicker?.hint).toBe(
       'Model X: no key for Google Gemini — open /providers to connect a key',
+    );
+  });
+
+  it('in a chat the Home hosts, a `no-key` model says how to get back to /providers, which that chat only points at', async () => {
+    const { port } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'x',
+          displayName: 'Model X',
+          provider: 'gemini',
+          available: false,
+          unavailableReason: 'no-key',
+        }),
+      ],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(makeSession().session),
+      reseatChat: () => Promise.resolve(makeSession().session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+      providerSetup: { initialKeyless: false, open: () => Promise.resolve() },
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker?.hint).toBe(
+      'Model X: no key for Google Gemini — go back to the Home (Ctrl+C twice) and use /providers',
     );
   });
 

@@ -214,7 +214,28 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     const missing = notices.filter((text) => text.includes("no API key for provider 'anthropic'"));
     expect(missing).toHaveLength(2); // on open, and for the refused message
     for (const text of missing) {
-      expect(text).toContain('restart this chat to open provider setup');
+      expect(text).toContain('from the Home (start Relavium without arguments)');
+      expect(text).not.toContain('restart this chat'); // a restart opens nothing when another provider works
+      expect(text).toContain('/models');
+      expect(text).not.toMatch(/relavium|set-key/u);
+    }
+  });
+
+  it('in a chat the Home hosts, the notice names the way back to the Home: that chat answers /providers with a pointer only', async () => {
+    const store = await seedSession();
+    const { providers } = keyedResolver(() => false);
+
+    const { notices } = await resumeInteractively(
+      store,
+      { ...providers, credentialSurface: 'home' },
+      ['hello again', '/exit'],
+    );
+
+    const missing = notices.filter((text) => text.includes("no API key for provider 'anthropic'"));
+    expect(missing).toHaveLength(2);
+    for (const text of missing) {
+      expect(text).toContain('go back to the Home (Ctrl+C twice) and use `/providers`');
+      expect(text).not.toContain('open `/providers`');
       expect(text).toContain('/models');
       expect(text).not.toMatch(/relavium|set-key/u);
     }

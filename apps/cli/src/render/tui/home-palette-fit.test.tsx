@@ -202,14 +202,16 @@ describe.each([
     }
   });
 
+  // All or none (MVP-11 Step 2 review, C9c): 28 and 29 rows used to draw one and two of the three blank rows, a list with one group set apart
+  // and the others run together. The three are drawn when all of them fit (30 rows) and not at all otherwise.
   it.each([
     [26, 0],
     [27, 0],
-    [28, 1],
-    [29, 2],
+    [28, 0],
+    [29, 0],
     [30, 3],
   ])(
-    'at 80×%i the gaps give way one by one, never an entry: %i of the three blank rows are drawn (the palette is asked for 21 rows, gaps first to go)',
+    'at 80×%i the gaps are all or nothing, never an entry: %i of the three blank rows are drawn (the palette is asked for 21 rows, gaps first to go)',
     async (rows, gaps) => {
       const m = mount({ cols: 80, rows }, 0, alternateScreen);
       await openPalette(m);

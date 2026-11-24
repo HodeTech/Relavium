@@ -285,3 +285,36 @@ describe('a notice is bounded before it is wrapped (review: a 2 MiB notice had n
     expect(pagesOf('Open Home there.').text).toBe('Open Home there.');
   });
 });
+
+describe('a row that continues a line starts with its word, not with the wrap’s own space (MVP-11 Step 2 review, C9b)', () => {
+  const options = {
+    editor: { text: '', cursor: 0 },
+    cols: 20,
+    rows: 24,
+    keyless: false,
+    showBanner: false,
+    isEmpty: false,
+    hasSessions: false,
+  };
+  const linesOf = (notice: string): readonly string[] =>
+    layoutHomeNotice({ ...options, notice })?.lines ?? [];
+
+  it('drops the space a word ending on the last column leaves at the start of the next row', () => {
+    // 20 characters, then the space, then the rest: the row is full, so the space used to open the next row (` opened; it is stored…`).
+    expect(linesOf(`${'a'.repeat(20)} opened; it is stored`)).toEqual([
+      'a'.repeat(20),
+      'opened; it is stored',
+    ]);
+  });
+
+  it('keeps a space the wrap leaves at the END of a row, and the indent of the first row of a line', () => {
+    const rows = linesOf('  indented line that wraps here');
+    expect(rows[0]?.startsWith('  indented')).toBe(true);
+    expect(rows.slice(1).every((row) => !row.startsWith(' '))).toBe(true);
+  });
+
+  it('applies to every logical line, and never removes a character that is not whitespace', () => {
+    const rows = linesOf(`${'b'.repeat(20)} first\n${'c'.repeat(20)} second`);
+    expect(rows).toEqual(['b'.repeat(20), 'first', 'c'.repeat(20), 'second']);
+  });
+});

@@ -67,6 +67,19 @@ const key = {
   capsLock: false,
   numLock: false,
 };
+type PromptUi = NonNullable<RootAppProps['nativePrompt']>;
+/**
+ * Move the card's cursor to the row of `value`, from wherever it is. The environment-key consent opens on `Not now` (ADR-0146 §6, the interim
+ * before Step 6's input guards: an Enter already on its way must not grant a source), so a test that means `Use it` has to say so.
+ */
+function moveTo(ui: PromptUi, value: string): void {
+  const snapshot = ui.getSnapshot();
+  const target = snapshot.options.findIndex((option) => option.value === value);
+  if (target < 0) throw new Error(`no row ${value}`);
+  const count = snapshot.options.length;
+  for (let step = 0; step < (target - snapshot.selected + count) % count; step += 1)
+    ui.input('', { ...key, downArrow: true });
+}
 const baseline = '# retained until actual publication\n[preferences]\ntheme = "dark"\n';
 const paths: string[] = [];
 afterEach(() => {
@@ -253,8 +266,7 @@ describe('driveHome native provider setup', () => {
       await vi.waitFor(() =>
         expect(ui.getSnapshot().options.some((option) => option.value === 'defer')).toBe(true),
       );
-      const index = ui.getSnapshot().options.findIndex((option) => option.value === 'defer');
-      for (let at = 0; at < index; at++) ui.input('', { ...key, downArrow: true });
+      moveTo(ui, 'defer');
       ui.input('', { ...key, return: true });
       await vi.waitFor(() => expect(ui.getSnapshot().active).toBe(false));
       p.controller.handleKey('/', {});
@@ -372,9 +384,11 @@ describe('driveHome native provider setup', () => {
     await vi.waitFor(() =>
       expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
     );
-    p.nativePrompt?.input('\r', { ...key, return: true });
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    moveTo(p.nativePrompt, 'use');
+    p.nativePrompt.input('\r', { ...key, return: true });
     await vi.waitFor(() => expect(f.notices).toBe(1));
-    expect(p.nativePrompt?.getSnapshot().note).toContain('rewrites the global config');
+    expect(p.nativePrompt.getSnapshot().note).toContain('rewrites the global config');
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
     f.release();
     await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
@@ -396,7 +410,9 @@ describe('driveHome native provider setup', () => {
       await vi.waitFor(() =>
         expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
       );
-      p.nativePrompt?.input('\r', { ...key, return: true });
+      if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+      moveTo(p.nativePrompt, 'use');
+      p.nativePrompt.input('\r', { ...key, return: true });
       await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
       p.controller.handleKey('h', {});
       p.controller.handleKey('i', {});
@@ -417,8 +433,9 @@ describe('driveHome native provider setup', () => {
         expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
       );
       if (action === 'not-now') {
-        p.nativePrompt?.input('', { ...key, downArrow: true });
-        p.nativePrompt?.input('', { ...key, downArrow: true });
+        // The card opens on Not now, so the bare Enter IS the answer (and is the one an Enter already on its way would give).
+        const open = p.nativePrompt?.getSnapshot();
+        expect(open?.options[open.selected]?.value).toBe('defer');
         p.nativePrompt?.input('\r', { ...key, return: true });
       } else p.nativePrompt?.input('\x1b', { ...key, escape: true });
       await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
@@ -448,9 +465,11 @@ describe('driveHome native provider setup', () => {
     await vi.waitFor(() =>
       expect(p.nativePrompt?.getSnapshot().message).toContain('OPENAI_API_KEY'),
     );
-    p.nativePrompt?.input('\r', { ...key, return: true });
+    if (p.nativePrompt === undefined) throw new Error('Native prompt missing');
+    moveTo(p.nativePrompt, 'use');
+    p.nativePrompt.input('\r', { ...key, return: true });
     await vi.waitFor(() => expect(f.notices).toBe(1));
-    p.nativePrompt?.input('\x1b', { ...key, escape: true });
+    p.nativePrompt.input('\x1b', { ...key, escape: true });
     f.release();
     await vi.waitFor(() => expect(p.nativePrompt?.getSnapshot().active).toBe(false));
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);

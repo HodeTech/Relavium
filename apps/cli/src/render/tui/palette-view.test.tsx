@@ -219,19 +219,28 @@ describe('a row that cannot act is drawn dim, with its reason in words (ADR-0145
     ]);
   });
 
-  it('colours a dim row dim and keeps the words (a no-colour terminal loses the colour, not the meaning)', () => {
+  it('colours a dim row dim from its NAME on, keeps the words, and leaves an enabled row’s name undimmed (a no-colour terminal loses the colour, not the meaning)', () => {
+    // An enabled row that is not highlighted, ahead of the dim ones: its description is dim too (every row's is), so what tells the rows
+    // apart is the NAME: SGR 2 must open before a dim row's `/resume` and must not before an enabled row's `/doctor`.
+    const list = [entry('doctor', 'Check your setup.'), ...WITH_DIM];
     const view = render(
-      <PaletteView list={listOf(WITH_DIM, 'down')} state={{ query: '', index: 1 }} color />,
+      <PaletteView list={listOf(list, 'down')} state={{ query: '', index: 2 }} color />,
     );
     const frame = view.lastFrame() ?? '';
     expect(frame).toContain('unavailable · nothing to resume');
-    // SGR 2 is dim: the dim row carries it. (The enabled row's description is dim too, so the row of the dim entry is the one checked.)
-    const row = frame.split('\n').find((line) => line.includes('/resume')) ?? '';
-    expect(row).toContain(`${ESC}[2m`);
+    const before = (name: string): string => {
+      const row = frame.split('\n').find((line) => line.includes(`/${name}`));
+      if (row === undefined) throw new Error(`no row for /${name}`);
+      return row.slice(0, row.indexOf(`/${name}`));
+    };
+    const DIM = `${ESC}[2m`;
+    expect(before('resume'), 'the dim row is dim from its name').toContain(DIM);
+    expect(before('clear'), 'and so is the other one').toContain(DIM);
+    expect(before('doctor'), 'an enabled row’s name is not dim').not.toContain(DIM);
   });
 });
 
-describe('the groups are separated by a blank row when the rows allow, and run together when short', () => {
+describe('the groups are separated by a blank row when the rows allow, and run together when short (all or none)', () => {
   // Three groups: a b | c d | e. Two gaps.
   const GROUPED: readonly PaletteEntry[] = [
     entry('a', 'first', { groupStart: true }),
@@ -256,20 +265,8 @@ describe('the groups are separated by a blank row when the rows allow, and run t
     ]);
   });
 
-  it('gives the gaps up first: with one spare row only the group nearest the prompt keeps its gap; with none, no gap and every entry', () => {
-    const one = lines(GROUPED, { query: '', index: 0 }, 9);
-    expect(one).toEqual([
-      '',
-      '/',
-      '› /a  first',
-      '  /b  second',
-      '',
-      '  /c  third',
-      '  /d  fourth',
-      '  /e  fifth',
-      LEGEND,
-    ]);
-    expect(lines(GROUPED, { query: '', index: 0 }, 8)).toEqual([
+  it('gives the gaps up first, all of them: with one spare row (two gaps asked) it draws none, and every entry', () => {
+    const run = [
       '',
       '/',
       '› /a  first',
@@ -278,7 +275,9 @@ describe('the groups are separated by a blank row when the rows allow, and run t
       '  /d  fourth',
       '  /e  fifth',
       LEGEND,
-    ]);
+    ];
+    expect(lines(GROUPED, { query: '', index: 0 }, 9)).toEqual(run);
+    expect(lines(GROUPED, { query: '', index: 0 }, 8)).toEqual(run);
   });
 
   it('never draws a gap for a typed query: a ranked list is not a grouped one', () => {

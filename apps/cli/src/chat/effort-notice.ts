@@ -15,6 +15,7 @@ import {
 } from '@relavium/shared';
 
 import { PRICING_FIELDS, pricingField, type PricingField } from '../commands/pricing-fields.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 import { sanitizeInline } from '../render/sanitize.js';
 
 /**
@@ -74,14 +75,8 @@ function safeModel(model: string): string {
   return sanitizeInline(model);
 }
 
-/**
- * Where a notice is read, because that decides which remedy exists. `shell` is the scripted output (`relavium run`, `agent run`,
- * `gate`): a subcommand can be named there ([ADR-0122](../../../../docs/decisions/0122-the-home-is-the-interactive-product.md) §6).
- * `tui` is the interactive chat and the Home: a remedy there names an action the surface has, never a shell command
- * ([ADR-0146](../../../../docs/decisions/0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md) §6,
- * MVP-11 OD-20). The default is `shell`, so a caller that has not chosen keeps the scripted wording.
- */
-export type NoticeSurface = 'shell' | 'tui';
+// The one type for every notice that has a shell wording and a TUI wording; re-exported so this file's importers keep their path.
+export type { NoticeSurface };
 
 /**
  * Why this model has no effort control at all — the sentence a surface shows instead of a dead overlay.

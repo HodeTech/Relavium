@@ -49,8 +49,9 @@ const SHELL_REMEDY = new RegExp(
     String.raw`(?<![\w@./~-])relavium\s+(?:provider|models?|chat|run|gate|status|logs|import|export|create|init|permissions|doctor|agent|workflow|pricing|mcp|budget|list|resume|replay|cost|config|help)\b`,
     String.raw`\bchat-export\b`,
     String.raw`\bchat-resume\b`,
-    String.raw`\bprovider add\b`,
-    String.raw`\bmodels (?:pricing|refresh)\b`,
+    // The subcommand phrases, with or without `relavium` in front of them: a remedy that says `provider set-key anthropic` is a shell command
+    // however it is introduced (it passed unflagged while only the prefixed form was looked for).
+    String.raw`\b(?:provider (?:set-key|add)|chat (?:resume|export)|models (?:refresh|pricing)|gate list|permissions revoke)\b`,
     String.raw`(?<![\w-])--(?:input|output)(?![-\w])`,
   ].join('|'),
   'gu',
@@ -342,6 +343,18 @@ const ALLOWANCES: readonly Allowance[] = [
   },
   {
     file: 'commands/chat.ts',
+    includes: 'chat resume needs a session ID outside an interactive terminal.',
+    reason:
+      'the refusal of `relavium chat resume` itself on a plain or `--json` run, thrown before any screen exists (the phrase was only looked for with its `relavium` prefix)',
+  },
+  {
+    file: 'commands/chat.ts',
+    includes: 'Retry chat resume or return to Home.',
+    reason:
+      'thrown only where the resume has no owned screen to retry in (`ownership === undefined`: the shell command), so the retry it names is the shell command; the owned path asks in a native card',
+  },
+  {
+    file: 'commands/chat.ts',
     includes: 'start a new `relavium chat` instead',
     reason:
       '`/clear` typed on the plain / `--json` driver, which has no screen to swap (ADR-0049); the interactive chat never reaches it',
@@ -433,8 +446,13 @@ const FILE_SURFACES: Readonly<Record<string, readonly Surface[]>> = {
   'chat/restored-transcript.ts': ['chat', 'home-chat'],
   'chat/starting-mode-hint.ts': ['chat', 'home-chat'],
   'commands/chat.ts': ['chat'],
+  'home/provider-setup.ts': ['home', 'chat'],
   'home/run-launch.ts': ['home'],
   'home/hosted-run-terminal.ts': ['home'],
+  // The first-run setup is ONE flow on two surfaces: the Home's native cards and a stand-alone chat's (which has neither `/providers` nor a
+  // Home to open it from). A string that names a command is checked against both; the ones that are the Home's alone are said so below.
+  'onboarding/setup-notes.ts': ['home', 'chat'],
+  'onboarding/wizard.ts': ['home', 'chat'],
   'home/run-host.ts': ['home'],
   'render/hatches.ts': ['chat', 'home-chat'],
   'render/tui/chat-projection.ts': ['chat', 'home-chat'],
@@ -453,7 +471,27 @@ const SURFACE_OVERRIDES: readonly {
   file: string;
   includes: string;
   surfaces: readonly Surface[];
-}[] = [{ file: 'chat/repl-info.ts', includes: '/resume continues it', surfaces: ['home-chat'] }];
+}[] = [
+  { file: 'chat/repl-info.ts', includes: '/resume continues it', surfaces: ['home-chat'] },
+  // The setup's own sentences for the Home. The stand-alone chat's sentence of each pair names no slash command (it says to restart the
+  // chat), so a `/providers` written into THAT one is a failure here, not covered by these.
+  {
+    file: 'onboarding/wizard.ts',
+    includes: 'Add a provider anytime with /providers',
+    surfaces: ['home'],
+  },
+  {
+    file: 'onboarding/wizard.ts',
+    includes: 'Open /providers to connect a key',
+    surfaces: ['home'],
+  },
+  {
+    file: 'onboarding/setup-notes.ts',
+    includes: '/providers connects a provider any time',
+    surfaces: ['home'],
+  },
+  { file: 'home/provider-setup.ts', includes: 'Open /providers to retry', surfaces: ['home'] },
+];
 
 const names = (commands: readonly { readonly name: string }[]): ReadonlySet<string> =>
   new Set(commands.map((command) => command.name));
@@ -681,6 +719,16 @@ describe('the detector sees what it should (it is run on text it is given, not o
     'Resume with chat-resume',
     'Price it with --input USD_PER_MTOK --output USD_PER_MTOK',
     'Set it with models pricing',
+    // The subcommand phrases WITHOUT the `relavium` prefix (they passed unflagged while only the prefixed form was looked for).
+    'Store one with provider set-key anthropic',
+    'Register it with provider add custom',
+    'Continue with chat resume <id>',
+    'Write it out with chat export <id>',
+    'Update the catalog with models refresh',
+    'Set the price with models pricing',
+    'Read it in full with gate list <run>',
+    'Withdraw them with permissions revoke --all',
+    'Start one with `relavium provider set-key openai`',
   ])('flags %j', (text) => {
     const [literal] = sourceWith(text);
     expect(literal).toBeDefined();
@@ -694,6 +742,11 @@ describe('the detector sees what it should (it is run on text it is given, not o
     'the price is --input-price and --output-price',
     '~/.relavium/workflows and @relavium/shared',
     'relavium',
+    // Prose that merely has the words near each other is not a subcommand phrase.
+    'Choose a provider, then add a key',
+    'a chat can resume later',
+    'the models are refreshed daily',
+    'a provider is set with a key',
   ])('lets %j through', (text) => {
     const [literal] = sourceWith(text);
     expect(shellRemediesIn(literal?.text ?? '', false)).toEqual([]);

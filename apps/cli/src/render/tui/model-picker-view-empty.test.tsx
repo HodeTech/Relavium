@@ -28,7 +28,9 @@ const EMPTY: ModelPickerState = {
 
 describe('the /models picker with no models yet (ADR-0146 §6, MVP-11 OD-20)', () => {
   it('points at the Home’s /providers, which is a command, and names no shell command', () => {
-    const { lastFrame } = render(<ModelPickerView state={EMPTY} color={false} nowMs={0} />);
+    const { lastFrame } = render(
+      <ModelPickerView state={EMPTY} color={false} nowMs={0} scope="next-chat" />,
+    );
     const frame = lastFrame() ?? '';
     expect(frame).toContain('no models yet — connect one with /providers on the Home');
     expect(frame).toContain('Ctrl+R');
@@ -64,7 +66,13 @@ describe('the /models picker names a provider the way a person reads it (ADR-014
 
   it('shows the display name in the row and in the no-key chip when the host supplies the names', () => {
     const { lastFrame } = render(
-      <ModelPickerView state={state} color={false} nowMs={0} providerName={providerDisplayName} />,
+      <ModelPickerView
+        state={state}
+        color={false}
+        nowMs={0}
+        providerName={providerDisplayName}
+        scope="next-chat"
+      />,
     );
     const frame = lastFrame() ?? '';
     expect(frame).toContain('Claude X · Anthropic');
@@ -73,7 +81,9 @@ describe('the /models picker names a provider the way a person reads it (ADR-014
   });
 
   it('keeps the id when the host supplies none (the view imports no engine code)', () => {
-    const { lastFrame } = render(<ModelPickerView state={state} color={false} nowMs={0} />);
+    const { lastFrame } = render(
+      <ModelPickerView state={state} color={false} nowMs={0} scope="next-chat" />,
+    );
     expect(lastFrame() ?? '').toContain('Claude X · anthropic');
   });
 });

@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { globalConfigDir } from '../config/paths.js';
+import type { NoticeSurface } from '../render/notice-surface.js';
 
 export const GLOBAL_ARTIFACTS_REMEDY =
   'Workflows or agents in ~/.relavium/workflows or ~/.relavium/agents are not project artifacts. Leave the originals in place until reviewed; move them into a project or run `relavium import <path>` from that project directory.';
@@ -11,13 +12,10 @@ export const GLOBAL_ARTIFACTS_REMEDY_TUI =
   'Workflows or agents in ~/.relavium/workflows or ~/.relavium/agents are not project artifacts. Leave the originals in place until reviewed; move them into a project, or open the Home in that project and use /import.';
 const MAX_NOTICE_ENTRIES = 256;
 
-/** The wording of the notice for where it is read: the shell's `relavium list`, or the TUI's `/doctor`. */
-export type GlobalArtifactsSurface = 'shell' | 'tui';
-
 /** Local read-only notice; never parse, move, repair or print arbitrary global artifact names. */
 export function globalArtifactsNotice(
   home: string = homedir(),
-  surface: GlobalArtifactsSurface = 'shell',
+  surface: NoticeSurface = 'shell', // the shell's `relavium list`, or the TUI's `/doctor`
 ): string | undefined {
   for (const kind of ['workflows', 'agents']) {
     try {

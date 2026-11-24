@@ -1,9 +1,9 @@
 import type { ReplCommand } from '../../commands/repl-commands.js';
 import { dropLastCodePoint } from './chat-input.js';
 import {
+  bestMatchIndex,
   filterPaletteEntries,
   firstEnabledIndex,
-  isExactNameMatch,
   lastEnabledIndex,
   type PaletteEntry,
 } from './palette-entries.js';
@@ -153,16 +153,6 @@ export function foldPaletteKey(
   return stepPalette(state, reducePaletteKey(char, key, list.layout), list);
 }
 
-/**
- * The highlight after an edit: the best match is the first row that can act. A TYPED EXACT NAME is the exception: when it is the first row
- * it stays highlighted even if it is dim, so `Enter` explains why it cannot run instead of running whatever else matched its description.
- */
-function highlightAfterEdit(rows: readonly PaletteEntry[], query: string): number {
-  const first = rows[0];
-  if (first !== undefined && isExactNameMatch(first, query)) return 0;
-  return firstEnabledIndex(rows);
-}
-
 /** The next row from `from` in `direction` that can act, or `from` itself when there is none (no wrap-around). */
 function nextEnabled(rows: readonly PaletteEntry[], from: number, direction: 1 | -1): number {
   for (let at = from + direction; at >= 0 && at < rows.length; at += direction) {
@@ -214,7 +204,7 @@ function edited(list: PaletteList, query: string): PaletteStep {
   const rows = filterPaletteEntries(list.entries, query);
   return {
     kind: 'state',
-    state: { query, index: highlightAfterEdit(rows, query) },
+    state: { query, index: bestMatchIndex(rows, query) },
     list: { ...list, rows },
   };
 }

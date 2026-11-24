@@ -560,11 +560,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(build.mock.calls[0]?.[0].record.context.workingDir).toBe(realpathSync.native(cwd));
       expect(build.mock.calls[0]?.[0].deferMissingKey).toBe(true);
       expect(
-        resumed?.store
-          .getSnapshot()
-          .state.transcript.some(
-            (row) => row.role === 'notice' && row.text.includes('no usable key'),
-          ),
+        resumed?.store.getSnapshot().state.transcript.some(
+          (row) =>
+            row.role === 'notice' &&
+            row.text.includes('no usable key') &&
+            // The chat the Home hosts answers `/providers` with a pointer only: the remedy is the way back.
+            row.text.includes('Go back to the Home (Ctrl+C twice) and use /providers') &&
+            row.text.includes('/models'),
+        ),
       ).toBe(true);
       await resumed?.processLine('must not reach the provider');
       expect(
@@ -2899,15 +2902,20 @@ workflow:
     let reseatAsk:
       | { askUser?: AskUserDelegate | undefined; checkpoint?: ToolRoundLimitHook | undefined }
       | undefined;
+    // The Home's chats say their notices in the TUI's words (`/models`, `/pricing`), on the fresh build and on the reseat's alike.
+    let freshSurface: string | undefined;
+    let reseatSurface: string | undefined;
     let captured: RootAppProps | undefined;
     const { deps } = makeDeps((p) => (captured = p), {
       providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
       buildSession: (options) => {
         freshAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
+        freshSurface = options.noticeSurface;
         return buildChatSession(options);
       },
       buildResumedSession: (options) => {
         reseatAsk = { askUser: options.askUser, checkpoint: options.checkpoint };
+        reseatSurface = options.noticeSurface;
         return buildResumedChatSession(options);
       },
     });
@@ -2935,6 +2943,8 @@ workflow:
     });
     expect(reseatAsk).toBeDefined();
     expect(await drawsACard(props.controller.getSnapshot().session?.store, reseatAsk)).toBe(true);
+    expect(freshSurface, 'the fresh build of a Home chat').toBe('tui');
+    expect(reseatSurface, 'the reseat build of a Home chat').toBe('tui');
 
     props.controller.handleKey('c', CTRL_C);
     props.controller.handleKey('c', CTRL_C); // two presses leave: the first arms (ADR-0115 §1)

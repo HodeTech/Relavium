@@ -1,7 +1,7 @@
 import type { EditorState } from './chat-input.js';
 import { shouldShowBanner } from './banner.js';
 import { sanitizeInline } from './chat-projection.js';
-import { displayWidth, wrapText } from './viewport.js';
+import { displayWidth, wrapWords } from './viewport.js';
 
 export function homePromptRows(editor: EditorState, columns: number): number {
   return editor.text
@@ -79,6 +79,32 @@ function continueSectionRows(
   return options.isEmpty ? 0 : 1;
 }
 
+/**
+ * One logical line of a notice as rows. `wrapWords` keeps every character of the source (it serves the transcript, whose rows must join back
+ * to the text for a selection), so a word that ends exactly at the last column leaves the space after it at the START of the next row:
+ * ` opened; it is stored…`. A notice is read, not selected, so the space the wrap breaks on is dropped and the rest is wrapped again from
+ * the next word (dropping it after the fact would leave a short row); the first row of a line keeps its indent. Each row is taken from a
+ * window of the rest of the line, not from all of it, so the cost is the rows times a window and a long notice stays cheap per frame.
+ */
+function wrapNoticeLine(line: string, cols: number): string[] {
+  if (line === '') return [''];
+  const window = Math.trunc(cols) * 4 + 8;
+  const rows: string[] = [];
+  let rest = line;
+  while (rest !== '') {
+    const first = wrapWords(rest.slice(0, window), cols)[0];
+    if (first === undefined) break; // a width nothing can be drawn at
+    if (!rest.startsWith(first)) {
+      // A glyph wider than the row was shown as `?`: the row is not a piece of the text, so the rest is wrapped as it is.
+      rows.push(...wrapWords(rest, cols));
+      break;
+    }
+    rows.push(first);
+    rest = rest.slice(first.length).trimStart();
+  }
+  return rows;
+}
+
 /** Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
@@ -101,10 +127,10 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
       (options.reservedRows ?? 0) -
       management,
   );
-  const all = wrapText(
-    boundedNotice(options.notice).split('\n').map(sanitizeInline).join('\n'),
-    options.cols,
-  );
+  const all = boundedNotice(options.notice)
+    .split('\n')
+    .map(sanitizeInline)
+    .flatMap((line) => wrapNoticeLine(line, options.cols));
   const overflow = all.length > available;
   const pageSize = overflow ? available - 1 : available;
   const maxPage = Math.max(0, Math.ceil(all.length / pageSize) - 1);

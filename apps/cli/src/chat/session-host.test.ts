@@ -3111,7 +3111,9 @@ describe('the default model follows the stored key (MVP-A4)', () => {
     const home = await refusalOf(build({ providers: keyless('home') }));
     expect(home).toContain('open `/providers`');
     const standalone = await refusalOf(build({ providers: keyless('standalone-chat') }));
-    expect(standalone).toContain('restart this chat to open provider setup');
+    // A restart opens setup only while NO provider is usable, so it is not the remedy; the Home is (ADR-0145 §7.4).
+    expect(standalone).toContain('from the Home (start Relavium without arguments)');
+    expect(standalone).not.toContain('restart this chat');
     for (const text of [home, standalone]) expect(text).not.toMatch(/relavium|set-key/u);
     // A resolver that names no surface (a scripting path, an injected stub) keeps the shell's own remedy.
     expect(await refusalOf(build({ providers: keyedOnly([]) }))).toContain('set-key anthropic');

@@ -396,30 +396,68 @@ describe('availability: a command that cannot act is shown dim with its reason, 
     expect(availabilityOf('nope', 'home', {}).enabled).toBe(false);
   });
 
-  it('reads an availability from a plain object: a function of the context, never of a port', () => {
+  it('an availability is a function of the context it is given: the same answer for an equal copy, and it reads nothing but the context’s own fields', () => {
+    const FIELDS = new Set(['surface', 'hasSession', 'hasKey', 'hasSavedSessions', 'turnRunning']);
+    const values = [undefined, true, false] as const;
+    let checked = 0;
     for (const definition of COMMAND_DEFINITIONS)
-      for (const placement of Object.values(definition.placements))
-        if (placement.available !== undefined)
-          expect(placement.available.length, `/${definition.name} availability`).toBe(1);
+      for (const [name, placement] of Object.entries(definition.placements)) {
+        const available = placement.available;
+        if (available === undefined) continue;
+        const surface = PALETTE_SURFACES.find((candidate) => candidate === name);
+        if (surface === undefined) throw new Error(`unknown surface ${name}`);
+        for (const hasSession of values)
+          for (const hasKey of values)
+            for (const hasSavedSessions of values)
+              for (const turnRunning of values) {
+                const base = { surface, hasSession, hasKey, hasSavedSessions, turnRunning };
+                const read: string[] = [];
+                const watched = new Proxy(base, {
+                  get: (target, name) => {
+                    read.push(String(name));
+                    const value: unknown = Reflect.get(target, name);
+                    return value;
+                  },
+                });
+                const label = `/${definition.name} on ${surface} with ${JSON.stringify(base)}`;
+                const answer = available(watched);
+                expect(available({ ...base }), label).toEqual(answer);
+                expect(
+                  read.filter((name) => !FIELDS.has(name)),
+                  `${label} read a field the context does not have`,
+                ).toEqual([]);
+                checked += 1;
+              }
+      }
+    expect(checked, 'at least the two availability functions were exercised').toBeGreaterThan(100);
   });
 });
 
 describe('a command typed where the surface does not offer it (ADR-0145 §7.4)', () => {
   const HOME_ONLY = ['providers', 'init', 'import', 'pricing', 'run', 'agents'];
 
-  it.each(['chat', 'home-chat'] as const)(
+  it.each([
+    // The chat the Home hosts IS in the Home, so its line only names it; a stand-alone chat is not, so its line says how to get there.
+    [
+      'chat',
+      (name: string) => `/${name} is available from the Home: start Relavium without arguments.`,
+    ],
+    ['home-chat', (name: string) => `/${name} is available from the Home.`],
+  ] as const)(
     'answers one line that names the Home, in %s, for every command only the Home has',
-    (surface) => {
+    (surface, expected) => {
       for (const name of HOME_ONLY) {
         const line = homeOnlyPointer(name, surface);
-        expect(line, `/${name}`).toBe(`/${name} is available from the Home.`);
+        expect(line, `/${name}`).toBe(expected(name));
         expect(line, `/${name}`).not.toMatch(/unknown/iu);
       }
     },
   );
 
   it('points /resume out of a stand-alone chat (it has no saved list) but not out of the chat the Home hosts', () => {
-    expect(homeOnlyPointer('resume', 'chat')).toBe('/resume is available from the Home.');
+    expect(homeOnlyPointer('resume', 'chat')).toBe(
+      '/resume is available from the Home: start Relavium without arguments.',
+    );
     expect(homeOnlyPointer('resume', 'home-chat')).toBeUndefined();
   });
 

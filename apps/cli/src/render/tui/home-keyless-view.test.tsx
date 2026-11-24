@@ -319,3 +319,48 @@ describe('the focused parked row at 80 columns', () => {
     expect(line).not.toContain('…');
   });
 });
+
+/** A keyless Home's hint for a draft (MVP-11 Step 2 review, C9a): a message is kept for the setup, a slash line is a command that `Enter` runs. */
+describe('the keyless Home hint bar by what the draft is', () => {
+  const frameOf = (text: string): string => {
+    const view = render(
+      <HomeView
+        snapshot={{
+          attention: { gates: [], failedRuns: [] },
+          recentSessions: [],
+          recentRuns: [],
+          recentAgents: [],
+          unreadableRunIds: [],
+          isEmpty: true,
+        }}
+        editor={{ text, cursor: text.length }}
+        nowMs={0}
+        cols={120}
+        rows={30}
+        color={false}
+        keyless
+      />,
+    );
+    const frame = view.lastFrame() ?? '';
+    view.unmount();
+    return frame;
+  };
+
+  it('promises that a message is kept, because Enter opens the setup with it', () => {
+    expect(frameOf('hello')).toContain('Enter to connect a provider · your message is kept');
+  });
+
+  it.each(['/clear', '/doctor --deep', '/'])(
+    'does not promise it for the command line %j: Enter runs the command, so the hint is the plain one',
+    (text) => {
+      const frame = frameOf(text);
+      expect(frame).not.toContain('your message is kept');
+      expect(frame).not.toContain('Enter to connect a provider ·');
+      expect(frame).toContain('Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit');
+    },
+  );
+
+  it('a line that only CONTAINS a slash is a message', () => {
+    expect(frameOf('see /etc/hosts')).toContain('your message is kept');
+  });
+});

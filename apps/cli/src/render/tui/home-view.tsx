@@ -213,6 +213,8 @@ function homeHint(state: {
   readonly runCanBeShown: boolean;
   /** No provider key: `Enter` connects one (and keeps what is typed), so the bar says so wherever `Enter` does nothing else first. */
   readonly keyless: boolean;
+  /** The draft starts with `/`: a command line, which `Enter` RUNS (a registry word answers, and never opens the setup) whatever the key state. */
+  readonly slashDraft: boolean;
 }): string {
   if (state.interruptArmed) return 'Press Ctrl+C again to exit';
   if (state.focusedRole === 'parked')
@@ -226,7 +228,9 @@ function homeHint(state: {
   // Keyless (ADR-0146 §5): `Enter` opens the provider setup and the message stays in the prompt, so the bar says both. A live run keeps
   // its own hint below, because `Enter` shows the run first.
   if (!state.emptyDraft)
-    return state.keyless
+    // A slash line is a command, not a message: `Enter` runs it with or without a key, so the keyless sentence ("your message is kept") would be
+    // a promise about something else. It reads the keyed hint.
+    return state.keyless && !state.slashDraft
       ? 'Enter to connect a provider · your message is kept'
       : 'Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit';
   if (state.keyless && !state.runCanBeShown)
@@ -590,6 +594,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
               parkedFocusKind: focusedParked?.kind,
               runCanBeShown,
               keyless: props.keyless === true,
+              slashDraft: editor.text.startsWith('/'),
             })}
           </Text>
         </Box>

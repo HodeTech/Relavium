@@ -5,6 +5,7 @@ import { createChatStore } from './chat-store.js';
 import {
   createHomeController,
   KEY_SHAPED_DRAFT_NOTICE,
+  KEY_SHAPED_LINE_NOTICE,
   type HomeChatSession,
   type HomeController,
 } from './home-controller.js';
@@ -29,8 +30,13 @@ const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 
 const type = (c: HomeController, text: string): void => {
   for (const ch of text) c.handleKey(ch, {});
 };
-/** A key as the scrubber knows it (an OpenAI/Anthropic `sk-` key), long enough to be one. */
+/** A key as the four providers write one, long enough to be one. */
 const FAKE_KEY = 'sk-ant-api03-journeyfakefakefakefake0123456789';
+const OTHER_KEYS = [
+  ['OpenAI project', 'sk-proj-journeyfakefakefakefake0123456789'],
+  ['DeepSeek', 'sk-journeyfake0123456789abcdef01234567'],
+  ['Gemini', 'AIzajourneyfakefakefakefake0123456789_-x'],
+] as const;
 
 function session(lines: string[]): HomeChatSession {
   return {
@@ -134,13 +140,21 @@ describe('Enter on a typed message while keyless', () => {
     expect(f.c.getSnapshot().historyEntries, 'recorded once it was sent').toEqual(['hello']);
   });
 
-  it('still lets a slash command through: /models is not a message, and opens no setup', () => {
-    const f = fixture();
-    type(f.c, '/models');
-    f.c.handleKey('', ENTER);
-    expect(f.open).not.toHaveBeenCalled();
-    expect(f.startChat).not.toHaveBeenCalled();
-  });
+  // The line is PASTED: typing `/` opens the palette, which owns Enter, so a typed line never reaches `submit()` and the test would say
+  // nothing about the order of `managementCommand` and the keyless branch there.
+  it.each(['/models', '/doctor', '/help'])(
+    'still lets a pasted slash command through: %s is a command, not a message, and opens no setup',
+    (line) => {
+      const f = fixture();
+      f.c.handlePaste(line);
+      expect(f.c.getSnapshot().palette, 'a paste does not open the palette').toBeUndefined();
+      expect(f.c.getSnapshot().input.text).toBe(line);
+      f.c.handleKey('', ENTER);
+      expect(f.open, 'the keyless branch did not take the command').not.toHaveBeenCalled();
+      expect(f.startChat).not.toHaveBeenCalled();
+      expect(f.c.getSnapshot().input.text, 'the command ran and cleared the line').toBe('');
+    },
+  );
 
   it('is the same Enter an empty prompt opens the setup with, and that one clears nothing', () => {
     const f = fixture();
@@ -188,10 +202,25 @@ describe('a draft that looks like a provider key is never kept and never recorde
     },
   );
 
-  it('says what happened in the fixed words, and never echoes any part of the draft', () => {
+  it.each(OTHER_KEYS)('a %s key is just as unkept and unrecorded', (_provider, key) => {
+    const f = fixture();
+    f.c.handlePaste(`my key: ${key}`);
+    f.c.handleKey('', ENTER);
+    const state = f.c.getSnapshot();
+    expect(state.input.text).toBe('');
+    expect(state.historyEntries).toEqual([]);
+    expect(state.notice).toBe(KEY_SHAPED_DRAFT_NOTICE);
+    expect(JSON.stringify(state)).not.toContain('journeyfake');
+  });
+
+  it('says what happened in the fixed words (kept nowhere, to be pasted in the setup, and nothing about where it is stored), and never echoes any part of the draft', () => {
     expect(KEY_SHAPED_DRAFT_NOTICE).toBe(
-      'That looked like an API key, so it was not kept. Paste it in the setup that just opened; it is stored in your OS keychain.',
+      'That looked like an API key, so it was not kept. Choose a provider in the setup that just opened and paste it there.',
     );
+    expect(
+      KEY_SHAPED_DRAFT_NOTICE,
+      'the keychain may be down: no promise about storage',
+    ).not.toContain('keychain');
     expect(KEY_SHAPED_DRAFT_NOTICE).not.toContain('sk-');
   });
 
@@ -211,6 +240,66 @@ describe('a draft that looks like a provider key is never kept and never recorde
     f.c.handleKey('', ENTER);
     expect(f.c.getSnapshot().input.text).toBe('sk-learn is a library');
     expect(f.open.mock.calls[0]?.[0]).toBeUndefined();
+  });
+
+  // The diagnostic scrubber masked all of these, discarded the message and said 'API key' (observed); none of them is a key.
+  it.each([
+    'What is the basic idea of a monad?',
+    'Explain Basic auth',
+    'the bearer of bad news',
+    'https://user@example.com',
+    'what does x-api-key: header do',
+    'sk-learn-intelex-2024-02',
+  ])('the ordinary message %j is kept and takes the normal keyless Enter path', (message) => {
+    const f = fixture();
+    f.c.handlePaste(message);
+    f.c.handleKey('', ENTER);
+    expect(f.c.getSnapshot().input.text, 'kept exactly as typed').toBe(message);
+    expect(f.open.mock.calls[0]?.[0], 'with no key-shaped reason on the card').toBeUndefined();
+    expect(f.c.getSnapshot().notice).toBeUndefined();
+  });
+
+  describe('a line that starts with a slash is not echoed back when it holds a key', () => {
+    it.each([
+      ['a slash and the key', `/${FAKE_KEY}`],
+      ['a capitalised word and the key on the next line', `/Foo\n${FAKE_KEY}`],
+      ['a lower-case word and the key', `/unknown ${FAKE_KEY}`],
+      [
+        'a path-like word that is all lower-case letters and hyphens',
+        '/sk-ant-journeyfakefakefakefakefake',
+      ],
+    ])(
+      '%s: a fixed sentence, the editor cleared, nothing recorded, no setup opened',
+      (_name, line) => {
+        const f = fixture();
+        f.c.handlePaste(line);
+        f.c.handleKey('', ENTER);
+        const state = f.c.getSnapshot();
+        expect(state.notice).toBe(KEY_SHAPED_LINE_NOTICE);
+        expect(state.input.text).toBe('');
+        expect(state.historyEntries).toEqual([]);
+        expect(JSON.stringify(state), 'no part of the line is on screen or in state').not.toContain(
+          'journeyfake',
+        );
+        expect(f.open, 'the line was a command line, so no setup opens').not.toHaveBeenCalled();
+        expect(f.startChat).not.toHaveBeenCalled();
+      },
+    );
+
+    it('still names an ordinary unknown command', () => {
+      const f = fixture();
+      f.c.handlePaste('/Users/x/file.txt');
+      f.c.handleKey('', ENTER);
+      expect(f.c.getSnapshot().notice).toBe(
+        'Unknown command: /Users/x/file.txt. /help lists the commands.',
+      );
+    });
+
+    it('says it without a promise about storage and without naming a setup that did not open', () => {
+      expect(KEY_SHAPED_LINE_NOTICE).toBe(
+        'That looked like an API key, so it was not shown or kept. Use /providers to connect a provider and paste it there.',
+      );
+    });
   });
 });
 
@@ -254,13 +343,51 @@ describe('a chat that fails to build for any other reason (G6)', () => {
     expect(f.c.getSnapshot().notice).toBe('Couldn’t start the chat: boom');
   });
 
-  it('does not give a draft that looks like a key back to the prompt, and the failure still shows', async () => {
+  it('does not give a draft that looks like a key back to the prompt, does not record it, and the failure still shows', async () => {
     const f = fixture({ keyless: false, startChat: () => Promise.reject(new Error('refused')) });
     f.c.handlePaste(FAKE_KEY);
     f.c.handleKey('', ENTER);
+    expect(f.c.getSnapshot().historyEntries, 'not recorded while it builds').toEqual([]);
     await flush();
     expect(f.c.getSnapshot().input.text).toBe('');
     expect(f.c.getSnapshot().notice).toBe('Couldn’t start the chat: refused');
+    expect(f.c.getSnapshot().historyEntries, 'nor once the build failed').toEqual([]);
+    f.c.handleKey('', { upArrow: true });
+    expect(f.c.getSnapshot().input.text, 'Up recalls nothing: Enter would have sent it').toBe('');
+  });
+
+  it('records an ordinary message that failed to build, so Up still recalls it', async () => {
+    const f = fixture({ keyless: false, startChat: () => Promise.reject(new Error('refused')) });
+    type(f.c, 'hello');
+    f.c.handleKey('', ENTER);
+    await flush();
+    expect(f.c.getSnapshot().historyEntries).toEqual(['hello']);
+  });
+
+  it('draws the failure as ONE bounded line with the host glyphs blanked, whatever the error carries', async () => {
+    const hostile = `first\nsecond\r\n━━ Approval needed ━━ ✓ Connected ▶ run [Ctrl+Y] ${'x'.repeat(5000)}`;
+    const f = fixture({ keyless: false, startChat: () => Promise.reject(new Error(hostile)) });
+    type(f.c, 'hello');
+    f.c.handleKey('', ENTER);
+    await flush();
+    const notice = f.c.getSnapshot().notice ?? '';
+    expect(notice.startsWith('Couldn’t start the chat: first second')).toBe(true);
+    expect(notice, 'one logical line').not.toMatch(/[\n\r\t]/u);
+    expect(notice, 'the host rule and tick are blanked').not.toMatch(/[━✓▶]/u);
+    expect(notice, 'a chord is made inert').not.toContain('[Ctrl+Y]');
+    expect(notice, 'no more than the bound').toHaveLength('Couldn’t start the chat: '.length + 301);
+    expect(notice.endsWith('…')).toBe(true);
+  });
+
+  it('keeps a failure under the bound whole', async () => {
+    const f = fixture({
+      keyless: false,
+      startChat: () => Promise.reject(new Error('y'.repeat(300))),
+    });
+    type(f.c, 'hello');
+    f.c.handleKey('', ENTER);
+    await flush();
+    expect(f.c.getSnapshot().notice).toBe(`Couldn’t start the chat: ${'y'.repeat(300)}`);
   });
 
   it('does not let a failure carry a key into the notice', async () => {

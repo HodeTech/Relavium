@@ -32,6 +32,19 @@ const sessionRow = (n: number): HomeSessionRow => ({
   totalCostMicrocents: 0,
 });
 
+/**
+ * A frame as the eye reads it. The prompt's cursor cell is written as the SGR pair `ESC[7m` `ESC[27m` when colour is off (it was invisible there
+ * under `--no-color`, `FORCE_COLOR=0` and `TERM=dumb`: MVP-11 Step 2 review C4), and a row that ends in it is not trimmed any more, so the
+ * pins below read the frame without the sequences and with the trailing blanks the old, cursorless frame never had.
+ */
+const SGR = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'gu');
+const plain = (frame: string): string =>
+  frame
+    .replace(SGR, '')
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .join('\n');
+
 const indexes = (count: number): readonly number[] => Array.from({ length: count }, (_, n) => n);
 
 function draw(
@@ -52,7 +65,7 @@ function draw(
       stripFocus={stripFocus}
     />,
   );
-  const frame = view.lastFrame() ?? '';
+  const frame = plain(view.lastFrame() ?? '');
   view.unmount();
   return frame;
 }
@@ -223,7 +236,7 @@ describe('the focused row is drawn when a long notice takes most of the screen',
           notice={notice}
         />,
       );
-      const frame = view.lastFrame() ?? '';
+      const frame = plain(view.lastFrame() ?? '');
       view.unmount();
       expect(frame).toContain(needle[index] ?? '');
       expect(frame.split('\n').length).toBeLessThanOrEqual(24);
@@ -331,7 +344,7 @@ describe('every row `↓` can reach is drawn beside a long notice', () => {
             notice={notice}
           />,
         );
-        const frame = view.lastFrame() ?? '';
+        const frame = plain(view.lastFrame() ?? '');
         view.unmount();
         expect(frame, `${row.id} is drawn`).toContain(marker(row));
         expect(frame.split('\n').length).toBeLessThanOrEqual(24);

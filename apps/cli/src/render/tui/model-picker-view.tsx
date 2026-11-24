@@ -38,7 +38,23 @@ export interface ModelPickerViewProps {
    * imports no engine code); absent ⇒ the id itself, which is also what a provider this build has no name for reads as.
    */
   readonly providerName?: (provider: string) => string;
+  /**
+   * What `Enter` on a row does, which the title and the footer say (ADR-0145: a label names its effect). The bare Home's picker writes the
+   * default model of the NEXT chats to the configuration; the picker of a live chat (stand-alone or hosted) switches THIS chat's model and
+   * writes no default. The host knows which it is.
+   */
+  readonly scope: ModelPickerScope;
 }
+
+/** `next-chat`: the picker sets the default of new chats. `this-chat`: the picker switches the model of the chat in front. */
+export type ModelPickerScope = 'next-chat' | 'this-chat';
+
+const SCOPE_WORDS: Readonly<
+  Record<ModelPickerScope, { readonly title: string; readonly enter: string }>
+> = {
+  'next-chat': { title: 'Default model for new chats', enter: 'Enter set default' },
+  'this-chat': { title: 'Switch this chat’s model', enter: 'Enter switch' },
+};
 
 /** The window of row indices to render around `selected` (a `[start, end)` slice), keeping the selection visible and
  *  never exceeding {@link MODEL_WINDOW} rows. Pure so the scroll math is unit-checkable. */
@@ -163,7 +179,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-        Set your default model
+        {SCOPE_WORDS[props.scope].title}
         <Text {...dimProps(color)}>{` · ${badge}`}</Text>
       </Text>
       {status !== undefined && (
@@ -177,7 +193,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       </Text>
       {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">
-        ↑/↓ select · Enter set default · Ctrl+R refresh · Esc cancel
+        {`↑/↓ select · ${SCOPE_WORDS[props.scope].enter} · Ctrl+R refresh · Esc cancel`}
       </Text>
     </Box>
   );

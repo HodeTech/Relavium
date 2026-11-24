@@ -141,7 +141,12 @@ export function providerKeyEnvVar(id: ProviderId): RelaviumKeyEnvName {
   return RELAVIUM_PROVIDER_KEY_ENV_VARS[id];
 }
 
-export type CredentialSurface = 'home' | 'standalone-chat' | 'shell';
+/**
+ * Where a credential message is read. `home` is the bare Home (`/providers` opens setup); `home-chat` is a chat the Home hosts, which answers
+ * `/providers` with a pointer only, so its remedy names the way back; `standalone-chat` is `relavium chat`, which cannot open setup itself
+ * (it opens it once, at its start, and only when no provider is usable); `shell` is a script or a plain command.
+ */
+export type CredentialSurface = 'home' | 'home-chat' | 'standalone-chat' | 'shell';
 
 /** Fixed, value-free diagnostics with a remedy reachable in the actual host. */
 export function providerKeyAvailabilityMessage(
@@ -149,14 +154,17 @@ export function providerKeyAvailabilityMessage(
   availability: ProviderKeyAvailability,
   surface: CredentialSurface = 'shell',
 ): string {
-  // The `home` and `standalone-chat` remedies name no shell command (ADR-0146 §6, MVP-11): the Home has `/providers`; a stand-alone
-  // chat has neither the Home nor a command of its own for it, and opens provider setup when it starts, so it says to start it again.
+  // The `home`, `home-chat` and `standalone-chat` remedies name no shell command (ADR-0146 §6, MVP-11): the Home has `/providers`; the chat
+  // it hosts is left with Ctrl+C twice; a stand-alone chat has no setup of its own to open (starting it again opens one only when NO provider
+  // is usable, which is not this case when another one works), so it names the Home, which `relavium` alone starts (ADR-0145 §7.4).
   const remedy =
     surface === 'home'
       ? 'open `/providers` to connect a key or review its source.'
-      : surface === 'standalone-chat'
-        ? 'restart this chat to open provider setup.'
-        : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
+      : surface === 'home-chat'
+        ? 'go back to the Home (Ctrl+C twice) and use `/providers` to connect a key or review its source.'
+        : surface === 'standalone-chat'
+          ? 'connect a key or review its source from the Home (start Relavium without arguments).'
+          : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
   switch (availability.status) {
     case 'present-standard-not-allowed':
       return `${availability.source.name} is present but has not been allowed for this interactive invocation — ${remedy}`;
@@ -180,7 +188,7 @@ export function providerKeyAvailabilityMessage(
 export function providerRowHint(availability: ProviderKeyAvailability): string {
   switch (availability.status) {
     case 'present-standard-not-allowed':
-      return `${availability.source.name} is set · Enter to allow it`;
+      return `${availability.source.name} is set · Enter to review it`;
     case 'ineligible-custom-endpoint':
       // Short on purpose: choosing the row says why in a note of its own (`${name} cannot be used with the configured custom endpoint`).
       return 'custom endpoint · Enter to add a key';

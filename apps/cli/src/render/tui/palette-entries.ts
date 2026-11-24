@@ -70,7 +70,10 @@ export function buildPaletteEntries(
   }));
 }
 
-/** The entries that end a session or spend tokens: inside a tier of a typed query they come after the others. */
+/**
+ * The entries that end a session or spend tokens. Inside a tier of a typed query they come after the others ({@link filterPaletteEntries}),
+ * and a typed query that is not exactly one of their names never HIGHLIGHTS one while another row can act ({@link bestMatchIndex}).
+ */
 const LAST_IN_TIER: ReadonlySet<string> = new Set(['clear', 'cancel', 'compact', 'exit']);
 
 /**
@@ -94,7 +97,8 @@ export function isExactNameMatch(entry: PaletteEntry, query: string): boolean {
 /**
  * The entries a typed query leaves, ranked (ADR-0145 §7.6): the name that equals the query, the names that start with it, the names that
  * hold it, then the descriptions that hold it, each tier in the declared order. Inside a tier the commands that end a session or spend tokens
- * (`clear`, `cancel`, `compact`, `exit`) come AFTER the others, so a short query never lands on one of them first. Case-insensitive, on a
+ * (`clear`, `cancel`, `compact`, `exit`) come AFTER the others. That ordering alone does not keep a short query off them (an end row that is
+ * alone in a better tier still leads the list), so the highlight is chosen by {@link bestMatchIndex}. Case-insensitive, on a
  * name or the description the row shows. A ranked list is not a grouped one, so no row of it starts a group; an empty query leaves the list
  * as it is, groups and all.
  */
@@ -115,6 +119,19 @@ export function filterPaletteEntries(
     });
   }
   return first.flatMap((tier, index) => [...tier, ...(last[index] ?? [])]);
+}
+
+/**
+ * The highlighted row after a typed query (ADR-0145 §7.6: a short query does not land on `/clear`, `/cancel`, `/compact` or `/exit`).
+ * Reordering inside a tier is not enough (`/e` has `/exit` alone in its tier, `/res` reaches `/clear` through its description), so the
+ * choice is made here: a typed EXACT name wins even when it is dim, so `Enter` explains it instead of running something else; otherwise the
+ * first row that can act and does not end a session or spend tokens; and only when every row that can act is one of those, the first of them.
+ */
+export function bestMatchIndex(rows: readonly PaletteEntry[], query: string): number {
+  const first = rows[0];
+  if (first !== undefined && isExactNameMatch(first, query)) return 0;
+  const safe = rows.findIndex((entry) => entry.enabled && !LAST_IN_TIER.has(entry.command.name));
+  return safe >= 0 ? safe : firstEnabledIndex(rows);
 }
 
 /** The index of the first row that can act, or `0` when none can (an all-dim list still has a highlighted row, which only explains itself). */

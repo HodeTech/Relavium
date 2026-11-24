@@ -111,8 +111,22 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
       firstUsable && outcome.status === 'cancelled' && outcome.notice === undefined
         ? { ...outcome, notice: setupSkippedNotice(surface) }
         : outcome;
+    /**
+     * A key typed while the keychain is down would be checked against the provider and then lost (G19), so every road to the key prompt
+     * stops at the keychain card instead. The health is the keychain's, not one provider's, so the gate is here and not on one card: the
+     * env-consent card, the usable card and the custom-endpoint note all reach the prompt through `manual`.
+     */
+    const keychainDown = (): boolean =>
+      observations.some(({ availability }) => availability.keychainHealth === 'unavailable');
     const manual = async (id?: ProviderId): Promise<ProviderSetupOutcome> => {
       assertAdmitting();
+      if (keychainDown()) {
+        const target =
+          id ??
+          observations.find(({ availability }) => availability.keychainHealth === 'unavailable')
+            ?.id;
+        if (target !== undefined) return unavailable(target);
+      }
       let committedNotice: string | undefined;
       const flow: NativePromptFlow = {
         ...deps.flow,
@@ -195,9 +209,13 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
     async function consent(id: ProviderId, source: string): Promise<ProviderSetupOutcome> {
       const answer = await deps.flow.select({
         message: `${source} is available for ${KNOWN_PROVIDERS[id].displayName}. Allow this source?`,
+        // The card opens on `Not now`: an Enter that was already on its way (a typed message, then Enter, then Enter again) must not grant a
+        // source of credentials. The input guards that make a grant deliberate are Step 6's (ADR-0146 §6); until then the safe answer is first.
+        initialValue: 'defer',
         options: [
           { value: 'use', label: 'Use it' },
-          { value: 'manual', label: 'Enter a different key' },
+          // A key typed while the keychain is down would be checked against the provider and then lost (G19), so it is not offered.
+          ...(keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
           { value: 'defer', label: 'Not now' },
         ],
       });
@@ -279,7 +297,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
                   {
                     value: 'ack',
                     label: 'Remember this and continue without a key',
-                    hint: 'saved in your global config; setup stops opening itself at start',
+                    hint: 'remembers in your global config that the OS keychain is unavailable',
                   },
                 ]
               : []),
@@ -297,8 +315,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
           );
           if (pending?.availability.status === 'present-standard-not-allowed')
             return consent(pending.id, pending.availability.source.name);
-          if (!observations.some(({ availability }) => availability.status === 'unavailable'))
-            return manual(id);
+          if (!keychainDown()) return manual(id);
           deps.flow.note('The keychain is still unavailable.');
           continue;
         }
@@ -399,7 +416,7 @@ export function createProviderSetupCoordinator(deps: ProviderSetupDeps): {
         const answer = await deps.flow.select({
           message: 'Provider action',
           options: [
-            { value: 'manual', label: 'Enter a different key' },
+            ...(keychainDown() ? [] : [{ value: 'manual', label: 'Enter a different key' }]),
             { value: 'cancel', label: 'Done' },
           ],
         });

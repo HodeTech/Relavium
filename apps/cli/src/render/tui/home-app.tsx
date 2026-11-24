@@ -299,6 +299,7 @@ function ChatRegion(
           color={color}
           nowMs={nowMs}
           providerName={providerDisplayName}
+          scope="this-chat"
         />
       )}
       {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
@@ -1069,6 +1070,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           color={color}
           nowMs={props.nowMs()}
           providerName={providerDisplayName}
+          scope="next-chat"
         />
       )}
     </Box>

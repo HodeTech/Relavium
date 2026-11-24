@@ -26,6 +26,7 @@ import {
 } from './home-controller.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
+const WAIT_MS = 5000; // the siblings' bound for a step that has to settle; the default `vi.waitFor` gives it one second
 const ENTER = { return: true } as const;
 const UP = { upArrow: true } as const;
 const DOWN = { downArrow: true } as const;
@@ -103,7 +104,9 @@ const paste = (c: HomeController, text: string): void => {
 async function intoChat(m: Mounted): Promise<void> {
   type(m.controller, 'hello');
   m.controller.handleKey('', ENTER);
-  await vi.waitFor(() => expect(m.controller.getSnapshot().mode).toBe('chat'));
+  await vi.waitFor(() => expect(m.controller.getSnapshot().mode).toBe('chat'), {
+    timeout: WAIT_MS,
+  });
   await flush();
   m.lines.length = 0;
 }
@@ -115,41 +118,91 @@ describe('every command the registry places on the Home is handled by the Home�
     expect(HOME_COMMANDS).toHaveLength(15);
   });
 
-  /** What "handled" means with no port wired: it answered with its own gate, opened its own screen or exited: never as an unknown word. */
-  const handled = (m: Mounted): boolean => {
-    const snapshot = m.controller.getSnapshot();
-    const notice = snapshot.notice ?? '';
-    if (/^Unknown command/u.test(notice) || notice.includes('works in a chat')) return false;
-    return notice.length > 0 || snapshot.screen !== undefined || m.onExit.mock.calls.length > 0;
+  /**
+   * What each word does with NO port wired, by name: the screen it opens, the exit it makes, or the fixed sentence it refuses with. "Answered
+   * with some notice" was the whole oracle once, and a word whose branch said the wrong thing, or the notice of another word, passed it. A new
+   * command has to be given its outcome here: the first test below fails for a name that is missing.
+   */
+  type Outcome =
+    | { readonly notice: string }
+    | { readonly screen: 'help' }
+    | { readonly exit: true };
+  const OUTCOMES: Readonly<Record<string, Outcome>> = {
+    resume: { notice: 'Session resume is unavailable here.' },
+    run: { notice: 'Running a workflow is unavailable in this session.' },
+    workflows: { notice: 'The project’s workflows are not available here.' },
+    agents: { notice: 'The project’s agents are not available here.' },
+    providers: { notice: 'Provider setup is unavailable in this session.' },
+    models: { notice: '/models is unavailable here.' },
+    mode: { notice: 'Startup mode settings are unavailable here.' },
+    permissions: { notice: 'Remembered commands are not available here.' },
+    pricing: { notice: 'Model pricing is not available here.' },
+    init: { notice: 'Project initialization is unavailable in this session.' },
+    import: { notice: 'Import is unavailable in this session.' },
+    // The fast tier starts at once: the notice is its progress line, replaced by the report when the probes settle.
+    doctor: { notice: 'doctor: checking…' },
+    help: { screen: 'help' },
+    clear: { notice: unavailableNotice('clear', 'no conversation to clear') },
+    exit: { exit: true },
   };
 
-  it.each(HOME_COMMANDS)('the line /%s, pasted, is answered by the Home', (name) => {
+  it('has an outcome for every command of the Home’s order, and for nothing else', () => {
+    expect(Object.keys(OUTCOMES).sort()).toEqual([...HOME_COMMANDS].sort());
+  });
+
+  /** What the Home did, in the terms of {@link Outcome}, or why it did not. */
+  const outcomeOf = (name: string, m: Mounted): string | undefined => {
+    const snapshot = m.controller.getSnapshot();
+    const expected = OUTCOMES[name];
+    if (expected === undefined) return `/${name} has no expected outcome`;
+    if ('exit' in expected)
+      return m.onExit.mock.calls.length === 1
+        ? undefined
+        : `onExit was called ${String(m.onExit.mock.calls.length)} times`;
+    if (m.onExit.mock.calls.length > 0) return 'the Home exited';
+    if ('screen' in expected)
+      return snapshot.screen?.kind === expected.screen
+        ? undefined
+        : `screen: ${snapshot.screen?.kind ?? '(none)'}`;
+    if (snapshot.screen !== undefined) return `opened the ${snapshot.screen.kind} screen`;
+    return snapshot.notice === expected.notice
+      ? undefined
+      : `notice: ${snapshot.notice ?? '(none)'}`;
+  };
+
+  it.each(HOME_COMMANDS)('the line /%s, pasted, does exactly what the Home does for it', (name) => {
     const m = mount({ sessions: 1 });
     paste(m.controller, `/${name}`);
     expect(m.startChat, `/${name} starts no chat`).not.toHaveBeenCalled();
-    expect(handled(m), `/${name}: ${m.controller.getSnapshot().notice ?? '(no notice)'}`).toBe(
-      true,
-    );
+    expect(outcomeOf(name, m), `/${name}`).toBeUndefined();
   });
 
   it.each(HOME_COMMANDS.filter((name) => name !== 'clear'))(
-    'the entry /%s, chosen in the palette by its name, is answered by the Home',
+    'the entry /%s, chosen in the palette by its name, does the same',
     (name) => {
       const m = mount({ sessions: 1 });
       type(m.controller, `/${name}`);
       m.controller.handleKey('', ENTER);
       expect(m.startChat).not.toHaveBeenCalled();
       expect(m.controller.getSnapshot().palette, 'the palette is closed').toBeUndefined();
-      expect(handled(m), `/${name}: ${m.controller.getSnapshot().notice ?? '(no notice)'}`).toBe(
-        true,
-      );
+      expect(outcomeOf(name, m), `/${name}`).toBeUndefined();
     },
   );
+
+  /** The ordinary "answered as unknown" test: the oracle above has to be able to say no. */
+  const unknown = (m: Mounted): boolean => {
+    const notice = m.controller.getSnapshot().notice ?? '';
+    return /^Unknown command/u.test(notice) || notice.includes('works in a chat');
+  };
 
   it('answers a word the registry does not place on the Home as unknown, so the check above can fail', () => {
     const m = mount();
     paste(m.controller, '/definitely-not-a-command');
-    expect(handled(m)).toBe(false);
+    expect(unknown(m)).toBe(true);
+    // …and the per-word oracle refuses it too: its notice is no word's outcome.
+    expect(Object.values(OUTCOMES)).not.toContainEqual({
+      notice: m.controller.getSnapshot().notice,
+    });
   });
 
   it('every command of the chat the Home hosts is the chat’s own dispatch or the Home’s /resume', () => {
