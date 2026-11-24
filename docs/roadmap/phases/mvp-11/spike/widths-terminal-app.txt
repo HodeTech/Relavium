@@ -1,0 +1,41 @@
+terminal: TERM=xterm-256color TERM_PROGRAM=Apple_Terminal 488 COLORTERM=truecolor size=120x30 LANG=en_NZ.UTF-8
+glyph  codepoint  role                         assumed  measured
+◉      U+25C9     rail node, new               1        1
+╌      U+254C     rail dashed                  1        1
+◌      U+25CC     pending                      1        1
+✓      U+2713     done                         1        1
+✗      U+2717     failed                       1        1
+⊘      U+2298     skipped                      1        1
+⚠      U+26A0     warning                      1        1
+↻      U+21BB     retry                        1        1
+›      U+203A     speaker marker / selection   1        1
+▸      U+25B8     tool row                     1        1
+○      U+25CB     empty node                   1        1
+●      U+25CF     filled node                  1        1
+◐      U+25D0     half node                    1        1
+━      U+2501     heavy rule                   1        1
+─      U+2500     light rule                   1        1
+‖      U+2016     paused (new)                 1        1
+▶      U+25B6     play                         1        1
+■      U+25A0     stop                         1        1
+★      U+2605     star                         1        1
+▲      U+25B2     up                           1        1
+▼      U+25BC     down                         1        1
+◆      U+25C6     diamond                      1        1
+•      U+2022     bullet                       1        1
+…      U+2026     ellipsis                     1        1
+→      U+2192     arrow                        1        1
+█      U+2588     cursor block                 1        1
+▌      U+258C     half block                   1        1
+⏸      U+23F8     paused (retiring)            1        1
+╭      U+256D     frame                        1        1
+╮      U+256E     frame                        1        1
+╰      U+2570     frame                        1        1
+╯      U+256F     frame                        1        1
+│      U+2502     frame / gutter               1        1
+·      U+00B7     legend separator             1        1
+—      U+2014     em dash                      1        1
+✎      U+270E     host glyph                   1        1
+╿      U+257F     host glyph                   1        1
+framed probe "│ ◉ ✓ ⚠ ● ━ ▸ …│": renderer assumes 16 columns, terminal reports 16
+SUMMARY: 37 glyphs, 0 measured differently from the renderer, 0 unanswered

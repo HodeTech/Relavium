@@ -1,6 +1,6 @@
 # MVP-11 — One surface language for the CLI: Home, chat, sheets, popups and the palette
 
-> Status: **Planned** (2026-11-24). MVP-11's product work was to start when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) was merged to `main`; it was merged on 2026-11-24 as `c17e9763`, so nothing waits on it and Step 1 (decisions, ADRs and a spike, no product code) can begin. Nothing in this file is built and no ADR it asks for is written. On 2026-11-24 the maintainer accepted the recommendation of each decision of [§7.2](#72-decisions-od-1-to-od-23); two sub-questions stay open (the populated Home's title in OD-8 and the default-model agreement in OD-23).
+> Status: **Planned** (2026-11-24). MVP-11's product work was to start when the MVP-8 pull request ([PR #102](https://github.com/HodeTech/Relavium/pull/102)) was merged to `main`; it was merged on 2026-11-24 as `c17e9763`, so nothing waits on it. Step 1 (decisions, ADRs and a spike, no product code) has begun: the real-terminal spike is partly run (see [Step 1](#step-1--decisions-adrs-spike-and-baseline)), and no ADR it asks for is written. Nothing in this file is built. On 2026-11-24 the maintainer accepted the recommendation of each decision of [§7.2](#72-decisions-od-1-to-od-23); two sub-questions stay open (the populated Home's title in OD-8 and the default-model agreement in OD-23).
 >
 > Last updated: 2026-11-24
 
@@ -661,9 +661,9 @@ Everything here was read from the code at `ff3e47fb` (2026-11-24; the counts of 
 
 | Concern | Design |
 |---|---|
-| Placement | Alternate screen: an absolutely positioned box over the body, offset to be centred, rows padded with spaces to the frame width. Inline: a framed block in the live region |
+| Placement | Alternate screen: an absolutely positioned box over the body, offset to be centred, rows padded with spaces to the frame width. Inline: a framed block in the live region, **sized so that the whole live region stays at most `rows − 1` lines** (measured in Step 1: at 24 of 24 rows Ink loses the user's earlier scrollback, at 25 it wipes it while the popup is open), so the inline height is what the live region has left, not a fixed 21 rows |
 | Opacity | Colour: the body behind is dimmed by passing the dim style at paint time (not through the wrap cache key, which must not change). No colour: padded rows only |
-| Proof | The acknowledgement checks that the frame drawn is the frame the user answered by walking the computed layout against terminal bounds. Step 1's spike must show an absolutely positioned node passes it, and that **no later sibling can occlude** a chord or secret popup's rows (the check verifies bounds, not occlusion, so an occlusion frame test is added). Until that is shown, no chord or secret step moves into a popup |
+| Proof | The acknowledgement checks that the frame drawn is the frame the user answered by walking the computed layout against terminal bounds. Step 1's spike must show an absolutely positioned node passes it, and that **no later sibling can occlude** a chord or secret popup's rows (the check verifies bounds, not occlusion, so an occlusion frame test is added). Until that is shown, no chord or secret step moves into a popup **Spike result (2026-11-24, [Step 1](#step-1--decisions-adrs-spike-and-baseline)):** an absolutely positioned popup passes the repository's own bounds check and acknowledgement; the same check rejects a popup past the bottom and one wider than its container; a later sibling is drawn over the popup and the bounds check still passes, and a comparison of the drawn frame with the popup's own rows catches it. The first part of the gate is therefore met in a test; the real-terminal part is open. |
 | Resize | Below 80×24 the popup is replaced by a notice with the way back; a resize that would hide a pending chord step closes it unanswered |
 | Time | The popup shows elapsed time past 5 s for a run. A wait clock on a sheet is display state only and never feeds a guard ([§4.5](#45-sheets)) |
 | Dependence on the renderer | The overlay relies on Ink's absolute-position compositing, which is not used anywhere in the CLI today; a test pins the behaviour across upgrades of the renderer |
@@ -824,12 +824,41 @@ After Step 3 the language (one key grammar, one glyph table, one host-glyph set,
 
 *Size M; milestone; documents and a prototype. It may start before PR #102 merges because it touches no product code.*
 
+**Where Step 1 stands (2026-11-24): start here.**
+
+| Item | State |
+|---|---|
+| PR #102 merged; re-read Step 2's defect list against the merged code | The PR is merged (`c17e9763`). The re-read is **not done** |
+| The rulings of [§7.2](#72-decisions-od-1-to-od-23) recorded in the ADRs | **Not started.** Two sub-questions are open: OD-8's title and OD-23's default-model agreement |
+| ADR-A, ADR-B, ADR-C1 | **Not written.** Take the next free number at writing time (`ls docs/decisions`; 0145 was the next free on 2026-11-24) |
+| The spike | **Partly run:** automated in tmux, by hand in the VS Code terminal and Terminal.app, glyph widths in all three. **Owed:** Windows Terminal, iTerm2, SSH and the inline form by hand. The kit and how to run it: [mvp-11/spike/README.md](mvp-11/spike/README.md) |
+| ADR-C2 | **Not written.** Its evidence is the block "What the spike has shown so far" below; write it when the maintainer is content with the evidence rows that exist |
+| The baseline of [§2.5](#25-success-criteria) B | **Not taken** |
+| Glossary additions; the surface-language reference page's skeleton | **Not started** |
+
+**Rules for whoever continues this.**
+
+- **Read in this order:** `CLAUDE.md`; the MVP-11 paragraphs and D79–D82 in [current.md](../current.md); this file's §1–§7 and [§5.5](#55-security-invariants-the-floor-that-does-not-move); the ADRs this file says it amends (0115, 0122, 0129, 0134, 0137, 0139, 0140); then the standards for what you touch.
+- **ADRs are written *Proposed*** in the condensed form (the `write-adr` skill) and are accepted by the maintainer, never by the author. An ADR that would change an accepted ruling of [§7.2](#72-decisions-od-1-to-od-23) goes back to the maintainer first. Nothing in Step 2 or later starts before ADR-A, ADR-B and ADR-C1 are Accepted (ADR-C2 before Step 4a).
+- **Tracked documents** cite only tracked files (this plan is meant to stand alone) and do not name or link other agent products ([the documentation direction](../../analysis/README.md#maintainer-documentation-direction--2026-11-15)). The frames are drawings, not screenshots.
+- **The spike kit is not product code.** Keep it out of `apps/` and `packages/`; its results belong in ADR-C2.
+- **Report what you ran and what you did not**, in the style of [§11](#11-limits-of-this-plan). Nothing is committed or pushed unless the maintainer asks.
+
 **Goal:** decide before building, and prove the one assumption the popup rests on.
 
 - Confirm that PR #102 is merged and re-read the defect list of Step 2 against the merged code.
 - Record the rulings of [§7.2](#72-decisions-od-1-to-od-23) in the ADRs they belong to, and settle the two open sub-questions (OD-8's title, OD-23's default-model agreement). An ADR that would change an accepted ruling goes back to the maintainer first. OD-3's docked panel applies only if the spike fails.
 - Write and accept ADR-A, ADR-B and ADR-C1 ([§5.7](#57-adrs-and-documentation)); write ADR-C2 after the spike.
 - **The spike** (real terminals, no product code): an absolutely positioned popup over the alternate screen on Terminal, iTerm2, Windows Terminal, the VS Code terminal and tmux/SSH (resize, ambiguous-width glyphs, focus, `NO_COLOR` opacity by padding); a unit test that an absolutely positioned node passes the measured-frame check; a frame test that **no later sibling occludes** a chord or secret popup's rows; and a try-out of the sheet-owned inspection popup ([§4.5.1](#451-the-inspection-popup-the-full-view-and-details)). The one experiment so far ran in the Ink test library, where an absolutely positioned box composited over the text and was fully opaque once its rows were padded; that is the hypothesis, not the proof.
+- **What the spike has shown so far** (2026-11-24; Ink 7.1.0 mounted with the Home's options, tmux 3.7b as the terminal on macOS; the kit is in [mvp-11/spike/](mvp-11/spike/README.md)):
+  - **Full screen, 80×24, popup 68×21:** 15 checks compare every captured screen cell with a model of the intended frame. The popup is opaque and its border is straight; the 412 cells outside it are dimmed and none of its own; `Esc` leaves exactly the idle frame; a resize to 100×30 re-centres it with no leftovers; below 80×24 the notice replaces it and 80×24 brings it back; quitting leaves the alternate screen and the shell's text intact. The large 78×23 inspection popup passes the same 15. Three repeated runs gave the same result.
+  - **The checks can fail:** a build with no dimming fails only the dimming check, and a build whose popup rows lack their space padding fails six of the fifteen. A popup row one cell short of the frame lets the body show through at its edge, so the padding rule is load-bearing.
+  - **Occlusion is real and the bounds check cannot see it:** a later sibling is drawn on top of the popup (z-order is tree order) while `fitsTerminalBounds` still returns true. A comparison of the drawn frame with the popup's rows does catch it, so rule 7's occlusion frame test is feasible as designed.
+  - **The inline form is safe only within `rows − 1`:** the popup draws in the flow above the prompt and repeated open and close leave no row and no copy in the scrollback, but with a live region of 23 of 24 rows the user's earlier shell output survives, at 24 it is lost at the next close and at 25 it is wiped while the popup is open. This is Ink's own rule. It is now part of the design (§5.2, Placement) and of Step 4a's acceptance.
+  - **Glyph widths:** asked of the terminal itself with a cursor position report, tmux 3.7b, the VS Code terminal (VS Code 1.147.0, 117×27, [the report](mvp-11/spike/widths-vscode.txt)) and Terminal.app (build 488, 120×30, [the report](mvp-11/spike/widths-terminal-app.txt)) all measure all 37 glyphs of the table (including `◉ ⚠ ‖ ⏸ ✎ ╿` and the frame corners) as one column, as the renderer assumes, and a framed line of 16 columns is reported as 16. That is three emulators' answers about the cursor, not the matrix, and it says nothing about how a font draws a glyph that is wider than its cell.
+  - **By hand, in two real terminals (the maintainer's report, 2026-11-24; an observer's account, not a capture):** `spike-render.mjs` in the VS Code terminal (VS Code 1.147.0) and in Terminal.app (build 488) was reported clean on the five points of the kit: the popup is straight with no body text inside, the text behind it is dimmed, `Esc` leaves no trace, `⚠` and `◉` do not shift the right border, and a window below 24 rows shows the notice instead.
+  - **Colour:** Ink's own colour library does not read `NO_COLOR` (the CLI gates colour with its own flag), so the "no colour" case is the run without dimming, and it passes every check except the dimming one by design.
+  - **Not yet run:** iTerm2 (not installed), Windows Terminal and an SSH session; the inline form by hand in the two real terminals (the report covers the full-screen popup); macOS automation is blocked from the session that ran the automated part, so the two real terminals rest on the maintainer's observation. They need a person for two minutes each with the kit; until then no chord or secret step moves into a popup. Also not checked: terminals with the ambiguous-width setting on, focus behaviour, and the Home's own code path (the spike is a prototype app, not the Home).
 - Take the **baseline** of [§2.5](#25-success-criteria) B on the current build, including the keyless run ([§4.12](#412-onboarding-the-first-run)).
 - Glossary additions; the skeleton of the surface-language reference page.
 
@@ -882,9 +911,9 @@ After Step 3 the language (one key grammar, one glyph table, one host-glyph set,
 - **4c · Settings:** `/mode`, `/effort`, `/models` (with the *where it applies* step and the data-leaves line) and `/permissions` in a chat; the residue rule and the durable record of widened authority.
 - **4d · Flows:** `/providers` including the **first-run setup** ([§4.12](#412-onboarding-the-first-run)), `/init`, `/import`, `/pricing`, `/resume`, `/run` and, if [OD-10](#72-decisions-od-1-to-od-23) is accepted, `/export`'s confirmation. The Home's tab host, the run view and `/help` stay screens ([OD-21](#72-decisions-od-1-to-od-23)).
 
-**Acceptance (each increment):** the surface matrix includes the new popups; each popup closes with `Esc`; nothing is written to the transcript or a Home notice (frame tests); the secret field's rules hold (the existing secret tests re-run inside the popup); a sheet arriving over a popup suspends it and a popup is refused over a sheet (race tests, both orders); the inline form has the same content and keys.
+**Acceptance (each increment):** the surface matrix includes the new popups; each popup closes with `Esc`; nothing is written to the transcript or a Home notice (frame tests); the secret field's rules hold (the existing secret tests re-run inside the popup); a sheet arriving over a popup suspends it and a popup is refused over a sheet (race tests, both orders); the inline form has the same content and keys, keeps the whole live region at most `rows − 1` lines at 80×24 for every popup (a frame test), and leaves the user's earlier scrollback intact across an open and close (a real-terminal check).
 
-**Gate:** until Step 1's evidence exists, no chord or secret step moves into a popup, which means 4d's key step waits for it and the existing native card stays until then.
+**Gate:** until Step 1's evidence exists, no chord or secret step moves into a popup, which means 4d's key step waits for it and the existing native card stays until then. **State on 2026-11-24:** the evidence covers tmux (automated), the VS Code terminal and Terminal.app (by hand); the Windows Terminal, iTerm2 and SSH rows are still owed, and whether 4d's key step needs them first is the maintainer's call at the Step 3 checkpoint (recommendation: Windows Terminal yes, because MVP-10 owes its runbook rows anyway; iTerm2 and SSH no).
 
 ### Step 5 — Sheets
 
@@ -1015,6 +1044,7 @@ Each was put to the maintainer with a recommendation, and on 2026-11-24 the main
 | 21 | MVP-5, MVP-6 and MVP-9 add surfaces that must be popups | Medium / Medium | They follow MVP-11; MVP-9's provider and MCP surfaces are written for the popup host from the start |
 | 22 | The first-run popup is a system-started popup, an exception to the rule that fixes who opens what | Low / Medium | The exception is written into ADR-C2 with its conditions ([§4.12](#412-onboarding-the-first-run)); an `Esc` skips it |
 | 23 | Decision load: twenty-three decisions | Low / Low (was High / Medium) | Accepted as recommended on 2026-11-24; two sub-questions remain ([§7.2](#72-decisions-od-1-to-od-23)) |
+| 24 | An inline popup makes the live region as tall as the terminal and Ink wipes the user's earlier scrollback | Medium / High | The inline height is bounded by what the live region has left ([§5.2](#52-the-popup-host)); a frame test at 80×24 and a real-terminal scrollback check (Step 4); measured in the Step 1 spike |
 
 ---
 
@@ -1060,7 +1090,7 @@ MVP-11 is complete when all of these hold on `development`, with the evidence wr
 
 - **The frames are drawings.** They were composed on the real grid and rendered in a browser with a monospace font, not in a terminal, so glyph widths, dimming and overlay behaviour on real terminals are exactly what Step 1 must prove.
 - **Code read at `ff3e47fb`** (2026-11-24) with the MVP-8 review's edits still uncommitted in the working tree; names are used instead of line numbers for that reason. The code claims of [§4.12](#412-onboarding-the-first-run), [§5](#5-technical-design) and the appendices were checked again at `f2aa2119`, eleven commits later; they still hold. Some counts of Appendix D drift: at that commit `Esc cancel` has 19 lines in 8 files, `↑/↓ select` 41 in 18, `Enter open the gate` 6 in 5, `Esc return to prompt` 7 in 4, and 20 production files use the sheet frame.
-- **Not verified:** the popup on any real terminal; that an absolutely positioned node passes the measured-frame check and cannot be occluded; today's behaviour when a sheet arrives over an open overlay (rule 12 is a proposal); the exact transcript lines a few commands leave today (`/mode`, `/effort`); whether `/compact` asks before spending tokens; the doctor's per-row remedies (a design, not an existing feature); the first-run behaviours of [§4.12](#412-onboarding-the-first-run) that were read from code and not run (the lost draft, the dropped skip note, `/` then Enter, whether a Home frame shows before the first card).
+- **Not verified:** the popup on any real terminal except tmux (Terminal, iTerm2, Windows Terminal, the VS Code terminal and SSH are not run; see Step 1); the Home's own code path under a popup; today's behaviour when a sheet arrives over an open overlay (rule 12 is a proposal); the exact transcript lines a few commands leave today (`/mode`, `/effort`); whether `/compact` asks before spending tokens; the doctor's per-row remedies (a design, not an existing feature); the first-run behaviours of [§4.12](#412-onboarding-the-first-run) that were read from code and not run (the lost draft, the dropped skip note, `/` then Enter, whether a Home frame shows before the first card).
 - **No users, no usage data and no persona research exist.** Statements about who the users are and what they feel are hypotheses; the protocol in [§2.5](#25-success-criteria) is how they would be tested.
 - **Counts** are word-for-word text counts in the repository (lines or occurrences and files); they are accurate to the method, not to the behaviour; [Appendix D](#appendix-d--measured-baseline) gives the commands.
 
