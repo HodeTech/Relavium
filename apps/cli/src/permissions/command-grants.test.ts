@@ -4,6 +4,7 @@ import {
   appendFileSync,
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -760,6 +761,21 @@ describe('the file protocol', () => {
     expect(removeCommandGrantsFile(home)).toEqual({ ok: true, removed: true });
     expect(existsSync(target)).toBe(true);
     expect(() => lstatSync(file())).toThrow();
+  });
+
+  it('a grants file with a second hard link is not written through: the other name keeps its bytes and its mode', async () => {
+    const grants = store();
+    await grants.remember(['npm', 'test']);
+    const other = join(home, 'other-name.txt');
+    linkSync(file(), other);
+    const before = readFileSync(other, 'utf8');
+    const modeBefore = statSync(other).mode & 0o777;
+    expect(await store().remember(['npm', 'run', 'build'])).toEqual({
+      ok: false,
+      reason: 'unwritable',
+    });
+    expect(readFileSync(other, 'utf8'), 'nothing was appended through the link').toBe(before);
+    expect(statSync(other).mode & 0o777).toBe(modeBefore);
   });
 
   it('a symlink to a REAL grants file is not followed either: the same grants would otherwise be honoured through a link', async () => {

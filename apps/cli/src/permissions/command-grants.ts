@@ -866,6 +866,8 @@ export async function namedProgram(
 /** The sentence the append's refusal of a link, or of a path that cannot be inspected, carries. */
 const REFUSED_LINK_OR_UNINSPECTABLE =
   'the remembered-command file cannot be inspected or is a symbolic link; refusing to write';
+const REFUSED_HARD_LINK =
+  'the remembered-command file has more than one hard link; refusing to write to it';
 
 /**
  * One record, one write, with a LEADING newline (a process killed mid-append leaves a partial last line with no terminator, and
@@ -888,7 +890,9 @@ function appendLine(path: string, record: object): void {
     throw new Error(
       error.reason === 'symlink'
         ? REFUSED_LINK_OR_UNINSPECTABLE
-        : 'the remembered-command file is not a regular file',
+        : error.reason === 'hard-link'
+          ? REFUSED_HARD_LINK
+          : 'the remembered-command file is not a regular file',
     );
   }
 }
