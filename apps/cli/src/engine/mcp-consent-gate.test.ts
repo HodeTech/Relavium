@@ -130,6 +130,9 @@ describe('assertStdioConsent — nothing spawns without a decision (ADR-0084 §1
     // Named from `~`, so a transcript or a screen share does not carry the operator's directory layout away.
     expect(err()).toContain(`~${sep}.relavium${sep}mcp-consent.ndjson could not be read`);
     expect(err()).not.toContain(home);
+    // And the way out: a store that cannot be read stays unread (every later approval would be appended and never seen) until the file
+    // is deleted or moved aside, which only the person can do.
+    expect(err()).toContain('Delete the file or move it aside to start a new grant log.');
   });
 
   // A symbolic link is not created on every Windows account.

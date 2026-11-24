@@ -52,6 +52,7 @@ describe('loadConfigFile reads through ONE descriptor (review M-E1)', () => {
     // clearAllMocks keeps the call-through implementations; make that explicit for the ones a test replaces.
     vi.mocked(openSync).mockImplementation(native.openSync);
     vi.mocked(fstatSync).mockImplementation(native.fstatSync);
+    vi.mocked(statSync).mockImplementation(native.statSync);
     dir = mkdtempSync(join(tmpdir(), 'relavium-load-fd-'));
     file = join(dir, 'config.toml');
   });
@@ -59,22 +60,100 @@ describe('loadConfigFile reads through ONE descriptor (review M-E1)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('opens the path once, without blocking, and asks the descriptor everything else: no stat or read by path', () => {
+  it('stats the path first, opens it once without blocking, and asks the descriptor everything else', () => {
     writeFileSync(file, 'update_channel = "beta"\n');
     expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
 
+    const stats = vi
+      .mocked(statSync)
+      .mock.invocationCallOrder.filter(
+        (_, index) => vi.mocked(statSync).mock.calls[index]?.[0] === file,
+      );
     const opens = vi.mocked(openSync).mock.calls.filter(([path]) => path === file);
+    expect(stats).toHaveLength(1);
     expect(opens).toHaveLength(1);
-    // O_NONBLOCK is what keeps the open from waiting on a FIFO swapped in for the file (where the platform has it).
-    expect(
-      (Number(opens[0]?.[1]) & (constants.O_NONBLOCK ?? 0)) === (constants.O_NONBLOCK ?? 0),
-    ).toBe(true);
+    // The stat comes BEFORE the open: what is not a regular file is never opened.
+    const openAt = vi.mocked(openSync).mock.invocationCallOrder[0] ?? 0;
+    expect(stats[0]).toBeLessThan(openAt);
+    // O_NONBLOCK keeps the open from waiting on a FIFO swapped in after the stat, and O_NOCTTY from adopting a terminal (where the
+    // platform has them).
+    const flags = Number(opens[0]?.[1]);
+    for (const flag of [constants.O_NONBLOCK, constants.O_NOCTTY]) {
+      if (flag !== undefined) expect(flags & flag).toBe(flag);
+    }
     const [fd] = vi.mocked(fstatSync).mock.calls[0] ?? [];
     expect(typeof fd).toBe('number');
-    // Not by path again: the window between a `stat` and a `read` is what this closes.
-    expect(vi.mocked(statSync).mock.calls.filter(([path]) => path === file)).toEqual([]);
+    // The read is the descriptor's: never `readFileSync` by path, which is the window this closes.
     expect(vi.mocked(readFileSync)).not.toHaveBeenCalledWith(file, expect.anything());
   });
+
+  it.skipIf(!POSIX)(
+    'never opens what is not a regular file: a directory, a FIFO and a device are refused at the stat',
+    () => {
+      const subdir = join(dir, 'a-directory');
+      mkdirSync(subdir);
+      const fifo = join(dir, 'a-fifo');
+      execFileSync('mkfifo', [fifo]);
+      // `/dev/null` stands for a tape or a serial line: a project-layer link to a device is opened by nothing here.
+      for (const target of [subdir, fifo, '/dev/null']) {
+        expect(() => loadConfigFile(target, GlobalConfigSchema), target).toThrow(
+          `${target}: is not a regular file.`,
+        );
+      }
+      expect(vi.mocked(openSync).mock.calls.map(([path]) => path)).toEqual([]);
+    },
+  );
+
+  it('refuses a file swapped in between the stat and the open, unread', async () => {
+    const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+    writeFileSync(file, 'update_channel = "beta"\n');
+    const other = join(dir, 'other.toml');
+    writeFileSync(other, 'update_channel = "stable"\n');
+    let swapped = false;
+    vi.mocked(statSync).mockImplementation((path, options) => {
+      const stats = native.statSync(path, options);
+      if (path === file && !swapped) {
+        swapped = true;
+        renameSync(other, file); // a different file takes the name after the stat
+      }
+      return stats;
+    });
+    expect(() => loadConfigFile(file, GlobalConfigSchema)).toThrow(`${file}: could not be read.`);
+    expect(swapped).toBe(true);
+    expect(readFileSync(file, 'utf8')).toContain('stable'); // the swap really happened, and the stable text was not what was parsed
+  });
+
+  it.skipIf(!POSIX)(
+    'refuses a FIFO swapped in between the stat and the open, without waiting for it',
+    async () => {
+      const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+      writeFileSync(file, 'update_channel = "beta"\n');
+      const fifo = join(dir, 'fifo.toml');
+      execFileSync('mkfifo', [fifo]);
+      // A reader and a writer are held, so that an open that forgot O_NONBLOCK (the flags test above catches that) could not hang the
+      // test worker: a blocked synchronous open cannot be timed out.
+      const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+      const writer = openSync(fifo, constants.O_WRONLY);
+      let swapped = false;
+      vi.mocked(statSync).mockImplementation((path, options) => {
+        const stats = native.statSync(path, options);
+        if (path === file && !swapped) {
+          swapped = true;
+          renameSync(fifo, file);
+        }
+        return stats;
+      });
+      try {
+        expect(() => loadConfigFile(file, GlobalConfigSchema)).toThrow(
+          `${file}: could not be read.`,
+        );
+        expect(swapped).toBe(true);
+      } finally {
+        closeSync(writer);
+        closeSync(reader);
+      }
+    },
+  );
 
   it('parses the file it opened, not one renamed over the path after the open', async () => {
     const native = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -155,26 +234,6 @@ describe('loadConfigFile reads through ONE descriptor (review M-E1)', () => {
     symlinkSync(a, b);
     expect(() => loadConfigFile(a, GlobalConfigSchema)).toThrow(`${a}: could not be read.`);
   });
-
-  it.skipIf(!POSIX)(
-    'refuses a FIFO at the path without waiting for a writer, and reads nothing from it',
-    () => {
-      const fifo = join(dir, 'fifo.toml');
-      execFileSync('mkfifo', [fifo]);
-      // A reader and a writer are held open for the test, so that a loader which forgot O_NONBLOCK (the flag test above is what
-      // catches that) could not hang the test worker on the open: a blocked synchronous open cannot be timed out.
-      const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
-      const writer = openSync(fifo, constants.O_WRONLY);
-      try {
-        expect(() => loadConfigFile(fifo, GlobalConfigSchema)).toThrow(
-          `${fifo}: is not a regular file.`,
-        );
-      } finally {
-        closeSync(writer);
-        closeSync(reader);
-      }
-    },
-  );
 
   describe('the 0600 self-heal acts on the descriptor', () => {
     it.skipIf(!POSIX)('sets the mode through the descriptor it holds, never by path', () => {

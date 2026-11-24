@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   closeSync,
   constants,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -218,6 +220,21 @@ describe('createFileTerminalOutbox', () => {
         await expect(createFileTerminalOutbox(planted).list()).resolves.toHaveLength(1);
         await expect(createFileTerminalOutbox(path).list()).rejects.toThrow(unreadable);
         expect(terminalOutboxStamp(path)).toMatch(/^\d+:/); // the stamp only stats: a poll still tells the file changed
+      },
+    );
+
+    it.skipIf(!posix)(
+      'does not write through a hard link: the other name keeps its content and mode',
+      async () => {
+        const victim = join(dir, 'victim.txt');
+        writeFileSync(victim, 'untouched');
+        chmodSync(victim, 0o644);
+        linkSync(victim, path);
+        const outbox = createFileTerminalOutbox(path);
+        await expect(outbox.put(terminal('r1'))).resolves.toBeUndefined();
+        await expect(outbox.remove('r1')).resolves.toBeUndefined();
+        expect(readFileSync(victim, 'utf8')).toBe('untouched');
+        expect(statSync(victim).mode & 0o777).toBe(0o644);
       },
     );
 

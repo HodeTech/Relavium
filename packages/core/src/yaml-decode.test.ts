@@ -6,7 +6,8 @@ import { WorkflowSyntaxError } from './errors.js';
 import { parseWorkflow } from './parser.js';
 import {
   LIBRARY_CHECK_MAX_CHARS,
-  MAX_MAP_KEYS,
+  MAX_YAML_TOKENS,
+  countYamlTokens,
   YamlDecodeInvariantError,
   decodeHardenedYaml,
 } from './yaml-decode.js';
@@ -204,15 +205,16 @@ describe.each(WAYS)(
 );
 
 describe('decodeHardenedYaml — a large map is not quadratic', () => {
-  // The library's own `uniqueKeys: true` needs ~25 s for 60,000 keys here, so the default test timeout is the bound
-  // (no clock is read): these tests fail by timing out if the check ever becomes quadratic again.
-  const KEYS = 60_000;
+  // The library's own `uniqueKeys: true` needs ~12 s for 40,000 keys here, so the default test timeout is the bound
+  // (no clock is read): these tests fail by timing out if the check ever becomes quadratic again. 40,000 keys are 80,000 of the
+  // decode's 120,000 structural tokens (a `key: value` line is two), the most one map of this shape can hold.
+  const KEYS = 40_000;
 
   function flatMap(count: number, indent: string): string {
     return Array.from({ length: count }, (_, index) => `${indent}k${index}: ${index}`).join('\n');
   }
 
-  it('parses and validates a workflow whose metadata holds 60,000 distinct keys', () => {
+  it('parses and validates a workflow whose metadata holds 40,000 distinct keys', () => {
     const text = [
       "schema_version: '1.0'",
       'workflow:',
@@ -227,10 +229,10 @@ describe('decodeHardenedYaml — a large map is not quadratic', () => {
     ].join('\n');
     const metadata = parseWorkflow(text).workflow.metadata;
     expect(Object.keys(metadata ?? {})).toHaveLength(KEYS);
-    expect(metadata?.['k59999']).toBe(59_999);
+    expect(metadata?.['k39999']).toBe(39_999);
   });
 
-  it('still finds a duplicate that comes after 59,999 distinct keys, at its own position', () => {
+  it('still finds a duplicate that comes after 39,999 distinct keys, at its own position', () => {
     const text = `${flatMap(KEYS - 1, '')}\nk0: again\n`;
     const fault = faultOf(decodeHardenedYaml, text);
     expect(fault.code).toBe('DUPLICATE_KEY');
@@ -252,103 +254,143 @@ describe('decodeHardenedYaml — a large map is not quadratic', () => {
     expect(fault.pos[0]).toBe(text.lastIndexOf('k0:'));
   });
 
-  it('keeps one set per map: 30,000 small maps that share their key names are not duplicates', () => {
-    const text = Array.from({ length: 30_000 }, (_, index) => `- {a: ${index}, b: ${index}}`).join(
+  it('keeps one set per map: 15,000 small maps that share their key names are not duplicates', () => {
+    const text = Array.from({ length: 15_000 }, (_, index) => `- {a: ${index}, b: ${index}}`).join(
       '\n',
     );
-    expect(decodeHardenedYaml(text, new LineCounter())).toHaveLength(30_000);
+    expect(decodeHardenedYaml(text, new LineCounter())).toHaveLength(15_000);
   });
 });
 
-describe('decodeHardenedYaml — a source has a budget of map keys', () => {
-  // Each test decodes sources of 100,000 keys and more; a loaded CI worker needs more than the default five seconds.
-  const SLOW = 30_000;
-  const TOO_MANY = `the document has more than ${String(MAX_MAP_KEYS)} mapping keys`;
+describe('countYamlTokens', () => {
+  it('counts each structural character once: a line break, a comma, a colon, a hyphen, a bracket and a brace', () => {
+    expect(countYamlTokens('')).toBe(0);
+    expect(countYamlTokens('plain words')).toBe(0);
+    for (const character of ['\n', '\r', ',', ':', '-', '[', '{']) {
+      expect(countYamlTokens(`a${character}b`), JSON.stringify(character)).toBe(1);
+    }
+    // The closers pair with an opener already counted, and the rest are not structure.
+    expect(countYamlTokens(']}#!&*|>?"\'')).toBe(0);
+    expect(countYamlTokens('- {a: 1, b: [x, y]}\n')).toBe(8); // - { : , : [ , and the line break
+  });
 
-  function flat(count: number, indent = ''): string {
-    return `${Array.from({ length: count }, (_, index) => `${indent}k${index}: ${index}`).join('\n')}\n`;
-  }
+  it('counts a CRLF break twice and a lone CR once (an old-style source has no \\n at all)', () => {
+    expect(countYamlTokens('a\r\nb')).toBe(2);
+    expect(countYamlTokens('a\rb\rc')).toBe(2);
+  });
 
-  it(
-    'admits a map of exactly the budget and refuses it one key later',
-    () => {
-      // The first key of a map is free: MAX_MAP_KEYS + 1 keys put MAX_MAP_KEYS questions to the check.
-      expect(
-        Object.keys(decodeHardenedYaml(flat(MAX_MAP_KEYS + 1), new LineCounter()) as object),
-      ).toHaveLength(MAX_MAP_KEYS + 1);
-      const fault = faultOf(decodeHardenedYaml, flat(MAX_MAP_KEYS + 2));
+  it('stops one past the limit, so a caller asking "is it over?" reads only the prefix it needed', () => {
+    const text = '- a\n'.repeat(1000);
+    expect(countYamlTokens(text)).toBe(2000);
+    expect(countYamlTokens(text, 10)).toBe(11);
+    expect(countYamlTokens(text, 2000)).toBe(2000);
+    expect(countYamlTokens(text, 1999)).toBe(2000);
+  });
+});
+
+describe('decodeHardenedYaml — a source has a budget of structural tokens', () => {
+  const TOO_LARGE = 'the document is too large to read safely';
+  // The three shapes the library spends most on per character (2 MiB of each cost it 1.5 to 4 s and 0.5 to 1.2 GB before the budget):
+  // a flow sequence of maps, a block sequence of one-key maps and a plain block sequence.
+  const SIZE = 2 * 1024 * 1024;
+  const repeated = (unit: string): string => unit.repeat(Math.floor(SIZE / unit.length));
+  const SHAPES: ReadonlyArray<readonly [string, string]> = [
+    ['a flow sequence of two-key maps', `[${'{a,b},'.repeat(Math.floor(SIZE / 6))}{a,b}]`],
+    ['a block sequence of one-key maps', repeated('- {a}\n')],
+    ['a plain block sequence', repeated('- a\n')],
+    [
+      'a block map of distinct keys',
+      Array.from({ length: SIZE / 8 }, (_, i) => `k${i}: 0\n`).join(''),
+    ],
+  ];
+
+  it.each(SHAPES)(
+    'refuses %s at the character cap before the library composes anything',
+    (_label, text) => {
+      expect(countYamlTokens(text)).toBeGreaterThan(MAX_YAML_TOKENS);
+      const fault = faultOf(decodeHardenedYaml, text);
       expect(fault.code).toBe('RESOURCE_EXHAUSTION');
-      expect(fault.message).toBe(TOO_MANY);
+      expect(fault.message).toBe(TOO_LARGE);
+      expect(fault.pos).toEqual([-1, -1]); // about the whole document: no place to name
+      expect(fault.message).not.toMatch(/\d/u); // nothing authored, and no count
     },
-    SLOW,
   );
 
-  it(
-    'counts the keys of a flow map the same way',
-    () => {
-      const flow = (count: number): string =>
-        `{${Array.from({ length: count }, (_, index) => `k${index}: ${index}`).join(', ')}}`;
-      expect(
-        Object.keys(decodeHardenedYaml(flow(MAX_MAP_KEYS + 1), new LineCounter()) as object),
-      ).toHaveLength(MAX_MAP_KEYS + 1);
-      expect(faultOf(decodeHardenedYaml, flow(MAX_MAP_KEYS + 2)).message).toBe(TOO_MANY);
-    },
-    SLOW,
-  );
+  it('admits a source of exactly the budget and refuses one token more', () => {
+    const atBudget = '- a\n'.repeat(MAX_YAML_TOKENS / 2);
+    expect(countYamlTokens(atBudget)).toBe(MAX_YAML_TOKENS);
+    expect(decodeHardenedYaml(atBudget, new LineCounter())).toHaveLength(MAX_YAML_TOKENS / 2);
+    const fault = faultOf(decodeHardenedYaml, `${atBudget}-`);
+    expect(countYamlTokens(`${atBudget}-`)).toBe(MAX_YAML_TOKENS + 1);
+    expect(fault.message).toBe(TOO_LARGE);
+  });
 
-  it(
-    'counts the keys of every map of the document together, not of each map alone',
-    () => {
-      // Three keys in each of the maps: two questions each, so 50,000 maps are exactly the budget and one more map is over it.
-      const maps = (count: number): string =>
-        Array.from({ length: count }, (_, index) => `- {a: ${index}, b: 1, c: 2}`).join('\n');
-      expect(decodeHardenedYaml(maps(MAX_MAP_KEYS / 2), new LineCounter())).toHaveLength(
-        MAX_MAP_KEYS / 2,
-      );
-      expect(faultOf(decodeHardenedYaml, maps(MAX_MAP_KEYS / 2 + 1)).message).toBe(TOO_MANY);
-    },
-    SLOW,
-  );
+  it('counts the whole source, not each map: many small maps run out of budget together', () => {
+    const maps = (count: number): string => '- {a}\n'.repeat(count); // '-', '{' and a line break: three tokens a map
+    expect(decodeHardenedYaml(maps(MAX_YAML_TOKENS / 3), new LineCounter())).toHaveLength(
+      MAX_YAML_TOKENS / 3,
+    );
+    expect(faultOf(decodeHardenedYaml, `${maps(MAX_YAML_TOKENS / 3)}- {a}\n`).message).toBe(
+      TOO_LARGE,
+    );
+  });
 
-  it(
-    'keeps a fault that comes before the budget as the fault',
-    () => {
-      // The first error in the document wins, as it does for `uniqueKeys: true`: a real duplicate at the second key is it.
-      const fault = faultOf(decodeHardenedYaml, `a: 1\na: 2\n${flat(MAX_MAP_KEYS + 50)}`);
-      expect(fault.code).toBe('DUPLICATE_KEY');
-      expect(fault.line).toBe(2);
-    },
-    SLOW,
-  );
+  it('refuses before the short path too: the budget does not depend on the length of the source', () => {
+    // 2,048 characters cannot hold the budget; what the count is NOT is a function of that threshold, so a lowered
+    // budget still applies to a source that the library's own check would decode.
+    expect(countYamlTokens('- a\n'.repeat(500))).toBeLessThan(MAX_YAML_TOKENS);
+    expect(decodeHardenedYaml('- a\n'.repeat(500), new LineCounter())).toHaveLength(500);
+  });
 
-  it(
-    'refuses through parseWorkflow and parseAgent with the fixed sentence and the position, and no authored text',
-    () => {
-      const agent = `id: a\nmodel: m\nmetadata:\n${flat(MAX_MAP_KEYS + 50, '  ')}`;
-      try {
-        parseAgent(agent, { source: 'agents/a.agent.yaml' });
-        expect.unreachable('a source over the key budget must be refused');
-      } catch (error) {
-        if (!(error instanceof AgentParseError)) throw error;
-        expect(error.code).toBe('agent_syntax');
-        expect(error.message).toMatch(
-          new RegExp(`^${TOO_MANY} \\(agents/a\\.agent\\.yaml — line \\d+, column \\d+\\)$`),
-        );
-        expect(error.message).not.toContain('k0');
-      }
-      try {
-        parseWorkflow(
-          `schema_version: '1.0'\nworkflow:\n  id: w\n  metadata:\n${flat(MAX_MAP_KEYS + 50, '    ')}`,
-        );
-        expect.unreachable('a source over the key budget must be refused');
-      } catch (error) {
-        if (!(error instanceof WorkflowSyntaxError)) throw error;
-        expect(error.message).toBe(TOO_MANY);
-        expect(error.line).toBeGreaterThan(0);
-      }
-    },
-    SLOW,
-  );
+  it('admits a workflow at every admission ceiling (500 nodes, 2,000 edges) with a wide margin', () => {
+    const nodes = Array.from({ length: 500 }, (_, i) =>
+      i === 0
+        ? '    - { id: n0, type: input }'
+        : `    - { id: n${i}, type: transform, transform: 'g' }`,
+    ).join('\n');
+    const edges = Array.from(
+      { length: 2000 },
+      (_, i) => `    - { from: n${i % 499}, to: n${(i % 499) + 1} }`,
+    ).join('\n');
+    const text = `schema_version: '1.0'\nworkflow:\n  id: ceiling\n  nodes:\n${nodes}\n  edges:\n${edges}\n`;
+    expect(parseWorkflow(text).workflow.nodes).toHaveLength(500);
+    // The largest legitimate documents measured (the generated workflows of the parser, graph, limits and engine tests) are 26,048.
+    expect(countYamlTokens(text)).toBeLessThan(MAX_YAML_TOKENS / 4);
+  });
+
+  it('admits an agent whose prompt is almost the whole character cap of ordinary prose', () => {
+    const sentence = 'Summarize the input as a list, one line per item - keep every line plain.\n';
+    const lines = Math.floor((1.9 * 1024 * 1024) / (sentence.length + 2));
+    const prompt = `${'  '}${sentence}`.repeat(lines);
+    const text = `id: wordy\nmodel: m\nprovider: anthropic\nsystem_prompt: |\n${prompt}`;
+    expect(text.length).toBeGreaterThan(1.8 * 1024 * 1024);
+    expect(text.length).toBeLessThan(2 * 1024 * 1024);
+    // Three tokens in a 76-character line: about 4%, the density of the repo's own prose (3.5 to 5.3%). Even the full 2 MiB character
+    // cap holds a prompt of up to about 5.7% structure under the budget.
+    expect(countYamlTokens(text)).toBeLessThan(MAX_YAML_TOKENS * 0.8);
+    expect(parseAgent(text).system_prompt.length).toBeGreaterThan(1.7 * 1024 * 1024);
+  });
+
+  it('surfaces through parseWorkflow and parseAgent as a fixed sentence with no line and column', () => {
+    const hostile = repeated('- a\n');
+    try {
+      parseAgent(hostile, { source: 'agents/a.agent.yaml' });
+      expect.unreachable('a source over the token budget must be refused');
+    } catch (error) {
+      if (!(error instanceof AgentParseError)) throw error;
+      expect(error.code).toBe('agent_syntax');
+      expect(error.message).toBe(`${TOO_LARGE} (agents/a.agent.yaml)`);
+      expect(error.line).toBeUndefined();
+    }
+    try {
+      parseWorkflow(hostile);
+      expect.unreachable('a source over the token budget must be refused');
+    } catch (error) {
+      if (!(error instanceof WorkflowSyntaxError)) throw error;
+      expect(error.message).toBe(TOO_LARGE);
+      expect(error.line).toBeUndefined();
+    }
+  });
 });
 
 describe('decodeHardenedYaml — the linear duplicate check fails closed', () => {
@@ -401,16 +443,34 @@ describe('decodeHardenedYaml — the linear duplicate check fails closed', () =>
     expect(attempt).toThrow(Invariant);
   });
 
-  it('does not build a library error per key past the key budget', async () => {
-    let built = -1;
-    const { decodeHardenedYaml: decode } = await decodeWithTamperedDocument((document) => {
-      built = document.errors.length;
+  it('never calls the library for a source over the token budget (neither parse nor parseDocument)', async () => {
+    vi.resetModules();
+    const calls = { parse: 0, parseDocument: 0 };
+    vi.doMock('yaml', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('yaml')>();
+      return {
+        ...actual,
+        parse: (...args: Parameters<typeof actual.parse>) => {
+          calls.parse += 1;
+          const parsed: unknown = actual.parse(...args);
+          return parsed;
+        },
+        parseDocument: (...args: Parameters<typeof actual.parseDocument>) => {
+          calls.parseDocument += 1;
+          return actual.parseDocument(...args);
+        },
+      };
     });
-    const keys = Array.from({ length: 3 * MAX_MAP_KEYS }, (_, index) => `k${index}: ${index}`);
-    expect(() => decode(`${keys.join('\n')}\n`, new LineCounter())).toThrow(/mapping keys/);
-    // One DUPLICATE_KEY error per answered question, and the refusal: never one for each of the 300,000 keys.
-    expect(built).toBeLessThanOrEqual(MAX_MAP_KEYS + 1);
-  }, 30_000);
+    const { decodeHardenedYaml: decode, MAX_YAML_TOKENS: budget } =
+      await import('./yaml-decode.js');
+    expect(() => decode('- a\n'.repeat(budget), new LineCounter())).toThrow(
+      'the document is too large to read safely',
+    );
+    expect(calls).toEqual({ parse: 0, parseDocument: 0 });
+    // The spy is live: a source within the budget does reach the library.
+    decode('- a\n'.repeat(1000), new LineCounter());
+    expect(calls.parseDocument).toBe(1);
+  });
 });
 
 describe('YamlDecodeInvariantError', () => {

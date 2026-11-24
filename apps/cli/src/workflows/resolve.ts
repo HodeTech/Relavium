@@ -1,4 +1,12 @@
-import { readFileSync, statSync, type Stats } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readSync,
+  statSync,
+  type BigIntStats,
+} from 'node:fs';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { MAX_SOURCE_CHARS } from '@relavium/core';
@@ -125,42 +133,74 @@ function explicitYamlPath(arg: string): boolean {
 }
 
 /**
- * Read one candidate, mirroring the 2.B config loader's `statSync`-first discipline (load.ts): a
- * genuine miss (`ENOENT`) returns `undefined` so the next candidate is tried (and the caller reports a
- * clean "not found"), but an existing-but-unreadable file (`EACCES`, a non-regular file, or one over
- * the size cap) is a real fault and throws an exit-2 error — never silently mis-reported as "not
- * found". The size cap is enforced from `stat` before the file is read into memory. `kind` names the
- * artifact in the diagnostic ('workflow' / 'agent').
+ * Read one candidate, in the 2.B config loader's order (load.ts): the path is STATTED FIRST (following a link, as an explicit path always
+ * has been), and a genuine miss (`ENOENT`) returns `undefined` so the next candidate is tried (and the caller reports a clean "not
+ * found"), but an existing-but-unreadable file (`EACCES`, a non-regular file, or one over the size cap) is a real fault and throws an
+ * exit-2 error — never silently mis-reported as "not found". What is not a regular file, or is over the size cap, is refused without being
+ * opened. A regular file is opened ONCE (`O_NONBLOCK`, `O_NOCTTY`) and every later question and the read itself are asked of the
+ * DESCRIPTOR, never of the path again: a `stat` then a `readFileSync` by path let a same-directory owner rename a FIFO over the file between
+ * them (the read then blocks `run` with no deadline) or a larger file (the cap was checked on the old one). The descriptor must name the
+ * same file (device and inode) as the `stat`, its size is checked again, and the bytes are read in bounded chunks, so a file that grew is
+ * refused as one that was over the cap. `kind` names the artifact in the diagnostic ('workflow' / 'agent').
  */
 function tryRead(path: string, kind: string, cwd: string): string | undefined {
   const label = sourceLabel(cwd, path);
-  let stats: Stats;
+  const unreadable = (cause?: unknown): CliError =>
+    new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
+      ...(cause === undefined ? {} : { cause }),
+    });
+  const tooLarge = (): CliError =>
+    new CliError(
+      'invalid_invocation',
+      `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
+    );
+  let admitted: BigIntStats;
   try {
-    stats = statSync(path);
+    admitted = statSync(path, { bigint: true });
   } catch (err) {
     if (errnoCode(err) === 'ENOENT') {
       return undefined; // this candidate does not exist — try the next
     }
-    throw new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
-      cause: err,
-    });
+    throw unreadable(err);
   }
-  if (!stats.isFile()) {
+  if (!admitted.isFile()) {
     throw new CliError('invalid_invocation', `${kind} path '${label}' is not a regular file.`);
   }
-  if (stats.size > MAX_YAML_SOURCE_BYTES) {
-    throw new CliError(
-      'invalid_invocation',
-      `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
-    );
-  }
+  if (admitted.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw tooLarge();
   let bytes: Buffer;
+  let fd: number | undefined;
   try {
-    bytes = readFileSync(path);
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0),
+    );
+    const opened = fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== admitted.dev || opened.ino !== admitted.ino) {
+      throw unreadable(); // not the file that was statted: swapped in between, and nothing of it is read
+    }
+    if (opened.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw tooLarge();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_YAML_SOURCE_BYTES + 1 - total));
+      const count = readSync(fd, chunk, 0, chunk.length, null);
+      if (count === 0) break;
+      total += count;
+      if (total > MAX_YAML_SOURCE_BYTES) throw tooLarge();
+      chunks.push(chunk.subarray(0, count));
+    }
+    bytes = Buffer.concat(chunks, total);
   } catch (err) {
-    throw new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
-      cause: err,
-    });
+    if (err instanceof CliError) throw err;
+    throw unreadable(err);
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // A read-only descriptor that fails to close has nothing left to lose.
+      }
+    }
   }
   try {
     return STRICT_UTF8.decode(bytes);

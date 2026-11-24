@@ -163,7 +163,7 @@ export async function assertStdioConsent(
     // invisible, and silence would leave them re-approving everything with no idea why. The file is named from `~`, not by its
     // absolute path.
     deps.io.writeErr(
-      `warning: ${consentStoreLabel(deps.homeDir, path)} could not be read; every stdio MCP server will be asked about again.\n`,
+      `warning: ${consentStoreLabel(deps.homeDir, path)} could not be read; every stdio MCP server will be asked about again. Delete the file or move it aside to start a new grant log.\n`,
     );
   }
 

@@ -11,12 +11,17 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { MAX_SOURCE_CHARS } from '@relavium/core';
+import { MAX_SOURCE_CHARS, MAX_YAML_TOKENS, countYamlTokens } from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
-import { MAX_CATALOG_FILES, MAX_CATALOG_SCAN_BYTES, discoverCatalog } from './catalog.js';
+import {
+  MAX_CATALOG_FILES,
+  MAX_CATALOG_SCAN_BYTES,
+  MAX_CATALOG_SCAN_TOKENS,
+  discoverCatalog,
+} from './catalog.js';
 
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
@@ -274,6 +279,144 @@ describe('discoverCatalog', () => {
           kind: 'workflows',
         }),
       ).toEqual([]);
+    });
+  });
+
+  describe('the token budget of one scan (the parser spends on nodes, not on bytes)', () => {
+    const SKIPPED =
+      'skipped: the catalog is too large to read safely; move some files out of .relavium/workflows/';
+    const TOO_LARGE = 'too large to read safely';
+
+    /** A valid workflow of EXACTLY `tokens` structural tokens, made large by a free-form `metadata` map of `k: 0` lines. */
+    function workflowOfTokens(id: string, tokens: number): string {
+      const head = `schema_version: '1.0'\nworkflow:\n  id: ${id}\n  metadata:\n`;
+      const tail =
+        '  nodes:\n    - { id: a, type: input }\n    - { id: b, type: output }\n  edges:\n    - { from: a, to: b }\n';
+      const base = countYamlTokens(head) + countYamlTokens(tail);
+      const keys = Math.floor((tokens - base) / 2); // a `    k0: 0` line is two tokens: the colon and the break
+      const body = Array.from({ length: keys }, (_, i) => `    k${String(i)}: 0\n`).join('');
+      // An odd remainder is one more token in a trailing comment (a comma), which the count includes and the parser ignores.
+      const text = `${head}${body}${tail}${(tokens - base) % 2 === 1 ? '# ,' : ''}`;
+      expect(countYamlTokens(text)).toBe(tokens);
+      return text;
+    }
+    function put(name: string, body: string): void {
+      mkdirSync(join(configDir, 'workflows'), { recursive: true });
+      writeFileSync(join(configDir, 'workflows', name), body);
+    }
+    const scan = () =>
+      discoverCatalog({ projectConfigDir: configDir, cwd: proj, homeDir: home, kind: 'workflows' });
+
+    it('is 200,000, above the per-file budget so that one file always fits an empty scan', () => {
+      expect(MAX_CATALOG_SCAN_TOKENS).toBe(200_000);
+      expect(MAX_YAML_TOKENS).toBeLessThan(MAX_CATALOG_SCAN_TOKENS);
+    });
+
+    it('refuses a file over the per-file budget as too large to read safely, uncharged and unparsed', () => {
+      // The parser's own refusal says `the document is too large to read safely`: THIS sentence is the catalog's, so the file never reached it.
+      put('a-hostile.relavium.yaml', '- a\n'.repeat(MAX_YAML_TOKENS)); // 2 x MAX_YAML_TOKENS tokens
+      put('b-fine.relavium.yaml', VALID_WORKFLOW);
+      const entries = scan();
+      expect(entries.map((e) => [e.slug, e.valid, e.error])).toEqual([
+        ['a-hostile', false, TOO_LARGE],
+        ['hello', true, undefined],
+      ]); // the later file is read normally: the refused one cost the scan nothing
+    });
+
+    it('stops after the files that fit: the file that crosses the budget and every file after it are skipped, unread', () => {
+      // 100,000 + 100,100 tokens cross the 200,000 of the scan, each file well under the 120,000 of one; the third is tiny and would fit.
+      put('wf-0.relavium.yaml', workflowOfTokens('wf-0', 100_000));
+      put('wf-1.relavium.yaml', workflowOfTokens('wf-1', 100_100));
+      put('wf-2.relavium.yaml', VALID_WORKFLOW.replace('id: hello', 'id: wf-2'));
+      vi.mocked(openSync).mockClear();
+      const entries = scan();
+      expect(entries.map((e) => [e.slug, e.valid, e.error])).toEqual([
+        ['wf-0', true, undefined],
+        ['wf-1', false, SKIPPED],
+        ['wf-2', false, SKIPPED],
+      ]);
+      // Counted, not timed: the second file was read (its text is what is counted) and never parsed; the third was never opened.
+      const opened = vi.mocked(openSync).mock.calls.map(([path]) => String(path));
+      expect(opened.filter((path) => path.includes('wf-0'))).toHaveLength(1);
+      expect(opened.filter((path) => path.includes('wf-1'))).toHaveLength(1);
+      expect(opened.filter((path) => path.includes('wf-2'))).toHaveLength(0);
+    });
+
+    it('takes a total of exactly the budget, and refuses a file that would take it one token past', () => {
+      put('wf-0.relavium.yaml', workflowOfTokens('wf-0', MAX_CATALOG_SCAN_TOKENS / 2));
+      put('wf-1.relavium.yaml', workflowOfTokens('wf-1', MAX_CATALOG_SCAN_TOKENS / 2));
+      expect(scan().map((e) => [e.slug, e.valid])).toEqual([
+        ['wf-0', true],
+        ['wf-1', true],
+      ]);
+      put('wf-1.relavium.yaml', workflowOfTokens('wf-1', MAX_CATALOG_SCAN_TOKENS / 2 + 1));
+      expect(scan().map((e) => [e.slug, e.valid, e.error])).toEqual([
+        ['wf-0', true, undefined],
+        ['wf-1', false, SKIPPED],
+      ]);
+    });
+
+    it('reads every file when their tokens sum to no more than the budget', () => {
+      put('wf-0.relavium.yaml', workflowOfTokens('wf-0', 99_000));
+      put('wf-1.relavium.yaml', workflowOfTokens('wf-1', 99_000));
+      put('wf-2.relavium.yaml', VALID_WORKFLOW.replace('id: hello', 'id: wf-2'));
+      expect(scan().map((e) => [e.slug, e.valid])).toEqual([
+        ['wf-0', true],
+        ['wf-1', true],
+        ['wf-2', true],
+      ]);
+    });
+
+    it('charges in file-name order and gives the same answer on a second read', () => {
+      put('wf-b.relavium.yaml', workflowOfTokens('wf-b', 100_000));
+      put('wf-a.relavium.yaml', workflowOfTokens('wf-a', 100_100));
+      const first = scan();
+      expect(first.map((e) => [e.slug, e.valid])).toEqual([
+        ['wf-a', true],
+        ['wf-b', false],
+      ]); // `wf-a` sorts first, so it is the one that fits, whatever order the directory lists them in
+      expect(scan()).toEqual(first);
+    });
+
+    it('does not let eight hostile files that are each just over the per-file budget cost the scan a parse', () => {
+      for (let n = 0; n < 8; n += 1) {
+        put(`h${String(n)}.relavium.yaml`, `[${'{a,b},'.repeat(80_000)}{a,b}]\n`); // 240,000 tokens a file, about 480 KB
+      }
+      const entries = scan();
+      expect(entries).toHaveLength(8);
+      expect(new Set(entries.map((e) => e.error))).toEqual(new Set([TOO_LARGE]));
+    });
+
+    it('applies to the agents catalog and names its directory', () => {
+      mkdirSync(join(configDir, 'agents'), { recursive: true });
+      // A `tools` list of `- tN` lines: two tokens an entry (the hyphen and the break), and the schema asks nothing of a tool's name.
+      const agent = (id: string, tools: number): string =>
+        `id: ${id}\nname: A\nmodel: m\nprovider: anthropic\nsystem_prompt: hi\ntools:\n${Array.from({ length: tools }, (_, i) => `  - t${String(i)}\n`).join('')}`;
+      writeFileSync(join(configDir, 'agents', 'a-0.agent.yaml'), agent('a-0', 49_000));
+      writeFileSync(join(configDir, 'agents', 'a-1.agent.yaml'), agent('a-1', 49_000));
+      writeFileSync(join(configDir, 'agents', 'a-2.agent.yaml'), agent('a-2', 49_000));
+      const entries = discoverCatalog({
+        projectConfigDir: configDir,
+        cwd: proj,
+        homeDir: home,
+        kind: 'agents',
+      });
+      expect(entries.map((e) => [e.slug, e.error])).toEqual([
+        ['a-0', undefined],
+        ['a-1', undefined],
+        ['a-2', SKIPPED.replace('/workflows/', '/agents/')],
+      ]);
+    });
+
+    it('names whichever budget ran out first: bytes for a byte overrun, tokens for a token overrun', () => {
+      put('wf-0.relavium.yaml', workflowOfTokens('wf-0', 100_000));
+      put('wf-1.relavium.yaml', workflowOfTokens('wf-1', 100_100));
+      put('wf-2.relavium.yaml', VALID_WORKFLOW);
+      expect(
+        scan()
+          .filter((e) => !e.valid)
+          .map((e) => e.error),
+      ).toEqual([SKIPPED, SKIPPED]); // not the 16 MiB sentence
     });
   });
 

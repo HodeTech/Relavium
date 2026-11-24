@@ -6,6 +6,7 @@ import {
   lstatSync,
   openSync,
   readSync,
+  statSync,
   type BigIntStats,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -79,11 +80,14 @@ export function loadConfigFile<T>(
 }
 
 /**
- * The text of one config layer, or `undefined` when there is no file. The file is opened ONCE and every question (is it a regular
- * file, how big, which mode) and the read itself are asked of the DESCRIPTOR, never of the path again: a `stat` then a `readFileSync`
- * by path left a window in which a same-directory owner could rename a FIFO over the file (the read then blocks with no deadline) or
- * a larger file (the size cap was checked on the old one). `O_NONBLOCK` keeps the open itself from waiting on a FIFO, which the
- * descriptor's own `fstat` then refuses.
+ * The text of one config layer, or `undefined` when there is no file. The path is STATTED FIRST (following a link, as the layers are read),
+ * and anything that is not a regular file is refused without ever being opened: a project-layer link to a device (a tape, a serial line)
+ * must not be opened at all, whatever the flags. A regular file is then opened ONCE, and every later question (is it still the file that was
+ * statted, how big, which mode) and the read itself are asked of the DESCRIPTOR, never of the path again: a `stat` then a `readFileSync` by
+ * path left a window in which a same-directory owner could rename a FIFO over the file (the read then blocks with no deadline) or a larger
+ * file (the size cap was checked on the old one). `O_NONBLOCK` keeps the open itself from waiting on a FIFO swapped in after the `stat`, and
+ * `O_NOCTTY` from making a terminal the process's controlling one; the descriptor's own `fstat` must then name the SAME file (device and
+ * inode) as the `stat`, so a file swapped in between is refused unread, as is anything that is no regular file.
  *
  * **A link is FOLLOWED, on purpose.** There is no `O_NOFOLLOW`: the operator's global config (and `--config`) may be a link into a
  * dotfiles repository, and a project layer may be a link to a file the project owns; reads through intentional links remain
@@ -94,14 +98,23 @@ export function loadConfigFile<T>(
  * Every failure keeps its fixed sentence; none carries the path (the caller's {@link ConfigError} names the file).
  */
 function readConfigText(filePath: string, selfHeal: boolean): string | undefined {
+  let admitted: BigIntStats;
+  try {
+    admitted = statSync(filePath, { bigint: true });
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return undefined; // an absent layer is not an error
+    throw new ConfigError(filePath, 'could not be read.', { cause: err });
+  }
+  if (!admitted.isFile()) {
+    throw new ConfigError(filePath, 'is not a regular file.');
+  }
   let fd: number;
   try {
-    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    fd = openSync(
+      filePath,
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0),
+    );
   } catch (err) {
-    const code = errnoCode(err);
-    if (code === 'ENOENT') return undefined;
-    // Windows reports a directory at the open; elsewhere it opens and the descriptor says what it is.
-    if (code === 'EISDIR') throw new ConfigError(filePath, 'is not a regular file.');
     throw new ConfigError(filePath, 'could not be read.', { cause: err });
   }
   try {
@@ -111,8 +124,10 @@ function readConfigText(filePath: string, selfHeal: boolean): string | undefined
     } catch (err) {
       throw new ConfigError(filePath, 'could not be read.', { cause: err });
     }
-    if (!stats.isFile()) {
-      throw new ConfigError(filePath, 'is not a regular file.');
+    // Exact bigint identities (a Windows file ID exceeds a Number's precision). A path that is no longer the statted file was swapped
+    // in the window between the `stat` and the open: nothing of it is read.
+    if (!stats.isFile() || stats.dev !== admitted.dev || stats.ino !== admitted.ino) {
+      throw new ConfigError(filePath, 'could not be read.');
     }
     if (selfHeal) {
       reassertOwnerOnly(filePath, fd, stats);

@@ -24,8 +24,15 @@ import {
  * file restored from a backup with a wider one is repaired rather than trusted. The mode step is best effort (Windows, or a file
  * the process does not own): a wide mode never blocks the append.
  *
- * Throws {@link AppendTargetRefusedError} for a link or a file that is not regular, and the filesystem's own error for anything else
- * (a missing directory, a full disk, a denied write): the caller decides what each means.
+ * **A hard link is refused too** (`nlink` other than 1, read from the descriptor before anything is written): a hard link planted at the
+ * path is no symbolic link and no special file, so `O_NOFOLLOW` and the regular-file check both pass it, and the append AND the
+ * `fchmod(0600)` would land in whatever file the other name belongs to. A file this CLI creates has one name, so the check costs
+ * nothing a real store has. Only the write is refused: a READ through a hard link writes nothing and discloses nothing (the text it
+ * parses is the file's own and is never echoed), and what a planted link could feed it is what write access to `~/.relavium` can already
+ * put in the file.
+ *
+ * Throws {@link AppendTargetRefusedError} for a link, a hard link or a file that is not regular, and the filesystem's own error for
+ * anything else (a missing directory, a full disk, a denied write): the caller decides what each means.
  */
 export function appendToOwnerOnlyFile(path: string, data: string, mode: number): void {
   if (constants.O_NOFOLLOW === undefined && isSymbolicLink(path)) {
@@ -50,7 +57,9 @@ export function appendToOwnerOnlyFile(path: string, data: string, mode: number):
     throw error;
   }
   try {
-    if (!fstatSync(fd).isFile()) throw new AppendTargetRefusedError('not-regular');
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new AppendTargetRefusedError('not-regular');
+    if (info.nlink !== 1) throw new AppendTargetRefusedError('hard-link');
     const bytes = Buffer.from(data, 'utf8');
     let written = 0;
     while (written < bytes.length) written += writeSync(fd, bytes, written);
@@ -64,15 +73,17 @@ export function appendToOwnerOnlyFile(path: string, data: string, mode: number):
   }
 }
 
-/** The path is a link (not followed) or not a regular file: the append was refused and nothing was written. */
+/** The path is a link (not followed), a hard link or not a regular file: the append was refused and nothing was written. */
 export class AppendTargetRefusedError extends Error {
-  readonly reason: 'symlink' | 'not-regular';
+  readonly reason: 'symlink' | 'hard-link' | 'not-regular';
 
-  constructor(reason: 'symlink' | 'not-regular') {
+  constructor(reason: 'symlink' | 'hard-link' | 'not-regular') {
     super(
       reason === 'symlink'
         ? 'the file is a symbolic link; refusing to write through it'
-        : 'the file is not a regular file; refusing to write to it',
+        : reason === 'hard-link'
+          ? 'the file has more than one hard link; refusing to write to it'
+          : 'the file is not a regular file; refusing to write to it',
     );
     this.name = 'AppendTargetRefusedError';
     this.reason = reason;

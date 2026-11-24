@@ -14,7 +14,9 @@ import { byCodeUnit } from '@relavium/shared';
 import {
   AgentParseError,
   MAX_SOURCE_CHARS,
+  MAX_YAML_TOKENS,
   WorkflowParseError,
+  countYamlTokens,
   parseAgent,
   parseWorkflow,
   type AgentDefinition,
@@ -96,6 +98,19 @@ export const MAX_CATALOG_FILES = 500;
 export const MAX_CATALOG_SCAN_BYTES = 16 * 1024 * 1024;
 
 /**
+ * The most structural YAML tokens ({@link countYamlTokens}) ONE catalog scan hands to the parser, 200,000. The byte budget bounds what a
+ * scan READS; what the parser SPENDS follows the nodes of what it reads, not its bytes (a 2 MiB source of `- a` lines costs it 1.5 s, the same
+ * bytes of prose 0.3 s), and the decode's own budget ({@link MAX_YAML_TOKENS}, 120,000) bounds one file, so eight files each just under it
+ * were eight times the cost of one: 51 s and 2.75 GB measured on the Home's UI thread, for the cost of opening the program in a cloned
+ * repository. Each file's tokens are charged in the order the scan reads them, as bytes are: the first file that would take the total past the
+ * budget is refused, and so is every file after it, each as a `valid: false` entry that says why. A file over the per-file budget is refused
+ * as `too large to read safely` and charged nothing: the parser is never run on it, so it costs the scan only its count. At about 3 to 7
+ * microseconds a token, 200,000 tokens are one to two seconds at the most; the repo's own catalog is 66 to 169 tokens a file, so the budget
+ * is a catalog of well over a thousand such files, past {@link MAX_CATALOG_FILES} by a wide margin.
+ */
+export const MAX_CATALOG_SCAN_TOKENS = 200_000;
+
+/**
  * Scan `<projectConfigDir>/<kind>/` (non-recursive) for `*.yaml`/`*.yml` files, parse each, and return the
  * catalog entries sorted by slug. A missing directory yields `[]` (no catalog of that kind); an unreadable
  * directory is a real fault (exit 2); a directory of more than {@link MAX_CATALOG_FILES} files is refused
@@ -155,30 +170,51 @@ interface CatalogScan {
   readonly budget: ScanBudget;
 }
 
-/** What one scan may still read, kept per scan (never across scans) and handed to every file read of it. */
+/** What one scan may still read and parse, kept per scan (never across scans) and handed to every file read of it. */
 interface ScanBudget {
   /** Charge `bytes` to the scan; `false` (and `false` for every later charge) when they would take it past {@link MAX_CATALOG_SCAN_BYTES}. */
   readonly charge: (bytes: number) => boolean;
+  /** Charge `tokens` to the scan; `false` (and `false` for every later charge) when they would take it past {@link MAX_CATALOG_SCAN_TOKENS}. */
+  readonly chargeTokens: (tokens: number) => boolean;
   /** `true` once a charge was refused: every later file is skipped without being touched. */
   readonly spent: () => boolean;
-  /** The reason a skipped file carries: fixed text, no authored content, naming the directory to thin out. */
+  /** The reason a skipped file carries (the budget that was spent first): fixed text, no authored content, naming the directory to thin out. */
   readonly reason: string;
 }
 
 function newScanBudget(kind: CatalogKind): ScanBudget {
-  let used = 0;
-  let spent = false;
+  let bytes = 0;
+  let tokens = 0;
+  let why: string | undefined;
+  const spend = (reason: string): false => {
+    why ??= reason; // the first budget to run out names itself; later files carry that reason
+    return false;
+  };
   return {
-    charge: (bytes) => {
-      if (spent || used + bytes > MAX_CATALOG_SCAN_BYTES) {
-        spent = true;
-        return false;
+    charge: (count) => {
+      if (why !== undefined) return false;
+      if (bytes + count > MAX_CATALOG_SCAN_BYTES) {
+        return spend(
+          `skipped: the catalog is larger than ${String(MAX_CATALOG_SCAN_BYTES / (1024 * 1024))} MiB; move some files out of .relavium/${kind}/`,
+        );
       }
-      used += bytes;
+      bytes += count;
       return true;
     },
-    spent: () => spent,
-    reason: `skipped: the catalog is larger than ${String(MAX_CATALOG_SCAN_BYTES / (1024 * 1024))} MiB; move some files out of .relavium/${kind}/`,
+    chargeTokens: (count) => {
+      if (why !== undefined) return false;
+      if (tokens + count > MAX_CATALOG_SCAN_TOKENS) {
+        return spend(
+          `skipped: the catalog is too large to read safely; move some files out of .relavium/${kind}/`,
+        );
+      }
+      tokens += count;
+      return true;
+    },
+    spent: () => why !== undefined,
+    get reason() {
+      return why ?? '';
+    },
   };
 }
 
@@ -286,7 +322,8 @@ function refused(path: string, rel: string, reason: string): CatalogText {
  *
  * **The scan's byte budget is accounted HERE** ({@link ScanBudget}): every kind and both discovery functions read through this function,
  * so none can skip it. Once a file has crossed the budget every later file is refused before it is even resolved; the file that crosses
- * it is refused before it is opened, so it is never partly read.
+ * it is refused before it is opened, so it is never partly read. The scan's TOKEN budget is accounted here too, once the text is read:
+ * the file that crosses it is refused unparsed.
  */
 function readCatalogText(
   path: string,
@@ -357,6 +394,12 @@ function readCatalogText(
         // agent whose prompt is no longer the one in the file (review P05-2; the authoring read refuses the same bytes).
         return refused(path, rel, 'not valid UTF-8');
       }
+      // What the PARSER will spend follows the nodes, not the bytes (see MAX_CATALOG_SCAN_TOKENS): a file over the per-file budget is
+      // refused here, unparsed and uncharged; any other is charged to the scan before it is parsed, so a scan of files each just under
+      // the per-file budget stops after the few that fit instead of costing eight times one.
+      const tokens = countYamlTokens(yaml, MAX_YAML_TOKENS);
+      if (tokens > MAX_YAML_TOKENS) return refused(path, rel, 'too large to read safely');
+      if (!budget.chargeTokens(tokens)) return refused(path, rel, budget.reason);
     } finally {
       closeSync(fd);
     }

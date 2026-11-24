@@ -1,4 +1,19 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, statSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,9 +23,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import { BARE_ID_WITHOUT_HOME, resolveYamlSource, resolveWorkflowSource } from './resolve.js';
 
+// The file operations are wrapped (calling through to the real ones) so a test can see which of them were used, and can act between two of
+// them, the way another process would.
 vi.mock('node:fs', async (original) => {
   const native = await original<typeof import('node:fs')>();
-  return { ...native, statSync: vi.fn(native.statSync), readFileSync: vi.fn(native.readFileSync) };
+  return {
+    ...native,
+    statSync: vi.fn(native.statSync),
+    readFileSync: vi.fn(native.readFileSync),
+    openSync: vi.fn(native.openSync),
+    fstatSync: vi.fn(native.fstatSync),
+    readSync: vi.fn(native.readSync),
+  };
 });
 
 const YAML = 'schema_version: "1.0"\n';
@@ -18,8 +42,14 @@ const YAML = 'schema_version: "1.0"\n';
 let root: string;
 // The operator home a bare id is admitted against: a fresh directory, never the real one (it is a required argument).
 let home: string;
-beforeEach(() => {
+beforeEach(async () => {
+  const native = await vi.importActual<typeof import('node:fs')>('node:fs');
   vi.clearAllMocks();
+  // clearAllMocks keeps the call-through implementations; make that explicit for the ones a test replaces.
+  vi.mocked(statSync).mockImplementation(native.statSync);
+  vi.mocked(openSync).mockImplementation(native.openSync);
+  vi.mocked(fstatSync).mockImplementation(native.fstatSync);
+  vi.mocked(readSync).mockImplementation(native.readSync);
   root = mkdtempSync(join(tmpdir(), 'relavium-resolve-'));
   home = mkdtempSync(join(tmpdir(), 'relavium-resolve-home-'));
 });
@@ -272,23 +302,21 @@ describe('resolveWorkflowSource', () => {
     expect(() =>
       resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined }),
     ).toThrow(/size limit/);
-    expect(readFileSync).not.toHaveBeenCalled();
+    expect(openSync).not.toHaveBeenCalled(); // refused from the stat: the file was never opened, let alone read
   });
 
-  it.each(['stat', 'read'] as const)(
+  it.each(['stat', 'open', 'read'] as const)(
     'keeps a native %s fault as cause without disclosing its absolute path',
     (stage) => {
       const path = join(root, 'fault.yaml');
       writeFileSync(path, YAML);
       const cause = Object.assign(new Error(`private native path: ${path}`), { code: 'EACCES' });
-      if (stage === 'stat')
-        vi.mocked(statSync).mockImplementationOnce(() => {
-          throw cause;
-        });
-      else
-        vi.mocked(readFileSync).mockImplementationOnce(() => {
-          throw cause;
-        });
+      const fail = (): never => {
+        throw cause;
+      };
+      if (stage === 'stat') vi.mocked(statSync).mockImplementationOnce(fail);
+      else if (stage === 'open') vi.mocked(openSync).mockImplementationOnce(fail);
+      else vi.mocked(readSync).mockImplementationOnce(fail);
       try {
         resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined });
         expect.fail('native fault must refuse');
@@ -296,12 +324,146 @@ describe('resolveWorkflowSource', () => {
         expect(isCliError(error)).toBe(true);
         if (!isCliError(error)) throw error;
         expect(error.cause).toBe(cause);
-        expect(error.message).toContain('fault.yaml');
+        expect(error.message).toBe(`workflow file 'fault.yaml' could not be read.`);
         expect(error.message).not.toContain(root);
         expect(error.message).not.toContain('private native');
       }
     },
   );
+
+  describe('reads through ONE descriptor, opened only after the stat has admitted a regular file (review: stat then read by path)', () => {
+    const resolveAt = (path: string) =>
+      resolveWorkflowSource(path, { cwd: root, homeDir: home, projectConfigDir: undefined });
+    const POSIX = process.platform !== 'win32';
+
+    it('stats the path first, opens it once without blocking, and reads through the descriptor', () => {
+      const path = join(root, 'one.relavium.yaml');
+      writeFileSync(path, YAML);
+      expect(resolveAt(path).yaml).toBe(YAML);
+
+      const statAt = vi.mocked(statSync).mock.calls.findIndex(([target]) => target === path);
+      const opens = vi.mocked(openSync).mock.calls.filter(([target]) => target === path);
+      expect(statAt).toBeGreaterThanOrEqual(0);
+      expect(opens).toHaveLength(1);
+      expect(vi.mocked(statSync).mock.invocationCallOrder[statAt]).toBeLessThan(
+        vi.mocked(openSync).mock.invocationCallOrder[0] ?? 0,
+      );
+      const flags = Number(opens[0]?.[1]);
+      for (const flag of [constants.O_NONBLOCK, constants.O_NOCTTY]) {
+        if (flag !== undefined) expect(flags & flag).toBe(flag);
+      }
+      expect(vi.mocked(readSync).mock.calls.length).toBeGreaterThan(0);
+      expect(vi.mocked(readFileSync)).not.toHaveBeenCalledWith(path);
+    });
+
+    it.skipIf(!POSIX)(
+      'never opens a directory, a FIFO or a device: each is refused at the stat',
+      () => {
+        const directory = join(root, 'a-directory');
+        mkdirSync(directory);
+        const fifo = join(root, 'a-fifo');
+        execFileSync('mkfifo', [fifo]);
+        for (const target of [directory, fifo, '/dev/null']) {
+          expect(() => resolveAt(target), target).toThrow(/is not a regular file\.$/u);
+        }
+        expect(vi.mocked(openSync).mock.calls.map(([target]) => target)).toEqual([]);
+      },
+    );
+
+    it('reads the file it opened, not one renamed over the path after the open', async () => {
+      const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const path = join(root, 'swap.relavium.yaml');
+      writeFileSync(path, YAML);
+      const other = join(root, 'other.yaml');
+      writeFileSync(other, 'schema_version: "other"\n');
+      let swapped = false;
+      vi.mocked(openSync).mockImplementation((target, flags, mode) => {
+        const fd = native.openSync(target, flags, mode);
+        if (target === path && !swapped) {
+          swapped = true;
+          renameSync(other, path);
+        }
+        return fd;
+      });
+      expect(resolveAt(path).yaml).toBe(YAML);
+      expect(swapped).toBe(true);
+      expect(readFileSync(path, 'utf8')).toContain('other'); // the swap really happened
+    });
+
+    it('refuses a different file swapped in between the stat and the open, unread', async () => {
+      const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const path = join(root, 'swap.relavium.yaml');
+      writeFileSync(path, YAML);
+      const other = join(root, 'other.yaml');
+      writeFileSync(other, 'schema_version: "other"\n');
+      let swapped = false;
+      vi.mocked(statSync).mockImplementation((target, options) => {
+        const stats = native.statSync(target, options);
+        if (target === path && !swapped) {
+          swapped = true;
+          renameSync(other, path);
+        }
+        return stats;
+      });
+      expect(() => resolveAt(path)).toThrow(
+        "workflow file 'swap.relavium.yaml' could not be read.",
+      );
+      expect(swapped).toBe(true);
+      expect(vi.mocked(readSync)).not.toHaveBeenCalled();
+    });
+
+    it.skipIf(!POSIX)(
+      'refuses a FIFO swapped in between the stat and the open, without waiting for it',
+      async () => {
+        const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+        const path = join(root, 'swap.relavium.yaml');
+        writeFileSync(path, YAML);
+        const fifo = join(root, 'swap-fifo');
+        execFileSync('mkfifo', [fifo]);
+        // A reader and a writer are held, so that an open that forgot O_NONBLOCK (the flags test above catches that) could not hang the test
+        // worker: a blocked synchronous open cannot be timed out.
+        const reader = native.openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+        const writer = native.openSync(fifo, constants.O_WRONLY);
+        let swapped = false;
+        vi.mocked(statSync).mockImplementation((target, options) => {
+          const stats = native.statSync(target, options);
+          if (target === path && !swapped) {
+            swapped = true;
+            renameSync(fifo, path);
+          }
+          return stats;
+        });
+        try {
+          expect(() => resolveAt(path)).toThrow(
+            "workflow file 'swap.relavium.yaml' could not be read.",
+          );
+          expect(swapped).toBe(true);
+        } finally {
+          closeSync(writer);
+          closeSync(reader);
+        }
+      },
+    );
+
+    it('refuses a file that grew past the cap after its size was read, from the bytes it reads', async () => {
+      const native = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const path = join(root, 'grow.relavium.yaml');
+      writeFileSync(path, YAML);
+      let grown = false;
+      vi.mocked(fstatSync).mockImplementation((fd, options) => {
+        const stats = native.fstatSync(fd, options);
+        if (!grown) {
+          grown = true;
+          appendFileSync(path, Buffer.alloc(MAX_SOURCE_CHARS * 4, 0x20)); // after the size was taken, before the read
+        }
+        return stats;
+      });
+      expect(() => resolveAt(path)).toThrow(
+        `workflow file 'grow.relavium.yaml' exceeds the ${String(MAX_SOURCE_CHARS * 4)}-byte size limit.`,
+      );
+      expect(grown).toBe(true);
+    });
+  });
 
   it('labels both the absolute argument and searched candidates in a miss', () => {
     const path = join(root, 'missing.yaml');

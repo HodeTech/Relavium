@@ -6,6 +6,7 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -125,6 +126,31 @@ describe('appendToOwnerOnlyFile (review P2: the outbox and consent lstat-then-ap
     expect(readFileSync(victim, 'utf8')).toBe('untouched');
     expect(statSync(victim).mode & 0o777).toBe(0o644); // the link's target was not even chmod'ed
   });
+
+  it.skipIf(!POSIX)(
+    'refuses a file with a second hard link before writing or changing a mode: the other name is untouched',
+    () => {
+      const victim = join(dir, 'victim.txt');
+      writeFileSync(victim, 'untouched');
+      chmodSync(victim, 0o644);
+      linkSync(victim, path); // a hard link is no symbolic link and no special file: only its link count gives it away
+      let refused: unknown;
+      try {
+        appendToOwnerOnlyFile(path, 'x\n', 0o600);
+      } catch (error) {
+        refused = error;
+      }
+      expect(refused).toBeInstanceOf(AppendTargetRefusedError);
+      expect(refused instanceof AppendTargetRefusedError && refused.reason).toBe('hard-link');
+      expect(readFileSync(victim, 'utf8')).toBe('untouched');
+      expect(statSync(victim).mode & 0o777).toBe(0o644); // the 0600 repair did not reach it either
+      expect(vi.mocked(fchmodSync)).not.toHaveBeenCalled();
+      // One name again (the other was removed): the same path is appended to as before.
+      rmSync(victim);
+      appendToOwnerOnlyFile(path, 'x\n', 0o600);
+      expect(readFileSync(path, 'utf8')).toBe('untouched' + 'x\n');
+    },
+  );
 
   it.skipIf(!POSIX)('refuses a FIFO without waiting, and a directory, as not regular', () => {
     execFileSync('mkfifo', [path]);

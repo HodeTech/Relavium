@@ -22,22 +22,55 @@ import {
 export const LIBRARY_CHECK_MAX_CHARS = 2048;
 
 /**
- * The most map keys one long source may hold, counting a key only when another key of its map comes before it (the first key
- * of every map is free). The linear duplicate check ({@link duplicateKeyCheck}) makes the library build one `DUPLICATE_KEY`
- * error per counted key, to be dropped afterwards, so the work and the memory of a decode grow with the keys: measured on a 2 MiB
- * source of 357,523 distinct keys, 1.9 s and about 575 MB of heap (the same source takes 0.95 s and 290 MB with no check at all),
- * and a catalog scan decodes up to eight such sources one after the other on the Home's UI thread. A source over the budget is
- * refused with a `YAMLParseError` (code `RESOURCE_EXHAUSTION`, a fixed message with no authored text) the moment the key past it
- * is met, before the library builds another error for it or composes the rest of that map.
+ * The most structural tokens one source may hold ({@link countYamlTokens}), 120,000. A source's size is bounded by its character cap
+ * (2 MiB), and that alone does NOT bound what the library spends on it: its cost follows the NUMBER OF NODES, not the characters. Measured
+ * here on 2 MiB sources (before this budget, with the map-key budget this replaced): `[{a,b},{a,b},…]` 3.9 s of CPU and 1.2 GB, `- {a,b}`
+ * lines 3.3 s and 0.9 GB, `- {a}` lines 1.8 s and 0.7 GB, `- a` lines 1.5 s and 0.5 GB (an independent run of the same shapes under load:
+ * 4.9 to 8.9 s), against 0.2 to 0.4 s for the same bytes of prose; and a catalog scan decodes up to eight such sources one after the other on
+ * the Home's UI thread (51 s and 2.75 GB measured). The count is made BEFORE the library composes anything, in one linear pass of about 3 ms
+ * for 2 MiB, and a source over the budget is refused with a `YAMLParseError` (code `RESOURCE_EXHAUSTION`, a fixed message with no authored
+ * text and no position). Every key after the first of its map needs a line break or a comma before it, so the number of map keys the check
+ * answers is at most the number of tokens: this one budget bounds the duplicate check's per-key errors as well.
  *
- * 100,000 is several times the keys of the largest workflow the admission ceilings describe in practice (500 nodes of ~15 keys
- * and 2,000 edges are ~14,000), and above the 60,000-key map the decode tests parse. It bounds one decode, not a scan: a scan's
- * total is the catalog's own byte budget.
+ * At 120,000 tokens a decode costs 0.2 to 0.5 s of CPU and about 150 to 240 MB on this machine (the worst shape, a flow sequence of maps;
+ * 3 to 7 microseconds a token, up to 17 under load), so one file is two seconds at the most. A legitimate file is far below it: the
+ * repo's own workflows and agents are 66 to 223 tokens, the largest example in the docs is 223, a workflow at every admission ceiling
+ * (500 nodes, 2,000 edges) is 16,000, and the largest legitimate documents of the parser, graph, limits and engine tests are 26,048.
+ * Ordinary prose is 3.5 to 5.3 tokens in 100 characters, so even a prompt of the full 2 MiB character cap passes; a source denser than about
+ * 5.7% structure (a list of short items) does not. It bounds one decode; the sum over a catalog scan is the catalog's own token budget.
  */
-export const MAX_MAP_KEYS = 100_000;
+export const MAX_YAML_TOKENS = 120_000;
 
-/** The fixed, source-free message of the refusal above. */
-const TOO_MANY_KEYS = `the document has more than ${String(MAX_MAP_KEYS)} mapping keys`;
+/** The fixed, source-free message of the refusal above (the catalog's own reason style: nothing authored in it). */
+const TOO_LARGE = 'the document is too large to read safely';
+
+/**
+ * How many structural tokens `text` holds, counted in one linear pass of character codes: every line break (`\n`, `\r`), `,` `:` `-` `[` and `{`.
+ * A token is NOT a node, it is a sound UPPER BOUND on the nodes the library builds: every map entry after the first needs a line break or a
+ * comma before it, every sequence item a `-`, every flow collection a `[` or `{`, every `key: value` pair a `:`; text inside a scalar (a hyphen in
+ * a word, a comma in prose) is counted too, which only over-counts. So a count over the budget is never a refusal of a smaller document.
+ *
+ * Stops as soon as the count passes `limit` and returns `limit + 1`, so a caller that only asks "is it over?" pays for the prefix it needed.
+ */
+export function countYamlTokens(text: string, limit: number = Number.POSITIVE_INFINITY): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    switch (text.charCodeAt(index)) {
+      case 10: // \n
+      case 13: // \r
+      case 44: // ,
+      case 58: // :
+      case 45: // -
+      case 91: // [
+      case 123: // {
+        count += 1;
+        if (count > limit) return count;
+        break;
+      default:
+    }
+  }
+  return count;
+}
 
 /**
  * The single hardened, deterministic YAML 1.2-core decode profile (ADR-0035) every authored-YAML parser
@@ -56,6 +89,11 @@ const TOO_MANY_KEYS = `the document has more than ${String(MAX_MAP_KEYS)} mappin
  * code, message, position and place among the other faults.
  */
 export function decodeHardenedYaml(yamlText: string, lineCounter: LineCounter): unknown {
+  // Before the library composes ANYTHING: its cost follows the nodes, not the characters (see MAX_YAML_TOKENS). No position, as the
+  // refusal is about the whole document, not a place in it; both parsers file a position-less fault without a line and column.
+  if (countYamlTokens(yamlText, MAX_YAML_TOKENS) > MAX_YAML_TOKENS) {
+    throw new YAMLParseError([-1, -1], 'RESOURCE_EXHAUSTION', TOO_LARGE);
+  }
   if (yamlText.length <= LIBRARY_CHECK_MAX_CHARS) {
     return parseYaml(yamlText, profile(lineCounter, true));
   }
@@ -129,29 +167,14 @@ interface DuplicateKeyCheck {
  * keeps the string `'.nan'` and gets a `NON_STRING_KEY` error of its own), so no key's value is ever `NaN` and `Set`
  * (SameValueZero) and `===` agree on every key: two `.nan` keys are a duplicate for the library and for this check.
  *
- * At most {@link MAX_MAP_KEYS} questions are answered; the next one throws a `YAMLParseError` (`RESOURCE_EXHAUSTION`,
- * {@link TOO_MANY_KEYS}). The library catches a throw from a collection's composition and files it as an error of its own
- * with the same message, then goes on with the rest of the document; every later question throws the same fault at once, so
- * no key past the budget costs a comparison or an answer, and `settle` hands the refusal back like any other error
- * (a fault before it in the document still comes first). A library that let the throw escape would escape with this error.
- *
  * It FAILS CLOSED: if the errors and the questions stop lining up (a library that asks differently, or not at
  * all), `settle` throws instead of letting a duplicate through.
  */
 function duplicateKeyCheck(): DuplicateKeyCheck {
   const keysOfMap = new WeakMap<ParsedNode, Set<unknown>>();
   const answers: boolean[] = [];
-  let overBudget: YAMLParseError | undefined;
 
   const ask = (first: ParsedNode, candidate: ParsedNode): boolean => {
-    if (overBudget === undefined && answers.length >= MAX_MAP_KEYS) {
-      overBudget = new YAMLParseError(
-        [candidate.range[0], candidate.range[1]],
-        'RESOURCE_EXHAUSTION',
-        TOO_MANY_KEYS,
-      );
-    }
-    if (overBudget !== undefined) throw overBudget;
     let keys = keysOfMap.get(first);
     if (keys === undefined) {
       // The first key of a map is never a candidate (nothing to compare it with), so it joins the set here.
