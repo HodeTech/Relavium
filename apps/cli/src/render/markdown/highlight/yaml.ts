@@ -40,6 +40,11 @@ function findKey(source: string, at: number, end: number): number {
   return -1;
 }
 
+/** How many characters a search from `from` read: through the colon it found, or up to `limit` when it found none. */
+function charsRead(colon: number, from: number, limit: number): number {
+  return (colon >= 0 ? colon + 1 : limit) - from;
+}
+
 /** The index of the first colon in `[from, to)`, or -1. */
 function colonWithin(source: string, from: number, to: number): number {
   for (let at = from; at < to; at++) {
@@ -90,41 +95,78 @@ function plainEnd(source: string, from: number, end: number, flow: number): numb
   return trimEnd(source, from, at);
 }
 
+/** The end of the run of non-blank characters that starts at `from` (`&anchor`, `!tag`, `|`, `>`), and, for a property, before a `,`. */
+function wordEnd(source: string, from: number, end: number, stopAtComma: boolean): number {
+  let close = from;
+  while (
+    close < end &&
+    !isBlank(source.charCodeAt(close)) &&
+    !(stopAtComma && source[close] === ',')
+  )
+    close += 1;
+  return close;
+}
+
+/** One quoted scalar; inside a flow collection, one followed by a colon is a key. */
+function scanQuotedValue(
+  source: string,
+  at: number,
+  end: number,
+  out: Segments,
+  state: ValueState,
+  rule: StringRule,
+): number {
+  const close = scanQuoted(source, at, rule);
+  const key = state.flow > 0 && endsKey(source, close, end);
+  out.mark(at, close, key ? 'property' : 'string');
+  return close;
+}
+
+/** One token of a value that is neither a blank nor a comment; returns where the scan goes on, which is past `at`. */
+function scanValueToken(
+  source: string,
+  at: number,
+  end: number,
+  out: Segments,
+  state: ValueState,
+  code: number,
+): number {
+  const rule = quoteRule(code);
+  if (rule) return scanQuotedValue(source, at, end, out, state, rule);
+  if (code === 38 || code === 42 || code === 33) {
+    const close = wordEnd(source, at + 1, end, true);
+    out.mark(at, close, 'meta');
+    return close;
+  }
+  if ((code === 124 || code === 62) && state.flow === 0) {
+    const close = wordEnd(source, at + 1, end, false);
+    out.mark(at, close, 'meta');
+    state.block = true;
+    return close;
+  }
+  if (code === 91 || code === 123) {
+    state.flow += 1;
+    return at + 1;
+  }
+  if (code === 93 || code === 125) {
+    state.flow = Math.max(0, state.flow - 1);
+    return at + 1;
+  }
+  if (code === 44 || code === COLON) return at + 1;
+  return scanPlain(source, at, end, out, state);
+}
+
 function scanValue(source: string, from: number, end: number, out: Segments): ValueState {
   const state: ValueState = { block: false, flow: 0 };
   let at = from;
   while (at < end) {
     out.tick();
     const code = source.charCodeAt(at);
-    const rule = quoteRule(code);
-    if (isBlank(code)) at += 1;
-    else if (code === HASH && (at === from || isBlank(source.charCodeAt(at - 1)))) {
+    if (code === HASH && (at === from || isBlank(source.charCodeAt(at - 1)))) {
       out.mark(at, end, 'comment');
       return state;
-    } else if (rule) {
-      const close = scanQuoted(source, at, rule);
-      const key = state.flow > 0 && endsKey(source, close, end);
-      out.mark(at, close, key ? 'property' : 'string');
-      at = close;
-    } else if (code === 38 || code === 42 || code === 33) {
-      let close = at + 1;
-      while (close < end && !isBlank(source.charCodeAt(close)) && source[close] !== ',') close += 1;
-      out.mark(at, close, 'meta');
-      at = close;
-    } else if ((code === 124 || code === 62) && state.flow === 0) {
-      let close = at + 1;
-      while (close < end && !isBlank(source.charCodeAt(close))) close += 1;
-      out.mark(at, close, 'meta');
-      state.block = true;
-      at = close;
-    } else if (code === 91 || code === 123) {
-      state.flow += 1;
-      at += 1;
-    } else if (code === 93 || code === 125) {
-      state.flow = Math.max(0, state.flow - 1);
-      at += 1;
-    } else if (code === 44 || code === COLON) at += 1;
-    else at = scanPlain(source, at, end, out, state);
+    }
+    at = isBlank(code) ? at + 1 : scanValueToken(source, at, end, out, state, code);
   }
   return state;
 }
@@ -139,7 +181,10 @@ function scanPlain(
 ): number {
   const stop = Math.max(plainEnd(source, at, end, state.flow), at + 1);
   if (state.flow > 0) {
-    const colon = colonWithin(source, at, Math.min(stop + 1, end));
+    const reach = Math.min(stop + 1, end);
+    const colon = colonWithin(source, at, reach);
+    // The search reads the scalar again without consuming it, so what it read is charged (ADR-0144).
+    out.charge(charsRead(colon, at, reach));
     if (colon > at && endsKey(source, colon, end)) {
       out.mark(at, trimEnd(source, at, colon), 'property');
       return colon + 1;
@@ -211,6 +256,9 @@ function scanLine(source: string, start: number, out: Segments, state: LineState
   const { at: item, column } = skipMarkers(source, start, at, end);
   const node = skipProperties(source, item, end);
   const colon = findKey(source, node, end);
+  // `findKey` reads from the node to its colon, or to the end of the line when there is none, and the value is read again
+  // afterwards: a lookahead, so what it read is charged (ADR-0144).
+  out.charge(charsRead(colon, node, end));
   let valueFrom = item;
   let parent = column;
   if (colon >= 0) {

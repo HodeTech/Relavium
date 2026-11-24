@@ -76,11 +76,15 @@ export function scanWord(source: string, start: number): number {
   return at;
 }
 
-/** Is the next non-blank character, within the same line and a short distance, a colon? */
-export function colonFollows(source: string, from: number): boolean {
+/**
+ * Is the next non-blank character, within the same line and a short distance, a colon? A lookahead that does not consume
+ * what it reads, so the blanks it looks past and the character it tests are charged (ADR-0144).
+ */
+export function colonFollows(out: Segments, source: string, from: number): boolean {
   const limit = Math.min(source.length, from + 256);
   let at = from;
   while (at < limit && isBlank(source.charCodeAt(at))) at += 1;
+  out.charge(at - from + 1);
   return source.charCodeAt(at) === 58;
 }
 

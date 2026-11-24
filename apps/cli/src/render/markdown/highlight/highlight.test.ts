@@ -54,7 +54,7 @@ describe('info strings name a language by their first word', () => {
   it('puts the size limit at exactly 64 KiB of short lines, apart from the line limit', () => {
     const line = 'let a = 1234567\n'; // 16 characters
     const atLimit = line.repeat(MAX_HIGHLIGHT_CHARS / line.length);
-    expect(atLimit.length).toBe(MAX_HIGHLIGHT_CHARS);
+    expect(atLimit).toHaveLength(MAX_HIGHLIGHT_CHARS);
     expect(highlightCode(atLimit, 'ts')).toBeDefined();
     expect(highlightCode(`${atLimit}x`, 'ts')).toBeUndefined();
   });

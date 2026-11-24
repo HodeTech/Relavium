@@ -104,6 +104,32 @@ describe('formatRunOutputs (MVP-A1)', () => {
     expect(lines).toContain(`  k${String(Object.keys(keys).length - 1)}: …`);
   });
 
+  it('counts the value text of the block against the bound, and not the keys, as the reference words it', () => {
+    // `commands.md`: "12,000 characters per run" of VALUES. A key is the workflow's own output id, shown as written, so a long key
+    // takes nothing from the budget and a key the budget has no room for is still listed.
+    const long = 'k'.repeat(300);
+    const keys = Object.fromEntries(
+      [0, 1, 2, 3].map((index) => [`${long}${String(index)}`, 'y'.repeat(MAX_VALUE_CHARS)]),
+    );
+    const lines = formatRunOutputs(keys, '');
+    expect(lines.join('\n').split('y').length - 1).toBe(MAX_TOTAL_CHARS);
+    expect(lines).toContain(`  ${long}3: …`);
+  });
+
+  it('says `(empty)` for a value with no text, so a key never ends in a bare colon', () => {
+    // An empty string, and a string of only newlines (a final newline run ends the value), print `(empty)`; every other value is as before.
+    expect(formatRunOutputs({ a: '', b: '\n\n', c: 'x', d: [], e: {}, f: ' ' }, '')).toEqual([
+      'outputs:',
+      '  a: (empty)',
+      '  b: (empty)',
+      '  c: x',
+      '  d: []',
+      '  e: {}',
+      '  f:  ',
+    ]);
+    expect(formatRunOutputs({ a: '' }, '    ')).toEqual(['    outputs:', '      a: (empty)']);
+  });
+
   it('masks a key inside a non-string value before serializing it, so an escaped newline cannot hide it', () => {
     // JSON.stringify writes the newline as the two characters `\n`; masked after that, `nsk-…` had no boundary.
     for (const outputs of [
@@ -142,8 +168,9 @@ describe('formatRunOutputs (MVP-A1)', () => {
         expect(text).toContain('(outputs masked — the full record: `relavium logs run-6 --json`)');
       }
     }
-    // The boundary: a name decides only through a shape the scrubber knows. Another name masks nothing, and a
-    // value already masked leaf by leaf keeps its prose rather than being masked whole.
+    // The boundary: a name decides only through a shape the scrubber knows or an entry of the exact list (the case
+    // below this one). Another name masks nothing, and a value already masked leaf by leaf keeps its prose rather
+    // than being masked whole.
     expect(formatRunOutputs({ v: { note: OPAQUE } }, '')).toEqual([
       'outputs:',
       `  v: {"note":"${OPAQUE}"}`,
@@ -226,6 +253,42 @@ describe('formatRunOutputs (MVP-A1)', () => {
     ]) {
       expect(formatRunOutputs({ v: { [name]: 'opaque' } }, '')[1]).toMatch(/:"\[REDACTED\]"\}$/u);
     }
+  });
+
+  it('masks the value of a member (or an output) named like a credential, whole, with no secret shape of its own', () => {
+    // `apiKey`, `password` and the rest of the exact list (output-masking.ts): an opaque value has no shape the scrubber knows, so the NAME is
+    // what says it is one. The name decides for a string and a number; a flag and a null are not a credential; a name that only looks like
+    // one (`max_tokens`, `key`, `tokens`) masks nothing.
+    const OPAQUE = '9f8e7d6c5b4a39281706f5e4d3c2b1a0';
+    expect(
+      formatRunOutputs(
+        {
+          config: {
+            apiKey: OPAQUE,
+            api_key: OPAQUE,
+            password: OPAQUE,
+            nested: { client_secret: 12_345 },
+          },
+          list: [{ Authorization: OPAQUE }, { token: true, secret: null }],
+          max_tokens: 4096,
+          key: OPAQUE,
+        },
+        '',
+        'run-9',
+      ),
+    ).toEqual([
+      'outputs:',
+      '  config: {"apiKey":"[REDACTED]","api_key":"[REDACTED]","password":"[REDACTED]","nested":{"client_secret":"[REDACTED]"}}',
+      '  list: [{"Authorization":"[REDACTED]"},{"token":true,"secret":null}]',
+      '  max_tokens: 4096',
+      `  key: ${OPAQUE}`,
+      '  (outputs masked — the full record: `relavium logs run-9 --json`)',
+    ]);
+    // A top-level output whose id is a listed name masks its string value, and `{ secret: true, ref }` (a masked input) stays readable.
+    expect(formatRunOutputs({ 'client-secret': OPAQUE }, '')[1]).toBe(
+      '  client-secret: [REDACTED]',
+    );
+    expect(formatRunOutputs({ password: 12_345 }, '')[1]).toBe('  password: "[REDACTED]"');
   });
 
   it('keeps an own __proto__ member, as JSON.parse makes one, rather than dropping it unsaid', () => {

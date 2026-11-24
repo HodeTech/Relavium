@@ -51,6 +51,25 @@ function line(spans: readonly MarkdownSpan[]): MarkdownDisplayLine {
   flush();
   return { text: merged.map((span) => span.text).join(''), spans: merged };
 }
+/** The spaces that go before a cell's text in its column: all the padding when right-aligned, half of it when centred. */
+function alignOffset(alignment: string, padding: number): number {
+  if (alignment === 'right') return padding;
+  return alignment === 'center' ? Math.floor(padding / 2) : 0;
+}
+
+/**
+ * Whether `text` is made only of the spaces a wrap may drop where it broke a line: ASCII spaces and tabs, which the author wrote as a separator. A
+ * no-break space (U+00A0), an ideographic space (U+3000) and the other Unicode spaces are content, and ADR-0143 says no
+ * table content is dropped, so a trim never takes them even where a line may break at one (`\s` is wider than that).
+ */
+function isBreakSpace(text: string): boolean {
+  // An empty text holds nothing else, so it counts too: a continuation line with no text at all is dropped as one of spaces is.
+  for (const character of text) {
+    if (character !== ' ' && character !== '\t') return false;
+  }
+  return true;
+}
+
 function wrap(
   spans: readonly MarkdownSpan[],
   columns: number,
@@ -104,7 +123,7 @@ function wrap(
       // A line the wrap broke at a space starts at its text: the space was the break, not content. A line the source
       // broke keeps its indentation, which is why only a wrap-created continuation (start > 0) is trimmed.
       if (dropBreakSpace && start > 0)
-        while (start < group.length && /^\s+$/u.test(group[start]?.text ?? '')) start++;
+        while (start < group.length && isBreakSpace(group[start]?.text ?? '')) start++;
       if (start >= group.length) break;
       const available = limit - displayWidth(prefix);
       let end = start;
@@ -248,11 +267,13 @@ function table(
       const width = displayWidth(cell.map((s) => s.text).join(''));
       const padding = (widths[column] ?? 0) - width;
       const alignment = block.align?.[column] ?? 'left';
-      const before =
-        alignment === 'right' ? padding : alignment === 'center' ? Math.floor(padding / 2) : 0;
-      spans.push({ text: ' '.repeat(before + 1) });
-      spans.push(...cell.map((s) => (index === 0 ? { ...s, strong: true } : s)));
-      spans.push({ text: ' '.repeat(padding - before + 1) }, { text: '│', dim: true });
+      const before = alignOffset(alignment, padding);
+      spans.push(
+        { text: ' '.repeat(before + 1) },
+        ...cell.map((s) => (index === 0 ? { ...s, strong: true } : s)),
+        { text: ' '.repeat(padding - before + 1) },
+        { text: '│', dim: true },
+      );
     });
     output.push(line(spans));
     if (index === 0) output.push(border('├', '┼', '┤'));
@@ -283,10 +304,10 @@ function longestCellWord(spans: readonly MarkdownSpan[]): number {
 function stripTrailingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
   const result = [...spans];
   while (result.length > 0) {
-    const last = result[result.length - 1];
+    const last = result.at(-1);
     if (last === undefined) break;
     let end = last.text.length;
-    while (end > 0 && /\s/u.test(last.text.charAt(end - 1))) end--;
+    while (end > 0 && isBreakSpace(last.text.charAt(end - 1))) end--;
     if (end === last.text.length) break;
     if (end > 0) {
       result[result.length - 1] = { ...last, text: last.text.slice(0, end) };
@@ -311,8 +332,10 @@ function stripLeadingSpace(spans: readonly MarkdownSpan[]): MarkdownSpan[] {
   while (result.length > 0) {
     const first = result[0];
     if (first === undefined) break;
-    const rest = first.text.replace(/^\s+/u, '');
-    if (rest.length === first.text.length) break;
+    let skip = 0;
+    while (skip < first.text.length && isBreakSpace(first.text.charAt(skip))) skip++;
+    const rest = first.text.slice(skip);
+    if (skip === 0) break;
     if (rest.length > 0) {
       result[0] = { ...first, text: rest };
       break;
@@ -389,7 +412,7 @@ function wrappedGrid(block: MarkdownBlock, columns: number): MarkdownDisplayLine
             index === 0 ? wrappedLine.spans : stripLeadingSpace(wrappedLine.spans),
           ),
         )
-        .filter((spans, index) => index === 0 || cellText(spans).trim() !== '');
+        .filter((spans, index) => index === 0 || !isBreakSpace(cellText(spans)));
     }),
   );
   const multiLine = wrapped.some((row) => row.some((lines) => lines.length > 1));
@@ -404,11 +427,13 @@ function wrappedGrid(block: MarkdownBlock, columns: number): MarkdownDisplayLine
         const content = lines[at] ?? [];
         const padding = Math.max(0, (widths[column] ?? 1) - displayWidth(cellText(content)));
         const alignment = block.align?.[column] ?? 'left';
-        const before =
-          alignment === 'right' ? padding : alignment === 'center' ? Math.floor(padding / 2) : 0;
-        spans.push({ text: ' '.repeat(before + 1) });
-        spans.push(...content.map((span) => (index === 0 ? { ...span, strong: true } : span)));
-        spans.push({ text: ' '.repeat(padding - before + 1) }, { text: '│', dim: true });
+        const before = alignOffset(alignment, padding);
+        spans.push(
+          { text: ' '.repeat(before + 1) },
+          ...content.map((span) => (index === 0 ? { ...span, strong: true } : span)),
+          { text: ' '.repeat(padding - before + 1) },
+          { text: '│', dim: true },
+        );
       });
       output.push(line(spans));
     }
@@ -464,8 +489,8 @@ function records(block: MarkdownBlock, columns: number): MarkdownDisplayLine[] |
   for (const row of body) {
     result.push(line([]));
     row.forEach((cell, column) => {
-      result.push(...wrap(labels[column] ?? [], columns, '', '', 0, true));
       result.push(
+        ...wrap(labels[column] ?? [], columns, '', '', 0, true),
         ...wrap(
           isBlankCell(cell) ? [EMPTY_CELL] : cell,
           columns,

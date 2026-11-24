@@ -29,6 +29,29 @@ function hunkEnd(out: Segments, at: number, end: number): number {
   return close >= 0 && close < end ? close + 2 : end;
 }
 
+/** What one line of a diff is: its class, where that class ends, and whether a `+++` header must follow the next line. */
+interface DiffLine {
+  readonly token: SyntaxToken;
+  readonly end: number;
+  readonly plusHeader: boolean;
+}
+
+/** A line that starts with `-`: a file header only when the line after it opens with `+++ `, otherwise a deletion. */
+function minusLine(source: string, at: number, end: number): DiffLine {
+  const header = source.startsWith('--- ', at) && source.startsWith('+++ ', end + 1);
+  return { token: header ? 'meta' : 'deleted', end, plusHeader: header };
+}
+
+/** A line that starts with neither `+` nor `-`: a hunk header, a "no newline" note, a metadata line, or plain text. */
+function otherLine(source: string, out: Segments, at: number, end: number): DiffLine {
+  const first = source.charCodeAt(at);
+  if (first === 64 && source.startsWith('@@', at)) {
+    return { token: 'hunk', end: hunkEnd(out, at, end), plusHeader: false };
+  }
+  if (first === 92) return { token: 'comment', end, plusHeader: false };
+  return { token: startsMeta(source, at) ? 'meta' : 'text', end, plusHeader: false };
+}
+
 /**
  * A unified diff, read one line at a time: a line's first character says what it is. Hunk line counts are not
  * trusted (a model often miscounts them); a `---` line is a file header only when a `+++` line follows it.
@@ -39,25 +62,15 @@ export const scanDiff: Scanner = (source, out) => {
   while (at < source.length) {
     out.tick();
     const end = out.lineEnd(at);
-    let token: SyntaxToken = 'text';
-    let tokenEnd = end;
     const first = source.charCodeAt(at);
+    let line: DiffLine;
     if (first === 43) {
-      token = plusHeader && source.startsWith('+++ ', at) ? 'meta' : 'inserted';
-      plusHeader = false;
-    } else if (first === 45) {
-      const header = source.startsWith('--- ', at) && source.startsWith('+++ ', end + 1);
-      token = header ? 'meta' : 'deleted';
-      plusHeader = header;
-    } else {
-      plusHeader = false;
-      if (first === 64 && source.startsWith('@@', at)) {
-        token = 'hunk';
-        tokenEnd = hunkEnd(out, at, end);
-      } else if (first === 92) token = 'comment';
-      else if (startsMeta(source, at)) token = 'meta';
-    }
-    if (token !== 'text') out.mark(at, tokenEnd, token);
+      const header = plusHeader && source.startsWith('+++ ', at);
+      line = { token: header ? 'meta' : 'inserted', end, plusHeader: false };
+    } else if (first === 45) line = minusLine(source, at, end);
+    else line = otherLine(source, out, at, end);
+    plusHeader = line.plusHeader;
+    if (line.token !== 'text') out.mark(at, line.end, line.token);
     at = end + 1;
   }
 };

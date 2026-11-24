@@ -131,16 +131,17 @@ describe('physical lookahead ownership', () => {
     },
   );
 
+  // Each case is an object so that its name shows every line: `%j` formats only the first argument, and four cases open with `foo` or `- a`.
   it.each([
-    ['foo', '===', '---'],
-    ['foo', '===', '===', '---'],
-    ['foo', '---', '===', '---'],
-    ['foo', '===', 'next', '---'],
-    ['- a', 'foo', '---'],
-    ['- a', 'x', 'b', '---'],
-    ['- a', 'x', 'b', '===', '---'],
-    ['- a', 'x', '**b**', '--- | ---'],
-  ])('keeps completed physical ownership across %j', (...lines) => {
+    { lines: ['foo', '===', '---'] },
+    { lines: ['foo', '===', '===', '---'] },
+    { lines: ['foo', '---', '===', '---'] },
+    { lines: ['foo', '===', 'next', '---'] },
+    { lines: ['- a', 'foo', '---'] },
+    { lines: ['- a', 'x', 'b', '---'] },
+    { lines: ['- a', 'x', 'b', '===', '---'] },
+    { lines: ['- a', 'x', '**b**', '--- | ---'] },
+  ])('keeps completed physical ownership across $lines', ({ lines }) => {
     for (const wrap of containers) {
       const source = wrap([...lines, '', 'END']);
       for (const [chunk, draw] of [

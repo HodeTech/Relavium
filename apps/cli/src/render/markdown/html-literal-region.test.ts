@@ -34,13 +34,14 @@ function check(source: string): void {
 }
 
 describe('literal HTML region ownership', () => {
+  // Each case is an object so that its name shows every line: `%j` formats only the first argument, and three cases open with `<!--`.
   it.each([
-    ['<!-- **text** -->', '**outside**'],
-    ['<!--', '**text**', '', '# literal', '-->', '**outside**'],
-    ['<!--', '```', '<pre>', '--> **also literal**', '**outside**'],
-    ['<!--', '**unclosed**', '', 'END'],
-    ['<!DOCTYPE html PUBLIC "**literal**">', '**outside**'],
-  ])('keeps comments and declaration source literal: %j', (...lines) => {
+    { lines: ['<!-- **text** -->', '**outside**'] },
+    { lines: ['<!--', '**text**', '', '# literal', '-->', '**outside**'] },
+    { lines: ['<!--', '```', '<pre>', '--> **also literal**', '**outside**'] },
+    { lines: ['<!--', '**unclosed**', '', 'END'] },
+    { lines: ['<!DOCTYPE html PUBLIC "**literal**">', '**outside**'] },
+  ])('keeps comments and declaration source literal: $lines', ({ lines }) => {
     for (const context of contexts) {
       const source = wrap(lines, context);
       const rows = layoutMarkdown(parseMarkdown(source), 80);

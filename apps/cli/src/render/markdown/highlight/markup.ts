@@ -60,6 +60,31 @@ function scanAttributes(source: string, from: number, out: Segments): number {
   return at;
 }
 
+/**
+ * What starts at the `<` at `open`: a comment, a declaration or processing instruction, or a tag with its attributes. Returns where
+ * the scan goes on, which is always past `open`.
+ */
+function scanTag(source: string, out: Segments, open: number): number {
+  const next = source.charCodeAt(open + 1);
+  if (source.startsWith('<!--', open)) {
+    const close = out.find('-->', open + 4);
+    const end = close < 0 ? source.length : close + 3;
+    out.mark(open, end, 'comment');
+    return end;
+  }
+  if (next === 33 || next === 63) {
+    const close = out.find('>', open);
+    const end = close < 0 ? source.length : close + 1;
+    out.mark(open, end, 'meta');
+    return end;
+  }
+  const nameStart = open + (next === SLASH ? 2 : 1);
+  const end = nameEnd(source, nameStart);
+  if (end === nameStart) return open + 1;
+  out.mark(nameStart, end, 'keyword');
+  return scanAttributes(source, end, out);
+}
+
 /** HTML, XML and SVG: tags, attributes, values, comments and declarations. The text between tags stays plain. */
 export const scanMarkup: Scanner = (source, out) => {
   let at = 0;
@@ -67,26 +92,6 @@ export const scanMarkup: Scanner = (source, out) => {
     out.tick();
     const open = out.find('<', at);
     if (open < 0) return;
-    const next = source.charCodeAt(open + 1);
-    if (source.startsWith('<!--', open)) {
-      const close = out.find('-->', open + 4);
-      const end = close < 0 ? source.length : close + 3;
-      out.mark(open, end, 'comment');
-      at = end;
-    } else if (next === 33 || next === 63) {
-      const close = out.find('>', open);
-      const end = close < 0 ? source.length : close + 1;
-      out.mark(open, end, 'meta');
-      at = end;
-    } else {
-      const nameStart = open + (next === SLASH ? 2 : 1);
-      const end = nameEnd(source, nameStart);
-      if (end === nameStart) {
-        at = open + 1;
-        continue;
-      }
-      out.mark(nameStart, end, 'keyword');
-      at = scanAttributes(source, end, out);
-    }
+    at = scanTag(source, out, open);
   }
 };

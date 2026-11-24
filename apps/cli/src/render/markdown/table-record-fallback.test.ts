@@ -169,9 +169,9 @@ describe('a table too wide for one line keeps its grid (ADR-0143)', () => {
   it('rules body rows apart only when some cell wraps', () => {
     const wrapping = texts(WIDE, 40);
     // The rule under the header, and one between the two body rows; no rule before the bottom border.
-    expect(wrapping.filter((line) => line.startsWith('├')).length).toBe(2);
+    expect(wrapping.filter((line) => line.startsWith('├'))).toHaveLength(2);
     const compact = texts('| a | b |\n| --- | --- |\n| x | y |\n| z | w |\n| p | q |', 80);
-    expect(compact.filter((line) => line.startsWith('├')).length).toBe(1);
+    expect(compact.filter((line) => line.startsWith('├'))).toHaveLength(1);
   });
 });
 
@@ -299,6 +299,56 @@ describe('a table over the fixed limit stays literal, and wraps without leading 
     const lines = texts([header, separator].join('\n'), 80);
     expect(lines.filter((line) => line.startsWith(' '))).toEqual([]);
     expect(lines).toContain('c29 | c30 | c31 | c32 | c33 |');
+  });
+});
+
+/**
+ * ADR-0143 decision 6: nothing in a table is dropped. A wrap drops the ASCII space it broke at and no other character, so a
+ * no-break space (U+00A0) and an ideographic space (U+3000), which `\s` also matches, are content wherever a line ends.
+ */
+describe('a no-break or ideographic space in a table is content, and a wrap never drops it', () => {
+  const SPACES: readonly (readonly [string, string, string])[] = [
+    ['a no-break space', 'no-break spaces', '\u00a0'],
+    ['an ideographic space', 'ideographic spaces', '\u3000'],
+  ];
+  const countOf = (lines: readonly string[], character: string): number =>
+    lines.join('').split(character).length - 1;
+
+  for (const [name, plural, space] of SPACES) {
+    it(`keeps ${name} at the break of a wrapped grid cell, and the rows stay aligned`, () => {
+      const source = `| aaaaaaaa${space}${space}bbbb | ${'c'.repeat(20)} |\n| --- | --- |\n| x | y |`;
+      const lines = texts(source, 35);
+      expect(lines[0]?.startsWith('┌')).toBe(true);
+      expect(countOf(lines, space)).toBe(2);
+      const widths = new Set(lines.map((line) => displayWidth(line)));
+      expect([...widths]).toHaveLength(1);
+    });
+
+    it(`keeps a continuation line made only of ${plural}`, () => {
+      // The run is as wide as the column, so it wraps onto a line of its own; that line is blanks to the eye, and it is still the author's text.
+      const source = `| aaaaaaaa${space.repeat(8)}bbbb | ${'c'.repeat(20)} |\n| --- | --- |\n| x | y |`;
+      const lines = texts(source, 35);
+      expect(lines[0]?.startsWith('┌')).toBe(true);
+      expect(countOf(lines, space)).toBe(8);
+    });
+
+    it(`keeps ${name} where a table kept literal starts a line`, () => {
+      // 33 columns is over the limit, so the table is word-wrapped source. The first cell fills the first 80-column line exactly, so the
+      // next line starts at the space; a wrap drops an ASCII space there and nothing else.
+      const header = `| ${'a'.repeat(78)}${space}bbb | ${Array.from({ length: 32 }, (_, i) => `c${i + 2}`).join(' | ')} |`;
+      const separator = `| ${Array.from({ length: 33 }, () => '---').join(' | ')} |`;
+      const lines = texts([header, separator].join('\n'), 80);
+      expect(countOf(lines, space)).toBe(1);
+      expect(lines.some((line) => line.startsWith(space))).toBe(true);
+    });
+  }
+
+  it('still drops the ASCII space a wrap broke at, as before', () => {
+    const header = `| ${'a'.repeat(78)} bbb | ${Array.from({ length: 32 }, (_, i) => `c${i + 2}`).join(' | ')} |`;
+    const separator = `| ${Array.from({ length: 33 }, () => '---').join(' | ')} |`;
+    const lines = texts([header, separator].join('\n'), 80);
+    expect(lines.filter((line) => line.startsWith(' '))).toEqual([]);
+    expect(lines.some((line) => line.startsWith('bbb'))).toBe(true);
   });
 });
 

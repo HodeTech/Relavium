@@ -26,9 +26,12 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
  * ordinary prose (a bare `https://host` and a later `@handle`) that blanked the whole result. The shared scrubber's
  * own normalized views still apply. A value that was masked says so, with the same pointer to the exact record.
  *
- * **Bounded.** A value shows at most {@link MAX_VALUE_LINES} lines and {@link MAX_VALUE_CHARS} code points,
- * and the whole block at most {@link MAX_TOTAL_CHARS}; what is cut is counted and points at the full record
- * (`relavium logs <runId> --json`). Every value line is indented under its key, so a hard line break in a value
+ * **Bounded.** A value shows at most {@link MAX_VALUE_LINES} lines and {@link MAX_VALUE_CHARS} code points, and
+ * the values of the whole block at most {@link MAX_TOTAL_CHARS} code points between them; what is cut is counted and
+ * points at the full record (`relavium logs <runId> --json`). The bound is on VALUE text, as the reference states it
+ * (commands.md: "12,000 characters per run"): a key is the workflow's own output id, shown as written on one row
+ * ({@link sanitizeInline}), so the labels are not counted, and a key the budget has no room for is still listed, with
+ * `…`, so that no output disappears unsaid. Every value line is indented under its key, so a hard line break in a value
  * cannot forge a row at the summary's own indentation. A row longer than the terminal is wide still soft-wraps to
  * column 0; wrapping value rows at the terminal width is a recorded follow-up (deferred-tasks.md).
  */
@@ -37,8 +40,10 @@ import { sanitizeInline, stripTerminalControls } from './sanitize.js';
 export const MAX_VALUE_LINES = 40;
 /** Code points shown per output value. */
 export const MAX_VALUE_CHARS = 4000;
-/** Code points shown across every output value of one run. */
+/** Code points of VALUE text shown across every output of one run; the keys are not counted. */
 export const MAX_TOTAL_CHARS = 12_000;
+/** What a value that is empty (an empty string, or only newlines) shows beside its key, so a key never ends in a bare colon. */
+const EMPTY_VALUE = '(empty)';
 
 /**
  * The outputs block as lines, each already prefixed with `indent`. Empty when there are no outputs. `runId`
@@ -70,7 +75,8 @@ export function formatRunOutputs(
     truncated ||= shown.truncated;
     const rows = shown.text.split('\n');
     if (rows.length === 1 && !shown.truncated) {
-      lines.push(`${label} ${rows[0] ?? ''}`);
+      const row = rows[0] ?? '';
+      lines.push(`${label} ${row === '' ? EMPTY_VALUE : row}`);
       continue;
     }
     lines.push(label);

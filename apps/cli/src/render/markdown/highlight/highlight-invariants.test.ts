@@ -178,14 +178,15 @@ describe('adversarial text of the size limit', () => {
   ];
 
   for (const language of HIGHLIGHT_LANGUAGES) {
-    it(`${language.id}: no pattern costs more than four steps a character, or a second`, () => {
+    // No wall-clock bound: a clock measures the machine's load as much as the scanner (the suite runs beside other jobs, and each of
+    // these tests scans the 28 patterns of 64 KiB), so a bound on it can fail on a busy runner without any scanner changing. The work
+    // counter is the proof and the only bound here; it is the same on every machine, and the guard in `highlight-lookahead.test.ts`
+    // keeps every character a scanner reads on it.
+    it(`${language.id}: no pattern costs more than four steps a character`, () => {
       for (const [name, text] of patterns) {
-        const started = performance.now();
         const { runs, work } = scan(language.id, text);
-        const elapsed = performance.now() - started;
         expect(runs.map((run) => run.text).join(''), name).toBe(text);
         expect(work, name).toBeLessThanOrEqual(WORK_PER_CHARACTER * text.length + 16);
-        expect(elapsed, name).toBeLessThan(1000); // a coarse net only: the work counter is the proof
       }
     });
 

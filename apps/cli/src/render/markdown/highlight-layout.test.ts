@@ -56,7 +56,7 @@ describe('a fenced block with a known language is drawn as classed spans (ADR-01
     expect(typed.filter((row) => row.text !== 'ts').map((row) => row.text)).toEqual(
       plain.map((row) => row.text),
     );
-    expect(typed.length).toBe(plain.length + 1);
+    expect(typed).toHaveLength(plain.length + 1);
   });
 
   it('carries each class across a wrapped row, and a wrapped code row keeps its gutter', () => {

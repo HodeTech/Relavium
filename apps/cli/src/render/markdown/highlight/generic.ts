@@ -222,7 +222,7 @@ class GenericScan {
       if (rule.interpolation === true) this.templateFrom(from, at + rule.open.length);
       else {
         const end = scanQuoted(this.source, at, rule);
-        const key = this.profile.jsonKeys === true && colonFollows(this.source, end);
+        const key = this.profile.jsonKeys === true && colonFollows(this.out, this.source, end);
         this.out.mark(from, end, rule.token ?? (key ? 'property' : 'string'));
         this.i = end;
         this.previous = this.source.charCodeAt(end - 1);
