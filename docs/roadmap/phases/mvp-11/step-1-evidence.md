@@ -1,0 +1,98 @@
+# MVP-11 Step 1 — the evidence behind ADR-0145 to ADR-0148
+
+> Gathered on 2026-11-24 at `1d6733f0` (code) and `development` (documents). It is the record that the four ADRs cite for what was **observed**, **measured** and **found by review**, so each statement can be audited. The plan is [mvp-11.md](../mvp-11.md); the spike's own account is in its [Step 1](../mvp-11.md#step-1--decisions-adrs-spike-and-baseline) and [kit](spike/README.md). Nothing here is product code.
+
+**How it was gathered, and what it is not.** Seven read-only agents read the plan, the four ADRs, the code and the private UX analysis; one ran the built CLI in a sandbox. Their reports are model output that was read against the code before it was used; the dispositions below are the author's. **Not verified anywhere in this file:** any behaviour on Windows Terminal, iTerm2 or over SSH; assistive technology; whether a terminal's reflow on resize leaves stale text in its scrollback; the real wall time of the CLI's test suite and the headroom of its CI job.
+
+## A. The first run, observed on the built CLI
+
+**Method.** `apps/cli/dist/index.js` (built 11:13, newer than every source file, `relavium --version` 0.1.1) was started in a private tmux server at 80×24 with `TERM=xterm-256color`, a throwaway home and XDG directories, an empty environment, and an **in-memory stand-in for the OS keychain** loaded with `node --import` (proved active before any run: the stand-in logged every read). No key was typed. Only item G set an environment variable, `ANTHROPIC_API_KEY=sk-fake-not-a-key`. The real home and keychain were not touched. The plan's claims of [§4.12](../mvp-11.md#412-onboarding-the-first-run) were read from code; these are what the screen showed.
+
+| | Observed | Against the plan |
+|---|---|---|
+| **A** First screen, no key | A Home frame (banner box, welcome, example, prompt) is written inside one synchronized-update block about 21 ms after the alternate screen opens and **erased 8, 8, 8, 9, 8 and 9 ms later** (six launches) by the first card; sampling every 20–30 ms never sees it. First card: `First-run setup: Connect a model provider to start chatting. Your key is stored in your OS keychain — never on disk. / Which provider? / ❯ Anthropic — Official endpoint: https://api.anthropic.com …` | Differs: the Home is not drawn behind the card, but it **is** written and erased; a real terminal probably never paints under one frame |
+| **B** `Esc` at the provider list | Home with the yellow line `Connect a provider to start chatting — Enter to set up or /providers.`, the first-run sentence as the notice, **no** `Setup skipped` note. `Esc` at the key step cancels the whole flow | Confirms row 7 and G10 |
+| **C** Type `hello world`, `Enter`, no key | One red row of exactly 80 characters ending in `…`: `couldn’t start the chat: no API key for provider 'anthropic' — store one with `…`; the prompt is empty. With a draft the hint reads `Enter to start the chat · Ctrl+J newline · Ctrl+C twice to exit`. At 100 columns the row is cut inside the command, at 120 it shows ``…`relavium provider set-key anthropic` or …``; it is one row at every width | Confirms G1, G2, G6; **the shell command is not even visible at 80 columns** |
+| **D** `/` then `Enter` | The first, selected row is `› /exit  End the chat session.`; the process **exits with code 0** | Confirms G14 |
+| **E** The Home palette | Fourteen rows in exactly the order of Appendix B's "today": exit, doctor, mode, clear, models, providers, init, permissions, resume, run, workflows, agents, import, pricing; at 80×24 eleven rows and `▼ 3 more`. `/clear` on the bare Home: `No active conversation to clear — type a message to start one.`; `/clear` is not dim | Confirms |
+| **F** Reports | `/doctor` prints `✓ doctor: all checks passed` (keychain, config, wired tools) **with no provider-key check** into a notice; `/doctor --deep` answers `/doctor accepts no arguments here. Start a chat to use them.` to a user who cannot start a chat. `/models` is **not** empty (the catalogue is seeded: rows read `no key for anthrop…`); `/pricing` opens with 77 models and the `provider add` text only through "Another model…"; `/providers` shows four rows whose hint is the circular ``open `/providers` to connect a key or review its source`` with lower-case ids and a stray leading space on wrapped rows | G12 sharper; **G4 not reproduced on a default first run**; G5 only via "Another model…"; G7 confirmed and wider (a keyless `Enter` opens this list) |
+| **G** Environment key | Consent card `ANTHROPIC_API_KEY is available for Anthropic. Allow this source? / ❯ Use it / Enter a different key / Not now`. `Not now` leaves a Home on which a message **still fails with the same truncated "no API key" line although the key is in the environment**. `Use it` writes `[preferences] default_model = "claude-haiku-4-5"`, `default_provider = "anthropic"` and `[preferences.standard_env_key_consent] anthropic = "ANTHROPIC_API_KEY"` to the global config and shows `Source consent saved. Starter default saved. Project settings may override it.` (no model, no provider named) | Confirms row 9 and G15; the card has a third row the plan does not list; `Not now` is a dead end |
+| **H** `NO_COLOR=1` | The prompt row is just `>`: **0** reverse-video sequences, the hardware cursor is hidden; the banner box becomes ASCII | Confirms the cursor defect |
+| **I** 70×20 | `Terminal too small — resize to at least 80×24. Esc cancels.`; `Esc` there **spends the first-run offer** and resizing up does not reopen it | Differs from §4.12 step 10 (the popup should wait) |
+| **J** Other | The offer returns on every launch (G17); `/exit` is described `End the chat session.` though on the Home it quits; `/pricing` reads `(models pricing)` in the palette, `/mode` is cut to `Shift+Ta…`; `/help` squeezes `/resume /run /workflows` onto one row with no descriptions; `Ctrl+C` at the first card is ignored; `/models` and `/pricing` list models the user cannot use without saying to connect a provider first | New |
+
+Not run (they need a typed key, a failed check or a locked keychain): G3, G8 to G11, G13, G16, G18 to G21.
+
+## B. The defect list re-read against the merged code
+
+Every defect **G1 to G21** of §4.12 still holds at `1d6733f0`; none of the files involved changed after the plan was written. Precisions: **G3** the Home's own pre-flight (`assertProviderKey` in `chat/session-host.ts`) builds its message with the `shell` surface by default, so the Home still gets the shell wording although the resolver is surface-aware; **G6** the draft is recorded in the history but the arrow keys on the landing drive the strip, so it is not recoverable there; **G7** is the screen of A·F above; **G13** the one `relavium doctor` is the shell output of `relavium models`, not a TUI string; **G21** has three spellings of "enter another key" (`Enter a new key`, `Enter a different key`, `Enter a key`) and two of "use for this invocation only".
+
+**New defects found** (not in G1 to G21), each carried to a step:
+
+1. `/clear` in a **stand-alone** chat points to `/resume`, which does not exist there (`chat/repl-info.ts`, `commands/chat.ts`): a wrong remedy of the plan's three kinds.
+2. Two different first screens for one job: the automatic first-run card ("Which provider?", with endpoints) and the explicit `Providers` list that a keyless `Enter` opens (circular hints).
+3. The note `First-run setup: Connect a model provider to start chatting` is unconditional, so it also shows when a key is replaced from `/providers`.
+4. The keychain-down note tells the user to `export RELAVIUM_<P>_API_KEY=…` in a shell, after the key was typed and sent to the provider.
+5. The Home palette's `/doctor` description advertises `--deep`, which the Home refuses.
+6. The shell help text says `NO_COLOR (any value ⇒ off)`; the code ignores an empty value.
+7. The stand-alone chat's picker hint names `relavium provider set-key`, while its own resolver says to restart `relavium chat`.
+8. (Read, not run.) An environment-key user who consented has no provider row until a model refresh, so `/pricing` says `No provider is registered yet` although chat works.
+9. The keyless call to action is suppressed while a hosted run or a non-session strip row has focus.
+10. (From A·C, A·G, A·I.) The failure line is cut before its remedy at 80 columns; `Not now` leaves a failing keyless state with the key still in the environment; the below-floor `Esc` spends the first-run offer.
+
+**Shell commands inside the TUI.** About fifty user-visible strings outside tests name a `relavium …` command inside the TUI (the first-run and key paths, the transcript notices of `chat/effort-notice.ts`, `chat/export.ts` and `commands/chat.ts`, the Home notices and tab hints, the gate and permission texts). Step 2's pattern test classifies each: rewritten to an in-TUI action, or kept in a short allow-list with a reason where the command is script-only by design (`relavium permissions revoke --all`, `relavium logs`); the exit line printed after the TUI has closed may keep its command ([OD-20](../mvp-11.md#72-decisions-od-1-to-od-23)).
+
+**Confirmed code facts used by the ADRs.** The two host-glyph sets are core's `/[›✎█─-╿]/u` (`ask-user.ts`) and the CLI's `/[›✎█▸●○✓✗▶‖⊘⚠◌■◆─-╿]/gu` (`run-card-model.ts`); `◉` is in neither and `◐` only in the core's range. The guard constants are `INTERRUPT_ARM_WINDOW_MS` 2000, the withdraw window 800–10 000 ms, `APPROVAL_CONFIRM_MIN/MAX_MS` 800/5000, the lockout 2000 and the sheet settle 400. The registry is `RAW_REPL_COMMANDS` plus nine Home-only constants stitched into two palette lists, and the Home dispatches by a regular-expression chain, not by the registry. The command counts hold: Home 14, chat 19, Home-hosted chat 22.
+
+## C. Measurements (the design review's probes, Ink 7.1.0 with a fake terminal)
+
+| Measure | Result |
+|---|---|
+| The popup overlay's cost per frame | 0.4 to 1.6 ms (80×24 to 200×60) |
+| A dimmed body with a bold span inside it | `ESC[2m … ESC[1m B ESC[22m tail` : SGR 22 cancels bold **and** dim, so the text after the bold is not dimmed (the spike's plain rows did not show it); about 190 `Text` sites in about 20 files would need a dim route |
+| The chat while an approval waits | The store's tick flushes at 80 ms whenever the turn is `running`, and a pending card keeps it so: **12.5 renders a second**, 1.4–1.8 ms at 80×24 (2.1 at 100×30, 3.6 at 200×60), about 1.3 KB a tick in the alternate screen and 0.8 KB inline, independent of the transcript's length |
+| One changed digit | 1 880 B (80×24) / 2 336 B (100×30) with the standard renderer, 139 / 157 B with incremental rendering (not enabled; Windows caveat unverified) |
+| The inline scrollback cliff | A live region of 24 rows does not clear; 25 rows, or a region that shrinks from 24 to 23, sends a screen-and-scrollback clear and re-prints every static line (it grows with the session) |
+| A fixed-size popup box and the measured-frame check | A box of 78×23 whose content is 78×31 still measures 78×23, so the bounds check passes and a page could be marked inspected for off-screen rows; a flow box grows and fails closed |
+| The overlay-owns-keyboard list | One existing overlay (`effortPicker`) appears at about 16 sites in 4 files; the strip's refresh pause and the Home's overlay and slot gates were not in the plan's list |
+| The surface matrix | About 17 ms a cell warm (mount, open, eight yields, unmount); 400–560 cells would be 7–10 s warm, 25–35 s with fixed sleeps, and coverage multiplies it |
+
+## D. Design reviews: what was found and what became of it
+
+Seven reviews in all: the code re-read (B), the sandboxed observation (A), a plan-against-analysis audit, and four design reviews (UX and accessibility, performance, architecture and test strategy, security, the last on opus). **No blocker was found by any of them.** The security review found no high finding and ten mediums, all design holes or missing tests.
+
+| Finding | Disposition |
+|---|---|
+| Popup host is not just the prompt channel: only flows and reports run on it; `/models`, `/effort`, the chat sheets and the review screen have their own reducers; the channel throws on a second flow | [ADR-0148](../../../decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md) §2: one pure frame, two body drivers, own module directory, `placement` |
+| `prompt.active` conflates "owns the keyboard" and "occupies the rows" | ADR-0148 §2: split into two predicates, frame tests for both placements |
+| "Overlay owns the keyboard" written in at least eight places, including the custody predicates of the cards | ADR-0148 §2: one predicate over one record, extracted first; the missed-list test includes custody and the strip pause |
+| The occlusion defence is only a test; a card under a popup keeps its old acknowledged frame | ADR-0148 §2: one overlay slot, the only absolutely positioned layer; custody revoked and acknowledgement reset |
+| A fixed-size popup box hides overflow from the measured-frame check | ADR-0148 §4 and §7: measure the content node; one geometry function; two mutation tests |
+| Identity compares a hand-kept field list that omits `note`/`picker`; a ticking field restarts the dwell | ADR-0147 §2 and ADR-0148 §2: today's fields plus the new; the clock is in no snapshot; reference-stable snapshots; key-enumeration test |
+| The wait clock's real cost is the existing 12.5 Hz tick | ADR-0147 §2: derive at render, gate the tick, one-second owned timer, minutes only after a minute, byte-count test |
+| The first-run popup opens itself, and a held or typed-ahead `Enter` can answer the environment-key consent (a persistent config write) | ADR-0146 §6 and ADR-0148 §3: opening guard, the approval card's input guards on the affirmative row, self-open conditions |
+| Keeping the draft keeps a pasted API key, then in the history database | ADR-0146 §6: a key-shaped draft is never restored or recorded |
+| The doctor's deep consent can misstate where the key goes and is not frozen | ADR-0148 §8: origins listed and frozen with the ids; shown-frame dwell origin; abortable run; kept result; MCP-never-contacted tests |
+| The interim `›` guard misses rendered rows, `▸`, `⇄`, `>` and `-`; colour-off is forgeable until the margin exists | [ADR-0145](../../../decisions/0145-the-cli-has-one-surface-language.md) §6: guard after markdown and wrapping, marker glyphs only, quotes get a gutter; **the grid (7b) is part of the MVP** |
+| The full scrub (chord tokens inert) is needed on every surface that has a chord step; more sinks than listed; the status-line separator | ADR-0145 §5 |
+| `/mode` on the Home is a persistent write answered by `Enter` in the plan; no durable record of a mode change exists | ADR-0148 §3 (`Ctrl+Y` confirmation kept) and §6 (the content-free session row is built in the settings step, an additive migration) |
+| The registry is not one table; declaring a class in it drives nothing | ADR-0145 §7: one `CommandDefinition` with placements, built once |
+| The legend builder cannot reproduce every old shape; there are about 56 hint literals | ADR-0145 §3: golden first; separator and free-text items |
+| The host-glyph base need not move into the shared package | ADR-0145 §5: pin the relation by a behavioural probe in `apps/cli` |
+| Dimming breaks on nested bold | The maintainer chose dimming anyway (ADR-0148 §4): a leaf-level route and an every-cell test, opaque as the fallback |
+| `/help` is in no palette; hints for the draft states; the dim example invites `Enter`; dim rows; status-line wording; the ASCII trigger; step state by glyph only; inline accessibility; copy for reports; Esc gaps; wording; resize clearing the key field; steps with nothing to choose | ADR-0145 §1, §3, §5, §7; ADR-0146 §1, §2, §4; ADR-0148 §1, §4, §5; the remaining small ones are carried to the steps below |
+| Step order: the sheets' row budget needs the chat header; 3b is a consent path; the matrix harness and the notification channel have no owning step; ADR gating | The ten-unit plan below: Home and chat before sheets; 3a and 3b merged under rigor; harness first in the language step; notification channel in the popup step |
+
+**Carried to the steps** (small, not decisions): `Esc` clears a filter before closing; first-run Done closes on `Enter` or `Esc`; controls without a legend key are listed or dropped; the `$ / $` price columns get a header; a resize that clears the key says so; `Ctrl+C` in the inspection popup stops the turn and arms the exit window and its legend says so; the accessible mode is named in the README, `--help` and `/help`; the deep-tier redaction is exact-match only (a partial echo of a key can reach a row; pre-existing, registered).
+
+**The ten units** (the maintainer chose this plan on 2026-11-24): 1 decisions and ADRs (this step); 2 registry placements, overlay predicate, defects and first-run basics; 3 the language (glyph table, golden-first legends, host glyphs, helpers, matrix harness); 4 popup host and reports; 5 settings (with the authority record); 6 flows and the first run; 7 Home and chat presentation; 8 sheets and the inspection popup; 9 the transcript grid; 10 close-out.
+
+## E. Corrections owed to the plan (made in the end-of-MVP documents pass)
+
+The ADRs win where they differ from the plan until then (a note at the top of the plan says so). The list, so it is not lost:
+
+- **Stale:** the PR #102 tense (§3 status, §5, Step 1, Step 2 and Step 3 collisions, risk 5, §11); "ADRs not written" and the Step 1 table; "nine rigor increments" (the pure rigor rows are seven); the deferred-tasks entries that name MVP-11 (five, not three); `/clear`'s notice text (`Continue in relavium with /resume, or: relavium chat resume <id>`); the `relavium doctor` entry of G13 (shell output, not a TUI string).
+- **Internal:** the snapshot identity list omits `note` (and `picker`); the `/` palette is listed as a surface but "not a class"; §5.5 rule 7 (base set in the shared package) and rule 12 ("a read-only report may be restored") are replaced by the ADRs; the occlusion test is rule 4/12, not rule 7; the sheet row arithmetic (§4.5, §4.8) and the top-gap formula; the Home chat block is 5 rows against the Home frame's 6.
+- **Refined by the ADRs, to be written into the body:** OD-4 (bracket rule), OD-7 (host-glyph base), OD-9 (loss order, `<mode> mode`, `next chat:` label), OD-12 (clock refresh), OD-23 (one starter table, Haiku 5.5), the chat palette's direction (first row beside the prompt), `/help` in both palettes (Appendix A and B, counts 15/20/21), `/run` enabled, dimming and the Windows condition (ruled), the cut line (the grid is in), the failed-check order in §4.12 (`Retry the check` first), the ASCII column of §4.10 (placeholders), the first-run texts (provider-independent), Appendix C's known differences.
+- **From the analysis, not carried until now:** the Home's below-80×24 message names the non-interactive subcommands; the rest-state hint `/ commands · ↓ open a parked run · Ctrl+C twice to exit`; `Tab` fills the example; a leftover user-visible `Ctrl-D` wording; the path-outside-project rule of the notation helper; the documents rows (the security-review and command-permissions "edited together" lists, the standards entry, the reference page's location).
+- **Departures from the analysis, to flag as deliberate:** `/cost`, `/details`, `/help` and `/doctor` classes; `/export`'s confirmation (the analysis gave the moment to MVP-6); the sheet frame and popup in v0.2.0 (the analysis put them after); popups close unanswered where the analysis suspended them; role labels replaced by the marker; the chat palette's direction.

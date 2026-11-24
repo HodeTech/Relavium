@@ -376,3 +376,5 @@ already accepted actual-join rule without changing discovery, pricing, retry or
 authorization policy. The additive signature, dialect boundaries and opaque
 Gemini/native-close limitation belong in the
 [canonical discovery contract](../reference/shared-core/llm-provider-seam.md#model-discovery--the-listmodels-capability-adr-0064).
+
+> Amended 2026-11-24 ([ADR-0148](0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md), accepted the same day). **§5(c):** the model popup, like the picker, renders the cache at once, and it now says on screen that a catalogue refresh is running and what it found; the refresh itself, its isolation and its bounds are unchanged.

@@ -507,3 +507,5 @@ perf thresholds for the full-screen frame loop.
 > product names/comparison references are removed from the explanatory prose.
 > The technical decision, status and guarantees are unchanged. See the
 > [documentation direction](../analysis/README.md#maintainer-documentation-direction--2026-11-15).
+
+> Amended 2026-11-24 ([ADR-0146](0146-the-home-and-the-chat-share-one-calm-layout-and-the-first-run-has-no-dead-end.md), accepted the same day). **The branded banner of the 2026-07-10 amendment:** it remains a cosmetic element that gates no feature and keeps `[preferences].show_banner` with its three values; its layout changes from the plaque to the calm rail (a spaced wordmark, a three-node rail and a box-less prompt), and the Home's one-line title is the spaced wordmark when the block is not shown.
