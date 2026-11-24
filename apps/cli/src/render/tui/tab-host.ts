@@ -739,6 +739,11 @@ export function disarmTabHost(state: TabHostState): TabHostState {
 /** The terminal width the legend must fit: the Home's 80-column floor. */
 const LEGEND_FLOOR_COLUMNS = 80;
 
+/** Whether a legend of `width` columns fits the floor: a legend exactly as wide as the usable columns fits (`<=`, never `<`). */
+export function legendFitsTheFloor(width: number): boolean {
+  return width <= usableColumns(LEGEND_FLOOR_COLUMNS);
+}
+
 /**
  * `items` with `Ctrl+C close` just before the way out, when the whole legend still fits the 80-column floor. `Ctrl+C` closes the screen from
  * any tab and any depth (ADR-0140 §1) and every state answers to it, so a person who has gone down a level reads that there is a way
@@ -786,8 +791,7 @@ export function tabHostLegend(state: TabHostState): TabHostLegend {
   // A withdrawal's question names its own two answers, and any other key drops it: the chord is not offered as a third.
   if (state.sheet?.armed === true) return { items, exit };
   if (exit === TAB_HOST_KEYS.close) {
-    const both =
-      displayWidth(legend(items, TAB_HOST_CLOSE_EITHER)) <= usableColumns(LEGEND_FLOOR_COLUMNS);
+    const both = legendFitsTheFloor(displayWidth(legend(items, TAB_HOST_CLOSE_EITHER)));
     return { items, exit: both ? TAB_HOST_CLOSE_EITHER : exit };
   }
   return { items: withInterruptItem(items, exit), exit };

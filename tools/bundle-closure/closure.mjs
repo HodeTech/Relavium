@@ -116,6 +116,12 @@ function imports(value, label) {
   return value;
 }
 
+/**
+ * The sources that are tests or the harnesses of tests: `*.test.*`, anything `test-support`, the surface matrix, the legend golden and a
+ * `fixtures/` directory. None of them is product, so none may be an input of the bundle.
+ */
+const HARNESS_INPUT = /\.test\.|test-support|surface-matrix|legend-golden|(?:^|\/)fixtures\//u;
+
 // Only syntax with an independently enumerable specifier is supported. Refuse
 // acquisition/aliasing of loader or code-generation capabilities, not just calls
 // spelled `require(...)`: imported createRequire is routinely minified/renamed.
@@ -331,6 +337,11 @@ export function checkBundleClosure({
     // No third-party implementation may silently become a second bundled copy.
     if (path.split('/').includes('node_modules')) {
       refuse('BUNDLED_DEPENDENCY', `third-party input must remain external: ${path}`);
+    }
+    // No test, fixture or test harness is product: whatever way a source file reached one (a static import, a template, a computed
+    // specifier no source scan can read), it would ship in the package. The surface matrix and the legend golden are harnesses too.
+    if (HARNESS_INPUT.test(path)) {
+      refuse('HARNESS_INPUT', `a test, a fixture or a test harness is bundled: ${path}`);
     }
     for (const imported of imports(input.imports, `input ${path}`)) {
       if (imported.path === NATIVE_OUTPUT_IMPORT) {

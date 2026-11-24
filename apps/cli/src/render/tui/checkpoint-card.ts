@@ -17,8 +17,7 @@ import { formatElapsed } from '../notation.js';
 import type { ChatKey } from './chat-input.js';
 import { glyph } from './glyphs.js';
 import { isInterruptKey } from './interrupt-keymap.js';
-import { exitKey, legend, type LegendExit } from './legend.js';
-import { itemsRow } from './legend-row.js';
+import { exitKey, legend, legendItems, type LegendExit } from './legend.js';
 
 /** What the open card says: the rounds dispatched, the rounds a "continue" grants, and the turn's working time so far. */
 export interface CheckpointCardState {
@@ -92,7 +91,7 @@ export function projectCheckpointCard(
     ),
     keys: [
       head(
-        itemsRow([
+        legendItems([
           { keys: 'Ctrl+Y', verb: 'Continue', role: 'ok' },
           { keys: 'Ctrl+N', verb: 'Stop here', role: 'danger' },
         ]).text,

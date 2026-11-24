@@ -5,11 +5,23 @@ import {
   type NativePickerOptions,
   type NativePickerResult,
 } from '../render/tui/native-picker.js';
-import { formatAgeOfIso } from '../render/notation.js';
+import { formatAgeOfIso, type DisplayPathRoots } from '../render/notation.js';
+import { placeForDisplay } from '../render/tui/place-label.js';
+
+/**
+ * The columns a row's directory line may take: the picker is drawn at 80 columns or wider (a narrower terminal is refused), and the line
+ * is indented two. A longer directory is cut at the FRONT, so its end (the part that tells one directory from another) stays.
+ */
+const PICKER_PLACE_COLUMNS = 78;
 
 export interface SessionPickerDeps {
   readonly store: Pick<SessionStore, 'listSessionPage'>;
   readonly cwd: string;
+  /**
+   * What the "All directories" scope names each session's directory against (the project and the home, ADR-0145 §8): `~/other`,
+   * `packages/app`, `. (project root)`. Absent, the directory is drawn as it is stored; both hosts pass it.
+   */
+  readonly paths?: DisplayPathRoots | undefined;
   readonly now: () => number;
   readonly assertAdmitting: () => void;
   /** Own every actual read, including a stale or cancelled one, until it settles. */
@@ -42,7 +54,9 @@ export function createSessionPickerSource(deps: SessionPickerDeps): NativePicker
               options: page.sessions.map((session) => ({
                 value: session.id,
                 label: `${session.title ?? `Untitled — ${session.agentSlug}`} · ${formatAgeOfIso(session.updatedAt, now)}`,
-                ...(allDirectories ? { hint: session.workingDir } : {}),
+                ...(allDirectories
+                  ? { hint: placeForDisplay(session.workingDir, deps.paths, PICKER_PLACE_COLUMNS) }
+                  : {}),
               })),
               ...(page.next === undefined ? {} : { next: () => readPage(page.next, 'forward') }),
               ...(page.previous === undefined

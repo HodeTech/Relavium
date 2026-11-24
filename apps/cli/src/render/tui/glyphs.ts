@@ -262,14 +262,12 @@ export const STATUS_WORD_WIDTH: number = Math.max(
 // ── host glyphs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * The glyphs the core's question refusal rejects besides the box-drawing range (`HOST_GLYPH` in `packages/core/src/tools/ask-user.ts`: the
- * cursor, the own-answer glyph, the field's block cursor). The core owns that set and this module does not import it (all three are also roles
- * of the table, so this list is the declared floor, not the source of the set); `host-glyphs.test.ts` calls the core's own refusal and fails
- * when it refuses something the CLI set does not blank.
+ * The box-drawing block, U+2500 to U+257F: the characters every rule, frame and gutter of the host is drawn from. It is the core's own range
+ * (`HOST_GLYPH` in `packages/core/src/tools/ask-user.ts`, which refuses it with the cursor `›`, the own-answer glyph `✎` and the field's block
+ * cursor `█`). The core owns that set and this module does not import it; the three glyphs are roles of the table (`selection`, `pencil`,
+ * `caret`), so the table's own set holds them, and `host-glyphs.test.ts` calls the core's refusal and fails when it refuses something the CLI
+ * set does not blank, so a role that left the table or turned `hostBlanked: false` cannot un-blank one of them unseen.
  */
-const CORE_REFUSAL_GLYPHS = ['›', '✎', '█'] as const;
-
-/** The box-drawing block, U+2500 to U+257F: the characters every rule, frame and gutter of the host is drawn from. */
 const BOX_DRAWING_CLASS = '\\u2500-\\u257F';
 
 /**
@@ -307,12 +305,18 @@ function glyphClass(glyphs: readonly string[], extra = ''): RegExp {
 }
 
 const HOST_GLYPH_PATTERN = glyphClass(
-  [...CORE_REFUSAL_GLYPHS, ...HOST_BLANKED_GLYPHS, ...RETIRED_GLYPHS],
+  [...HOST_BLANKED_GLYPHS, ...RETIRED_GLYPHS],
   BOX_DRAWING_CLASS,
 );
 const MARKER_GLYPH_PATTERN = glyphClass(MARKER_GLYPHS);
-/** The plain radio shapes and the selection `>` at the start of a text, before a digit or a space. */
-const ASCII_HOST_SHAPE = /\((?:[*xXoO])\)|^>(?=[\d\s])/gu;
+/**
+ * The shapes the host draws as the radio of a single-choice list, by form: `( )` always (the unchosen one), `(•)` in the Unicode form and `(*)`
+ * in the plain form (the chosen one, drawn from the table's `bullet`), and, in the plain form only, the selection marker `>` at the start of a
+ * text before a digit or a space (the Unicode form's `›` is a glyph of the table and is blanked as one). Neither `(x)` nor `(o)` is a shape of
+ * the host: a model writing `f(x)` or `(o)` writes ordinary text.
+ */
+const UNICODE_HOST_SHAPE = /\((?:[ •])\)/gu;
+const PLAIN_HOST_SHAPE = /\((?:[ *])\)|^>(?=[\d\s])/gu;
 
 /**
  * `text` with every host glyph replaced by a space: the core's refusal set, the box-drawing block, the glyph of every role that is not
@@ -326,15 +330,26 @@ export function blankHostGlyphs(text: string): string {
 }
 
 /**
- * What the host draws in its PLAIN form that a model could write too: the radio of a chosen option (`(*)`, and its relatives `(x)` and
- * `(o)`), and the selection marker `>` at the start of a line, followed by a digit or a space (`>1 (*) Delete` imitates the host's own
- * `> 1 ( ) Keep it`). The core's question refusal rejects `(•)`, `( )`, `[x]`, `[ ]` and a list marker such as `> ` at the start, but it
- * does not know the ASCII shapes, and it must not change (ADR-0145 §5: the engine does not change). Each shape is replaced by spaces of the
- * same width, so a layout measured on the text is unchanged; ordinary text, and a `(*)` or `>` anywhere else, is left alone. Apply it to
- * every string a model wrote that a card draws, in the Unicode form too (it costs nothing there and keeps one rule).
+ * What the host draws as the mark of a choice that a model could write too, neutralised in the form in force ({@link withGlyphForm}): the
+ * radio (`( )`, `(•)`, and `(*)` in the plain form) loses its PARENTHESES and the plain form's selection `>` at the start of a text loses
+ * itself, each replaced by a space, so a layout measured on the text is unchanged, the text stays readable and two labels that differed
+ * still differ (`Delete (*)` reads `Delete  * `, never `Delete`). The core's question refusal rejects `(•)`, `( )`, `[x]`, `[ ]` and a list
+ * marker such as `> ` at the start, but it does not know `(*)` or `>1` (and must not change: ADR-0145 §5, the engine does not change), and
+ * {@link blankHostGlyphs} can leave a `( )` behind (`(●)` reads `( )` once the dot is gone), so this runs AFTER it ({@link blankHostMarks} is
+ * the two in order). A `(x)`, a `(o)`, a `(*)` in the Unicode form and a `>` anywhere else are ordinary text and are left alone.
  */
-export function blankAsciiHostShapes(text: string): string {
-  return text.replace(ASCII_HOST_SHAPE, (shape) => ' '.repeat(shape.length));
+export function blankHostShapes(text: string): string {
+  const shapes = plainFormInForce() ? PLAIN_HOST_SHAPE : UNICODE_HOST_SHAPE;
+  return text.replace(shapes, (shape) => (shape === '>' ? ' ' : ` ${shape.slice(1, -1)} `));
+}
+
+/**
+ * A string a model wrote that a card draws beside the host's own marks, made unable to imitate them: the host glyphs blanked
+ * ({@link blankHostGlyphs}: `❯`, `●`, the box-drawing block, …) and then the choice shapes neutralised ({@link blankHostShapes}). The one
+ * entry for model text in the question card, in the Unicode form too (it costs nothing there and keeps one rule).
+ */
+export function blankHostMarks(text: string): string {
+  return blankHostShapes(blankHostGlyphs(text));
 }
 
 /**

@@ -5,8 +5,10 @@ import { sanitizeInline } from './chat-projection.js';
 import { Emph } from './emphasis-view.js';
 import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
+import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { SelectableText, selectedTone, selectionMarker } from './selectable-text.js';
+import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js';
 
 /** The most candidate rows shown at once — a directory with hundreds of entries scrolls a window around the
  *  selection rather than flooding the terminal (the palette renders all; a directory listing can be far larger). */
@@ -35,13 +37,11 @@ export interface MentionViewProps {
   readonly color: boolean;
 }
 
-/** The window of candidate indices to render around `selected` (a `[start, end)` slice), keeping the selection
- *  visible and never exceeding {@link MENTION_WINDOW} rows. Pure so the scroll math is unit-checkable. */
-export function mentionWindow(count: number, selected: number): { start: number; end: number } {
-  if (count <= MENTION_WINDOW) return { start: 0, end: count };
-  const half = Math.floor(MENTION_WINDOW / 2);
-  const start = Math.max(0, Math.min(selected - half, count - MENTION_WINDOW));
-  return { start, end: start + MENTION_WINDOW };
+/** The window of candidate indices to render around `selected` (a `[start, end)` slice) of {@link MENTION_WINDOW} rows, keeping the selection
+ *  visible, with the `▲`/`▼ N more` markers for what it hides (they take the window's first and last row, so its height does not change).
+ *  Pure so the scroll math is unit-checkable. */
+export function mentionWindow(count: number, selected: number): MarkedWindow {
+  return markedWindow(count, selected, MENTION_WINDOW);
 }
 
 export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
@@ -52,7 +52,9 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
   const selected =
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
   const where = state.dir.length === 0 ? './' : `${sanitizeInline(state.dir)}/`;
-  const { start, end } = mentionWindow(visible.length, selected);
+  const span = mentionWindow(visible.length, selected);
+  const { start, end } = span;
+  const { above, below } = withGlyphForm(!color, () => windowMarkers(span));
   const windowed = visible.slice(start, end);
   // The body: a "loading…" hint, a "no matching file" hint, or the windowed candidate rows — as early-return
   // branches (not a nested ternary) so the JSX stays scannable.
@@ -72,12 +74,20 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
       );
     }
     return windowed.map((candidate, index) => {
+      // The first and last row of a window that hides candidates stand for them: `▲ 3 more`, the candidate under it counted.
+      const marker = index === 0 ? above : index === windowed.length - 1 ? below : undefined;
+      if (marker !== undefined)
+        return (
+          <Text key={marker} {...dimProps(color)} wrap="truncate-end">
+            {`  ${marker}`}
+          </Text>
+        );
       const isSelected = start + index === selected;
-      const marker = candidate.type === 'directory' ? '/' : '';
+      const slash = candidate.type === 'directory' ? '/' : '';
       return (
         <Text key={candidate.path} {...selectedTone(isSelected, color)} wrap="truncate-end">
           <SelectableText selected={isSelected}>
-            {`${selectionMarker(isSelected, color)} ${sanitizeInline(candidate.name)}${marker}`}
+            {`${selectionMarker(isSelected, color)} ${sanitizeInline(candidate.name)}${slash}`}
           </SelectableText>
         </Text>
       );

@@ -181,7 +181,6 @@ const command = (name: string): ReplCommand => ({
   label: name,
   description: `Does ${name}.`,
   effect: 'read',
-  availableIn: ['home'],
   run: () => undefined,
 });
 const paletteEntry = (name: string, groupStart = false): PaletteEntry => ({

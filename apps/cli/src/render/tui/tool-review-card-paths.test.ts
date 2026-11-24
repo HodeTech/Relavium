@@ -23,7 +23,8 @@ const facts = (cwd: string): CommandCardFacts => ({
 
 const CASES = [
   ['inside the project', '/work/project/packages/app', 'Runs in: packages/app'],
-  ['the project itself', '/work/project', 'Runs in: . (project root)'],
+  // The project itself names its folder: a resumed chat's project is the session's own directory, which is not always the one the person launched from.
+  ['the project itself', '/work/project', 'Runs in: . (project root: project)'],
   ['inside the home, outside the project', '/home/me/other', 'Runs in: ~/other'],
   ['elsewhere', '/opt/shared/tools', 'Runs in: /opt/shared/tools'],
 ] as const;
@@ -33,6 +34,84 @@ describe('the command card’s directory', () => {
     expect(commandFactRows(facts(cwd), 78, false, ROOTS)).toEqual([
       `Standing: not pre-approved · ${row}`,
     ]);
+  });
+
+  it('shortens BEFORE it makes the text safe: a control character inside the project’s own name does not forge a project-relative path', () => {
+    // `/work/pro<BEL>ject/x` is not inside `/work/project`: cleaning it first would shorten it to `x` and say it runs in the project.
+    const rows = commandFactRows(facts('/work/pro\u0007ject/x'), 78, false, ROOTS);
+    expect(rows[0]).toContain('Runs in: /work/project/x');
+    expect(rows[0]).not.toContain('Runs in: x');
+  });
+
+  it.each([
+    ['BEL', '\u0007'],
+    ['an SGR reset', '\u001b[0m'],
+    ['NUL', '\u0000'],
+    ['a right-to-left override', '\u202e'],
+    ['a left-to-right mark', '\u200e'],
+  ])('never lets %s in front of a `~` folder of the project read as the home', (_name, junk) => {
+    // The folder `<project>/<junk>~/x` is cleaned to `~/x`, which a person reads as their home: it keeps its `./`.
+    const rows = commandFactRows(facts(`/work/project/${junk}~/x`), 78, false, ROOTS);
+    expect(rows[0]).toContain('Runs in: ./~/x');
+    expect(rows[0]).not.toMatch(/Runs in: ~/u);
+  });
+
+  it('keeps the home form of a directory that really is in the home', () => {
+    expect(commandFactRows(facts('/home/me/~bob'), 78, false, ROOTS)[0]).toContain(
+      'Runs in: ~/~bob',
+    );
+  });
+
+  it('names the project folder in the words, bounded to the row, and plain words when the root has no name', () => {
+    const named = commandFactRows(facts('/work/project'), 78, false, ROOTS)[0] ?? '';
+    expect(named).toBe('Standing: not pre-approved · Runs in: . (project root: project)');
+    // A folder name is stored text: made safe, and cut at the front so the phrase still fits the room.
+    const long = { cwd: `/work/${'a-long-folder-name-'.repeat(6)}end`, home: '/home/me' };
+    for (const columns of [62, 78]) {
+      const row = commandFactRows(facts(long.cwd), columns, false, long).join('\n');
+      expect(row, row).toContain('. (project root: …');
+      expect(row.endsWith('end)'), row).toBe(true);
+      for (const line of row.split('\n'))
+        expect(displayWidth(line), line).toBeLessThanOrEqual(columns);
+    }
+    const dirty = { cwd: '/work/pro\u0007je\u001b[31mct', home: '/home/me' };
+    expect(commandFactRows(facts(dirty.cwd), 78, false, dirty)[0]).toContain(
+      'Runs in: . (project root: project)',
+    );
+  });
+
+  it('calls an empty directory the workspace, and draws neither it nor the standing while the reason box is open', () => {
+    expect(commandFactRows(facts(''), 78, false, ROOTS)).toEqual([
+      'Standing: not pre-approved · Runs in: (the workspace)',
+    ]);
+    expect(commandFactRows(facts(''), 78, false, undefined)[0]).toContain(
+      'Runs in: (the workspace)',
+    );
+    // Compact: the plain rows give way (the box is for typing) and the warnings stay.
+    expect(commandFactRows(facts('/work/project'), 78, true, ROOTS)).toEqual([]);
+    const warned = { ...facts('/work/project'), runsCode: true, protectedPath: true };
+    const compact = commandFactRows(warned, 78, true, ROOTS);
+    expect(compact).toHaveLength(2);
+    expect(compact.join('\n')).not.toContain('Standing');
+    expect(compact.join('\n')).not.toContain('Runs in');
+  });
+
+  it('puts the directory on the standing row only while it has room for 24 columns, and on its own row below', () => {
+    const cwd = `/opt/${'very-long-directory/'.repeat(4)}service/src`;
+    // `Standing: not pre-approved` (26) + ` · ` (3) + `Runs in: ` (9) leave `columns - 38`.
+    const atLeast = commandFactRows(facts(cwd), 62, false, ROOTS);
+    expect(atLeast, 'room 24: one row').toHaveLength(1);
+    expect(atLeast[0]?.startsWith('Standing: not pre-approved · Runs in: …')).toBe(true);
+    const below = commandFactRows(facts(cwd), 61, false, ROOTS);
+    expect(below, 'room 23: two rows').toHaveLength(2);
+    expect(below[0]).toBe('Standing: not pre-approved');
+    expect(below[1]?.startsWith('Runs in: …')).toBe(true);
+    for (const row of [...atLeast, ...below])
+      expect(displayWidth(row), row).toBeLessThanOrEqual(62);
+    // The second row has the card's whole width to itself, but never less than eight columns.
+    expect(displayWidth(below[1] ?? '')).toBe(61);
+    const narrow = commandFactRows(facts(cwd), 12, false, ROOTS);
+    expect(displayWidth(narrow[1] ?? ''), narrow[1]).toBe(9 + 8);
   });
 
   it('keeps the host’s own path when it is given no roots', () => {

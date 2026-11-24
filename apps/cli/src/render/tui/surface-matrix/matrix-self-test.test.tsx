@@ -261,6 +261,19 @@ describe('the five properties, each on a surface that breaks it', () => {
       'bold closed, inverse still open',
     ).toContain('not bold');
     expect(checkSelectedRow(row(drawn), 'never written')[0]?.message).toContain('never written');
+    // it is the LAST write of the words that counts: a styled draw earlier does not stand for a plain one after it, and a plain one earlier
+    // does not fail a styled redraw (the surface is repainted, and what is on screen is what the person sees)
+    expect(
+      checkSelectedRow(
+        observation(ALT_80, ['> /run  words'], `${drawn}\n> /run  words`),
+        '/run  ',
+      )[0]?.message,
+      'styled first, plain last',
+    ).toContain('inverse and bold');
+    expect(
+      checkSelectedRow(observation(ALT_80, ['> /run  words'], `> /run  words\n${drawn}`), '/run  '),
+      'plain first, styled last',
+    ).toEqual([]);
     // a style left open on the row above does not carry to the row below
     expect(
       checkSelectedRow(

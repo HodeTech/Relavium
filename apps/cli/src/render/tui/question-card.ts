@@ -18,7 +18,6 @@ import {
   hasReview,
   isAnswered,
   isReview,
-  questionCount,
   type QuestionCardState,
   type QuestionEntry,
 } from './question-card-model.js';
@@ -32,7 +31,7 @@ import {
   legend,
   legendItems,
 } from './legend.js';
-import { blankAsciiHostShapes, glyph, plainFormInForce } from './glyphs.js';
+import { blankHostMarks, glyph, plainFormInForce } from './glyphs.js';
 import { displayWidth } from './viewport.js';
 
 /** The most body rows the card ever draws (twelve minus the rule and the two key rows). */
@@ -76,10 +75,12 @@ const FIELD_EXIT: LegendExit = exitKey.close();
  */
 const GUIDE_NOTE: LegendItem = { text: 'an answer is guidance, not a veto' };
 /**
- * The host's gutter. EVERY row of model-authored text (the question, the highlighted description) starts with it, and the
- * glyph is refused inside model text, so column 0 of a wrapped line belongs to the renderer: a forged option row can neither
- * begin at the start of the question nor at any later wrap boundary. Host text (hints, the own-row note) is NOT behind it, so
- * the gutter always means "the agent wrote this".
+ * The host's gutter. EVERY row of model-authored text (the header, the question, the highlighted description) starts with it, and
+ * the glyph is refused inside model text, so column 0 of a wrapped line belongs to the renderer: a forged option row can neither
+ * begin at the start of the header or of the question nor at any later wrap boundary (the header was drawn at column 0 until a
+ * lookalike of the host's cursor row there, `˃ 1 (∗)`, was shown to pass for it). Host text (hints, the own-row note) is NOT
+ * behind it, so the gutter means "the agent wrote this", and the tab strip that follows the header on its row is the one host
+ * text beside it.
  */
 const GUTTER = '│ ';
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -181,7 +182,7 @@ function optionRow(
   const chosen = entry.ticked.includes(index);
   const cursor = entry.highlight === index ? glyph('selection') : ' ';
   const prefix = `${cursor} ${String(index + 1)} ${mark(question.multiSelect, chosen)} `;
-  const text = hardWrap(`${prefix}${blankAsciiHostShapes(option?.label ?? '')}`, width)[0] ?? '';
+  const text = hardWrap(`${prefix}${blankHostMarks(option?.label ?? '')}`, width)[0] ?? '';
   return { text, tone: entry.highlight === index ? 'highlight' : chosen ? 'chosen' : 'option' };
 }
 
@@ -219,7 +220,7 @@ function summaryOf(state: QuestionCardState, index: number): string {
     .sort((a, b) => a - b)
     .flatMap((optionIndex) => {
       const option = question.options[optionIndex];
-      return option === undefined ? [] : [blankAsciiHostShapes(option.label)];
+      return option === undefined ? [] : [blankHostMarks(option.label)];
     });
   return [...labels, ...(entry.own === undefined ? [] : [`“${entry.own}”`])].join(', ');
 }
@@ -297,8 +298,8 @@ function stopRow(state: QuestionCardState, guideNote: boolean, width: number): s
   return legend(fitLegend(required, note, exit, width, displayWidth), exit);
 }
 
-/** The Review tab's rows for answers: the body bound minus its title and its closing note. */
-const REVIEW_ANSWER_ROWS = QUESTION_CARD_MAX_BODY_ROWS - 2;
+/** The Review tab's rows for answers: the body bound minus its title, and minus its closing hint when it has one (otherwise the row is theirs). */
+const REVIEW_ANSWER_ROWS = QUESTION_CARD_MAX_BODY_ROWS - 1;
 /** A wrapped answer continues under its own row, indented, so column 0 stays the host's (no answer text can pose as a new row). */
 const REVIEW_INDENT = '    ';
 
@@ -362,13 +363,13 @@ function answerRows(lines: readonly string[], allowed: number, width: number): s
 /**
  * The Review tab: every answer as it will be sent, wrapped over as many rows as the body bound leaves (a short answer takes one,
  * a long one takes what the short ones left), and where even that is not enough the answer says how much it hides. The title and
- * the closing note are one row each.
+ * the closing hint (when there is one) are one row each; the keys are the first key row's, never repeated in the body.
  */
 function projectReview(state: QuestionCardState, width: number): readonly QuestionCardRow[] {
   const rest = Math.max(1, width - REVIEW_INDENT.length);
   const answers = state.request.questions.map((question, index) => {
     const answered = isAnswered(state, index);
-    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${blankAsciiHostShapes(question.header)} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
+    const line = `${glyph(answered ? 'answered' : 'pending')} ${String(index + 1)} ${blankHostMarks(question.header)} → ${answered ? summaryOf(state, index) : 'not answered yet'}`;
     return {
       tone: answered ? ('chosen' as const) : ('pending' as const),
       lines: wrapRows(line, width, rest),
@@ -376,7 +377,7 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
   });
   const allowed = shareRows(
     answers.map((answer) => answer.lines.length),
-    REVIEW_ANSWER_ROWS,
+    REVIEW_ANSWER_ROWS - (state.hint === undefined ? 0 : 1),
   );
   const rows: QuestionCardRow[] = [
     { text: head(`Review your answers  ${tabs(state)}`, width), tone: 'header' },
@@ -386,18 +387,9 @@ function projectReview(state: QuestionCardState, width: number): readonly Questi
       ),
     ),
   ];
-  rows.push({
-    text: head(
-      state.hint === undefined
-        ? legendItems([
-            { keys: 'Enter', verb: 'send them' },
-            { keys: ['←/→', `1-${String(questionCount(state))}`], verb: 'change one' },
-          ]).text
-        : state.hint,
-      width,
-    ),
-    tone: state.hint === undefined ? 'description' : 'hint',
-  });
+  // The keys of this tab are the first key row's (`Enter send answers · ←/→ questions · [Ctrl+S] skip all`): a second row that said them
+  // again in other words (`send them`, `[1-2] change one`) is not drawn. The one thing this row can still say is a hint.
+  if (state.hint !== undefined) rows.push({ text: head(state.hint, width), tone: 'hint' });
   return rows;
 }
 
@@ -417,10 +409,10 @@ export function projectQuestionCard(
   const progress = hasReview(state) ? `  ${tabs(state)}` : '';
   const body: QuestionCardRow[] = [
     {
-      text: hardWrap(`${blankAsciiHostShapes(question.header)}${progress}`, width)[0] ?? '',
+      text: `${GUTTER}${hardWrap(`${blankHostMarks(question.header)}${progress}`, width - gutterWidth)[0] ?? ''}`,
       tone: 'header',
     },
-    ...hardWrap(blankAsciiHostShapes(question.question), width - gutterWidth).map(
+    ...hardWrap(blankHostMarks(question.question), width - gutterWidth).map(
       (text): QuestionCardRow => ({ text: `${GUTTER}${text}`, tone: 'question' }),
     ),
     ...question.options.map((_, index) => optionRow(state, entry, index, width)),
@@ -434,7 +426,7 @@ export function projectQuestionCard(
     body.push({ text: `  ${head(OWN_DESCRIPTION, Math.max(1, width - 2))}`, tone: 'description' });
   } else {
     body.push({
-      text: `${GUTTER}${head(blankAsciiHostShapes(highlighted.description), Math.max(1, width - gutterWidth))}`,
+      text: `${GUTTER}${head(blankHostMarks(highlighted.description), Math.max(1, width - gutterWidth))}`,
       tone: 'description',
     });
   }

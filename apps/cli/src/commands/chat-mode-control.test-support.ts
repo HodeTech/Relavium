@@ -83,14 +83,10 @@ export async function realModeControl(options?: {
   const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const control = createChatModeControl(built, store, {
     ...(options?.commandGrants === undefined ? {} : { commandGrants: options.commandGrants }),
-    ...(options?.commandPaths === undefined
-      ? {}
-      : {
-          commandPaths:
-            typeof options.commandPaths === 'function'
-              ? options.commandPaths(workspace)
-              : options.commandPaths,
-        }),
+    commandPaths:
+      typeof options?.commandPaths === 'function'
+        ? options.commandPaths(workspace)
+        : options?.commandPaths,
   });
   return {
     store,

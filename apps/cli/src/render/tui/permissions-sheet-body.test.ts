@@ -63,7 +63,7 @@ const SHEET_KEYS = {
   withdraw: { keys: ['d', 'Del'], verb: 'withdraw', role: 'danger' },
   confirm: { keys: 'Enter', verb: 'withdraw', role: 'warn' },
   keep: exitKey.step('Esc', 'keep'),
-  close: exitKey.close(),
+  close: exitKey.close(['Esc', 'Ctrl+C']),
 } as const satisfies Readonly<Record<string, LegendKey>>;
 
 const SHEET_LEGEND_IDLE_ITEMS: readonly LegendItem[] = [SHEET_KEYS.select, SHEET_KEYS.withdraw];

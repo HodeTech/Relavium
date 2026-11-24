@@ -25,6 +25,7 @@ const DATA_MODULE = 'tools/lint-fixtures/forbidden-in-data-module.ts';
 
 const STATIC_RULE = '@typescript-eslint/no-restricted-imports'; // bare, subpath, type-only, 2× re-export
 const SYNTAX_RULE = 'no-restricted-syntax'; // dynamic, non-literal dynamic, import-type query, require
+const GLOBALS_RULE = 'no-restricted-globals'; // process and Buffer, in the data modules
 const EXPECT_STATIC = 5;
 const EXPECT_SYNTAX = 4;
 
@@ -41,13 +42,23 @@ const EXPECT_SYNTAX = 4;
 const EXPECT_AUTHORED = 7;
 
 /**
- * The CLI data-module fence's exact spec (ADR-0145 §10): NINE errors on the fixture — `chalk`, `ink`, `react`, `react-dom`, a `node:` module,
- * a bare Node built-in, a `react` subpath, and a vendor SDK of the seam (`openai`) bare and as a subpath (`openai/resources`). A drop means a
- * form a data module must not import stopped being policed (the entry's paths or patterns lost a name, or the seam paths fell out of the
- * replaced entry); a rise means the named list's entry now catches something the fixture did not mean to (read the fixture before changing
- * this number).
+ * The CLI data-module fence's exact spec (ADR-0145 §10), three counts on the one fixture.
+ *
+ * STATIC: ELEVEN errors from `no-restricted-imports` — `chalk`, `ink` twice (the second under an `eslint-disable` comment that must lift
+ * nothing), `ink-spinner`, `react`, `react-dom`, a `node:` module, a bare Node built-in, a `react` subpath, and a vendor SDK of the seam
+ * (`openai`) bare and as a subpath (`openai/resources`). A drop means a form a data module must not import stopped being policed (the
+ * entry's paths or patterns lost a name, the seam paths fell out of the replaced entry, or an inline comment can lift the fence); a rise means
+ * the named list's entry now catches something the fixture did not mean to (read the fixture before changing this number).
+ *
+ * SYNTAX: NINE errors from `no-restricted-syntax` — six dynamic `import()` forms (`ink`, `react/jsx-runtime`, `chalk`, `ink-spinner`, `node:fs`,
+ * and the bare built-in `fs/promises`), the import-type query `import('react').ReactNode`, a `require('node:os')` and a `globalThis.process`. The
+ * seam's own syntax rules (a non-literal specifier, a vendor SDK) are carried too and the fixture holds no case of them.
+ *
+ * GLOBALS: TWO errors from `no-restricted-globals` — a read of `process` and of `Buffer`.
  */
-const EXPECT_DATA_MODULE = 9;
+const EXPECT_DATA_MODULE = 11;
+const EXPECT_DATA_MODULE_SYNTAX = 9;
+const EXPECT_DATA_MODULE_GLOBALS = 2;
 
 /**
  * The modules that must carry the data-module fence, written out HERE and not read from `eslint.config.mjs`: the list in the config is what
@@ -64,6 +75,7 @@ const EXPECTED_DATA_MODULES = [
   'apps/cli/src/render/tui/palette-entries.ts',
   'apps/cli/src/render/tui/sheet-frame.ts',
   'apps/cli/src/render/tui/tui-constants.ts',
+  'apps/cli/src/render/tui/place-label.ts',
   'apps/cli/src/render/notation.ts',
   'apps/cli/src/render/notice-surface.ts',
   'apps/cli/src/render/surface.ts',
@@ -87,9 +99,20 @@ const REQUIRED_PATTERN_GROUPS = [
   'fs',
   'path',
   'ink/*',
+  'ink-*',
   'react/*',
   'react-dom/*',
   'openai/*',
+];
+/** The globals the data modules must not read. */
+const REQUIRED_GLOBALS = ['process', 'Buffer'];
+/** What each data module's `no-restricted-syntax` must still carry (a selector is found by a part of its text), so a dropped selector fails here and not in a review. */
+const REQUIRED_SYNTAX_SELECTORS = [
+  'ImportExpression[source.value=/^(ink|react|react-dom|chalk)',
+  'TSImportType Literal[value=/^(ink|react|react-dom|chalk)',
+  "CallExpression[callee.name='require'] > Literal[value=/^(ink|react|react-dom|chalk)",
+  '[object.name=/^(globalThis|global)$/][property.name=/^(process|Buffer)$/]',
+  "ImportExpression:not([source.type='Literal'])",
 ];
 
 const eslint = new ESLint();
@@ -145,13 +168,21 @@ if (authoredHits !== EXPECT_AUTHORED) {
   );
 }
 
-// 4. The CLI data-module fence must fire EXACTLY nine times on its fixture (see EXPECT_DATA_MODULE).
+// 4. The CLI data-module fence must fire EXACTLY as often as its fixture says, on each of its three rules (see EXPECT_DATA_MODULE).
 const dataModule = resultFor('forbidden-in-data-module.ts');
 const dataModuleHits = seamErrors(dataModule, STATIC_RULE);
-if (dataModuleHits !== EXPECT_DATA_MODULE) {
+const dataModuleSyntaxHits = seamErrors(dataModule, SYNTAX_RULE);
+const dataModuleGlobalHits = seamErrors(dataModule, GLOBALS_RULE);
+if (
+  dataModuleHits !== EXPECT_DATA_MODULE ||
+  dataModuleSyntaxHits !== EXPECT_DATA_MODULE_SYNTAX ||
+  dataModuleGlobalHits !== EXPECT_DATA_MODULE_GLOBALS
+) {
   fail(
-    `CLI data-module fence count drift on ${DATA_MODULE}: ${dataModuleHits}/${EXPECT_DATA_MODULE}. ` +
-      'Fewer means an ink, react or node: import stopped being policed in the data modules (ADR-0145 §10 regression).',
+    `CLI data-module fence count drift on ${DATA_MODULE}: ${STATIC_RULE} ${dataModuleHits}/${EXPECT_DATA_MODULE}, ` +
+      `${SYNTAX_RULE} ${dataModuleSyntaxHits}/${EXPECT_DATA_MODULE_SYNTAX}, ${GLOBALS_RULE} ${dataModuleGlobalHits}/${EXPECT_DATA_MODULE_GLOBALS}. ` +
+      'Fewer means an ink, react or node: import (static, dynamic, an import-type query or a require), a read of process or Buffer, or an import under an inline ' +
+      'eslint-disable stopped being policed in the data modules (ADR-0145 §10 regression).',
     dataModule,
   );
 }
@@ -178,6 +209,29 @@ for (const file of EXPECTED_DATA_MODULES) {
       `${file} does not carry ${STATIC_RULE} as an error: it fell off the CLI_DATA_MODULES list in eslint.config.mjs (ADR-0145 §10).`,
     );
   }
+  const syntaxEntry = config?.rules?.[SYNTAX_RULE];
+  const selectors = (Array.isArray(syntaxEntry) ? syntaxEntry.slice(1) : []).map((option) =>
+    typeof option === 'string' ? option : (option?.selector ?? ''),
+  );
+  const missingSelectors = REQUIRED_SYNTAX_SELECTORS.filter(
+    (part) => !selectors.some((selector) => selector.includes(part)),
+  );
+  const globalsEntry = config?.rules?.[GLOBALS_RULE];
+  const restrictedGlobals = (Array.isArray(globalsEntry) ? globalsEntry.slice(1) : []).map(
+    (option) => (typeof option === 'string' ? option : (option?.name ?? '')),
+  );
+  const missingGlobals = REQUIRED_GLOBALS.filter((name) => !restrictedGlobals.includes(name));
+  if (config?.linterOptions?.noInlineConfig !== true) {
+    fail(
+      `${file} honours inline eslint-disable comments: the data-module entry must set linterOptions.noInlineConfig, or a comment lifts the fence from the module it is written in (ADR-0145 §10).`,
+    );
+  }
+  if (missingSelectors.length > 0 || missingGlobals.length > 0) {
+    fail(
+      `${file} is a data module without its whole syntax and globals fence — missing selectors [${missingSelectors.join(', ')}] and globals [${missingGlobals.join(', ')}]: ` +
+        'a dynamic import, an import-type query, a require or a read of process or Buffer is not policed in it (ADR-0145 §10).',
+    );
+  }
   if (missingPaths.length > 0 || missingGroups.length > 0) {
     fail(
       `${file} carries ${STATIC_RULE} without the data-module names — missing paths [${missingPaths.join(', ')}] and patterns [${missingGroups.join(', ')}]: ` +
@@ -196,6 +250,7 @@ console.log(
     "the two residual forms ADR-0081 §1 names are still uncaught, and legitimate uses of the type aren't.",
 );
 console.log(
-  `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} ink, react, react-dom, chalk, node: and vendor-SDK imports policed; ` +
-    `${EXPECTED_DATA_MODULES.length} named data modules exist and carry it.`,
+  `✓ CLI data-module fence airtight: ${dataModuleHits}/${EXPECT_DATA_MODULE} static ink, ink-*, react, react-dom, chalk, node: and vendor-SDK imports, ` +
+    `${dataModuleSyntaxHits}/${EXPECT_DATA_MODULE_SYNTAX} dynamic, import-type and require forms, ${dataModuleGlobalHits}/${EXPECT_DATA_MODULE_GLOBALS} process and Buffer reads policed ` +
+    `(an eslint-disable comment lifts none); ${EXPECTED_DATA_MODULES.length} named data modules exist and carry it.`,
 );

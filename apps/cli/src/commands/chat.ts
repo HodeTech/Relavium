@@ -33,6 +33,7 @@ import {
 } from '../process/native-process-owner.js';
 import { randomUUID } from 'node:crypto';
 import { resumeHint } from '../chat/resume-hint.js';
+import { resumeIntro } from '../chat/resume-intro.js';
 import { realpathSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
 import { withSessionReadline } from '../chat/session-readline.js';
@@ -1173,6 +1174,7 @@ async function chatResumeCommandBody(
               flow,
               store: opened.store,
               cwd,
+              paths: displayRoots(cwd, homeDir),
               now,
               assertAdmitting: ownership.surface.work.assertAdmitting,
               runRead: (read) => ownership.surface.work.enter(read),
@@ -1265,6 +1267,8 @@ async function chatResumeCommandBody(
       );
       ({ config, projectConfigDir } = loadedConfig);
       fsPolicy = admitChatFsPolicy(grants, originalCwd, config.chat.extraRoots);
+      // What the banner shortens the session's directory against: the directory the resume was LAUNCHED from, before the session re-anchors it.
+      const launchRoots = displayRoots(deps.global.cwd, homeDir);
       deps = { ...deps, global: Object.freeze({ ...deps.global, cwd: originalCwd }) };
       let historyBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
       const restore = () =>
@@ -1412,7 +1416,14 @@ async function chatResumeCommandBody(
       // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
       // agent id is kebab-constrained, so safe raw). Without this the resume banner is the one chat output path
       // that could carry a terminal escape from a crafted stored id.
-      intro = `Resuming session ${sanitizeInline(resumed.sessionId)} — ${resumed.agent.id}, ${turns} prior ${turns === 1 ? 'turn' : 'turns'}. Type a message, or /exit to quit.`;
+      // The banner also says where the session lives: it is anchored to its own directory, which is not always the one it was resumed from.
+      intro = resumeIntro({
+        sessionId: resumed.sessionId,
+        agentId: resumed.agent.id,
+        turns,
+        directory: originalCwd,
+        launchRoots,
+      });
       // Pre-flight the hard turn cap: a session resumed under a config whose `[chat].max_turns` is now at/below
       // its prior turn count would have EVERY new turn blocked loudly as `turn_limit` (the engine cap counts the
       // carried turns) with no way forward but /exit. Warn up front (stderr, non-blocking) so the user isn't
@@ -1714,12 +1725,15 @@ export function createChatModeControl(
     'session' | 'tools' | 'context' | 'agent' | 'fsPolicy' | 'startingMode'
   >,
   store: ChatStoreController,
-  opts?: {
+  opts: {
     readonly interactive?: boolean;
     /** The remembered command grants of this project root (ADR-0118 §2); absent ⇒ nothing is remembered. */
     readonly commandGrants?: CommandGrantsPort;
-    /** What a command's card shortens its directory against (the project and the home, ADR-0145 §8); absent ⇒ the card draws it as it is. */
-    readonly commandPaths?: DisplayPathRoots;
+    /**
+     * What a command's card shortens its directory against (the project and the home, ADR-0145 §8); `undefined` ⇒ the card draws it as it is.
+     * A required key, so that a host that forgets it does not silently draw the absolute path.
+     */
+    readonly commandPaths: DisplayPathRoots | undefined;
   },
 ): ChatModeControl {
   // The interactive prompt is the store's `requestApproval`, answered by the ink UI / Home controller. On a
@@ -1740,7 +1754,7 @@ export function createChatModeControl(
     session: built.session,
     tools: built.tools,
     workspaceDir: built.context.workingDir,
-    ...(opts?.commandPaths === undefined ? {} : { commandPaths: opts.commandPaths }),
+    commandPaths: opts.commandPaths,
     ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
     prompt,
     // Remembered grants only mean something where a person can answer: a headless surface degrades `auto` to `ask` and refuses.
@@ -3954,7 +3968,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
             : ctx.subscribeInterrupt(onSigint);
         ctx.workOwner?.signal.addEventListener('abort', stopInput, { once: true });
         if (ctx.workOwner?.signal.aborted === true) stopInput();
-        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to quit.'}\n`);
+        io.writeOut(`${ctx.intro ?? 'relavium chat — type a message, or /exit to end.'}\n`);
         ctx.workOwner?.assertAdmitting();
         ctx.startSession(); // subscription wired above ⇒ session:started is observed (fresh), or a no-op (resume)
         // A full output pipe must not hold cancellation/teardown hostage. The race observes late

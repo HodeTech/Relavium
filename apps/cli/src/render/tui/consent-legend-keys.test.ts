@@ -4,8 +4,8 @@ import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { ChatKey } from './chat-input.js';
-import { LEGEND_SEPARATOR } from './legend.js';
-import { rowSegments, type LegendRow } from './legend-row.js';
+import { LEGEND_SEPARATOR, type LegendRender } from './legend.js';
+import { rowSegments } from './legend-row.js';
 import { editedFilePreview } from './fixtures/edit-diff.js';
 import {
   acknowledgeToolReview,
@@ -39,7 +39,7 @@ import {
 const CTRL = { ctrl: true } as const;
 
 /** The keys a row names, in order: each stretch the builder drew in a key's role, a list (`Tab / Shift+Tab`) split into its keys. */
-function keysOf(row: LegendRow): string[] {
+function keysOf(row: LegendRender): string[] {
   return rowSegments(row)
     .filter((segment) => segment.role !== 'dim')
     .flatMap((segment) => segment.text.split(' / '));
@@ -155,7 +155,7 @@ const CARD_EFFECTS: Readonly<Record<string, (at: Reviewed) => void>> = {
  * fails, and so does a verb that was swapped. Returns the items, so a test says which it expected.
  */
 function everyKeyDoesWhatItSays(
-  row: LegendRow,
+  row: LegendRender,
   at: Reviewed,
   effects: Readonly<Record<string, (at: Reviewed) => void>>,
 ): readonly string[] {
@@ -192,10 +192,10 @@ describe('the approval card: every key its legend names does what it says (ADR-0
 
   it('a legend that swaps two verbs fails: `[Ctrl+N] Allow` is no item the table knows', () => {
     const at = review(SMALL);
-    const swapped: LegendRow = { text: '[Ctrl+N] Allow · [Ctrl+Y] Deny', spans: [] };
-    const named = (row: LegendRow): string[] => keysOf(row);
+    const swapped: LegendRender = { text: '[Ctrl+N] Allow · [Ctrl+Y] Deny', spans: [] };
+    const named = (row: LegendRender): string[] => keysOf(row);
     // the swapped row, read the way the legend builder writes its spans (a key in a role, the verb dim)
-    const built: LegendRow = {
+    const built: LegendRender = {
       text: swapped.text,
       spans: [
         { from: 0, to: 8, role: 'strong' },

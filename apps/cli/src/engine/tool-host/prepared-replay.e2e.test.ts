@@ -332,6 +332,7 @@ describe('actual registry and CLI provisional approval cache', () => {
         const policy = buildTurnPolicy('ask', {
           governed: new Set(['write_file']),
           cache,
+          commandPaths: undefined,
           prompt,
         });
         if (policy.confirm === undefined) throw new Error('missing approval fixture');

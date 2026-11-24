@@ -80,7 +80,7 @@ describe('what the sheet lists', () => {
     expect(body).toMatch(/System prompt\s+You review code and say what is wrong with it\./u);
     expect(lines.at(-1)?.kind).toBe('legend');
     expect(out.at(-1)).toBe(SHEET_LEGEND_EMPTY);
-    expect(SHEET_LEGEND_EMPTY).toBe('Esc close');
+    expect(SHEET_LEGEND_EMPTY).toBe('Esc / [Ctrl+C] close');
   });
 
   it('says what a definition leaves out instead of leaving a blank: no name, no temperature, no effort, no tools, an empty prompt', () => {
@@ -543,7 +543,7 @@ describe('the room it takes', () => {
     (size) => {
       const view = viewOf(definition());
       const lines = agentSheetLines(view, size);
-      expect(texts(lines).slice(1)).toEqual([SHEET_TOO_SMALL_TEXT, 'Esc close']);
+      expect(texts(lines).slice(1)).toEqual([SHEET_TOO_SMALL_TEXT, 'Esc / [Ctrl+C] close']);
       expect(lines[0]?.text).toContain(agentSheetTitle(view));
       expect(texts(lines).join('\n')).not.toContain('claude-sonnet-4-6');
     },

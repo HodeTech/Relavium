@@ -2,7 +2,7 @@ import type { RunHistoryReader, RunLeaseSummary, RunSummaryRecord } from '@relav
 import type { RunStatus } from '@relavium/shared';
 
 import { gatesOfRun, type RunGatesReader } from '../home/run-gates.js';
-import type { DisplayPathRoots } from '../render/notation.js';
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { classifyActiveRuns, type ActiveRow } from './active-model.js';
 import type { ReadSnapshot } from './change-probe.js';
 import { keysetCursorOf } from './keyset-cursor.js';
@@ -270,7 +270,7 @@ export function readActive(input: ActiveSourceInput): ActiveRead {
       ? {}
       : { pendingGateCounts: parkCounts.gates, pendingMediaJobCounts: parkCounts.media }),
     workflowLabels: readLabels(reader, runs),
-    ...(input.paths === undefined ? {} : { paths: input.paths }),
+    ...optionalPaths(input.paths),
   });
   return { rows, more, heldUnread: input.heldUnread === true };
 }
@@ -365,7 +365,7 @@ export function createActiveReader(deps: ActiveReaderDeps): () => Promise<Active
         nowMs: deps.now(),
         leaseTtlMs: deps.leaseTtlMs,
         gateCache,
-        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
+        ...optionalPaths(deps.paths),
       }),
     );
   };

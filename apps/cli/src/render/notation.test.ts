@@ -21,6 +21,7 @@ import {
   formatUsdExact,
   IN_THE_FUTURE,
   NO_TIME,
+  optionalPaths,
   pricePhrase,
   shortId,
   SHORT_ID_CHARS,
@@ -289,6 +290,20 @@ describe('time', () => {
     expect(formatDuration(60_000)).toBe('1m00s');
   });
 
+  it('formatDuration: from one hour up it reads hours and minutes, never "60m00s" or a thousand minutes', () => {
+    const HOUR_MS = 3_600_000;
+    expect(formatDuration(HOUR_MS - 1000)).toBe('59m59s');
+    expect(formatDuration(HOUR_MS - 501)).toBe('59m59s');
+    expect(formatDuration(HOUR_MS - 500)).toBe('1h00m'); // 3599.5 s rounds to a whole hour and carries
+    expect(formatDuration(HOUR_MS)).toBe('1h00m');
+    expect(formatDuration(HOUR_MS + 59_000)).toBe('1h00m');
+    expect(formatDuration(HOUR_MS + 60_000)).toBe('1h01m');
+    expect(formatDuration(HOUR_MS + 61_000)).toBe('1h01m');
+    expect(formatDuration(22 * HOUR_MS + 10 * 60_000 + 32_000)).toBe('22h10m');
+    expect(formatDuration(24 * HOUR_MS)).toBe('24h00m'); // hours only: a day is not a unit here
+    expect(formatDuration(100 * HOUR_MS)).toBe('100h00m');
+  });
+
   it('formatDuration: clamps a negative duration (clock skew) to zero', () => {
     expect(formatDuration(-5)).toBe('0ms');
   });
@@ -321,9 +336,18 @@ describe('time', () => {
     expect(formatElapsed(60_000)).toBe('1m00s');
     expect(formatElapsed(63_000)).toBe('1m03s');
     expect(formatElapsed(600_000)).toBe('10m00s');
+    expect(formatElapsed(3_599_999)).toBe('59m59s');
     expect(formatElapsed(-5000)).toBe('0s');
     expect(formatElapsed(Number.NaN)).toBe('0s');
     expect(formatElapsed(Number.POSITIVE_INFINITY)).toBe('0s');
+  });
+
+  it('formatElapsed: from one hour up it reads hours and minutes (a live timer once read 1330m32s)', () => {
+    expect(formatElapsed(3_600_000)).toBe('1h00m');
+    expect(formatElapsed(3_659_999)).toBe('1h00m');
+    expect(formatElapsed(3_660_000)).toBe('1h01m');
+    expect(formatElapsed(79_832_000)).toBe('22h10m'); // the 1330m32s of the report
+    expect(formatElapsed(24 * 3_600_000)).toBe('24h00m');
   });
 
   const MINUTE = 60_000;
@@ -378,6 +402,20 @@ describe('time', () => {
     expect(formatTimeUntil(5 * MINUTE)).toBe('in 5m');
     expect(formatTimeUntil(2 * HOUR)).toBe('in 2h');
     expect(formatTimeUntil(3 * DAY)).toBe('in 3d');
+  });
+
+  it('formatTimeUntil: a time that has passed reads as the age it is, the words of formatAge, never "in 1s"', () => {
+    expect(formatTimeUntil(-5)).toBe('just now');
+    expect(formatTimeUntil(-(MINUTE - 1))).toBe('just now');
+    expect(formatTimeUntil(-MINUTE)).toBe('1m ago');
+    expect(formatTimeUntil(-2 * HOUR)).toBe('2h ago');
+    expect(formatTimeUntil(-3 * DAY)).toBe('3d ago');
+    for (const ms of [5, 59_999, MINUTE, HOUR, DAY, 400 * DAY])
+      expect(formatTimeUntil(-ms), String(ms)).toBe(formatAge(ms));
+    // the edge between the two: nothing left is still "in 1s", a negative nothing is the past
+    expect(formatTimeUntil(0)).toBe('in 1s');
+    expect(formatTimeUntil(-0)).toBe('in 1s');
+    expect(formatTimeUntil(-1)).toBe('just now');
   });
 
   it('formatRefreshed: the same ages, under "updated", and "never refreshed" for none', () => {
@@ -465,6 +503,22 @@ describe('displayPath', () => {
     expect(displayPath('/x', { cwd: '/home/ada/..', home: '/home/ada/..' })).toBe('/x');
   });
 
+  it('shortens nothing against a root that holds a dot segment: it names a place only after it is resolved, and the text cannot say which', () => {
+    expect(
+      displayPath('/work/../work/proj/x', { cwd: '/work/../work/proj', home: undefined }),
+    ).toBe('/work/../work/proj/x');
+    expect(displayPath('/work/./proj/x', { cwd: '/work/./proj', home: undefined })).toBe(
+      '/work/./proj/x',
+    );
+    expect(displayPath('/work/../me/x', { cwd: undefined, home: '/work/../me' })).toBe(
+      '/work/../me/x',
+    );
+    // the plain root beside it still shortens: the dot segment is the root's, not the target's
+    expect(displayPath('/work/proj/x', { cwd: '/work/../work/proj', home: '/work' })).toBe(
+      '~/proj/x',
+    );
+  });
+
   it('shortens nothing against a filesystem root', () => {
     expect(displayPath('/etc/hosts', { cwd: '/', home: '/' })).toBe('/etc/hosts');
   });
@@ -520,6 +574,64 @@ describe('displayPath', () => {
       expect(displayPath('C:\\Users\\Adam\\x', win)).toBe('C:\\Users\\Adam\\x');
       expect(displayPath('C:\\Users\\Ada\\work\\app\\..\\x', win)).toBe(
         'C:\\Users\\Ada\\work\\app\\..\\x',
+      );
+    });
+
+    it('folds the case of ASCII letters only: a Kelvin sign or an Angstrom sign is not a k or an a-ring, and a mismatch shows the whole path', () => {
+      // `toLowerCase` reads U+212A as `k` and U+212B as `å`, so a folder that only LOOKS like the home would have been taken for it
+      expect(
+        displayPath('C:\\Users\\\u212Au\\a', {
+          cwd: undefined,
+          home: 'C:\\Users\\ku',
+          win32: true,
+        }),
+      ).toBe('C:\\Users\\\u212Au\\a');
+      expect(
+        displayPath('C:\\Users\\\u212Bx\\a', {
+          cwd: 'C:\\Users\\\u00E5x',
+          home: undefined,
+          win32: true,
+        }),
+      ).toBe('C:\\Users\\\u212Bx\\a');
+      // the same letters in ASCII are the same name in any case
+      expect(
+        displayPath('C:\\Users\\Ku\\a', { cwd: undefined, home: 'C:\\Users\\kU', win32: true }),
+      ).toBe('~\\a');
+      // other letters are compared exactly: a different case of a non-ASCII letter is another name (the failure is the safe one)
+      expect(
+        displayPath('C:\\Users\\\u00C9\\a', {
+          cwd: 'C:\\Users\\\u00E9',
+          home: undefined,
+          win32: true,
+        }),
+      ).toBe('C:\\Users\\\u00C9\\a');
+    });
+
+    it('keeps a UNC root, a single-slash path and a drive-less root apart: only the same root shortens', () => {
+      const unc = { cwd: '\\\\srv\\share\\proj', home: undefined, win32: true } as const;
+      // a UNC root and a path that starts with a single slash are not the same root, though the names after them are
+      expect(displayPath('/srv/share/proj/x', unc)).toBe('/srv/share/proj/x');
+      expect(displayPath('\\srv\\share\\proj\\x', unc)).toBe('\\srv\\share\\proj\\x');
+      // the UNC path against the UNC root is shortened, and `//` is the same root as `\\`
+      expect(displayPath('\\\\srv\\share\\proj\\x', unc)).toBe('x');
+      expect(displayPath('//srv/share/proj/x', unc)).toBe('x');
+      // a drive-less rooted path is read as an absolute one (on the current drive): it shortens against a drive-less root, not against a drive
+      const rooted = { cwd: '\\work\\proj', home: undefined, win32: true } as const;
+      expect(displayPath('\\work\\proj\\x', rooted)).toBe('x');
+      expect(displayPath('/work/proj/x', rooted)).toBe('x');
+      expect(
+        displayPath('\\work\\proj\\x', { cwd: 'C:\\work\\proj', home: undefined, win32: true }),
+      ).toBe('\\work\\proj\\x');
+      expect(displayPath('C:\\work\\proj\\x', rooted)).toBe('C:\\work\\proj\\x');
+    });
+
+    it('does not read a drive-relative path (`C:name`) as an absolute one, in either place', () => {
+      const roots = { cwd: 'C:\\o', home: undefined, win32: true } as const;
+      expect(displayPath('C:xo\\file', roots)).toBe('C:xo\\file');
+      expect(displayPath('C:o\\file', roots)).toBe('C:o\\file');
+      // and a root written that way names nothing to shorten against
+      expect(displayPath('C:\\o\\file', { cwd: 'C:o', home: undefined, win32: true })).toBe(
+        'C:\\o\\file',
       );
     });
 
@@ -603,14 +715,25 @@ describe('displayPath: what is shown names the file that went in (a node:path or
       name: 'posix',
       win32: false,
       resolve: (...paths) => posix.resolve(...paths),
-      roots: ['/home/ada', '/home/ada/work/app', '/srv', '/'],
+      // a root with a dot segment shortens nothing, and a path that climbs out of one must never read as inside it
+      roots: ['/home/ada', '/home/ada/work/app', '/srv', '/', '/home/ada/../ada/work'],
       separators: ['/', '//', '///'],
     },
     {
       name: 'win32',
       win32: true,
       resolve: (...paths) => win32.resolve(...paths).toLowerCase(),
-      roots: ['C:\\Users\\Ada', 'C:\\Users\\Ada\\work\\app', 'D:\\data', 'c:/Users/Ada'],
+      // a UNC root (the backslash and the slash spelling) and a root with no drive are roots of their own
+      roots: [
+        'C:\\Users\\Ada',
+        'C:\\Users\\Ada\\work\\app',
+        'D:\\data',
+        'c:/Users/Ada',
+        '\\\\srv\\share\\Ada\\work',
+        '//srv/share/Ada',
+        '\\Users\\Ada',
+        'C:\\Users\\Ada\\..\\Ada\\work',
+      ],
       separators: ['\\', '/', '\\\\', '/\\'],
     },
   ];
@@ -688,6 +811,17 @@ describe('displayPath: what is shown names the file that went in (a node:path or
   }
 });
 
+describe('optionalPaths', () => {
+  it('is the roots under `paths` when there are some, and nothing at all when there are none', () => {
+    const roots = { cwd: '/work/app', home: '/home/ada' };
+    expect(optionalPaths(roots)).toEqual({ paths: roots });
+    expect(optionalPaths(roots).paths).toBe(roots);
+    // nothing: not a `paths: undefined`, which a model that says `paths?: DisplayPathRoots` refuses
+    expect(optionalPaths(undefined)).toEqual({});
+    expect('paths' in optionalPaths(undefined)).toBe(false);
+  });
+});
+
 describe('dates and clock times', () => {
   it('reads an ISO timestamp as a UTC date, a 24-hour clock time, and both with the zone said', () => {
     expect(formatDate('2026-11-24T09:05:59.999Z')).toBe('2026-11-24');
@@ -706,8 +840,18 @@ describe('dates and clock times', () => {
   });
 
   it('is empty for a text that is not a time, and for a year outside four digits', () => {
-    for (const text of ['', 'not a time', '2026-13-45', '+275760-09-13T00:00:00.000Z'])
+    for (const text of [
+      '',
+      'not a time',
+      '2026-13-45',
+      '+275760-09-13T00:00:00.000Z',
+      '-000001-06-01T00:00:00.000Z',
+      '+010000-01-01T00:00:00.000Z',
+    ])
       expect(formatDateTime(text), text).toBe('');
+    // the first and the last year of four digits are dates
+    expect(formatDate('0000-01-01T00:00:00.000Z')).toBe('0000-01-01');
+    expect(formatDate('9999-12-31T23:59:59.999Z')).toBe('9999-12-31');
     expect(formatDate('not a time')).toBe('');
     expect(formatClock('not a time')).toBe('');
   });

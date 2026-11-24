@@ -114,7 +114,7 @@ describe('the /agent sheet in the standalone chat', () => {
     expect(text).toContain('anthropic');
     expect(text).toContain('the built-in chat agent');
     expect(text).toContain('Reasoning effort  medium');
-    expect(text).toContain('Esc close');
+    expect(text).toContain('Esc / [Ctrl+C] close');
     expect(submitted, 'the typed command was not sent to the model or the dispatch').toEqual([]);
   });
 

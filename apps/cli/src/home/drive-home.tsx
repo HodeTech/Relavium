@@ -2167,6 +2167,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             flow: promptFlow,
             store: opened.store,
             cwd: fsPolicyWorkspace(fsPolicy),
+            paths: displayRoots(fsPolicyWorkspace(fsPolicy), homeDir),
             now,
             assertAdmitting: assertHomeAdmitting,
             runRead: (operation) =>

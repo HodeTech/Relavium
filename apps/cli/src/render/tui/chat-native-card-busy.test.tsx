@@ -2,6 +2,9 @@ import './force-color.js';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
+
+import type { CommandCardFacts } from '../../chat/command-facts.js';
 import { runExportCard, type ExportPort } from './export-card.js';
 import { chatIsBusy } from './chat-ink.js';
 import {
@@ -206,8 +209,133 @@ describe('the commands that open a sheet or a picker of the chat itself', () => 
   });
 });
 
+/** What a `!` shell command says it is doing, and what its approval card says an `Esc` does: the two must never be on one screen. */
+const SHELL_RUNNING = 'running · Esc cancels it';
+
+const SHELL_REQUEST: ToolApprovalRequest = {
+  toolId: 'run_command',
+  action: 'process',
+  preview: { command: 'sleep 4' },
+  unredactedPreview: { command: 'sleep 4' },
+  argv: ['sleep', '4'],
+  commandAdmitted: false,
+};
+const SHELL_PREVIEW: ToolPreview = {
+  kind: 'operation',
+  target: 'sleep 4',
+  fields: [
+    { name: '', value: 'sleep' },
+    { name: '', value: '4' },
+  ],
+};
+const SHELL_FACTS: CommandCardFacts = {
+  standing: 'not-pre-approved',
+  runsCode: false,
+  protectedPath: false,
+  cwd: '/work/project',
+  offers: { session: true, remember: true },
+};
+
+/** A shell command that never finishes: the chat is "running" it for as long as the test looks. */
+const NEVER = (): Promise<never> => new Promise(() => {});
+
+/** Mount a chat whose slash-command handler waits for `release`: the chat is "submitting" for as long as it does. */
+async function mountSubmitting(
+  host: 'chat' | 'standalone-chat',
+  release: Promise<void>,
+): Promise<ChatMount> {
+  return host === 'chat'
+    ? mountHostedChat(VARIANT, {
+        hosted: { session: { processLine: () => release, onAbort: () => {} } },
+      })
+    : mountStandaloneChat(VARIANT, { standalone: { onSubmit: () => release } });
+}
+
+/** Mount a chat whose `!` handler never returns: the chat is running a shell command for as long as the test looks. */
+async function mountShelling(host: 'chat' | 'standalone-chat'): Promise<ChatMount> {
+  return host === 'chat'
+    ? mountHostedChat(VARIANT, {
+        hosted: { session: { runShellCommand: NEVER, onAbort: () => {} } },
+      })
+    : mountStandaloneChat(VARIANT, { standalone: { runShellCommand: NEVER } });
+}
+
+describe('the busy line of a submit and of a `!` shell command that the host is waiting on', () => {
+  // `submitBusy` and `shellBusy` are two wires of each host into the one predicate; each is pinned by the words it draws.
+  it.each(['chat', 'standalone-chat'] as const)(
+    'a slash command in flight draws Working… with the Esc that stops the turn (%s)',
+    async (host) => {
+      let release: () => void = () => {};
+      const pending = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const mount = await mountSubmitting(host, pending);
+      try {
+        await mount.settle();
+        await mount.typeLine('/compact');
+        await mount.until(() => mount.text().includes('Esc stops the turn'));
+        expect(mount.text()).toMatch(/Working… · Esc stops the turn/u);
+      } finally {
+        release();
+        mount.unmount();
+      }
+    },
+  );
+
+  it.each(['chat', 'standalone-chat'] as const)(
+    'a `!` command in flight draws the command and the Esc that cancels it (%s)',
+    async (host) => {
+      const mount = await mountShelling(host);
+      try {
+        await mount.settle();
+        await mount.typeLine('!sleep 5');
+        await mount.until(() => mount.text().includes(SHELL_RUNNING));
+        expect(mount.text()).toMatch(/! sleep 5 — running · Esc cancels it/u);
+      } finally {
+        mount.unmount();
+      }
+    },
+  );
+
+  it.each(['chat', 'standalone-chat'] as const)(
+    'a `!` command that waits on its own approval card draws no “running”, and the card’s Esc is the only Esc on screen (%s)',
+    async (host) => {
+      const mount = await mountShelling(host);
+      try {
+        await mount.settle();
+        await mount.typeLine('!sleep 4');
+        await mount.until(() => mount.text().includes(SHELL_RUNNING));
+        mount.store
+          .requestApproval(
+            SHELL_REQUEST,
+            SHELL_FACTS.offers.session,
+            undefined,
+            { callId: 'call-shell', preview: SHELL_PREVIEW },
+            SHELL_FACTS,
+          )
+          .catch(() => undefined);
+        await mount.until(() => mount.text().includes('Standing:'));
+        await mount.settle();
+        const frame = mount.text();
+        expect(frame, 'the card is up').toContain('Approval needed');
+        expect(frame, frame).not.toContain(SHELL_RUNNING);
+        expect(frame, frame).not.toContain('— running');
+        expect(frame.match(/Esc /gu) ?? [], 'one Esc on the screen: the card’s').toHaveLength(1);
+      } finally {
+        mount.unmount();
+      }
+    },
+  );
+});
+
 describe('chatIsBusy', () => {
-  const idle = { turnRunning: false, shellBusy: false, submitBusy: false, nativePrompt: false };
+  const idle = {
+    turnRunning: false,
+    shellBusy: false,
+    submitBusy: false,
+    nativePrompt: false,
+    approvalCard: false,
+  };
 
   it('is busy for a turn, a shell command and a submit, and idle for nothing', () => {
     expect(chatIsBusy(idle)).toBe(false);
@@ -225,5 +353,20 @@ describe('chatIsBusy', () => {
       true,
     );
     expect(chatIsBusy({ ...idle, nativePrompt: true })).toBe(false);
+  });
+
+  it('is not busy for a shell command or a submit that only waits on its approval card, but is for a turn behind one', () => {
+    expect(chatIsBusy({ ...idle, shellBusy: true, approvalCard: true })).toBe(false);
+    expect(chatIsBusy({ ...idle, shellBusy: true, submitBusy: true, approvalCard: true })).toBe(
+      false,
+    );
+    expect(chatIsBusy({ ...idle, submitBusy: true, approvalCard: true })).toBe(false);
+    // A turn that streams keeps its line while its card is open: the line then says it waits for the person, and the card's Esc stops the turn.
+    expect(chatIsBusy({ ...idle, turnRunning: true, approvalCard: true })).toBe(true);
+    expect(chatIsBusy({ ...idle, turnRunning: true, submitBusy: true, approvalCard: true })).toBe(
+      true,
+    );
+    // A card that is not up changes nothing.
+    expect(chatIsBusy({ ...idle, shellBusy: true })).toBe(true);
   });
 });

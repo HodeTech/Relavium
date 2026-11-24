@@ -3,8 +3,15 @@ import type { ToolDisplay } from './tool-display.js';
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { DisplayPathRoots } from '../notation.js';
 import { glyph, plainFormInForce, statusCell, statusCellWidth } from './glyphs.js';
-import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
-import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
+import {
+  exitKey,
+  keyToken,
+  legend,
+  legendItems,
+  type LegendItem,
+  type LegendRender,
+} from './legend.js';
+import { exitRow, sentenceRow } from './legend-row.js';
 import {
   cardKeyLegend,
   commandFactRows,
@@ -229,17 +236,17 @@ export interface NavLegendInput {
 }
 
 /** Greedily pack `items` into rows no wider than `width`, each row drawn as a legend row (the items between ` · `). */
-function packRows(items: readonly LegendItem[], width: number): readonly LegendRow[] {
-  const rows: LegendRow[] = [];
+function packRows(items: readonly LegendItem[], width: number): readonly LegendRender[] {
+  const rows: LegendRender[] = [];
   let row: LegendItem[] = [];
   for (const item of items) {
-    if (row.length === 0 || displayWidth(itemsRow([...row, item]).text) <= width) row.push(item);
+    if (row.length === 0 || displayWidth(legendItems([...row, item]).text) <= width) row.push(item);
     else {
-      rows.push(itemsRow(row));
+      rows.push(legendItems(row));
       row = [item];
     }
   }
-  if (row.length > 0) rows.push(itemsRow(row));
+  if (row.length > 0) rows.push(legendItems(row));
   return rows;
 }
 
@@ -248,7 +255,7 @@ function packRows(items: readonly LegendItem[], width: number): readonly LegendR
  * a mask to reveal, `c` when a clipboard is bound. Movement is one group and inspection another, each packed into as few rows as the width
  * allows (one each at 80 columns). `[b]` is not here: it sits with the answers on an approval and with the close note on details.
  */
-export function fullNavRows(input: NavLegendInput): readonly LegendRow[] {
+export function fullNavRows(input: NavLegendInput): readonly LegendRender[] {
   const move: LegendItem[] = [
     { keys: '↑/↓', verb: 'scroll' },
     { keys: 'PgUp/PgDn', verb: 'page' },
@@ -278,11 +285,11 @@ const STOP_KEY: LegendItem = { keys: 'Ctrl+C', verb: 'stops the turn', role: 'wa
  * `Ctrl+C` stops the turn from anywhere and is named, because the stop key stays named wherever it works. The command variants
  * (an Enter confirms) and the tool variant (any key) differ only in their first words.
  */
-export const FULL_CONFIRM_ENTER_LEGEND: LegendRow = exitRow(
+export const FULL_CONFIRM_ENTER_LEGEND: LegendRender = exitRow(
   [{ keys: 'Enter', verb: 'confirm' }, { text: 'any other key cancels' }, STOP_KEY],
   exitKey.step(),
 );
-export const FULL_CONFIRM_ANY_LEGEND: LegendRow = exitRow(
+export const FULL_CONFIRM_ANY_LEGEND: LegendRender = exitRow(
   [{ text: 'Any other key cancels' }, STOP_KEY],
   exitKey.step(),
 );
@@ -292,7 +299,7 @@ export const FULL_CONFIRM_ANY_ROW = FULL_CONFIRM_ANY_LEGEND.text;
  * The full view's second answer row: the refusals that exist here, the way back, and the stop key. `Esc` steps back to the card
  * (ADR-0137 §4) and `Ctrl+C` stops the turn; the row names both, so neither is learned by pressing it.
  */
-export const FULL_DENY_LEGEND: LegendRow = exitRow(
+export const FULL_DENY_LEGEND: LegendRender = exitRow(
   [
     { keys: 'Ctrl+N', verb: 'Deny', role: 'danger' },
     { keys: 'b', verb: 'back to the card' },
@@ -303,7 +310,7 @@ export const FULL_DENY_LEGEND: LegendRow = exitRow(
 export const FULL_DENY_ROW = FULL_DENY_LEGEND.text;
 
 /** The grants row the card shows, then the refusals: the same words, minus the keys that only exist on the card, plus the way back. */
-export function fullAnswerLegend(input: CardKeyInput): readonly [LegendRow, LegendRow] {
+export function fullAnswerLegend(input: CardKeyInput): readonly [LegendRender, LegendRender] {
   const rows = cardKeyLegend(input);
   if (input.confirmAlways === true || input.confirmRemember === true)
     return [
@@ -329,10 +336,10 @@ export function fullAnswerRows(input: CardKeyInput): readonly [string, string] {
  * The two answer rows while the full view's search box is open (ADR-0115 §3). The box owns the keyboard: a chord is not an answer in
  * it and `b` is typing, so the card's rows would name keys that do nothing. `Esc` closes the box and `Ctrl+C` is what stops the turn.
  */
-export function fullSearchLegend(): readonly [LegendRow, LegendRow] {
+export function fullSearchLegend(): readonly [LegendRender, LegendRender] {
   return [
     exitRow([{ keys: 'Enter', verb: 'find' }], exitKey.close('Esc', 'close the search box')),
-    itemsRow([STOP_KEY]),
+    legendItems([STOP_KEY]),
   ];
 }
 
@@ -348,7 +355,7 @@ export const FULL_PROTECTED_NOTE = 'Approval cannot override protected-path or p
 export const FULL_COMMAND_NOTE =
   'Approving runs exactly this command; file-tool path rules do not limit it.';
 /** The one line a details screen ends on: the way back to the list, what viewing does, and the key that closes. */
-export const DETAILS_CLOSE_LEGEND: LegendRow = exitRow(
+export const DETAILS_CLOSE_LEGEND: LegendRender = exitRow(
   [{ keys: 'b', verb: 'back to the list' }, { text: 'viewing never executes a tool' }],
   exitKey.close(),
 );
@@ -383,9 +390,9 @@ export interface FullChrome {
   readonly note: string;
   /** The same rows as {@link FullChrome.nav}, {@link FullChrome.answers} and {@link FullChrome.note}, with where their keys are, for a view to colour. */
   readonly legends: {
-    readonly nav: readonly LegendRow[];
-    readonly answers: readonly LegendRow[];
-    readonly note: LegendRow;
+    readonly nav: readonly LegendRender[];
+    readonly answers: readonly LegendRender[];
+    readonly note: LegendRender;
   };
   readonly hasTarget: boolean;
   readonly searching: boolean;
@@ -394,13 +401,13 @@ export interface FullChrome {
 }
 
 /** The answer rows of the full view: none for a details screen, the search rows while a search is typed, else the approval's. */
-function fullAnswers(keys: CardKeyInput | undefined, searching: boolean): readonly LegendRow[] {
+function fullAnswers(keys: CardKeyInput | undefined, searching: boolean): readonly LegendRender[] {
   if (keys === undefined) return [];
   return searching ? fullSearchLegend() : fullAnswerLegend(keys);
 }
 
 /** The closing note of the full view: a details screen's, a command's, or the protected-path sentence of any other approval. */
-function fullNote(kind: ScreenKind, commandFacts: CommandCardFacts | undefined): LegendRow {
+function fullNote(kind: ScreenKind, commandFacts: CommandCardFacts | undefined): LegendRender {
   if (kind !== 'approval') return DETAILS_CLOSE_LEGEND;
   return sentenceRow(commandFacts === undefined ? FULL_PROTECTED_NOTE : FULL_COMMAND_NOTE);
 }

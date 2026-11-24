@@ -123,7 +123,8 @@ describe.each([true, false])('Home reports and minimum geometry alternate=%s', (
         h.resize(80, 24);
         await vi.waitFor(() => expect(h.frame('doctor:')).toContain('Notice 1–'));
         expect(h.frame('doctor:')).toContain(`${color ? '›' : '>'} Saved conversation 0`);
-        expect(h.frame('doctor:')).toContain('No provider key yet · Enter connect');
+        // a saved conversation is focused, so `Enter` resumes it: the line promises only the command word
+        expect(h.frame('doctor:')).toContain('No provider key yet · /providers connects one');
         expect(h.frame('doctor:')).toContain('PgUp/PgDn');
         expect(h.frame('doctor:').split('\n').length).toBeLessThanOrEqual(24);
         // Coalesced page keys reduce against the live page, without submitting or moving Continue focus.

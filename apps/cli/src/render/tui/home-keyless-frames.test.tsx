@@ -106,7 +106,7 @@ describe('the keyless hint bar', () => {
       'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
     );
     expect(frameOf('', false)).toContain(
-      '[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)',
+      '[/] commands · type a message to chat · [Ctrl+C] exit (twice)',
     );
   });
 });

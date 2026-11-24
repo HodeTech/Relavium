@@ -121,7 +121,21 @@ function hintOf(
   controller: HomeController,
   hostedRun: RunHostSnapshot = IDLE,
   size: { readonly cols: number; readonly rows: number } = { cols: 100, rows: 30 },
+  keyless = false,
 ): string {
+  return (
+    rowsOf(controller, hostedRun, size, keyless).findLast((row) => /\[Ctrl\+C\] exit/u.test(row)) ??
+    ''
+  );
+}
+
+/** The rows the Home draws for a controller in its state. */
+function rowsOf(
+  controller: HomeController,
+  hostedRun: RunHostSnapshot,
+  size: { readonly cols: number; readonly rows: number },
+  keyless: boolean,
+): string[] {
   const state = controller.getSnapshot();
   const view = render(
     <HomeView
@@ -131,7 +145,7 @@ function hintOf(
       cols={size.cols}
       rows={size.rows}
       color={false}
-      keyless={false}
+      keyless={keyless}
       interruptArmed={state.interruptArmed}
       hostedRun={hostedRun}
       parkedRuns={state.parkedRuns}
@@ -140,7 +154,18 @@ function hintOf(
   );
   const rows = (view.lastFrame() ?? '').split('\n').map((line) => line.trimEnd());
   view.unmount();
-  return rows.findLast((row) => /\[Ctrl\+C\] exit/u.test(row)) ?? '';
+  return rows;
+}
+
+/** The keyless line the Home draws above the prompt, or `''` when it draws none. */
+function keylessLineOf(
+  controller: HomeController,
+  hostedRun: RunHostSnapshot = IDLE,
+  size: { readonly cols: number; readonly rows: number } = { cols: 100, rows: 30 },
+): string {
+  return (
+    rowsOf(controller, hostedRun, size, true).find((row) => row.startsWith('No provider key')) ?? ''
+  );
 }
 
 /** The keys a legend row lists: the leading key of each ` · ` item that starts with one, as written. */
@@ -154,7 +179,7 @@ describe('the Home hint bar at the prompt', () => {
   it('an empty Home lists [/] and [Ctrl+C]: the first opens the palette, the second arms and the next leaves', () => {
     const { controller, exits } = rig({});
     const hint = hintOf(controller);
-    expect(hint).toBe('[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)');
+    expect(hint).toBe('[/] commands · type a message to chat · [Ctrl+C] exit (twice)');
     expect(listedKeys(hint)).toEqual(['[/]', '[Ctrl+C]']);
     controller.handleKey('/', {});
     expect(controller.getSnapshot().palette, '/ opens the palette').toBeDefined();
@@ -220,6 +245,83 @@ describe('the Home hint bar at the prompt', () => {
     expect(started).not.toHaveBeenCalled();
     controller.handleKey('', ENTER);
     expect(started, 'Enter starts the chat with the draft').toHaveBeenCalledOnce();
+  });
+});
+
+describe('the Home hint bar for a draft that is a command', () => {
+  it.each(['/mod', '/nonsense', '/models'])(
+    'a pasted %s lists Enter run, because Enter runs the command (or says it is unknown) and starts no chat',
+    (line) => {
+      const started = vi.fn(() => new Promise<never>(() => {}));
+      const { controller } = rig({ startChat: started });
+      controller.handleKey(line, {}); // a paste: one chunk, so it is a draft and not the palette
+      expect(controller.getSnapshot().input.text).toBe(line);
+      const hint = hintOf(controller);
+      expect(hint).toBe('Enter run · [Ctrl+J] newline · [Ctrl+C] exit (twice)');
+      expect(hint).not.toContain('start the chat');
+      controller.handleKey('', ENTER);
+      expect(started, 'Enter on a command line starts no chat').not.toHaveBeenCalled();
+    },
+  );
+
+  it('a message that only contains a slash is a message: Enter starts the chat', () => {
+    const { controller } = rig({});
+    controller.handleKey('see /etc/hosts', {});
+    expect(hintOf(controller)).toBe(
+      'Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)',
+    );
+  });
+});
+
+describe('the keyless line promises Enter only where Enter connects', () => {
+  const CONNECTS = 'No provider key yet · Enter connect · /providers';
+  const COMMAND_ONLY = 'No provider key yet · /providers connects one';
+
+  it('at an empty prompt with nothing else to open, Enter connects, and the line says so', () => {
+    const { controller } = rig({});
+    expect(keylessLineOf(controller)).toBe(CONNECTS);
+  });
+
+  it('with a message typed, Enter connects (and keeps the message), and the line says so', () => {
+    const { controller } = rig({});
+    controller.handleKey('hello', {});
+    expect(keylessLineOf(controller)).toBe(CONNECTS);
+  });
+
+  it('on a focused session row, a run row or a parked row, Enter does that row’s own thing, so the line promises only the command', () => {
+    const sessions = rig({ snapshot: snapshotOf({ sessions: 1 }) });
+    sessions.controller.handleKey('', DOWN);
+    expect(keylessLineOf(sessions.controller)).toBe(COMMAND_ONLY);
+    const runs = rig({ snapshot: snapshotOf({ runs: 1 }) });
+    runs.controller.handleKey('', DOWN);
+    expect(keylessLineOf(runs.controller)).toBe(COMMAND_ONLY);
+    const parked = rig({ parked: [parkedRow('approval')] });
+    parked.controller.handleKey('', DOWN);
+    expect(keylessLineOf(parked.controller)).toBe(COMMAND_ONLY);
+    // Esc returns to the prompt, where Enter connects again.
+    sessions.controller.handleKey('', ESC);
+    expect(keylessLineOf(sessions.controller)).toBe(CONNECTS);
+  });
+
+  it('while a run executes at an empty prompt, Enter shows the run; with a message typed, Enter connects', () => {
+    const { controller } = rig({ host: EXECUTING });
+    expect(keylessLineOf(controller, EXECUTING)).toBe(COMMAND_ONLY);
+    controller.handleKey('hello', {});
+    expect(keylessLineOf(controller, EXECUTING)).toBe(CONNECTS);
+  });
+
+  it('on a command line, Enter runs the command, so the line promises only the command word', () => {
+    const { controller } = rig({});
+    controller.handleKey('/doctor', {});
+    expect(keylessLineOf(controller)).toBe(COMMAND_ONLY);
+  });
+
+  it('draws the same hint bar in every one of those states: only the keyless line changed its words', () => {
+    const { controller } = rig({ snapshot: snapshotOf({ sessions: 1 }) });
+    controller.handleKey('', DOWN);
+    expect(hintOf(controller, IDLE, { cols: 100, rows: 30 }, true)).toBe(
+      '↑/↓ select session · Enter resume · Esc return to prompt · [Ctrl+C] exit (twice)',
+    );
   });
 });
 

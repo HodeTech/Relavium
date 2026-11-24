@@ -13,6 +13,7 @@ import { createStandardEnvKeyPolicy } from '../../../engine/standard-env-policy.
 import { runHomeProjectInit } from '../../../home/project-init.js';
 import { createProviderSetupCoordinator } from '../../../home/provider-setup.js';
 import { runSessionPicker } from '../../../home/session-picker.js';
+import { displayRoots } from '../../display-roots.js';
 import { KeychainUnavailableError, type KeychainStore } from '../../../secrets/keychain.js';
 import { captureIo } from '../../../test-support.js';
 import { runExportCard, type ExportPort } from '../export-card.js';
@@ -169,6 +170,7 @@ export function openResumePicker(m: HomeMount): void {
     runSessionPicker({
       store: { listSessionPage: () => page },
       cwd: '/work/project',
+      paths: displayRoots('/work/project', '/home/ada'),
       now: () => Date.parse('2026-11-23T01:00:00.000Z'),
       assertAdmitting: () => {},
       runRead: (operation) => operation(),

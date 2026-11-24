@@ -736,7 +736,7 @@ describe.each([
     expect(m.frame()).toContain(
       '←/→ tab · Tab cycle · ↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close',
     );
-    expect(m.frame(), 'no prompt behind the screen').not.toContain('[/] for commands');
+    expect(m.frame(), 'no prompt behind the screen').not.toContain('[/] commands');
   });
 
   it('moves between tabs with the keys a person presses, and Esc leaves for the landing', async () => {
@@ -749,7 +749,7 @@ describe.each([
     await until(() => m.frame().includes('> Permissions'));
     m.harness.stdin.write(ESC);
     await until(() => m.controller.getSnapshot().screen === undefined);
-    await until(() => m.frame().includes('[/] for commands'));
+    await until(() => m.frame().includes('[/] commands'));
   });
 
   it('drops a paste: it reaches neither the screen nor the prompt behind it', async () => {

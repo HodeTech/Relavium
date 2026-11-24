@@ -80,6 +80,7 @@ const WRITE: ToolApprovalRequest = {
 function chat(grants: CommandGrantStore, mode: 'auto' | 'accept-edits', answer: ApprovalAnswer) {
   const prompt = vi.fn<ApprovalPrompt>(() => Promise.resolve(answer));
   const policy = buildTurnPolicy(mode, {
+    commandPaths: undefined,
     governed: new Set(['run_command', 'fs_write']),
     prompt,
     cache: new ApprovalCache(),

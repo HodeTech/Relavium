@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import {
   blankStatusCell,
   blankHostGlyphs,
+  blankHostMarks,
+  blankHostShapes,
   blankMarkerGlyphs,
   GLYPH_ROLES,
   GLYPHS,
@@ -360,6 +362,59 @@ describe('what the table does to text', () => {
     expect(blankMarkerGlyphs('✓ done ● dot ─ rule ◉ ○ ‖ ⚠ ★')).toBe(
       '✓ done ● dot ─ rule ◉ ○ ‖ ⚠ ★',
     );
+  });
+});
+
+describe('the shapes of the host’s choice marks a model could write', () => {
+  const plain = (text: string): string => withGlyphForm(true, () => blankHostShapes(text));
+  const unicode = (text: string): string => withGlyphForm(false, () => blankHostShapes(text));
+
+  it('the plain form loses the parentheses of `(*)` and `( )` and the `>` that starts a text before a digit or a space', () => {
+    expect(plain('Keep (*) it')).toBe('Keep  *  it');
+    expect(plain('Keep ( ) it')).toBe('Keep     it');
+    expect(plain('>1 (*) Delete')).toBe(' 1  *  Delete');
+    expect(plain('> 1 (*) Delete')).toBe('  1  *  Delete');
+    expect(plain('>')).toBe('>');
+  });
+
+  it('the Unicode form loses the parentheses of `(•)` and `( )`, and keeps `(*)` and `>`: the host draws neither there', () => {
+    expect(unicode('Keep (•) it')).toBe('Keep  •  it');
+    expect(unicode('Keep ( ) it')).toBe('Keep     it');
+    expect(unicode('Keep (*) it')).toBe('Keep (*) it');
+    expect(unicode('>1 (*) Delete')).toBe('>1 (*) Delete');
+  });
+
+  it('`(x)`, `(o)`, a call such as `f(x)`, a `>` that is not at the start and a `>` before a letter are ordinary text, in both forms', () => {
+    for (const text of [
+      'What should f(x) return when (o) is empty?',
+      'Delete (X) (O)',
+      'a > b',
+      '>x then',
+      'x > 1',
+      'f(*x)',
+      '(**)',
+    ]) {
+      expect(plain(text), text).toBe(text);
+      expect(unicode(text), text).toBe(text);
+    }
+  });
+
+  it('keeps the width of the text, so a layout measured on it does not move, and keeps two labels that differed different', () => {
+    for (const text of ['Delete (*)', 'Delete ( )', '> 1 (*) x', 'Delete', 'Delete (x)']) {
+      expect(displayWidth(plain(text)), text).toBe(displayWidth(text));
+      expect([...plain(text)].length, text).toBe([...text].length);
+    }
+    expect(new Set(['Delete (x)', 'Delete (*)', 'Delete'].map(plain)).size).toBe(3);
+  });
+
+  it('blankHostMarks blanks the host glyphs FIRST, so the `( )` that `(●)` becomes is neutralised too, and a `❯` is a space', () => {
+    for (const asciiForm of [true, false])
+      expect(withGlyphForm(asciiForm, () => blankHostMarks('❯ 1 (●) Delete all'))).toBe(
+        '  1     Delete all',
+      );
+    // the order is the point: shapes first would leave the `( )` that blanking creates
+    expect(blankHostGlyphs('(●)')).toBe('( )');
+    expect(withGlyphForm(true, () => blankHostMarks('a (●) b (›) c'))).toBe('a     b     c');
   });
 });
 

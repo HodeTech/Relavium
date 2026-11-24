@@ -14,7 +14,9 @@ import type { ConsentPrompter, ConsentSubject } from '../engine/mcp-consent-gate
  * unit-tested without a TTY — and so the DECISION logic, which lives in `mcp-consent-gate.ts`, never has to
  * know a terminal exists.
  *
- * Every field arrives already sanitized and length-bounded from the gate; this module only lays them out.
+ * Every field arrives already sanitized and length-bounded from the gate; this module only lays them out. A path (the executable, its
+ * directory, the directory of an earlier approval) arrives exactly as it is on disk or not at all: the gate refuses one it would have to
+ * clean or cut before this prompt is called (`CONSENT_PATH_UNSHOWN`), so the line never names a visible twin of the file that runs.
  */
 
 /** The narrow slice of `@clack/prompts` this prompt uses — injectable, like every sibling wrapper. */

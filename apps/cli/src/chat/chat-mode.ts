@@ -294,8 +294,12 @@ export interface TurnPolicyDeps {
   readonly commandSessionGrants?: boolean;
   /** The directory a command runs in — the host's, shown on the card and the anchor of its protected-path check. */
   readonly commandCwd?: string;
-  /** What the command card shortens {@link TurnPolicyDeps.commandCwd} against (the project and the home); absent ⇒ the card draws it as it is. */
-  readonly commandPaths?: DisplayPathRoots;
+  /**
+   * What the command card shortens {@link TurnPolicyDeps.commandCwd} against (the project and the home). A REQUIRED key, `undefined` when the
+   * host has none (the one-shot `agent run`, a test): a host that forgot it would draw the host's absolute path where every other surface
+   * draws a short one, with nothing to say so, so each host says it.
+   */
+  readonly commandPaths: DisplayPathRoots | undefined;
   /** Where a note for the person goes (a Remember that could not be written). Never given a command. */
   readonly notify?: (message: string) => void;
   /**

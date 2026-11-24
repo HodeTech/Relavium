@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import type { ToolApprovalLiveContext, ToolApprovalRequest } from '@relavium/core';
 import { createClient, createSessionStore, runMigrations } from '@relavium/db';
@@ -185,7 +185,9 @@ it('the card of the command a Home-hosted chat asks about names the directory fr
       await mount.until(() => mount.frame().some((line) => line.includes('Runs in:')));
       await mount.settle();
       const row = mount.frame().find((line) => line.includes('Runs in:')) ?? '';
-      expect(row, mount.frame().join('\n')).toContain('Runs in: . (project root)');
+      expect(row, mount.frame().join('\n')).toContain(
+        `Runs in: . (project root: ${basename(host.cwd)})`,
+      );
       expect(row).not.toContain(host.cwd);
     } finally {
       mount.unmount();
@@ -242,6 +244,65 @@ it('the strip of the Home the host mounts names each session’s directory from 
       expect(rows).toContain('~/other');
       expect(rows).toContain('/opt/shared/tools');
       expect(rows.join('\n')).not.toContain(host.cwd);
+    } finally {
+      mount.unmount();
+    }
+    controller.handleKey('c', { ctrl: true });
+    controller.handleKey('c', { ctrl: true });
+  });
+});
+
+it('the resume picker of the Home, in All directories, names each session’s directory from the project or the home, as the real handler passes the roots', async () => {
+  await withHome(async (host) => {
+    await startChat(host);
+    const session = host.props.controller.getSnapshot().session;
+    if (session === undefined) throw new Error('Expected the chat the Home hosts.');
+    const record = host.sessions.loadFull(session.sessionId)?.session;
+    if (record === undefined) throw new Error('Expected the durable session record.');
+    const places = [
+      ['in-project', join(host.cwd, 'packages', 'app')],
+      ['in-home', join(host.homeDir, 'other')],
+      ['elsewhere', '/opt/shared/tools'],
+    ] as const;
+    places.forEach(([name, workingDir], index) => {
+      host.sessions.createSession({
+        ...record,
+        id: `pick-${name}`,
+        title: `Pick ${name}`,
+        context: { ...record.context, workingDir },
+        updatedAt: `2026-11-25T00:00:0${String(index + 1)}.000Z`,
+      });
+    });
+    const { controller } = host.props;
+    for (const char of '/cancel') controller.handleKey(char, {});
+    controller.handleKey('', { return: true });
+    await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('home'));
+    const mount = host.mount();
+    try {
+      controller.handleKey('/resume', {}); // a paste: a command line, not the palette
+      controller.handleKey('', { return: true });
+      // The picker takes keys once its first page is in (a key sent while it loads is not one).
+      await vi.waitFor(
+        async () => {
+          await mount.settle();
+          expect(rowsOf(mount).some((row) => row.includes('hello'))).toBe(true);
+        },
+        { timeout: 3000, interval: 20 },
+      );
+      mount.key('\t'); // This directory -> All directories
+      await vi.waitFor(
+        async () => {
+          await mount.settle();
+          expect(rowsOf(mount), mount.frame().join('\n')).toContain('~/other');
+        },
+        { timeout: 3000, interval: 20 },
+      );
+      const rows = rowsOf(mount);
+      expect(rows, mount.frame().join('\n')).toContain('packages/app');
+      expect(rows).toContain('~/other');
+      expect(rows).toContain('/opt/shared/tools');
+      expect(rows.join('\n')).not.toContain(host.cwd);
+      expect(rows.join('\n')).not.toContain(host.homeDir);
     } finally {
       mount.unmount();
     }

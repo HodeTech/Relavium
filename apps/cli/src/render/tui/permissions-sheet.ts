@@ -62,14 +62,15 @@ import { displayWidth, wrapWords } from './viewport.js';
  * says, which is what keeps a hint and its handler from drifting (the handler matches the keys themselves, not these labels). The legend
  * builder brackets a letter and a Ctrl chord and writes the universal keys plain (`[d] / Del withdraw`, `Enter withdraw`: ADR-0145 §3),
  * and draws a key in its role (the withdrawal in danger, its confirmation as a warning). The key that leaves is an exit of its class
- * (ADR-0145 §2): `Esc close` changes nothing; while a withdrawal's question is up `Esc` goes one level back and the permission stays.
+ * (ADR-0145 §2): `Esc / [Ctrl+C] close` changes nothing; while a withdrawal's question is up `Esc` goes one level back and the permission stays.
  */
 export const SHEET_KEYS = {
   select: { keys: '↑/↓', verb: 'select' },
   withdraw: { keys: ['d', 'Del'], verb: 'withdraw', role: 'danger' },
   confirm: { keys: 'Enter', verb: 'withdraw', role: 'warn' },
   keep: exitKey.step('Esc', 'keep'),
-  close: exitKey.close(),
+  /** `Esc` and `Ctrl+C` close the sheet the same way (`foldPermissionsSheetKey` and the host take both, from either state), so the legend names both. */
+  close: exitKey.close(['Esc', 'Ctrl+C']),
 } as const satisfies Readonly<Record<string, LegendKey>>;
 
 /** The legend while no withdrawal is asked: navigation and the action; the leaving key ({@link SHEET_KEYS.close}) goes last. */

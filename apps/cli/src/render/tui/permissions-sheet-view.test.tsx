@@ -125,7 +125,7 @@ describe('PermissionsSheetView with colour off', () => {
     expect(text).toContain('> npm, 1 argument');
     expect(text).toContain('[d] withdraw');
     expect(text).toContain('This project · remembered (2)');
-    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
     const armedStyled = frame(open(true), false);
     expect(armedStyled).not.toMatch(ANY_COLOUR);
     const armed = plain(armedStyled);
@@ -165,7 +165,7 @@ describe('PermissionsSheetView with colour off', () => {
     const lines = plain(frame(initialPermissionsSheetState(empty, 'chat', 'ask', 0), false)).split(
       '\n',
     );
-    const legend = lines.findIndex((line) => line.startsWith('Esc close'));
+    const legend = lines.findIndex((line) => line.startsWith('Esc / [Ctrl+C] close'));
     expect(lines[legend - 1]?.trim()).toBe('');
     expect(lines[legend - 2]).toContain('Session-approved commands run unasked here');
   });

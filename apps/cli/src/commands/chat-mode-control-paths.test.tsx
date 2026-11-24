@@ -88,7 +88,9 @@ const home = '/nonexistent-home';
 describe('the command card of the production mode control, with the roots the chat handler passes', () => {
   it('names the project’s own directory in words', async () => {
     const card = await cardWith((workspace) => ({ cwd: workspace, home }));
-    expect(card.row).toContain('Runs in: . (project root)');
+    // The project names its folder, cut at the front to the room the row has (the temporary folder's name is long): the end of the name is what stays.
+    expect(card.row).toContain('Runs in: . (project root: ');
+    expect(card.row).toContain(basename(card.workspace).slice(-12));
     expect(card.row).not.toContain(card.workspace);
   });
 

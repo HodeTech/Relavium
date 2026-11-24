@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { join, posix, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
@@ -574,7 +574,8 @@ function scanSource(file: string, source: string): Scan {
 /**
  * Directories that hold test harnesses and no product string: they are imported only by `*.test.ts` files, so nothing in them reaches a
  * terminal (the surface matrix and the legend golden mount and record the real surfaces; the words they carry are comments and
- * fixture text about those surfaces, not remedies).
+ * fixture text about those surfaces, not remedies). File names are held the same way ({@link isHarnessFile}): `test-support` and anything
+ * with `fixture` in its name.
  */
 const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([
   'node_modules',
@@ -584,9 +585,28 @@ const HARNESS_DIRECTORIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Modules with `fixture` in the name that are PRODUCT code, so they are scanned like any other file and a product file may import them:
+ * the cassette of `--cassette` (a recorded LLM exchange replayed by `agent run`) is a feature, not a harness.
+ */
+const PRODUCT_FIXTURE_MODULES: ReadonlySet<string> = new Set(['chat/fixture']);
+
+/** The module path (relative to `src`, no extension) of a source file. */
+const modulePathOf = (file: string): string => file.replace(/\.[cm]?[jt]sx?$/u, '');
+
+/** Whether a file is a test harness by its name: `…test-support.ts`, or `fixture` in the name unless it is one of {@link PRODUCT_FIXTURE_MODULES}. */
+function isHarnessFile(file: string): boolean {
+  const name = posix.basename(file);
+  if (/test-support\.tsx?$/u.test(name)) return true;
+  return /fixture/u.test(name) && !PRODUCT_FIXTURE_MODULES.has(modulePathOf(file));
+}
+
+/**
  * Every module a source file names, read from its syntax tree: a static `import … from '…'`, a side-effect `import '…'`, a re-export
- * `export … from '…'`, a dynamic `import('…')` (a string or an untagged template with no substitution) and `require('…')`. A comment, a
- * string that is not a specifier and a `from '…'` inside prose never count.
+ * `export … from '…'`, a dynamic `import('…')` (a string, or a template: its fixed parts, each substitution written `*`) and `require('…')`.
+ * A comment, a string that is not a specifier and a `from '…'` inside prose never count. **A specifier that is computed** (`import(name)`,
+ * `import(base + '/x')`) is out of this guard's reach: no syntax says what it names. The built bundle is held to the same rule from the
+ * other side (`tools/bundle-closure`: no metafile input may be a test, a fixture, a test-support file, the surface matrix or the legend
+ * golden), and that check does not depend on how the import was spelled.
  */
 function moduleSpecifiers(file: string, text: string): string[] {
   const specifiers: string[] = [];
@@ -597,10 +617,14 @@ function moduleSpecifiers(file: string, text: string): string[] {
     true,
     file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
-  const literalText = (node: ts.Node | undefined): string | undefined =>
-    node !== undefined && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-      ? node.text
-      : undefined;
+  const literalText = (node: ts.Node | undefined): string | undefined => {
+    if (node === undefined) return undefined;
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+    // a template with substitutions: the fixed parts, each substitution a `*` (no name can be made of one)
+    if (ts.isTemplateExpression(node))
+      return node.head.text + node.templateSpans.map((span) => `*${span.literal.text}`).join('');
+    return undefined;
+  };
   const visit = (node: ts.Node): void => {
     if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
       const specifier = literalText(node.moduleSpecifier);
@@ -627,12 +651,23 @@ function moduleSpecifiers(file: string, text: string): string[] {
   return specifiers;
 }
 
-/** The harness directories a specifier reaches: any path segment of it that is the name of one. */
-function harnessDirectoriesIn(specifier: string): string[] {
+/**
+ * What of a test harness a specifier, written in `file`, reaches: a path segment that is the name of a harness directory (`surface-matrix`,
+ * `legend-golden`, `fixtures`), and a module whose name is a harness's (`test-support`, `fixture` in the name: {@link isHarnessFile}). A
+ * segment with a `*` in it (a template's substitution) is no name and is not read.
+ */
+function harnessReached(file: string, specifier: string): string[] {
   const segments = specifier.split('/');
-  return [...HARNESS_DIRECTORIES].filter(
-    (name) => name !== 'node_modules' && name !== 'fixtures' && segments.includes(name),
+  const found = [...HARNESS_DIRECTORIES].filter(
+    (name) => name !== 'node_modules' && segments.includes(name),
   );
+  const name = (segments.at(-1) ?? '').replace(/\.[cm]?[jt]sx?$/u, '');
+  const resolved = specifier.startsWith('.')
+    ? modulePathOf(posix.normalize(posix.join(posix.dirname(file), specifier)))
+    : specifier;
+  if (/test-support$/u.test(name)) found.push('test-support');
+  else if (/fixture/u.test(name) && !PRODUCT_FIXTURE_MODULES.has(resolved)) found.push('fixture');
+  return found;
 }
 
 function sourceFiles(dir: string): string[] {
@@ -645,8 +680,7 @@ function sourceFiles(dir: string): string[] {
       /\.tsx?$/u.test(entry.name) &&
       !/\.d\.ts$/u.test(entry.name) &&
       !/\.test\.tsx?$/u.test(entry.name) &&
-      !/test-support\.tsx?$/u.test(entry.name) &&
-      !/fixture/u.test(entry.name)
+      !isHarnessFile(relative(SRC, full).split(sep).join('/'))
     )
       found.push(full);
   }
@@ -768,7 +802,7 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
   it('leaves out the test harness directories only because no product source imports them (a static, side-effect, re-export or dynamic import)', () => {
     const importers = [...FILES.keys()].filter((file) =>
       moduleSpecifiers(file, readFileSync(join(SRC, ...file.split('/')), 'utf8')).some(
-        (specifier) => harnessDirectoriesIn(specifier).length > 0,
+        (specifier) => harnessReached(file, specifier).length > 0,
       ),
     );
     expect(importers).toEqual([]);
@@ -776,8 +810,8 @@ describe('no remedy inside the TUI names a shell command (ADR-0122 §6, ADR-0146
 });
 
 describe('the harness-import guard sees every way a module is named (it is run on text it is given)', () => {
-  const reached = (text: string, file = 'x.ts'): string[] =>
-    moduleSpecifiers(file, text).flatMap(harnessDirectoriesIn);
+  const reached = (text: string, file = 'render/tui/x.ts'): string[] =>
+    moduleSpecifiers(file, text).flatMap((specifier) => harnessReached(file, specifier));
 
   it.each([
     ['a named import', "import { a } from './x/surface-matrix/y.js';"],
@@ -792,6 +826,33 @@ describe('the harness-import guard sees every way a module is named (it is run o
     ['an import type node', "type T = import('./legend-golden/y.js').A;"],
     ['an import-equals', "import m = require('./legend-golden/y.js');"],
     ['a directory import with no trailing path', "import { a } from './surface-matrix';"],
+    ['a fixtures directory', "import { a } from './fixtures/worker.js';"],
+    ['a test-support module', "import { a } from '../../test-support.js';"],
+    [
+      'a test-support module of a feature',
+      "import { a } from './chat-mode-control.test-support.js';",
+    ],
+    ['a fixture module', "import { a } from '../history/node-run-fixture.js';"],
+    [
+      'a template dynamic import with a substitution before the name',
+      'const m = await import(`./x/${kind}/surface-matrix/y.js`);',
+    ],
+    [
+      'a template dynamic import with a substitution after it',
+      'const m = await import(`./legend-golden/${name}.js`);',
+    ],
+    [
+      'a template dynamic import of a fixtures directory',
+      'const m = await import(`./fixtures/${name}.js`);',
+    ],
+    [
+      'a template dynamic import of a module named fixture-*',
+      'const m = await import(`./fixture-${name}.js`);',
+    ],
+    [
+      'a template dynamic import of a test-support module',
+      'const m = await import(`../${dir}/test-support.js`);',
+    ],
   ])('flags %s', (_name, text) => {
     expect(reached(text).length, text).toBeGreaterThan(0);
   });
@@ -807,8 +868,41 @@ describe('the harness-import guard sees every way a module is named (it is run o
     ['a string that is not a specifier', 'const a = "from \'./surface-matrix/y.js\'";'],
     ['an ordinary import', "import { a } from './x/y.js'; import('./z.js');"],
     ['a name that only contains a harness name', "import a from './surface-matrix-like/y.js';"],
+    ['a directory that only contains the word', "import a from './fixtures-like/y.js';"],
+    [
+      'the cassette, which is product code',
+      "import { cassetteResolver } from '../../chat/fixture.js';",
+    ],
+    [
+      'a template whose substitution is a whole name',
+      'const m = await import(`./x/${kind}/y.js`);',
+    ],
   ])('does not flag %s', (_name, text) => {
     expect(reached(text), text).toEqual([]);
+  });
+
+  it('flags the cassette module only where it is not the one of `chat/`', () => {
+    expect(reached("import a from './fixture.js';", 'render/tui/x.ts')).toEqual(['fixture']);
+    expect(reached("import a from './fixture.js';", 'chat/x.ts')).toEqual([]);
+  });
+
+  it('cannot read a specifier that is computed: the bundle check (tools/bundle-closure) is what holds that case', () => {
+    expect(reached('const m = await import(name);')).toEqual([]);
+    expect(reached("const m = await import(base + '/surface-matrix/y.js');")).toEqual([]);
+  });
+
+  it('scans the product module named fixture and leaves the harness files out, by name', () => {
+    expect(FILES.has('chat/fixture.ts')).toBe(true);
+    for (const harness of [
+      'test-support.ts',
+      'history/node-run-fixture.ts',
+      'chat/test-support.ts',
+    ])
+      expect(FILES.has(harness), harness).toBe(false);
+    expect(isHarnessFile('commands/x.test-support.ts')).toBe(true);
+    expect(isHarnessFile('engine/media-generated-fixtures.ts')).toBe(true);
+    expect(isHarnessFile('chat/fixture.ts')).toBe(false);
+    expect(isHarnessFile('render/tui/fixture.ts')).toBe(true);
   });
 });
 

@@ -128,12 +128,19 @@ const MINUTE_MS = 60 * SECOND_MS;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 
-/** `1m04s`: whole minutes, then the seconds padded to two digits. */
-const minutesAndSeconds = (wholeSeconds: number): string =>
-  `${Math.floor(wholeSeconds / 60)}m${String(wholeSeconds % 60).padStart(2, '0')}s`;
+/**
+ * A span of whole seconds as a clock reads it, from a minute up: `1m04s`, and from an hour up `1h00m`, `1h01m` (hours and minutes: the seconds
+ * of a span that long are noise, and a turn that has run a day reads `24h00m`, never `1440m00s`). The one helper of {@link formatDuration} and
+ * {@link formatElapsed}.
+ */
+const clockOf = (wholeSeconds: number): string => {
+  const minutes = Math.floor(wholeSeconds / 60);
+  if (minutes < 60) return `${minutes}m${String(wholeSeconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, '0')}m`;
+};
 
 /**
- * A completed span, compactly: `420ms`, `3.2s`, `1m04s`. A negative (clock skew) and a number that is not finite (`NaN`, `Infinity`: a
+ * A completed span, compactly: `420ms`, `3.2s`, `1m04s`, `1h01m`. A negative (clock skew) and a number that is not finite (`NaN`, `Infinity`: a
  * clock that failed) clamp to 0, as {@link formatElapsed} does, so a row never reads `NaNmNaNs`. A span that rounds to a whole second
  * reads in seconds (`999.5 ms` is `1.0s`, never `1000ms`).
  */
@@ -148,19 +155,19 @@ export function formatDuration(ms: number): string {
   if (totalSeconds < 59.95) {
     return `${totalSeconds.toFixed(1)}s`;
   }
-  // Round to whole seconds, then carry into minutes — so 59.95–59.999s → "1m00s" and 119.6s → "2m00s",
-  // never the invalid "60.0s" or "1m60s".
-  return minutesAndSeconds(Math.round(totalSeconds));
+  // Round to whole seconds, then carry into minutes and hours — so 59.95–59.999s → "1m00s", 119.6s → "2m00s" and 3599.6s → "1h00m",
+  // never the invalid "60.0s", "1m60s" or "60m00s".
+  return clockOf(Math.round(totalSeconds));
 }
 
 /**
  * A LIVE in-flight counter (the "thinking… {elapsed}" turn timer): WHOLE seconds only so it does not jitter every animation frame —
- * `3s`, `12s`, `1m03s`. Negatives (clock skew) and a non-finite input clamp to 0 (never `NaNmNaNs`). Distinct from
+ * `3s`, `12s`, `1m03s`, and from an hour up `1h00m` (no seconds, no days: the hours keep counting). Negatives (clock skew) and a non-finite input clamp to 0 (never `NaNmNaNs`). Distinct from
  * {@link formatDuration}, which shows sub-second precision for a COMPLETED span.
  */
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.floor(Math.max(0, Number.isFinite(ms) ? ms : 0) / SECOND_MS);
-  return totalSeconds < 60 ? `${totalSeconds}s` : minutesAndSeconds(totalSeconds);
+  return totalSeconds < 60 ? `${totalSeconds}s` : clockOf(totalSeconds);
 }
 
 /** What a timestamp more than one minute ahead of the clock says: it is not an age, and `just now` would be a lie. */
@@ -192,10 +199,12 @@ export function formatAgeOfIso(iso: string, nowMs: number): string {
 
 /**
  * The forward-looking counterpart of {@link formatAge}: `in 30s`, `in 5m`, `in 2h`, `in 3d` (a sub-second remainder reads `in 1s`, never
- * `in 0s`). A number that is not finite is {@link NO_TIME}, never `in NaNd`.
+ * `in 0s`). A time that has PASSED (a negative remainder) reads as the age it is, by {@link formatAge}: `just now`, `5m ago`, never `in 1s`.
+ * A number that is not finite is {@link NO_TIME}, never `in NaNd`.
  */
 export function formatTimeUntil(remainingMs: number): string {
   if (!Number.isFinite(remainingMs)) return NO_TIME;
+  if (remainingMs < 0) return formatAge(-remainingMs);
   const seconds = Math.max(1, Math.floor(remainingMs / SECOND_MS));
   if (seconds < 60) return `in ${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -303,8 +312,16 @@ function parseAbsolute(path: string, win32: boolean): ParsedPath | undefined {
   return { root, parts, trailing: last === '/' || (win32 && last === '\\') };
 }
 
+/**
+ * `text` with the capital letters A to Z made lower case, and nothing else touched. JavaScript's own `toLowerCase` folds more than that (the
+ * Kelvin sign U+212A is a `k`, the Angstrom sign U+212B an `å`), so a name that only LOOKS like another would be read as the same file and a
+ * path outside the project shown inside it. A name that differs by anything but the case of an ASCII letter does not compare equal, and a
+ * mismatch fails safe: the whole path is shown.
+ */
+const asciiLower = (text: string): string => text.replace(/[A-Z]+/gu, (run) => run.toLowerCase());
+
 const sameName = (a: string, b: string, win32: boolean): boolean =>
-  win32 ? a.toLowerCase() === b.toLowerCase() : a === b;
+  win32 ? asciiLower(a) === asciiLower(b) : a === b;
 
 const isDotSegment = (part: string): boolean => part === '.' || part === '..';
 
@@ -327,6 +344,17 @@ function insideOf(
   }
   const rest = target.parts.slice(base.parts.length);
   return rest.some(isDotSegment) ? undefined : rest;
+}
+
+/**
+ * `{ paths: roots }` when there are roots and `{}` when there are none: for a model whose input says `paths?: DisplayPathRoots` and so refuses an
+ * explicit `undefined` (`exactOptionalPropertyTypes`). Spread it (`...optionalPaths(deps.paths)`) instead of writing the conditional at
+ * each place that passes its roots on.
+ */
+export function optionalPaths(roots: DisplayPathRoots | undefined): {
+  readonly paths?: DisplayPathRoots;
+} {
+  return roots === undefined ? {} : { paths: roots };
 }
 
 /** The separator a shortened path is written with: a backslash when it is a Windows path that used one, else a slash. */

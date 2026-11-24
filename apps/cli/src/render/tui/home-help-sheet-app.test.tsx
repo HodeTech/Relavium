@@ -90,12 +90,12 @@ describe.each([
 ] as const)('the /help sheet in %s', (_name, alternateScreen) => {
   it('opens from a typed /help, takes the body of the landing at 80×24 in at most 23 rows, and names the commands and the keys', async () => {
     const m = mountHelp({ alternateScreen });
-    await until(() => m.frame().includes('[/] for commands'));
+    await until(() => m.frame().includes('[/] commands'));
     await typeHelp(m);
     await until(() => m.frame().includes('Keys of the Home'));
     const frame = m.frame();
     expect(frame.split('\n').length).toBeLessThanOrEqual(HELP_SHEET_ROWS);
-    expect(frame, 'no prompt behind the screen').not.toContain('[/] for commands');
+    expect(frame, 'no prompt behind the screen').not.toContain('[/] commands');
     expect(frame).toContain('Commands');
     // Every command is named as a whole word (it has its own row with a description, or is one of the names the last rows hold).
     for (const command of HOME_PALETTE_COMMANDS)
@@ -110,7 +110,7 @@ describe.each([
     await typeHelp(m);
     m.harness.stdin.write(ESC);
     await until(() => m.controller.getSnapshot().screen === undefined);
-    await until(() => m.frame().includes('[/] for commands'));
+    await until(() => m.frame().includes('[/] commands'));
     expect(m.frame()).not.toContain('Keys of the Home');
   });
 
@@ -119,7 +119,7 @@ describe.each([
     await typeHelp(m);
     m.harness.stdin.write('\u0003');
     await until(() => m.controller.getSnapshot().screen === undefined);
-    await until(() => m.frame().includes('[/] for commands'));
+    await until(() => m.frame().includes('[/] commands'));
     expect(m.controller.getSnapshot().interruptArmed).toBe(false);
     expect(m.onExit).not.toHaveBeenCalled();
   });

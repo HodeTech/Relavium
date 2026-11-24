@@ -351,15 +351,19 @@ export function formatModelPrice(entry: ModelCatalogEntry): string {
   return formatPricePair(inputPerMtokMicrocents, outputPerMtokMicrocents);
 }
 
-/** A compact context-window label (`200K ctx`, `1M ctx`), or `''` when the window is unknown. */
+/**
+ * A compact context-window label (`200K ctx`, `1M ctx`, `1.5M ctx`), or `''` when the window is unknown. A size is rounded ONCE, to the
+ * nearest thousand and, from a million up, to the nearest tenth of a million: `999,500` and `1,000,000` and `1,048,576` all read `1M ctx` (a
+ * `1000K ctx` and a `1.0M ctx` next to a `1M ctx` read as three different sizes).
+ */
 export function formatContextWindow(tokens: number | undefined): string {
-  if (tokens === undefined || tokens <= 0) return '';
-  if (tokens >= 1_000_000) {
-    const millions = tokens / 1_000_000;
-    return `${Number.isInteger(millions) ? millions : millions.toFixed(1)}M ctx`;
-  }
-  if (tokens >= 1000) return `${Math.round(tokens / 1000)}K ctx`;
-  return `${tokens} ctx`;
+  if (tokens === undefined || !Number.isFinite(tokens) || tokens <= 0) return '';
+  if (tokens < 1000) return `${tokens} ctx`;
+  const thousands = Math.round(tokens / 1000);
+  if (thousands < 1000) return `${thousands}K ctx`;
+  const tenths = Math.round(tokens / 100_000);
+  const rest = tenths % 10;
+  return `${Math.floor(tenths / 10)}${rest === 0 ? '' : `.${rest}`}M ctx`;
 }
 
 /**

@@ -239,6 +239,34 @@ const enginePurityImportEntry = /** @type {const} */ ([
 const DATA_MODULE_MESSAGE =
   'A CLI data module (the registry, the glyph table, the legend builder, the notation helpers) imports nothing from ink, react or node: ' +
   '(ADR-0145 §10): keep it pure data and pure functions, and let the view that draws it do the importing.';
+const DATA_MODULE_GLOBAL_MESSAGE =
+  'A CLI data module reads no process state and no Buffer (ADR-0145 §10): it is pure data and pure functions. A surface that needs a platform, ' +
+  'a clock or a path passes it in (`render/display-roots.ts` is where the process is read, and it is not a data module).';
+// The forms `no-restricted-imports` cannot see, closed for the data modules the way the seam's are (above): a dynamic `import('ink')`, the
+// import-type query `import('react').ReactNode` and `require('node:fs')`. A specifier is read by name and by prefix (`node:`, `ink-`), and a
+// bare Node built-in by the same list the static pattern uses; a computed specifier is banned outright by the seam selectors every data module
+// already carries.
+const DATA_MODULE_SPECIFIER_RE = String.raw`^(ink|react|react-dom|chalk)(\/.*)?$|^ink-|^node:|^(${NODE_BUILTINS.join('|')})(\/.*)?$`;
+const dataModuleSyntaxRules = /** @type {const} */ ([
+  {
+    selector: `ImportExpression[source.value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  {
+    selector: `TSImportType Literal[value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  {
+    selector: `CallExpression[callee.name='require'] > Literal[value=/${DATA_MODULE_SPECIFIER_RE}/]`,
+    message: DATA_MODULE_MESSAGE,
+  },
+  // the global object is a way to `process` and `Buffer` that `no-restricted-globals` does not see
+  {
+    selector:
+      'MemberExpression[object.name=/^(globalThis|global)$/][property.name=/^(process|Buffer)$/]',
+    message: DATA_MODULE_GLOBAL_MESSAGE,
+  },
+]);
 const dataModuleImportEntry = /** @type {const} */ ([
   'error',
   {
@@ -270,6 +298,7 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/render/tui/palette-entries.ts',
   'apps/cli/src/render/tui/sheet-frame.ts',
   'apps/cli/src/render/tui/tui-constants.ts',
+  'apps/cli/src/render/tui/place-label.ts',
   'apps/cli/src/render/notation.ts',
   'apps/cli/src/render/notice-surface.ts',
   'apps/cli/src/render/surface.ts',
@@ -428,9 +457,26 @@ export default tseslint.config(
     },
   },
   {
-    // The CLI data modules (ADR-0145 §10): no ink, react or node: import. After the general TS block, whose entry this replaces.
+    // The CLI data modules (ADR-0145 §10): no ink, react or node: import (static, dynamic, an import-type query or a `require`), and no read of
+    // `process` or `Buffer`. After the general TS and CLI blocks, whose entries this replaces: the syntax list is theirs with the data modules' added.
+    // An inline `eslint-disable` is not honoured here: a comment must not be able to lift the fence from the module it is written in.
     files: CLI_DATA_MODULES,
-    rules: { '@typescript-eslint/no-restricted-imports': dataModuleImportEntry },
+    linterOptions: { noInlineConfig: true },
+    rules: {
+      '@typescript-eslint/no-restricted-imports': dataModuleImportEntry,
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+        jsonLineSyntaxRule,
+        ...dataModuleSyntaxRules,
+      ],
+      'no-restricted-globals': [
+        'error',
+        ...['process', 'Buffer'].map((name) => ({ name, message: DATA_MODULE_GLOBAL_MESSAGE })),
+      ],
+    },
   },
   {
     // The seam's ONE legal zone: provider SDKs are imported only inside the adapters,

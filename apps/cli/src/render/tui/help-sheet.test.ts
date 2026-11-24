@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   HOME_PALETTE_COMMANDS,
+  placementOf,
   REPL_COMMANDS,
   type ReplCommand,
 } from '../../commands/repl-commands.js';
@@ -58,7 +59,7 @@ describe('which commands the sheet lists', () => {
     // The home-enabled registry commands, /help (typed at the landing, though the registry marks it a chat's) and the Home's own.
     const expected = new Set([
       'help',
-      ...REPL_COMMANDS.filter((command) => command.availableIn.includes('home')).map(
+      ...REPL_COMMANDS.filter((command) => placementOf(command.name, 'home') !== undefined).map(
         (command) => command.name,
       ),
       ...HOME_PALETTE_COMMANDS.map((command) => command.name),
@@ -94,7 +95,7 @@ describe('which commands the sheet lists', () => {
     const named = new Set(namedCommands(textOf(200)));
     for (const command of REPL_COMMANDS) {
       if (listed.has(command.name)) continue;
-      expect(command.availableIn, `/${command.name} is a chat's`).not.toContain('home');
+      expect(placementOf(command.name, 'home'), `/${command.name} is a chat's`).toBeUndefined();
       expect(named.has(`/${command.name}`), `/${command.name} is not named`).toBe(false);
     }
     expect(listed.has('cost')).toBe(false);

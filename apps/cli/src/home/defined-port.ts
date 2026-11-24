@@ -11,7 +11,7 @@ import {
 } from '../history/defined-model.js';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
-import type { DisplayPathRoots } from '../render/notation.js';
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
   type ExportAttempt,
@@ -62,7 +62,7 @@ export function createDefinedPort(deps: DefinedPortDeps): DefinedPort {
         entries,
         pins,
         otherPins,
-        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
+        ...optionalPaths(deps.paths),
         ...(lastRuns === undefined ? {} : { lastRuns }),
       });
       // The entries are held by the read, so a row's index names the entry that was listed and not whatever sits there later.

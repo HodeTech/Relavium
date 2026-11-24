@@ -21,13 +21,14 @@ const ESC = String.fromCharCode(0x1b);
 const plain = (text: string): string => text.replace(new RegExp(`${ESC}\\[\\d+m`, 'gu'), '');
 
 const LEGEND = '↑/↓ select · Enter run · Esc close';
+/** With nothing to select or run, only the key that closes is named: a legend that listed `↑/↓` and `Enter` would list keys that do nothing. */
+const NO_MATCH_LEGEND = 'Esc close';
 
 const command = (name: string, description: string): ReplCommand => ({
   name,
   label: name,
   description,
   effect: 'read',
-  availableIn: ['home'],
   run: () => undefined,
 });
 const entry = (
@@ -113,7 +114,7 @@ describe('a palette whose entries all fit', () => {
       '',
       '/zzz',
       'no matching command',
-      LEGEND,
+      NO_MATCH_LEGEND,
     ]);
   });
 });
@@ -320,7 +321,7 @@ describe('in a chat the list runs away from the prompt: the first entry is besid
     ]);
     expect(lines(SHORT, { query: 'zzz', index: 0 }, 24, 'up')).toEqual([
       '',
-      LEGEND,
+      NO_MATCH_LEGEND,
       'no matching command',
       '/zzz',
     ]);

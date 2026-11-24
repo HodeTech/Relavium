@@ -35,7 +35,8 @@ import {
   fullSearchRows,
   fullWarnings,
 } from '../../tool-review-screen.js';
-import { rowSegments, type LegendRow } from '../../legend-row.js';
+import type { LegendRender } from '../../legend.js';
+import { rowSegments } from '../../legend-row.js';
 import {
   ToolReviewHost,
   keyTone,
@@ -447,7 +448,7 @@ function toneName(tone: Record<string, unknown>): string {
 }
 
 const keyRoles: Recorder = () => {
-  const rows: Record<string, LegendRow> = {
+  const rows: Record<string, LegendRender> = {
     'card, tool, inspected': cardKeyLegend({
       inspected: true,
       cacheable: true,

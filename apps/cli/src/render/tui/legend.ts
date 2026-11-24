@@ -73,23 +73,90 @@ const PLAIN_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The key tokens the grammar brackets: a single letter or digit (`[d]`, `[1]`) and a chord (`[Ctrl+Y]`, `[Alt+Enter]`, `[Ctrl+Shift+R]`). The
- * universal keys are never bracketed, so a `[Enter]` is not the grammar's and is left alone. A name such as `[id].tsx` has no token in it.
+ * The key tokens the grammar brackets, as {@link inertLegendText} looks for them: a single letter or digit (`[d]`, `[1]`) and a chord, any
+ * short word, a `+` and a short rest (`[Ctrl+Y]`, `[Alt+Enter]`, `[Ctrl+Shift+R]`). A chord is read by its SHAPE and not by its modifier's name,
+ * so a lookalike of one (`[Сtrl+Y]` with a Cyrillic `С`) is as inert as the real one; the price is that a name such as `file[a+b].ts` reads
+ * `file(a+b).ts`. The universal keys are never bracketed, so a `[Enter]` is not the grammar's and is left alone. A name such as `[id].tsx` has
+ * no token in it.
  */
-const BRACKETED_KEY =
-  /\[(?:[\p{L}\p{N}]|(?:Ctrl|Alt|Shift|Cmd|Meta|Super|Win)\+[^\]\n]{1,16})\]/giu;
+const KEY_TOKEN_LOOKALIKE = /\[(?:[\p{L}\p{N}]|[^\]\n+]{1,10}\+[^\]\n]{1,16})\]/gu;
+
+/**
+ * The separator as it can be forged: a lookalike of the middle dot (U+00B7; the bullet and dot operators U+2219 and U+22C5, the hyphenation
+ * point U+2027 and the katakana middle dot U+30FB; the Greek ano teleia U+0387 and the halfwidth katakana middle dot U+FF65 fold to the first
+ * and the last of these, so the {@link foldedView} reads them as those) with a whitespace character of any kind (a no-break or a thin space too)
+ * on each side. The whitespace is looked at and left, so two dots in a row (`a · · b`) are both found.
+ */
+const SEPARATOR_LOOKALIKE = /(?<=\s)[\u00B7\u2219\u22C5\u2027\u30FB](?=\s)/gu;
+
+/** The characters that draw nothing (the zero-width and joining characters, the soft hyphen, the byte-order mark, the bidi marks): dropped from the view a forgery is looked for in. */
+const INVISIBLE = /^\p{Cf}$/u;
+
+/** `text` as a forgery would be read: the invisible characters gone and every other character in its compatibility form (`［Ctrl＋Y］` reads `[Ctrl+Y]`), with where each folded unit came from. */
+function foldedView(text: string): {
+  readonly folded: string;
+  readonly start: readonly number[];
+  readonly end: readonly number[];
+} {
+  let folded = '';
+  const start: number[] = [];
+  const end: number[] = [];
+  let at = 0;
+  for (const character of text) {
+    const next = at + character.length;
+    if (!INVISIBLE.test(character)) {
+      const piece = character.normalize('NFKC');
+      for (let unit = 0; unit < piece.length; unit += 1) {
+        start.push(at);
+        end.push(next);
+      }
+      folded += piece;
+    }
+    at = next;
+  }
+  return { folded, start, end };
+}
 
 /**
  * Text from an untrusted source (a file name, a command line, a path) that is drawn INSIDE a legend as a {@link LegendText}: with the
  * legend's separator and its key tokens made inert, so a name cannot be read as another item of the legend (ADR-0145 §5: "a separator the
  * status line uses is neutralised inside a field value"). Every ` · ` becomes ` - ` (a different shape, not a lookalike: the forgery is
  * visual) and a bracketed key token becomes a parenthesised one (`[Ctrl+Y]` reads `(Ctrl+Y)`). Everything else, brackets of a name
- * included, is left as it is. It does not sanitise: the control characters go through the inline sanitiser first.
+ * included, is left as it is.
+ *
+ * What is looked for is looked for in the text as it would be READ: the invisible characters dropped (a zero-width space inside `[Ctrl+\u200BY]`)
+ * and every character folded to its compatibility form (a fullwidth `［Ctrl＋Y］`, the fullwidth `＋` of a chord), so a forgery that is not byte-for-byte
+ * the separator or the token is found all the same: any whitespace around the dot (a no-break or thin space), the lookalike dots
+ * ({@link SEPARATOR_LOOKALIKE}) and a chord by its shape ({@link KEY_TOKEN_LOOKALIKE}). Only what is found is changed, in the text as it was written
+ * (an emoji sequence, a name in another script, an invisible character elsewhere stay). It does not sanitise: the control characters go through
+ * the inline sanitiser first.
  */
 export function inertLegendText(text: string): string {
-  return text
-    .replaceAll(LEGEND_SEPARATOR, ' - ')
-    .replace(BRACKETED_KEY, (token) => `(${token.slice(1, -1)})`);
+  // two passes, so that a separator inside a chord (`[Ctrl+ · Y]`) is made inert before the chord is
+  const separated = replaceFolded(text, SEPARATOR_LOOKALIKE, () => '-');
+  return replaceFolded(separated, KEY_TOKEN_LOOKALIKE, (written) => {
+    // the first and the last character of what was written are the brackets, whatever their form was: they become parentheses, the rest stays
+    const characters = Array.from(written);
+    return `(${characters.slice(1, -1).join('')})`;
+  });
+}
+
+/** `text` with each match of `pattern` in its {@link foldedView} replaced, in the text as it was written, by `replace` of what was written there. */
+function replaceFolded(
+  text: string,
+  pattern: RegExp,
+  replace: (written: string) => string,
+): string {
+  const { folded, start, end } = foldedView(text);
+  let out = '';
+  let at = 0;
+  for (const found of folded.matchAll(pattern)) {
+    const from = start[found.index] ?? 0;
+    const to = end[found.index + found[0].length - 1] ?? from;
+    out += text.slice(at, from) + replace(text.slice(from, to));
+    at = to;
+  }
+  return out + text.slice(at);
 }
 
 /** A key as the grammar writes it: `Enter` stays `Enter`, `d` becomes `[d]`, `Ctrl+Y` becomes `[Ctrl+Y]`. Idempotent on a bracketed key. */

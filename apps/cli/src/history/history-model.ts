@@ -1,13 +1,9 @@
 import type { RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import {
-  displayPath,
-  formatAgeOfIso,
-  formatDuration,
-  type DisplayPathRoots,
-} from '../render/notation.js';
+import { formatAgeOfIso, formatDuration, type DisplayPathRoots } from '../render/notation.js';
 import { glyphOf, type StatusGlyphRole } from '../render/tui/glyphs.js';
+import { placeForDisplay } from '../render/tui/place-label.js';
 import {
   MAX_PROJECT_ROOT_CHARS,
   isFinishedRun,
@@ -15,6 +11,24 @@ import {
   shortRunId,
   spanMs,
 } from './run-detail-model.js';
+
+/**
+ * A stored project root as a row of the History, Active or Defined tab may carry it: named as the rest of the CLI names a directory
+ * ({@link placeForDisplay}: shortened FIRST against `paths`, so the project's own directory reads `. (project root)` and never a lone
+ * `.`), then scrubbed WHOLE and cut to `max` code points ({@link scrubbedBounded}: the root is stored text that could carry a secret, so
+ * the scrub is the sanitiser the helper runs and the bound is the one it applies). The three tabs call this one function, so a directory
+ * reads the same on all of them.
+ */
+export function storedPlace(
+  root: string,
+  paths: DisplayPathRoots | undefined,
+  max: number,
+): string {
+  // `scrubbedBounded` is the bound (it cuts the tail and marks the cut), so the front cut of the helper has nothing left to do.
+  return placeForDisplay(root, paths, Number.POSITIVE_INFINITY, (text) =>
+    scrubbedBounded(text, max),
+  );
+}
 
 /**
  * The pure view model of the Home's History browser rows (ADR-0140 §2, "History"; MVP-8 step 1). One row per run
@@ -108,12 +122,7 @@ export function buildHistoryRows(input: HistoryRowsInput): HistoryRow[] {
       ...(run.projectRoot === undefined
         ? {}
         : {
-            projectRoot: scrubbedBounded(
-              input.paths === undefined
-                ? run.projectRoot
-                : displayPath(run.projectRoot, input.paths),
-              MAX_PROJECT_ROOT_CHARS,
-            ),
+            projectRoot: storedPlace(run.projectRoot, input.paths, MAX_PROJECT_ROOT_CHARS),
           }),
     };
   });

@@ -280,9 +280,6 @@ export interface ReplCommand {
    *  (an awaited `Promise<void>`), so `/cost` / `/doctor` are safe. A {@link HomeOpenedCommand} has no handler to run: its `run` throws, so
    *  a route that reached it by mistake fails loudly instead of doing nothing. */
   readonly run: CommandRun;
-  /** The surfaces the command applies to, derived from its placements: `home` (the bare Home) and/or `chat` (a stand-alone or a Home-hosted
-   *  chat). A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. */
-  readonly availableIn: readonly ('home' | 'chat')[];
 }
 
 const ENABLED: Availability = Object.freeze({ enabled: true });
@@ -852,17 +849,6 @@ export function availabilityOf(
   return placement.available?.({ ...ctx, surface }) ?? ENABLED;
 }
 
-const availableInOf = (definition: CommandDefinition): readonly ('home' | 'chat')[] => {
-  const surfaces: ('home' | 'chat')[] = [];
-  if (definition.placements.home !== undefined) surfaces.push('home');
-  if (
-    definition.placements['standalone-chat'] !== undefined ||
-    definition.placements['home-chat'] !== undefined
-  )
-    surfaces.push('chat');
-  return Object.freeze(surfaces);
-};
-
 const replCommandCache = new Map<string, ReplCommand>();
 
 /** A definition as one surface sees it, flattened to a {@link ReplCommand}. The same object every time for one (name, surface). */
@@ -881,7 +867,6 @@ function replCommandFor(definition: CommandDefinition, surface: PaletteSurface):
     ...(definition.rejectHint === undefined ? {} : { rejectHint: definition.rejectHint }),
     ...(definition.positional === undefined ? {} : { positional: definition.positional }),
     run: definition.run ?? refuseToRun(definition.name),
-    availableIn: availableInOf(definition),
   });
   replCommandCache.set(key, command);
   return command;

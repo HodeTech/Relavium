@@ -257,6 +257,7 @@ function ChatRegion(
           shellBusy: props.shellBusy,
           submitBusy: props.submitBusy,
           nativePrompt: props.overlays.nativePrompt,
+          approvalCard: state.approvalSinceMs !== undefined,
         })}
         mode={mode}
         reasoningEffort={reasoningEffort}

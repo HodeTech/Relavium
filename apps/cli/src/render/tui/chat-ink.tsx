@@ -456,17 +456,25 @@ export interface ChatWork {
   readonly submitBusy: boolean;
   /** A card of the native prompt channel (`/mode`, `/export`, `/resume`, ...) is on screen and answers every key. */
   readonly nativePrompt: boolean;
+  /** An approval card (or the agent's question card) is open (the store's `approvalSinceMs`): it owns the keyboard and answers `Esc` itself. */
+  readonly approvalCard: boolean;
 }
 
 /**
  * Whether the chat draws its busy line (`Working… · Esc stops the turn`). A slash command that is only waiting on its own card is a submit in
  * flight too, but no turn runs and the card answers `Esc` (it closes the card and stops nothing): the busy line would say a key does what it
- * does not, so it is not drawn while a card holds the screen and nothing else is running. The input gate is not this: it keeps reading
- * `submitBusy`, so a key still never reaches the composer behind the card.
+ * does not, so it is not drawn while a card holds the screen and nothing else is running. A `!` shell command that waits on its own approval
+ * card is the same case: it has not started, the card's `Esc` denies it, and "running · Esc cancels it" above that card would put two `Esc`
+ * effects on one screen. A turn that is running keeps its line while its approval card is open (the line then says it waits for the person,
+ * and the card's `Esc` does stop the turn). The input gate is not this: it keeps reading `submitBusy`, so a key still never reaches the
+ * composer behind a card.
  */
 export function chatIsBusy(work: ChatWork): boolean {
-  const waitingOnItsOwnCard = work.nativePrompt && !work.turnRunning && !work.shellBusy;
-  return work.turnRunning || work.shellBusy || (work.submitBusy && !waitingOnItsOwnCard);
+  return (
+    work.turnRunning ||
+    (work.shellBusy && !work.approvalCard) ||
+    (work.submitBusy && !work.nativePrompt && !work.approvalCard)
+  );
 }
 
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
@@ -2103,7 +2111,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
             turnRunning: running,
             shellBusy,
             submitBusy,
+            // Not observable here today (the stand-alone chat hides its conversation behind a card), and kept so that both hosts feed the
+            // one predicate the same inputs: the Home's wire is the one that is drawn, and it is pinned.
             nativePrompt: renderedOverlays.nativePrompt,
+            approvalCard: state.approvalSinceMs !== undefined,
           })}
           mode={mode}
           reasoningEffort={reasoningEffort}

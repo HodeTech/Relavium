@@ -74,7 +74,6 @@ describe('the / palette', () => {
     label: name,
     description,
     effect: 'read',
-    availableIn: ['home'],
     run: () => undefined,
   });
   const entry = (name: string, description: string): PaletteEntry => ({

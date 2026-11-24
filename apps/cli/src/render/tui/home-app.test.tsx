@@ -1181,7 +1181,7 @@ describe('RootApp — the /permissions sheet in the in-Home chat (ADR-0137 §2)'
     const frame = harness.lastFrame() ?? '';
     expect(frame).toContain('This project · remembered (1)');
     expect(frame).toContain('> npm, 1 argument');
-    expect(frame).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(frame).toContain('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
     // A paste is not input to the sheet and not text for the prompt behind it.
     harness.stdin.write(bracketed('pasted words'));
     await settleFrames();
@@ -1310,7 +1310,7 @@ describe('RootApp — the /agent sheet in the in-Home chat (ADR-0140 §3)', () =
     expect(frame).toContain('anthropic');
     expect(frame).toContain('the built-in chat agent');
     expect(frame).toContain('Reasoning effort  high');
-    expect(frame).toContain('Esc close');
+    expect(frame).toContain('Esc / [Ctrl+C] close');
     harness.stdin.write(bracketed('pasted words'));
     await settleFrames();
     expect(c.getSnapshot().input.text).toBe('');
@@ -1449,11 +1449,11 @@ describe('RootApp — the /permissions tab on the bare Home (ADR-0137 §3, ADR-0
   it('hides the Home’s own prompt and footer while the sheet is open, so there is one keyboard owner on screen', async () => {
     const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const m = mountHome(store, { permissions: homePort, size: { cols: 100, rows: 30 } });
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('[/] for commands'));
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('[/] commands'));
     await openFromPalette(m);
     const open = m.harness.lastFrame() ?? '';
-    expect(open).not.toContain('[/] for commands');
+    expect(open).not.toContain('[/] commands');
     m.harness.stdin.write('\u001b');
-    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('[/] for commands'));
+    await untilTrue(() => (m.harness.lastFrame() ?? '').includes('[/] commands'));
   });
 });

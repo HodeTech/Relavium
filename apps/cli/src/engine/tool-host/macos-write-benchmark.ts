@@ -28,6 +28,7 @@ const registry = createToolRegistry({ tools: BUILTIN_TOOLS, host: { fs: host } }
 const policy = buildTurnPolicy('auto', {
   governed: governedToolIds(BUILTIN_TOOLS),
   cache: new ApprovalCache(),
+  commandPaths: undefined,
   prompt: () => Promise.reject(new Error('benchmark unexpectedly requested interactive approval')),
 });
 assert.ok(policy.confirm);

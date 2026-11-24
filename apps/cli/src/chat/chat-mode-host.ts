@@ -54,8 +54,8 @@ export interface ChatModeEnv {
   readonly commandSessionGrants?: boolean;
   /** The directory a command runs in (the session workspace), shown on its card and the anchor of its protected-path check. */
   readonly commandCwd: string;
-  /** What the card shortens that directory against (the project and the home); absent ⇒ the card draws it as it is. */
-  readonly commandPaths?: DisplayPathRoots;
+  /** What the card shortens that directory against (the project and the home); `undefined` ⇒ the card draws it as it is. A required key: see {@link TurnPolicyDeps.commandPaths}. */
+  readonly commandPaths: DisplayPathRoots | undefined;
   /** Where a note for the person goes (a Remember that could not be written). */
   readonly notify?: (message: string) => void;
 }
@@ -69,8 +69,8 @@ export interface MakeChatModeEnvOptions {
   readonly tools: readonly ToolDef[];
   /** The session working dir — the anchor a relative preview path is resolved against for the protected check. */
   readonly workspaceDir: string;
-  /** What a command's card shortens the workspace directory against (the project and the home). */
-  readonly commandPaths?: DisplayPathRoots;
+  /** What a command's card shortens the workspace directory against (the project and the home); `undefined` when the host has none. A required key: see {@link TurnPolicyDeps.commandPaths}. */
+  readonly commandPaths: DisplayPathRoots | undefined;
   readonly fsPolicy?: FsPathPolicy;
   /** The REPL's interactive approval prompt. */
   readonly prompt: ApprovalPrompt;
@@ -99,7 +99,7 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
       ? {}
       : { commandSessionGrants: opts.commandSessionGrants }),
     commandCwd: opts.workspaceDir,
-    ...(opts.commandPaths === undefined ? {} : { commandPaths: opts.commandPaths }),
+    commandPaths: opts.commandPaths,
     ...(opts.notify === undefined ? {} : { notify: opts.notify }),
     // fs_write is the only action class with a path; egress/process have none, so they are never "protected"
     // (auto approves them directly). A relative path resolves against the session workspace — the SAME anchor
@@ -153,7 +153,7 @@ export function applyChatMode(
       ? {}
       : { commandSessionGrants: env.commandSessionGrants }),
     commandCwd: env.commandCwd,
-    ...(env.commandPaths === undefined ? {} : { commandPaths: env.commandPaths }),
+    commandPaths: env.commandPaths,
     ...(env.notify === undefined ? {} : { notify: env.notify }),
     canAsk: interactive, // no TTY / no approver ⇒ the governed tools are hidden, as in plan
   });

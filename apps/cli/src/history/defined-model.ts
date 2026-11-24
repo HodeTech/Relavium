@@ -1,8 +1,8 @@
 import type { RunStatus } from '@relavium/shared';
 
-import { displayPath, type DisplayPathRoots } from '../render/notation.js';
+import type { DisplayPathRoots } from '../render/notation.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { RUN_STATUS_GLYPH } from './history-model.js';
+import { RUN_STATUS_GLYPH, storedPlace } from './history-model.js';
 import { scrubbedBounded } from './run-detail-model.js';
 
 /**
@@ -196,11 +196,8 @@ function otherProjectRow(pin: DefinedOtherPin, paths: DisplayPathRoots | undefin
     state: 'other-project',
     slug: pin.oversized ? `${scrubbedBounded(pin.ref)}…` : scrubbedBounded(pin.ref),
     note: OTHER_PROJECT,
-    // Shortened first (project-relative or from ~, never an absolute path inside either), then scrubbed and bounded: the root is stored text.
-    projectRoot: scrubbedBounded(
-      paths === undefined ? pin.projectRoot : displayPath(pin.projectRoot, paths),
-      MAX_DETAIL_CHARS,
-    ),
+    // Named as every tab names a directory (project-relative, from ~ or in words, never an absolute path inside either), scrubbed and bounded: the root is stored text.
+    projectRoot: storedPlace(pin.projectRoot, paths, MAX_DETAIL_CHARS),
     ...pinPart(pin),
     ...(pin.oversized ? { pinOversized: true } : {}),
   };

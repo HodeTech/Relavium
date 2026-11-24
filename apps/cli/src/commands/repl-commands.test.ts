@@ -4,6 +4,7 @@ import {
   formatReplHelp,
   HOME_PALETTE_COMMANDS,
   HOME_CHAT_PALETTE_COMMANDS,
+  placementOf,
   replCommandList,
   REPL_COMMANDS,
   REPL_COMMANDS_BY_NAME,
@@ -104,7 +105,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(command?.args ?? []).toEqual([]);
     expect(command?.positional).toBeUndefined();
     expect(command?.effect).toBe('read');
-    expect(command?.availableIn).toEqual(['chat']);
+    // A chat's capability: placed on both chats, not on the bare Home.
+    expect(placementOf('agent', 'home')).toBeUndefined();
+    expect(placementOf('agent', 'standalone-chat')).toBeDefined();
+    expect(placementOf('agent', 'home-chat')).toBeDefined();
     expect(command?.description).toBe('Show the agent this chat is bound to.');
     for (const [name, set] of [
       ['CHAT', REPL_COMMANDS],
@@ -283,9 +287,12 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
   });
 
-  it('every command declares a non-empty availableIn; the palette sets derive from the one table (with /help, since ADR-0145 §7.3)', () => {
+  it('every command of a chat is placed there; the palette sets derive from the one table (with /help, since ADR-0145 §7.3)', () => {
     for (const command of REPL_COMMANDS) {
-      expect(command.availableIn.length, `${command.name} availableIn`).toBeGreaterThan(0);
+      expect(
+        placementOf(command.name, 'standalone-chat'),
+        `/${command.name} has a chat placement`,
+      ).toBeDefined();
     }
     const chat = [
       'models',
@@ -339,9 +346,12 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('/workflows is ONE command with two placements: the chat lists, the bare Home opens the Defined tab, each with its own words', () => {
     const chat = REPL_COMMANDS_BY_NAME.get('workflows');
-    expect(chat?.availableIn, 'one definition, placed on both surfaces').toEqual(['home', 'chat']);
+    for (const surface of ['home', 'standalone-chat', 'home-chat'] as const)
+      expect(
+        placementOf('workflows', surface),
+        `one definition, placed on ${surface}`,
+      ).toBeDefined();
     const home = HOME_PALETTE_COMMANDS.find((command) => command.name === 'workflows');
-    expect(home?.availableIn).toEqual(['home', 'chat']);
     expect(home?.description).toBe('The workflows of this project: run or export one.');
     expect(chat?.description).toBe('List the workflows and agents discovered in this project.');
     expect(home, 'one object per surface: the Home’s words are the Home’s').not.toBe(chat);
@@ -352,8 +362,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
   });
 
   it('/run is a Home command only: it is in the Home palette and in no chat palette (ADR-0139 §7)', () => {
-    const run = HOME_PALETTE_COMMANDS.find((command) => command.name === 'run');
-    expect(run?.availableIn).toEqual(['home']);
+    expect(HOME_PALETTE_COMMANDS.some((command) => command.name === 'run')).toBe(true);
+    expect(placementOf('run', 'home')).toBeDefined();
+    expect(placementOf('run', 'standalone-chat')).toBeUndefined();
+    expect(placementOf('run', 'home-chat')).toBeUndefined();
     for (const [name, set] of [
       ['CHAT', REPL_COMMANDS],
       ['HOME_CHAT', HOME_CHAT_PALETTE_COMMANDS],
@@ -370,7 +382,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
   it('/import and /pricing are Home commands only: in the Home palette, in no chat palette, and not a command a chat could dispatch (ADR-0140 §9)', () => {
     for (const name of ['import', 'pricing']) {
       const command = HOME_PALETTE_COMMANDS.find((entry) => entry.name === name);
-      expect(command?.availableIn, `/${name}`).toEqual(['home']);
+      expect(placementOf(name, 'home'), `/${name}`).toBeDefined();
+      expect(placementOf(name, 'standalone-chat'), `/${name}`).toBeUndefined();
+      expect(placementOf(name, 'home-chat'), `/${name}`).toBeUndefined();
       // Both write something (a file, a price) and ask first: the registry says `write`, as it does of `/run` and `/init`.
       expect(command?.effect, `/${name}`).toBe('write');
       for (const [setName, set] of [
@@ -414,10 +428,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       expect(new Set(names).size, `${name}: ${names.join(', ')}`).toBe(names.length);
     }
     expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'permissions')).toHaveLength(1);
-    // One definition on both surfaces now (ADR-0145 §7), so the command says it is offered on the Home and in a chat.
-    expect(HOME_CHAT_PALETTE_COMMANDS.find((c) => c.name === 'permissions')?.availableIn).toEqual([
-      'home',
-      'chat',
-    ]);
+    // One definition on both surfaces now (ADR-0145 §7): it is placed on the Home and in both chats.
+    for (const surface of ['home', 'standalone-chat', 'home-chat'] as const)
+      expect(placementOf('permissions', surface), surface).toBeDefined();
   });
 });

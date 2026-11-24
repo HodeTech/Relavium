@@ -46,6 +46,15 @@ describe.each([false, true])('MarkdownText with chalk off, the colour flag %s', 
     const frame = await frameOf({ start: 2, end: 9 }, color);
     expect(withoutStyles(frame)).toBe('x:hello bold world');
     expect(stylesOver(frame, 'hello b')).toContain('inverse');
+    // The neighbours are found whole first: a stretch that is not there would pass "carries no inverse" for the wrong reason.
+    expect(
+      stylesOver(frame, 'x:'),
+      'the stretch before the selection is found whole',
+    ).toBeDefined();
+    expect(
+      stylesOver(frame, 'old world'),
+      'the stretch after the selection is found whole',
+    ).toBeDefined();
     expect(stylesOver(frame, 'x:') ?? []).not.toContain('inverse');
     expect(stylesOver(frame, 'old world') ?? []).not.toContain('inverse');
   });

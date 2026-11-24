@@ -45,6 +45,9 @@ const LEGEND = legend(
   exitKey.close(),
 );
 
+/** What the legend says when nothing matches: there is no entry to select or run, so only the key that closes is named. */
+const NO_MATCH_LEGEND = legend([], exitKey.close());
+
 function EntryRow(
   props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean }>,
 ): ReactElement {
@@ -78,7 +81,7 @@ export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
   );
   const legend = (
     <Text key="legend" {...dimProps(color)} wrap="truncate-end">
-      {LEGEND}
+      {rows.length === 0 ? NO_MATCH_LEGEND : LEGEND}
     </Text>
   );
   const body =

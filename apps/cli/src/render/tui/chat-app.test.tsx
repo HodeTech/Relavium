@@ -514,12 +514,14 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       h.stdin.write(ch); // filter to NO match → the palette stays open but short (leaves the viewport tall)
       await settleFrames();
     }
-    expect(frame()).toContain('Enter run'); // the palette overlay is open (its nav hint is on-screen)
+    expect(frame()).toContain('no matching command'); // the palette overlay is open (its row and its `Esc close` are on-screen)
+    expect(frame()).toContain('Esc close');
     expect(frame()).toContain('MSG59'); // still following the tail
 
     h.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
     await settleFrames();
-    expect(frame()).toContain('Enter run'); // the palette still owns the keyboard
+    expect(frame()).toContain('no matching command'); // the palette still owns the keyboard
+    expect(frame()).toContain('Esc close');
     expect(frame()).toContain('MSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
 
@@ -618,13 +620,15 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       h.stdin.write(ch); // filter to no match ⇒ the palette stays open but short
       await settleFrames();
     }
-    expect(frame()).toContain('Enter run'); // the palette owns the keyboard
+    expect(frame()).toContain('no matching command'); // the palette owns the keyboard
+    expect(frame()).toContain('Esc close');
 
     h.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
     h.stdin.write('\x1b[<0;10;5M'); // …and a click
     await settleFrames();
 
-    expect(frame()).toContain('Enter run'); // the palette is still open
+    expect(frame()).toContain('no matching command'); // the palette is still open
+    expect(frame()).toContain('Esc close');
     expect(frame()).not.toContain('<64;10'); // the mouse bytes did NOT enter the filter
     expect(frame()).not.toContain('<0;10');
     expect(frame()).toContain('MSG59'); // …and the transcript did not scroll behind the overlay

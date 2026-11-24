@@ -140,6 +140,45 @@ export function flushRow(left: string, right: string, width: number): string {
   return `${clipped}${' '.repeat(Math.max(GAP, width - displayWidth(clipped) - displayWidth(right)))}${right}`;
 }
 
+/** A window of a list and how many entries it hides on each side ({@link markedWindow}). */
+export interface MarkedWindow {
+  readonly start: number;
+  readonly end: number;
+  /** How many entries a `▲ N more` marker on the window's FIRST row stands for, the entry under it counted. Absent when nothing is hidden above. */
+  readonly above?: number;
+  /** How many a `▼ N more` marker on the window's LAST row stands for. Absent when nothing is hidden below. */
+  readonly below?: number;
+}
+
+/**
+ * The window of `height` rows of `total` entries around `selected`, with the marker rows of the lists of the Home: a window that hides
+ * entries is marked on its first and last row (the entry under the marker counted, as every list counts them), and `windowBody` keeps
+ * `selected` off those two rows. The window is as tall as it was without markers, so a list that scrolled silently keeps its height. A window
+ * of fewer than three rows cannot hold a marker, a selected row and the other marker, and is marked on neither side. Pure and in numbers: the
+ * words are {@link windowMarkers}, written in the glyph form in force.
+ */
+export function markedWindow(total: number, selected: number, height: number): MarkedWindow {
+  const { start, end } = windowBody(total, selected, height);
+  const marked = end - start >= 3;
+  return {
+    start,
+    end,
+    ...(marked && start > 0 ? { above: start + 1 } : {}),
+    ...(marked && end < total ? { below: total - end + 1 } : {}),
+  };
+}
+
+/** The marker rows of a {@link MarkedWindow} as text (`▲ 3 more`), in the glyph form in force: a caller draws them inside the form its colour asks for. */
+export function windowMarkers(window: MarkedWindow): {
+  readonly above: string | undefined;
+  readonly below: string | undefined;
+} {
+  return {
+    above: window.above === undefined ? undefined : moreAboveText(window.above),
+    below: window.below === undefined ? undefined : moreBelowText(window.below),
+  };
+}
+
 /**
  * The window of `height` lines of `total` around `cursorLine`. It starts centred on the cursor and, if the caller's `accept` check refuses it,
  * moves outward one line at a time to the nearest start it accepts; a caller that accepts nothing gets the centred window.

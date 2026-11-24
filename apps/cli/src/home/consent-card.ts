@@ -19,8 +19,8 @@ import { authorLine } from '../render/tui/run-card-model.js';
  * run": the ADR's table row that says "for this run" describes a narrower grant than the code writes, and a card that understated
  * what `Ctrl+Y` does would be a consent that is not informed.
  *
- * Every field of the subject arrives sanitized and bounded by the gate (`subjectOf`); each becomes its own row, never a joined
- * shell string, so an argument boundary is a row boundary.
+ * Every field of the subject arrives sanitized and bounded by the gate (`subjectOf`), and each path exactly as it is on disk or not at
+ * all; each becomes its own row, never a joined shell string, so an argument boundary is a row boundary.
  *
  * **What a server's author wrote cannot pass for the card's own keys.** The text the declaration authors (the server's id and where it
  * is declared, the command as written, every argument, each environment name and value) is the text a hostile artifact controls, and
@@ -35,8 +35,12 @@ import { authorLine } from '../render/tui/run-card-model.js';
  * showing it would put a forged key legend on the card. So a path the scrub would change (a control or invisible character, a host
  * glyph such as a box-drawing line, `✓` or `◐`, or an answer-chord token) is never put on a card at all: the card is not built, the
  * program is not offered, and the run is refused in fixed words that carry no path ({@link CONSENT_PATH_REFUSED}). A program that holds
- * a grant already is not asked about, so this never reaches it, and the shell's own question is a plain yes or no that a path cannot
- * forge.
+ * a grant already is not asked about, so this never reaches it. The half of this that is not about keys (a control or invisible
+ * character, a path past the gate's length bound) is the gate's: it refuses such a path before any prompter is called, the shell's
+ * question included, in its own words (`CONSENT_PATH_UNSHOWN`, which name no command, since no prompt can approve such a path), because
+ * a prompter only ever sees the gate's cleaned text and would otherwise name the visible twin of the file that runs. The half that is
+ * about keys (a host glyph, an answer-chord token) is this card's alone, and the shell's question can still approve it: that question is
+ * a plain yes or no that a path cannot forge.
  */
 
 export type ConsentDecision = 'allow' | 'refuse';
@@ -61,6 +65,11 @@ export const CONSENT_PATH_REFUSED =
  * Whether the scrub would change `path`, ignoring only the normalization every comparison shares: a path the scrub leaves alone is one
  * the card shows exactly as it is (spaces, accents in either composition and compatibility forms included), and any other (a control or
  * invisible character, a host glyph, an answer-chord token) is one a hostile repository could use to draw its own key row.
+ *
+ * The gate hands the card a path only when its own sanitizer and bound would leave it unchanged and it holds no character that draws
+ * nothing (`exactPath` in the gate), so the text checked here is the path on disk, not a cleaned twin of it: a check that ran on the
+ * cleaned text passed `tools/srv` with a zero-width space as `tools/srv`. What is left for this check is what only a card must refuse:
+ * a host glyph and an answer-chord token.
  */
 function wouldBeRewritten(path: string): boolean {
   return authorLine(path) !== path.normalize('NFKC');

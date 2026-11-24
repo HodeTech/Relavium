@@ -385,12 +385,13 @@ describe('the key ladder (ADR-0137 §2)', () => {
 
 describe('the legend and the handler (ADR-0137 §5)', () => {
   it('names every key the handler answers to, in the grammar: dim separators, leaving key last', () => {
-    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · [d] / Del withdraw · Esc close');
+    // `Esc` and `Ctrl+C` close the sheet the same way, so the one item names both (the handler is pressed with each below)
+    expect(SHEET_LEGEND_IDLE).toBe('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
     expect(SHEET_LEGEND_ARMED).toBe('Enter withdraw · Esc keep');
-    expect(SHEET_LEGEND_EMPTY).toBe('Esc close');
-    expect(SHEET_LEGEND_IDLE.endsWith('Esc close')).toBe(true);
-    expect(SHEET_KEYS.close).toMatchObject({ keys: 'Esc', verb: 'close' });
-    // the key that leaves says its effect through the builder's classes: `Esc close` changes nothing, `Esc keep` goes one level back
+    expect(SHEET_LEGEND_EMPTY).toBe('Esc / [Ctrl+C] close');
+    expect(SHEET_LEGEND_IDLE.endsWith('Esc / [Ctrl+C] close')).toBe(true);
+    expect(SHEET_KEYS.close).toMatchObject({ keys: ['Esc', 'Ctrl+C'], verb: 'close' });
+    // the key that leaves says its effect through the builder's classes: `Esc / [Ctrl+C] close` changes nothing, `Esc keep` goes one level back
     expect(SHEET_KEYS.close.class).toBe('close');
     expect(SHEET_KEYS.keep.class).toBe('step');
   });
@@ -409,8 +410,10 @@ describe('the legend and the handler (ADR-0137 §5)', () => {
     expect(press(armed, '', ENTER, armed.armedAt + SHEET_CONFIRM_DWELL_MS).kind).toBe('withdraw');
     // keep: `Esc` keeps what is armed
     expect(stateOf(press(armed, '', ESC)).armed).toBe(false);
-    // close: `Esc` closes an idle sheet
+    // close: `Esc` and `Ctrl+C`, the two keys `Esc / [Ctrl+C] close` names, each close an idle sheet; `Ctrl+C` closes an armed one too and withdraws nothing
     expect(press(idle, '', ESC).kind).toBe('close');
+    expect(press(idle, 'c', CTRL_C).kind).toBe('close');
+    expect(press(armed, 'c', CTRL_C, armed.armedAt + SHEET_CONFIRM_DWELL_MS).kind).toBe('close');
   });
 });
 
@@ -682,7 +685,10 @@ describe('what is drawn', () => {
     const lines = permissionsSheetLines(open(TWO_AND_ONE), { columns: 60, terminalRows: 20 });
     const text = lines.map((line) => line.text);
     expect(text[0]).toMatch(/^─ Permissions · ask mode ─+$/u);
-    expect(text.slice(1)).toEqual(['Enlarge the terminal to use this screen.', 'Esc close']);
+    expect(text.slice(1)).toEqual([
+      'Enlarge the terminal to use this screen.',
+      'Esc / [Ctrl+C] close',
+    ]);
   });
 });
 

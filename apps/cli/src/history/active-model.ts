@@ -1,8 +1,8 @@
 import type { RunLeaseSummary, RunSummaryRecord } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import { displayPath, type DisplayPathRoots } from '../render/notation.js';
-import { RUN_STATUS_GLYPH } from './history-model.js';
+import type { DisplayPathRoots } from '../render/notation.js';
+import { RUN_STATUS_GLYPH, storedPlace } from './history-model.js';
 import { MAX_PROJECT_ROOT_CHARS, scrubbedBounded, shortRunId } from './run-detail-model.js';
 
 /**
@@ -246,12 +246,7 @@ export function classifyActiveRuns(input: ClassifyActiveInput): ActiveRow[] {
       ...(run.projectRoot === undefined
         ? {}
         : {
-            projectRoot: scrubbedBounded(
-              input.paths === undefined
-                ? run.projectRoot
-                : displayPath(run.projectRoot, input.paths),
-              MAX_PROJECT_ROOT_CHARS,
-            ),
+            projectRoot: storedPlace(run.projectRoot, input.paths, MAX_PROJECT_ROOT_CHARS),
           }),
     });
   }

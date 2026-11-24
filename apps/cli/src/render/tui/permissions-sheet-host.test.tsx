@@ -144,7 +144,7 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(text).toContain('> npm, 1 argument');
     expect(text).toContain('This session · approved (1)');
     expect(text).toContain('git status');
-    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(text).toContain('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
     expect(submitted, 'the sheet took the command: nothing was sent to the model').toEqual([]);
   });
 
@@ -229,7 +229,7 @@ describe('the permissions sheet in the standalone chat', () => {
     expect(withdraw.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', row: { id: 'a' } });
     await settleFrames();
     expect(frame(view)).toContain('This project · remembered (1)');
-    expect(frame(view)).toContain('↑/↓ select · [d] / Del withdraw · Esc close');
+    expect(frame(view)).toContain('↑/↓ select · [d] / Del withdraw · Esc / [Ctrl+C] close');
   });
 
   it('a port that throws on a withdrawal leaves the sheet open and says so as a failure, with the cross', async () => {

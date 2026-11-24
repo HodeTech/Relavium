@@ -4276,6 +4276,7 @@ workflow:
       throw new Error('missing Home host');
     applyChatMode(
       makeChatModeEnv({
+        commandPaths: undefined,
         session: built.session,
         tools: built.tools,
         workspaceDir: built.context.workingDir,
@@ -4482,6 +4483,7 @@ workflow:
         });
         applyChatMode(
           makeChatModeEnv({
+            commandPaths: undefined,
             session: built.session,
             tools: built.tools,
             workspaceDir: built.context.workingDir,

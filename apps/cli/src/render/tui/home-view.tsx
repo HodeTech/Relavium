@@ -45,7 +45,7 @@ import { PaletteView } from './palette-view.js';
 import type { OpenPalette } from './palette-reducer.js';
 import { PALETTE_MIN_ROWS, paletteGapCount, paletteRowBudget } from './palette-window.js';
 import type { DisplayPathRoots } from '../notation.js';
-import { keepEnd, placeLabel } from './place-label.js';
+import { placeForDisplay } from './place-label.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
@@ -162,18 +162,15 @@ export function ExitGuardCard(
 const STRIP_HINT_INDENT = 6;
 
 /**
- * The directory line under a session row (ADR-0145 §8): the directory as {@link placeLabel} names it, shortened FIRST, then made safe for
- * the terminal and cut at the FRONT to the row's room, so the end of a long path (the part that tells one directory from another) is what stays.
+ * The directory line under a session row (ADR-0145 §8): the directory as {@link placeForDisplay} names it (shortened FIRST, then made safe for
+ * the terminal and guarded) and cut at the FRONT to the row's room, so the end of a long path (the part that tells one directory from another) is what stays.
  */
 function sessionPlace(
   workingDir: string,
   paths: DisplayPathRoots | undefined,
   columns: number,
 ): string {
-  return keepEnd(
-    sanitizeInline(placeLabel(workingDir, paths)),
-    Math.max(1, columns - STRIP_HINT_INDENT),
-  );
+  return placeForDisplay(workingDir, paths, Math.max(1, columns - STRIP_HINT_INDENT));
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -235,7 +232,7 @@ function parkedHintCue(kind: ParkedRunKind | undefined): LegendKey {
 /** The one more door the hint bar names while a run can be shown: a parked run, else the saved sessions, else the chat itself. */
 function runHintNext(hasParkedRuns: boolean, hasRecentSessions: boolean): LegendItem {
   if (hasParkedRuns) return { keys: '↓', verb: 'open a parked run' };
-  return hasRecentSessions ? { keys: '↓', verb: 'continue' } : { text: 'type a message to chat' };
+  return hasRecentSessions ? { keys: '↓', verb: 'continue' } : TYPE_A_MESSAGE;
 }
 
 /**
@@ -249,12 +246,17 @@ export const EXIT_AGAIN = exitKey.leave('exit (again)', 'Ctrl+C');
 
 /** The standing call to action of a Home with no key (ADR-0146 §5): `Enter` opens the provider setup. A key and a command word, so it has no leaving key of its own: the hint bar under the prompt carries that. */
 const KEYLESS_SETUP_LINE = `No provider key yet · ${keyToken('Enter')} connect · /providers`;
+/** The same call to action while something else owns `Enter` (a focused row, a live run, a command being typed): only the command word is promised. */
+const KEYLESS_SETUP_LINE_ENTER_TAKEN = 'No provider key yet · /providers connects one';
 
 /** `Esc` on a focused strip row steps back to the prompt; it is not the key that leaves the Home (`Ctrl+C` is). */
 const RETURN_TO_PROMPT: LegendKey = { keys: 'Esc', verb: 'return to prompt' };
 
 /** The palette's own key, written first wherever the prompt is empty. */
 const SLASH_COMMANDS: LegendKey = { keys: '/', verb: 'commands' };
+
+/** The way to start a chat that is always there: the same words in every state of the bar, so the bar does not change its wording when its content does. */
+const TYPE_A_MESSAGE: LegendItem = { text: 'type a message to chat' };
 
 /**
  * The context-aware hint bar of the Home (2.5.C S6): the second `Ctrl+C` while the first is armed, the session picker's keys while one
@@ -307,15 +309,21 @@ function homeHint(state: {
     ]);
   // Keyless (ADR-0146 §5): `Enter` opens the provider setup and the message stays in the prompt, so the bar says both. A live run keeps
   // its own hint below, because `Enter` shows the run first.
-  if (!state.emptyDraft)
-    // A slash line is a command, not a message: `Enter` runs it with or without a key, so the keyless sentence ("your message is kept") would be
-    // a promise about something else. It reads the keyed hint.
-    return state.keyless && !state.slashDraft
+  if (!state.emptyDraft) {
+    // A slash line is a command, not a message: `Enter` RUNS it (a registry word answers, an unknown one says so) with or without a key, so
+    // neither "start the chat" nor the keyless sentence ("your message is kept") would be true of it.
+    if (state.slashDraft)
+      return fitted([
+        { keys: 'Enter', verb: 'run' },
+        { keys: 'Ctrl+J', verb: 'newline' },
+      ]);
+    return state.keyless
       ? fitted([{ keys: 'Enter', verb: 'connect a provider' }, { text: 'your message is kept' }])
       : fitted([
           { keys: 'Enter', verb: 'start the chat' },
           { keys: 'Ctrl+J', verb: 'newline' },
         ]);
+  }
   if (state.keyless && !state.runCanBeShown)
     return fitted([{ keys: 'Enter', verb: 'connect a provider' }, SLASH_COMMANDS]);
   if (state.runCanBeShown) {
@@ -334,7 +342,7 @@ function homeHint(state: {
       [SLASH_COMMANDS],
       [
         { item: { keys: '↓', verb: 'open a parked run' }, priority: 2 },
-        { item: { text: 'type a message to chat' }, priority: 1 },
+        { item: TYPE_A_MESSAGE, priority: 1 },
       ],
     );
   return state.hasRecentSessions
@@ -342,13 +350,10 @@ function homeHint(state: {
         [SLASH_COMMANDS],
         [
           { item: { keys: '↓', verb: 'continue' }, priority: 2 },
-          { item: { text: 'type a message to chat' }, priority: 1 },
+          { item: TYPE_A_MESSAGE, priority: 1 },
         ],
       )
-    : fitted(
-        [{ keys: '/', verb: 'for commands' }],
-        [{ item: { text: 'type a message to start a chat' }, priority: 1 }],
-      );
+    : fitted([SLASH_COMMANDS], [{ item: TYPE_A_MESSAGE, priority: 1 }]);
 }
 
 /**
@@ -376,6 +381,11 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
   // The standing call to action stays on screen whatever has the focus (ADR-0146 §5): a live run or a focused row takes `Enter` first, and
   // the hint bar below says so in those states, but the line is what tells a keyless person there is a way to start at all.
   const keylessLine = props.keyless === true;
+  // Whether `Enter` does something else first: it opens the focused row, shows the run this Home hosts, or runs the command being typed. The
+  // line then promises only the command word; the hint bar below says what `Enter` does.
+  const slashDraft = editor.text.trimStart().startsWith('/'); // dispatch trims, so a line with blanks before its slash is a command too
+  const enterIsTaken =
+    focusedRow !== undefined || slashDraft || (runCanBeShown && editor.text.length === 0);
   // Nothing to show means no parked run either: a run of this project that waits on an answer is something to show.
   const isEmpty = homeIsEmpty(snapshot, parked);
   const frame = useRef<DOMElement | null>(null);
@@ -695,7 +705,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
         <Box marginTop={1} flexDirection="column">
           {keylessLine && (
             <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
-              {KEYLESS_SETUP_LINE}
+              {enterIsTaken ? KEYLESS_SETUP_LINE_ENTER_TAKEN : KEYLESS_SETUP_LINE}
             </Text>
           )}
           <PromptEditor editor={editor} color={color} />
@@ -712,7 +722,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
               parkedFocusKind: focusedParked?.kind,
               runCanBeShown,
               keyless: props.keyless === true,
-              slashDraft: editor.text.trimStart().startsWith('/'), // dispatch trims, so a line with blanks before its slash is a command too
+              slashDraft,
               columns: cols,
             })}
           </Text>

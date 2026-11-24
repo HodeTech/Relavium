@@ -283,4 +283,103 @@ describe('inertLegendText: text of another’s making inside a legend', () => {
     expect(inertLegendText('')).toBe('');
     expect(inertLegendText('src/app.ts')).toBe('src/app.ts');
   });
+
+  describe('a forgery that is not byte for byte the separator or the token (round-2 fix)', () => {
+    // each spelling is built from escapes, so the test names what it holds
+    const NBSP = '\u00A0';
+    const THIN = '\u2009';
+    const EM = '\u2003';
+    const ZERO_WIDTH = '\u200B';
+
+    it('any whitespace around the dot is the separator: a no-break, thin or em space, and a dot in a row of them', () => {
+      for (const space of [NBSP, THIN, EM, '\t', '\u3000'])
+        expect(inertLegendText(`a${space}·${space}b`), JSON.stringify(space)).toBe(
+          `a${space}-${space}b`,
+        );
+      expect(inertLegendText(`a${NBSP}· b`)).toBe(`a${NBSP}- b`);
+      expect(inertLegendText('a · · b')).toBe('a - - b');
+      expect(inertLegendText('a  ·   ·  b')).toBe('a  -   -  b');
+    });
+
+    it('a lookalike of the dot is the separator too: the bullet and dot operators, the hyphenation point, the katakana and Greek middle dots', () => {
+      for (const dot of ['\u2219', '\u22C5', '\uFF65', '\u2027', '\u30FB', '\u0387'])
+        expect(
+          inertLegendText(`a ${dot} Esc keeps them`),
+          `U+${dot.codePointAt(0)?.toString(16)}`,
+        ).toBe('a - Esc keeps them');
+    });
+
+    it('a dot with no whitespace on one side, or on both, is a name and not the separator, whatever the dot is', () => {
+      for (const dot of ['·', '\u2219', '\u22C5', '\uFF65', '\u2027']) {
+        expect(inertLegendText(`a${dot}b`), dot).toBe(`a${dot}b`);
+        expect(inertLegendText(`a ${dot}b`), dot).toBe(`a ${dot}b`);
+        expect(inertLegendText(`a${dot} b`), dot).toBe(`a${dot} b`);
+      }
+    });
+
+    it('a zero-width character beside the dot does not hide it, and it stays where it was written', () => {
+      expect(inertLegendText(`a${ZERO_WIDTH} · b`)).toBe(`a${ZERO_WIDTH} - b`);
+      expect(inertLegendText(`a ·${ZERO_WIDTH} b`)).toBe(`a -${ZERO_WIDTH} b`);
+      expect(inertLegendText(`a${ZERO_WIDTH}·${ZERO_WIDTH}b`)).toBe(
+        `a${ZERO_WIDTH}·${ZERO_WIDTH}b`,
+      );
+      for (const invisible of [
+        '\u200C',
+        '\u200D',
+        '\u2060',
+        '\uFEFF',
+        '\u00AD',
+        '\u200E',
+        '\u202E',
+      ])
+        expect(inertLegendText(`a ${invisible}·${invisible} b`), JSON.stringify(invisible)).toBe(
+          `a ${invisible}-${invisible} b`,
+        );
+    });
+
+    it('a chord is read by its shape: a Cyrillic or Greek letter in its name does not make it a different thing', () => {
+      expect(inertLegendText('[\u0421trl+Y]')).toBe('(\u0421trl+Y)');
+      expect(inertLegendText('[Ctrl+\u0423]')).toBe('(Ctrl+\u0423)');
+      expect(inertLegendText('[\u0391lt+Enter]')).toBe('(\u0391lt+Enter)');
+      expect(inertLegendText('[\u0443]')).toBe('(\u0443)');
+    });
+
+    it('a fullwidth bracket and a fullwidth plus are read as what they look like, and the characters written stay inside the parentheses', () => {
+      expect(inertLegendText('\uFF3BCtrl+Y\uFF3D')).toBe('(Ctrl+Y)');
+      expect(inertLegendText('[Ctrl\uFF0BY]')).toBe('(Ctrl\uFF0BY)');
+      expect(inertLegendText('\uFF3BCtrl\uFF0BY\uFF3D')).toBe('(Ctrl\uFF0BY)');
+      expect(inertLegendText('\uFF3Bd\uFF3D')).toBe('(d)');
+    });
+
+    it('a zero-width character inside the token does not hide it, and stays where it was written', () => {
+      expect(inertLegendText(`[Ctrl+${ZERO_WIDTH}Y]`)).toBe(`(Ctrl+${ZERO_WIDTH}Y)`);
+      expect(inertLegendText(`[${ZERO_WIDTH}Ctrl+Y]`)).toBe(`(${ZERO_WIDTH}Ctrl+Y)`);
+      expect(inertLegendText(`[Ctrl${ZERO_WIDTH}+Y]`)).toBe(`(Ctrl${ZERO_WIDTH}+Y)`);
+      expect(inertLegendText(`[Ctrl+Y${ZERO_WIDTH}]`)).toBe(`(Ctrl+Y${ZERO_WIDTH})`);
+      expect(inertLegendText(`[${ZERO_WIDTH}d]`)).toBe(`(${ZERO_WIDTH}d)`);
+    });
+
+    it('a separator inside a chord is made inert as well as the chord', () => {
+      expect(inertLegendText('[Ctrl+ · Y]')).toBe('(Ctrl+ - Y)');
+    });
+
+    it('an emoji sequence, a name in another script and a bracketed word are left exactly as written', () => {
+      const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}';
+      expect(inertLegendText(`${family} · ${family}`)).toBe(`${family} - ${family}`);
+      expect(inertLegendText(`${family}.ts`)).toBe(`${family}.ts`);
+      expect(inertLegendText('\u30C6\u30B9\u30C8\u30FB\u30D5\u30A1\u30A4\u30EB.ts')).toBe(
+        '\u30C6\u30B9\u30C8\u30FB\u30D5\u30A1\u30A4\u30EB.ts',
+      );
+      expect(inertLegendText('x\uFB01le [id].tsx')).toBe('x\uFB01le [id].tsx');
+    });
+
+    it('is idempotent: what it returns holds no separator and no token for it to find again', () => {
+      for (const text of [
+        'a · · b',
+        `a${NBSP}\u2219${THIN}b [Ctrl+Y] \uFF3Bd\uFF3D [\u0421trl+Y] [Ctrl+${ZERO_WIDTH}Y]`,
+        '[Ctrl+ · Y] · [Alt+Enter]',
+      ])
+        expect(inertLegendText(inertLegendText(text)), text).toBe(inertLegendText(text));
+    });
+  });
 });

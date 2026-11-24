@@ -8,8 +8,7 @@
  * builder gives, so a row carries the builder's brackets, separator and roles whether or not it carries the exit:
  *
  * - {@link exitRow}: items and the key that leaves, by `legend` and `legendSpans`;
- * - `legendItems` of `legend.ts`: items only (the grants row). {@link itemsRow} is the same function under its older name, kept for the
- *   callers that are not moved yet;
+ * - `legendItems` of `legend.ts`: items only (the grants row);
  * - {@link sentenceRow}: a sentence in the place of a legend (the question a wider grant asks, the lock that says Allow is off), dim.
  *
  * Framework-free and pure.
@@ -17,7 +16,6 @@
 
 import {
   legend,
-  legendItems,
   legendSpans,
   type LegendExit,
   type LegendItem,
@@ -25,29 +23,19 @@ import {
 } from './legend.js';
 import type { SheetRole } from './sheet-frame.js';
 
-/** A row's text and where its keys, verbs and separators are in it; the spans cover the text once, in order: the shape `legend.ts` renders. */
-export type LegendRow = LegendRender;
-
 /** The row of `items` and the key that leaves, exactly as {@link legend} and {@link legendSpans} write it. */
-export function exitRow(items: readonly LegendItem[], exit: LegendExit): LegendRow {
+export function exitRow(items: readonly LegendItem[], exit: LegendExit): LegendRender {
   return { text: legend(items, exit), spans: legendSpans(items, exit) };
 }
 
-/**
- * The row of `items` with no key that leaves: {@link legendItems} under its older name (an empty list is an empty row). It is one function,
- * not a second one that happens to agree; `checkpoint-card.ts` and `tool-review-card.ts` still call it by this name, and move to
- * `legendItems` when those files are next opened.
- */
-export const itemsRow: (items: readonly LegendItem[]) => LegendRow = legendItems;
-
 /** A sentence drawn where a legend would be: the whole of it dim, no keys. */
-export function sentenceRow(text: string): LegendRow {
+export function sentenceRow(text: string): LegendRender {
   return { text, spans: text.length === 0 ? [] : [{ from: 0, to: text.length, role: 'dim' }] };
 }
 
 /** The row cut at its spans' edges: each stretch of text with the role it is drawn in. A stretch no span covers is dim. */
 export function rowSegments(
-  row: LegendRow,
+  row: LegendRender,
 ): readonly { readonly text: string; readonly role: SheetRole }[] {
   const out: { text: string; role: SheetRole }[] = [];
   let at = 0;

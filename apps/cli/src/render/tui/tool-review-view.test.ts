@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { rowSegments, type LegendRow } from './legend-row.js';
+import { rowSegments } from './legend-row.js';
+import type { LegendRender } from './legend.js';
 import { cardKeyLegend } from './tool-review-card.js';
 import { FULL_DENY_LEGEND } from './tool-review-screen.js';
 import { cardTitleRows, keyTone, reviewUnavailableText } from './tool-review-view.js';
@@ -22,7 +23,7 @@ describe('keyTone — a legend stretch, coloured by its role', () => {
   });
 
   it('follows the item, not the text: the keys of a real row are drawn in the role their legend gave them', () => {
-    const colours = (row: LegendRow): string[] =>
+    const colours = (row: LegendRender): string[] =>
       rowSegments(row)
         .filter((segment) => segment.role !== 'dim')
         .map((segment) => `${segment.text}=${String(keyTone(segment.role, true)['color'])}`);

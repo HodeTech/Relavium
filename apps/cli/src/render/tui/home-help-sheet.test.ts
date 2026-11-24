@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   HOME_PALETTE_COMMANDS,
+  placementOf,
   REPL_COMMANDS,
   unavailableNotice,
 } from '../../commands/repl-commands.js';
@@ -181,7 +182,7 @@ describe('a registry word at the landing is answered, and never starts a chat', 
     // Every other word is a chat's: the registry says it works nowhere on the landing.
     for (const command of REPL_COMMANDS)
       if (!owned.includes(command.name))
-        expect(command.availableIn, `/${command.name}`).not.toContain('home');
+        expect(placementOf(command.name, 'home'), `/${command.name}`).toBeUndefined();
   });
 
   it.each(REPL_COMMANDS.map((command) => command.name))(

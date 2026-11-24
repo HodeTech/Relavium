@@ -405,6 +405,29 @@ describe('display formatters', () => {
     expect(formatContextWindow(0)).toBe(''); // the "unknown" sentinel reads as empty, never "0 ctx"
   });
 
+  it('rounds a size once, so that no two spellings of nearly one size disagree: a mebi-token window is 1M, and 999,500 is not 1000K', () => {
+    expect(formatContextWindow(999)).toBe('999 ctx');
+    expect(formatContextWindow(1000)).toBe('1K ctx');
+    expect(formatContextWindow(1499)).toBe('1K ctx');
+    expect(formatContextWindow(1500)).toBe('2K ctx');
+    expect(formatContextWindow(128_000)).toBe('128K ctx');
+    expect(formatContextWindow(999_499)).toBe('999K ctx');
+    expect(formatContextWindow(999_500)).toBe('1M ctx');
+    expect(formatContextWindow(999_999)).toBe('1M ctx');
+    expect(formatContextWindow(1_048_576)).toBe('1M ctx');
+    expect(formatContextWindow(1_049_999)).toBe('1M ctx');
+    expect(formatContextWindow(1_050_000)).toBe('1.1M ctx');
+    expect(formatContextWindow(1_500_000)).toBe('1.5M ctx');
+    expect(formatContextWindow(2_000_000)).toBe('2M ctx');
+    expect(formatContextWindow(10_000_000)).toBe('10M ctx');
+    // a size that is not a size is unknown, never `NaN ctx`
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -5])
+      expect(formatContextWindow(bad), String(bad)).toBe('');
+    // never the three spellings `1000K ctx`, `1.0M ctx` and `1M ctx` of one size
+    for (const tokens of [999_500, 1_000_000, 1_048_576, 1_001_000])
+      expect(formatContextWindow(tokens), String(tokens)).toBe('1M ctx');
+  });
+
   it('summarizes partial refresh failures into a secret-free banner (or undefined when clean)', () => {
     expect(partialFailureBanner([])).toBeUndefined();
     expect(partialFailureBanner(['openai'])).toBe(

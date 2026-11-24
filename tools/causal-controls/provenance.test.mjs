@@ -291,7 +291,7 @@ test('secrets workload corrections retain independent complete-count and reader-
     ['run-default-secret-reader', 'apps/cli/src/commands/run.test.ts', 85],
     ['snapshot-run-warning', 'apps/cli/src/commands/run.test.ts', 85],
     ['gate-consumed-stdin-prompt-authority', 'apps/cli/src/commands/gate.test.ts', 76],
-    ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 18],
+    ['export-command-review-notice', 'apps/cli/src/commands/chat-export.test.ts', 20],
     // Seventeen interruption-disclosure and five denial-printer cases extend 143; MVP-4's chat `/permissions` cases and the chat-mode wiring take it to 171; MVP-8 step 3's /workflows case takes it to 172; MVP-8 step 5 and its follow-ups (the /agent, /agents, /import and /pricing entries and the typed-word rule) take it to 185.
     ['export-live-review-notice', 'apps/cli/src/commands/chat.test.ts', 185],
     ['export-live-interactive-notice-routing', 'apps/cli/src/commands/chat.test.ts', 185],

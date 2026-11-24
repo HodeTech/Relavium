@@ -165,6 +165,11 @@ export type HistoryStep =
 
 /** The keys the History tab's legend names that are its own. The test presses every one of them. */
 export const HISTORY_KEYS = {
+  /**
+   * `move`, not `select` (the verb every other list says): the list's legend with the scope key at its longer word (`[a] here`) is 77 columns
+   * with `move` and 79 with `select`, and the 80-column floor leaves 78 (`usableColumns`): a legend that does not fit is clipped and loses its
+   * `Esc close`. Unifying the verb needs one column from another item of the row (`[a] here`, `[f] filter`, `Enter open`) first.
+   */
   select: { keys: '↑/↓', verb: 'move' },
   open: { keys: 'Enter', verb: 'open' },
   pin: PIN_KEY,

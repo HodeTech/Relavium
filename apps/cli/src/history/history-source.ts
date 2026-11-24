@@ -2,7 +2,7 @@ import type { RunHistoryReader, RunSummaryRecord } from '@relavium/db';
 import { MAX_RUN_SUMMARY_IDS } from '@relavium/db';
 import type { RunStatus } from '@relavium/shared';
 
-import type { DisplayPathRoots } from '../render/notation.js';
+import { optionalPaths, type DisplayPathRoots } from '../render/notation.js';
 import { formatCostShort } from '../render/tui/format.js';
 import { buildHistoryRows, type HistoryRow } from './history-model.js';
 import { keysetCursorOf, type KeysetCursor } from './keyset-cursor.js';
@@ -119,9 +119,9 @@ export interface HistorySourceDeps {
   readonly listRunPins: () => readonly HistoryRunPin[];
   /** The directory the Home is in: the `project` scope, and what a pinned run is compared with. */
   readonly projectRoot: string;
-  /** Epoch milliseconds: the ages are taken against it. */
   /** What a run's project root is shortened against (the Home's directory and the operator's home). Absent, a root is shown as stored. */
   readonly paths?: DisplayPathRoots | undefined;
+  /** Epoch milliseconds: the ages are taken against it. */
   readonly now: () => number;
   /** The coverage read of one run. Defaults to `readRunUsageCoverage` over the reader; a test counts its calls. */
   readonly readCoverage?: ((runId: string) => ReturnType<typeof readRunUsageCoverage>) | undefined;
@@ -236,7 +236,7 @@ export function createHistorySource(
         workflowLabels: reader.loadWorkflowSlugs([
           ...new Set(summaries.map((run) => run.workflowId)),
         ]),
-        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
+        ...optionalPaths(deps.paths),
       }).map((row) => [row.id, row]),
     );
     const entries: HistoryEntry[] = [];
@@ -279,7 +279,7 @@ export function createHistorySource(
         nowMs: now,
         pinnedRunIds: new Set(pinRowids.keys()),
         workflowLabels: slot.labels,
-        ...(deps.paths === undefined ? {} : { paths: deps.paths }),
+        ...optionalPaths(deps.paths),
       }).map((row): HistoryEntry => {
         const pinRowid = pinRowids.get(row.id);
         return pinRowid === undefined ? { kind: 'run', row } : { kind: 'run', row, pinRowid };

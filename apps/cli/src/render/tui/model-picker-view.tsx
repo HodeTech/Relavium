@@ -7,7 +7,7 @@ import { formatRefreshed } from '../notation.js';
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
 import { Emph } from './emphasis-view.js';
-import { blankStatusCell, statusCellOf } from './glyphs.js';
+import { blankStatusCell, statusCellOf, withGlyphForm } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import {
   formatContextWindow,
@@ -17,6 +17,7 @@ import {
 } from './model-picker.js';
 import { colorProps, dimProps } from './projection.js';
 import { SelectableText, selectionMarker } from './selectable-text.js';
+import { markedWindow, windowMarkers, type MarkedWindow } from './sheet-frame.js';
 
 /** The most model rows shown at once — a large multi-provider catalog scrolls a window around the selection rather
  *  than flooding the terminal (parity with the mention overlay's {@link MENTION_WINDOW}). */
@@ -84,13 +85,11 @@ export const EFFORT_STEP_FOOTER = legend(
   exitKey.step(),
 );
 
-/** The window of row indices to render around `selected` (a `[start, end)` slice), keeping the selection visible and
- *  never exceeding {@link MODEL_WINDOW} rows. Pure so the scroll math is unit-checkable. */
-export function modelWindow(count: number, selected: number): { start: number; end: number } {
-  if (count <= MODEL_WINDOW) return { start: 0, end: count };
-  const half = Math.floor(MODEL_WINDOW / 2);
-  const start = Math.max(0, Math.min(selected - half, count - MODEL_WINDOW));
-  return { start, end: start + MODEL_WINDOW };
+/** The window of row indices to render around `selected` (a `[start, end)` slice) of {@link MODEL_WINDOW} rows, keeping the selection
+ *  visible, with the `▲`/`▼ N more` markers for what it hides (they take the window's first and last row, so its height does not change).
+ *  Pure so the scroll math is unit-checkable. */
+export function modelWindow(count: number, selected: number): MarkedWindow {
+  return markedWindow(count, selected, MODEL_WINDOW);
 }
 
 /** The "unavailable" reason chip(s) for a row (2.5.G key-awareness): a keyless provider names the remedy; a keyed
@@ -176,7 +175,9 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
   // next keystroke re-clamps (foldModelPickerKey clamps on move).
   const selected =
     visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
-  const { start, end } = modelWindow(visible.length, selected);
+  const span = modelWindow(visible.length, selected);
+  const { start, end } = span;
+  const { above, below } = withGlyphForm(!color, () => windowMarkers(span));
   const windowed = visible.slice(start, end);
   const badge = `${formatRefreshed(state.refreshedAt, nowMs)}${state.loading ? ' · refreshing…' : ''}`;
   // One status line: the transient user-action `hint` (a dimmed/save note) takes priority over the async refresh
@@ -214,6 +215,14 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       );
     }
     return windowed.map((entry, index) => {
+      // The first and last row of a window that hides models stand for them: `▲ 3 more`, the model under it counted.
+      const marker = index === 0 ? above : index === windowed.length - 1 ? below : undefined;
+      if (marker !== undefined)
+        return (
+          <Text key={marker} {...dimProps(color)} wrap="truncate-end">
+            {`  ${marker}`}
+          </Text>
+        );
       const isSelected = start + index === selected;
       const isDefault = entry.modelId === markedDefault;
       return (

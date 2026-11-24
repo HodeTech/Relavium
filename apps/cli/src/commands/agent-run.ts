@@ -480,6 +480,8 @@ async function runOneShotTurn(
       session: built.session,
       tools: built.tools,
       workspaceDir: built.context.workingDir,
+      // No card is drawn in a one-shot, so there is no path to shorten.
+      commandPaths: undefined,
       ...(built.fsPolicy === undefined ? {} : { fsPolicy: built.fsPolicy }),
       // The one canonical no-TTY fail-closed policy (Step 14) — a one-shot has no user to approve, so every
       // governed dispatch is denied (never a hang / auto-approve). Shared with the non-interactive chat driver.

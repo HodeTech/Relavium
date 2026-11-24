@@ -341,6 +341,13 @@ function trimTrailingSeparators(value: string): string {
 /**
  * A project root as a row may carry it: `~/…` when it lies under `homeDir`, otherwise only its last two segments behind `…/` (a root
  * outside the home is not abbreviated to a name that could be mistaken for a home path, and is never shown whole), scrubbed and bounded.
+ *
+ * **This is the one place that does NOT use `displayPath`/`placeLabel`, on purpose.** Those two keep a path outside the project and the home
+ * WHOLE and absolute ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §8, "one helper for paths"), because a card
+ * that asks for consent must say where a command really runs. This label is the mark `other project` on a run row of the strip, which names a
+ * project the person did not open here: a root is never shown whole on that row (it would put a long absolute path of another project into the
+ * strip), so it keeps its last two segments behind `…/`. It is the one privacy exception to the rule, and it stays an exception: do not
+ * replace it with the helper, and do not use it for a path a person has to act on.
  */
 function projectLabel(root: string, homeDir: string | undefined): string {
   const home = homeDir === undefined ? undefined : trimTrailingSeparators(homeDir);

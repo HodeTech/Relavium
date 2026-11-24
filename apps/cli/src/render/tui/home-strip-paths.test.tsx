@@ -105,6 +105,24 @@ describe('the Home strip’s session rows', () => {
     }
   });
 
+  it('shorten BEFORE they make the text safe: a control character inside the project’s own name does not forge a project-relative path', () => {
+    const rows = rowsOf(homeFrame(snapshotOf('/work/pro\u0007ject/x'), ROOTS));
+    expect(rows).toContain('/work/project/x');
+    expect(rows).not.toContain('x');
+  });
+
+  it.each([
+    ['BEL', '\u0007'],
+    ['an SGR reset', '\u001b[0m'],
+    ['NUL', '\u0000'],
+    ['a right-to-left override', '\u202e'],
+    ['a left-to-right mark', '\u200e'],
+  ])('never let %s in front of a `~` folder of the project read as the home', (_name, junk) => {
+    const rows = rowsOf(homeFrame(snapshotOf(`/work/project/${junk}~/x`), ROOTS));
+    expect(rows).toContain('./~/x');
+    expect(rows).not.toContain('~/x');
+  });
+
   it('are shortened by the Home the host mounts, from the roots it gives RootApp', async () => {
     const variant: Variant = { renderer: 'alt', color: true, size: { cols: 100, rows: 30 } };
     const withRoots = mountHome(variant, {

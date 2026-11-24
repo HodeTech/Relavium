@@ -299,7 +299,7 @@ describe.each([
       await settleFrames();
       expect(m.controller.getSnapshot().palette).toBeUndefined();
       expect(m.onExit).not.toHaveBeenCalled();
-      expect(m.frame().join('\n')).toContain('[/] for commands');
+      expect(m.frame().join('\n')).toContain('[/] commands');
       expect(markersOf(m.frame())).toEqual([]);
       cleanup();
     }

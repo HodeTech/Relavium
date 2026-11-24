@@ -26,6 +26,7 @@ function wire(options: {
   const notes: string[] = [];
   const policies: unknown[] = [];
   const env = makeChatModeEnv({
+    commandPaths: undefined,
     session: { setTurnPolicy: (policy) => void policies.push(policy) },
     tools: [],
     workspaceDir: '/work/project',
@@ -87,6 +88,7 @@ describe('where no one can answer, run_command is not advertised (ADR-0118 §4)'
   it('a non-interactive host hides the governed tools from the model, as plan does', () => {
     const policies: { advertise?: (id: string) => boolean }[] = [];
     const env = makeChatModeEnv({
+      commandPaths: undefined,
       interactive: false,
       session: { setTurnPolicy: (policy) => void policies.push(policy as never) },
       tools: [

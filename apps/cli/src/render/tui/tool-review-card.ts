@@ -2,11 +2,16 @@ import type { ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
 import type { DisplayPathRoots } from '../notation.js';
-import { sanitizeInline } from '../sanitize.js';
 import { glyph } from './glyphs.js';
-import { exitKey, keyToken, type LegendItem } from './legend.js';
-import { exitRow, itemsRow, sentenceRow, type LegendRow } from './legend-row.js';
-import { keepEnd, placeLabel } from './place-label.js';
+import { exitKey, keyToken, legendItems, type LegendItem, type LegendRender } from './legend.js';
+import { exitRow, sentenceRow } from './legend-row.js';
+import {
+  keepEnd,
+  namedProjectRoot,
+  PROJECT_ROOT_WORDS,
+  placeForDisplay,
+  placeLabel,
+} from './place-label.js';
 import type { ReviewDocument } from './tool-review-projection.js';
 import { displayWidth } from './viewport.js';
 
@@ -176,7 +181,7 @@ export function commandStandingRow(facts: CommandCardFacts): string {
 /**
  * The rows a command card adds (ADR-0118 §1), as plain text, wrapped by the caller: the standing, the directory the host pins,
  * and the two warnings, each worded as a fact and neither ever refusing a command. The directory is the host's own path, shortened
- * against `paths` (default: the roots the facts carry) first (ADR-0145 §8: the project's own directory reads `. (project root)`, one inside it from the project, one inside the
+ * against `paths` (default: the roots the facts carry) first (ADR-0145 §8: the project's own directory reads `. (project root: <folder>)`, one inside it from the project, one inside the
  * home from `~`, and one outside both stays whole), and only then sent through the one-line sanitizer and bounded to the room, keeping its end.
  */
 export function commandFactRows(
@@ -190,12 +195,23 @@ export function commandFactRows(
   // While the reason box is open the card has no room to spare: the warnings stay, the plain rows go (the box is for typing).
   if (!compact) {
     const standing = commandStandingRow(facts);
-    const directory = sanitizeInline(placeLabel(facts.cwd, paths)) || '(the workspace)';
-    // One row when the directory still has room to say where it is (it keeps its END), else two: a row saved is a row of the command.
+    // Shortened, made safe, guarded and bounded by the one helper (keeping the END of the path); an empty directory is the workspace. The
+    // project's own directory names its folder (`. (project root: app)`): a resumed chat's project is the session's directory, which is
+    // not always the one the person launched from, so "the project root" alone would not say where the command runs.
+    const inProjectRoot =
+      paths !== undefined && placeLabel(facts.cwd, paths) === PROJECT_ROOT_WORDS;
+    const directory = (bound: number): string =>
+      keepEnd(
+        (inProjectRoot
+          ? namedProjectRoot(paths, bound)
+          : placeForDisplay(facts.cwd, paths, bound)) || '(the workspace)',
+        bound,
+      );
+    // One row when the directory still has room to say where it is, else two: a row saved is a row of the command.
     const separator = ' \u00b7 ';
     const room = columns - displayWidth(standing) - separator.length - label.length;
-    if (room >= 24) rows.push(`${standing}${separator}${label}${keepEnd(directory, room)}`);
-    else rows.push(standing, `${label}${keepEnd(directory, Math.max(8, columns - label.length))}`);
+    if (room >= 24) rows.push(`${standing}${separator}${label}${directory(room)}`);
+    else rows.push(standing, `${label}${directory(Math.max(8, columns - label.length))}`);
   }
   // One row each: the key that is not offered is already missing from the legend, so these say why in few words.
   if (facts.runsCode)
@@ -368,7 +384,7 @@ function allowItems(input: CardKeyInput): readonly LegendItem[] {
 }
 
 /** The first key row while Allow is locked: what the person has to do first. */
-function lockedAllowRow(command: boolean): LegendRow {
+function lockedAllowRow(command: boolean): LegendRender {
   return sentenceRow(
     command
       ? '(Allow is locked until you read the whole command)'
@@ -384,7 +400,7 @@ function lockedAllowRow(command: boolean): LegendRow {
  * rows, so the card keeps its two key rows (and the layout its budget) and no scope phrase can push "any other key cancels" off the end of
  * a row. The confirmation is ENTER, never a second `Ctrl+G`: the same key twice is what a held key produces.
  */
-export function cardKeyLegend(input: CardKeyInput): readonly [LegendRow, LegendRow] {
+export function cardKeyLegend(input: CardKeyInput): readonly [LegendRender, LegendRender] {
   const stop = exitKey.decide(STOPS_THE_TURN);
   const enter = keyToken('Enter');
   if (input.confirmRemember === true)
@@ -407,7 +423,7 @@ export function cardKeyLegend(input: CardKeyInput): readonly [LegendRow, LegendR
       ),
     ];
   const command = input.command === true;
-  const grants = input.inspected ? itemsRow(allowItems(input)) : lockedAllowRow(command);
+  const grants = input.inspected ? legendItems(allowItems(input)) : lockedAllowRow(command);
   return [
     grants,
     exitRow(

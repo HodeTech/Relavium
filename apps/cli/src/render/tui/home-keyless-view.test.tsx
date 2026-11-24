@@ -141,9 +141,7 @@ describe('the Home hint bar', () => {
     expect(frameOf({ sessions: [session] })).toContain(
       '[/] commands · ↓ continue · type a message to chat · [Ctrl+C] exit (twice)',
     );
-    expect(frameOf({})).toContain(
-      '[/] for commands · type a message to start a chat · [Ctrl+C] exit (twice)',
-    );
+    expect(frameOf({})).toContain('[/] commands · type a message to chat · [Ctrl+C] exit (twice)');
   });
 });
 
@@ -160,6 +158,8 @@ describe('the keyless line and the other things Enter does first', () => {
   const IDLE_HOST: RunHostSnapshot = { launching: false, active: undefined, last: undefined };
   const PARKED = [{ runId: 'run-0002', kind: 'approval' as const, gates: 1 }];
   const LINE = 'No provider key yet · Enter connect · /providers';
+  /** The line while something else owns `Enter`: it promises only the command word, because `Enter` does not connect there. */
+  const LINE_ENTER_TAKEN = 'No provider key yet · /providers connects one';
   const frameOf = (over: {
     hostedRun?: RunHostSnapshot;
     parkedFocus?: string;
@@ -199,18 +199,20 @@ describe('the keyless line and the other things Enter does first', () => {
     expect(frame).toContain('Enter connect a provider · [/] commands · [Ctrl+C] exit (twice)');
   });
 
-  it('is shown while a live run is in the view, where the hint bar says Enter shows the run first', () => {
+  it('is shown while a live run is in the view, where the hint bar says Enter shows the run first, and so does not promise that Enter connects', () => {
     const frame = frameOf({ hostedRun: RUNNING_HOST });
-    expect(frame).toContain(LINE);
+    expect(frame).toContain(LINE_ENTER_TAKEN);
+    expect(frame).not.toContain('Enter connect ·');
     expect(frame).toContain('Enter show it');
     expect(frame, 'the idle keyless hint does not claim Enter for the setup here').not.toContain(
       'Enter connect a provider',
     );
   });
 
-  it('is shown while a parked run is focused, where the hint bar says Enter opens its gate first', () => {
+  it('is shown while a parked run is focused, where the hint bar says Enter opens its gate first, and so does not promise that Enter connects', () => {
     const frame = frameOf({ parkedFocus: 'run-0002' });
-    expect(frame).toContain(LINE);
+    expect(frame).toContain(LINE_ENTER_TAKEN);
+    expect(frame).not.toContain('Enter connect ·');
     expect(frame).toContain('Enter open the gate');
     expect(frame).not.toContain('Enter connect a provider');
   });
@@ -356,12 +358,15 @@ describe('the keyless Home hint bar by what the draft is', () => {
 
   // `submit` trims the draft before it reads it, so a command line with blanks before its slash runs, and the hint must say so (round 2, U2).
   it.each(['/clear', '/doctor --deep', '/', '  /clear', ' /doctor --deep'])(
-    'does not promise it for the command line %j: Enter runs the command, so the hint is the plain one',
+    'does not promise it for the command line %j: Enter runs the command, so the hint says so, and so does the line above it',
     (text) => {
       const frame = frameOf(text);
       expect(frame).not.toContain('your message is kept');
       expect(frame).not.toContain('Enter connect a provider ·');
-      expect(frame).toContain('Enter start the chat · [Ctrl+J] newline · [Ctrl+C] exit (twice)');
+      expect(frame).not.toContain('Enter connect ·');
+      expect(frame).toContain('No provider key yet · /providers connects one');
+      expect(frame).toContain('Enter run · [Ctrl+J] newline · [Ctrl+C] exit (twice)');
+      expect(frame).not.toContain('Enter start the chat');
     },
   );
 

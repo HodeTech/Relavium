@@ -26,7 +26,6 @@ const cmd = (name: string, description: string): ReplCommand => ({
   description,
   effect: 'read',
   run: noop,
-  availableIn: ['home', 'chat'],
 });
 const entry = (
   name: string,

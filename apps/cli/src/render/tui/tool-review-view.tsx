@@ -39,8 +39,15 @@ import {
   type InspectionPending,
 } from './tool-review-screen.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
-import { exitKey, keyToken, legend, legendItems, type LegendItem } from './legend.js';
-import { rowSegments, type LegendRow } from './legend-row.js';
+import {
+  exitKey,
+  keyToken,
+  legend,
+  legendItems,
+  type LegendItem,
+  type LegendRender,
+} from './legend.js';
+import { rowSegments } from './legend-row.js';
 import { EmphText } from './emphasis-view.js';
 import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import type { SheetRole } from './sheet-frame.js';
@@ -458,7 +465,7 @@ function KeyRow({
   row,
   color,
   question = false,
-}: Readonly<{ row: LegendRow; color: boolean; question?: boolean }>): ReactElement {
+}: Readonly<{ row: LegendRender; color: boolean; question?: boolean }>): ReactElement {
   if (question)
     return (
       <EmphText wrap="truncate-end" emphasis="bold">

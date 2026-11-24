@@ -35,6 +35,7 @@ import {
   enterTab,
   foldTabHostKey,
   freshTabMemory,
+  legendFitsTheFloor,
   tabHostLegend,
   tabHostLines,
   tabHostMemory,
@@ -139,6 +140,20 @@ const sheetOf = (state: TabHostState) => {
   if (state.sheet === undefined) throw new Error('the Permissions tab holds no sheet');
   return state.sheet;
 };
+
+describe('the legend that names both keys of the way out', () => {
+  it('fits the 80-column floor up to its last usable column, and not past it', () => {
+    // The usable width is 78: a legend exactly that wide fits (the comparison is `<=`), one column more does not.
+    expect(usableColumns(80)).toBe(78);
+    expect(legendFitsTheFloor(77)).toBe(true);
+    expect(legendFitsTheFloor(78)).toBe(true);
+    expect(legendFitsTheFloor(79)).toBe(false);
+  });
+
+  it('names Esc and Ctrl+C as one item on a list where the whole fits the floor', () => {
+    expect(legendLabels(rig().state).at(-1)).toBe('Esc / [Ctrl+C] close');
+  });
+});
 
 describe('the tab registry', () => {
   it('is Defined, Active, History and Permissions, in that order, the last being the real one', () => {

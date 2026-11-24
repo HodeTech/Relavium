@@ -53,7 +53,6 @@ describe('a field of untrusted text drawn inside the style pair of its row', () 
           label: HOSTILE,
           description: HOSTILE,
           effect: 'read',
-          availableIn: ['home'],
           run: () => undefined,
         } satisfies ReplCommand,
         description: HOSTILE,

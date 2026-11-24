@@ -1768,6 +1768,7 @@ describe('chatCommand', () => {
             throw new Error('missing standalone host');
           applyChatMode(
             makeChatModeEnv({
+              commandPaths: undefined,
               session: built.session,
               tools: built.tools,
               workspaceDir: built.context.workingDir,
@@ -1920,6 +1921,7 @@ describe('chatCommand', () => {
               throw new Error('missing standalone host');
             applyChatMode(
               makeChatModeEnv({
+                commandPaths: undefined,
                 session: built.session,
                 tools: built.tools,
                 workspaceDir: built.context.workingDir,
@@ -2086,6 +2088,7 @@ describe('chatCommand', () => {
               throw new Error('missing standalone host');
             applyChatMode(
               makeChatModeEnv({
+                commandPaths: undefined,
                 session: built.session,
                 tools: built.tools,
                 workspaceDir: built.context.workingDir,

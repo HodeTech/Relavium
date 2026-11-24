@@ -638,19 +638,16 @@ describe('the exports that were arrays are derived from the one table', () => {
     expect(rows.map((row) => row.slice(3).split('  ')[0])).toEqual([...CHAT_ORDER]);
   });
 
-  it('derives availableIn from the placements', () => {
-    const availableIn = (name: string): readonly string[] | undefined =>
-      REPL_COMMANDS_BY_NAME.get(name)?.availableIn;
-    expect(availableIn('exit')).toEqual(['home', 'chat']);
-    expect(availableIn('workflows')).toEqual(['home', 'chat']);
-    expect(availableIn('cost')).toEqual(['chat']);
-    expect(HOME_PALETTE_COMMANDS.find((c) => c.name === 'providers')?.availableIn).toEqual([
-      'home',
-    ]);
-    expect(HOME_PALETTE_COMMANDS.find((c) => c.name === 'resume')?.availableIn).toEqual([
-      'home',
-      'chat',
-    ]);
+  it('offers a command on the surfaces its placements name, and on no other', () => {
+    const surfaces = (name: string): readonly string[] =>
+      (['home', 'standalone-chat', 'home-chat'] as const).filter(
+        (surface) => placementOf(name, surface) !== undefined,
+      );
+    expect(surfaces('exit')).toEqual(['home', 'standalone-chat', 'home-chat']);
+    expect(surfaces('workflows')).toEqual(['home', 'standalone-chat', 'home-chat']);
+    expect(surfaces('cost')).toEqual(['standalone-chat', 'home-chat']);
+    expect(surfaces('providers')).toEqual(['home']);
+    expect(surfaces('resume')).toEqual(['home', 'home-chat']);
   });
 
   it('keeps one object per (name, surface), so a lookup and a list agree', () => {
