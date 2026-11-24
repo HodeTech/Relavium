@@ -333,3 +333,8 @@ Both recorded triggers are now answered. The long-lived-host trigger is not met:
 > [deferred-tasks-parked.md](../roadmap/deferred-tasks-parked.md#pr-97-review--fixed-findings-and-recorded-lows-2026-11-06)
 > ("Answering a stale gate card after another process decided the gate fails a healthy run"). The register
 > entry stays open until its D64 review round and separate security sitting are recorded.
+>
+> **Closure note, 2026-11-24.** The condition above is met: MVP-8 step 2 ran three review rounds on the fix, and round two included
+> the separate opus security sitting on the lease fence and the secret, consent and resume paths (verdict PASS, D64). The register
+> entry is closed; the narrower residuals it left stay registered in
+> [deferred-tasks.md](../roadmap/deferred-tasks.md).

@@ -498,7 +498,7 @@ MVP-1, MVP-2, MVP-3 (with MVP-3b/3c/3d) and MVP-4 are complete on `main`. The ne
 
 **Owed before v0.2.0 (recorded rulings):** the liveness-1 ruling (a 0.1.x run settled by a newer reconcile, MVP-1
 1b); the superset-safe URL-password reading (A4); the ReDoS vector in a cloned repository's workflow defaults (M8);
-the stale-card ownership defect (PR #97 round 7, a lease-path increment); and Proposed ADRs 0121
+and Proposed ADRs 0121
 (and 0058 and 0060 for MVP-6), each accepted before its implementation (ADR-0115, ADR-0117, ADR-0118, ADR-0119 and ADR-0136 are accepted). ADR-0116/0120 are accepted; MVP-3
 keeps their pre-build design and post-implementation security gates. All open
 obligations are in [deferred-tasks.md](deferred-tasks.md).

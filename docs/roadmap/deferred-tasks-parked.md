@@ -1714,7 +1714,7 @@ predates the correction, recorded below by the maintainer's ruling. **The mainta
 sitting was held.** Round 7's medium and its lows (the reconcile comments, the TTL rule's either-way clock, two test
 comments and a test name) were fixed on `development` after the merge. Recorded:
 
-- [ ] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
+- [x] **Answering a stale gate card after another process decided the gate fails a healthy run.** *Medium;
   pre-existing (on `main` before the correction); must be fixed before v0.2.0 (maintainer ruling 2026-11-07).*
   *(security-2)* When terminal B decides gate g with `relavium gate` and releases its lease, terminal A's open card for
   g still takes an answer. A's resume reclaims the lease under a fresh fence, its guarded append is refused on its
@@ -1727,8 +1727,9 @@ comments and a test name) were fixed on `development` after the merge. Recorded:
   `#reclaim()` give the claim back when the store's last sequence moved; add a two-engine SQLite test, and make
   `InMemoryRunStore` refuse a duplicate `(runId, seq)`. A lease-path change: its own D64 security-tier increment.
   *(medium · packages/core/src/engine/engine.ts, packages/core/src/engine/execution-host.ts; ADR-0079 §4)*
-  **Implemented 2026-11-22 on `development` and committed in `0494fad5`; stays open until its D64 review round and
-  separate security sitting are recorded.** Classified at the write, not read in `#reclaim()`: a claim `#reclaim()` re-takes stays unproven until a
+  **Implemented 2026-11-22 on `development` and committed in `0494fad5`; closed 2026-11-24 by the record that its closing condition
+  was met: MVP-8 step 2 ran three review rounds on it, and round two included the opus security sitting on the lease fence and the
+  secret, consent and resume paths (verdict PASS, D64; the [step 2 record](phases/phase-2.6-conversational-authoring.md#mvp-8-step-2-implementation-record-2026-11-22)).** Classified at the write, not read in `#reclaim()`: a claim `#reclaim()` re-takes stays unproven until a
   write under it is acknowledged. Until then a terminal is guarded against the last sequence this process asked for at its park, and
   an `AppendConflictError` whose durable head differs from that head is ownership loss: no terminal, no outbox entry,
   the re-taken row released by its exact fence, and `uncertain` with no terminal (exit `6`). The answer and the Ctrl-C
