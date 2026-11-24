@@ -39,14 +39,15 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status (2026-11-21): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
+**Status (2026-11-24): the CLI MVP comes first.** Phase 1 (engine and LLM) is complete; Phase 2
 (CLI) is feature-complete and `relavium@0.1.1` is the published version; Phase 2.5 (CLI Consolidation) is
 complete (M2.5-4, PR #69, 2026-07-08); Phase 2.6.5 (Core reliability) is complete with approved deferrals
 (49/51, PR #92, 2026-10-11). Phase 2.5.5 (Hardening and Remediation): Waves 0–2 are merged (Wave 2: PR #94),
 Wave 3 Steps 1–8 are merged (PR #95, 2026-10-18), and PR95, 9a.1, 9a.2a, 9a.2b, NI, 9b.1 and 9b.2 are
 accepted and on `main` since the `development`→`main` checkpoint (PR #96, merged 2026-11-04). **On 2026-10-26 the maintainer paused Wave 3 — Steps 9c–19 are pending, not
 declined — and put the CLI MVP first:** `relavium` v0.2.0 on npm (milestone M3.5), ordered as MVP-1…MVP-10 in
-[current.md](docs/roadmap/current.md#next-work--the-cli-mvp) under decisions D58–D72 (ruled 2026-11-04).
+[current.md](docs/roadmap/current.md#next-work--the-cli-mvp) under decisions D58–D72 (ruled 2026-11-04), plus MVP-11
+(2026-11-24, D79–D82; below).
 Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress: 2.6.C and 2.6.F are done
 (2.6.F's v0.2.0 release clause closes with the MVP) and 2.6.Q P1–P5 landed; the MVP takes slices of the rest.
 **MVP-1 is accepted (2026-11-06) and on `main` with the second checkpoint (PR #97, merged 2026-11-07).
@@ -89,7 +90,7 @@ after it, and the phase record's [PR #101 review corrections](docs/roadmap/phase
 fixed, refuted, deferred and what needs a human (the [implementation record](docs/roadmap/phases/phase-2.6-conversational-authoring.md#mvp-4-implementation-record) owns progress).
 The final head `9e77ff04` passed all 30 CI checks, and SonarCloud's gate went OK after one reliability bug and 15 small findings were fixed; the maintainer merged, and the
 [PR #101 merge checkpoint](docs/roadmap/phases/phase-2.6-conversational-authoring.md#pr-101-merge-checkpoint-2026-11-21) records the evidence and what is still owed (above all the Windows
-runbook rows 1–16 on real terminals). **MVP-8 (the Home as hub) is implemented and reviewed on `development` (steps 1 to 5); its pull request is open for the maintainer's review ([PR #102](https://github.com/HodeTech/Relavium/pull/102), 2026-11-24); its independent review (three external reports and three security sittings) is answered in the phase record's "PR #102 review corrections", the whole local gate passed on a still tree at the code head `ae0326d9`, and CI is the authority.** npm still serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
+runbook rows 1–16 on real terminals). **MVP-8 (the Home as hub) is implemented and reviewed on `development` (steps 1 to 5); its pull request is open for the maintainer's review ([PR #102](https://github.com/HodeTech/Relavium/pull/102), 2026-11-24); its independent review (three external reports and three security sittings) is answered in the phase record's "PR #102 review corrections", the whole local gate passed on a still tree at the code head `ae0326d9`, and CI is the authority.** **MVP-11 (one surface language for the CLI) is planned, not started (2026-11-24, D79–D82): popups for reports and settings such as `/doctor`, sheets for the questions the system asks, an ordered palette with `/exit` last, a speaker marker in the chat, a calmer Home and a reviewed first run. It follows MVP-8 and comes before MVP-5, and its work starts when PR #102 is merged. The maintainer accepted the recommendation of each of its 23 decisions on 2026-11-24 (two sub-questions stay open). The plan is [docs/roadmap/phases/mvp-11.md](docs/roadmap/phases/mvp-11.md).** npm still serves `0.1.1`; no publication is claimed. Exact status lives in [current.md](docs/roadmap/current.md).
 On 2026-11-08 the maintainer made the full-screen Home the interactive product: the user types `relavium` and
 does everything there, and subcommands stay for scripting ([ADR-0122](docs/decisions/0122-the-home-is-the-interactive-product.md)).
 MVP-2 delivers readable replies, native provider setup, project initialization and safe session resume around it.

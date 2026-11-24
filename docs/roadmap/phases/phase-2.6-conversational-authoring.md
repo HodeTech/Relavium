@@ -6,6 +6,9 @@
 > **CLI MVP first (2026-11-04):** the MVP order in [../current.md](../current.md#next-work--the-cli-mvp) takes slices of
 > 2.6.A/B/D/E/G/H/I/J/K/M/Q ahead of the rest of the phase; new MVP items are defined under
 > [CLI MVP additions](#cli-mvp-additions--2026-11-04). The phase scope, exit criteria and milestones are unchanged.
+> **MVP-11 (2026-11-24)**, the CLI's one surface language (popups, sheets, the palette order, the speaker marker, the Home and the first run), is
+> planned in its own file, [mvp-11.md](mvp-11.md). It builds the CLI-internal tables that 2.6.L's theme and locale catalogue will
+> consume and takes none of 2.6.L's scope.
 > Live progress is canonical in [../current.md](../current.md); the rest of the phase follows. Depends on the Phase 2.5
 > spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
 > PR #69, 2026-07-08), so this phase is unblocked.

@@ -1,6 +1,6 @@
 # Documentation Style
 
-> Last updated: 2026-10-10
+> Last updated: 2026-11-24
 
 This is the binding style guide for everything under `docs/`. It is the Relavium
 equivalent of a CONTRIBUTING guide for documentation. Every file in the tree —
@@ -174,6 +174,13 @@ diagram immediately after the H1, then explains it in prose. Diagrams are Mermai
 embedded as inline fenced code blocks — no binary diagram formats. Tables and Mermaid
 are encouraged throughout the tree.
 
+A **UI mock-up** (a picture of a terminal screen that a design asks the reader to
+judge) is not an architecture diagram, so this rule does not apply to it, and a PNG is
+allowed. Such frames sit in a folder named after the phase document that cites them
+(`phases/mvp-11/` for `phases/mvp-11.md`), and that folder's `README.md` indexes them
+and says they are drawings, not screenshots of the application. Every topology and flow
+stays Mermaid, and where a frame and the text differ, the text governs.
+
 ## 9. Mark Phase-2 content explicitly
 
 Relavium ships in two phases (see [roadmap/README.md](../roadmap/README.md)). Phase 1 is local-first
@@ -206,6 +213,7 @@ blockquote:
 | A managed-mode legal/regulatory posture (provider ToS, data protection, tax & billing, SOC 2) | `compliance/` *(Phase 2)* |
 | A future / out-of-scope idea | `ideas/` |
 | A binding rule | `standards/` |
+| A UI mock-up frame that a phase document cites | a folder named after that document, next to it, with an index `README.md` (see [§8](#8-architecture-docs-lead-with-a-diagram)) |
 | A detailed review record | `reviews/` (local, Git-ignored timestamped file); tracked acceptance belongs in the owning roadmap register |
 
 When in doubt, pick the folder whose **question** matches what the reader will be
