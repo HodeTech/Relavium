@@ -2176,7 +2176,7 @@ workflow:
         () => expect(prompt.getSnapshot().message).toBe("Which provider serves 'my-own-model'?"),
         { timeout: WAIT_MS },
       );
-      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['openai']);
+      expect(prompt.getSnapshot().options.map((option) => option.label)).toEqual(['OpenAI']); // the display name, not the id
       prompt.input('c', nativeKey({ ctrl: true })); // leaves the form: nothing was recorded
       await vi.waitFor(
         () => expect(props.controller.getSnapshot().notice).toBe(PRICING_NOT_RECORDED),

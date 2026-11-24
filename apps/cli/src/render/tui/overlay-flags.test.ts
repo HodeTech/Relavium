@@ -35,7 +35,6 @@ import {
   stripPausedByOverlay,
   type OverlayFlags,
 } from './overlay-flags.js';
-import { INITIAL_PALETTE_STATE } from './palette-reducer.js';
 import { INITIAL_REVERSE_SEARCH } from './input-history.js';
 import { permissionsChatSheet } from './chat-sheet.js';
 import { initialPermissionsSheetState } from './permissions-sheet.js';
@@ -384,7 +383,7 @@ describe("the Home's own record is built from its state in one place", () => {
   });
 
   it.each([
-    ['palette', { palette: INITIAL_PALETTE_STATE }],
+    ['palette', { palette: { query: '', index: 0 } }],
     ['search', { search: INITIAL_REVERSE_SEARCH }],
     ['mention', { mention: { dir: '', filter: '', candidates: [], selected: 0, loading: false } }],
     ['modelPicker', { modelPicker: MODEL_PICKER }],

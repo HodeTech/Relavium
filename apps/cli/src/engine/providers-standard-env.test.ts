@@ -385,12 +385,15 @@ describe('MVP-2 value-free availability and independent keychain health', () => 
     });
     const state = providerKeyAvailability(resolver, 'openai');
     expect(providerKeyAvailabilityMessage('openai', state, 'home')).toContain('/providers');
+    // Neither interactive surface names a shell command (ADR-0146 §6, MVP-11): the Home has `/providers`, and a
+    // stand-alone chat, which has no Home, says to start the chat again, where provider setup opens.
     expect(providerKeyAvailabilityMessage('openai', state, 'standalone-chat')).toContain(
-      'restart `relavium chat`',
+      'restart this chat to open provider setup',
     );
-    expect(providerKeyAvailabilityMessage('openai', state, 'standalone-chat')).not.toContain(
-      '/providers',
+    expect(providerKeyAvailabilityMessage('openai', state, 'standalone-chat')).not.toMatch(
+      /\/providers|relavium/u,
     );
+    expect(providerKeyAvailabilityMessage('openai', state, 'home')).not.toContain('relavium');
     expect(
       providerKeyAvailabilityMessage(
         'openai',

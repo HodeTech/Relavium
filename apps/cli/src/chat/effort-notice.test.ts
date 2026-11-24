@@ -74,6 +74,32 @@ describe('effortUnavailableNote — the two empty lists are NOT the same sentenc
   });
 });
 
+describe('effortUnavailableNote — the refresh it offers is the one the surface has (ADR-0146 §6, MVP-11 OD-20)', () => {
+  it('names `relavium models refresh` in the shell wording and the /models picker’s Ctrl+R in the interactive chat', () => {
+    const shell = effortUnavailableNote('some-custom-endpoint-model');
+    expect(shell).toContain('`relavium models refresh`');
+    const tui = effortUnavailableNote('some-custom-endpoint-model', 'tui');
+    expect(tui).toContain('Open /models and press Ctrl+R');
+    expect(tui).not.toMatch(/relavium models|`/u);
+    // The sentence that needs no refresh is the same on both surfaces.
+    expect(effortUnavailableNote('deepseek-reasoner', 'tui')).toBe(
+      effortUnavailableNote('deepseek-reasoner'),
+    );
+  });
+
+  it('carries the surface through the two sentences that fall back to it', () => {
+    expect(effortRejectedNote('some-custom-endpoint-model', 'low', [], 'tui')).toContain(
+      'Open /models',
+    );
+    expect(
+      effortWithheldNote({ kind: 'uncontrollable' }, 'some-custom-endpoint-model', 'tui'),
+    ).toContain('Open /models');
+    expect(effortWithheldNote({ kind: 'uncontrollable' }, 'some-custom-endpoint-model')).toContain(
+      '`relavium models refresh`',
+    );
+  });
+});
+
 describe('effortCappedNote — the cap, not the model, was the blocker (review M6)', () => {
   it('names max_tokens as the fix and reads the on/off label for a budget model', () => {
     const note = effortCappedNote('claude-haiku-4-5', 'medium', 500);

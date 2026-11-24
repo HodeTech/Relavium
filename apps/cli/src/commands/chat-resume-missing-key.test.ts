@@ -201,6 +201,25 @@ describe('chat-resume when the session’s provider has no key (MVP-A4)', () => 
     expect(userTurns).not.toContain('hello again'); // nor the view, as a turn that was never sent
   });
 
+  it('names no shell command in the in-view notice when the resolver belongs to the interactive chat (ADR-0146 §6)', async () => {
+    const store = await seedSession();
+    const { providers } = keyedResolver(() => false);
+
+    const { notices } = await resumeInteractively(
+      store,
+      { ...providers, credentialSurface: 'standalone-chat' },
+      ['hello again', '/exit'],
+    );
+
+    const missing = notices.filter((text) => text.includes("no API key for provider 'anthropic'"));
+    expect(missing).toHaveLength(2); // on open, and for the refused message
+    for (const text of missing) {
+      expect(text).toContain('restart this chat to open provider setup');
+      expect(text).toContain('/models');
+      expect(text).not.toMatch(/relavium|set-key/u);
+    }
+  });
+
   it('lets the next message through once a key exists', async () => {
     const store = await seedSession();
     let keyed = false;

@@ -24,6 +24,7 @@ import {
   type PricingFieldId,
 } from '../commands/pricing-fields.js';
 import { installCatalogFromDb } from '../engine/catalog-metadata.js';
+import { providerDisplayName } from '../engine/providers.js';
 import { isCliError } from '../process/errors.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import {
@@ -110,6 +111,7 @@ function offerOf(plan: PricingPlan): PricingOffer {
       kind: 'clear',
       model,
       provider: plan.provider,
+      providerName: providerDisplayName(plan.provider),
       prices: [],
       keeps: false,
       replaces: undefined,
@@ -120,6 +122,7 @@ function offerOf(plan: PricingPlan): PricingOffer {
     kind: 'set',
     model,
     provider: plan.provider,
+    providerName: providerDisplayName(plan.provider),
     prices: plan.prices.map((price) => {
       const field = pricingField(price.id);
       return {
@@ -185,8 +188,12 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
       });
       sentence =
         plan.kind === 'set'
-          ? pricingSetSentence(plan)
-          : clearedPricingSentence(plan, outcome.kind === 'clear' && outcome.cleared);
+          ? pricingSetSentence(plan, 'tui', providerDisplayName(plan.provider))
+          : clearedPricingSentence(
+              plan,
+              outcome.kind === 'clear' && outcome.cleared,
+              providerDisplayName(plan.provider),
+            );
     } catch (cause) {
       // A fault the person can act on is a refusal, not the end of the Home; anything else is a defect (ADR-0139).
       const reason = reasonOf(cause) ?? writeFaultReasonOf(cause);
@@ -201,9 +208,10 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
       deps.models().map((entry) => ({
         modelId: entry.modelId,
         provider: entry.provider,
-        hint: `${entry.provider} · ${pricingSourceText(entry)}`,
+        hint: `${providerDisplayName(entry.provider)} · ${pricingSourceText(entry)}`,
       })),
     providers: () => providers.list().map((provider) => provider.name),
+    providerName: providerDisplayName,
     prepare: (target, values): PricingPrepared => {
       // The card states the model id it records, and says it exactly: an id the card cannot show as it is stored (a control byte, a
       // bidirectional override, a zero-width or other invisible character, a space at either end, more than it can fit) would be
@@ -222,7 +230,12 @@ export function createPricingPort(deps: PricingPortDeps): PricingPort {
       }
       // A CLEAR of a model the operator has no price for would ask for a Yes to change nothing: it is said, not asked.
       if (plan.kind === 'clear' && !plan.hasOverride)
-        return { ok: false, reason: sanitizeUntrustedInline(clearedPricingSentence(plan, false)) };
+        return {
+          ok: false,
+          reason: sanitizeUntrustedInline(
+            clearedPricingSentence(plan, false, providerDisplayName(plan.provider)),
+          ),
+        };
       return { ok: true, offer: offerOf(plan), commit: commitOf(plan) };
     },
   };

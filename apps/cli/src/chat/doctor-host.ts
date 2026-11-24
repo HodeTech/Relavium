@@ -47,7 +47,7 @@ export interface DoctorHostInputs {
 export function assembleDoctorProbes(inputs: DoctorHostInputs): DoctorProbes {
   return {
     // The invocation's own operator home when it was handed one (a test, an embedding), never `os.homedir()` behind its back.
-    globalArtifacts: () => globalArtifactsNotice(inputs.operatorHomeDir),
+    globalArtifacts: () => globalArtifactsNotice(inputs.operatorHomeDir, 'tui'),
     keychain: () => {
       // Reachability only: read a never-set account. `null` ⇒ reachable; a `KeychainUnavailableError` ⇒ down.
       const store = inputs.keychain ?? createOsKeychainStore();

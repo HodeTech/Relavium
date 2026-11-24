@@ -135,10 +135,18 @@ describe.each(['finish', 'clear', 'reseat'] as const)(
             expect(build).toHaveBeenCalledTimes(choose ? (action === 'reseat' ? 2 : 1) : 0);
             if (choose && action !== 'finish') {
               const recovery = action === 'clear' ? clearIntro : captured.err();
-              expect(recovery).toContain('relavium chat resume');
-              expect(recovery).toContain('picker');
-              expect(recovery).not.toContain('$(SECURITY_MARKER)');
-              expect(recovery).not.toContain('chat-resume');
+              if (action === 'clear') {
+                // The `/clear` notice is drawn inside the TUI, so it names no shell command and no session id (MVP-11 OD-20, ADR-0145
+                // §7.4): a stand-alone chat has no `/resume`, so it names the Home in words. The id, which this test makes hostile, is not in it.
+                expect(recovery).toContain('/resume on the Home');
+                expect(recovery).not.toMatch(/relavium chat|chat-resume|SECURITY_MARKER/u);
+              } else {
+                // The error text returned after the screen was left is a shell line: it keeps the command, and the id stays out of it.
+                expect(recovery).toContain('relavium chat resume');
+                expect(recovery).toContain('picker');
+                expect(recovery).not.toContain('$(SECURITY_MARKER)');
+                expect(recovery).not.toContain('chat-resume');
+              }
             }
             expect(close).toHaveBeenCalledTimes(1);
             expect(f.registry.activeOwners).toBe(0);

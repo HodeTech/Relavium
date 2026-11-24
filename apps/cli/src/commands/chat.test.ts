@@ -2426,14 +2426,16 @@ describe('chatCommand', () => {
         expect(events.filter((event) => event.type === 'session:exported')).toEqual([
           expect.objectContaining({ workflowPath: exportedAt(cwd, 'private-user-sentinel') }),
         ]);
-        // The documented split: under --json the event carries the path, and no human path or run-hint line is
-        // printed on either stream.
+        // The documented split: under --json the event carries the path, and no human path line is printed on
+        // either stream (and, since MVP-11 OD-20, no run-hint line is printed in any mode).
         expect(err()).not.toContain('exported session to');
         expect(`${err()}${out()}`).not.toContain('run it with');
       } else {
+        // The notice is the path alone: it names no shell command (OD-20, ADR-0122 §6 inside the TUI).
         expect(err()).toContain(
-          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')} — run it with \`relavium run private-user-sentinel\``,
+          `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')}`,
         );
+        expect(err()).not.toContain('relavium run');
       }
     },
   );
@@ -2540,9 +2542,13 @@ describe('chatCommand', () => {
               expect(frames).toContain('exported session to');
               expect(
                 notices.some((text) =>
-                  text.includes('run it with `relavium run private-user-sentinel`'),
+                  text.endsWith(
+                    `exported session to ${join('.relavium', 'workflows', 'private-user-sentinel.relavium.yaml')}`,
+                  ),
                 ),
               ).toBe(true);
+              // OD-20: the transcript notice names no command to run the file.
+              expect(notices.some((text) => text.includes('relavium run'))).toBe(false);
               expect(err()).not.toContain('exported session to');
             }
             expect(err()).not.toContain('note: exported workflow');
@@ -2582,8 +2588,9 @@ describe('chatCommand', () => {
 
     expect(existsSync(exportedAt(cwd, 'hello'))).toBe(true);
     expect(err()).toContain(
-      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')} — run it with \`relavium run hello\``,
+      `exported session to ${join('.relavium', 'workflows', 'hello.relavium.yaml')}`,
     );
+    expect(err()).not.toContain('relavium run'); // OD-20: no shell command in the notice
     expect(statusAfterExport).toBe('active'); // /export left the live row untouched (NOT 'exported')
     expect(store.loadFull(sessionId)?.messages).toHaveLength(4); // both turns persisted — REPL continued
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // /exit's terminal

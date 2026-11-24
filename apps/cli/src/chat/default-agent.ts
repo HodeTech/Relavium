@@ -127,7 +127,7 @@ export function buildDefaultChatAgent(
       'invalid_invocation',
       `cannot infer a provider for chat model '${model}'. Set [chat].default_model to a known model ` +
         `(claude-*, gpt-*, gemini-*, deepseek-*) — or set [chat].default_provider, or bind an explicit agent ` +
-        `with 'relavium chat --agent <ref>'.`,
+        `(the --agent option when a chat is started).`,
     );
   }
   return {

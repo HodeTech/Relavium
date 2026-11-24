@@ -1947,6 +1947,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   describe('the / command palette (2.5.C S3b)', () => {
     const DOWN = { downArrow: true } as const;
+    const UP = { upArrow: true } as const;
     const ESC = { escape: true } as const;
 
     /** Build a controller, submit a first message so it is in `chat` mode at an empty prompt, ready for the palette. */
@@ -1976,9 +1977,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       const made = makeSession();
       const c = await intoChat(made);
       c.handleKey('/', {});
-      type(c, 'ex'); // filter → [exit, export]
-      c.handleKey('', DOWN); // highlight export
+      type(c, 'ex'); // filter → [export, exit]: /exit ends the session, so it follows /export (ADR-0145 §7.6)
+      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 }); // the best match is the row beside the prompt
+      // A chat's list is drawn above the prompt, bottom-up: ↑ is the NEXT entry, ↓ the previous one (ADR-0145 §7.1).
+      c.handleKey('', UP);
       expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 1 });
+      c.handleKey('', DOWN);
+      expect(c.getSnapshot().palette).toEqual({ query: 'ex', index: 0 });
       c.handleKey('', ENTER); // select → submit /export through the chat dispatch
       await flush();
       expect(made.lines).toEqual(['hi', '/export']);
@@ -2020,8 +2025,9 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
 
   describe('the / command palette in the bare Home (2.5.C S3c)', () => {
     const ESC = { escape: true } as const;
+    const DOWN = { downArrow: true } as const;
 
-    it('opens on "/" at the Home prompt, and selecting /exit ends the Home', () => {
+    it('opens on "/" at the Home prompt on the first row that can act, and `Enter` there never ends the Home (ADR-0145 §7.2)', () => {
       const onExit = vi.fn();
       const c = createHomeController({
         doctorProbes: STUB_DOCTOR_PROBES,
@@ -2031,10 +2037,44 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         onError: vi.fn(),
       });
       c.handleKey('/', {});
-      expect(c.getSnapshot().palette).toEqual({ query: '', index: 0 }); // HOME_PALETTE_COMMANDS = [exit, doctor]; index 0 = /exit
+      // This Home has no saved session: /resume (row 0) is dim, so the highlight is /run (row 1), the first row that can act.
+      expect(c.getSnapshot().palette).toEqual({ query: '', index: 1 });
+      c.handleKey('', ENTER);
+      expect(onExit).not.toHaveBeenCalled();
+      expect(c.getSnapshot().palette).toBeUndefined();
+    });
+
+    it('selecting /exit ends the Home: only on the explicit selection, typed or reached at the end of the list', () => {
+      const onExit = vi.fn();
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit,
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'exit');
       c.handleKey('', ENTER); // select the highlighted /exit → run over the Home context → exitHome
       expect(onExit).toHaveBeenCalledTimes(1);
       expect(c.getSnapshot().palette).toBeUndefined();
+
+      const walked = vi.fn();
+      const d = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: walked,
+        onError: vi.fn(),
+      });
+      d.handleKey('/', {});
+      for (let step = 0; step < 30; step += 1) d.handleKey('', DOWN); // far past the end: it stops on the last row, never wraps
+      expect(walked).not.toHaveBeenCalled(); // the highlight alone runs nothing
+      expect(d.getSnapshot().palette?.index, '/exit is the last row; /clear above it is dim').toBe(
+        14,
+      );
+      d.handleKey('', ENTER);
+      expect(walked).toHaveBeenCalledTimes(1);
     });
 
     it('Esc closes the Home palette without exiting', () => {

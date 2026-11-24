@@ -69,6 +69,7 @@ import {
   createProviderResolver,
   missingKeyMessage,
   providerHasKey,
+  type CredentialSurface,
   type ProviderResolver,
 } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
@@ -849,7 +850,7 @@ function buildSessionRuntime(
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            onEffortWithheld(effortWithheldNote(result, model));
+            onEffortWithheld(effortWithheldNote(result, model, 'tui'));
           },
         }),
     registry,
@@ -1048,9 +1049,13 @@ function bindChatAgent(
  * entry fails only if it is reached. An interactive resume defers this refusal to each send
  * ({@link BuildResumedChatSessionOptions.deferMissingKey}), because there `/models` can still change the model.
  */
-function assertProviderKey(agent: AgentDefinition, hasKey: (id: ProviderId) => boolean): void {
+function assertProviderKey(
+  agent: AgentDefinition,
+  hasKey: (id: ProviderId) => boolean,
+  surface?: CredentialSurface,
+): void {
   if (hasKey(agent.provider)) return;
-  throw new CliError('invalid_invocation', missingKeyMessage(agent.provider));
+  throw new CliError('invalid_invocation', missingKeyMessage(agent.provider, surface));
 }
 
 /** {@link providerHasKey}, asked at most once per provider for the life of the returned function. */
@@ -1170,7 +1175,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   // provider per build keeps them agreeing by construction and keeps the build at one keychain read per provider.
   const hasKey = memoizedHasKey(providers);
   const { agent, artifact } = bindChatAgent(opts, hasKey);
-  assertProviderKey(agent, hasKey);
+  assertProviderKey(agent, hasKey, providers.credentialSurface);
   const mcpArtifact = opts.mcpArtifact ?? artifact;
   const context: SessionContext = {
     workingDir: opts.fsPolicy === undefined ? opts.cwd : fsPolicyWorkspace(opts.fsPolicy),
@@ -1526,7 +1531,10 @@ export async function buildResumedChatSession(
   const providers = opts.providers ?? createProviderResolver();
   const missingKeyProvider = providerHasKey(providers, agent.provider) ? undefined : agent.provider;
   if (missingKeyProvider !== undefined && opts.deferMissingKey !== true) {
-    throw new CliError('invalid_invocation', missingKeyMessage(missingKeyProvider));
+    throw new CliError(
+      'invalid_invocation',
+      missingKeyMessage(missingKeyProvider, providers.credentialSurface),
+    );
   }
   // Clamp the restored fs-scope tier to the host-allowed ceiling (full→project for the chat surface),
   // mirroring buildChatSession — so a PRE-2.5.A session persisted with a broader `full` scope resumes at the tier
@@ -1737,7 +1745,7 @@ export function buildGovernorWiring(
             modalities?: readonly MediaBilledModality[],
           ) =>
             onUnpriced(
-              unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap', modalities),
+              unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap', modalities, 'tui'),
             ),
         }),
     emit: (event) => {

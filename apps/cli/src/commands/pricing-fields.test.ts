@@ -71,6 +71,14 @@ describe('the table and the command descriptor name the same flags, each way', (
     }
   });
 
+  it("every row's remedy flag is the option's PRIMARY spelling, so a remedy never names a deprecated one", () => {
+    for (const field of PRICING_FIELDS) {
+      const option = descriptor.options.find((candidate) => candidate.binding === field.id);
+      expect(option?.spellings[0], `${field.id} remedy flag`).toBe(field.canonicalFlag);
+      expect(option?.deprecatedSpellings ?? []).not.toContain(field.canonicalFlag);
+    }
+  });
+
   it('the descriptor still offers --provider and --clear, which the table does not own', () => {
     expect(descriptor.options.map((option) => option.binding)).toEqual(
       expect.arrayContaining(['provider', 'clear']),

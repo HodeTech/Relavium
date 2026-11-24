@@ -10,6 +10,7 @@ import {
   KNOWN_PROVIDER_IDS,
   KNOWN_PROVIDERS,
   neededProviderIds,
+  providerDisplayName,
   providerHasKey,
   providerKeyEnvVar,
   validateProviderKey,
@@ -137,6 +138,21 @@ ${OUTPUT}`,
     - { from: t, to: out }`,
     );
     expect(neededProviderIds(def)).toEqual([]);
+  });
+});
+
+describe('providerDisplayName (ADR-0145: a person reads a provider by its name, not its id)', () => {
+  it('is the display name of every known provider, and the id itself for one this build has no metadata for', () => {
+    expect(providerDisplayName('anthropic')).toBe('Anthropic');
+    expect(providerDisplayName('openai')).toBe('OpenAI');
+    expect(providerDisplayName('gemini')).toBe('Google Gemini');
+    expect(providerDisplayName('deepseek')).toBe('DeepSeek');
+    expect(providerDisplayName('my-gateway')).toBe('my-gateway'); // a registered custom provider
+    expect(providerDisplayName('toString')).toBe('toString'); // not a lookup into Object.prototype
+  });
+
+  it('covers every known provider id, so a new one cannot read as its id by omission', () => {
+    for (const id of KNOWN_PROVIDER_IDS) expect(providerDisplayName(id)).not.toBe(id);
   });
 });
 

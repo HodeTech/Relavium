@@ -230,7 +230,8 @@ describe('the disposition card', () => {
       over: { outcome: 'failed' },
       glyph: '✗',
       word: 'failed',
-      says: 'relavium logs run-0001',
+      // The card is drawn inside the Home, so its remedy is the Home's own browser, not a shell command (MVP-11 OD-20).
+      says: '/workflows (History tab)',
     },
     {
       disposition: 'cancelled',

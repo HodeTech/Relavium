@@ -6,7 +6,6 @@ import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
 import { formatReportedCost } from '../render/tui/format.js';
-import { resumeHint } from './resume-hint.js';
 
 /**
  * Pure formatters for the in-REPL info commands (2.5.C S4) — `/cost` and `/workflows`. The output is rendered as
@@ -187,13 +186,28 @@ export function trimNotice(result: TrimResult): string {
   }
 }
 
+/** Where a `/clear` notice is shown: the Home's hosted chat (it has `/resume`), or a stand-alone `relavium chat` (it has no Home). */
+export type ClearedNoticeSurface = 'home' | 'standalone-chat';
+
 /**
  * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a
- * fresh session started. The shared resume hint names a shell-neutral ID or the native picker, so a stored ID
- * cannot turn the recovery command into shell syntax. Other surfaces can write non-UUID session IDs.
+ * fresh session started.
+ *
+ * The notice names no shell command and no session id (MVP-11 OD-20, ADR-0145 §7.4): it is shown inside the TUI, and a command
+ * there must exist on the surface that shows it. `/resume` lives on the Home, so the Home's hosted chat names it directly, and a
+ * stand-alone chat (which has no Home and no `/resume`) names the Home in words and says `relavium` alone. The shell line that
+ * names the saved session's id is printed when the chat has closed (`resumeHint`), never in the transcript.
+ *
+ * `surface` defaults to the Home because the Home's controller calls this with the session id alone; the stand-alone chat passes
+ * its own.
  */
-export function clearedNotice(oldSessionId: string): string {
-  return `✨ Started a fresh conversation. The previous one is saved. ${resumeHint(oldSessionId).trimEnd()}`;
+export function clearedNotice(
+  _previousSessionId: string,
+  surface: ClearedNoticeSurface = 'home',
+): string {
+  return surface === 'home'
+    ? '✨ Started a fresh conversation. The previous one is saved; /resume continues it.'
+    : '✨ Started a fresh conversation. The previous one is saved; to continue it, start Relavium without arguments and use /resume on the Home.';
 }
 
 /**

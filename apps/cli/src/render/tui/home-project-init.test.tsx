@@ -125,14 +125,8 @@ function fixture(alternate: boolean, color: boolean, hold = false) {
     if (flush === undefined) throw new Error('Renderer not mounted');
     await flush();
   };
-  const open = async (chat = false): Promise<void> => {
+  const open = async (): Promise<void> => {
     await vi.waitFor(() => expect(flush).toBeDefined());
-    if (chat) {
-      controller.handleKey('start', {});
-      controller.handleKey('', { return: true });
-      await vi.waitFor(() => expect(controller.getSnapshot().mode).toBe('chat'));
-      store.appendUser('retained context');
-    }
     // The native parser treats a mixed text+CR chunk as editable multiline
     // text. A separate Return event is the terminal's submit gesture.
     input.push('/init');
@@ -205,30 +199,49 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
     await f.finish();
     expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
   });
-  for (const chat of [false, true]) {
-    it.each([false, true])(
-      `lists directories and requires explicit yes (chat=${chat}, color=%s)`,
-      async (color) => {
-        const f = fixture(alternate, color);
-        await f.open(chat);
-        await f.approve();
-        await f.finish();
-        expect(readdirSync(join(f.cwd, '.relavium')).sort()).toEqual(['agents', 'workflows']);
-        expect(f.controller.getSnapshot().notice).toContain('Created');
-        if (chat) {
-          expect(f.controller.getSnapshot().session?.store).toBe(f.store);
-          expect(
-            f.store
-              .getSnapshot()
-              .state.transcript.filter((entry) => entry.role === 'user')
-              .map((entry) => entry.text),
-          ).toEqual(['retained context']);
-          if (!alternate)
-            expect(f.output.frames.join('').split('retained context')).toHaveLength(2);
-        }
-      },
+  it.each([false, true])(
+    'lists directories and requires explicit yes (color=%s)',
+    async (color) => {
+      const f = fixture(alternate, color);
+      await f.open();
+      await f.approve();
+      await f.finish();
+      expect(readdirSync(join(f.cwd, '.relavium')).sort()).toEqual(['agents', 'workflows']);
+      expect(f.controller.getSnapshot().notice).toContain('Created');
+    },
+  );
+  it('is the Home’s: in the chat the Home hosts, /init answers one line that names the Home, and no flow opens (ADR-0145 §7.5, OD-2)', async () => {
+    const f = fixture(alternate, false);
+    await settleFrames();
+    f.controller.handleKey('start', {});
+    f.controller.handleKey('', { return: true });
+    await vi.waitFor(() => expect(f.controller.getSnapshot().mode).toBe('chat'));
+    f.store.appendUser('retained context');
+    f.input.push('/init');
+    await vi.waitFor(() => expect(f.controller.getSnapshot().input.text).toBe('/init'));
+    f.input.push('\r');
+    await vi.waitFor(() =>
+      expect(
+        f.store
+          .getSnapshot()
+          .state.transcript.some(
+            (entry) =>
+              entry.role === 'notice' && entry.text === '/init is available from the Home.',
+          ),
+      ).toBe(true),
     );
-  }
+    await settleFrames();
+    expect(f.channel.ui.getSnapshot().active, 'no popup or prompt opened').toBe(false);
+    expect(f.controller.getSnapshot().nativeActionBusy).toBe(false);
+    expect(f.controller.getSnapshot().session?.store).toBe(f.store);
+    expect(existsSync(join(f.cwd, '.relavium'))).toBe(false);
+    expect(
+      f.store
+        .getSnapshot()
+        .state.transcript.filter((entry) => entry.role === 'user')
+        .map((entry) => entry.text),
+    ).toEqual(['retained context']);
+  });
   it.each(['no', 'escape', 'ctrl-c'] as const)(
     '%s cancels without any project write',
     async (choice) => {
@@ -244,7 +257,7 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
     'blocks publication after shrink and can %s',
     async (action) => {
       const f = fixture(alternate, false, true);
-      await f.open(true);
+      await f.open();
       await f.approve();
       await vi.waitFor(() => expect(f.held()).toBe(true));
       f.resize(0.5);
@@ -258,7 +271,10 @@ describe.each([false, true])('Home init alternate=%s', (alternate) => {
       else f.resize(80);
       await f.finish();
       expect(existsSync(join(f.cwd, '.relavium'))).toBe(action === 'recover');
-      expect(f.controller.getSnapshot().session?.store).toBe(f.store);
+      expect(
+        f.controller.getSnapshot().session,
+        '/init is the Home’s: no chat is in front',
+      ).toBeUndefined();
     },
   );
 });

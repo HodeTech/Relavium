@@ -48,7 +48,7 @@ import {
   type ChatModelsPort,
   type ReseatTarget,
 } from '../../commands/chat.js';
-import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import { unavailableNotice } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import {
   canControlEffort,
@@ -155,10 +155,12 @@ import { PaletteView } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
 import { layoutColumns } from './layout-columns.js';
 import { ReverseSearchView } from './reverse-search-view.js';
+import { buildPaletteEntries } from './palette-entries.js';
 import {
   foldPaletteKey,
-  INITIAL_PALETTE_STATE,
+  openPalette,
   shouldOpenPalette,
+  type PaletteList,
   type PaletteState,
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
@@ -839,9 +841,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // keeps the ref in lockstep with state; the input handler reads `paletteRef.current`, the render reads `palette`.
   const [palette, setPalette] = useState<PaletteState | undefined>(undefined);
   const paletteRef = useRef<PaletteState | undefined>(undefined);
-  const applyPalette = (next: PaletteState | undefined): void => {
-    paletteRef.current = next;
-    setPalette(next);
+  // The rows the open palette reads (MVP-11 Step 2.2): built once per change and shared by the key fold and the view, shadowed by a ref
+  // for the same coalesced-chunk reason. `applyPalette` keeps the three in lockstep.
+  const [paletteList, setPaletteList] = useState<PaletteList | undefined>(undefined);
+  const paletteListRef = useRef<PaletteList | undefined>(undefined);
+  const applyPalette = (
+    next: { readonly state: PaletteState; readonly list: PaletteList } | undefined,
+  ): void => {
+    paletteRef.current = next?.state;
+    paletteListRef.current = next?.list;
+    setPalette(next?.state);
+    setPaletteList(next?.list);
   };
   // Per-session command history (2.5.D step 3): Up/Down recall, Ctrl+R reverse-searches. History is a ref (not
   // rendered directly); the reverse-search submode is React-local + ref-shadowed like the palette (it renders a
@@ -1750,9 +1760,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
-    const openPalette = paletteRef.current;
-    if (openPalette !== undefined) {
-      const step = foldPaletteKey(char, key, openPalette, CHAT_PALETTE_COMMANDS);
+    const paletteNow = paletteRef.current;
+    const listNow = paletteListRef.current;
+    if (paletteNow !== undefined && listNow !== undefined) {
+      const step = foldPaletteKey(char, key, paletteNow, listNow);
       if (step.kind === 'close') {
         applyPalette(undefined);
         return;
@@ -1762,7 +1773,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         if (step.command !== undefined) submit(`/${step.command.name}`); // reuse the S3a slash dispatch
         return;
       }
-      applyPalette(step.state);
+      if (step.kind === 'unavailable') {
+        // `Enter` on a dim row: its reason is said (the chat's own line) and the palette stays open. Never "unknown command", never run.
+        props.store.note(
+          unavailableNotice(listNow.rows[paletteNow.index]?.command.name ?? '', step.reason),
+        );
+        return;
+      }
+      applyPalette({ state: step.state, list: step.list });
       return;
     }
     // A pending approval OWNS the keyboard (never opens the palette): the card has taken every key before this point.
@@ -1772,7 +1790,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       !approvalPending &&
       shouldOpenPalette(char, key, isRunning, editorRef.current.text.length)
     ) {
-      applyPalette(INITIAL_PALETTE_STATE);
+      // The list opens ABOVE the prompt, so its first row is the one beside it and it is drawn bottom-up (ADR-0145 §7.1).
+      applyPalette(
+        openPalette(
+          buildPaletteEntries('chat', { hasSession: true, hasKey: true, turnRunning: isRunning }),
+          'up',
+        ),
+      );
       return;
     }
     // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — a keyboard-owning submode.
@@ -2048,9 +2072,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           hasCustody={() => acceptsInput() && props.suspendPort?.isSuspended() !== true}
           color={color}
         />
-        {palette !== undefined && (
+        {palette !== undefined && paletteList !== undefined && (
           <PaletteView
-            commands={CHAT_PALETTE_COMMANDS}
+            list={paletteList}
             state={palette}
             color={color}
             maxRows={windowSize.rows - 1}

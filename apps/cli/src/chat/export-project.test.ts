@@ -387,6 +387,11 @@ describe('exportSessionToProject (MVP-A3)', () => {
     if (!isCliError(caught)) throw new Error('expected a CliError');
     expect(caught.code).toBe('invalid_invocation');
     expect(caught.message).toContain("no free workflow id near 'my-session'");
-    expect(caught.message).toContain('relavium chat-export <sessionId> --out <path>');
+    // The remedy is an action of the TUI that shows it (`/export` again after freeing a name), never the deprecated
+    // `chat-export` alias or any shell command (MVP-11 OD-20, ADR-0122 §6).
+    expect(caught.message).toContain(
+      'remove or rename some of those workflow files, then run /export again',
+    );
+    expect(caught.message).not.toMatch(/chat-export|relavium /u);
   });
 });

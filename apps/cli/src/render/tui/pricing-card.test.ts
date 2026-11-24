@@ -254,8 +254,8 @@ describe('the form asks one question per row of the field table', () => {
       PRICING_OTHER_MODEL,
     ]);
     expect(r.snap().options.map((option) => option.hint)).toEqual([
-      'openai · catalog price',
-      'openai · no price',
+      'OpenAI · catalog price',
+      'OpenAI · no price',
       'a model id the list does not show',
     ]);
     r.choose('acme-custom-1');
@@ -344,9 +344,9 @@ describe('the card shows exactly what will be recorded, and whose override it is
     await r.cardUp();
     const card = r.snap();
     expect(card.kind).toBe('chord');
-    expect(card.message).toBe("Record your price for 'gpt-5.5' under openai?");
+    expect(card.message).toBe("Record your price for 'gpt-5.5' under OpenAI?");
     expect(card.details).toEqual([
-      'model       gpt-5.5 (openai)',
+      'model       gpt-5.5 (OpenAI)',
       'input       $3/Mtok',
       'output      $9/Mtok',
       'cached      $0.03/Mtok',
@@ -382,7 +382,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(r.snap().details).toContain('A price you left empty keeps what is stored now.');
     r.ui.input('y', ctrl);
     expect(await r.result).toContain(
-      'Set user pricing for acme-custom-1 (openai): input $0.12345679/Mtok',
+      'Set user pricing for acme-custom-1 (OpenAI): input $0.12345679/Mtok',
     );
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
@@ -429,9 +429,9 @@ describe('the card shows exactly what will be recorded, and whose override it is
     r.commits.mockClear();
     await r.start(PRICING_ACTION_CLEAR, 'gpt-5.5');
     await r.cardUp();
-    expect(r.snap().message).toBe("Remove your price override for 'gpt-5.5' under openai?");
+    expect(r.snap().message).toBe("Remove your price override for 'gpt-5.5' under OpenAI?");
     expect(r.snap().details).toEqual([
-      'model       gpt-5.5 (openai)',
+      'model       gpt-5.5 (OpenAI)',
       'Afterwards it falls back to the catalog: input $5/Mtok, output $30/Mtok.',
       PRICING_CLEAR_OWNERSHIP,
     ]);
@@ -442,7 +442,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     expect(rowsFor('gpt-5.5'), 'asking removes nothing').toHaveLength(1);
     r.ui.input('y', ctrl);
     expect(await r.result).toBe(
-      'Cleared the user price for gpt-5.5 (openai). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
+      'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
     );
     expect(r.commits).toHaveBeenCalledTimes(1);
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
@@ -459,7 +459,7 @@ describe('the card shows exactly what will be recorded, and whose override it is
     ).toEqual([PRICING_CLOSE_LABEL]);
     r.choose(PRICING_CLOSE_LABEL);
     expect(await r.result).toBe(
-      'Not recorded. gpt-5.5 (openai) has no user price to clear — nothing changed.',
+      'Not recorded. gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
     );
     expect(r.commits).not.toHaveBeenCalled();
   });
@@ -574,7 +574,7 @@ describe('Yes writes once, through the commit, and only past the chord guard', (
     await atCard(r);
     r.ui.input('y', ctrl);
     expect(await r.result).toBe(
-      'Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives `relavium models refresh`.',
+      'Set user pricing for acme-custom-1 (OpenAI): input $3/Mtok, output $9/Mtok. It applies to your next run/chat and survives a model refresh.',
     );
     expect(r.commits).toHaveBeenCalledTimes(1);
     const [row] = rowsFor('acme-custom-1');
@@ -790,13 +790,13 @@ describe('a model the list does not show', () => {
         .snap()
         .options.map((option) => option.label)
         .sort(),
-    ).toEqual(['deepseek', 'openai']);
-    r.choose('deepseek');
+    ).toEqual(['DeepSeek', 'OpenAI']);
+    r.choose('DeepSeek');
     await r.fill({ input: '1', output: '2' });
     await r.cardUp();
-    expect(r.snap().message).toBe("Record your price for 'house-model' under deepseek?");
+    expect(r.snap().message).toBe("Record your price for 'house-model' under DeepSeek?");
     r.ui.input('y', ctrl);
-    expect(await r.result).toContain('Set user pricing for house-model (deepseek)');
+    expect(await r.result).toContain('Set user pricing for house-model (DeepSeek)');
     expect(rowsFor('house-model')).toHaveLength(1);
   });
 

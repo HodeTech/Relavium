@@ -74,8 +74,7 @@ export const SESSIONS_UNREADABLE = 'The conversations of this project could not 
 /** What the tab says under the list when older conversations exist than it lists. */
 export const SESSIONS_MORE = '… older conversations are not listed; /resume searches them';
 /** What `Enter` says when the Home cannot resume a conversation: nothing was opened. */
-export const SESSIONS_RESUME_UNAVAILABLE =
-  'Session resume is unavailable here. Use relavium chat resume.';
+export const SESSIONS_RESUME_UNAVAILABLE = 'Session resume is unavailable here.';
 
 const POINTER = '› ';
 const INDENT = '  ';

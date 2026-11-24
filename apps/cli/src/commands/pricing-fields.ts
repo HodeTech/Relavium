@@ -74,6 +74,12 @@ export interface PricingField {
   readonly id: PricingFieldId;
   /** The flag as the shell's sentences name it. The descriptor lists it as a spelling (primary or deprecated). */
   readonly flag: string;
+  /**
+   * The flag a REMEDY tells a person to type: the descriptor's primary spelling. It differs from {@link flag} for the token pair, whose
+   * short spellings `--input` and `--output` are still accepted but deprecated, so a remedy that printed them would name a spelling the
+   * command's own help marks as old (ADR-0145 §7.4, MVP-11 OD-20). `pricing-fields.test.ts` proves it is the descriptor's first spelling.
+   */
+  readonly canonicalFlag: string;
   /** What the form's prompt and card call it. */
   readonly label: string;
   /** What the shell's sentences call the missing flag's value (`--input USD_PER_MTOK`). */
@@ -98,6 +104,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'input',
     flag: '--input',
+    canonicalFlag: '--input-price',
     label: 'Input price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
@@ -112,6 +119,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'output',
     flag: '--output',
+    canonicalFlag: '--output-price',
     label: 'Output price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
@@ -126,6 +134,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'cached',
     flag: '--cached',
+    canonicalFlag: '--cached',
     label: 'Cached input price',
     placeholder: 'USD_PER_MTOK',
     unit: 'mtok',
@@ -140,6 +149,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'image',
     flag: '--image',
+    canonicalFlag: '--image',
     label: 'Image price',
     placeholder: 'USD_PER_IMAGE',
     unit: 'billed-unit',
@@ -154,6 +164,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'audio',
     flag: '--audio',
+    canonicalFlag: '--audio',
     label: 'Audio price',
     placeholder: 'USD_PER_SECOND',
     unit: 'billed-unit',
@@ -168,6 +179,7 @@ export const PRICING_FIELDS: readonly PricingField[] = Object.freeze([
   {
     id: 'video',
     flag: '--video',
+    canonicalFlag: '--video',
     label: 'Video price',
     placeholder: 'USD_PER_SECOND',
     unit: 'billed-unit',

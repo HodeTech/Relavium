@@ -290,6 +290,17 @@ describe('chat-projection', () => {
       expect(errorRecoveryHint(undefined)).toBeUndefined(); // a successful/aborted turn carries no code
     });
 
+    it('names the Home’s /providers for a rejected key and no shell command in any hint (ADR-0146 §6)', () => {
+      expect(errorRecoveryHint('provider_auth')).toContain(
+        'fix the key from the Home (/providers)',
+      );
+      for (const code of ERROR_CODES) {
+        expect(errorRecoveryHint(code) ?? '', code).not.toMatch(
+          /`relavium|relavium (provider|models|chat|run|gate|status|logs|import|export|doctor)/u,
+        );
+      }
+    });
+
     it('hints /compact·/trim for a context-overflow validation (the message heuristic), else no hint', () => {
       for (const msg of [
         "This model's maximum context length is 8192 tokens", // OpenAI

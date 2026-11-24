@@ -60,6 +60,11 @@ export interface ProviderResolver {
   readonly endpointKind?: (id: ProviderId) => EndpointKind;
   /** Safe destination captured with the actual adapter; absent only on injected resolver stubs. */
   readonly endpointContext?: (id: ProviderId) => string;
+  /**
+   * The surface this resolver's diagnostics are written for, so a message built OUTSIDE the resolver (the session pre-flight) names the
+   * same remedy `keyFor` does. Absent on a scripting path and on an injected stub, where the shell wording is the right one.
+   */
+  readonly credentialSurface?: CredentialSurface;
 }
 
 /** Both native setup hosts disclose the resolver's pinned recipient, never a fresh registry read. */
@@ -144,11 +149,13 @@ export function providerKeyAvailabilityMessage(
   availability: ProviderKeyAvailability,
   surface: CredentialSurface = 'shell',
 ): string {
+  // The `home` and `standalone-chat` remedies name no shell command (ADR-0146 §6, MVP-11): the Home has `/providers`; a stand-alone
+  // chat has neither the Home nor a command of its own for it, and opens provider setup when it starts, so it says to start it again.
   const remedy =
     surface === 'home'
       ? 'open `/providers` to connect a key or review its source.'
       : surface === 'standalone-chat'
-        ? 'restart `relavium chat` to open provider setup.'
+        ? 'restart this chat to open provider setup.'
         : `store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`;
   switch (availability.status) {
     case 'present-standard-not-allowed':
@@ -169,8 +176,22 @@ export function providerKeyAvailabilityMessage(
  * {@link createProviderResolver}'s `keyFor` and the session pre-flight (MVP-A4), so the user reads the same
  * remedy whichever caught it first.
  */
-export function missingKeyMessage(id: ProviderId): string {
-  return providerKeyAvailabilityMessage(id, { status: 'missing', keychainHealth: 'unknown' });
+export function missingKeyMessage(id: ProviderId, surface?: CredentialSurface): string {
+  return providerKeyAvailabilityMessage(
+    id,
+    { status: 'missing', keychainHealth: 'unknown' },
+    surface,
+  );
+}
+
+/**
+ * What a person reads for a provider: its display name (`Anthropic`, `Google Gemini`), or the id itself for a provider this build has
+ * no metadata for (a registered custom one). A message names a provider this way wherever a person reads it; the id stays the key a
+ * command, a config file and a log use (MVP-11, ADR-0145).
+ */
+export function providerDisplayName(id: string): string {
+  const known = KNOWN_PROVIDER_IDS.find((candidate) => candidate === id);
+  return known === undefined ? id : KNOWN_PROVIDERS[known].displayName;
 }
 
 /** A non-secret display hint for a key — masked, with the last 4 chars (or fully masked when too short). NEVER the full key. */
@@ -525,6 +546,9 @@ export function createProviderResolver(
     },
     hasKey: (id) => resolveKey(id).key !== undefined,
     availability: (id) => resolveKey(id).observation,
+    ...(options.credentialSurface === undefined
+      ? {}
+      : { credentialSurface: options.credentialSurface }),
   };
 }
 

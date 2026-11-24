@@ -74,6 +74,7 @@ import {
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
   formatReplHelp,
+  homeOnlyPointer,
   replCommandList,
   REPL_COMMANDS_BY_NAME,
   type ReplCommand,
@@ -1506,7 +1507,7 @@ async function chatResumeCommandBody(
         startSession: () => undefined,
         ...(missingKey === undefined ? {} : { sendGuard: missingKeyGuard(providers, missingKey) }),
         onActivated: (isActive, flushNotice) => {
-          if (missingKey !== undefined) store.notice(resumeMissingKeyNotice(missingKey));
+          if (missingKey !== undefined) store.notice(resumeMissingKeyNotice(providers, missingKey));
           return reconcileResumedSessionEffects({
             io: deps.io,
             ...(built.workOwner === undefined ? {} : { owner: built.workOwner }),
@@ -1557,8 +1558,8 @@ async function chatResumeCommandBody(
 }
 
 /** The in-view notice a resumed session whose provider has no key opens with, and repeats at each refused send. */
-function resumeMissingKeyNotice(provider: ProviderId): string {
-  return `${missingKeyMessage(provider)} Or switch to a model whose provider has a key with /models.`;
+function resumeMissingKeyNotice(providers: ProviderResolver, provider: ProviderId): string {
+  return `${missingKeyMessage(provider, providers.credentialSurface)} Or switch to a model whose provider has a key with /models.`;
 }
 
 /**
@@ -1570,7 +1571,8 @@ function missingKeyGuard(
   providers: ProviderResolver,
   provider: ProviderId,
 ): () => string | undefined {
-  return () => (providerHasKey(providers, provider) ? undefined : resumeMissingKeyNotice(provider));
+  return () =>
+    providerHasKey(providers, provider) ? undefined : resumeMissingKeyNotice(providers, provider);
 }
 
 /** What the shared REPL loop needs: a built (fresh or resumed) session, its store/persister, and how to open it. */
@@ -1734,7 +1736,7 @@ export function createChatModeControl(
     // the default model, and the tier stays behind. It is inert now, and being inert SILENTLY is the expensive
     // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
     // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
-    store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
+    store.notice(effortRejectedNote(built.agent.model, seeded, tiers, 'tui'));
   }
   return {
     commandApprovals: modeEnv.cache,
@@ -2038,12 +2040,11 @@ export function createChatLineHandler(
           // driveJson serializer (subscribed) writes it to stdout, keeping the stream pure + complete.
           built.emitSessionEvent({ type: 'session:exported', workflowPath: result.path });
         } else {
-          // The cwd-relative path and the command that runs it — the export offers the next step. Through the
-          // notice channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
+          // The cwd-relative path. It names no command to run the file (MVP-11 OD-20): this notice is shown inside
+          // the TUI, whose own way to run it (`/run` on the Home) a chat does not offer. Through the notice
+          // channel, like the review note above: in the full-screen view a raw stderr line is overdrawn by
           // the next frame and discarded with the alternate buffer.
-          emitOutput(
-            `exported session to ${sourceLabel(deps.global.cwd, result.path)} — run it with \`relavium run ${result.workflowId}\``,
-          );
+          emitOutput(`exported session to ${sourceLabel(deps.global.cwd, result.path)}`);
         }
       } catch (err) {
         workOwner?.failure(err);
@@ -2194,7 +2195,7 @@ export function createChatLineHandler(
         // the palette submits this bare form), marking the active one.
         const current = store.getSnapshot().reasoningEffort;
         if (offered.length === 0) {
-          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model)}`);
+          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model, 'tui')}`);
           return;
         }
         // Label + mark through the SAME projection the picker uses, so a budget model reads "on" and a bound tier
@@ -2230,7 +2231,7 @@ export function createChatLineHandler(
       if (!offered.includes(tier)) {
         // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
         // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
-        emitOutput(effortRejectedNote(built.agent.model, tier, offered));
+        emitOutput(effortRejectedNote(built.agent.model, tier, offered, 'tui'));
         return;
       }
       modeControl.onSetEffort(tier);
@@ -2345,6 +2346,13 @@ export function createChatLineHandler(
     const command =
       name !== undefined && name.length > 0 ? REPL_COMMANDS_BY_NAME.get(name) : undefined;
     if (command === undefined) {
+      // A word only the Home has (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`): one line that names the Home, and
+      // nothing opens (ADR-0145 §7.4). It is not an unknown command.
+      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'home-chat');
+      if (pointer !== undefined) {
+        emitOutput(pointer);
+        return;
+      }
       // Echo a SANITIZED form — strip non-printable bytes + truncate — so a crafted slash can't smuggle a
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
@@ -2356,9 +2364,7 @@ export function createChatLineHandler(
     // (CHAT_PALETTE_COMMANDS); this covers a command TYPED directly, keeping the home-only next-session `/models`
     // config action distinct from the Phase-2.6 mid-chat `/models` live reseat (ADR-0059).
     if (!command.availableIn.includes('chat')) {
-      emitOutput(
-        `/${command.name} is available from the Home (run \`relavium\` with no arguments), not inside a chat.`,
-      );
+      emitOutput(`Open the Home to use /${command.name}: start Relavium without arguments.`);
       return;
     }
     const rejection = validateSlashTokens(command, tokens);
@@ -2684,9 +2690,9 @@ function createClearRebuild(params: {
   };
   return (oldSessionId) =>
     params.ownership === undefined
-      ? buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId))
+      ? buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId, 'standalone-chat'))
       : params.ownership.hosts.construct((host) =>
-          buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId), host),
+          buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId, 'standalone-chat'), host),
         );
 }
 

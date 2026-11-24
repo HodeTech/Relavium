@@ -41,9 +41,9 @@ function fixture(
 }
 
 describe('Home provider setup', () => {
-  it('exposes provider setup in Home palettes but never standalone chat', () => {
+  it('exposes provider setup in the Home palette only: not in a standalone chat and, since OD-2, not in the chat the Home hosts', () => {
     expect(HOME_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(true);
-    expect(HOME_CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(true);
+    expect(HOME_CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
     expect(CHAT_PALETTE_COMMANDS.some((item) => item.name === 'providers')).toBe(false);
     expect(HOME_PALETTE_COMMANDS.find((item) => item.name === 'providers')?.description).toContain(
       'keys',
@@ -92,7 +92,7 @@ describe('Home provider setup', () => {
     await flush();
     expect(open).toHaveBeenCalledTimes(2);
   });
-  it('intercepts /providers in Home chat without sending it as a chat line', async () => {
+  it('answers /providers in the chat the Home hosts with a pointer to the Home: it opens nothing and is not sent as a chat line', async () => {
     const lines: string[] = [];
     const session: HomeChatSession = {
       store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
@@ -121,8 +121,18 @@ describe('Home provider setup', () => {
     c.handlePaste('/providers');
     c.handleKey('', { return: true });
     await flush();
-    expect(open).toHaveBeenCalledOnce();
+    expect(open, 'the setup is the Home’s: a chat opens nothing').not.toHaveBeenCalled();
     expect(lines).toEqual(['hello']);
+    expect(
+      session.store
+        .getSnapshot()
+        .state.transcript.some(
+          (entry) =>
+            entry.role === 'notice' && entry.text === '/providers is available from the Home.',
+        ),
+      'one line names the Home',
+    ).toBe(true);
+    expect(c.getSnapshot().mode).toBe('chat');
   });
 
   it('samples key availability once on return to Home, not on render or initial chat open', async () => {

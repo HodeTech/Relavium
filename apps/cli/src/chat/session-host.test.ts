@@ -3103,6 +3103,20 @@ describe('the default model follows the stored key (MVP-A4)', () => {
     ).toContain('set-key openai');
   });
 
+  it('words the pre-flight refusal for the surface the resolver was built for, never a shell command inside the TUI (ADR-0146 §6)', async () => {
+    const keyless = (credentialSurface: 'home' | 'standalone-chat'): ProviderResolver => ({
+      ...keyedOnly([]),
+      credentialSurface,
+    });
+    const home = await refusalOf(build({ providers: keyless('home') }));
+    expect(home).toContain('open `/providers`');
+    const standalone = await refusalOf(build({ providers: keyless('standalone-chat') }));
+    expect(standalone).toContain('restart this chat to open provider setup');
+    for (const text of [home, standalone]) expect(text).not.toMatch(/relavium|set-key/u);
+    // A resolver that names no surface (a scripting path, an injected stub) keeps the shell's own remedy.
+    expect(await refusalOf(build({ providers: keyedOnly([]) }))).toContain('set-key anthropic');
+  });
+
   it('refuses a RESUMED keyless session BEFORE asking for MCP consent or starting a server (MVP-A4)', async () => {
     const ISO = '2026-06-25T00:00:00.000Z';
     const agent: Agent = {

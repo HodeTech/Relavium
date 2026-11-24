@@ -10,7 +10,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import { HOME_PALETTE_COMMANDS, REPL_COMMANDS } from '../../commands/repl-commands.js';
+import {
+  HOME_PALETTE_COMMANDS,
+  REPL_COMMANDS,
+  unavailableNotice,
+} from '../../commands/repl-commands.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { createChatStore } from './chat-store.js';
@@ -21,7 +25,7 @@ import {
   type HomeController,
   type HomeControllerDeps,
 } from './home-controller.js';
-import { filterPaletteCommands } from './palette-reducer.js';
+import { buildPaletteEntries, filterPaletteEntries } from './palette-entries.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const EMPTY: HomeSnapshot = {
@@ -203,12 +207,22 @@ describe('a registry word at the landing is answered, and never starts a chat', 
       await flush();
       expect(home.startChat, `/${name} starts no chat`).not.toHaveBeenCalled();
       const snapshot = home.controller.getSnapshot();
+      if (name === 'clear') {
+        // The Home has no conversation to clear, so /clear is a dim row: the palette says why and stays open (ADR-0145 §7.4). It is neither
+        // run nor "unknown command"; the pasted word, which never reaches the palette, is answered above.
+        expect(snapshot.palette, 'a dim row keeps the palette open').toBeDefined();
+        expect(snapshot.notice).toBe(unavailableNotice('clear', 'no conversation to clear'));
+        expect(snapshot.mode).toBe('home');
+        await home.controller.teardownActive();
+        return;
+      }
       expect(snapshot.palette, 'the palette is closed').toBeUndefined();
       expect(snapshot.mode).toBe('home');
       expect(snapshot.input.text).toBe('');
       // The palette filters on the descriptions too, so a word that matches a command of the Home's runs that command, as it always did
       // (`/export` matches the Home's `/workflows`: "run or export one"); one that matches nothing is the typed word, answered here.
-      if (filterPaletteCommands(HOME_PALETTE_COMMANDS, name).length === 0)
+      const rows = buildPaletteEntries('home', { hasSession: false, hasKey: true });
+      if (filterPaletteEntries(rows, name).length === 0)
         await (ANSWERS[name] ?? chatOnly(name))(home);
       await home.controller.teardownActive();
     },

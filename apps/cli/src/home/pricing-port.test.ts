@@ -257,7 +257,7 @@ describe("prepare shows the plan the shell's own core decided, and writes nothin
     expect(result.commit()).toEqual({
       ok: true,
       written:
-        'Set user pricing for acme-custom-1 (openai): input $3/Mtok, output $9/Mtok, cached $0.03/Mtok, audio $0.001/s. It applies to your next run/chat and survives `relavium models refresh`.',
+        'Set user pricing for acme-custom-1 (OpenAI): input $3/Mtok, output $9/Mtok, cached $0.03/Mtok, audio $0.001/s. It applies to your next run/chat and survives a model refresh.',
     });
     const [row] = rowsFor('acme-custom-1');
     const stored: Record<PricingFieldId, number | null | undefined> = {
@@ -531,7 +531,14 @@ describe("the shell and the form refuse alike (the core's rules, pinned on both 
       const viaShell = shellOutput('gpt-5.5', { input: '0.30000000', output: '9' });
       client.sqlite.exec('DELETE FROM model_catalog');
       const viaForm = prepared('gpt-5.5', { input: '0.30000000', output: '9' }).commit();
-      expect(viaForm.ok && viaShell.startsWith(viaForm.written)).toBe(true);
+      // The two sentences are the same but for the two places the form speaks in the Home's words (MVP-11, ADR-0146 §6, OD-20): the
+      // shell says `relavium models refresh` where the Home says "a model refresh", and the shell names the provider by its id where
+      // the Home names it by its display name. Anything else that differs fails here.
+      const shellInTheHomesWords = viaShell
+        .replace('`relavium models refresh`', 'a model refresh')
+        .replace('(openai)', '(OpenAI)');
+      expect(viaForm.ok && shellInTheHomesWords.startsWith(viaForm.written)).toBe(true);
+      expect(viaForm.ok && viaForm.written).not.toContain('relavium');
     });
 
     it('refuses a hexadecimal, binary, octal or separated number, which a bare Number() would have read', () => {
@@ -754,7 +761,7 @@ describe('--clear', () => {
     expect(result.commit()).toEqual({
       ok: true,
       written:
-        'Cleared the user price for gpt-5.5 (openai). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
+        'Cleared the user price for gpt-5.5 (OpenAI). It falls back to the catalog: input $5/Mtok, output $30/Mtok.',
     });
     expect(rowsFor('gpt-5.5')).toHaveLength(0);
   });
@@ -773,7 +780,7 @@ describe('--clear', () => {
     const result = port.prepare(OPENAI('gpt-5.5'), { action: 'clear' });
     expect(result).toEqual({
       ok: false,
-      reason: 'gpt-5.5 (openai) has no user price to clear — nothing changed.',
+      reason: 'gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
     });
   });
 
@@ -787,7 +794,7 @@ describe('--clear', () => {
     );
     expect(result.commit()).toEqual({
       ok: true,
-      written: 'gpt-5.5 (openai) has no user price to clear — nothing changed.',
+      written: 'gpt-5.5 (OpenAI) has no user price to clear — nothing changed.',
     });
   });
 
@@ -1105,9 +1112,9 @@ describe('the lists the form offers', () => {
       entry('mystery', { provider: 'deepseek' }),
     ];
     expect(port.models()).toEqual([
-      { modelId: 'gpt-5.5', provider: 'openai', hint: 'openai · catalog price' },
-      { modelId: 'acme-custom-1', provider: 'openai', hint: 'openai · your price' },
-      { modelId: 'mystery', provider: 'deepseek', hint: 'deepseek · no price' },
+      { modelId: 'gpt-5.5', provider: 'openai', hint: 'OpenAI · catalog price' },
+      { modelId: 'acme-custom-1', provider: 'openai', hint: 'OpenAI · your price' },
+      { modelId: 'mystery', provider: 'deepseek', hint: 'DeepSeek · no price' },
     ]);
     expect([...port.providers()].sort()).toEqual(['deepseek', 'openai']);
   });

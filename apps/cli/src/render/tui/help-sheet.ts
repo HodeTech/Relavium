@@ -4,9 +4,8 @@
  * pure, like the other sheets' models: {@link helpSheetLines} turns a size into lines, and `HelpScreen` of the Home controller holds
  * nothing else, because the sheet has nothing to remember.
  *
- * - **The commands** are the registry's own entries, never a copy of their text: `/help` itself, then every command of the bare Home's
- *   palette ({@link HOME_PALETTE_COMMANDS}: the registry entries whose `availableIn` names the Home, and the Home's own commands), by
- *   name. A chat-only command (`/cost`, `/export`, ...) is not listed here: typing one at the landing answers with where it works.
+ * - **The commands** are the registry's own entries, never a copy of their text: every command of the bare Home's palette
+ *   ({@link HOME_PALETTE_COMMANDS}: the table's placements on the Home, `/help` among them), in the Home's grouped order. A chat-only command (`/cost`, `/export`, ...) is not listed here: typing one at the landing answers with where it works.
  * - **The keys** are {@link HOME_KEYS}, the landing's keys, each with the key press that does it, so the test presses every one of them and
  *   checks that it does what its verb says. {@link HELP_SHEET_KEYS} are the sheet's own: `Esc` and `Ctrl+C` close it and every other key
  *   does nothing, a key of the landing included, because the sheet is a screen of the slot and owns every key while it is open.
@@ -16,11 +15,7 @@
  *   count what it leaves out. Below 80x24 it is two lines: the hint that says to enlarge, and the way out.
  */
 
-import {
-  HOME_PALETTE_COMMANDS,
-  REPL_COMMANDS,
-  type ReplCommand,
-} from '../../commands/repl-commands.js';
+import { HOME_PALETTE_COMMANDS, type ReplCommand } from '../../commands/repl-commands.js';
 import { legend, legendSpans, type LegendItem } from './legend.js';
 import { displayWidth } from './viewport.js';
 import { sheetCanArm } from './permissions-sheet.js';
@@ -119,14 +114,10 @@ export const HELP_TOO_SMALL = 'Enlarge the terminal — Esc closes.';
 const LEGEND_ITEMS: readonly LegendItem[] = [HELP_SHEET_KEYS.close];
 
 /**
- * What the sheet lists: `/help` first among the registry's words (it is a word of the landing, though the registry marks it as a chat's),
- * then the bare Home's palette commands, all by name.
+ * What the sheet lists: the bare Home's palette commands, `/help` among them, in the Home's own order (*Work*, *Set up*, *Check*, *End*:
+ * ADR-0145 §7.3), so the sheet and the palette read alike and a command added to the Home's table is listed here with no second edit.
  */
-export const HOME_HELP_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  [...REPL_COMMANDS.filter((command) => command.name === 'help'), ...HOME_PALETTE_COMMANDS].sort(
-    (a, b) => a.name.localeCompare(b.name, 'en'),
-  ),
-);
+export const HOME_HELP_COMMANDS: readonly ReplCommand[] = HOME_PALETTE_COMMANDS;
 
 const INDENT = '  ';
 const GAP = '  ';

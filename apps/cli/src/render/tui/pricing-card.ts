@@ -72,6 +72,8 @@ export interface PricingOffer {
   readonly kind: 'set' | 'clear';
   readonly model: string;
   readonly provider: string;
+  /** What a person reads for `provider` (`OpenAI`, not `openai`); absent ⇒ the id itself. The id is what the write is keyed by. */
+  readonly providerName?: string;
   /** The prices a SET will record, in the field table's order; empty for a CLEAR. */
   readonly prices: readonly PricingOfferPrice[];
   /** Whether a SET leaves a field alone: a price not stated keeps what the row holds now. */
@@ -98,6 +100,8 @@ export interface PricingPort {
   readonly models: () => readonly PricingModelChoice[];
   /** The registered providers' slugs, for a model id the catalog does not list. */
   readonly providers: () => readonly string[];
+  /** What a person reads for a provider's slug (`OpenAI`, not `openai`); absent ⇒ the slug itself. */
+  readonly providerName?: (slug: string) => string;
   readonly prepare: (target: PricingTarget, values: PricingValues) => PricingPrepared;
 }
 
@@ -138,10 +142,11 @@ export interface PricingCardText {
 /** The card's words for one offer: the question, exactly what is recorded (or removed), and whose override it is. */
 export function pricingCardText(offer: PricingOffer): PricingCardText {
   const model = clipLine(offer.model, MODEL_COLUMNS);
-  const target = `${model} (${offer.provider})`;
+  const provider = offer.providerName ?? offer.provider;
+  const target = `${model} (${provider})`;
   if (offer.kind === 'clear') {
     return {
-      message: `Remove your price override for '${model}' under ${offer.provider}?`,
+      message: `Remove your price override for '${model}' under ${provider}?`,
       details: [
         `${label('model')}${target}`,
         offer.fallback === undefined
@@ -154,7 +159,7 @@ export function pricingCardText(offer: PricingOffer): PricingCardText {
     };
   }
   return {
-    message: `Record your price for '${model}' under ${offer.provider}?`,
+    message: `Record your price for '${model}' under ${provider}?`,
     details: [
       `${label('model')}${target}`,
       ...offer.prices.map((price) => `${label(price.id)}${price.amount}`),
@@ -205,10 +210,11 @@ export function pricingModelIdFault(id: string): PricingModelIdFault | undefined
 /** The fixed sentence for each fault: it never quotes the id (the id is the thing that cannot be shown). */
 export const PRICING_MODEL_ID_FAULTS: Readonly<Record<PricingModelIdFault, string>> = {
   empty: 'Type a model id.',
+  // `padded` and `invisible` are refused by the SHELL's core too (`modelIdFault`), so no command is named: there is none that prices them.
   padded:
-    'This model id starts or ends with a space, so the card cannot show it as it is stored, and it cannot be priced from here. Use relavium models pricing.',
+    'This model id starts or ends with a space, so the card cannot show it as it is stored, and it cannot be priced.',
   invisible:
-    'This model id has invisible or formatting characters, so it cannot be shown safely, and it cannot be priced from here. Use relavium models pricing.',
+    'This model id has invisible or formatting characters, so it cannot be shown safely, and it cannot be priced.',
   'too-long': `This model id is longer than the ${String(MODEL_COLUMNS)} columns the card can show in full, so it cannot be priced from here. Use relavium models pricing.`,
   unsafe:
     'This model id has characters that cannot be shown safely, so it cannot be priced from here. Use relavium models pricing.',
@@ -285,15 +291,12 @@ function stepsOf(deps: PricingCardDeps, choices: readonly PricingModelChoice[]):
       if (typeof id !== 'string') return awayFrom(id);
       const slugs = port.providers();
       if (slugs.length === 0) {
-        flow.note(
-          'No provider is registered yet. Register one with relavium provider add.',
-          'Price',
-        );
+        flow.note('No provider is registered yet. Connect one with /providers.', 'Price');
         return 'back';
       }
       const provider = await flow.select({
         message: `Which provider serves '${clipLine(id.trim(), MODEL_COLUMNS)}'?`,
-        options: slugs.map((slug) => ({ value: slug, label: slug })),
+        options: slugs.map((slug) => ({ value: slug, label: port.providerName?.(slug) ?? slug })),
         escape: 'back',
       });
       if (typeof provider !== 'string') {

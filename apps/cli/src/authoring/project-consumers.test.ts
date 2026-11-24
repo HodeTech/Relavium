@@ -13,7 +13,11 @@ import { join } from 'node:path';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildAuthored, serializeAuthored } from './authoring.js';
-import { GLOBAL_ARTIFACTS_REMEDY, globalArtifactsNotice } from './global-artifacts.js';
+import {
+  GLOBAL_ARTIFACTS_REMEDY,
+  GLOBAL_ARTIFACTS_REMEDY_TUI,
+  globalArtifactsNotice,
+} from './global-artifacts.js';
 import { createCommand } from '../commands/create.js';
 import { importCommand } from '../commands/import.js';
 import { exportCommand } from '../commands/export.js';
@@ -210,7 +214,7 @@ describe('project consumers never use global artifacts as project state', () => 
     },
   );
 
-  it('doctor reports the same read-only artifact remedy without changing the global files', async () => {
+  it('doctor reports the same read-only artifact notice, worded for the TUI, without changing the global files', async () => {
     const before = readFileSync(join(globalDir, 'workflows', 'global-flow.relavium.yaml'), 'utf8');
     const report = await runDoctorChecks(
       false,
@@ -222,12 +226,26 @@ describe('project consumers never use global artifacts as project state', () => 
     );
     expect(report.checks.find((check) => check.id === 'global-artifacts')).toMatchObject({
       status: 'warn',
-      detail: GLOBAL_ARTIFACTS_REMEDY,
+      // `/doctor` is read in the TUI: the Home's `/import` replaces the shell's `relavium import` (MVP-11 OD-20); `list` keeps the shell's.
+      detail: GLOBAL_ARTIFACTS_REMEDY_TUI,
     });
     expect(globalArtifactsNotice(home)).toBe(GLOBAL_ARTIFACTS_REMEDY);
     expect(readFileSync(join(globalDir, 'workflows', 'global-flow.relavium.yaml'), 'utf8')).toBe(
       before,
     );
+  });
+
+  it('words the notice for the TUI with the Home’s /import and no shell command (ADR-0146 §6)', () => {
+    expect(globalArtifactsNotice(home, 'tui')).toBe(GLOBAL_ARTIFACTS_REMEDY_TUI);
+    rmSync(join(globalDir, 'workflows', 'global-flow.relavium.yaml'));
+    for (let index = 0; index < 260; index++)
+      writeFileSync(join(globalDir, 'workflows', `unrelated-${index}.txt`), 'untouched');
+    const incomplete = globalArtifactsNotice(home, 'tui');
+    expect(incomplete).toContain('inspection was incomplete');
+    for (const text of [GLOBAL_ARTIFACTS_REMEDY_TUI, incomplete ?? '']) {
+      expect(text).toContain('/import');
+      expect(text).not.toMatch(/relavium import|`/u);
+    }
   });
 
   it('discloses incomplete global inspection instead of scanning an arbitrarily large folder', () => {

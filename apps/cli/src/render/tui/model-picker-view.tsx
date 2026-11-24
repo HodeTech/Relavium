@@ -33,6 +33,11 @@ export interface ModelPickerViewProps {
   readonly color: boolean;
   /** The injected clock (epoch-ms) for the freshness badge — threaded from `RootApp` so the relative age is testable. */
   readonly nowMs: number;
+  /**
+   * What a person reads for a provider's id (`Anthropic`, not `anthropic`; ADR-0145). The host passes `providerDisplayName` (the view
+   * imports no engine code); absent ⇒ the id itself, which is also what a provider this build has no name for reads as.
+   */
+  readonly providerName?: (provider: string) => string;
 }
 
 /** The window of row indices to render around `selected` (a `[start, end)` slice), keeping the selection visible and
@@ -46,9 +51,12 @@ export function modelWindow(count: number, selected: number): { start: number; e
 
 /** The "unavailable" reason chip(s) for a row (2.5.G key-awareness): a keyless provider names the remedy; a keyed
  *  provider whose live list omits the model shows the pre-existing "not on your key". Empty when available. */
-function unavailableParts(entry: ModelCatalogEntry): string[] {
+function unavailableParts(
+  entry: ModelCatalogEntry,
+  providerName: (id: string) => string,
+): string[] {
   if (entry.available) return [];
-  if (entry.unavailableReason === 'no-key') return [`no key for ${entry.provider}`];
+  if (entry.unavailableReason === 'no-key') return [`no key for ${providerName(entry.provider)}`];
   return ['unavailable on your key'];
 }
 
@@ -86,6 +94,7 @@ function EffortSubList(props: Readonly<{ state: ModelPickerState; color: boolean
 
 export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactElement {
   const { state, color, nowMs } = props;
+  const providerName = props.providerName ?? ((id: string): string => id);
   // The effort sub-step (ADR-0066) owns the whole overlay while active — a fixed tier list, no catalog/filter/badge.
   if (state.phase === 'effort') return <EffortSubList state={state} color={color} />;
   const visible = visibleModels(state);
@@ -119,7 +128,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
     if (state.entries.length === 0) {
       return (
         <Text {...dimProps(color)} wrap="truncate-end">
-          no models yet — add a provider key with `relavium provider add`, then Ctrl+R to refresh
+          no models yet — connect one with /providers on the Home, then Ctrl+R to refresh
         </Text>
       );
     }
@@ -136,10 +145,10 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       const ctx = formatContextWindow(entry.contextWindowTokens);
       const parts = [
         sanitizeInline(entry.displayName),
-        entry.provider,
+        providerName(entry.provider),
         ...(ctx.length > 0 ? [ctx] : []),
         formatModelPrice(entry),
-        ...unavailableParts(entry),
+        ...unavailableParts(entry, providerName),
         ...(entry.deprecated ? ['deprecated'] : []),
       ];
       const rowColor = rowColorFor(entry, isSelected, color);

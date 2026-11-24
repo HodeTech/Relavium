@@ -11,7 +11,7 @@ import {
   REPL_COMMANDS_BY_NAME,
   type ReplCommandContext,
 } from './repl-commands.js';
-import { filterPaletteCommands } from '../render/tui/palette-reducer.js';
+import { buildPaletteEntries, filterPaletteEntries } from '../render/tui/palette-entries.js';
 
 /**
  * DERIVED from `ReplCommandContext`, never hand-kept. Both this map and the `total` sum below used to enumerate the
@@ -56,27 +56,29 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     const names = REPL_COMMANDS.map((command) => command.name);
     expect(new Set(names).size).toBe(names.length);
     expect(REPL_COMMANDS_BY_NAME.size).toBe(names.length);
+    // A stand-alone chat's palette order (ADR-0145 §7.3): the registry is derived from the one table, so `/help` and the unknown-slash hint
+    // follow it. (The exact order of every surface is pinned in `repl-registry.test.ts`.)
     expect(names).toEqual([
-      'help',
-      'exit',
-      'cancel',
-      'export',
-      'agent',
-      'workflows',
-      'cost',
-      'doctor',
+      'models',
       'mode',
       'effort',
       'thinking',
-      'details',
-      'compact',
       'permissions',
       'trim',
-      'clear',
-      'models',
-      'scrollback',
-      'edit',
+      'compact',
+      'cost',
+      'details',
+      'agent',
+      'workflows',
+      'doctor',
+      'help',
       'copy',
+      'export',
+      'edit',
+      'scrollback',
+      'clear',
+      'cancel',
+      'exit',
     ]);
   });
 
@@ -181,7 +183,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /agent, /workflows, /cost, /doctor, /mode, /effort, /thinking, /details, /compact, /permissions, /trim, /clear, /models, /scrollback, /edit, /copy',
+      '/models, /mode, /effort, /thinking, /permissions, /trim, /compact, /cost, /details, /agent, /workflows, /doctor, /help, /copy, /export, /edit, /scrollback, /clear, /cancel, /exit',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -217,81 +219,70 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
   });
 
-  it('every command declares a non-empty availableIn; the palette sets derive from it (no /help)', () => {
+  it('every command declares a non-empty availableIn; the palette sets derive from the one table (with /help, since ADR-0145 §7.3)', () => {
     for (const command of REPL_COMMANDS) {
       expect(command.availableIn.length, `${command.name} availableIn`).toBeGreaterThan(0);
     }
-    // The base palette set excludes /help; the surface sets split it by availableIn.
-    expect(PALETTE_COMMANDS.map((c) => c.name)).toEqual([
-      'exit',
-      'cancel',
-      'export',
-      'agent',
-      'workflows',
-      'cost',
-      'doctor',
+    const chat = [
+      'models',
       'mode',
       'effort',
       'thinking',
-      'details',
-      'compact',
       'permissions',
       'trim',
-      'clear',
-      'models',
-      'scrollback',
-      'edit',
-      'copy',
-    ]);
-    // /models is availableIn ['home','chat'] (ADR-0059: the chat reseat) — so it appears in BOTH palettes.
-    expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
-      'exit',
-      'cancel',
-      'export',
+      'compact',
+      'cost',
+      'details',
       'agent',
       'workflows',
-      'cost',
       'doctor',
-      'mode',
-      'effort',
-      'thinking',
-      'details',
-      'compact',
-      'permissions',
-      'trim',
-      'clear',
-      'models',
-      'scrollback',
-      'edit',
+      'help',
       'copy',
-    ]);
-    // The bare Home offers /exit + /doctor (pre-chat diagnostics), /clear (availableIn ['home','chat']; an inert
-    // "nothing to clear" notice — ADR-0062 §7), and /models (availableIn ['home','chat'] — the Home writes the
-    // next-session default, ADR-0064 §10; the chat reseats live, ADR-0059).
-    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
-      'exit',
-      'doctor',
-      'mode',
+      'export',
+      'edit',
+      'scrollback',
       'clear',
-      'models',
-      'providers',
-      'init',
-      'permissions', // the bare Home's sheet of the project's remembered commands (ADR-0137 §3)
+      'cancel',
+      'exit',
+    ];
+    // The base palette set is a stand-alone chat's list: `/help` is listed now, so the old "everything but /help" set is gone.
+    expect(PALETTE_COMMANDS.map((c) => c.name)).toEqual(chat);
+    expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual(chat);
+    // The chat the Home hosts: a chat's list with /resume first in *End*, and without /providers and /init (OD-2).
+    expect(HOME_CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
+      ...chat.slice(0, chat.indexOf('clear')),
       'resume',
-      'run', // the launch of a hosted workflow run (ADR-0139 §7, MVP-8 step 3)
-      'workflows', // the Defined tab of the tab host (ADR-0140 §2, MVP-8 step 4): the Home's own, not the chat's
-      'agents', // the `/agents` strip of the tab host (ADR-0140 §3, MVP-8 step 5): the Home's own, there is no chat `/agents`
-      'import', // the import card (ADR-0140 §9, MVP-8 step 5): the Home's own, a file written only on a Yes
-      'pricing', // the model pricing form (ADR-0140 §9, MVP-8 step 5): the Home's own, described as `models pricing`
+      ...chat.slice(chat.indexOf('clear')),
+    ]);
+    // The bare Home: Work, Set up, Check, End (the Home's `/exit` leaves Relavium; `/clear` is listed dim, with its reason).
+    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
+      'resume',
+      'run',
+      'workflows',
+      'agents',
+      'providers',
+      'models',
+      'mode',
+      'permissions',
+      'pricing',
+      'init',
+      'import',
+      'doctor',
+      'help',
+      'clear',
+      'exit',
     ]);
   });
 
-  it('/workflows is two commands: the chat lists, the bare Home opens the Defined tab, and neither palette carries the other', () => {
+  it('/workflows is ONE command with two placements: the chat lists, the bare Home opens the Defined tab, each with its own words', () => {
     const chat = REPL_COMMANDS_BY_NAME.get('workflows');
-    expect(chat?.availableIn, 'the chat’s own command is unchanged').toEqual(['chat']);
+    expect(chat?.availableIn, 'one definition, placed on both surfaces').toEqual(['home', 'chat']);
     const home = HOME_PALETTE_COMMANDS.find((command) => command.name === 'workflows');
-    expect(home?.availableIn).toEqual(['home']);
-    expect(home, 'a distinct entry, not the chat’s').not.toBe(chat);
+    expect(home?.availableIn).toEqual(['home', 'chat']);
+    expect(home?.description).toBe('The workflows of this project: run or export one.');
+    expect(chat?.description).toBe('List the workflows and agents discovered in this project.');
+    expect(home, 'one object per surface: the Home’s words are the Home’s').not.toBe(chat);
+    expect(home?.run).toBe(chat?.run);
     expect(CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
     expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([chat]);
     expect(HOME_PALETTE_COMMANDS.filter((c) => c.name === 'workflows')).toEqual([home]);
@@ -334,20 +325,22 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
     expect(
       HOME_PALETTE_COMMANDS.find((command) => command.name === 'pricing')?.description,
-      'the palette says which command this form is the other half of',
-    ).toContain('models pricing');
+      'a row inside the TUI names no shell command (ADR-0122 §6)',
+    ).toBe('Set or clear your own price for a model.');
   });
 
   it('every command of the Home palette is the first answer to its own name, so a description never captures another command’s word', () => {
     // The palette filter matches names AND descriptions. `/pricing`'s words include `clear` and `models`, and `/import`'s include `file` and
     // `project`; none of them may put a command in front of the one a person named, whatever the query.
+    const rows = buildPaletteEntries('home', {
+      hasSession: false,
+      hasKey: true,
+      hasSavedSessions: true,
+    });
     for (const command of HOME_PALETTE_COMMANDS) {
-      const first = filterPaletteCommands(HOME_PALETTE_COMMANDS, command.name)[0];
-      expect(first?.name, `the query "${command.name}"`).toBe(command.name);
+      const first = filterPaletteEntries(rows, command.name)[0];
+      expect(first?.command.name, `the query "${command.name}"`).toBe(command.name);
     }
-    // The new entries come after every older one, so they can only add a row at the end of an older command's results.
-    const names = HOME_PALETTE_COMMANDS.map((command) => command.name);
-    expect(names.slice(-2)).toEqual(['import', 'pricing']);
   });
 
   it('lists every command once in each palette: the Home’s own /permissions is not also in the chat set (ADR-0137 §3)', () => {
@@ -361,7 +354,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       expect(new Set(names).size, `${name}: ${names.join(', ')}`).toBe(names.length);
     }
     expect(HOME_CHAT_PALETTE_COMMANDS.filter((c) => c.name === 'permissions')).toHaveLength(1);
+    // One definition on both surfaces now (ADR-0145 §7), so the command says it is offered on the Home and in a chat.
     expect(HOME_CHAT_PALETTE_COMMANDS.find((c) => c.name === 'permissions')?.availableIn).toEqual([
+      'home',
       'chat',
     ]);
   });

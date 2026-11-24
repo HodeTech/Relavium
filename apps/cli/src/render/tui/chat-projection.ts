@@ -224,7 +224,7 @@ export function errorRecoveryHint(
     case 'provider_unavailable':
       return 'The provider was unavailable — Relavium tried the fallback chain. The session is still active; try again.';
     case 'provider_auth':
-      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key (`relavium provider …`) and resend.';
+      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key from the Home (/providers) and resend.';
     case 'content_filter':
       return 'The provider blocked the content by its policy. The session is still active; rephrase and resend.';
     case 'context_overflow':

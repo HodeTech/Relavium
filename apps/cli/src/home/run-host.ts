@@ -425,7 +425,8 @@ function unexpectedTerminal(runId: string): HostedRunTerminal {
     disposition: 'failed',
     safety: undefined,
     headline: `Run ${id} ended unexpectedly.`,
-    remedy: `Read ${relaviumRunCommand('logs', runId)}.`,
+    remedy: 'Read the run in /workflows (History tab).',
+    shellRemedy: `Read ${relaviumRunCommand('logs', runId)}.`,
   });
 }
 
@@ -592,7 +593,7 @@ export class RunHost {
           kind: 'safety',
           runId: safety.runId,
           line: sanitizeInline(
-            `${safety.terminal.headline} ${safety.terminal.remedy ?? ''}`.trim(),
+            `${safety.terminal.headline} ${safety.terminal.shellRemedy ?? safety.terminal.remedy ?? ''}`.trim(),
           ),
         }),
       );

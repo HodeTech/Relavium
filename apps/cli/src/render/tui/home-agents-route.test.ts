@@ -293,19 +293,22 @@ describe('/agents inside a chat', () => {
     return mounted;
   }
 
-  it('is not the Home’s: the tab host does not open and its catalog is not read, and the person is pointed at the chat’s own /agent', async () => {
+  it('is not the Home’s: the tab host does not open and its catalog is not read, and one line names the Home, which has it', async () => {
     const { controller, lines, agentReads } = await chatting();
     controller.handlePaste('/agents');
     controller.handleKey('', ENTER);
     await flush();
     expect(controller.getSnapshot().screen).toBeUndefined();
     expect(agentReads).not.toHaveBeenCalled();
-    // The chat has its own `/agent` (ADR-0140 §3), and `/agents` is a near miss of it, so the controller answers the line with the
-    // suggestion that never runs the command it names, as it does for any near miss of a chat word; the chat is not asked to parse it.
-    expect(controller.getSnapshot().notice).toBe('Unknown command. Did you mean /agent?');
-    expect(lines, 'the suggestion never invokes /agent, and the line is not sent').not.toContain(
-      '/agents',
-    );
+    // `/agents` is the Home's (ADR-0145 §7.4): typed in a chat it is answered with one line that names the Home, in the transcript. It is not
+    // a near miss of the chat's own `/agent` (a suggestion of one is for a word nothing has), it opens nothing and is not sent to the chat.
+    expect(controller.getSnapshot().notice).toBeUndefined();
+    const transcript = controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+    expect(
+      transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
+      'one line names the Home',
+    ).toContain('/agents is available from the Home.');
+    expect(lines, 'the line is not sent').not.toContain('/agents');
     expect(lines).not.toContain('/agent');
   });
 

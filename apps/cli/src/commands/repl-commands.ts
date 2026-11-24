@@ -12,11 +12,15 @@
  * (the live session's lifecycle capabilities), not a `CommandInput` + the durable stores. So this is a separate,
  * purpose-built registry — the single source for the palette, the `/help` list, and the unknown-slash hint, so
  * those three can never disagree. The set is deliberately small and **alias-free**.
+ *
+ * **One table** ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7, MVP-11 Step 2.2): one
+ * {@link CommandDefinition} per command name, with a {@link Placement} per surface (`home`, `chat`, `home-chat`) that carries the group, the
+ * rank, the words, the surface class and an availability function. Everything else here is DERIVED from it: the per-surface lists, the
+ * `/help` text, the typed dispatch's lookup. The module is pure data and imports nothing from `ink`, `react` or `node:`.
  */
 
-import { REASONING_EFFORTS } from '@relavium/shared';
+import { CHAT_MODES, REASONING_EFFORTS } from '@relavium/shared';
 
-import { CHAT_MODES } from '../chat/chat-mode.js';
 import type { CommandEffect } from './manifest.js';
 
 /**
@@ -114,7 +118,115 @@ export interface ReplArg {
   readonly description: string;
 }
 
-/** One curated in-REPL command. `run` wires the slash name to a {@link ReplCommandContext} capability. */
+// ── The one table ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The surfaces a command can be offered on ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7): the bare
+ * Home, a stand-alone `relavium chat` and the chat the Home hosts. A command is placed on each of them separately: where it sits, what it
+ * says and whether it can act differ by surface.
+ */
+export type PaletteSurface = 'home' | 'chat' | 'home-chat';
+
+/** The three surfaces, in the order the tests and the docs list them. */
+export const PALETTE_SURFACES: readonly PaletteSurface[] = Object.freeze([
+  'home',
+  'chat',
+  'home-chat',
+]);
+
+/** The groups of a palette: the Home's four and the chat's five. The order a surface draws them in is {@link SURFACE_GROUPS}. */
+export type CommandGroup =
+  | 'work'
+  | 'setup'
+  | 'check'
+  | 'model'
+  | 'context'
+  | 'inspect'
+  | 'takeaway'
+  | 'end';
+
+/**
+ * The groups of each surface, in the order they are listed ([MVP-11 Appendix B](../../../../docs/roadmap/phases/mvp-11.md#appendix-b--palette-orders)):
+ * on the Home *Work*, *Set up*, *Check*, *End*; in a chat *Model and behaviour*, *Context*, *Inspect*, *Take away*, *End*. Nothing is sorted by
+ * name: intent order, with the commands that end something last.
+ */
+export const SURFACE_GROUPS: Readonly<Record<PaletteSurface, readonly CommandGroup[]>> =
+  Object.freeze({
+    home: Object.freeze<CommandGroup[]>(['work', 'setup', 'check', 'end']),
+    chat: Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
+    'home-chat': Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
+  });
+
+/**
+ * What a command does when it is chosen ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §1): a **popup** (a
+ * report, a setting or a flow the user asked for), a **screen** (long, browsable content the user works in) or an **instant** (a one-line
+ * result with no surface of its own). The registry stores the class of every placement: a command cannot be added without declaring one.
+ */
+export type SurfaceClass = 'popup' | 'screen' | 'instant';
+
+/**
+ * The state a palette row's availability is read from. The host fills it from CACHED state only: never from a port, the keychain or the
+ * disk at render time. A field that is `undefined` is unknown, and **an unknown value reads as enabled**: a dim row is advisory, and the
+ * handler re-validates when the command runs.
+ */
+export interface AvailabilityContext {
+  readonly surface: PaletteSurface;
+  /** A conversation is live: true in a chat, false at the bare Home. */
+  readonly hasSession?: boolean | undefined;
+  /** At least one provider key is usable. */
+  readonly hasKey?: boolean | undefined;
+  /** There is a saved conversation to continue. Unknown while the Home's snapshot has not loaded. */
+  readonly hasSavedSessions?: boolean | undefined;
+  /** A turn is streaming. */
+  readonly turnRunning?: boolean | undefined;
+}
+
+/** Whether a command can act now, and if not, the reason in words (a dim row reads `unavailable · <reason>`). */
+export type Availability =
+  | { readonly enabled: true }
+  | { readonly enabled: false; readonly reason: string };
+
+/** Where, in what words and with what behaviour a command is offered on ONE surface. */
+export interface Placement {
+  readonly group: CommandGroup;
+  /** The position inside the group on this surface: lower first. Unique within a group. */
+  readonly rank: number;
+  /** The row's words on this surface (one per surface, because the meaning differs: `/exit` leaves Relavium, ends a chat or goes home). */
+  readonly description: string;
+  readonly surface: SurfaceClass;
+  /** Absent ⇒ always available. */
+  readonly available?: (ctx: AvailabilityContext) => Availability;
+}
+
+/**
+ * One command: what it is and what it runs, and the placements that say where it is offered. **One definition per name**: `/workflows`,
+ * `/permissions` and `/help` are the same command on the Home and in a chat, with a placement each.
+ */
+export interface CommandDefinition {
+  /** The slash name without the leading `/`. */
+  readonly name: string;
+  readonly label?: string;
+  /** A forward annotation, shared with the shell manifest ({@link CommandEffect}). */
+  readonly effect: CommandEffect;
+  /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any other token. */
+  readonly args?: readonly ReplArg[];
+  /** A sentence appended to the dispatch's rejection of a token this command does not accept. */
+  readonly rejectHint?: string;
+  /** An optional single POSITIONAL value (e.g. `/mode plan`); `values` empty ⇒ any single token. */
+  readonly positional?: { readonly name: string; readonly values: readonly string[] };
+  /**
+   * Run the command over the live session's lifecycle capabilities. The Home's own commands (`/providers`, `/run`, …) have a `run` that does
+   * nothing: the Home opens them from its controller, and a test asserts that every command it offers is handled there.
+   */
+  readonly run: (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
+  readonly placements: Readonly<Partial<Record<PaletteSurface, Placement>>>;
+}
+
+/**
+ * One curated in-REPL command AS ONE SURFACE SEES IT: the definition with that surface's description, derived from {@link COMMAND_TABLE} so
+ * the palette, `/help`, the unknown-slash hint and the typed dispatch can never disagree. `run` wires the slash name to a
+ * {@link ReplCommandContext} capability.
+ */
 export interface ReplCommand {
   /** The slash name without the leading `/` (`exit`, `help`) — also the palette/help label key. */
   readonly name: string;
@@ -135,9 +247,8 @@ export interface ReplCommand {
   /** Run the command; receives the validated post-name arg tokens (empty for a zero-arg command). May be async
    *  (an awaited `Promise<void>`), so `/cost` / `/doctor` are safe. */
   readonly run: (ctx: ReplCommandContext, args: readonly string[]) => void | Promise<void>;
-  /** The surfaces the command applies to — `chat` (a live session) and/or `home` (the bare management strip).
-   *  A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. The
-   *  palette of each surface shows only its applicable commands (2.5.C S3c). */
+  /** The surfaces the command applies to, derived from its placements: `home` (the bare Home) and/or `chat` (a stand-alone or a Home-hosted
+   *  chat). A lifecycle command like `/cancel` is `chat`-only (no turn to cancel in the Home); `/exit` is both. */
   readonly availableIn: readonly ('home' | 'chat')[];
 }
 
@@ -150,65 +261,134 @@ export interface ReplCommand {
  * opt-in by TYPING it. The set stays flags-only (no positionals).
  */
 
-/** The curated REPL command set — the single source for the palette, `/help`, and the unknown-slash hint. */
-const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
+const ENABLED: Availability = Object.freeze({ enabled: true });
+const unavailable = (reason: string): Availability => Object.freeze({ enabled: false, reason });
+
+/** The Home has no conversation: `/clear` there is shown, dim, with this reason (ADR-0145 §7.4). */
+const NO_CONVERSATION_TO_CLEAR = 'no conversation to clear';
+/** `/resume` with no saved conversation is dim: the picker would be empty. */
+const NOTHING_TO_RESUME = 'nothing to resume';
+
+const clearNeedsAConversation = (ctx: AvailabilityContext): Availability =>
+  ctx.hasSession === false ? unavailable(NO_CONVERSATION_TO_CLEAR) : ENABLED;
+const resumeNeedsASavedSession = (ctx: AvailabilityContext): Availability =>
+  ctx.hasSavedSessions === false ? unavailable(NOTHING_TO_RESUME) : ENABLED;
+
+/**
+ * The two chat placements of one command: a stand-alone chat and the chat the Home hosts differ only where a row says so (`/exit` says where it
+ * goes, `/resume` exists only in the Home's). `homeChat` overrides what differs.
+ */
+function inChats(
+  placement: Placement,
+  homeChat: Partial<Placement> = {},
+): { readonly chat: Placement; readonly 'home-chat': Placement } {
+  return { chat: placement, 'home-chat': { ...placement, ...homeChat } };
+}
+
+/** The Home's own command: its handler is in the controller, so `run` has nothing to call. */
+const homeOpens = (): void => undefined;
+
+/**
+ * The commands. Order here is NOT the palette's order: each surface lists its commands by (group, rank) ({@link commandsOf}), so a command is
+ * added where it reads best and the tests pin the result.
+ */
+const COMMAND_TABLE: readonly CommandDefinition[] = [
   {
     name: 'help',
     label: 'Help',
-    description: 'List the available slash commands.',
-    // `/help` (the text list) is reachable only by being TYPED in a chat REPL — it is excluded from the `/`
-    // palette (the palette IS the interactive help) and the Home has no typed-slash dispatch, so it never runs
-    // as a command in the Home. Hence `chat` only; the palette-key discovery still opens in both surfaces.
+    // `/help` is a screen on the Home (the keys and the commands, ADR-0140 §3) and, until Step 4's popup, a text list in a chat.
     effect: 'read',
     run: (ctx) => ctx.help(),
-    availableIn: ['chat'],
+    placements: {
+      home: {
+        group: 'check',
+        rank: 20,
+        description: 'List the available slash commands.',
+        surface: 'screen',
+      },
+      ...inChats({
+        group: 'inspect',
+        rank: 60,
+        description: 'List the available slash commands.',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'exit',
     label: 'Exit',
-    description: 'End the chat session.',
     effect: 'read',
     run: (ctx) => ctx.exit(),
-    availableIn: ['home', 'chat'],
+    placements: {
+      home: { group: 'end', rank: 20, description: 'Leave Relavium.', surface: 'instant' },
+      ...inChats(
+        { group: 'end', rank: 30, description: 'End the chat session.', surface: 'instant' },
+        { description: 'Leave this chat and go back to the Home.' },
+      ),
+    },
   },
   {
     name: 'cancel',
     label: 'Cancel',
-    description: 'Cancel the current turn and end the (resumable) session.',
     effect: 'read',
     run: (ctx) => ctx.cancel(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'end',
+      rank: 20,
+      description: 'Cancel the current turn and end the (resumable) session.',
+      surface: 'instant',
+    }),
   },
   {
     name: 'export',
     label: 'Export session',
-    description: 'Scaffold the session so far to a .relavium.yaml.',
     effect: 'write',
     run: (ctx) => ctx.exportSession(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'takeaway',
+      rank: 20,
+      description: 'Scaffold the session so far to a .relavium.yaml.',
+      surface: 'popup',
+    }),
   },
   {
     name: 'agent',
     label: 'Agent',
-    description: 'Show the agent this chat is bound to.',
-    // Listed before `/workflows`, whose description also says "agents": typing `agent` in the palette then selects this one first.
     // `read`: it shows the definition the session already holds, and reads and writes nothing. Zero-arg: the dispatch rejects any token.
+    // Typing `agent` in the palette selects this one first: an exact name leads, and `/workflows`' description also says "agents".
     effect: 'read',
     run: (ctx) => ctx.showAgent(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'inspect',
+      rank: 30,
+      description: 'Show the agent this chat is bound to.',
+      surface: 'popup',
+    }),
   },
   {
     name: 'workflows',
     label: 'Workflows',
-    description: 'List the workflows and agents discovered in this project.',
+    // Two behaviours under one name: a chat lists what the project holds; the Home opens the tab host on its Defined tab (ADR-0140 §2).
     effect: 'read',
     run: (ctx) => ctx.showWorkflows(),
-    availableIn: ['chat'],
+    placements: {
+      home: {
+        group: 'work',
+        rank: 30,
+        description: 'The workflows of this project: run or export one.',
+        surface: 'screen',
+      },
+      ...inChats({
+        group: 'inspect',
+        rank: 40,
+        description: 'List the workflows and agents discovered in this project.',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'cost',
     label: 'Cost',
-    description: "Show this session's cumulative cost; --release clears held estimates.",
     // `read` for the bare form. `--release` MUTATES (ADR-0074 §1's deliberate user decision), but the flag is
     // opt-in by typing it — the palette submits the bare form, exactly like `/doctor --deep`.
     effect: 'read',
@@ -220,12 +400,16 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
       },
     ],
     run: (ctx, args) => ctx.showCost(args.includes('--release')),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'inspect',
+      rank: 10,
+      description: "Show this session's cumulative cost; --release clears held estimates.",
+      surface: 'popup',
+    }),
   },
   {
     name: 'doctor',
     label: 'Doctor',
-    description: 'Check your setup; --deep also validates keys + MCP.',
     effect: 'read',
     args: [
       {
@@ -233,320 +417,498 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
         description: 'Also validate provider keys and MCP connectivity (network).',
       },
     ],
-    // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home
-    // capability (pre-chat diagnostics), so it is `availableIn` both surfaces (homeReplCtx wires a live impl).
+    // The palette runs the fast tier (`deep: false`); `--deep` is opt-in by typing it. `/doctor` is a REAL Home capability (pre-chat
+    // diagnostics), so it is placed on every surface (homeReplCtx wires a live impl). The Home refuses `--deep` today (N5), so its row does
+    // not advertise it.
     run: (ctx, args) => ctx.runDoctor(args.includes('--deep')),
-    availableIn: ['home', 'chat'],
+    placements: {
+      home: { group: 'check', rank: 10, description: 'Check your setup.', surface: 'popup' },
+      ...inChats({
+        group: 'inspect',
+        rank: 50,
+        description: 'Check your setup; --deep also validates keys and MCP.',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'mode',
     label: 'Mode',
-    description:
-      'Choose the current mode or explicitly save a startup default. Shift+Tab changes only this chat.',
     effect: 'read',
     // A single positional mode name; the dispatch validates it against these values, so `run` only ever sees a
     // valid mode or an empty arg (the palette's bare `/mode` — which shows the current mode + the options).
     positional: { name: 'mode', values: [...CHAT_MODES] },
     run: (ctx, args) => ctx.setMode(args[0] ?? ''),
-    availableIn: ['home', 'chat'],
+    placements: {
+      // The Home has no conversation for Shift+Tab to change: its form sets the startup default.
+      home: {
+        group: 'setup',
+        rank: 30,
+        description: 'Choose the mode new chats start in.',
+        surface: 'popup',
+      },
+      ...inChats({
+        group: 'model',
+        rank: 20,
+        description: 'Choose the mode; Shift+Tab changes this chat only.',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'effort',
     label: 'Effort',
-    description: 'Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
     effect: 'read',
     // A single positional tier, validated by the dispatch against these values; bare `/effort` shows the current
     // tier + the options. A per-turn session override (no reseat) — chat-only, like `/mode`.
     positional: { name: 'effort', values: [...REASONING_EFFORTS] },
     run: (ctx, args) => ctx.setReasoningEffort(args[0] ?? ''),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'model',
+      rank: 30,
+      description: 'Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
+      surface: 'popup',
+    }),
   },
   {
     name: 'thinking',
     label: 'Thinking',
-    description: 'Show or hide the reasoning ("thinking") panel (or Ctrl+T to toggle).',
     // Zero-arg toggle: a pure UI-view flip of the reasoning panel (2.5.H), no session effect. Chat-only (reasoning
     // streams only in a live turn), like `/mode` / `/effort`.
     effect: 'read',
     run: (ctx) => ctx.toggleReasoning(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'model',
+      rank: 40,
+      description: 'Show or hide the reasoning ("thinking") panel (or Ctrl+T to toggle).',
+      surface: 'instant',
+    }),
   },
   {
     name: 'details',
     label: 'Tool details',
-    description: 'Inspect recent tool calls and their available previews.',
     effect: 'read',
     run: (ctx) => ctx.openDetails(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'inspect',
+      rank: 20,
+      description: 'Inspect recent tool calls and their available previews.',
+      surface: 'popup',
+    }),
   },
   {
     name: 'compact',
     label: 'Compact',
-    description: 'Summarise the conversation so far to reclaim context (spends tokens).',
     effect: 'write',
     run: (ctx) => ctx.compactHistory(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'context',
+      rank: 20,
+      description: 'Summarise the conversation so far to reclaim context (spends tokens).',
+      surface: 'instant',
+    }),
   },
   {
     name: 'permissions',
     label: 'Permissions',
-    description:
-      'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
     // `read`: opening the sheet changes nothing; a withdrawal is a keypress inside it, never a typed argument.
     effect: 'read',
     rejectHint: 'Open /permissions and press d on a row to withdraw it.',
     run: (ctx) => ctx.managePermissions(),
-    availableIn: ['chat'],
+    placements: {
+      // The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it.
+      home: {
+        group: 'setup',
+        rank: 40,
+        description: 'Remembered commands for this project; d withdraws one.',
+        surface: 'screen',
+      },
+      ...inChats({
+        group: 'model',
+        rank: 50,
+        description:
+          'Open the permissions sheet: the commands remembered for this project and approved for this session; d withdraws one.',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'trim',
     label: 'Trim',
-    description:
-      'Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',
     effect: 'read',
     // An optional numeric bound; a FREE positional (empty `values`) accepts any single token — `run` validates it.
     positional: { name: 'n', values: [] },
     run: (ctx, args) => ctx.trimHistory(args[0] ?? ''),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'context',
+      rank: 10,
+      description:
+        'Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',
+      surface: 'instant',
+    }),
   },
   {
     name: 'clear',
     label: 'Clear',
-    description: 'End this conversation (saved + resumable) and start a fresh session.',
-    // `destructive` in the forward taxonomy (ADR-0062 §7): it ends the current session — still persisted +
-    // resumable via `chat-resume` — and swaps in a fresh one under a new sessionId. Offered in BOTH surfaces'
-    // palettes (['home','chat']): a live chat (standalone OR in-Home) performs the swap, while the BARE Home has
-    // no session and surfaces an inert "nothing to clear" notice (see homeReplCtx). Zero-arg (`/clear x` rejects).
+    // `destructive` in the forward taxonomy (ADR-0062 §7): it ends the current session — still persisted + resumable — and swaps in a fresh
+    // one under a new sessionId. Listed on the bare Home too, DIM with its reason (ADR-0145 §7.4): the Home has no conversation to clear.
+    // Zero-arg (`/clear x` rejects).
     effect: 'destructive',
     run: (ctx) => ctx.clearSession(),
-    availableIn: ['home', 'chat'],
+    placements: {
+      home: {
+        group: 'end',
+        rank: 10,
+        description: 'End this conversation (saved + resumable) and start a fresh session.',
+        surface: 'instant',
+        available: clearNeedsAConversation,
+      },
+      ...inChats({
+        group: 'end',
+        rank: 10,
+        description: 'End this conversation (saved + resumable) and start a fresh session.',
+        surface: 'instant',
+      }),
+    },
   },
   {
     name: 'models',
     label: 'Models',
-    description: 'Switch model (opens the catalog picker).',
-    // `read` in the forward taxonomy: opening the picker changes nothing; the action happens only on an explicit
-    // selection — the Home writes the NEXT session's default (ADR-0063), the chat reseats the LIVE session (ADR-0059).
+    // `read` in the forward taxonomy: opening the picker changes nothing; the action happens only on an explicit selection — the Home writes
+    // the NEXT session's default (ADR-0063), the chat reseats the LIVE session (ADR-0059). In an interactive (ink) chat the render layer
+    // intercepts a typed `/models` to open the overlay; a plain/`--json` chat (no overlay) falls through to `openModels`, which surfaces an
+    // actionable hint.
     effect: 'read',
-    // Available on BOTH surfaces off the ONE picker, with a surface-specific accept: the HOME writes the next-session
-    // default (ADR-0064 §10 / ADR-0063); the CHAT REPL rebinds the LIVE session mid-conversation via a host-side
-    // reseat (ADR-0059). In an interactive (ink) chat the render layer intercepts a typed `/models` to open the
-    // overlay; a plain/`--json` chat (no overlay) falls through to `openModels`, which surfaces an actionable hint.
     run: (ctx) => ctx.openModels(),
-    availableIn: ['home', 'chat'],
+    placements: {
+      home: {
+        group: 'setup',
+        rank: 20,
+        description: 'Switch model (opens the catalog picker).',
+        surface: 'popup',
+      },
+      ...inChats({
+        group: 'model',
+        rank: 10,
+        description: 'Switch model (opens the catalog picker).',
+        surface: 'popup',
+      }),
+    },
   },
   {
     name: 'scrollback',
     label: 'Scrollback',
-    description: 'Dump the transcript into the terminal’s native scrollback (to copy or search).',
-    // `read` in the forward taxonomy: it prints, and changes nothing.
+    // `read` in the forward taxonomy: it prints, and changes nothing. It reaches the live chat on both surfaces through the ONE
+    // `ReplCommandContext` capability: unlike `/models` it opens no React overlay, so no render-layer interception is needed (ADR-0068 §e).
     effect: 'read',
-    // Chat-only — the BARE Home has no transcript to dump. It reaches the live chat on both surfaces (standalone and
-    // in-Home) through the ONE `ReplCommandContext` capability: unlike `/models` it opens no React overlay, so no
-    // render-layer interception is needed and the two surfaces cannot drift (ADR-0068 §e).
     run: (ctx) => ctx.dumpScrollback(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'takeaway',
+      rank: 40,
+      description: 'Dump the transcript into the terminal’s native scrollback (to copy or search).',
+      surface: 'instant',
+    }),
   },
   {
     name: 'edit',
     label: 'Edit',
-    description: 'Open the transcript in $EDITOR (read-only — to search or copy).',
     // `read`: the editor gets a throwaway copy; edits are never read back into the session.
     effect: 'read',
     run: (ctx) => ctx.editTranscript(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'takeaway',
+      rank: 30,
+      description: 'Open the transcript in $EDITOR (read-only — to search or copy).',
+      surface: 'instant',
+    }),
   },
   {
     name: 'copy',
     label: 'Copy',
-    description: 'Copy the whole transcript to the system clipboard (OSC 52).',
     // `read`: it sends bytes to the terminal, and changes nothing in the session.
     effect: 'read',
-    // Chat-only — the BARE Home has no transcript. Like `/scrollback` and `/edit` it opens no overlay, so the ONE
-    // capability reaches both surfaces and they cannot drift (ADR-0068 §e).
     run: (ctx) => ctx.copyTranscript(),
-    availableIn: ['chat'],
+    placements: inChats({
+      group: 'takeaway',
+      rank: 10,
+      description: 'Copy the whole transcript to the system clipboard (OSC 52).',
+      surface: 'instant',
+    }),
+  },
+  // ── The Home's own commands: the controller opens each, so `run` has nothing to call ──────────────────────────────────────
+  {
+    name: 'providers',
+    label: 'Providers',
+    // Project and environment configuration is Home-only (ADR-0145 §7.5, OD-2): both Home surfaces intercept it and open the shared setup.
+    effect: 'read',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'setup',
+        rank: 10,
+        description: 'Connect, login, or manage provider API keys.',
+        surface: 'popup',
+      },
+    },
+  },
+  {
+    name: 'init',
+    label: 'Initialize project',
+    effect: 'write',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'setup',
+        rank: 60,
+        description: 'Initialize project workflow and agent directories after confirmation.',
+        surface: 'popup',
+      },
+    },
+  },
+  {
+    name: 'import',
+    label: 'Import file',
+    // The card over `relavium import`'s own core, which writes a file only on a Yes and never overwrites (ADR-0140 §9).
+    effect: 'write',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'setup',
+        rank: 70,
+        description: 'Bring a YAML file into this project, after confirmation.',
+        surface: 'popup',
+      },
+    },
+  },
+  {
+    name: 'pricing',
+    label: 'Model pricing',
+    // The form over the shell's own pricing core, which records a price only on a Yes (ADR-0140 §9).
+    effect: 'write',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'setup',
+        rank: 50,
+        description: 'Set or clear your own price for a model.',
+        surface: 'popup',
+      },
+    },
+  },
+  {
+    name: 'resume',
+    label: 'Resume session',
+    // The Home and the chat it hosts have it (a stand-alone chat has no Home to go back to). Dim when there is nothing to continue.
+    effect: 'read',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'work',
+        rank: 10,
+        description: 'Search saved conversations and continue one.',
+        surface: 'popup',
+        available: resumeNeedsASavedSession,
+      },
+      'home-chat': {
+        group: 'end',
+        rank: 5,
+        description: 'Search saved conversations and continue one.',
+        surface: 'popup',
+        available: resumeNeedsASavedSession,
+      },
+    },
+  },
+  {
+    name: 'run',
+    label: 'Run workflow',
+    // A picker over the project's workflows, the launch form and a confirmation that defaults to No (ADR-0139 §7). Home only.
+    effect: 'write',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'work',
+        rank: 20,
+        description: 'Pick a workflow, fill in its inputs and run it after confirmation.',
+        surface: 'popup',
+      },
+    },
+  },
+  {
+    name: 'agents',
+    label: 'Agents',
+    // The tab host on its two-tab strip, Defined and Sessions (ADR-0140 §3). A Home command only: a live chat has no `/agents`.
+    effect: 'read',
+    run: homeOpens,
+    placements: {
+      home: {
+        group: 'work',
+        rank: 40,
+        description: 'The agents of this project, and its saved conversations.',
+        surface: 'screen',
+      },
+    },
   },
 ];
 
-/** DEEP-freeze a curated command — the entry, its `args` array + each flag, and its `availableIn` array — so no
- *  downstream code can mutate the registry (or its nested `args`/`availableIn`) at runtime. Parity with
- *  `COMMAND_MANIFEST`'s `freezeEntry`. */
-function freezeReplCommand(command: ReplCommand): ReplCommand {
-  if (command.args !== undefined) {
-    command.args.forEach((arg) => Object.freeze(arg));
-    Object.freeze(command.args);
+const ORDER_BY_SURFACE: Readonly<Record<PaletteSurface, readonly CommandDefinition[]>> = (() => {
+  const orderOf = (surface: PaletteSurface): readonly CommandDefinition[] => {
+    const groups = SURFACE_GROUPS[surface];
+    const placed = COMMAND_TABLE.flatMap((definition) => {
+      const placement = definition.placements[surface];
+      return placement === undefined ? [] : [{ definition, placement }];
+    });
+    placed.sort(
+      (a, b) =>
+        groups.indexOf(a.placement.group) - groups.indexOf(b.placement.group) ||
+        a.placement.rank - b.placement.rank,
+    );
+    return placed.map((entry) => entry.definition);
+  };
+  return { home: orderOf('home'), chat: orderOf('chat'), 'home-chat': orderOf('home-chat') };
+})();
+
+/** DEEP-freeze a definition — the entry, its `args` array + each flag, its `positional` and its placements — so no downstream code can mutate
+ *  the registry at runtime. Parity with `COMMAND_MANIFEST`'s `freezeEntry`. */
+function freezeDefinition(definition: CommandDefinition): CommandDefinition {
+  if (definition.args !== undefined) {
+    definition.args.forEach((arg) => Object.freeze(arg));
+    Object.freeze(definition.args);
   }
-  if (command.positional !== undefined) {
-    Object.freeze(command.positional.values);
-    Object.freeze(command.positional);
+  if (definition.positional !== undefined) {
+    Object.freeze(definition.positional.values);
+    Object.freeze(definition.positional);
   }
-  Object.freeze(command.availableIn);
-  return Object.freeze(command);
+  for (const placement of Object.values(definition.placements)) Object.freeze(placement);
+  Object.freeze(definition.placements);
+  return Object.freeze(definition);
 }
 
-/** The deep-frozen curated command set (each entry + its nested arrays immutable at runtime). */
-export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  RAW_REPL_COMMANDS.map(freezeReplCommand),
+/** The deep-frozen table: one definition per command name, with its placements. */
+export const COMMAND_DEFINITIONS: readonly CommandDefinition[] = Object.freeze(
+  COMMAND_TABLE.map(freezeDefinition),
 );
 
-/** O(1) lookup of a REPL command by its slash name (no leading `/`). The `ReadonlyMap` type is the mutation guard
+/** O(1) lookup of a definition by its slash name (no leading `/`). */
+export const COMMAND_DEFINITIONS_BY_NAME: ReadonlyMap<string, CommandDefinition> = new Map(
+  COMMAND_DEFINITIONS.map((definition) => [definition.name, definition]),
+);
+
+/** The definitions a surface offers, in the order it lists them: by the surface's group order, then by rank. */
+export function commandDefinitionsOf(surface: PaletteSurface): readonly CommandDefinition[] {
+  return ORDER_BY_SURFACE[surface];
+}
+
+/** A command's placement on a surface, or `undefined` when that surface does not offer it. */
+export function placementOf(name: string, surface: PaletteSurface): Placement | undefined {
+  return COMMAND_DEFINITIONS_BY_NAME.get(name)?.placements[surface];
+}
+
+/**
+ * Whether a command can act on a surface given the cached state. A command with no availability function is always available, and a
+ * command the surface does not offer is not available there. An unknown value in the context reads as enabled.
+ */
+export function availabilityOf(
+  name: string,
+  surface: PaletteSurface,
+  ctx: Omit<AvailabilityContext, 'surface'>,
+): Availability {
+  const placement = placementOf(name, surface);
+  if (placement === undefined) return unavailable('not offered here');
+  return placement.available?.({ ...ctx, surface }) ?? ENABLED;
+}
+
+const availableInOf = (definition: CommandDefinition): readonly ('home' | 'chat')[] => {
+  const surfaces: ('home' | 'chat')[] = [];
+  if (definition.placements.home !== undefined) surfaces.push('home');
+  if (definition.placements.chat !== undefined || definition.placements['home-chat'] !== undefined)
+    surfaces.push('chat');
+  return Object.freeze(surfaces);
+};
+
+const replCommandCache = new Map<string, ReplCommand>();
+
+/** A definition as one surface sees it, flattened to a {@link ReplCommand}. The same object every time for one (name, surface). */
+function replCommandFor(definition: CommandDefinition, surface: PaletteSurface): ReplCommand {
+  const key = `${surface}:${definition.name}`;
+  const cached = replCommandCache.get(key);
+  if (cached !== undefined) return cached;
+  const placement = definition.placements[surface];
+  if (placement === undefined) throw new Error(`/${definition.name} has no ${surface} placement`);
+  const command: ReplCommand = Object.freeze({
+    name: definition.name,
+    label: definition.label ?? definition.name,
+    description: placement.description,
+    effect: definition.effect,
+    ...(definition.args === undefined ? {} : { args: definition.args }),
+    ...(definition.rejectHint === undefined ? {} : { rejectHint: definition.rejectHint }),
+    ...(definition.positional === undefined ? {} : { positional: definition.positional }),
+    run: definition.run,
+    availableIn: availableInOf(definition),
+  });
+  replCommandCache.set(key, command);
+  return command;
+}
+
+/** The commands a surface offers, as that surface sees them, in the order it lists them. */
+export function commandsOf(surface: PaletteSurface): readonly ReplCommand[] {
+  return ORDER_BY_SURFACE[surface].map((definition) => replCommandFor(definition, surface));
+}
+
+/**
+ * The curated command set of a stand-alone chat, in its palette's order — the single source for `/help`, the unknown-slash hint and the typed
+ * dispatch (the palette's own rows come from {@link commandsOf} through `buildPaletteEntries`). The plain, `--json` and one-shot drivers run
+ * the same handlers and print this order in their `/help`, which is accepted and recorded (ADR-0145 §7.7).
+ */
+export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(commandsOf('chat'));
+
+/** O(1) lookup of a chat's REPL command by its slash name (no leading `/`). The `ReadonlyMap` type is the mutation guard
  *  (a `Map`'s internal data can't be `Object.freeze`d); every command it holds is deep-frozen above. */
 export const REPL_COMMANDS_BY_NAME: ReadonlyMap<string, ReplCommand> = new Map(
   REPL_COMMANDS.map((command) => [command.name, command]),
 );
 
 /**
- * The commands the interactive `/` palette offers — every curated command EXCEPT `/help`: the palette IS the
- * interactive help, so listing `/help` would be circular (and selecting it would print the text list to stderr
- * behind the live ink view). `/help` stays a typed / non-TTY text-list affordance (the unknown-slash fallback).
+ * The commands a stand-alone chat's `/` palette offers. `/help` is in it since MVP-11 Step 2.2 (ADR-0145 §7.3): the keys that only `/help`
+ * lists, such as `Shift+Tab` and `Ctrl+J`, are otherwise undiscoverable.
  */
-export const PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  REPL_COMMANDS.filter((command) => command.name !== 'help'),
+export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = REPL_COMMANDS;
+
+/** The base palette set. It was every curated command but `/help`; with `/help` listed it is a stand-alone chat's list. */
+export const PALETTE_COMMANDS: readonly ReplCommand[] = CHAT_PALETTE_COMMANDS;
+
+/** The commands the `/` palette of the chat the Home hosts offers: a chat's list plus `/resume`, without `/providers` and `/init` (OD-2). */
+export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
+  commandsOf('home-chat'),
 );
 
-/** The palette commands available in a live chat (S3b) — every palette command whose `availableIn` includes `chat`. */
-export const CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(
-  PALETTE_COMMANDS.filter((command) => command.availableIn.includes('chat')),
-);
-
-/** Home owns this action; standalone chat must not advertise or dispatch it. */
-const HOME_PROVIDERS_COMMAND = freezeReplCommand({
-  name: 'providers',
-  label: 'Providers',
-  description: 'Connect, login, or manage provider API keys.',
-  effect: 'read',
-  availableIn: ['home'],
-  // Both Home surfaces intercept this command and open their shared setup port.
-  run: () => undefined,
-});
-
-const HOME_INIT_COMMAND = freezeReplCommand({
-  name: 'init',
-  label: 'Initialize project',
-  description: 'Initialize project workflow and agent directories after confirmation.',
-  effect: 'write',
-  availableIn: ['home'],
-  run: () => undefined,
-});
-
-/** The bare Home's `/permissions` (ADR-0137 §3): the same sheet with the project's remembered commands only; the controller opens it. */
-const HOME_PERMISSIONS_COMMAND = freezeReplCommand({
-  name: 'permissions',
-  label: 'Permissions',
-  description: 'Remembered commands for this project; d withdraws one.',
-  effect: 'read',
-  availableIn: ['home'],
-  run: () => undefined,
-});
+/** The commands the bare Home's `/` palette offers, in its order (the keyless lead is the palette's own, state-aware rule). */
+export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(commandsOf('home'));
 
 /**
- * The bare Home's `/workflows` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §2, MVP-8 step 4): the tab host on its Defined tab. The chat's `/workflows` (above) is its own command and lists what the project
- * holds; this one is the Home's and is not in any chat palette, so a line typed in a chat reaches the chat's command and nothing else.
+ * The one line a chat answers to a command that only the Home has (ADR-0145 §7.4): it names the surface that has the command, opens
+ * nothing and is not "unknown command". `undefined` when the surface offers the command, when no command has that name and when no surface
+ * but a chat has it (the Home answers a chat's word itself, with its own sentence). The stand-alone chat has no Home to go back to, and the
+ * line is the same for it: the chat handler is the one both chats share.
  */
-const HOME_WORKFLOWS_COMMAND = freezeReplCommand({
-  name: 'workflows',
-  label: 'Workflows',
-  description: 'The workflows of this project: run or export one.',
-  effect: 'read',
-  availableIn: ['home'],
-  run: () => undefined,
-});
+export function homeOnlyPointer(name: string, surface: PaletteSurface): string | undefined {
+  if (surface === 'home') return undefined;
+  const definition = COMMAND_DEFINITIONS_BY_NAME.get(name);
+  if (definition === undefined || definition.placements[surface] !== undefined) return undefined;
+  if (definition.placements.home === undefined) return undefined;
+  return `/${name} is available from the Home.`;
+}
 
-/**
- * The bare Home's `/agents` ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §3, MVP-8 step 5): the tab host on its own two-tab strip, Defined and Sessions. A Home command only: a live chat has no `/agents`, so a
- * line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
- */
-const HOME_AGENTS_COMMAND = freezeReplCommand({
-  name: 'agents',
-  label: 'Agents',
-  description: 'The agents of this project, and its saved conversations.',
-  effect: 'read',
-  availableIn: ['home'],
-  run: () => undefined,
-});
+/** What a host says when the palette's Enter lands on a dim row: the row's own reason, as a sentence, never "unknown command". */
+export function unavailableNotice(name: string, reason: string): string {
+  return `/${name} is unavailable: ${reason}.`;
+}
 
-const HOME_RESUME_COMMAND = freezeReplCommand({
-  name: 'resume',
-  label: 'Resume session',
-  description: 'Search saved conversations and continue one.',
-  effect: 'read',
-  availableIn: ['home'],
-  run: () => undefined,
-});
-
-/**
- * Run a workflow from the bare Home ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md) §7): a picker
- * over the project's workflows, the launch form and a confirmation that defaults to No. It is a Home command only: a live chat has no
- * `/run`, so a line typed there starts nothing (the controller routes it, and this entry is not in the chat palette).
- */
-const HOME_RUN_COMMAND = freezeReplCommand({
-  name: 'run',
-  label: 'Run workflow',
-  description: 'Pick a workflow, fill in its inputs and run it after confirmation.',
-  effect: 'write',
-  availableIn: ['home'],
-  run: () => undefined,
-});
-
-/**
- * `/import` at the bare Home ([ADR-0140](../../../../docs/decisions/0140-management-browsers-the-run-drill-down-and-the-durable-run-detail.md)
- * §9): the card over `relavium import`'s own core, which writes a file only on a Yes and never overwrites. A Home command only: a live chat
- * has no `/import` (the controller routes it, and this entry is in no chat palette).
- */
-const HOME_IMPORT_COMMAND = freezeReplCommand({
-  name: 'import',
-  label: 'Import file',
-  description: 'Bring a YAML file into this project, after confirmation.',
-  effect: 'write',
-  availableIn: ['home'],
-  run: () => undefined,
-});
-
-/**
- * `/pricing` at the bare Home (ADR-0140 §9): the form over `relavium models pricing`'s own core, which records a price only on a Yes. A Home
- * command only, as `/import` is.
- */
-const HOME_PRICING_COMMAND = freezeReplCommand({
-  name: 'pricing',
-  label: 'Model pricing',
-  description: 'Set or clear your own price for a model (models pricing).',
-  effect: 'write',
-  availableIn: ['home'],
-  run: () => undefined,
-});
-
-export const HOME_CHAT_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
-  ...CHAT_PALETTE_COMMANDS,
-  HOME_PROVIDERS_COMMAND,
-  HOME_INIT_COMMAND,
-  HOME_RESUME_COMMAND,
-]);
-
-/** The palette commands available in the bare Home (S3c) — `availableIn` includes `home`: `/exit` plus `/doctor`
- *  (S5, pre-chat diagnostics). The chat's own `/workflows` and `/cost` stay out of the Home set; the Home has its own `/workflows`
- *  (the Defined tab, MVP-8 step 4), and `/cost` is chat-only. */
-export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze([
-  ...PALETTE_COMMANDS.filter((command) => command.availableIn.includes('home')),
-  HOME_PROVIDERS_COMMAND,
-  HOME_INIT_COMMAND,
-  HOME_PERMISSIONS_COMMAND,
-  HOME_RESUME_COMMAND,
-  HOME_RUN_COMMAND,
-  HOME_WORKFLOWS_COMMAND,
-  HOME_AGENTS_COMMAND,
-  HOME_IMPORT_COMMAND,
-  HOME_PRICING_COMMAND,
-]);
-
-/** The comma-separated slash list for the unknown-slash hint — `/help, /exit, /cancel, /export`. */
+/** The comma-separated slash list for the unknown-slash hint — `/models, /mode, /effort, …`, a stand-alone chat's order. */
 export function replCommandList(): string {
   return REPL_COMMANDS.map((command) => `/${command.name}`).join(', ');
 }
 
-/** The multi-line `/help` body — one line per command (`/name  description`). */
+/** The multi-line `/help` body — one line per command (`/name  description`), in a stand-alone chat's palette order. */
 export function formatReplHelp(): string {
   const rows = REPL_COMMANDS.map((command) => `  /${command.name}  ${command.description}`);
   return `Commands:\n${rows.join('\n')}\n`;

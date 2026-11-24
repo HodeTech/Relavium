@@ -1,22 +1,25 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
-import type { ReplCommand } from '../../commands/repl-commands.js';
 import { sanitizeInline } from './chat-projection.js';
-import { filterPaletteCommands, type PaletteState } from './palette-reducer.js';
+import type { PaletteEntry } from './palette-entries.js';
+import type { PaletteList, PaletteState } from './palette-reducer.js';
 import { paletteLines } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 
 /**
- * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the filtered curated commands
- * ({@link filterPaletteCommands}). It owns NO `useInput`: the single raw-mode owner (the standalone `ChatApp` or
- * the Home's `RootApp`) routes keys to {@link reducePaletteKey}/{@link stepPalette} and re-renders this from the
- * resulting {@link PaletteState}. Every rendered free-form field — the query echo, the command name, and its
- * description — is sanitized at the display boundary, so a crafted command name/description or a pasted control
- * sequence can never forge a row or inject an escape.
+ * The interactive `/` command-palette overlay (2.5.C S3b) — a PURE ink view over the palette's rows ({@link PaletteList.rows}), the very list
+ * the key fold reads. It owns NO `useInput`: the single raw-mode owner (the standalone `ChatApp` or the Home's `RootApp`) routes keys to
+ * {@link reducePaletteKey}/{@link stepPalette} and re-renders this from the resulting {@link PaletteState}. Every rendered free-form field —
+ * the query echo, the command name, and its description or reason — is sanitized at the display boundary, so a crafted command name/description
+ * or a pasted control sequence can never forge a row or inject an escape.
+ *
+ * **Direction** (ADR-0145 §7.1): the first row touches the prompt. `down` draws the legend last, under the list and its query line first;
+ * `up` (a chat) draws the legend at the top, the entries reversed (the LAST entry at the top, the FIRST beside the query line) and the query
+ * echo at the bottom, nearest the prompt.
  */
 export interface PaletteViewProps {
-  readonly commands: readonly ReplCommand[];
+  readonly list: PaletteList;
   readonly state: PaletteState;
   readonly color: boolean;
   /**
@@ -27,44 +30,78 @@ export interface PaletteViewProps {
   readonly maxRows?: number | undefined;
 }
 
-export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
-  const { commands, state, color } = props;
-  const filtered = filterPaletteCommands(commands, state.query);
+/** The words a dim row carries instead of its description: they read without colour (`unavailable · no conversation to clear`). */
+export const UNAVAILABLE_PREFIX = 'unavailable · ';
+
+/** What the legend says. Step 3 rewrites the legends; the words are today's. */
+const LEGEND = '↑/↓ select · Enter run · Esc cancel';
+
+function EntryRow(
+  props: Readonly<{ entry: PaletteEntry; selected: boolean; color: boolean }>,
+): ReactElement {
+  const { entry, selected, color } = props;
+  const words = entry.enabled
+    ? sanitizeInline(entry.description)
+    : `${UNAVAILABLE_PREFIX}${sanitizeInline(entry.reason ?? '')}`;
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {`/${sanitizeInline(state.query)}`}
+    <Text
+      {...(selected ? colorProps(color, 'cyan') : entry.enabled ? {} : dimProps(color))}
+      wrap="truncate-end"
+    >
+      {`${selected ? '›' : ' '} /${sanitizeInline(entry.command.name)}  `}
+      <Text {...dimProps(color)}>{words}</Text>
+    </Text>
+  );
+}
+
+export function PaletteView(props: Readonly<PaletteViewProps>): ReactElement {
+  const { list, state, color } = props;
+  const rows = list.rows;
+  const query = (
+    <Text key="query" {...dimProps(color)} wrap="truncate-end">
+      {`/${sanitizeInline(state.query)}`}
+    </Text>
+  );
+  const legend = (
+    <Text key="legend" {...dimProps(color)} wrap="truncate-end">
+      {LEGEND}
+    </Text>
+  );
+  const body =
+    rows.length === 0 ? (
+      <Text key="none" {...dimProps(color)} wrap="truncate-end">
+        no matching command
       </Text>
-      {filtered.length === 0 ? (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          no matching command
-        </Text>
-      ) : (
-        paletteLines(filtered.length, state.index, props.maxRows).map((line) => {
-          if (line.kind === 'marker')
-            return (
-              <Text key={line.position} {...dimProps(color)} wrap="truncate-end">
-                {`  ${line.text}`}
-              </Text>
-            );
-          const command = filtered[line.index];
-          if (command === undefined) return null;
-          const selected = line.index === state.index;
+    ) : (
+      paletteLines(
+        rows.length,
+        state.index,
+        props.maxRows,
+        rows.map((entry) => entry.groupStart),
+        list.layout,
+      ).map((line, position) => {
+        if (line.kind === 'gap') return <Text key={`gap-${String(position)}`}> </Text>;
+        if (line.kind === 'marker')
           return (
-            <Text
-              key={command.name}
-              {...(selected ? colorProps(color, 'cyan') : {})}
-              wrap="truncate-end"
-            >
-              {`${selected ? '›' : ' '} /${sanitizeInline(command.name)}  `}
-              <Text {...dimProps(color)}>{sanitizeInline(command.description)}</Text>
+            <Text key={line.position} {...dimProps(color)} wrap="truncate-end">
+              {`  ${line.text}`}
             </Text>
           );
-        })
-      )}
-      <Text {...dimProps(color)} wrap="truncate-end">
-        ↑/↓ select · Enter run · Esc cancel
-      </Text>
+        const entry = rows[line.index];
+        if (entry === undefined) return null;
+        return (
+          <EntryRow
+            key={entry.command.name}
+            entry={entry}
+            selected={line.index === state.index}
+            color={color}
+          />
+        );
+      })
+    );
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {list.layout === 'down' ? [query, body, legend] : [legend, body, query]}
     </Box>
   );
 }

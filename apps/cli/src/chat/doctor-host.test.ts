@@ -4,7 +4,7 @@ import { join, sep } from 'node:path';
 import type { McpServerRef } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
-import { GLOBAL_ARTIFACTS_REMEDY } from '../authoring/global-artifacts.js';
+import { GLOBAL_ARTIFACTS_REMEDY_TUI } from '../authoring/global-artifacts.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import type { KeychainStore } from '../secrets/keychain.js';
 import { checkConfig } from './doctor.js';
@@ -72,7 +72,10 @@ describe('assembleDoctorProbes', () => {
       writeFileSync(join(home, '.relavium', 'workflows', 'stray.relavium.yaml'), 'x');
       writeFileSync(join(home, '.relavium', 'config.toml'), 'not = [valid');
       const probes = assembleDoctorProbes({ cwd: workspace, operatorHomeDir: home, resolver });
-      expect(probes.globalArtifacts?.()).toBe(GLOBAL_ARTIFACTS_REMEDY);
+      // `/doctor` is read in the TUI, so its remedy is the Home's `/import`, never the shell's `relavium import` (OD-20).
+      expect(probes.globalArtifacts?.()).toBe(GLOBAL_ARTIFACTS_REMEDY_TUI);
+      expect(GLOBAL_ARTIFACTS_REMEDY_TUI).toContain('/import');
+      expect(GLOBAL_ARTIFACTS_REMEDY_TUI).not.toContain('relavium import');
       const check = checkConfig(probes.config);
       expect(check.status, 'the handed home`s own config was the one read').toBe('fail');
       expect(check.detail).toContain('is not valid TOML');

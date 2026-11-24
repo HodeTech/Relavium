@@ -203,7 +203,7 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
   }
   throw new CliError(
     'invalid_invocation',
-    `no free workflow id near '${base}' in the project's workflows/ — export with \`relavium chat-export <sessionId> --out <path>\``,
+    `no free workflow id near '${base}' in the project's workflows/ — remove or rename some of those workflow files, then run /export again`,
   );
 }
 

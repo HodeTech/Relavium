@@ -249,7 +249,7 @@ describe.each(WORDS)('$word with a chat in front', ({ word, dependency }) => {
   });
 });
 
-describe('what a chat does with the line when a word is not routed to the Home', () => {
+describe('what a chat does with the line of a word only the Home has', () => {
   /** A chat in front, and the lines its own dispatch was handed after `hello`. */
   async function inChat(): Promise<Mounted> {
     const m = mount({
@@ -266,19 +266,24 @@ describe('what a chat does with the line when a word is not routed to the Home',
     return m;
   }
 
-  it('/pricing reaches the chat’s own dispatch, which answers it as the unknown slash it is', async () => {
-    const m = await inChat();
-    m.controller.handlePaste('/pricing');
-    m.controller.handleKey('', ENTER);
-    await vi.waitFor(() => expect(m.lines).toEqual(['/pricing']), { timeout: WAIT_MS });
-  });
-
-  it('/import is a near miss of the chat’s /export, which a chat answers locally and never runs', async () => {
-    const m = await inChat();
-    m.controller.handlePaste('/import');
-    m.controller.handleKey('', ENTER);
-    await flush();
-    expect(m.controller.getSnapshot().notice).toBe('Unknown command. Did you mean /export?');
-    expect(m.lines, 'the suggestion never runs the command it names').toEqual([]);
-  });
+  it.each(['/pricing', '/import'])(
+    '%s is answered with one line that names the Home, in the transcript: it opens nothing, is not sent to the chat and is not an unknown command (ADR-0145 §7.4)',
+    async (word) => {
+      const m = await inChat();
+      m.controller.handlePaste(word);
+      m.controller.handleKey('', ENTER);
+      await flush();
+      const transcript =
+        m.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      expect(
+        transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : [])),
+      ).toContain(`${word} is available from the Home.`);
+      expect(
+        m.controller.getSnapshot().notice,
+        'not "Unknown command" and no suggestion',
+      ).toBeUndefined();
+      expect(m.controller.getSnapshot().nativeActionBusy).toBe(false);
+      expect(m.lines, 'the line is not sent to the chat').toEqual([]);
+    },
+  );
 });

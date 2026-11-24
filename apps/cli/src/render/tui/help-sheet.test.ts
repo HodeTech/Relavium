@@ -84,8 +84,10 @@ describe('which commands the sheet lists', () => {
   });
 
   it('shows a short description whole', () => {
-    const exit = HOME_HELP_COMMANDS.find((command) => command.name === 'exit');
-    expect(describedRow(textOf(200), 'exit')).toContain(exit?.description);
+    // The first command of the Home's order keeps its row and its words (the last ones are listed by name when the rows run short).
+    const first = HOME_HELP_COMMANDS[0];
+    expect(first?.name).toBe('resume');
+    expect(describedRow(textOf(200), 'resume')).toContain(first?.description);
   });
 
   it('does not list a command that works only in a chat: /cost, /cancel, /export, /effort and the rest', () => {
@@ -99,10 +101,19 @@ describe('which commands the sheet lists', () => {
     expect(listed.has('cost')).toBe(false);
   });
 
-  it('lists the commands by name, in one order', () => {
+  it('lists the commands by name, in the Home’s own order (Work, Set up, Check, End), not by alphabet (ADR-0145 §7.3)', () => {
     const names = namedCommands(textOf(200));
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, 'en')));
     expect(names).toEqual(HOME_HELP_COMMANDS.map((command) => `/${command.name}`));
+    expect(names).toEqual(HOME_PALETTE_COMMANDS.map((command) => `/${command.name}`));
+    expect(names).toEqual(
+      [
+        'resume', 'run', 'workflows', 'agents',
+        'providers', 'models', 'mode', 'permissions', 'pricing', 'init', 'import',
+        'doctor', 'help',
+        'clear', 'exit',
+      ].map((name) => `/${name}`),
+    ); // prettier-ignore
+    expect(names).not.toEqual([...names].sort((a, b) => a.localeCompare(b, 'en')));
   });
 });
 

@@ -97,6 +97,17 @@ const markersOf = (frame: readonly string[]): string[] =>
   frame.filter((line) => /^ {2}[▲▼] \d+ more$/u.test(line));
 const highlightedOf = (frame: readonly string[]): string | undefined =>
   frame.map((line) => /^› \/([a-z]+)(?: |$)/u.exec(line)?.[1]).find((name) => name !== undefined);
+/** The blank rows between the query line and the legend: the gaps between the groups (the palette's own, not the landing's). */
+const gapsOf = (frame: readonly string[]): number => {
+  const from = frame.findIndex((line) => line === '/');
+  const to = frame.indexOf(FOOTER);
+  return frame.slice(from + 1, to).filter((line) => line.trim() === '').length;
+};
+
+/** The entries an arrow key can reach on a Home with no saved session: /resume and /clear are dim, so the arrows skip them. */
+const REACHABLE = HOME_PALETTE_COMMANDS.map((command) => command.name).filter(
+  (name) => name !== 'resume' && name !== 'clear',
+);
 
 describe.each([
   ['the inline renderer', false],
@@ -112,21 +123,32 @@ describe.each([
       23,
     );
     expect(frame.at(-1)).toBe(FOOTER);
-    expect(markersOf(frame)).toEqual(['  ▼ 3 more']);
+    expect(markersOf(frame)).toEqual(['  ▼ 4 more']);
     expect(entriesOf(frame)).toEqual(
       HOME_PALETTE_COMMANDS.slice(0, 11).map((command) => command.name),
     );
-    expect(highlightedOf(frame)).toBe('exit');
+    // `/` then `Enter` must never leave the application: the highlight is the first row that can act. /resume has nothing to resume, so it
+    // is dim and says so in words, and the highlight is /run.
+    expect(frame, 'the dim row says why').toContain('  /resume  unavailable · nothing to resume');
+    expect(highlightedOf(frame)).toBe('run');
+    expect(gapsOf(frame), 'no room for a gap: the entries are windowed').toBe(0);
   });
 
-  it('at 80×24 with one saved session draws every entry: they fit, so none is hidden and no marker is drawn', async () => {
+  it('at 80×24 with one saved session is a window of its entries too: with /help among them the fifteen no longer fit beside the session', async () => {
     const m = mount({ cols: 80, rows: 24 }, 1, alternateScreen);
     await openPalette(m);
     const frame = m.frame();
     expect(frame.length).toBeLessThanOrEqual(23);
     expect(frame, 'the session is still on the landing').toContain('  Sessions');
-    expect(entriesOf(frame)).toEqual(HOME_PALETTE_COMMANDS.map((command) => command.name));
-    expect(markersOf(frame)).toEqual([]);
+    expect(entriesOf(frame)).toEqual(
+      HOME_PALETTE_COMMANDS.slice(0, 13).map((command) => command.name),
+    );
+    expect(markersOf(frame), '/clear and /exit are behind the marker').toEqual(['  ▼ 2 more']);
+    expect(
+      highlightedOf(frame),
+      'there is something to resume, so /resume is the default row',
+    ).toBe('resume');
+    expect(frame.join('\n')).not.toContain('unavailable');
   });
 
   it('at 80×24 with a strip longer than the terminal, trims the strip and not the palette below the rows it keeps', async () => {
@@ -159,12 +181,12 @@ describe.each([
       expect(frame.some((line) => line.startsWith('Notice 1–'))).toBe(true);
       expect(frame, 'the report is drawn').toContain('doctor line 0');
       expect(frame.at(-1)).toBe(FOOTER);
-      expect(highlightedOf(frame)).toBe('exit');
+      expect(highlightedOf(frame)).toBe(sessions === 0 ? 'run' : 'resume');
       expect(markersOf(frame).length).toBeGreaterThan(0);
     },
   );
 
-  it('at 80×30 on an empty Home draws every entry, with no marker', async () => {
+  it('at 80×30 on an empty Home draws every entry and the three blank rows between the groups, with no marker', async () => {
     const m = mount({ cols: 80, rows: 30 }, 0, alternateScreen);
     await openPalette(m);
     const frame = m.frame();
@@ -172,45 +194,98 @@ describe.each([
     expect(entriesOf(frame)).toEqual(HOME_PALETTE_COMMANDS.map((command) => command.name));
     expect(markersOf(frame)).toEqual([]);
     expect(frame.at(-1)).toBe(FOOTER);
+    expect(gapsOf(frame), 'Work · Set up · Check · End: three gaps').toBe(3);
+    // The gaps sit before /providers, /doctor and /clear, the first row of each group after the first.
+    for (const name of ['providers', 'doctor', 'clear']) {
+      const at = frame.findIndex((line) => new RegExp(`^[› ] /${name}( |$)`, 'u').test(line));
+      expect(frame[at - 1]?.trim(), `a blank row before /${name}`).toBe('');
+    }
   });
 
-  it('keeps the highlighted entry in the window: ↓ sixteen times from the first entry, then ↑ sixteen times', async () => {
+  it.each([
+    [26, 0],
+    [27, 0],
+    [28, 1],
+    [29, 2],
+    [30, 3],
+  ])(
+    'at 80×%i the gaps give way one by one, never an entry: %i of the three blank rows are drawn (the palette is asked for 21 rows, gaps first to go)',
+    async (rows, gaps) => {
+      const m = mount({ cols: 80, rows }, 0, alternateScreen);
+      await openPalette(m);
+      const frame = m.frame();
+      expect(frame.length).toBeLessThanOrEqual(rows - 1);
+      expect(gapsOf(frame)).toBe(gaps);
+      // 80×26 cannot hold the fifteen entries even with no gap: it windows them (and never draws a gap in a window).
+      if (rows === 26) {
+        expect(entriesOf(frame).length).toBeLessThan(HOME_PALETTE_COMMANDS.length);
+        expect(markersOf(frame)).toHaveLength(1);
+      } else {
+        expect(entriesOf(frame)).toEqual(HOME_PALETTE_COMMANDS.map((command) => command.name));
+        expect(markersOf(frame)).toEqual([]);
+        expect(entriesOf(frame).at(-1), 'a gap never costs /exit its row').toBe('exit');
+      }
+    },
+  );
+
+  it('keeps the highlighted entry in the window: ↓ sixteen times from the first row that can act, then ↑ sixteen times; the arrows skip the dim rows and stop at both ends', async () => {
     const m = mount({ cols: 80, rows: 24 }, 0, alternateScreen);
     await openPalette(m);
-    const names = HOME_PALETTE_COMMANDS.map((command) => command.name);
+    expect(highlightedOf(m.frame())).toBe('run');
+    const last = REACHABLE.length - 1;
     for (let step = 1; step <= 16; step += 1) {
       await press(m.controller, { downArrow: true });
       const frame = m.frame();
-      expect(highlightedOf(frame), `↓ ${String(step)}`).toBe(names[Math.min(step, 13)]);
+      expect(highlightedOf(frame), `↓ ${String(step)}`).toBe(REACHABLE[Math.min(step, last)]);
       expect(frame.length, `↓ ${String(step)}`).toBeLessThanOrEqual(23);
       expect(frame.at(-1)).toBe(FOOTER);
     }
-    // At the end of the list the window shows the last entry and says what it hides above, and nothing below.
+    // At the end of the list the window shows /exit, the last entry, and says what it hides above, and nothing below. /clear above it
+    // is dim, and the highlight went over it.
     const end = m.frame();
-    expect(entriesOf(end).at(-1)).toBe('pricing');
+    expect(highlightedOf(end)).toBe('exit');
+    expect(entriesOf(end).at(-1)).toBe('exit');
     expect(markersOf(end).map((line) => line.trim().slice(0, 1))).toEqual(['▲']);
     for (let step = 1; step <= 16; step += 1) {
       await press(m.controller, { upArrow: true });
       const frame = m.frame();
-      expect(highlightedOf(frame), `↑ ${String(step)}`).toBe(names[Math.max(0, 13 - step)]);
+      expect(highlightedOf(frame), `↑ ${String(step)}`).toBe(REACHABLE[Math.max(0, last - step)]);
       expect(frame.length, `↑ ${String(step)}`).toBeLessThanOrEqual(23);
     }
-    expect(entriesOf(m.frame())[0]).toBe('exit');
+    // Back at the top: /run, and never /resume, which is dim and above it; the window shows the head of the list again.
+    expect(highlightedOf(m.frame())).toBe('run');
+    expect(entriesOf(m.frame())[0]).toBe('resume');
   });
 
   it('Enter runs the highlighted entry of a window, which is one the first frame did not show', async () => {
     const m = mount({ cols: 80, rows: 24 }, 0, alternateScreen);
     await openPalette(m);
-    expect(entriesOf(m.frame()), 'the first frame stops before /import').not.toContain('import');
-    for (let step = 0; step < 12; step += 1) await press(m.controller, { downArrow: true });
-    expect(highlightedOf(m.frame())).toBe('import');
+    expect(entriesOf(m.frame()), 'the first frame stops before /help').not.toContain('help');
+    for (let step = 0; step < REACHABLE.indexOf('help'); step += 1)
+      await press(m.controller, { downArrow: true });
+    expect(highlightedOf(m.frame())).toBe('help');
     await press(m.controller, { return: true });
     const snapshot = m.controller.getSnapshot();
     expect(snapshot.palette, 'the palette is closed').toBeUndefined();
-    // No import port is wired in this Home, so the controller says so: the entry that ran was /import.
-    expect(snapshot.notice).toBe('Import is unavailable in this session.');
+    // The entry that ran was /help: the Home's help screen is open.
+    expect(snapshot.screen?.kind).toBe('help');
     expect(m.startChat).not.toHaveBeenCalled();
-    expect(m.frame().join('\n')).toContain('Import is unavailable in this session.');
+    expect(m.onExit).not.toHaveBeenCalled();
+  });
+
+  it('`/` then `Enter` never leaves the application: on a Home with no saved session it runs /run, and with one it runs /resume', async () => {
+    for (const sessions of [0, 1]) {
+      const m = mount({ cols: 80, rows: 24 }, sessions, alternateScreen);
+      await openPalette(m);
+      await press(m.controller, { return: true });
+      expect(m.onExit, `${String(sessions)} sessions`).not.toHaveBeenCalled();
+      expect(m.controller.getSnapshot().palette).toBeUndefined();
+      // No launch or resume port is wired in this Home, so the controller says so: the entry that ran was /run, or /resume.
+      expect(m.controller.getSnapshot().notice).toMatch(
+        sessions === 0 ? /^Running a workflow is unavailable/u : /^Session resume is unavailable/u,
+      );
+      cleanup();
+    }
   });
 
   it('Esc and Ctrl+C close a windowed palette and the prompt comes back, as they do for a whole one', async () => {

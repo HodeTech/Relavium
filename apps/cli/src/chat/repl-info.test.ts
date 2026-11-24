@@ -2,6 +2,7 @@ import { LEGACY_COST_SENTINEL, type SessionCostRow } from '@relavium/db';
 import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
+import { REPL_COMMANDS_BY_NAME } from '../commands/repl-commands.js';
 import type { CatalogEntry } from '../workflows/catalog.js';
 import {
   catalogNotice,
@@ -125,23 +126,35 @@ describe('compactionNotice / trimNotice (ADR-0062)', () => {
   });
 });
 
-describe('clearedNotice (ADR-0062 §7)', () => {
-  it('names the prior session + the exact chat resume command so it is discoverable', () => {
+describe('clearedNotice (ADR-0062 §7, MVP-11 OD-20)', () => {
+  it("the Home's hosted chat names /resume, which the Home has, and no shell command", () => {
     const notice = clearedNotice('sess-42');
     expect(notice).toContain('fresh conversation');
-    expect(notice).toContain('relavium chat resume sess-42'); // the exact recovery command, not just the id
+    expect(notice).toContain('/resume');
+    expect(notice).not.toMatch(/relavium|chat-resume|sess-42/u);
   });
 
-  it('sanitizes a crafted session id (no terminal escape reaches the TTY)', () => {
+  it('a stand-alone chat has no /resume: it names the Home in words and says relavium alone, never a shell command', () => {
+    const notice = clearedNotice('sess-42', 'standalone-chat');
+    expect(notice).toContain('fresh conversation');
+    // The Home is where the saved conversation is continued; the sentence says so, and the command it names is the Home's.
+    expect(notice).toContain('on the Home');
+    expect(notice).toContain('/resume');
+    expect(notice).not.toMatch(/relavium (chat|resume)|chat-resume|sess-42/u);
+    expect(REPL_COMMANDS_BY_NAME.has('resume')).toBe(false); // the premise: no chat registry entry for it
+  });
+
+  it('names no session id, so a crafted one can neither reach the terminal nor become a command', () => {
     // `history.db` is shared with other surfaces whose ids are only non-empty strings, so a row may carry control
-    // bytes — the notice must strip them (parity with the resume banner), never let one inject into the terminal.
-    const notice = clearedNotice(
-      `evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`,
-    );
-    expect(notice).not.toContain(String.fromCharCode(27)); // no ESC survives
-    expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
-    expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line
-    expect(notice).toContain('relavium chat resume'); // the static recovery text is intact
+    // bytes. The notice no longer prints the id at all (the shell line after the chat closes does, sanitized there).
+    const crafted = `evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`;
+    for (const surface of ['home', 'standalone-chat'] as const) {
+      const notice = clearedNotice(crafted, surface);
+      expect(notice).not.toContain(String.fromCharCode(27));
+      expect(notice).not.toContain(String.fromCharCode(7));
+      expect(notice).not.toContain('\n');
+      expect(notice).not.toContain('FAKE');
+    }
   });
 });
 

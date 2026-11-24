@@ -173,12 +173,14 @@ describe('/run in a chat', () => {
     expect(s.list, 'no catalog was read').not.toHaveBeenCalled();
     expect(s.start, 'no run was started').not.toHaveBeenCalled();
     expect(controller.getSnapshot().nativeActionBusy).toBe(false);
-    // The line was the chat's to handle, not the Home's: it reached the chat as the unknown slash it is, or the Home's typo hint
-    // for an unknown slash answered it; either way it was not a launch.
-    expect(
-      lines.includes('/run') ||
-        (controller.getSnapshot().notice ?? '').startsWith('Unknown command'),
-    ).toBe(true);
+    // `/run` is the Home's (ADR-0145 §7.4): typed in a chat it is answered with one line that names the Home, in the transcript; it was not
+    // a launch, was not sent to the chat and is not an unknown command.
+    const transcript = controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+    expect(transcript.flatMap((entry) => (entry.role === 'notice' ? [entry.text] : []))).toContain(
+      '/run is available from the Home.',
+    );
+    expect(lines).not.toContain('/run');
+    expect(controller.getSnapshot().notice).toBeUndefined();
   });
 
   it('is not in the chat palette either', async () => {

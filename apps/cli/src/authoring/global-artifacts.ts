@@ -6,10 +6,19 @@ import { globalConfigDir } from '../config/paths.js';
 
 export const GLOBAL_ARTIFACTS_REMEDY =
   'Workflows or agents in ~/.relavium/workflows or ~/.relavium/agents are not project artifacts. Leave the originals in place until reviewed; move them into a project or run `relavium import <path>` from that project directory.';
+/** The same notice for `/doctor`: the Home's `/import` is the action there, never a shell command (ADR-0146 §6, MVP-11 OD-20). */
+export const GLOBAL_ARTIFACTS_REMEDY_TUI =
+  'Workflows or agents in ~/.relavium/workflows or ~/.relavium/agents are not project artifacts. Leave the originals in place until reviewed; move them into a project, or open the Home in that project and use /import.';
 const MAX_NOTICE_ENTRIES = 256;
 
+/** The wording of the notice for where it is read: the shell's `relavium list`, or the TUI's `/doctor`. */
+export type GlobalArtifactsSurface = 'shell' | 'tui';
+
 /** Local read-only notice; never parse, move, repair or print arbitrary global artifact names. */
-export function globalArtifactsNotice(home: string = homedir()): string | undefined {
+export function globalArtifactsNotice(
+  home: string = homedir(),
+  surface: GlobalArtifactsSurface = 'shell',
+): string | undefined {
   for (const kind of ['workflows', 'agents']) {
     try {
       const directory = opendirSync(join(globalConfigDir(home), kind));
@@ -18,12 +27,14 @@ export function globalArtifactsNotice(home: string = homedir()): string | undefi
           const entry = directory.readSync();
           if (entry === null) break;
           if ((entry.isFile() || entry.isSymbolicLink()) && /\.ya?ml$/iu.test(entry.name))
-            return GLOBAL_ARTIFACTS_REMEDY;
+            return surface === 'tui' ? GLOBAL_ARTIFACTS_REMEDY_TUI : GLOBAL_ARTIFACTS_REMEDY;
         }
         // Do not turn a health notice into an unbounded scan of a large folder.
         // An incomplete observation is disclosed instead of claiming no artifacts.
         if (directory.readSync() !== null)
-          return 'Global artifact inspection was incomplete. ~/.relavium/workflows and ~/.relavium/agents are not project catalogs; review those folders before moving files or running `relavium import <path>` from a project directory.';
+          return surface === 'tui'
+            ? 'Global artifact inspection was incomplete. ~/.relavium/workflows and ~/.relavium/agents are not project catalogs; review those folders before moving files or using /import from the Home in a project directory.'
+            : 'Global artifact inspection was incomplete. ~/.relavium/workflows and ~/.relavium/agents are not project catalogs; review those folders before moving files or running `relavium import <path>` from a project directory.';
       } finally {
         directory.closeSync();
       }

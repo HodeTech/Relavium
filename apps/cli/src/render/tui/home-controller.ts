@@ -7,7 +7,9 @@ import type { ReasoningEffort } from '@relavium/shared';
 import {
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
+  homeOnlyPointer,
   REPL_COMMANDS_BY_NAME,
+  unavailableNotice,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
@@ -147,11 +149,13 @@ import {
   type ShellCommand,
 } from './shell.js';
 import { reduceHomeKey, type HomeKey } from './home-input.js';
+import { buildPaletteEntries } from './palette-entries.js';
 import {
   foldPaletteKey,
-  INITIAL_PALETTE_STATE,
+  openPalette,
   shouldOpenPalette,
   type PaletteKey,
+  type PaletteList,
   type PaletteState,
 } from './palette-reducer.js';
 import {
@@ -268,6 +272,9 @@ export interface HomeControllerState {
   /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
    *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
   readonly palette: PaletteState | undefined;
+  /** The rows the open palette reads: built ONCE when it opens and when its query changes, and read by BOTH the key fold and the view, so
+   *  they cannot disagree on the highlighted row (MVP-11 Step 2.2). Stale while the palette is closed; the view reads it only when open. */
+  readonly paletteList: PaletteList | undefined;
   /** The open Ctrl+R reverse-search submode of the in-Home chat (2.5.D step 3) — `undefined` ⇒ closed. Chat-only
    *  (the bare Home has no history); mutually exclusive with the palette, yields to a pending approval. */
   readonly search: ReverseSearchState | undefined;
@@ -893,6 +900,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     input: emptyEditor(),
     session: undefined,
     palette: undefined,
+    paletteList: undefined,
     search: undefined,
     mention: undefined,
     shellBusy: false,
@@ -2378,6 +2386,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   const managementCommand = (text: string): boolean => {
+    // A word only the Home has, typed in the chat it hosts (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`): one line that
+    // names the Home, and nothing opens (ADR-0145 §7.4, OD-2). `/resume` has a placement here, so it is not one of them.
+    if (state.session !== undefined && text.startsWith('/')) {
+      const pointer = homeOnlyPointer(text.slice(1).split(/\s/u, 1)[0] ?? '', 'home-chat');
+      if (pointer !== undefined) {
+        set({ input: emptyEditor() });
+        state.session.store.notice(pointer); // the channel the chat's own dispatch answers through (`emitOutput`)
+        return true;
+      }
+    }
     if (state.session === undefined && /^\/mode(?:\s|$)/u.test(text)) {
       set({ input: emptyEditor() });
       if (text !== '/mode')
@@ -3071,7 +3089,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     exit: () => requestExit(),
     cancel: () => undefined,
     exportSession: () => undefined,
-    help: () => undefined,
+    // `/help` is on the Home's palette (ADR-0145 §7.3): chosen there it opens the same screen the typed word does.
+    help: () => {
+      openScreen('help');
+    },
     showWorkflows: () => undefined, // the chat's own listing; the Home's `/workflows` opens the Defined tab from the controller (MVP-8 step 4)
     // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
     // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
@@ -3136,16 +3157,56 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     },
   };
 
+  /**
+   * Open the palette over the rows this surface offers (MVP-11 Step 2.2, ADR-0145 §7): the bare Home lists its own commands under the prompt
+   * and the chat it hosts lists a chat's above it. Availability is read from CACHED state only: never a port, the keychain or the disk. At
+   * the bare Home that is the key flag and the snapshot's recent sessions (the snapshot is read when the Home opens, so "nothing to resume"
+   * is as fresh as the strip); in the chat, the chat itself and its turn (a saved conversation is unknown there, so `/resume` reads as
+   * enabled: the snapshot may predate the chats of this Home).
+   */
+  const openPaletteState = (
+    active: HomeChatSession | undefined,
+  ): Pick<HomeControllerState, 'palette' | 'paletteList'> => {
+    const opened =
+      active === undefined
+        ? openPalette(
+            buildPaletteEntries('home', {
+              hasSession: false,
+              hasKey: !state.keyless,
+              hasSavedSessions: state.snapshot.recentSessions.length > 0,
+              turnRunning: false,
+            }),
+            'down',
+          )
+        : openPalette(
+            buildPaletteEntries('home-chat', {
+              hasSession: true,
+              hasKey: true,
+              turnRunning: active.store.getSnapshot().state.status === 'running',
+            }),
+            'up',
+          );
+    return { palette: opened.state, paletteList: opened.list };
+  };
+
   const handlePaletteKey = (input: string, key: PaletteKey): void => {
     const palette = state.palette;
-    if (palette === undefined) return;
+    const list = state.paletteList;
+    if (palette === undefined || list === undefined) return;
     // The palette runs in BOTH surfaces: a live chat (a session ⇒ submit the slash through the S3a dispatch) and
-    // the bare Home (no session ⇒ run the command over the Home's own context). The command set is the surface's.
+    // the bare Home (no session ⇒ run the command over the Home's own context). The rows are the surface's, built when the palette opened.
     const active = state.session;
-    const commands = active === undefined ? HOME_PALETTE_COMMANDS : HOME_CHAT_PALETTE_COMMANDS;
-    const step = foldPaletteKey(input, key, palette, commands);
+    const step = foldPaletteKey(input, key, palette, list);
     if (step.kind === 'close') {
       set({ palette: undefined });
+      return;
+    }
+    if (step.kind === 'unavailable') {
+      // `Enter` on a dim row: its reason is said and the palette stays open. Never "unknown command", never run.
+      const row = list.rows[palette.index];
+      const notice = unavailableNotice(row?.command.name ?? '', step.reason);
+      if (active === undefined) set({ notice });
+      else active.store.note(notice);
       return;
     }
     if (step.kind === 'run') {
@@ -3210,7 +3271,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
       return;
     }
-    set({ palette: step.state });
+    set({ palette: step.state, paletteList: step.list });
   };
 
   // The in-Home chat's `@`-mention completion (2.5.D step 4, ADR-0061) — mirrors ChatApp. ASYNC: opening/descending
@@ -3397,7 +3458,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): boolean => {
     if (approvalPending) return false; // a pending approval OWNS the keyboard — never opens an overlay
     if (shouldOpenPalette(input, key, running, state.input.text.length)) {
-      set({ palette: INITIAL_PALETTE_STATE });
+      set(openPaletteState(active));
       return true;
     }
     if (!running && key.ctrl === true && input === 'r') {
@@ -3792,7 +3853,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Open the `/` palette at an idle, EMPTY Home prompt (the Home has no running turn) — the discovery entry point
     // (2.5.C S3c). The Home palette shows the home-applicable commands; selecting runs over the Home context.
     if (shouldOpenPalette(input, key, false, state.input.text.length)) {
-      set({ palette: INITIAL_PALETTE_STATE, notice: undefined }); // running another command clears a stale report
+      set({ ...openPaletteState(undefined), notice: undefined }); // running another command clears a stale report
       return;
     }
     switch (action.kind) {

@@ -1,7 +1,6 @@
 import { Box, Text, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
-import type { ReplCommand } from '../../commands/repl-commands.js';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
@@ -32,8 +31,8 @@ import {
   type ParkedRunRow,
 } from './home-attention.js';
 import { PaletteView } from './palette-view.js';
-import type { PaletteState } from './palette-reducer.js';
-import { PALETTE_MIN_ROWS, paletteRowBudget } from './palette-window.js';
+import type { PaletteList, PaletteState } from './palette-reducer.js';
+import { PALETTE_MIN_ROWS, paletteGapCount, paletteRowBudget } from './palette-window.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
 import { homePromptRows, layoutHomeNotice } from './home-notice.js';
@@ -83,7 +82,7 @@ interface HomeViewProps {
    * landing and the palette together are never taller than the terminal (`paletteRowBudget`, `paletteLines`). Absent ⇒ no palette is drawn
    * here (`paletteOpen` alone only suppresses the prompt, as it does for the model picker, which the host draws).
    */
-  readonly palette?: { readonly commands: readonly ReplCommand[]; readonly state: PaletteState };
+  readonly palette?: { readonly list: PaletteList; readonly state: PaletteState };
   /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
   readonly showBanner?: boolean | undefined;
   /** Cached key availability, sampled by the host on opening and changes. */
@@ -300,8 +299,16 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
       ? undefined
       : exitGuardLines(exitGuard, props.hostedRun, HOSTED_RUN_EXIT_BOUND_MS / 1000).length;
   const palette = props.palette;
+  // The palette asks for its entries, the blank rows between its groups and its chrome; the gaps are the first thing to give way
+  // (`paletteLines`), so the budget the strip and the notice leave it is sized with them, and never at the cost of an entry.
   const paletteRows =
-    palette === undefined ? undefined : paletteRowBudget(rows, palette.commands.length);
+    palette === undefined
+      ? undefined
+      : paletteRowBudget(
+          rows,
+          palette.list.rows.length,
+          paletteGapCount(palette.list.rows.map((entry) => entry.groupStart)),
+        );
   // The notice leaves the palette what the prompt block would have left it (`homePromptRows + 3 + keyless`, the notice's own slack included)
   // and the rest of the palette's rows (`paletteRows + 2`: the budget, the unused row and the same slack).
   const keylessRows = keylessLine ? 1 : 0;
@@ -596,7 +603,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
       {palette !== undefined && (
         <PaletteView
-          commands={palette.commands}
+          list={palette.list}
           state={palette.state}
           color={color}
           maxRows={paletteMaxRows}

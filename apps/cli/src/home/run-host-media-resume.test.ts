@@ -908,7 +908,9 @@ describe('a continued leg whose run another process takes while it polls', () =>
         safety: 6,
       });
       expect(end.terminal.headline).toContain('taken over by another process');
-      expect(end.terminal.remedy).toContain(`relavium logs ${runId}`);
+      // The card is inside the TUI (the Home's `/workflows`); the shell line printed after the Home closes keeps the command.
+      expect(end.terminal.remedy).toContain('/workflows');
+      expect(end.terminal.shellRemedy).toContain(`relavium logs ${runId}`);
       expect(end.fault, 'a takeover is a disposition, not a fault of this leg').toBeUndefined();
       expect(end.handedOff).toBe(false);
       expect(eventsOf(runId), 'this process wrote nothing after the takeover').toHaveLength(before);
