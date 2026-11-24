@@ -10,7 +10,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { stringifyJsonLine } from '../render/sanitize.js';
+import { sanitizeInline, stringifyJsonLine } from '../render/sanitize.js';
 
 /**
  * `relavium chat-export <sessionId>` (2.P) — export a persisted session to a `.relavium.yaml` **scaffold** for
@@ -75,7 +75,7 @@ export function chatExportCommand(
     // `agent_ref` must resolve against the workspace registry before `relavium run` will accept it.
     if (result.record.agentSnapshot === undefined) {
       deps.io.writeErr(
-        `note: this session has no stored agent — set agent_ref in ${result.path} to a workspace agent before running it.\n`,
+        `note: this session has no stored agent — set agent_ref in ${sanitizeInline(result.path)} to a workspace agent before running it.\n`,
       );
     }
 
@@ -107,7 +107,8 @@ export function chatExportCommand(
       });
       deps.io.writeOut(`${stringifyJsonLine(event)}\n`);
     } else {
-      deps.io.writeOut(`Exported session ${args.sessionId} to ${result.path}\n`);
+      // The path comes from `--out` or the launch directory, text a person typed or a repository named: one row, no terminal controls.
+      deps.io.writeOut(`Exported session ${args.sessionId} to ${sanitizeInline(result.path)}\n`);
     }
     return EXIT_CODES.success;
   } finally {

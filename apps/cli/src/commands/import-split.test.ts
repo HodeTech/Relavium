@@ -135,7 +135,10 @@ describe('prepareImport writes and prints nothing, and says what commitImport wi
     mkdirSync(join(cwd, '.relavium', 'agents'), { recursive: true });
     writeFileSync(target(), AGENT);
     try {
-      prepareImport({ path: 'incoming.agent.yaml', force: false }, { global: global() });
+      prepareImport(
+        { path: 'incoming.agent.yaml', force: false },
+        { global: global(), homeDir: home },
+      );
       expect.unreachable('a collision must be refused');
     } catch (cause) {
       expect(cause).toBeInstanceOf(SlugClashError);
@@ -152,7 +155,10 @@ describe('prepareImport writes and prints nothing, and says what commitImport wi
     }
     // With --force the same plan is returned: the force only decides whether the write may replace.
     expect(
-      prepareImport({ path: 'incoming.agent.yaml', force: true }, { global: global() }).force,
+      prepareImport(
+        { path: 'incoming.agent.yaml', force: true },
+        { global: global(), homeDir: home },
+      ).force,
     ).toBe(true);
   });
 
@@ -161,7 +167,7 @@ describe('prepareImport writes and prints nothing, and says what commitImport wi
     writeFileSync(join(cwd, '.relavium', 'workflows', 'reviewer.relavium.yaml'), WORKFLOW);
     for (const force of [false, true]) {
       try {
-        prepareImport({ path: 'incoming.agent.yaml', force }, { global: global() });
+        prepareImport({ path: 'incoming.agent.yaml', force }, { global: global(), homeDir: home });
         expect.unreachable('a cross-kind id must be refused');
       } catch (cause) {
         if (!(cause instanceof SlugClashError)) throw cause;
@@ -291,7 +297,7 @@ describe('importCommand prints the collected notices only after the write', () =
     expect(
       importCommand(
         { path: 'secret.agent.yaml', force: false },
-        { io: watching, global: global() },
+        { io: watching, global: global(), homeDir: home },
       ),
     ).toBe(0);
     expect(events).toEqual(['err:written:Warning:', 'out:Imported']);
@@ -303,7 +309,10 @@ describe('importCommand prints the collected notices only after the write', () =
     writeFileSync(join(cwd, 'secret.agent.yaml'), AGENT.replace('Review the code.', LITERAL));
     const { io, out, err } = captureIo();
     expect(() =>
-      importCommand({ path: 'secret.agent.yaml', force: false }, { io, global: global() }),
+      importCommand(
+        { path: 'secret.agent.yaml', force: false },
+        { io, global: global(), homeDir: home },
+      ),
     ).toThrow('already exists');
     expect([out(), err()]).toEqual(['', '']);
     expect(readFileSync(target(), 'utf8')).toBe('kept\n');

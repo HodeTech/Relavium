@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { basename, dirname, relative, resolve } from 'node:path';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
@@ -17,7 +18,7 @@ import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { stringifyJsonLine } from '../render/sanitize.js';
+import { sanitizeInline, stringifyJsonLine } from '../render/sanitize.js';
 
 export interface ImportCommandArgs {
   /** The external workflow/agent YAML to copy into the project (absolute, or relative to cwd). */
@@ -29,13 +30,15 @@ export interface ImportCommandArgs {
 export interface ImportCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** The operator home the path rules read. The program passes none (the process's own, read in {@link importCommand}); a test hands it a temporary one. */
+  readonly homeDir?: string | undefined;
 }
 
-/** What {@link prepareImport} needs: no output (it prints nothing) and, for a caller that is handed one, the operator home. */
+/** What {@link prepareImport} needs: no output (it prints nothing) and the operator home, which has no default here. */
 export interface ImportPrepareDeps {
   readonly global: GlobalOptions;
-  /** The operator home the path rules read. The command passes none (the process's own); the Home passes its own. */
-  readonly homeDir?: string | undefined;
+  /** The operator home the path rules read: the command resolves the process's own at its boundary, the Home passes its own. */
+  readonly homeDir: string;
 }
 
 /**
@@ -94,7 +97,7 @@ export function prepareImport(args: ImportCommandArgs, deps: ImportPrepareDeps):
     kind: parsed.kind,
     slug: parsed.slug,
     force: args.force,
-    ...(home === undefined ? {} : { homeDir: home }),
+    homeDir: home,
   });
 
   const catalogTarget = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
@@ -158,7 +161,8 @@ export function commitImport(plan: ImportPlan): void {
  * first step collects, are written only after the second has written).
  */
 export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps): ExitCode {
-  const plan = prepareImport(args, deps);
+  // The one place the command reads the process's own home; every rule below is handed it.
+  const plan = prepareImport(args, { global: deps.global, homeDir: deps.homeDir ?? homedir() });
   commitImport(plan);
   for (const warning of plan.warnings) deps.io.writeErr(warning);
 
@@ -167,7 +171,10 @@ export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps):
       `${stringifyJsonLine({ id: plan.slug, kind: plan.kind, path: plan.targetDisplay })}\n`,
     );
   } else {
-    deps.io.writeOut(`Imported ${plan.kind} '${plan.slug}' to ${plan.targetDisplay}\n`);
+    // The destination is spelled from the directory names under the project, which a link inside it can make anything: one row, no controls.
+    deps.io.writeOut(
+      `Imported ${plan.kind} '${plan.slug}' to ${sanitizeInline(plan.targetDisplay)}\n`,
+    );
   }
   return EXIT_CODES.success;
 }

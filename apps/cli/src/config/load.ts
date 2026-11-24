@@ -38,7 +38,7 @@ export function loadConfigFile<T>(
 ): T | undefined {
   // Automatic project layers must not read global state through child aliases.
   // Explicit operator config reads retain their selected-file contract.
-  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home);
+  if (opts?.projectLayer === true) assertProjectArtifactPath(filePath, opts.home ?? homedir());
   let stats: Stats;
   try {
     stats = statSync(filePath);

@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -55,6 +64,8 @@ describe('exportSession (2.P)', () => {
   let client: DbClient;
   let store: ReturnType<typeof createSessionStore>;
   let cwd: string;
+  /** A temporary operator home: the path rules read it, so no test reaches the real one. */
+  let homeDir: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -62,10 +73,12 @@ describe('exportSession (2.P)', () => {
     runMigrations(client.db);
     store = createSessionStore(client.db);
     cwd = mkdtempSync(join(tmpdir(), 'relavium-export-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'relavium-export-home-'));
   });
   afterEach(() => {
     client.sqlite.close();
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   function seedOneTurn(): void {
@@ -76,7 +89,7 @@ describe('exportSession (2.P)', () => {
 
   it('writes a .relavium.yaml scaffold named from the UNIQUE session id, and returns the path', () => {
     seedOneTurn();
-    const result = exportSession({ store, sessionId: 's1', cwd, force: false });
+    const result = exportSession({ store, sessionId: 's1', cwd, homeDir, force: false });
 
     expect(result.workflowId).toBe('my-session'); // the IN-FILE id is the title-slug (renameable on the canvas)
     expect(result.path).toBe(join(cwd, 's1.relavium.yaml')); // the FILENAME is the collision-free session id
@@ -107,7 +120,7 @@ describe('exportSession (2.P)', () => {
       },
     ];
     for (const row of messages) store.appendMessage(row);
-    const result = exportSession({ store, sessionId: 's1', cwd, force: false });
+    const result = exportSession({ store, sessionId: 's1', cwd, homeDir, force: false });
     const workflow = parseWorkflow(readFileSync(result.path, 'utf8')).workflow;
     expect(workflow.agents, 'W2_EXPORT_FAITHFUL_LITERALS').toEqual([agent]);
     expect(workflow.metadata?.['relaviumExport']).toMatchObject({ messages });
@@ -120,8 +133,8 @@ describe('exportSession (2.P)', () => {
   it('keys the default filename on the session id, so same-titled sessions never collide', () => {
     store.createSession(record({ id: 's1', title: 'Same Title' }));
     store.createSession(record({ id: 's2', title: 'Same Title' }));
-    const a = exportSession({ store, sessionId: 's1', cwd, force: false });
-    const b = exportSession({ store, sessionId: 's2', cwd, force: false });
+    const a = exportSession({ store, sessionId: 's1', cwd, homeDir, force: false });
+    const b = exportSession({ store, sessionId: 's2', cwd, homeDir, force: false });
     expect(a.path).toBe(join(cwd, 's1.relavium.yaml'));
     expect(b.path).toBe(join(cwd, 's2.relavium.yaml'));
     expect(a.path).not.toBe(b.path); // distinct files despite the shared title — no silent clobber
@@ -133,6 +146,7 @@ describe('exportSession (2.P)', () => {
       store,
       sessionId: 's1',
       cwd,
+      homeDir,
       outPath: 'flows/out.yaml',
       force: false,
     });
@@ -143,7 +157,14 @@ describe('exportSession (2.P)', () => {
   it('writes to an absolute --out path', () => {
     seedOneTurn();
     const out = join(cwd, 'explicit.relavium.yaml');
-    const result = exportSession({ store, sessionId: 's1', cwd, outPath: out, force: false });
+    const result = exportSession({
+      store,
+      sessionId: 's1',
+      cwd,
+      homeDir,
+      outPath: out,
+      force: false,
+    });
     expect(result.path).toBe(out);
     expect(existsSync(out)).toBe(true);
   });
@@ -152,7 +173,7 @@ describe('exportSession (2.P)', () => {
     seedOneTurn();
     const path = join(cwd, 's1.relavium.yaml');
     writeFileSync(path, 'pre-existing', 'utf8');
-    expect(() => exportSession({ store, sessionId: 's1', cwd, force: false })).toThrow(
+    expect(() => exportSession({ store, sessionId: 's1', cwd, homeDir, force: false })).toThrow(
       /already exists — pass --force/,
     );
     expect(readFileSync(path, 'utf8')).toBe('pre-existing'); // untouched
@@ -162,12 +183,46 @@ describe('exportSession (2.P)', () => {
     seedOneTurn();
     const path = join(cwd, 's1.relavium.yaml');
     writeFileSync(path, 'pre-existing', 'utf8');
-    exportSession({ store, sessionId: 's1', cwd, force: true });
+    exportSession({ store, sessionId: 's1', cwd, homeDir, force: true });
     expect(readFileSync(path, 'utf8')).toContain('schema_version:'); // replaced with the scaffold
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'never writes THROUGH a link at the target under --force (review P0-1): refused in fixed words, the file it leads to untouched',
+    () => {
+      seedOneTurn();
+      const victim = join(homeDir, 'victim.txt');
+      writeFileSync(victim, 'precious\n', 'utf8');
+      const link = join(cwd, 's1.relavium.yaml');
+      symlinkSync(victim, link);
+      for (const outPath of [undefined, 'via-out.yaml']) {
+        if (outPath !== undefined) symlinkSync(victim, join(cwd, outPath));
+        let thrown: unknown;
+        try {
+          exportSession({
+            store,
+            sessionId: 's1',
+            cwd,
+            homeDir,
+            ...(outPath === undefined ? {} : { outPath }),
+            force: true,
+          });
+        } catch (err) {
+          thrown = err;
+        }
+        expect(isCliError(thrown) && thrown.message, String(outPath)).toBe(
+          'The target exists and is a link or not a regular file, so nothing was written. Remove it or choose another path, then retry.',
+        );
+      }
+      expect(readFileSync(victim, 'utf8'), 'nothing reached the file the link leads to').toBe(
+        'precious\n',
+      );
+      expect(lstatSync(link).isSymbolicLink(), 'the link was left as it was').toBe(true);
+    },
+  );
+
   it('rejects an unknown sessionId as a clean exit-2 invocation fault', () => {
-    expect(() => exportSession({ store, sessionId: 'ghost', cwd, force: false })).toThrow(
+    expect(() => exportSession({ store, sessionId: 'ghost', cwd, homeDir, force: false })).toThrow(
       /no session found with id ghost/,
     );
   });
@@ -177,7 +232,7 @@ describe('exportSession (2.P)', () => {
     mkdirSync(join(cwd, 's1.relavium.yaml')); // occupy the default path with a DIRECTORY
     let thrown: unknown;
     try {
-      exportSession({ store, sessionId: 's1', cwd, force: true });
+      exportSession({ store, sessionId: 's1', cwd, homeDir, force: true });
     } catch (err) {
       thrown = err;
     }
@@ -196,6 +251,7 @@ describe('exportSession (2.P)', () => {
         store,
         sessionId: 's1',
         cwd,
+        homeDir,
         outPath: 'conflict/deeper/sub.yaml',
         force: true,
       });
@@ -211,7 +267,7 @@ describe('exportSession (2.P)', () => {
 
   it('exports a session with no completed turns as a minimal input→output scaffold', () => {
     store.createSession(record({ id: 's1', title: 'Empty' }));
-    const result = exportSession({ store, sessionId: 's1', cwd, force: false });
+    const result = exportSession({ store, sessionId: 's1', cwd, homeDir, force: false });
     expect(result.sequenceNumber).toBe(0); // empty transcript ⇒ next seq 0
     const yaml = readFileSync(result.path, 'utf8');
     expect(yaml).toContain('type: input');
@@ -225,7 +281,14 @@ describe('exportSession (2.P)', () => {
       throw cause;
     });
     try {
-      exportSession({ store, sessionId: 's1', cwd, outPath: 'exports/fault.yaml', force: false });
+      exportSession({
+        store,
+        sessionId: 's1',
+        cwd,
+        homeDir,
+        outPath: 'exports/fault.yaml',
+        force: false,
+      });
       expect.fail('native write failure must refuse');
     } catch (error) {
       expect(isCliError(error)).toBe(true);
@@ -247,7 +310,7 @@ describe('exportSession (2.P)', () => {
         throw cause;
       });
       try {
-        exportSession({ store, sessionId: 's1', cwd, force: false });
+        exportSession({ store, sessionId: 's1', cwd, homeDir, force: false });
         expect.fail('write must refuse');
       } catch (error) {
         expect(isCliError(error)).toBe(true);
@@ -266,7 +329,9 @@ describe('exportSession (2.P)', () => {
     vi.spyOn(store, 'loadFull').mockImplementationOnce(() => {
       throw failure;
     });
-    expect(() => exportSession({ store, sessionId: 's1', cwd, force: false })).toThrow(failure);
+    expect(() => exportSession({ store, sessionId: 's1', cwd, homeDir, force: false })).toThrow(
+      failure,
+    );
     expect(vi.mocked(writeFileSync)).not.toHaveBeenCalled();
   });
 });

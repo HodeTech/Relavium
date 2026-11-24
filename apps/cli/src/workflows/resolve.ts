@@ -1,4 +1,5 @@
 import { readFileSync, statSync, type Stats } from 'node:fs';
+import { homedir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 
 import { MAX_SOURCE_CHARS } from '@relavium/core';
@@ -62,7 +63,7 @@ export function resolveYamlSource(
 ): WorkflowSource {
   const candidates = candidatePaths(arg, opts);
   for (const candidate of candidates) {
-    if (!explicitYamlPath(arg)) assertProjectArtifactPath(candidate, opts.homeDir);
+    if (!explicitYamlPath(arg)) assertProjectArtifactPath(candidate, opts.homeDir ?? homedir());
     const yaml = tryRead(candidate, opts.kind, opts.cwd);
     if (yaml !== undefined) {
       return { path: candidate, yaml };

@@ -95,6 +95,27 @@ describe('a file is read through the descriptor it was opened as', () => {
     expect(readAuthoredFile(path, 'a.yaml')).toBe(long);
   });
 
+  it('refuses bytes that are not UTF-8 instead of repairing them into U+FFFD, in fixed words, and keeps a byte-order mark', () => {
+    const path = join(dir, 'bad.yaml');
+    // A lone continuation byte, a truncated multi-byte sequence, an overlong encoding and a UTF-16 surrogate encoded as UTF-8.
+    const malformed = [
+      Buffer.from([0x69, 0x64, 0x3a, 0x20, 0x80, 0x0a]),
+      Buffer.concat([Buffer.from('id: a '), Buffer.from([0xe6, 0x97])]),
+      Buffer.concat([Buffer.from('id: a '), Buffer.from([0xc0, 0xaf])]),
+      Buffer.concat([Buffer.from('id: a '), Buffer.from([0xed, 0xa0, 0x80])]),
+    ];
+    for (const bytes of malformed) {
+      fs.writeFileSync(path, bytes);
+      expect(refusal(path, 'bad.yaml')).toBe('bad.yaml is not valid UTF-8');
+    }
+    // What is well-formed is read as before, a leading byte-order mark included.
+    fs.writeFileSync(
+      path,
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('id: ağ\n')]),
+    );
+    expect(readAuthoredFile(path, 'bad.yaml')).toBe('\ufeffid: ağ\n');
+  });
+
   it('still follows a symbolic link to a regular file, as it always did', () => {
     if (process.platform === 'win32') return;
     fs.writeFileSync(join(dir, 'real.yaml'), 'id: linked\n');
@@ -159,13 +180,42 @@ describe('the words of a refusal are the ones the by-path code used', () => {
 describe.skipIf(!canMakeFifo)(
   'a FIFO is refused, and never waited for (POSIX only: it needs mkfifo)',
   () => {
-    /** A FIFO at `name`, and a child that holds its write end for a second: a reader that opens it BLOCKING is held until it is gone. */
+    /**
+     * A FIFO at `name`, and a child that holds its write end for a second. A reader's open finds a writer already there, so it does not
+     * wait even without `O_NONBLOCK`: these cases prove the refusal comes from the DESCRIPTOR's `fstat` (a FIFO is no regular file),
+     * not that the open cannot block. That is {@link fifoWithLateWriter}'s.
+     */
     function fifoWithWriter(name: string): string {
       const path = join(dir, name);
       execFileSync('mkfifo', [path]);
       writer = spawn('sh', ['-c', 'exec 3>"$1"; sleep 1', 'sh', path], { stdio: 'ignore' });
       return path;
     }
+
+    /**
+     * A FIFO at `name` that NOBODY has open for writing yet: a child opens its write end only after a second. An open for reading
+     * without `O_NONBLOCK` waits for a writer, so it returns only when the child arrives, a second later; with it, the open returns at
+     * once. A regression therefore shows as elapsed time, not as a hung worker (the child bounds the wait to a second).
+     */
+    function fifoWithLateWriter(name: string): string {
+      const path = join(dir, name);
+      execFileSync('mkfifo', [path]);
+      writer = spawn('sh', ['-c', 'sleep 1; exec 3>"$1"; sleep 2', 'sh', path], {
+        stdio: 'ignore',
+      });
+      return path;
+    }
+
+    it(
+      'a FIFO nobody is writing to is refused at once: the open does not wait for a writer (O_NONBLOCK)',
+      { timeout: 6000 },
+      () => {
+        const path = fifoWithLateWriter('idle.yaml');
+        const started = Date.now();
+        expect(refusal(path, 'idle.yaml')).toBe('idle.yaml is not a regular file');
+        expect(Date.now() - started, 'the refusal did not wait for a writer').toBeLessThan(800);
+      },
+    );
 
     it('a FIFO at the path is refused as not a regular file', { timeout: 4000 }, () => {
       const path = fifoWithWriter('pipe.yaml');

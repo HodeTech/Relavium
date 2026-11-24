@@ -1,11 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import {
+  accessSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readSync,
+  renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -55,8 +62,12 @@ const KIND_SUFFIX: Record<AuthoredKind, string> = {
   agent: '.agent.yaml',
 };
 
-/** The project `.relavium/` to author into: the nearest one walking up from `cwd`, else `<cwd>/.relavium`. */
-export function resolveProjectConfigDir(cwd: string, home?: string): string {
+/**
+ * The project `.relavium/` to author into: the nearest one walking up from `cwd`, else `<cwd>/.relavium`. `home` is the operator home
+ * the path rules read, handed in by the caller (a command passes the process's own at its boundary, the Home passes its own): nothing
+ * here falls back to the real one.
+ */
+export function resolveProjectConfigDir(cwd: string, home: string): string {
   return resolveProjectDirectory(cwd, home);
 }
 
@@ -276,7 +287,9 @@ export function buildAuthored(spec: CreateSpec): ParsedAuthored {
  * `stat` then a `readFileSync` by path would let a same-directory owner rename a FIFO over the file between them, and the read would
  * block with no deadline. Symlinks are followed, as they always were. A missing / unreadable file, a non-regular-file target, or one over
  * the source cap is a typed, exit-2 {@link CliError} whose message is path-free of the absolute path (never echo a raw fs error —
- * error-handling.md).
+ * error-handling.md). The bytes must be well-formed UTF-8: a lenient decode would turn each bad sequence into U+FFFD and the canonical
+ * re-serialization would write that into the person's file, so a corrupt prompt would be laundered into one that looks intact (review
+ * P05-2). A byte-order mark is kept as the lenient decode kept it.
  */
 export function readAuthoredFile(path: string, displayPath: string): string {
   let fd: number;
@@ -303,17 +316,21 @@ export function readAuthoredFile(path: string, displayPath: string): string {
     if (stats.size > MAX_SOURCE_CHARS * 4) {
       throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
     }
-    let text: string | undefined;
+    let bytes: Buffer | undefined;
     try {
-      text = readBounded(fd, MAX_SOURCE_CHARS * 4);
+      bytes = readBounded(fd, MAX_SOURCE_CHARS * 4);
     } catch {
       throw new CliError('invalid_invocation', `could not read ${displayPath}`);
     }
     // A file that grew past the ceiling after its size was read is refused as one that was over it.
-    if (text === undefined) {
+    if (bytes === undefined) {
       throw new CliError('invalid_invocation', `${displayPath} exceeds the size limit`);
     }
-    return text;
+    try {
+      return STRICT_UTF8.decode(bytes);
+    } catch {
+      throw new CliError('invalid_invocation', `${displayPath} is not valid UTF-8`);
+    }
   } finally {
     try {
       closeSync(fd);
@@ -323,8 +340,11 @@ export function readAuthoredFile(path: string, displayPath: string): string {
   }
 }
 
-/** The descriptor's bytes as UTF-8, read in bounded chunks; `undefined` as soon as more than `ceiling` bytes are there. */
-function readBounded(fd: number, ceiling: number): string | undefined {
+/** UTF-8 that refuses malformed input instead of repairing it; `ignoreBOM` keeps a leading U+FEFF in the text, as `Buffer#toString` does. */
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/** The descriptor's bytes, read in bounded chunks; `undefined` as soon as more than `ceiling` bytes are there. */
+function readBounded(fd: number, ceiling: number): Buffer | undefined {
   const chunks: Buffer[] = [];
   let total = 0;
   for (;;) {
@@ -335,7 +355,7 @@ function readBounded(fd: number, ceiling: number): string | undefined {
     if (total > ceiling) return undefined;
     chunks.push(buffer.subarray(0, count));
   }
-  return Buffer.concat(chunks, total).toString('utf8');
+  return Buffer.concat(chunks, total);
 }
 
 /**
@@ -359,11 +379,94 @@ function unopenedReason(path: string, displayPath: string): CliError {
 }
 
 /**
- * Atomically write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean
- * exit-2 fault — `wx` fails `EEXIST` so there is no TOCTOU window between a separate existence check and the
- * write; `w` truncates/overwrites under `force`. A non-file target (`EISDIR`/`ENOTDIR`) is also exit 2; other
- * write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a cwd-relative path
- * the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
+ * The refusal for a write target that is a link, a FIFO, a socket or a device. Fixed words: no path, no errno, nothing of the entry's
+ * own. (A directory has its own, older sentence, {@link writeAuthoredFile}'s `EISDIR` one.)
+ */
+const NOT_A_PLAIN_FILE =
+  'The target exists and is a link or not a regular file, so nothing was written. Remove it or choose another path, then retry.';
+
+/**
+ * What the final component of a write target is, looked at WITHOUT following it (`lstat`): `undefined` when nothing is there, the
+ * permission bits of a regular file, and a typed exit-2 {@link CliError} for anything else (the target is never opened first, so a FIFO
+ * with no reader cannot hold the process and a link is never followed). `confineToProjectConfig` canonicalises the directory a target
+ * goes into and says nothing about the target itself; this is the rule for the last component, for every caller that overwrites.
+ */
+export function inspectWriteTarget(
+  path: string,
+  displayPath: string,
+): { readonly mode: number } | undefined {
+  let stats: ReturnType<typeof lstatSync>;
+  try {
+    stats = lstatSync(path);
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') return undefined;
+    throw err;
+  }
+  if (stats.isFile()) return { mode: stats.mode & 0o777 };
+  if (stats.isDirectory()) throw notAFile(displayPath);
+  throw new CliError('invalid_invocation', NOT_A_PLAIN_FILE);
+}
+
+function notAFile(displayPath: string, cause?: unknown): CliError {
+  return new CliError(
+    'invalid_invocation',
+    `cannot write ${displayPath}: the target path is not a file`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/** Create `path` with `content`, failing `EEXIST` if anything is there: `O_EXCL` never follows a link at the final component. */
+function createExclusive(path: string, content: string): void {
+  writeFileSync(path, content, { encoding: 'utf8', flag: 'wx' });
+}
+
+/**
+ * Replace the regular file at `path` with `content`, atomically: a fresh temporary beside it (`wx`, so it never follows a link or reuses
+ * a file), `fsync`ed, then renamed over `path`. A rename replaces the directory entry and never writes through one, so a link put at
+ * `path` after {@link inspectWriteTarget} looked is REPLACED, not followed, and no write ever leaves the directory; a crash leaves the old
+ * file or the new one, never a truncated mix. The new file takes `mode`, the old file's permission bits (`open`'s own are narrowed by the
+ * umask), and a file its owner made read-only is refused (`EACCES`) as an in-place write would have refused it. The temporary is removed
+ * whenever anything fails. A name a hard link shares is replaced and not the link's other names, which an in-place write would have
+ * changed.
+ */
+function replaceRegularFile(path: string, content: string, mode: number): void {
+  const temp = join(dirname(path), `.relavium-write-${randomUUID()}.tmp`);
+  let fd: number | undefined;
+  try {
+    accessSync(path, constants.W_OK);
+    fd = openSync(temp, 'wx', mode);
+    fchmodSync(fd, mode);
+    writeFileSync(fd, content, 'utf8');
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+  } catch (err) {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // already failing: a secondary close error adds nothing
+      }
+    }
+    try {
+      unlinkSync(temp);
+    } catch {
+      // best effort: the temporary may never have been created
+    }
+    throw err;
+  }
+}
+
+/**
+ * Write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean exit-2 fault: `wx` fails `EEXIST`,
+ * so there is no TOCTOU window between a separate existence check and the write, and a link at the target is "already there" too, since
+ * `O_EXCL` never follows one. Under `force` the final component is looked at first, without following it ({@link inspectWriteTarget}):
+ * a regular file is replaced atomically ({@link replaceRegularFile}), nothing at all is created exclusively, and a link, a FIFO or a
+ * device is refused in fixed words with nothing written (review P0-1: a link committed to a repository took `--force` out of the project).
+ * A directory (`EISDIR`/`ENOTDIR`) is also exit 2; other write faults (permissions, disk) propagate. User-facing messages name only
+ * `displayPath` (a cwd-relative path the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile}
+ * (error-handling.md).
  */
 export function writeAuthoredFile(
   path: string,
@@ -373,7 +476,24 @@ export function writeAuthoredFile(
 ): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
+    if (!force) {
+      createExclusive(path, content);
+      return;
+    }
+    const existing = inspectWriteTarget(path, displayPath);
+    if (existing !== undefined) {
+      replaceRegularFile(path, content, existing.mode);
+      return;
+    }
+    try {
+      createExclusive(path, content);
+    } catch (err) {
+      // Something took the name between the look and the create: look once more, and replace it if it is a plain file.
+      if (errnoCode(err) !== 'EEXIST') throw err;
+      const raced = inspectWriteTarget(path, displayPath);
+      if (raced === undefined) throw err;
+      replaceRegularFile(path, content, raced.mode);
+    }
   } catch (err) {
     const code = errnoCode(err);
     if (code === 'EEXIST') {
@@ -383,13 +503,7 @@ export function writeAuthoredFile(
         { cause: err },
       );
     }
-    if (code === 'EISDIR' || code === 'ENOTDIR') {
-      throw new CliError(
-        'invalid_invocation',
-        `cannot write ${displayPath}: the target path is not a file`,
-        { cause: err },
-      );
-    }
+    if (code === 'EISDIR' || code === 'ENOTDIR') throw notAFile(displayPath, err);
     throw err;
   }
 }
@@ -405,8 +519,8 @@ export function resolveById(opts: {
   projectConfigDir: string;
   cwd: string;
   id: string;
-  /** The operator home the catalog's path rules read; default is the process's own. A caller that is handed one passes it on. */
-  homeDir?: string;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
 }): {
   kind: AuthoredKind;
   path: string;
@@ -417,7 +531,7 @@ export function resolveById(opts: {
       projectConfigDir: opts.projectConfigDir,
       cwd: opts.cwd,
       kind: KIND_DIR[kind],
-      ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
+      homeDir: opts.homeDir,
     }).filter((e) => e.valid && e.slug === opts.id);
     const [entry, other] = found;
     // Two valid files of one kind that declare one id: which of them `<id>` means is not for this resolution to guess.
@@ -452,14 +566,14 @@ export function slugExists(opts: {
   cwd: string;
   kind: AuthoredKind;
   slug: string;
-  /** The operator home the catalog's path rules read; default is the process's own. A caller that is handed one (the Home) passes it on. */
-  homeDir?: string;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
 }): boolean {
   return discoverCatalog({
     projectConfigDir: opts.projectConfigDir,
     cwd: opts.cwd,
     kind: KIND_DIR[opts.kind],
-    ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
+    homeDir: opts.homeDir,
   }).some((e) => e.valid && e.slug === opts.slug);
 }
 
@@ -501,13 +615,12 @@ export function assertSlugAvailable(opts: {
   kind: AuthoredKind;
   slug: string;
   force: boolean;
-  /** The operator home the catalog's path rules read; default is the process's own. */
-  homeDir?: string;
+  /** The operator home the catalog's path rules read, handed in by the caller: nothing falls back to the process's own. */
+  homeDir: string;
 }): void {
   const { projectConfigDir, cwd, kind, slug, force, homeDir } = opts;
-  const home = homeDir === undefined ? {} : { homeDir };
   const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
-  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug, ...home })) {
+  if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug, homeDir })) {
     throw new SlugClashError(
       'other-kind',
       kind,
@@ -515,7 +628,7 @@ export function assertSlugAvailable(opts: {
       `'${slug}' already exists as a ${otherKind} in this project — an id must be unique across agents and workflows; rename one.`,
     );
   }
-  if (!force && slugExists({ projectConfigDir, cwd, kind, slug, ...home })) {
+  if (!force && slugExists({ projectConfigDir, cwd, kind, slug, homeDir })) {
     throw new SlugClashError(
       'same-kind',
       kind,

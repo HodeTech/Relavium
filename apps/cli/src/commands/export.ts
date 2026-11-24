@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { assertProjectArtifactPath } from '../config/project-directory.js';
 
@@ -13,7 +14,7 @@ import {
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
-import { stringifyJsonLine, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeInline, stringifyJsonLine } from '../render/sanitize.js';
 
 export interface ExportCommandArgs {
   /** The in-file `id` of the workflow/agent to export (resolved across both project catalogs). */
@@ -58,8 +59,8 @@ export interface ExportPlan {
 export function prepareExport(
   args: ExportCommandArgs,
   deps: Pick<ExportCommandDeps, 'global'> & {
-    /** The operator home the path rules read, for a caller that is handed one (the Home). The command passes none: the process's own. */
-    readonly homeDir?: string | undefined;
+    /** The operator home the path rules read, which has no default here: the command resolves the process's own at its boundary, the Home passes its own. */
+    readonly homeDir: string;
   },
 ): ExportPlan {
   const cwd = deps.global.cwd;
@@ -69,7 +70,7 @@ export function prepareExport(
     projectConfigDir,
     cwd,
     id: args.id,
-    ...(home === undefined ? {} : { homeDir: home }),
+    homeDir: home,
   });
 
   const displayPath = relative(cwd, path);
@@ -83,6 +84,9 @@ export function prepareExport(
       ? join(cwd, authoredFileName(parsed.kind, parsed.slug))
       : resolve(cwd, args.out);
   const targetDisplay = relative(cwd, target);
+  // The rule about global state guards the DEFAULT destination only: `--out` is a path the person typed, and an explicit selection is
+  // theirs to make (commands.md, "Explicit `--config` and `--out` paths retain their selected-file contracts"). What `--out` shares with
+  // every other write is the final-component rule in {@link writeAuthoredFile}: a link or a special file there is never written through.
   if (args.out === undefined) assertProjectArtifactPath(target, home);
   const content = serializeAuthored(parsed);
   return {
@@ -120,7 +124,8 @@ export function commitExport(plan: ExportPlan): void {
  * card show the destination between them, and changes nothing the command prints, returns or throws.
  */
 export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps): ExitCode {
-  const plan = prepareExport(args, deps);
+  // The one place the command reads the process's own home; every rule below is handed it.
+  const plan = prepareExport(args, { global: deps.global, homeDir: deps.homeDir ?? homedir() });
   commitExport(plan);
   const { kind, slug, targetDisplay } = plan;
 
@@ -133,8 +138,9 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
     deps.io.writeOut(`${stringifyJsonLine({ id: slug, kind, path: targetDisplay })}\n`);
   } else {
     // The human line needs the terminal floor for the same reason: every dynamic string written to a terminal
-    // passes `stripTerminalControls` (security-review.md), and this one is user-supplied.
-    deps.io.writeOut(`Exported ${kind} '${slug}' to ${stripTerminalControls(targetDisplay)}\n`);
+    // passes the strip (security-review.md), and this one is user-supplied. `sanitizeInline` is `stripTerminalControls` that also folds a
+    // tab or a line feed (which the strip keeps) to a space, so a name cannot start a second row.
+    deps.io.writeOut(`Exported ${kind} '${slug}' to ${sanitizeInline(targetDisplay)}\n`);
   }
   return EXIT_CODES.success;
 }

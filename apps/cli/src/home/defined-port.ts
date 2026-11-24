@@ -3,6 +3,7 @@ import { lstatSync } from 'node:fs';
 import type { RunStatus } from '@relavium/shared';
 
 import { commitExport, prepareExport, type ExportPlan } from '../commands/export.js';
+import { assertProjectArtifactPath } from '../config/project-directory.js';
 import {
   buildDefinedModel,
   type DefinedOtherPin,
@@ -127,9 +128,14 @@ export function writeFaultReasonOf(cause: unknown): string | undefined {
   return typeof code === 'string' ? WRITE_FAULT_REASONS.get(code) : undefined;
 }
 
-function commitOf(plan: ExportPlan): () => ExportAttempt {
+function commitOf(plan: ExportPlan, deps: ExportPortDeps): () => ExportAttempt {
   return () => {
     try {
+      // The rule about global state, asked again now as the import card's commit asks it: the card stayed open for as long as a person
+      // took, and a link put in the working directory since would send the write into home or global configuration. The shell's
+      // check-to-write gap is microseconds; this one is not, so it is closed here by looking again right before the write. (The card's
+      // destination is always the default one, never `--out`, so the rule the shell applies to it applies here.)
+      assertProjectArtifactPath(plan.target, deps.homeDir);
       commitExport(plan);
     } catch (cause) {
       // A fault the person can act on is a refusal, not the end of the Home: an unwritable directory is the destination's, not ours.
@@ -172,7 +178,7 @@ export function createExportPort(deps: ExportPortDeps): ExportPort {
       return {
         ok: true,
         offer: { kind: plan.kind, slug: plan.slug, destination, bytes: plan.bytes },
-        commit: commitOf(plan),
+        commit: commitOf(plan, deps),
       };
     },
   };

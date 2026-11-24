@@ -49,9 +49,11 @@ describe('own-export descriptor growth', () => {
   let client: DbClient;
   let store: ReturnType<typeof createSessionStore>;
   let cwd: string;
+  /** A temporary operator home: the path rules read it, so no test reaches the real one. */
+  let homeDir: string;
   const maxBytes = MAX_SOURCE_CHARS * 4;
   const exportSession = () =>
-    exportSessionToProject({ store, sessionId: 's1', cwd, projectConfigDir: undefined });
+    exportSessionToProject({ store, sessionId: 's1', cwd, homeDir, projectConfigDir: undefined });
 
   beforeEach(() => {
     hooks.path = '';
@@ -59,6 +61,7 @@ describe('own-export descriptor growth', () => {
     hooks.afterStat = undefined;
     hooks.bytesRead = 0;
     cwd = mkdtempSync(join(tmpdir(), 'relavium-export-growth-'));
+    homeDir = mkdtempSync(join(tmpdir(), 'relavium-export-growth-home-'));
     client = createClient(':memory:');
     runMigrations(client.db);
     store = createSessionStore(client.db);
@@ -89,6 +92,7 @@ describe('own-export descriptor growth', () => {
     hooks.fd = -1;
     client.sqlite.close();
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(homeDir, { recursive: true, force: true });
   });
 
   it('reads at most the existing byte ceiling plus one when an admitted file grows after fstat', () => {

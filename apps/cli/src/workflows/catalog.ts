@@ -8,6 +8,7 @@ import {
   realpathSync,
   statSync,
 } from 'node:fs';
+import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { byCodeUnit } from '@relavium/shared';
 
@@ -194,7 +195,7 @@ function scanCatalogDirectory(opts: {
   readonly homeDir?: string;
 }): CatalogScan | undefined {
   const dir = join(opts.projectConfigDir, opts.kind);
-  assertProjectArtifactPath(dir, opts.homeDir);
+  assertProjectArtifactPath(dir, opts.homeDir ?? homedir());
   let names: readonly string[];
   let root: string;
   try {
@@ -303,7 +304,7 @@ function readCatalogText(
   try {
     const canonical = realpathSync.native(path);
     try {
-      assertProjectArtifactPath(canonical, homeDir);
+      assertProjectArtifactPath(canonical, homeDir ?? homedir());
     } catch {
       return refused(path, rel, 'not an admitted project artifact; check global catalog links');
     }

@@ -11,6 +11,7 @@ import {
 import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
+import { inspectWriteTarget } from '../authoring/authoring.js';
 import { CliError } from '../process/errors.js';
 import { assertProjectArtifactPath, resolveProjectDirectory } from '../config/project-directory.js';
 import {
@@ -49,7 +50,8 @@ export interface ExportSessionOptions {
   readonly sessionId: string;
   /** The base dir a relative `outPath` (or the default `<sessionId>.relavium.yaml`) resolves against — the launch cwd. */
   readonly cwd: string;
-  readonly homeDir?: string;
+  /** The operator home the path rules read, handed in by the caller (the command's resolved one): nothing falls back to the process's own. */
+  readonly homeDir: string;
   /**
    * `--out <path>` override (absolute, or relative to {@link cwd}); the default is `<sessionId>.relavium.yaml`
    * in cwd — keyed on the UNIQUE session id, not the (possibly shared/absent) title, so two sessions never
@@ -101,7 +103,8 @@ export interface ExportToProjectOptions {
   readonly sessionId: string;
   /** The launch cwd — the base for display labels, and for `.relavium/` when there is no project. */
   readonly cwd: string;
-  readonly homeDir?: string;
+  /** The operator home the path rules read, handed in by the caller (the session's resolved one): nothing falls back to the process's own. */
+  readonly homeDir: string;
   /** The discovered `.relavium/` directory; absent ⇒ `<cwd>/.relavium`, created by the write. */
   readonly projectConfigDir: string | undefined;
 }
@@ -314,6 +317,10 @@ function writeScaffold(
     }
     throw storageBoundaryError(err);
   }
+  // Under `force` the target is looked at WITHOUT being followed before it is written: `w` follows a link at the final component, and a
+  // link committed to a repository (or a FIFO, which `w` would wait on) must not take the export anywhere (review P0-1, the same rule as
+  // `writeAuthoredFile`). A swap between this look and the open is not detected: `writeFileForStorage` opens by path.
+  if (force) inspectWriteTarget(path, label);
   try {
     // Atomic create: `wx` fails with EEXIST if the target already exists — no TOCTOU window between a
     // separate existence check and the write; `w` truncates/overwrites under `force`.
