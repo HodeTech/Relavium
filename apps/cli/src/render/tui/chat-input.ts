@@ -142,7 +142,8 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
 }
 
 /** The flags the bracketed-paste gate reads, surface-agnostically — the Home's `state`/store and the ChatApp's
- *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. */
+ *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. The overlay fields are NOT written out by a
+ *  host: they come from its `OverlayFlags` record through `pasteFlagsFrom` (`overlay-flags.ts`), the one place that lists them. */
 export interface PasteEditableFlags {
   readonly running: boolean; // a chat turn is streaming
   readonly shellBusy: boolean; // a `!`-shell command in flight

@@ -17,19 +17,15 @@
  */
 
 import { homeFitsTerminal } from './home-projection.js';
+import { NO_OVERLAYS, stripPausedByOverlay, type OverlayFlags } from './overlay-flags.js';
 
-export interface StripPauseFacts {
+/**
+ * Every fact is one flag of {@link OverlayFlags} (the screen, the six submodes, the exit question and the native action; which of the
+ * record's flags pause the strip is the record's table, `overlay-flags.ts`), plus the mode and the terminal. A flag left out is `false`, and
+ * the Home hands in its whole record.
+ */
+export interface StripPauseFacts extends Partial<OverlayFlags> {
   readonly mode: 'home' | 'loading' | 'chat';
-  readonly screen: boolean;
-  readonly palette: boolean;
-  readonly modelPicker: boolean;
-  readonly effortPicker: boolean;
-  /** A chat's docked sheet is open: `/permissions` or `/agent`. */
-  readonly chatSheet: boolean;
-  readonly search: boolean;
-  readonly mention: boolean;
-  readonly exitGuard: boolean;
-  readonly nativeActionBusy: boolean;
   /** The terminal as the host last told the Home, or `undefined` before it did (assumed big enough). */
   readonly terminal: { readonly columns: number; readonly rows: number } | undefined;
 }
@@ -38,15 +34,7 @@ export interface StripPauseFacts {
 export function stripRefreshPaused(facts: StripPauseFacts): boolean {
   return (
     facts.mode !== 'home' ||
-    facts.screen ||
-    facts.palette ||
-    facts.modelPicker ||
-    facts.effortPicker ||
-    facts.chatSheet ||
-    facts.search ||
-    facts.mention ||
-    facts.exitGuard ||
-    facts.nativeActionBusy ||
+    stripPausedByOverlay({ ...NO_OVERLAYS, ...facts }) ||
     (facts.terminal !== undefined && !homeFitsTerminal(facts.terminal.columns, facts.terminal.rows))
   );
 }

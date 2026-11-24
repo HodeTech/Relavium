@@ -105,6 +105,16 @@ import {
   type InterruptState,
 } from './interrupt-keymap.js';
 import {
+  cardFlagsFrom,
+  holdsCustody,
+  interruptContextFrom,
+  occupiesRows,
+  pasteFlagsFrom,
+  pointerBlocked,
+  promptHidden,
+  type OverlayFlags,
+} from './overlay-flags.js';
+import {
   foldMentionKey,
   mentionOpensAt,
   type MentionReader,
@@ -719,7 +729,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     () => props.modePrompt?.ui.getSnapshot().active === true,
   );
   const acceptsInput = (): boolean =>
-    props.inputEnabled?.() !== false && props.modePrompt?.ui.getSnapshot().active !== true;
+    props.inputEnabled?.() !== false && holdsCustody(liveOverlays());
   const storeRef = useRef(props.store);
   storeRef.current = props.store;
   const [acknowledgement] = useState(() => createTranscriptAcknowledgement(() => storeRef.current));
@@ -881,6 +891,49 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     chatSheetRef.current = next;
     setChatSheet(next);
   };
+  // What owns the keyboard (`overlay-flags.ts`), built in ONE place from the values given: the refs in a handler (a coalesced stdin chunk
+  // sees what an earlier key of the same chunk just opened) and React's state at a render. A stand-alone chat has no screen, no exit-guard
+  // card and no native action, so those three are written out as `false` (never defaulted: a flag added to the record must be decided here
+  // too); the cards are the store's, read now, and the native prompt is the channel's.
+  const overlayFlagsFrom = (
+    open: Readonly<{
+      palette: unknown;
+      search: unknown;
+      mention: unknown;
+      modelPicker: unknown;
+      effortPicker: unknown;
+      chatSheet: unknown;
+    }>,
+    nativePrompt: boolean,
+  ): OverlayFlags => ({
+    palette: open.palette !== undefined,
+    search: open.search !== undefined,
+    mention: open.mention !== undefined,
+    modelPicker: open.modelPicker !== undefined,
+    effortPicker: open.effortPicker !== undefined,
+    chatSheet: open.chatSheet !== undefined,
+    screen: false,
+    exitGuard: false,
+    nativePrompt,
+    nativeActionBusy: false,
+    ...cardFlagsFrom(props.store.getSnapshot()),
+  });
+  const liveOverlays = (): OverlayFlags =>
+    overlayFlagsFrom(
+      {
+        palette: paletteRef.current,
+        search: searchRef.current,
+        mention: mentionRef.current,
+        modelPicker: modelPickerRef.current,
+        effortPicker: effortPickerRef.current,
+        chatSheet: chatSheetRef.current,
+      },
+      props.modePrompt?.ui.getSnapshot().active === true,
+    );
+  const renderedOverlays = overlayFlagsFrom(
+    { palette, search, mention, modelPicker, effortPicker, chatSheet },
+    nativeActive,
+  );
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -1402,13 +1455,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       running: snap.state.status === 'running',
       shellBusy: shellBusyRef.current,
       submitBusy: submitBusyRef.current,
-      paletteOpen: paletteRef.current !== undefined,
-      searchOpen: searchRef.current !== undefined,
-      mentionOpen: mentionRef.current !== undefined,
-      modelPickerOpen: modelPickerRef.current !== undefined,
-      effortPickerOpen: effortPickerRef.current !== undefined,
-      chatSheetOpen: chatSheetRef.current !== undefined,
-      approvalPending: snap.approval !== undefined || snap.review !== undefined,
+      ...pasteFlagsFrom(liveOverlays()),
     });
     // A paste while the permissions sheet waits on a withdrawal drops the question: it is input the sheet does not answer to, so nothing is
     // withdrawn. The agent sheet has no question to drop, and a paste changes nothing there.
@@ -1521,15 +1568,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // of the same chunk just changed. An open card is `card`; the details view closes inside the store and never reaches here.
   const interruptContext = (cardStopped: boolean): InterruptContext => {
     if (cardStopped) return { kind: 'card' };
-    if (
-      paletteRef.current !== undefined ||
-      searchRef.current !== undefined ||
-      mentionRef.current !== undefined ||
-      modelPickerRef.current !== undefined ||
-      effortPickerRef.current !== undefined ||
-      chatSheetRef.current !== undefined
-    )
-      return { kind: 'overlay' };
+    const overlay = interruptContextFrom(liveOverlays(), true); // a chat is always on screen here
+    if (overlay !== undefined) return overlay;
     const busy =
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
@@ -1599,17 +1639,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       const read = mouseReaderRef.current.read(char);
       if (read.kind !== 'none') {
         const mouse = read.kind === 'event' ? read.event : undefined;
-        const overlayOwnsKeyboard =
-          props.store.getSnapshot().review !== undefined ||
-          props.store.getSnapshot().question !== undefined ||
-          props.store.getSnapshot().checkpoint !== undefined ||
-          paletteRef.current !== undefined ||
-          searchRef.current !== undefined ||
-          mentionRef.current !== undefined ||
-          modelPickerRef.current !== undefined ||
-          effortPickerRef.current !== undefined ||
-          chatSheetRef.current !== undefined;
-        if (mouse !== undefined && !overlayOwnsKeyboard) {
+        if (mouse !== undefined && !pointerBlocked(liveOverlays())) {
           if (mouse.kind === 'wheel') {
             const geom = chatLiveGeom();
             const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
@@ -1953,7 +1983,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
   return (
     <>
-      {nativeActive && props.modePrompt !== undefined && (
+      {occupiesRows(renderedOverlays) && props.modePrompt !== undefined && (
         <NativePromptHost
           ui={props.modePrompt.ui}
           color={color}
@@ -1966,7 +1996,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         />
       )}
       <Box
-        display={nativeActive ? 'none' : 'flex'}
+        display={occupiesRows(renderedOverlays) ? 'none' : 'flex'}
         flexDirection="column"
         width={layoutColumns(windowSize.columns)}
         {...(viewport === undefined ? {} : { height: viewport.rows })}
@@ -1993,14 +2023,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           viewport={viewport}
           interruptArmed={interruptArmed}
           copied={copied}
-          paletteOpen={
-            palette !== undefined ||
-            search !== undefined ||
-            mention !== undefined ||
-            modelPicker !== undefined ||
-            effortPicker !== undefined ||
-            chatSheet !== undefined
-          }
+          paletteOpen={promptHidden(renderedOverlays)}
         />
         {/* The docked approval card (ADR-0129) sits below the live region, where the other keyboard-owning
             overlays do; its full view and call list take the screen instead (ChatView is hidden then). */}

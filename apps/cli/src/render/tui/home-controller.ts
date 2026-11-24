@@ -161,6 +161,14 @@ import {
 } from './tui-constants.js';
 import { hostedRunIsLive, type ExitGuardPhase } from './home-projection.js';
 import { stripRefreshPaused } from './strip-pause.js';
+import {
+  activePollPausedByOverlay,
+  cardFlagsFrom,
+  interruptContextFrom,
+  pasteFlagsFrom,
+  screenSlotBlocked,
+  type OverlayFlags,
+} from './overlay-flags.js';
 import { createStripBackoff } from './strip-backoff.js';
 import {
   focusFor,
@@ -332,6 +340,28 @@ export interface HomeControllerState {
   readonly stripFocus: StripFocus | undefined;
   /** The Home can open a gate card (a port is wired): the run view of a parked run then offers `Enter`. */
   readonly gateCards: boolean;
+}
+
+/**
+ * The Home's record of what owns the keyboard, built ONCE from its own state ([ADR-0148](../../../../../docs/decisions/0148-a-user-started-report-setting-or-flow-is-a-centred-popup.md)
+ * §2): every gate of the controller (the screen slot, the paste gate, the interrupt context, the strip's and the Active tab's pauses) and
+ * of its host (`home-app.tsx`) asks `overlay-flags.ts` about this record instead of listing the overlays again. The cards are the live
+ * chat store's, read now. `nativePrompt` is `false` here: the prompt channel is the HOST's, which sets it on top of this record.
+ */
+export function homeOverlayFlags(state: HomeControllerState): OverlayFlags {
+  return {
+    palette: state.palette !== undefined,
+    search: state.search !== undefined,
+    mention: state.mention !== undefined,
+    modelPicker: state.modelPicker !== undefined,
+    effortPicker: state.effortPicker !== undefined,
+    chatSheet: state.chatSheet !== undefined,
+    screen: state.screen !== undefined,
+    exitGuard: state.exitGuard !== undefined,
+    nativePrompt: false,
+    nativeActionBusy: state.nativeActionBusy,
+    ...cardFlagsFrom(state.session?.store.getSnapshot()),
+  };
 }
 
 /**
@@ -985,6 +1015,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /** Whether a chat turn is streaming — paste content (like every other key) is gated mid-turn. */
   const chatRunning = (): boolean =>
     state.mode === 'chat' && state.session?.store.getSnapshot().state.status === 'running';
+  /** The record of what owns the keyboard right now (`overlay-flags.ts`): every gate below asks it, never the state's fields one by one. */
+  const overlayFlags = (): OverlayFlags => homeOverlayFlags(state);
   /** Whether a native bracketed paste (ink 7 `usePaste`) may append to the prompt buffer — only when the main
    *  Home/chat prompt is the active editable target: no build/turn/`!`-shell/submit in flight, no keyboard-owning
    *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`), and
@@ -995,15 +1027,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       running: chatRunning(),
       shellBusy: state.shellBusy,
       submitBusy: state.submitBusy,
-      paletteOpen: state.palette !== undefined,
-      searchOpen: state.search !== undefined,
-      mentionOpen: state.mention !== undefined,
-      modelPickerOpen: state.modelPicker !== undefined,
-      effortPickerOpen: state.effortPicker !== undefined,
-      chatSheetOpen: state.chatSheet !== undefined,
-      approvalPending:
-        state.session?.store.getSnapshot().approval !== undefined ||
-        state.session?.store.getSnapshot().review !== undefined,
+      ...pasteFlagsFrom(overlayFlags()),
     });
   /** The landing is what the person is looking at: the bare Home, with no screen or card in front of it. */
   const landingInFront = (): boolean => state.mode === 'home' && state.screen === undefined;
@@ -1045,8 +1069,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    * the floor (the tab then shows only its one line).
    */
   const activePollPaused = (): boolean =>
-    state.exitGuard !== undefined ||
-    state.nativeActionBusy ||
+    activePollPausedByOverlay(overlayFlags()) ||
     (terminal !== undefined &&
       !sheetCanArm({ columns: terminal.columns, terminalRows: terminal.rows }));
   const onActiveRead = (read: ActiveRead): void => {
@@ -1280,16 +1303,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // ---- The screen slot (ADR-0140 §1) and the run view's ladder (ADR-0139 §5) -------------------------------------------------
   // One slot holds the screen in front of the landing. It is opened in one place and closed in one place, and each takes the
   // interrupt state with it: a window a screen armed must not carry over to whatever replaces it or to the landing behind it.
-  const overlayOpen = (): boolean =>
-    state.palette !== undefined ||
-    state.modelPicker !== undefined ||
-    state.chatSheet !== undefined ||
-    state.search !== undefined ||
-    state.mention !== undefined ||
-    state.effortPicker !== undefined;
   /** Whether the slot may take a screen now: the Home is the landing, with no overlay, no exit-guard card and no ending. */
   const slotAdmits = (): boolean =>
-    !exiting && state.exitGuard === undefined && state.mode === 'home' && !overlayOpen();
+    !exiting && state.mode === 'home' && !screenSlotBlocked(overlayFlags());
   /** The ONE place a screen enters the slot: the interrupt state is dropped, and the strip and the screen read one host snapshot. */
   const putScreen = (screen: HomeScreen, extra: Partial<HomeControllerState> = {}): void => {
     disarmInterrupt();
@@ -3544,15 +3560,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Where the person is. An open card is not a context of its own here: it implies a running turn, and the host settles it (an
   // approval as a rejection, before the abort) in the store before the key reaches the controller.
   const interruptContext = (active: HomeChatSession | undefined): InterruptContext => {
-    if (
-      state.palette !== undefined ||
-      state.modelPicker !== undefined ||
-      state.search !== undefined ||
-      state.mention !== undefined ||
-      (state.effortPicker !== undefined && active !== undefined) ||
-      state.chatSheet !== undefined
-    )
-      return { kind: 'overlay' };
+    const overlay = interruptContextFrom(overlayFlags(), active !== undefined);
+    if (overlay !== undefined) return overlay;
     if (active === undefined) return { kind: 'home', loading: state.mode === 'loading' };
     const busy =
       active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
@@ -3816,6 +3825,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    *   non-null (a stale overlay with no session falls through, never expected);
    * - the docked sheet. `/permissions` (ADR-0137 §2): `Esc` drops a withdrawal's question and then closes, `Ctrl+C` closes, neither
    *   withdraws. `/agent` (ADR-0140 §3): `Esc` and `Ctrl+C` close it, every other key is dropped.
+   *
+   * The routes are ORDERED handlers, not a list of flags, so a new overlay needs its branch here (or in the chat's own key handler, where the
+   * `@`-mention and the reverse search are routed) AND a flag in `overlay-flags.ts`: the record's tests fail until the flag decides its gates.
    */
   const routeOverlayKey = (input: string, key: HomeKeyEvent): boolean => {
     if (state.palette !== undefined) {
@@ -3870,19 +3882,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // token (`PRAGMA data_version`, the in-process generation, the hosted run) and reads the strip only when that moved. It is paused, not
   // stopped, while anything else has the keyboard or the screen, and it is cancelled with the Home's other timers when the Home ends.
   const stripPollPaused = (): boolean =>
-    stripRefreshPaused({
-      mode: state.mode,
-      screen: state.screen !== undefined,
-      palette: state.palette !== undefined,
-      modelPicker: state.modelPicker !== undefined,
-      effortPicker: state.effortPicker !== undefined,
-      chatSheet: state.chatSheet !== undefined,
-      search: state.search !== undefined,
-      mention: state.mention !== undefined,
-      exitGuard: state.exitGuard !== undefined,
-      nativeActionBusy: state.nativeActionBusy,
-      terminal,
-    });
+    stripRefreshPaused({ mode: state.mode, ...overlayFlags(), terminal });
   /** A newer read of the strip: published only when it differs from what the landing shows, so an idle tick never repaints. */
   const applyStripRead = (read: StripRead): void => {
     const parked = withoutExecutingRun(read.parked, deps.hostedRuns?.snapshot());

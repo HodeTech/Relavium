@@ -33,7 +33,25 @@ import type { EditorState } from './chat-input.js';
 import { isInterruptKey } from './interrupt-keymap.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
-import type { GateCardScreen, HomeController, HomeControllerState } from './home-controller.js';
+import {
+  homeOverlayFlags,
+  type GateCardScreen,
+  type HomeController,
+  type HomeControllerState,
+} from './home-controller.js';
+import {
+  cardFlagsFrom,
+  holdsCustody,
+  landingPromptHidden,
+  mouseCapturedFrom,
+  NO_OVERLAYS,
+  noticePagingBlocked,
+  occupiesRows,
+  pointerBlocked,
+  promptHidden,
+  scrollKeysBlocked,
+  type OverlayFlags,
+} from './overlay-flags.js';
 import type { GateCardFrame } from './gate-card-frame.js';
 import { ExitGuardCard, HomeView } from './home-view.js';
 import { RunScreenView } from './run-screen-view.js';
@@ -141,6 +159,8 @@ function ChatRegion(
     reviewClipboard: ClipboardWriter | undefined;
     acknowledgement: TranscriptAcknowledgement;
     editor: EditorState;
+    /** What owns the keyboard, as of this render (`overlay-flags.ts`): the region draws no idle prompt under a submode. */
+    overlays: OverlayFlags;
     palette: PaletteState | undefined;
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
@@ -234,14 +254,7 @@ function ChatRegion(
         viewport={viewport}
         interruptArmed={props.interruptArmed}
         copied={props.copied}
-        paletteOpen={
-          props.palette !== undefined ||
-          props.search !== undefined ||
-          props.mention !== undefined ||
-          props.modelPicker !== undefined ||
-          props.effortPicker !== undefined ||
-          props.chatSheet !== undefined
-        }
+        paletteOpen={promptHidden(props.overlays)}
       />
       {/* The docked approval card (ADR-0129), below the live region like the other overlays. */}
       <ToolReviewHost
@@ -340,6 +353,14 @@ export function routeKeyThroughCards(
 }
 
 /**
+ * The Home host's record of what owns the keyboard: the controller's, with the native prompt channel's `active` on top (the channel is the
+ * HOST's; the controller never sees it). One builder for the render's snapshot and for the live read of a handler.
+ */
+function hostOverlayFlags(state: HomeControllerState, nativePromptActive: boolean): OverlayFlags {
+  return { ...homeOverlayFlags(state), nativePrompt: nativePromptActive };
+}
+
+/**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
  * `home | loading | chat` mode machine. The session state machine lives in {@link HomeController} (a plain
  * external store, unit-tested without ink); `RootApp` is a thin view that subscribes to it, forwards every key to
@@ -360,6 +381,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   getSizeRef.current = getSize;
   const propsRef = useRef(props);
   propsRef.current = props;
+  /** What owns the keyboard NOW: the controller's state and the prompt channel, read at the call (a handler, a custody check), never a render's. */
+  const liveOverlays = (): OverlayFlags =>
+    hostOverlayFlags(
+      controller.getSnapshot(),
+      propsRef.current.nativePrompt?.getSnapshot().active === true,
+    );
   const [nativeAcknowledgement] = useState(() =>
     props.nativePrompt === undefined
       ? undefined
@@ -380,6 +407,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     props.nativePrompt?.subscribe ?? emptyPromptSubscribe,
     props.nativePrompt?.getSnapshot ?? emptyPromptSnapshot,
   );
+  /** What owned the keyboard at this render: every render-time gate below asks it, and the prompt's rows are `prompt`'s own. */
+  const flags = hostOverlayFlags(state, prompt.active);
   const [acknowledgement] = useState(() =>
     createTranscriptAcknowledgement(() => controller.getSnapshot().session?.store),
   );
@@ -414,7 +443,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       hasCustody: () =>
         propsRef.current.inputEnabled?.() !== false &&
         propsRef.current.suspendPort?.isSuspended() !== true &&
-        propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+        holdsCustody(liveOverlays()) &&
         stdout.writable !== false &&
         !stdout.destroyed &&
         !stdout.writableEnded,
@@ -438,7 +467,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       hasCustody: () =>
         propsRef.current.inputEnabled?.() !== false &&
         propsRef.current.suspendPort?.isSuspended() !== true &&
-        propsRef.current.nativePrompt?.getSnapshot().active !== true &&
+        holdsCustody(liveOverlays()) &&
         stdout.writable !== false &&
         !stdout.destroyed &&
         !stdout.writableEnded,
@@ -545,23 +574,12 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // model-picker / effort-picker) — mirroring ChatApp's after-overlays ordering, so an overlay that
   // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
   // no force-follow is needed (parity with `ChatApp`).
-  const noOverlay =
-    state.palette === undefined &&
-    state.search === undefined &&
-    state.mention === undefined &&
-    state.modelPicker === undefined &&
-    state.effortPicker === undefined &&
-    state.chatSheet === undefined &&
-    !prompt.active &&
-    !state.nativeActionBusy;
+  const noOverlay = !scrollKeysBlocked(flags);
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   // Capture the mouse exactly while the CHAT owns the screen — not while an overlay is open over it (a transient
   // state; toggling DECSET per overlay would be churn, and a report there is consumed and ignored anyway).
   const mouseCaptured =
-    props.alternateScreen === true &&
-    state.mode === 'chat' &&
-    !prompt.active &&
-    !state.nativeActionBusy;
+    props.alternateScreen === true && state.mode === 'chat' && mouseCapturedFrom(flags);
   const setMouseCapture = props.setMouseCapture;
   useEffect(() => {
     setMouseCapture?.(mouseCaptured);
@@ -631,8 +649,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const store = session?.store;
     if (
       clipboard === undefined ||
-      props.nativePrompt?.getSnapshot().active === true ||
-      current.nativeActionBusy ||
+      !mouseCapturedFrom(liveOverlays()) ||
       store === undefined ||
       current.mode !== 'chat' ||
       current.session !== session
@@ -653,8 +670,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           current.session !== session ||
           session?.shouldStop() === true ||
           props.inputEnabled?.() === false ||
-          props.nativePrompt?.getSnapshot().active === true ||
-          current.nativeActionBusy
+          !mouseCapturedFrom(liveOverlays())
         )
           return;
         if (outcome.kind === 'written') flashCopied();
@@ -698,11 +714,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     const mouse = read.kind === 'event' ? read.event : undefined;
     if (
       mouse !== undefined &&
-      altChat &&
-      props.nativePrompt?.getSnapshot().active !== true &&
-      controller.getSnapshot().session?.store.getSnapshot().review === undefined &&
-      controller.getSnapshot().session?.store.getSnapshot().question === undefined &&
-      controller.getSnapshot().session?.store.getSnapshot().checkpoint === undefined
+      altChat && // the submodes, as of the last render
+      // The prompt and the cards are read NOW, so a report that arrives in the chunk that opened one is not routed under it.
+      !pointerBlocked({
+        ...NO_OVERLAYS,
+        ...cardFlagsFrom(controller.getSnapshot().session?.store.getSnapshot()),
+        nativePrompt: props.nativePrompt?.getSnapshot().active === true,
+      })
     ) {
       if (mouse.kind === 'wheel') routeWheel(mouse.direction);
       else routeSelection(mouse);
@@ -721,10 +739,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const pagesNotice = (current: HomeControllerState, key: Key): boolean =>
     current.mode === 'home' &&
     current.notice !== undefined &&
-    current.exitGuard === undefined &&
-    current.screen === undefined &&
-    current.palette === undefined &&
-    current.modelPicker === undefined &&
+    !noticePagingBlocked(homeOverlayFlags(current)) &&
     (key.pageUp || key.pageDown);
 
   const routeHomeInput = (input: string, key: Key): boolean => {
@@ -872,10 +887,11 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           reviewCustody={() =>
             props.inputEnabled?.() !== false &&
             props.suspendPort?.isSuspended() !== true &&
-            props.nativePrompt?.getSnapshot().active !== true
+            holdsCustody(liveOverlays())
           }
           reviewClipboard={props.reviewClipboard}
           editor={state.input}
+          overlays={flags}
           palette={state.palette}
           search={state.search}
           mention={state.mention}
@@ -889,7 +905,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           viewport={
             props.alternateScreen === true
               ? {
-                  rows: chatViewportRows(prompt, size),
+                  rows: chatViewportRows(flags, prompt, size),
                   cols: size.cols,
                   scroll,
                   // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
@@ -907,7 +923,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           historyEntries={state.historyEntries}
           attachments={state.attachments}
           copied={copied}
-          promptHeight={chatPromptHeight(prompt, size)}
+          promptHeight={chatPromptHeight(flags, prompt, size)}
         />
         {nativeAcknowledgement && (
           <NativePromptView
@@ -966,7 +982,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     <Box
       flexDirection="column"
       width={layoutColumns(size.cols)}
-      {...(prompt.active
+      {...(occupiesRows(flags)
         ? { height: nativePromptFits(size) ? size.rows : 1, overflowY: 'hidden' }
         : {})}
     >
@@ -979,7 +995,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         />
       )}
       {/* A screen of the slot (ADR-0140 §1) takes the body of the landing: the strip and the prompt are not drawn while it is open. */}
-      {!prompt.active && state.screen?.kind === 'run-view' && (
+      {!occupiesRows(flags) && state.screen?.kind === 'run-view' && (
         <RunScreenView
           runId={state.screen.runId}
           store={state.screen.store}
@@ -993,7 +1009,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           color={color}
         />
       )}
-      {!prompt.active && state.screen?.kind === 'gate-card' && (
+      {!occupiesRows(flags) && state.screen?.kind === 'gate-card' && (
         <GateCardScreenView
           screen={state.screen}
           frame={cardFrame}
@@ -1004,16 +1020,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           color={color}
         />
       )}
-      {!prompt.active && state.screen?.kind === 'tab-host' && (
+      {!occupiesRows(flags) && state.screen?.kind === 'tab-host' && (
         <TabHostView state={state.screen.host} color={color} columns={size.cols} rows={size.rows} />
       )}
-      {!prompt.active && state.screen?.kind === 'help' && (
+      {!occupiesRows(flags) && state.screen?.kind === 'help' && (
         <SheetLinesView
           lines={helpSheetLines({ columns: size.cols, terminalRows: size.rows })}
           color={color}
         />
       )}
-      {!prompt.active && state.screen === undefined && (
+      {!occupiesRows(flags) && state.screen === undefined && (
         <HomeView
           onFrame={(node) => {
             homeFrame.commit(state, node, () => app.waitUntilRenderFlush());
@@ -1026,7 +1042,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
           cols={Number.isFinite(size.cols) ? size.cols : 0}
           rows={size.rows}
           color={color}
-          paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+          paletteOpen={landingPromptHidden(flags)}
           {...(state.palette === undefined
             ? {}
             : { palette: { commands: HOME_PALETTE_COMMANDS, state: state.palette } })}
@@ -1124,14 +1140,22 @@ type NativeSize = Parameters<typeof nativePromptFits>[0];
  * The rows the chat's transcript viewport keeps in the alternate screen: the terminal's own with no native card open, what the card leaves
  * while one is, and one row when the card does not fit (the card then owns the screen).
  */
-function chatViewportRows(prompt: NativePromptSnapshot, size: NativeSize): number {
-  if (!prompt.active) return size.rows;
+function chatViewportRows(
+  flags: OverlayFlags,
+  prompt: NativePromptSnapshot,
+  size: NativeSize,
+): number {
+  if (!occupiesRows(flags)) return size.rows;
   return nativePromptFits(size) ? Math.max(1, size.rows - promptRows(prompt, size.cols)) : 1;
 }
 
 /** The rows the chat region is bounded to while a native card is open (two fewer than the viewport keeps), or `undefined` with none open. */
-function chatPromptHeight(prompt: NativePromptSnapshot, size: NativeSize): number | undefined {
-  if (!prompt.active) return undefined;
+function chatPromptHeight(
+  flags: OverlayFlags,
+  prompt: NativePromptSnapshot,
+  size: NativeSize,
+): number | undefined {
+  if (!occupiesRows(flags)) return undefined;
   return nativePromptFits(size) ? Math.max(0, size.rows - promptRows(prompt, size.cols) - 2) : 0;
 }
 
