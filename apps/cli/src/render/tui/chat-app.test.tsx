@@ -16,7 +16,7 @@ import {
   INLINE_TRANSCRIPT_BOUND,
   assertRenderStoreAgree,
 } from './session-view-model.js';
-import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor, withoutStyles } from './harness-util.js';
 
 /**
  * Mounted-`ChatApp` component tests (2.6.F Step 3, ADR-0068 part f) — the harness's first end-to-end renders of a
@@ -1074,7 +1074,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       const h = mountWithClipboard(seedThree(), copied);
       await copyOnce(h);
       expect(copied).toHaveLength(1); // the write happened
-      const rows = (h.lastFrame() ?? '').split('\n');
+      const rows = withoutStyles(h.lastFrame() ?? '').split('\n');
       const toastRow = rows.findIndex((r) => r.includes('Sent to terminal clipboard'));
       const footerRow = rows.findIndex((r) => r.includes('turns'));
       expect(toastRow).toBeGreaterThanOrEqual(0);

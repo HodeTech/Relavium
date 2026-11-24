@@ -39,6 +39,7 @@ export function observe(entry: SurfaceBase, mount: Observable): CellResult {
   const below = isBelowFloor(variant) && entry.belowFloor !== 'renders';
   const violations: Violation[] = checkProperties(observation, {
     exitKey: below ? undefined : entry.exitKey,
+    selectedRow: below ? undefined : entry.selectedRow,
   });
   if (below) {
     const expected = entry.belowFloor ?? DEFAULT_BELOW_FLOOR;

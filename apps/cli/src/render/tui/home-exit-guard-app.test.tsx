@@ -13,7 +13,7 @@ import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunHostSnapshot } from '../../home/run-host.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
-import { settleFrames, waitFor } from './harness-util.js';
+import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import { glyphOf } from './glyphs.js';
 import { HOSTED_RUN_EXIT_BOUND_MS } from './tui-constants.js';
 
@@ -85,7 +85,7 @@ describe('the exit-guard card through RootApp', () => {
     harness.stdin.write(CTRL_D);
     await waitFor(() => controller.getSnapshot().exitGuard === 'confirm');
     await waitFor(() => (harness.lastFrame() ?? '').includes('[Ctrl+Y] stop the run and leave'));
-    const lines = (harness.lastFrame() ?? '').split('\n');
+    const lines = withoutStyles(harness.lastFrame() ?? '').split('\n');
     const title = lines.find((line) => line.includes('A workflow run is executing'));
     expect(title?.trim(), 'a glyph, then the words, on one row').toBe(
       `${glyphOf('warning', true)} A workflow run is executing: run-0001.`,
@@ -94,7 +94,7 @@ describe('the exit-guard card through RootApp', () => {
     harness.stdin.write(CTRL_Y);
     await waitFor(() => (harness.lastFrame() ?? '').includes('Stopping the run…'));
     expect(
-      (harness.lastFrame() ?? '')
+      withoutStyles(harness.lastFrame() ?? '')
         .split('\n')
         .find((line) => line.includes('Stopping the run…'))
         ?.trim(),

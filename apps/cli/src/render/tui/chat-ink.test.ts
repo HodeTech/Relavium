@@ -126,7 +126,7 @@ describe('idleHint — what the idle prompt tells the person to press', () => {
     // At an empty prompt: `/` opens the palette, `/exit` is a typed command of the chat's registry (named, not a key), `Ctrl+C` twice ends the session.
     expect(listedKeys(idleHint(false, true))).toEqual(['[/]', '/exit', '[Ctrl+C]']);
     expect(shouldOpenPalette('/', {}, false, 0)).toBe(true);
-    expect(commandsOf('chat').map((command) => command.name)).toContain('exit');
+    expect(commandsOf('standalone-chat').map((command) => command.name)).toContain('exit');
     const first = pressInterrupt(DISARMED, { kind: 'prompt', hasText: false }, now);
     expect(first.action).toBe('arm-hint');
     expect(pressInterrupt(first.state, { kind: 'prompt', hasText: false }, now + 1).action).toBe(

@@ -167,6 +167,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The populated Home with a strip row focused (the ↓ flow)',
     exitKey: 'Esc',
     landmark: 'Esc return to prompt',
+    selectedRow: 'ship-it  ·  failed',
     setup: () => ({ snapshot: POPULATED_SNAPSHOT }),
     open: async (m) => {
       await m.until(() => m.homePainted());
@@ -192,6 +193,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The / palette on the landing',
     exitKey: 'Esc',
     landmark: 'select · Enter run',
+    selectedRow: '/run  ',
     open: async (m) => {
       m.key('/');
       await m.until(() => m.controller.getSnapshot().palette !== undefined);
@@ -225,6 +227,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Defined tab (workflows)',
     exitKey: 'Esc',
     landmark: 'alpha',
+    selectedRow: 'beta  1 node',
     setup: { deps: { defined: DEFINED_PORT } },
     open: openTab('defined'),
   },
@@ -234,6 +237,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Active tab (runs in flight)',
     exitKey: 'Esc',
     landmark: 'hostrun1',
+    selectedRow: 'running  hostrun1',
     setup: { deps: { active: ACTIVE_PORT } },
     open: async (m) => {
       await openTab('active')(m);
@@ -292,6 +296,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Agents tab (the project’s agents)',
     exitKey: 'Esc',
     landmark: 'reviewer',
+    selectedRow: 'reviewer  Reviewer',
     setup: { deps: { agents: AGENTS_PORT } },
     open: openTab('agents'),
   },
@@ -301,6 +306,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Sessions tab (saved conversations)',
     exitKey: 'Esc',
     landmark: 'Fix the flaky test',
+    selectedRow: 'Fix the flaky test  chat',
     setup: { deps: { sessions: SESSIONS_PORT } },
     open: openTab('sessions'),
   },
@@ -310,6 +316,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The Permissions tab (remembered commands)',
     exitKey: 'Esc',
     landmark: 'npm, 1 argument',
+    selectedRow: 'npm, 1 argument',
     setup: { deps: { permissions: PROJECT_PERMISSIONS_PORT } },
     open: openTab('permissions'),
   },
@@ -409,6 +416,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The /models picker (the next session’s default)',
     exitKey: 'Esc',
     landmark: 'Claude Sonnet 4.5',
+    selectedRow: 'Claude Sonnet 4.5 · ',
     setup: { deps: { models: homeModelsPort } },
     open: async (m) => {
       await typeCommand(m, '/models');
@@ -484,6 +492,7 @@ export const HOME_SURFACES: readonly HomeSurface[] = [
     title: 'The /resume picker',
     exitKey: 'Esc',
     landmark: 'Resume a session',
+    selectedRow: 'Fix the flaky test · ',
     setup: NATIVE,
     open: async (m) => {
       openResumePicker(m);

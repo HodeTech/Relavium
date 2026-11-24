@@ -94,7 +94,7 @@ const names = (commands: readonly { readonly name: string }[]): string[] =>
 /** The three surfaces. A `Record` over the type makes a surface added to it a compile error here, not a surface the tests forget. */
 const SURFACE_SET: Readonly<Record<PaletteSurface, true>> = {
   home: true,
-  chat: true,
+  'standalone-chat': true,
   'home-chat': true,
 };
 const PALETTE_SURFACES = Object.keys(SURFACE_SET) as readonly PaletteSurface[];
@@ -170,17 +170,17 @@ const POPUP_NOT_BUILT_YET: readonly string[] = [
   'home:run',
   'home:import',
   'home:pricing',
-  'chat:help',
-  'chat:export',
-  'chat:agent',
-  'chat:workflows',
-  'chat:cost',
-  'chat:doctor',
-  'chat:mode',
-  'chat:effort',
-  'chat:details',
-  'chat:permissions',
-  'chat:models',
+  'standalone-chat:help',
+  'standalone-chat:export',
+  'standalone-chat:agent',
+  'standalone-chat:workflows',
+  'standalone-chat:cost',
+  'standalone-chat:doctor',
+  'standalone-chat:mode',
+  'standalone-chat:effort',
+  'standalone-chat:details',
+  'standalone-chat:permissions',
+  'standalone-chat:models',
   'home-chat:help',
   'home-chat:export',
   'home-chat:agent',
@@ -279,8 +279,8 @@ describe('the command table: one definition per name, with the fields every comm
 
   it('keeps each surface’s groups in the surface’s own order', () => {
     expect(groupsOf('home')).toEqual(['work', 'setup', 'check', 'end']);
-    expect(groupsOf('chat')).toEqual(['model', 'context', 'inspect', 'takeaway', 'end']);
-    expect(groupsOf('home-chat')).toEqual(groupsOf('chat'));
+    expect(groupsOf('standalone-chat')).toEqual(['model', 'context', 'inspect', 'takeaway', 'end']);
+    expect(groupsOf('home-chat')).toEqual(groupsOf('standalone-chat'));
     // Each group is one run of the list: it is never split, and the groups never go back (a group not of the surface would sort first).
     for (const surface of PALETTE_SURFACES) {
       const sequence = commandDefinitionsOf(surface).map(
@@ -307,7 +307,7 @@ describe('a command the Home opens carries a typed marker, not an empty handler 
     for (const definition of OPENED) {
       expect(definition.placements.home, `/${definition.name} is on the Home`).toBeDefined();
       expect(
-        definition.placements.chat,
+        definition.placements['standalone-chat'],
         `/${definition.name} is on no stand-alone chat`,
       ).toBeUndefined();
     }
@@ -334,7 +334,7 @@ describe('the order of each surface is the contract (ADR-0145 §7.3)', () => {
   });
 
   it('a stand-alone chat: Model, Context, Inspect, Take away, End (20 entries)', () => {
-    expect(names(commandDefinitionsOf('chat'))).toEqual(CHAT_ORDER);
+    expect(names(commandDefinitionsOf('standalone-chat'))).toEqual(CHAT_ORDER);
     expect(names(REPL_COMMANDS)).toEqual(CHAT_ORDER);
     expect(CHAT_ORDER).toHaveLength(20);
   });
@@ -434,16 +434,16 @@ describe('what a surface says (ADR-0145 §7.4, §8)', () => {
 
   it('/exit says where it goes on each surface', () => {
     expect(description('exit', 'home')).toBe('Leave Relavium.');
-    expect(description('exit', 'chat')).toBe('End the chat session.');
+    expect(description('exit', 'standalone-chat')).toBe('End the chat session.');
     expect(description('exit', 'home-chat')).toBe('Leave this chat and go back to the Home.');
   });
 
   it('/doctor on the Home does not advertise --deep, which the Home refuses (N5); a chat does', () => {
     expect(description('doctor', 'home')).toBe('Check your setup.');
-    expect(description('doctor', 'chat')).toBe(
+    expect(description('doctor', 'standalone-chat')).toBe(
       'Check your setup; --deep also validates keys and MCP.',
     );
-    expect(description('doctor', 'home-chat')).toBe(description('doctor', 'chat'));
+    expect(description('doctor', 'home-chat')).toBe(description('doctor', 'standalone-chat'));
   });
 
   it('/pricing names no shell command', () => {
@@ -457,24 +457,28 @@ describe('what a surface says (ADR-0145 §7.4, §8)', () => {
       // The row is `› /mode  ` then the words, and a row is cut at the terminal's width.
       expect(`› /mode  ${words}`.length, `${surface}: ${words}`).toBeLessThanOrEqual(80);
     }
-    expect(description('mode', 'chat')).toBe('Choose the mode; Shift+Tab changes this chat only.');
+    expect(description('mode', 'standalone-chat')).toBe(
+      'Choose the mode; Shift+Tab changes this chat only.',
+    );
   });
 
   it('a name shared by the Home and a chat is one definition with a placement each, and the words may differ', () => {
     for (const name of ['workflows', 'permissions', 'help']) {
       const definition = DEFINITION_BY_NAME.get(name);
       expect(definition?.placements.home, `/${name} on the Home`).toBeDefined();
-      expect(definition?.placements.chat, `/${name} in a chat`).toBeDefined();
+      expect(definition?.placements['standalone-chat'], `/${name} in a chat`).toBeDefined();
       expect(definition?.placements['home-chat'], `/${name} in the Home's chat`).toBeDefined();
     }
-    expect(description('workflows', 'home')).not.toBe(description('workflows', 'chat'));
-    expect(description('permissions', 'home')).not.toBe(description('permissions', 'chat'));
+    expect(description('workflows', 'home')).not.toBe(description('workflows', 'standalone-chat'));
+    expect(description('permissions', 'home')).not.toBe(
+      description('permissions', 'standalone-chat'),
+    );
     // The derived lists hold ONE command object per (name, surface), with that surface's words.
     expect(HOME_PALETTE_COMMANDS.find((c) => c.name === 'workflows')?.description).toBe(
       description('workflows', 'home'),
     );
     expect(REPL_COMMANDS_BY_NAME.get('workflows')?.description).toBe(
-      description('workflows', 'chat'),
+      description('workflows', 'standalone-chat'),
     );
   });
 });
@@ -487,7 +491,9 @@ describe('availability: a command that cannot act is shown dim with its reason, 
       enabled: false,
       reason: 'no conversation to clear',
     });
-    expect(availabilityOf('clear', 'chat', { hasSession: true })).toEqual({ enabled: true });
+    expect(availabilityOf('clear', 'standalone-chat', { hasSession: true })).toEqual({
+      enabled: true,
+    });
     expect(availabilityOf('clear', 'home-chat', { hasSession: true })).toEqual({ enabled: true });
   });
 
@@ -528,7 +534,7 @@ describe('availability: a command that cannot act is shown dim with its reason, 
   });
 
   it('says a command the surface does not offer is not available there', () => {
-    expect(availabilityOf('providers', 'chat', {}).enabled).toBe(false);
+    expect(availabilityOf('providers', 'standalone-chat', {}).enabled).toBe(false);
     expect(availabilityOf('nope', 'home', {}).enabled).toBe(false);
   });
 
@@ -575,7 +581,7 @@ describe('a command typed where the surface does not offer it (ADR-0145 §7.4)',
   it.each([
     // The chat the Home hosts IS in the Home, so its line only names it; a stand-alone chat is not, so its line says how to get there.
     [
-      'chat',
+      'standalone-chat',
       (name: string) => `/${name} is available from the Home: start Relavium without arguments.`,
     ],
     ['home-chat', (name: string) => `/${name} is available from the Home.`],
@@ -591,7 +597,7 @@ describe('a command typed where the surface does not offer it (ADR-0145 §7.4)',
   );
 
   it('points /resume out of a stand-alone chat (it has no saved list) but not out of the chat the Home hosts', () => {
-    expect(homeOnlyPointer('resume', 'chat')).toBe(
+    expect(homeOnlyPointer('resume', 'standalone-chat')).toBe(
       '/resume is available from the Home: start Relavium without arguments.',
     );
     expect(homeOnlyPointer('resume', 'home-chat')).toBeUndefined();
@@ -604,7 +610,7 @@ describe('a command typed where the surface does not offer it (ADR-0145 §7.4)',
           homeOnlyPointer(definition.name, surface),
           `/${definition.name} on ${surface}`,
         ).toBeUndefined();
-    expect(homeOnlyPointer('nope', 'chat')).toBeUndefined();
+    expect(homeOnlyPointer('nope', 'standalone-chat')).toBeUndefined();
     expect(homeOnlyPointer('cost', 'home')).toBeUndefined();
     expect(homeOnlyPointer('providers', 'home')).toBeUndefined();
   });
@@ -624,7 +630,7 @@ describe('a command typed where the surface does not offer it (ADR-0145 §7.4)',
 describe('the exports that were arrays are derived from the one table', () => {
   it('REPL_COMMANDS is the stand-alone chat’s order, and /help and the unknown-slash hint follow it', () => {
     expect(names(REPL_COMMANDS)).toEqual(CHAT_ORDER);
-    expect(names(commandsOf('chat'))).toEqual(CHAT_ORDER);
+    expect(names(commandsOf('standalone-chat'))).toEqual(CHAT_ORDER);
     expect(replCommandList()).toBe(CHAT_ORDER.map((name) => `/${name}`).join(', '));
     const rows = formatReplHelp()
       .split('\n')
@@ -650,7 +656,7 @@ describe('the exports that were arrays are derived from the one table', () => {
   it('keeps one object per (name, surface), so a lookup and a list agree', () => {
     for (const command of REPL_COMMANDS)
       expect(REPL_COMMANDS_BY_NAME.get(command.name)).toBe(command);
-    expect(commandsOf('chat')[0]).toBe(REPL_COMMANDS[0]);
+    expect(commandsOf('standalone-chat')[0]).toBe(REPL_COMMANDS[0]);
   });
 
   it('freezes the table, its placements and the derived lists', () => {

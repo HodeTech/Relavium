@@ -14,6 +14,7 @@ import {
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import type { Surface } from '../render/surface.js';
 import { keyLabel, keyToken, LEGEND_SEPARATOR } from '../render/tui/legend.js';
 import {
   KeychainUnavailableError,
@@ -65,7 +66,7 @@ export interface ProviderResolver {
    * The surface this resolver's diagnostics are written for, so a message built OUTSIDE the resolver (the session pre-flight) names the
    * same remedy `keyFor` does. Absent on a scripting path and on an injected stub, where the shell wording is the right one.
    */
-  readonly credentialSurface?: CredentialSurface;
+  readonly credentialSurface?: Surface;
 }
 
 /** Both native setup hosts disclose the resolver's pinned recipient, never a fresh registry read. */
@@ -142,19 +143,15 @@ export function providerKeyEnvVar(id: ProviderId): RelaviumKeyEnvName {
   return RELAVIUM_PROVIDER_KEY_ENV_VARS[id];
 }
 
-/**
- * Where a credential message is read. `home` is the bare Home (`/providers` opens setup); `home-chat` is a chat the Home hosts, which answers
- * `/providers` with a pointer only, so its remedy names the way back; `standalone-chat` is `relavium chat`, which cannot open setup itself
- * (it opens it once, at its start, and only when no provider is usable); `shell` is a script or a plain command.
- */
-export type CredentialSurface = 'home' | 'home-chat' | 'standalone-chat' | 'shell';
-
 /** Fixed, value-free diagnostics with a remedy reachable in the actual host. */
 export function providerKeyAvailabilityMessage(
   id: ProviderId,
   availability: ProviderKeyAvailability,
-  surface: CredentialSurface = 'shell',
+  surface: Surface = 'shell',
 ): string {
+  // Where a credential message is read decides its remedy: `home` is the bare Home (`/providers` opens setup); `home-chat` is a chat the Home
+  // hosts, which answers `/providers` with a pointer only, so its remedy names the way back; `standalone-chat` is `relavium chat`, which cannot
+  // open setup itself (it opens it once, at its start, and only when no provider is usable); `shell` is a script or a plain command.
   // The `home`, `home-chat` and `standalone-chat` remedies name no shell command (ADR-0146 §6, MVP-11): the Home has `/providers`; the chat
   // it hosts is left with Ctrl+C twice; a stand-alone chat has no setup of its own to open (starting it again opens one only when NO provider
   // is usable, which is not this case when another one works), so it names the Home, which `relavium` alone starts (ADR-0145 §7.4).
@@ -211,7 +208,7 @@ export function providerRowHint(availability: ProviderKeyAvailability): string {
  * {@link createProviderResolver}'s `keyFor` and the session pre-flight (MVP-A4), so the user reads the same
  * remedy whichever caught it first.
  */
-export function missingKeyMessage(id: ProviderId, surface?: CredentialSurface): string {
+export function missingKeyMessage(id: ProviderId, surface?: Surface): string {
   return providerKeyAvailabilityMessage(
     id,
     { status: 'missing', keychainHealth: 'unknown' },
@@ -480,7 +477,7 @@ export interface ProviderResolverOptions {
   readonly validatedFetch?: FetchLike;
   /** Absent on scripting paths: eligible standard variables are used directly. Interactive hosts share one policy. */
   readonly standardEnvPolicy?: Pick<StandardEnvKeyPolicy, 'allows'>;
-  readonly credentialSurface?: CredentialSurface;
+  readonly credentialSurface?: Surface;
 }
 
 export function createProviderResolver(

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
 
 import type { CommandCardFacts } from '../../chat/command-facts.js';
-import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
+import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
 import type { ClipboardWriter } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 import { EMPTY_COMMAND_REASON, UNSHOWABLE_COMMAND_REASON, createChatStore } from './chat-store.js';
@@ -65,7 +65,7 @@ function fixture(
   host: 'chat' | 'home',
   alternate: boolean,
   color: boolean,
-  output = new OwnedTtyOutput(),
+  output = new PlainTtyOutput(),
   ports: { suspendPort?: SuspendPort; reviewClipboard?: ClipboardWriter } = {},
   approvalGuard?: ApprovalGuard,
 ) {
@@ -201,7 +201,7 @@ function fixture(
 const FAST: ApprovalGuard = { settleMs: 50, quietMs: 30, typeaheadMs: 150, lockoutMs: 200 };
 
 describe.each(['chat', 'home'] as const)('the docked command card %s (ADR-0118 §1)', (host) => {
-  const fast = () => fixture(host, true, false, new OwnedTtyOutput(), {}, FAST);
+  const fast = () => fixture(host, true, false, new PlainTtyOutput(), {}, FAST);
   const wait = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => setTimeout(resolve, ms));
   /** The card has been on screen past the fast dwell and the keyboard is quiet. */
@@ -607,7 +607,7 @@ describe.each(['chat', 'home'] as const)(
       });
       return (f.lastFrameWith('A command is waiting') ?? '').replace(/\s+/gu, ' ');
     };
-    const fast = () => fixture(host, true, false, new OwnedTtyOutput(), {}, FAST);
+    const fast = () => fixture(host, true, false, new PlainTtyOutput(), {}, FAST);
     const denied = [{ outcome: 'reject', denialClass: 'mode', reason: UNSHOWABLE_COMMAND_REASON }];
 
     it('a preview that holds nothing is refused before any card opens: nobody approves an argv they cannot see', async () => {

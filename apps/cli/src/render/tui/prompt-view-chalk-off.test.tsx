@@ -63,8 +63,9 @@ describe('the prompt cursor where chalk is off', () => {
     expect(frame.replace(SGR, '')).toBe('> abcdefghij');
   });
 
-  it('with colour on keeps ink’s own inverse (chalk off here, so it prints plain: the sequence is the host’s to add)', () => {
-    // The two branches are told apart by what they emit when chalk cannot: ink's `inverse` adds nothing, the literal pair would.
-    expect(frameOf('hello', 5, true)).not.toContain(INVERSE_OPEN);
+  it('with colour on is the same cell, in the same bytes: the cursor is not what colour switches, and chalk being off does not take it', () => {
+    // The cell is written by the one emphasis rule (`emphasis.ts`) in both modes, so a terminal where chalk is at 0 still has a cursor.
+    expect(frameOf('hello', 5, true)).toBe(frameOf('hello', 5, false));
+    expect(frameOf('hello', 5, true)).toContain(`hello${INVERSE_OPEN} ${INVERSE_CLOSE}`);
   });
 });

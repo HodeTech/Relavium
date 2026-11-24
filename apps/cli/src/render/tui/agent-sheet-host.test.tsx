@@ -11,7 +11,7 @@ import { AGENT_UNREADABLE } from './agent-sheet.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
-import { bracketed, settleFrames } from './harness-util.js';
+import { bracketed, settleFrames, withoutStyles } from './harness-util.js';
 
 /**
  * The `/agent` sheet mounted in the standalone `ChatApp` (ADR-0140 §3): that it takes the typed command instead of sending it, owns every
@@ -87,7 +87,8 @@ function mount(options: {
   return { view, store };
 }
 
-const frame = (view: ReturnType<typeof renderCapture>): string => view.lastFrame() ?? '';
+const frame = (view: ReturnType<typeof renderCapture>): string =>
+  withoutStyles(view.lastFrame() ?? '');
 const SHEET = 'Agent · relavium-chat';
 
 async function openAgent(view: ReturnType<typeof renderCapture>, typed = '/agent'): Promise<void> {

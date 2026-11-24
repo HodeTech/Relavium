@@ -6,6 +6,8 @@ import type { RunHostSnapshot } from '../../home/run-host.js';
 import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
+import { Emph, EmphText } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import type { StatusColor } from './format.js';
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import {
@@ -136,14 +138,14 @@ export function ExitGuardCard(
   return (
     <Box flexDirection="column">
       {lines.map((line, row) => (
-        <Text
+        <EmphText
           key={line}
           {...(row === 0 ? colorProps(props.color, 'yellow') : dimProps(props.color))}
-          {...(row === 0 ? { bold: true } : {})}
+          emphasis={row === 0 ? 'bold' : undefined}
           wrap="truncate-end"
         >
           {line}
-        </Text>
+        </EmphText>
       ))}
     </Box>
   );
@@ -176,8 +178,10 @@ function Section(
             {...(props.tint === undefined ? {} : colorProps(props.color, props.tint))}
             wrap="truncate-end"
           >
-            {row.selected === true ? `${glyphOf('selection', !props.color)} ` : '  '}
-            {row.line}
+            <Emph kinds={row.selected === true ? SELECTED_ROW : undefined}>
+              {row.selected === true ? `${glyphOf('selection', !props.color)} ` : '  '}
+              {sanitizeInline(row.line)}
+            </Emph>
           </Text>
           {row.hint !== undefined && (
             <Text {...dimProps(props.color)} wrap="truncate-end">
@@ -454,6 +458,7 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
   ).map((row) => ({
     key: `parked:${row.runId}`,
     line: `${runFocused(row.runId) ? `${glyph('selection')} ` : '  '}${parkedRunLabel(row, runFocused(row.runId), cols - PARKED_ROW_INDENT_COLUMNS, nowMs)}`,
+    selected: runFocused(row.runId),
     overdue: parkedRunOverdue(row, nowMs),
   }));
   const unreadable = takeAttention(snapshot.unreadableRunIds, 3);
@@ -544,20 +549,20 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
         // `color === false` covers both `NO_COLOR` and `--no-color`, and takes the ASCII glyphs with it (ADR-0068).
         <Box flexDirection="column">
           {bannerLines(cols, !color).map((line) => (
-            <Text
+            <EmphText
               key={line.id}
               {...(line.kind === 'tagline' ? dimProps(color) : colorProps(color, 'cyan'))}
-              {...(line.kind === 'wordmark' ? { bold: true } : {})}
+              emphasis={line.kind === 'wordmark' ? 'bold' : undefined}
               wrap="truncate-end"
             >
               {line.text}
-            </Text>
+            </EmphText>
           ))}
         </Box>
       ) : (
-        <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
+        <EmphText {...colorProps(color, 'cyan')} emphasis="bold" wrap="truncate-end">
           relavium
-        </Text>
+        </EmphText>
       )}
 
       {runRow !== undefined && (
@@ -588,7 +593,9 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
                     {...colorProps(color, row.overdue ? 'red' : 'yellow')}
                     wrap="truncate-end"
                   >
-                    {row.line}
+                    <Emph kinds={row.selected === true ? SELECTED_ROW : undefined}>
+                      {sanitizeInline(row.line)}
+                    </Emph>
                   </Text>
                 ))}
                 {/* #W15-15: a run whose event log cannot be read used to render as an ordinary run with
@@ -616,8 +623,10 @@ function HomeViewBody(props: Readonly<HomeViewProps>): ReactElement {
                 ))}
                 {failed.map((f) => (
                   <Text key={f.key} {...colorProps(color, 'red')} wrap="truncate-end">
-                    {f.selected === true ? `${glyph('selection')} ` : '  '}
-                    {f.line}
+                    <Emph kinds={f.selected === true ? SELECTED_ROW : undefined}>
+                      {f.selected === true ? `${glyph('selection')} ` : '  '}
+                      {sanitizeInline(f.line)}
+                    </Emph>
                   </Text>
                 ))}
               </Box>

@@ -10,7 +10,8 @@ import {
 } from './native-prompt-channel.js';
 import { NativePromptHost } from './native-prompt-host.js';
 import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
-import { settleFrames, waitFor } from './harness-util.js';
+import { stylesOver } from './emphasis-test-kit.js';
+import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 
 afterEach(cleanup);
 
@@ -50,7 +51,8 @@ async function open(
   Object.defineProperty(h.stdout, 'columns', { value: size.cols });
   Object.defineProperty(h.stdout, 'rows', { value: size.rows });
   h.stdout.emit('resize');
-  const frame = (): string => h.lastFrame() ?? '';
+  const rawFrame = (): string => h.lastFrame() ?? '';
+  const frame = (): string => withoutStyles(rawFrame());
   const lines = (): string[] => frame().split('\n');
   const visible = (): boolean => {
     try {
@@ -70,7 +72,7 @@ async function open(
     await waitFor(() => ui.getSnapshot().selected === selected);
     await waitFor(visible, 40);
   };
-  return { ui, flow, h, answer, frame, lines, visible, press };
+  return { ui, flow, h, answer, frame, rawFrame, lines, visible, press };
 }
 
 type Opened = Awaited<ReturnType<typeof open>>;
@@ -81,6 +83,23 @@ async function close(o: Opened): Promise<void> {
   o.ui.dispose();
 }
 const cursorRows = (o: Opened): string[] => o.lines().filter((line) => line.startsWith('> '));
+
+describe('the row under the cursor of a select card', () => {
+  it('is the selected row, bold and inverse, and the rows around it are neither (colour is off here, and the cursor is `>`)', async () => {
+    const o = await open(workflows(5));
+    try {
+      const raw = o.rawFrame();
+      expect(stylesOver(raw, '> wf-00')).toEqual(['bold', 'inverse']);
+      expect(stylesOver(raw, 'wf-01') ?? []).toEqual([]);
+      expect(stylesOver(raw, 'wf-04') ?? []).toEqual([]);
+      await o.press(DOWN, 1);
+      expect(stylesOver(o.rawFrame(), '> wf-01')).toEqual(['bold', 'inverse']);
+      expect(stylesOver(o.rawFrame(), 'wf-00') ?? []).toEqual([]);
+    } finally {
+      await close(o);
+    }
+  });
+});
 
 describe('a select card with more options than the terminal holds (LAUNCH-4)', () => {
   it('draws a window of a 60-workflow list at 80x24, with a `v` marker and no refusal, and the keys are delivered', async () => {

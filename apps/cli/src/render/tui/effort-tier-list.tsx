@@ -5,6 +5,8 @@ import { type ReasoningEffort } from '@relavium/shared';
 
 import { effortRowLabel, projectEffortToRow } from '../../chat/effort-notice.js';
 import { sanitizeInline } from './chat-projection.js';
+import { Emph } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import { blankStatusCell, glyphOf, statusCellOf } from './glyphs.js';
 import { exitKey, legend } from './legend.js';
 import { colorProps, dimProps } from './projection.js';
@@ -74,8 +76,12 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
         const { label, hint } = effortRowLabel(model, effort);
         return (
           <Text key={effort} {...rowColor} wrap="truncate-end">
-            {`${isSelected ? glyphOf('selection', !color) : ' '} ${isCurrent ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${label}${isCurrent ? ' · current' : ''} · `}
-            <Text {...dimProps(color)}>{hint}</Text>
+            <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
+              {`${isSelected ? glyphOf('selection', !color) : ' '} ${isCurrent ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${label}${isCurrent ? ' · current' : ''} · `}
+            </Emph>
+            <Text {...dimProps(color)}>
+              <Emph kinds={isSelected ? 'inverse' : undefined}>{hint}</Emph>
+            </Text>
           </Text>
         );
       })}

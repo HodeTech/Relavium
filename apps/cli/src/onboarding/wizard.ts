@@ -200,7 +200,7 @@ export interface OnboardingDeps {
     readonly endpointContext: (id: ProviderId) => string;
     /** Only a first usable-source setup chooses a starter; key maintenance preserves model preferences. */
     readonly selectStarterDefault?: boolean;
-    readonly surface?: 'home' | 'standalone-chat';
+    readonly surface?: SetupSurface;
   };
   /** The clack slice — omit for the real prompts; a test injects a scripted one. */
   readonly prompter?: ClackOnboardingDeps;
@@ -659,7 +659,7 @@ function buildRetryPrompt(
 }
 
 /** The recovery after a setup that could not finish: a pointer to the way back in, in actions the host has. */
-function nativeSetupRemedy(surface: SetupSurface): string {
+function nativeSetupRemedy(surface: SetupSurface | undefined): string {
   return surface === 'standalone-chat'
     ? 'Restart this chat to open provider setup, or run /doctor to check your setup.'
     : 'Open /providers to connect a key, or run /doctor to check your setup.';

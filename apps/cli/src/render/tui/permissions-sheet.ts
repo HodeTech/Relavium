@@ -116,8 +116,11 @@ const marker = (): string => `${glyph('selection')} `;
 const NO_MARKER = '  ';
 const CHIP_GAP = '   ';
 
-/** Whether the sheet shows a chat's two lists or only the project's (the bare Home, a bare `relavium permissions`). */
-export type SheetSurface = 'chat' | 'project';
+/**
+ * What the sheet is FOR: a chat's two lists, or only the project's (the bare Home, a bare `relavium permissions`). Not the `Surface` the CLI
+ * runs on (a chat's sheet is opened from `standalone-chat` and `home-chat` alike), so it is a scope, not a surface.
+ */
+export type SheetScope = 'chat' | 'project';
 
 /** One selectable row: a remembered command or a session approval. */
 export type SheetEntry = PermissionEntry;
@@ -128,7 +131,7 @@ export type SheetMessage = WithdrawAnswer;
 const notice = (text: string): SheetMessage => ({ tone: 'note', text });
 
 export interface PermissionsSheetState {
-  readonly surface: SheetSurface;
+  readonly surface: SheetScope;
   /** The chat's mode, for the title and the note; `undefined` where there is no chat. */
   readonly mode: ChatMode | undefined;
   readonly snapshot: PermissionsSnapshot;
@@ -156,7 +159,7 @@ export function sheetEntries(snapshot: PermissionsSnapshot): readonly SheetEntry
 
 export function initialPermissionsSheetState(
   snapshot: PermissionsSnapshot,
-  surface: SheetSurface,
+  surface: SheetScope,
   mode: ChatMode | undefined,
   now: number,
 ): PermissionsSheetState {

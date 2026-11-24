@@ -35,6 +35,11 @@ export interface SheetSpan {
   readonly from: number;
   readonly to: number;
   readonly role: SheetRole;
+  /**
+   * The stretch is the selected item of a line that holds several (the current tab of the strip): it carries the selection marker, so it is
+   * also drawn as the selected row is, bold and inverse (ADR-0145 §5). A line that is one item as a whole says so by its kind (`selected`).
+   */
+  readonly selected?: true;
 }
 
 export interface SheetLine {

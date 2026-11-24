@@ -13,6 +13,7 @@ import {
 } from '../../history/node-run-fixture.js';
 import { createRunDetailLoader } from '../../history/run-detail-source.js';
 import type { HomeRunRow, HomeSnapshot } from '../../home/home-store.js';
+import { withoutStyles } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -120,9 +121,11 @@ function mount() {
     onError,
     detailOf,
     landingFrameAcknowledged,
-    frame: () => harness.lastFrame() ?? '',
+    frame: () => withoutStyles(harness.lastFrame() ?? ''),
     selectedLine: () =>
-      (harness.lastFrame() ?? '').split('\n').find((line) => line.startsWith('> ')) ?? '',
+      withoutStyles(harness.lastFrame() ?? '')
+        .split('\n')
+        .find((line) => line.startsWith('> ')) ?? '',
   };
 }
 

@@ -291,7 +291,7 @@ describe('a word that is a chat’s is not the Home’s (the table has no entry 
   // the chat's words, and the ones the Home does not offer are the chat-only ones.
   const CHAT_ONLY = [
     ...new Set(
-      (['chat', 'home-chat'] as const).flatMap((surface) =>
+      (['standalone-chat', 'home-chat'] as const).flatMap((surface) =>
         commandDefinitionsOf(surface).map((definition) => definition.name),
       ),
     ),

@@ -73,6 +73,7 @@ export function chatSurfaces(definitions: readonly ChatSurfaceDefinition[]): Cha
         title: `${definition.title} (${host === 'chat' ? 'in the Home' : 'stand-alone chat'})`,
         exitKey: definition.exitKey,
         landmark: definition.landmark,
+        selectedRow: definition.selectedRow,
         belowFloor: definition.belowFloor,
         variants: definition.variants,
         knownFailure: [
@@ -237,6 +238,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The / palette, laid out upwards from the prompt',
     exitKey: 'Esc',
     landmark: 'select · Enter run',
+    selectedRow: '/models  ',
     belowFloor: 'renders',
     knownFailure: {
       chat: HOSTED_CHAT_PALETTE_OVERFLOWS_INLINE,
@@ -252,6 +254,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The /models picker',
     exitKey: 'Esc',
     landmark: 'Claude Sonnet 4.5',
+    selectedRow: 'Claude Sonnet 4.5 · ',
     belowFloor: 'renders',
     setup: setupWith({ models: true, seedModel: true }),
     open: typeLineAndWait('/models', 'Claude Sonnet 4.5'),
@@ -261,6 +264,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The /effort picker',
     exitKey: 'Esc',
     landmark: 'Reasoning effort',
+    selectedRow: 'on · ',
     belowFloor: 'renders',
     setup: setupWith({ effort: true }),
     open: typeLineAndWait('/effort', 'Reasoning effort'),
@@ -270,6 +274,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The docked /permissions sheet',
     exitKey: 'Esc',
     landmark: 'Permissions · ask mode',
+    selectedRow: 'npm, 1 argument',
     setup: setupWith({ permissions: CHAT_PERMISSIONS }),
     open: typeLineAndWait('/permissions', 'Permissions · ask mode'),
   },
@@ -333,6 +338,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The agent’s question card (ask_user)',
     exitKey: 'Esc',
     landmark: 'Which file should I change?',
+    selectedRow: 'alpha.ts',
     open: async (m) => {
       m.store.requestQuestion(QUESTION).catch(() => undefined);
       await m.until(() => m.text().includes('Which file should I change?'));
@@ -368,6 +374,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The /details list of the tool calls',
     exitKey: 'Esc',
     landmark: 'edit_file',
+    selectedRow: 'src/app.ts',
     open: async (m) => {
       finishToolCall(m);
       m.store.openDetails();
@@ -395,6 +402,7 @@ export const CHAT_SURFACES: readonly ChatSurface[] = chatSurfaces([
     title: 'The @-mention file completion',
     exitKey: 'Esc',
     landmark: 'README.md',
+    selectedRow: 'src/',
     setup: setupWith({ mentionReader: MENTION_READER }),
     open: async (m) => {
       m.key('@');

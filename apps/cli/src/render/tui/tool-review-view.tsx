@@ -41,6 +41,8 @@ import {
 import { glyph, glyphOf, withGlyphForm } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { itemsRow, rowSegments, type LegendRow } from './legend-row.js';
+import { EmphText } from './emphasis-view.js';
+import { emphasisDescription, SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import type { SheetRole } from './sheet-frame.js';
 import { colorProps, dimProps } from './projection.js';
 import {
@@ -404,21 +406,35 @@ function approvalRule(columns: number): string {
   return `${rule}${RULE_LABEL}${rule.repeat(Math.max(1, columns - 2 - RULE_LABEL.length))}`;
 }
 
-/** Colour a key legend by the role its builder gave each stretch: allow green, deny red, a stop yellow, other keys cyan, the words dim. */
-export function keyTone(role: SheetRole, color: boolean): Record<string, unknown> {
+/** The colour of a key stretch by the role its builder gave it: allow green, deny red, a stop yellow, other keys cyan, the words dim; nothing with colour off. */
+function keyColour(role: SheetRole, color: boolean): Record<string, unknown> {
   if (!color) return {};
   switch (role) {
     case 'ok':
-      return { color: 'green', bold: true };
+      return { color: 'green' };
     case 'danger':
-      return { color: 'red', bold: true };
+      return { color: 'red' };
     case 'warn':
-      return { color: 'yellow', bold: true };
+      return { color: 'yellow' };
     case 'strong':
-      return { color: 'cyan', bold: true };
+      return { color: 'cyan' };
     case 'dim':
       return { dimColor: true };
   }
+}
+
+/** The weight of a key stretch, with colour on and off alike: a key is bold, the words around it are not. */
+function keyEmphasis(role: SheetRole): EmphasisSet | undefined {
+  return role === 'dim' ? undefined : 'bold';
+}
+
+/**
+ * A key legend's stretch as a description: its colour (none with colour off) and its weight, which is there with colour off too. The view
+ * draws the colour as a prop and the weight with the one emphasis rule ({@link keyColour}, {@link keyEmphasis}); the description is what
+ * a test and the legend golden read.
+ */
+export function keyTone(role: SheetRole, color: boolean): Record<string, unknown> {
+  return { ...keyColour(role, color), ...emphasisDescription(keyEmphasis(role)) };
 }
 
 /**
@@ -445,16 +461,20 @@ function KeyRow({
 }: Readonly<{ row: LegendRow; color: boolean; question?: boolean }>): ReactElement {
   if (question)
     return (
-      <Text wrap="truncate-end" bold>
+      <EmphText wrap="truncate-end" emphasis="bold">
         {row.text}
-      </Text>
+      </EmphText>
     );
   return (
     <Text wrap="truncate-end">
       {keyed(rowSegments(row), (segment) => segment.text).map(({ key, item: segment }) => (
-        <Text key={key} {...keyTone(segment.role, color)}>
+        <EmphText
+          key={key}
+          {...keyColour(segment.role, color)}
+          emphasis={keyEmphasis(segment.role)}
+        >
           {segment.text}
-        </Text>
+        </EmphText>
       ))}
     </Text>
   );
@@ -475,12 +495,9 @@ function cardRowText(
   if (label === 'field value') return `  ${withoutLabel(row, label) || '(empty)'}`;
   return cardBodyRow(row, kind);
 }
-function cardRowProps(
-  label: string | undefined,
-  kind: ReviewPage['kinds'][number],
-  color: boolean,
-): Record<string, unknown> {
-  return label === 'field name' ? { bold: true } : rowTone(kind, color);
+/** A call's field name is bold on the card, with colour on and off alike; every other row has only its colour. */
+function cardRowEmphasis(label: string | undefined): EmphasisSet | undefined {
+  return label === 'field name' ? 'bold' : undefined;
 }
 
 /** One diff row as drawn on the card: context rows lose the `=` framing mark and are dimmed. */
@@ -577,16 +594,21 @@ function ReviewCardBody({
         {approvalRule(columns)}
       </Text>
       {keyed(titleRows, (row) => row).map(({ key, item: row }) => (
-        <Text key={key} bold>
+        <EmphText key={key} emphasis="bold">
           {row}
-        </Text>
+        </EmphText>
       ))}
       {keyed(page?.rows ?? [], (row) => row).map(({ key, item: row, index }) => {
         const kind = page?.kinds[index] ?? 'meta';
+        const label = page?.labels[index];
         return (
-          <Text key={key} {...cardRowProps(page?.labels[index], kind, color)}>
-            {cardRowText(row, page?.labels[index], kind) || ' '}
-          </Text>
+          <EmphText
+            key={key}
+            {...(label === 'field name' ? {} : rowTone(kind, color))}
+            emphasis={cardRowEmphasis(label)}
+          >
+            {cardRowText(row, label, kind) || ' '}
+          </EmphText>
         );
       })}
       {review.facts === undefined && (
@@ -698,14 +720,19 @@ function ReviewCallList({
   );
   return (
     <>
-      <Text bold wrap="truncate-end">
+      <EmphText emphasis="bold" wrap="truncate-end">
         {view.title}
-      </Text>
+      </EmphText>
       {view.empty !== undefined && <Text wrap="truncate-end">{view.empty}</Text>}
       {keyed(view.rows, (row) => row.text).map(({ key, item: row }) => (
-        <Text key={key} wrap="truncate-end" {...callRowProps(row, color)}>
+        <EmphText
+          key={key}
+          wrap="truncate-end"
+          {...callToneProps(row.tone, color)}
+          emphasis={row.selected ? SELECTED_ROW : undefined}
+        >
           {row.text}
-        </Text>
+        </EmphText>
       ))}
       {view.status.length > 0 && (
         <Text wrap="truncate-end" {...dimProps(color)}>
@@ -726,11 +753,6 @@ function callToneProps(tone: CallListRow['tone'], color: boolean): Record<string
   return {};
 }
 
-function callRowProps(row: CallListRow, color: boolean): Record<string, unknown> {
-  const tone = callToneProps(row.tone, color);
-  return row.selected ? { ...tone, bold: true } : tone;
-}
-
 /** A body row of the full view: diff rows as the card draws them, a call's fields as a name and an indented value. */
 function bodyRow(
   row: string,
@@ -738,8 +760,13 @@ function bodyRow(
   label: string,
   color: boolean,
   continued = false,
-): { readonly text: string; readonly props: Record<string, unknown> } {
-  if (label === 'field name') return { text: withoutLabel(row, label), props: { bold: true } };
+): {
+  readonly text: string;
+  readonly props: Record<string, unknown>;
+  readonly emphasis?: EmphasisSet;
+} {
+  if (label === 'field name')
+    return { text: withoutLabel(row, label), props: {}, emphasis: 'bold' };
   if (label === 'field value') return { text: `  ${withoutLabel(row, label)}`, props: {} };
   // The rows of a wrapped target all start with its label; the later ones are indented under it, as the card does, so the
   // path does not read as several.
@@ -780,9 +807,9 @@ function ReviewScreen({
   return (
     <>
       {keyed(chrome.header, (row) => row).map(({ key, item: row, index }) => (
-        <Text key={key} bold={index === 0} wrap="truncate-end">
+        <EmphText key={key} emphasis={index === 0 ? 'bold' : undefined} wrap="truncate-end">
           {row}
-        </Text>
+        </EmphText>
       ))}
       {chrome.hasTarget && (
         <Text wrap="truncate-end" {...dimProps(color)}>
@@ -805,9 +832,9 @@ function ReviewScreen({
         return (
           // Not cut by the renderer: a row is fitted to its page by the projection, and one that were wider would wrap, make the
           // frame taller than the terminal and be refused by the measured acknowledgement — never silently hide what it shows.
-          <Text key={key} {...drawnRow.props}>
+          <EmphText key={key} {...drawnRow.props} emphasis={drawnRow.emphasis}>
             {drawnRow.text || ' '}
-          </Text>
+          </EmphText>
         );
       })}
       {Array.from({ length: Math.max(0, body - drawn) }, (_, index) => (

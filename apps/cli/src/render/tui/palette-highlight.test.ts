@@ -21,7 +21,7 @@ import { foldPaletteKey, openPalette, type OpenPalette } from './palette-reducer
  * them, so `/res` in a stand-alone chat landed on `/clear` and `Enter` ran it, `/su` landed on `/compact` (which spends tokens), `/hom` on
  * `/exit` and `/ini` on `/trim` (which drops the older messages, and was not in the ending set). A new file.
  */
-const SURFACES: readonly PaletteSurface[] = ['home', 'chat', 'home-chat'];
+const SURFACES: readonly PaletteSurface[] = ['home', 'standalone-chat', 'home-chat'];
 /** Every state a host builds the rows from, per surface: with and without a key, saved conversations and a running turn. */
 const CONTEXTS: Readonly<Record<PaletteSurface, readonly PaletteContext[]>> = {
   home: [
@@ -29,7 +29,7 @@ const CONTEXTS: Readonly<Record<PaletteSurface, readonly PaletteContext[]>> = {
     { hasSession: false, hasKey: true, hasSavedSessions: false, turnRunning: false },
     { hasSession: false, hasKey: false, hasSavedSessions: false, turnRunning: false },
   ],
-  chat: [
+  'standalone-chat': [
     { hasSession: true, hasKey: true, turnRunning: false },
     { hasSession: true, hasKey: true, turnRunning: true },
   ],
@@ -122,10 +122,10 @@ describe('the highlight of a typed query (A2)', () => {
 
   // The queries of the review, one by one, on the surfaces where each landed on an ending row.
   describe.each([
-    ['a stand-alone chat: /res reached /clear', 'chat', ['res', 'resu', 'resum']],
+    ['a stand-alone chat: /res reached /clear', 'standalone-chat', ['res', 'resu', 'resum']],
     [
       'both chats: /sta, /sav and /fr reached /clear',
-      'chat',
+      'standalone-chat',
       ['sta', 'start', 'sav', 'save', 'fr', 'fre', 'fres', 'fresh'],
     ],
     [
@@ -135,7 +135,7 @@ describe('the highlight of a typed query (A2)', () => {
     ],
     [
       'both chats: /su and /end reached /compact, which spends tokens',
-      'chat',
+      'standalone-chat',
       ['su', 'sum', 'summ', 'summa', 'summar', 'summari', 'end'],
     ],
     [
@@ -149,7 +149,11 @@ describe('the highlight of a typed query (A2)', () => {
       ['hom', 'home', 'leav', 'leave', 'go'],
     ],
     ['the bare Home: /rel reached /exit', 'home', ['rel']],
-    ['a chat: /ini and /sa reached /trim, which drops the older messages', 'chat', ['ini', 'sa']],
+    [
+      'a chat: /ini and /sa reached /trim, which drops the older messages',
+      'standalone-chat',
+      ['ini', 'sa'],
+    ],
     ['the Home-hosted chat: /ini and /sa reached /trim', 'home-chat', ['ini', 'sa']],
   ] as const)('%s', (_why, surface, queries) => {
     it.each(queries)('/%s highlights no ending, spending or dropping row', (query) => {
@@ -163,7 +167,7 @@ describe('the highlight of a typed query (A2)', () => {
   });
 
   it('answers NO_HIGHLIGHT, and Enter then answers as it does for a query that matches nothing: a run with no command', () => {
-    const entries = buildPaletteEntries('chat', { hasSession: true, hasKey: true });
+    const entries = buildPaletteEntries('standalone-chat', { hasSession: true, hasKey: true });
     let palette: OpenPalette = openPalette(entries, 'up');
     for (const char of 'res') {
       const step = foldPaletteKey(char, {}, palette);
@@ -179,7 +183,7 @@ describe('the highlight of a typed query (A2)', () => {
   });
 
   it('still highlights an ending row for the start of its name, and an exact name wins', () => {
-    const chat = buildPaletteEntries('chat', { hasSession: true, hasKey: true });
+    const chat = buildPaletteEntries('standalone-chat', { hasSession: true, hasKey: true });
     for (const [query, name] of [
       ['clear', 'clear'],
       ['tri', 'trim'],
@@ -193,7 +197,7 @@ describe('the highlight of a typed query (A2)', () => {
   });
 
   it('prefers a safe row that can act to any ending one, as before', () => {
-    const chat = buildPaletteEntries('chat', { hasSession: true, hasKey: true });
+    const chat = buildPaletteEntries('standalone-chat', { hasSession: true, hasKey: true });
     for (const query of ['e', 'ex', 'c', 'co', 't']) {
       const rows = filterPaletteEntries(chat, query);
       const name = nameOf(rows, bestMatchIndex(rows, query));

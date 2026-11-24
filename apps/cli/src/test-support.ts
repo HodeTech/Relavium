@@ -469,3 +469,20 @@ export class OwnedTtyOutput extends Socket implements NodeJS.WriteStream {
     return [this.columns, this.rows];
   }
 }
+
+/**
+ * {@link OwnedTtyOutput} with the styling taken out of every chunk it receives, for a test that asks a frame for its WORDS. The host writes
+ * bold and inverse into its text whatever the colour setting is (`render/tui/emphasis.ts`), a terminal draws them in no column, and a bold
+ * key (`Esc`) splits a sentence (`Esc stops the turn`) in the raw bytes. A test about the styling itself reads an {@link OwnedTtyOutput}.
+ */
+export class PlainTtyOutput extends OwnedTtyOutput {
+  override _write(
+    chunk: unknown,
+    encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    // eslint-disable-next-line no-control-regex -- the point of the pattern is the escape byte
+    const plain = typeof chunk === 'string' ? chunk.replace(/\u001b\[[0-9;]*m/gu, '') : chunk;
+    super._write(plain, encoding, callback);
+  }
+}

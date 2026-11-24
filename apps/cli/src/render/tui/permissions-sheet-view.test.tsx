@@ -79,13 +79,13 @@ describe('PermissionsSheetView with colour on', () => {
 
   it('draws the hint dim with its key in red, and the legend with the keys apart from the words', () => {
     const text = frame(open(), true);
-    // the dim stretch is closed (ESC[22m) before the key, so the key is bold red on its own, not red inside a dimmed line
+    // the dim stretch is closed (ESC[22m) before the key, so the key is red and bold on its own, not red inside a dimmed line
     expect(lineWith(text, 'to withdraw it: auto mode')).toMatch(
-      new RegExp(`${ESC}\\[2mPress ${ESC}\\[22m${ESC}\\[1m${ESC}\\[31m\\[d\\]`, 'u'),
+      new RegExp(`${ESC}\\[2mPress ${ESC}\\[22m${ESC}\\[31m${ESC}\\[1m\\[d\\]`, 'u'),
     );
     const legend = lineWith(text, 'select');
     expect(legend).toContain(`${BOLD}↑/↓`);
-    expect(legend).toMatch(new RegExp(`${ESC}\\[31m\\[d\\] / Del`, 'u'));
+    expect(legend).toMatch(new RegExp(`${ESC}\\[31m${ESC}\\[1m\\[d\\] / Del`, 'u'));
     expect(legend).toContain(`${BOLD}Esc`);
     expect(legend).toContain(`${DIM} withdraw`);
   });
@@ -95,9 +95,9 @@ describe('PermissionsSheetView with colour on', () => {
     const row = lineWith(text, '› npm, 1 argument');
     expect(row).toContain(YELLOW);
     expect(row).toContain(`${BOLD}Enter`);
-    expect(lineWith(text, 'Withdraw npm, 1 argument')).toContain(`${BOLD}${YELLOW}`);
+    expect(lineWith(text, 'Withdraw npm, 1 argument')).toContain(`${YELLOW}${BOLD}`);
     expect(lineWith(text, 'Any other key keeps it.')).toContain(BOLD);
-    expect(lineWith(text, 'Esc')).toMatch(new RegExp(`${ESC}\\[33mEnter`, 'u'));
+    expect(lineWith(text, 'Esc')).toMatch(new RegExp(`${ESC}\\[33m${ESC}\\[1mEnter`, 'u'));
   });
 
   it('draws a withdrawal’s answer by its tone: done in green with a tick, a failure in red with a cross, a note in yellow', () => {

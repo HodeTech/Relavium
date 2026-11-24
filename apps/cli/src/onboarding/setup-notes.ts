@@ -4,6 +4,8 @@
  * importing the wizard's prompt library.
  */
 
+import type { Surface } from '../render/surface.js';
+
 /**
  * The titles of the notes that say what a step IS (the first-run sentence, where the key goes), not what happened. They are shown above the
  * card while it is open and mean nothing once it has closed, so {@link leftoverSetupNote} never lets one of them stand as the notice the
@@ -27,13 +29,13 @@ export function leftoverSetupNote(note: string | undefined): string | undefined 
 }
 
 /** The surfaces that open the native setup: the Home (which has `/providers`) and a stand-alone `relavium chat` (which has not). */
-export type SetupSurface = 'home' | 'standalone-chat' | undefined;
+export type SetupSurface = Extract<Surface, 'home' | 'standalone-chat'>;
 
 /**
  * What a skipped first run says, in one line (MVP-11, ADR-0146 §6): that it was a skip, and how to come back to it. The same words whether
  * the skip came from `Esc`, `Ctrl+C` or the `Skip setup` row of a failed check.
  */
-export function setupSkippedNotice(surface: SetupSurface): string {
+export function setupSkippedNotice(surface: SetupSurface | undefined): string {
   return surface === 'standalone-chat'
     ? 'Setup skipped · restart this chat to open provider setup any time'
     : 'Setup skipped · /providers connects a provider any time';

@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import type { RunHostSnapshot } from '../../home/run-host.js';
+import { EmphText } from './emphasis-view.js';
 import { withGlyphForm } from './glyphs.js';
 import { RunApp } from './RunApp.js';
 import { layoutColumns } from './layout-columns.js';
@@ -62,9 +63,9 @@ export function RunScreenView(props: Readonly<RunScreenViewProps>): ReactElement
         </Text>
       ) : (
         <>
-          <Text {...colorProps(color, model.tone)} bold wrap="truncate-end">
+          <EmphText {...colorProps(color, model.tone)} emphasis="bold" wrap="truncate-end">
             {model.header}
-          </Text>
+          </EmphText>
           {model.status !== undefined && (
             <Text
               {...(model.phase === 'cancelling' ? colorProps(color, 'yellow') : dimProps(color))}

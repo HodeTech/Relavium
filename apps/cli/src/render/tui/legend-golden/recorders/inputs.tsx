@@ -1,5 +1,6 @@
 import { legendStates } from '../frames.js';
 import { label, type Producer, type Recorder } from '../golden.js';
+import type { PaletteSurface } from '../../../../commands/repl-commands.js';
 import { INITIAL_REVERSE_SEARCH, reverseSearchExtendQuery } from '../../input-history.js';
 import { MentionView } from '../../mention-view.js';
 import { buildPaletteEntries, filterPaletteEntries } from '../../palette-entries.js';
@@ -31,8 +32,8 @@ const palette: Recorder = () => {
   const out: Record<string, readonly string[]> = {};
   for (const [surface, layout] of [
     ['home', 'down'],
-    ['chat', 'up'],
-  ] as const satisfies readonly (readonly ['home' | 'chat', PaletteLayout])[]) {
+    ['standalone-chat', 'up'],
+  ] as const satisfies readonly (readonly [PaletteSurface, PaletteLayout])[]) {
     const entries = buildPaletteEntries(surface, { hasKey: true });
     // One row only (`/exit`): the registry's own descriptions that name a key are the registry's to record, not the view's.
     const listOf = (query: string): PaletteList => ({

@@ -6,6 +6,8 @@ import { datedPinBase, type ModelCatalogEntry } from '@relavium/llm';
 import { formatRefreshed } from '../notation.js';
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
+import { Emph } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import { blankStatusCell, glyphOf, statusCellOf } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import {
@@ -198,7 +200,9 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       const rowColor = rowColorFor(entry, isSelected, color);
       return (
         <Text key={`${entry.provider}:${entry.modelId}`} {...rowColor} wrap="truncate-end">
-          {`${isSelected ? glyphOf('selection', !color) : ' '} ${isDefault ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${parts.join(' · ')}`}
+          <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
+            {`${isSelected ? glyphOf('selection', !color) : ' '} ${isDefault ? statusCellOf('completed', !color) : blankStatusCell(!color)} ${parts.join(' · ')}`}
+          </Emph>
         </Text>
       );
     });
@@ -217,7 +221,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
       )}
       <Text {...dimProps(color)} wrap="truncate-end">
         {'model: '}
-        <Text bold>{sanitizeInline(state.filter)}</Text>
+        <Emph kinds="bold">{sanitizeInline(state.filter)}</Emph>
       </Text>
       {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">

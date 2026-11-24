@@ -1,5 +1,7 @@
 import { Box, Text, useApp, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
+import { Emph } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import { glyphOf, withGlyphForm } from './glyphs.js';
 import { exitKey, keyToken, legend, type LegendItem } from './legend.js';
 import { nativeLeave, type NativePromptSnapshot } from './native-prompt-channel.js';
@@ -106,9 +108,13 @@ export function NativePromptView({
     snapshot.kind === 'select'
       ? withGlyphForm(!color, () => selectLayout(snapshot, size))
       : undefined;
-  // A row's text is built in the glyph form the colour setting asks for (the cursor is the table's selection marker).
-  const rowText = (index: number): string =>
-    withGlyphForm(!color, () => selectRowText(snapshot, index));
+  // A row's text is built in the glyph form the colour setting asks for (the cursor is the table's selection marker). The row under the
+  // cursor is the selected row: bold and inverse, with colour on and off alike.
+  const rowText = (index: number): ReactElement => (
+    <Emph kinds={index === snapshot.selected ? SELECTED_ROW : undefined}>
+      {withGlyphForm(!color, () => selectRowText(snapshot, index))}
+    </Emph>
+  );
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
       {snapshot.note !== '' && <Text wrap="wrap">{snapshot.note}</Text>}
@@ -134,8 +140,10 @@ export function NativePromptView({
           {snapshot.options.map((option, index) => (
             <Box key={option.value} flexDirection="column">
               <Text wrap="truncate-end">
-                {index === snapshot.selected ? `${glyphOf('selection', !color)} ` : '  '}
-                {option.label}
+                <Emph kinds={index === snapshot.selected ? SELECTED_ROW : undefined}>
+                  {index === snapshot.selected ? `${glyphOf('selection', !color)} ` : '  '}
+                  {option.label}
+                </Emph>
               </Text>
               {option.hint !== undefined && (
                 <Text {...dimProps(color)} wrap="truncate-end">

@@ -14,10 +14,11 @@ describe('keyTone — a legend stretch, coloured by its role', () => {
     expect(keyTone('strong', true)).toEqual({ color: 'cyan', bold: true });
   });
 
-  it('dims the words, and draws nothing at all with colour off', () => {
+  it('dims the words, and draws no colour with colour off, where a key keeps its weight (ADR-0145 §5)', () => {
     expect(keyTone('dim', true)).toEqual({ dimColor: true });
-    for (const role of ['ok', 'danger', 'warn', 'strong', 'dim'] as const)
-      expect(keyTone(role, false), role).toEqual({});
+    expect(keyTone('dim', false)).toEqual({});
+    for (const role of ['ok', 'danger', 'warn', 'strong'] as const)
+      expect(keyTone(role, false), role).toEqual({ bold: true });
   });
 
   it('follows the item, not the text: the keys of a real row are drawn in the role their legend gave them', () => {

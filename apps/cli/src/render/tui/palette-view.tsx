@@ -2,6 +2,8 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { Emph } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import { exitKey, legend } from './legend.js';
 import type { PaletteEntry } from './palette-entries.js';
 import type { PaletteList, PaletteState } from './palette-reducer.js';
@@ -56,8 +58,13 @@ function EntryRow(
       {...(selected ? colorProps(color, 'cyan') : entry.enabled ? {} : dimProps(color))}
       wrap="truncate-end"
     >
-      {`${selected ? glyphOf('selection', !color) : ' '} /${sanitizeInline(entry.command.name)}  `}
-      <Text {...dimProps(color)}>{words}</Text>
+      <Emph kinds={selected ? SELECTED_ROW : undefined}>
+        {`${selected ? glyphOf('selection', !color) : ' '} /${sanitizeInline(entry.command.name)}  `}
+      </Emph>
+      <Text {...dimProps(color)}>
+        {/* the dimmed words of the selected row are inverse with it but not bold: the two contradict, and both close with ESC[22m */}
+        <Emph kinds={selected ? 'inverse' : undefined}>{words}</Emph>
+      </Text>
     </Text>
   );
 }

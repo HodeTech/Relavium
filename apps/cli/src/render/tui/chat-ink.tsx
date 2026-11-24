@@ -152,6 +152,7 @@ import {
   type InputHistory,
   type ReverseSearchState,
 } from './input-history.js';
+import { EmphText } from './emphasis-view.js';
 import { PaletteView } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
 import { layoutColumns } from './layout-columns.js';
@@ -709,9 +710,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           green pill when colour is on; a plain `[Copied]` under `NO_COLOR` / `--no-color` (parity with the banner). */}
       {props.copied === true &&
         (color ? (
-          <Text backgroundColor="green" color="black" bold>
+          <EmphText backgroundColor="green" color="black" emphasis="bold">
             {' Sent to terminal clipboard '}
-          </Text>
+          </EmphText>
         ) : (
           <Text>[Sent to terminal clipboard]</Text>
         ))}
@@ -1823,7 +1824,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       // The list opens ABOVE the prompt, so its first row is the one beside it and it is drawn bottom-up (ADR-0145 §7.1).
       applyPalette(
         openPalette(
-          buildPaletteEntries('chat', { hasSession: true, hasKey: true, turnRunning: isRunning }),
+          buildPaletteEntries('standalone-chat', {
+            hasSession: true,
+            hasKey: true,
+            turnRunning: isRunning,
+          }),
           'up',
         ),
       );

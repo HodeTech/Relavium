@@ -64,3 +64,15 @@ export async function waitFor(predicate: () => boolean, maxYields = 100): Promis
  * the ADR-0057 fail-closed foundation (a pasted approval token cannot answer the per-tool floor).
  */
 export const bracketed = (body: string): string => `\x1b[200~${body}\x1b[201~`;
+
+// eslint-disable-next-line no-control-regex -- the point of the pattern is the escape byte
+const SGR_SEQUENCE = /\u001b\[[0-9;]*m/gu;
+
+/**
+ * `frame` without its styling (the SGR sequences). The host writes bold and inverse into its text whatever the colour setting is
+ * (`emphasis.ts`), and a terminal draws them in no column, so a test that asks a frame for its WORDS (a sentence, a row, a width) reads it
+ * through this; a test about the styling itself reads the raw frame.
+ */
+export function withoutStyles(frame: string): string {
+  return frame.replace(SGR_SEQUENCE, '');
+}

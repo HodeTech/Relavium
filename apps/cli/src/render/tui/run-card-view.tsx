@@ -1,6 +1,8 @@
 import { Box, Text, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, type ReactElement } from 'react';
 
+import { EmphText } from './emphasis-view.js';
+import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';
 import { layoutColumns } from './layout-columns.js';
 import { colorProps, dimProps } from './projection.js';
@@ -34,6 +36,7 @@ export interface RunCardViewProps {
   readonly onFrame?: ((node: DOMElement | null) => void) | undefined;
 }
 
+/** The colour of a row by its role (none with colour off); the weight of a row is {@link rowEmphasis}, which colour does not switch. */
 function rowProps(
   color: boolean,
   row: RunCardRow,
@@ -42,21 +45,33 @@ function rowProps(
   const role: RunCardRole = row.role;
   switch (role) {
     case 'title':
-      return color ? { color: projection.tone, bold: true } : {};
+      return color ? { color: projection.tone } : {};
     case 'warn':
       return colorProps(color, 'yellow');
     case 'cursor':
-      return color ? { color: 'cyan', bold: true } : {};
+      return colorProps(color, 'cyan');
     case 'note':
       return projection.state === 'not-answered' ? colorProps(color, 'red') : {};
     case 'fact':
     case 'keys':
       return dimProps(color);
     case 'amount':
-      return { bold: true };
     case 'author':
     case 'list':
       return {};
+  }
+}
+
+/** The weight of a row by its role, with colour on and off alike: the title and the amount are bold, the gate under the cursor is the selected row. */
+function rowEmphasis(row: RunCardRow): EmphasisSet | undefined {
+  switch (row.role) {
+    case 'title':
+    case 'amount':
+      return 'bold';
+    case 'cursor':
+      return SELECTED_ROW;
+    default:
+      return undefined;
   }
 }
 
@@ -81,13 +96,14 @@ export function RunCardView(props: Readonly<RunCardViewProps>): ReactElement {
         </Text>
       )}
       {projection.rows.map((row, index) => (
-        <Text
+        <EmphText
           key={`${String(index)}:${row.role}:${row.text}`}
           {...rowProps(color, row, projection)}
+          emphasis={rowEmphasis(row)}
           wrap="truncate-end"
         >
           {row.text}
-        </Text>
+        </EmphText>
       ))}
     </Box>
   );

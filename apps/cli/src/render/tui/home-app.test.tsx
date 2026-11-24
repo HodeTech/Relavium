@@ -16,7 +16,7 @@ import {
   assertRenderStoreAgree,
   type TranscriptEntry,
 } from './session-view-model.js';
-import { bracketed, settleFrames, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import type { PermissionsPort } from '../../permissions/chat-permissions.js';
 import { boundAgentView } from '../../chat/bound-agent-view.js';
 import { buildDefaultChatAgent } from '../../chat/default-agent.js';
@@ -189,7 +189,7 @@ function mountHome(
   // render — so a divergent fixture fails loudly. Inside a component it would be swallowed by ink's no-op error
   // callbacks and the test would pass on a DEAD TREE, which is exactly how two of these fixtures used to "pass".
   assertRenderStoreAgree(opts.alternateScreen === true, store.getSnapshot().state.transcriptBound);
-  const harness = render(
+  const rendered = render(
     <RootApp
       {...(opts.inputEnabled === undefined ? {} : { inputEnabled: opts.inputEnabled })}
       controller={c}
@@ -207,6 +207,15 @@ function mountHome(
       {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
     />,
   );
+  // The host writes bold and inverse into its text whatever the colour setting is (`emphasis.ts`): the frames these tests read are
+  // asked for their words, so they are read without the styling (a test about the styling reads the raw bytes elsewhere).
+  const harness = {
+    ...rendered,
+    lastFrame: (): string | undefined => {
+      const frame = rendered.lastFrame();
+      return frame === undefined ? undefined : withoutStyles(frame);
+    },
+  };
   return {
     c,
     harness,

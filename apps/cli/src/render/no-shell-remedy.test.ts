@@ -8,6 +8,7 @@ import {
   HOME_CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   REPL_COMMANDS,
+  type PaletteSurface,
 } from '../commands/repl-commands.js';
 
 /**
@@ -434,29 +435,27 @@ const BUILDER_CALLS: Readonly<
 
 // ── Where each file's strings are shown, for the check that a /command is offered there ────────────────────────────────────
 
-type Surface = 'home' | 'chat' | 'home-chat';
-
 /** The surfaces whose person reads a file's strings, where that is one fixed set; a file not listed is checked for existence only. */
-const FILE_SURFACES: Readonly<Record<string, readonly Surface[]>> = {
-  'authoring/global-artifacts.ts': ['home', 'chat', 'home-chat'],
-  'chat/chat-mode.ts': ['chat', 'home-chat'],
-  'chat/effort-notice.ts': ['chat', 'home-chat'],
-  'chat/export.ts': ['chat', 'home-chat'],
-  'chat/repl-info.ts': ['chat', 'home-chat'],
-  'chat/restored-transcript.ts': ['chat', 'home-chat'],
-  'chat/starting-mode-hint.ts': ['chat', 'home-chat'],
-  'commands/chat.ts': ['chat'],
-  'home/provider-setup.ts': ['home', 'chat'],
+const FILE_SURFACES: Readonly<Record<string, readonly PaletteSurface[]>> = {
+  'authoring/global-artifacts.ts': ['home', 'standalone-chat', 'home-chat'],
+  'chat/chat-mode.ts': ['standalone-chat', 'home-chat'],
+  'chat/effort-notice.ts': ['standalone-chat', 'home-chat'],
+  'chat/export.ts': ['standalone-chat', 'home-chat'],
+  'chat/repl-info.ts': ['standalone-chat', 'home-chat'],
+  'chat/restored-transcript.ts': ['standalone-chat', 'home-chat'],
+  'chat/starting-mode-hint.ts': ['standalone-chat', 'home-chat'],
+  'commands/chat.ts': ['standalone-chat'],
+  'home/provider-setup.ts': ['home', 'standalone-chat'],
   'home/run-launch.ts': ['home'],
   'home/hosted-run-terminal.ts': ['home'],
   // The first-run setup is ONE flow on two surfaces: the Home's native cards and a stand-alone chat's (which has neither `/providers` nor a
   // Home to open it from). A string that names a command is checked against both; the ones that are the Home's alone are said so below.
-  'onboarding/setup-notes.ts': ['home', 'chat'],
-  'onboarding/wizard.ts': ['home', 'chat'],
+  'onboarding/setup-notes.ts': ['home', 'standalone-chat'],
+  'onboarding/wizard.ts': ['home', 'standalone-chat'],
   'home/run-host.ts': ['home'],
-  'render/hatches.ts': ['chat', 'home-chat'],
-  'render/tui/chat-projection.ts': ['chat', 'home-chat'],
-  'render/tui/model-picker-view.tsx': ['home', 'chat', 'home-chat'],
+  'render/hatches.ts': ['standalone-chat', 'home-chat'],
+  'render/tui/chat-projection.ts': ['standalone-chat', 'home-chat'],
+  'render/tui/model-picker-view.tsx': ['home', 'standalone-chat', 'home-chat'],
   'render/tui/pricing-card.ts': ['home'],
   'render/tui/tab-host-agents.ts': ['home'],
   'render/tui/tab-host-sessions.ts': ['home'],
@@ -470,7 +469,7 @@ const FILE_SURFACES: Readonly<Record<string, readonly Surface[]>> = {
 const SURFACE_OVERRIDES: readonly {
   file: string;
   includes: string;
-  surfaces: readonly Surface[];
+  surfaces: readonly PaletteSurface[];
 }[] = [
   { file: 'chat/repl-info.ts', includes: '/resume continues it', surfaces: ['home-chat'] },
   // The setup's own sentences for the Home. The stand-alone chat's sentence of each pair names no slash command (it says to restart the
@@ -497,9 +496,9 @@ const names = (commands: readonly { readonly name: string }[]): ReadonlySet<stri
   new Set(commands.map((command) => command.name));
 
 /** Every command a surface offers is in its palette list (`/help` too, since MVP-11 Step 2.2). */
-const OFFERED: Readonly<Record<Surface, ReadonlySet<string>>> = {
+const OFFERED: Readonly<Record<PaletteSurface, ReadonlySet<string>>> = {
   home: names(HOME_PALETTE_COMMANDS),
-  chat: names(REPL_COMMANDS),
+  'standalone-chat': names(REPL_COMMANDS),
   'home-chat': names(HOME_CHAT_PALETTE_COMMANDS),
 };
 
@@ -507,7 +506,7 @@ const OFFERED: Readonly<Record<Surface, ReadonlySet<string>>> = {
 const REGISTRY: ReadonlySet<string> = new Set([
   ...names(REPL_COMMANDS),
   ...OFFERED.home,
-  ...OFFERED.chat,
+  ...OFFERED['standalone-chat'],
   ...OFFERED['home-chat'],
 ]);
 
@@ -795,7 +794,7 @@ describe('the detector sees what it should (it is run on text it is given, not o
 });
 
 describe('every /command a TUI string names exists, and is offered where the string is shown (ADR-0145 §7.4)', () => {
-  const surfacesOf = (literal: Literal): readonly Surface[] | undefined => {
+  const surfacesOf = (literal: Literal): readonly PaletteSurface[] | undefined => {
     const override = SURFACE_OVERRIDES.find(
       (entry) => entry.file === literal.file && literal.text.includes(entry.includes),
     );
@@ -848,12 +847,14 @@ describe('every /command a TUI string names exists, and is offered where the str
     ])
       expect(OFFERED.home.has(name), `/${name} on the Home`).toBe(true);
     for (const name of ['models', 'export', 'doctor', 'permissions', 'compact', 'trim', 'clear'])
-      expect(OFFERED.chat.has(name), `/${name} in a stand-alone chat`).toBe(true);
+      expect(OFFERED['standalone-chat'].has(name), `/${name} in a stand-alone chat`).toBe(true);
     // The Home-hosted chat adds `/resume` to a chat's list; `/providers` and `/init` are the bare Home's (ADR-0145, OD-2), which the
     // pointer rule names in words ("from the Home (/providers)").
     expect(OFFERED['home-chat'].has('resume'), '/resume in the Home-hosted chat').toBe(true);
     // A stand-alone chat has no Home, so none of the Home's own: the pointer rule names the Home in words instead.
     for (const name of ['providers', 'resume', 'pricing', 'import', 'run'])
-      expect(OFFERED.chat.has(name), `/${name} is not a stand-alone chat's`).toBe(false);
+      expect(OFFERED['standalone-chat'].has(name), `/${name} is not a stand-alone chat's`).toBe(
+        false,
+      );
   });
 });

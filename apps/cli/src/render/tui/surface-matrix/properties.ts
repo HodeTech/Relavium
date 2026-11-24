@@ -16,6 +16,8 @@ export type PropertyId =
   | 'exit-key'
   | 'no-scrollback-clear'
   | 'no-colour'
+  /** Not one of the five: the surface draws its selected row inverse, with colour on and off alike (ADR-0145 §5), for a surface that names one. */
+  | 'selected-row'
   /** Not one of the five: the surface's own landmark (or, below the floor, its notice) is on screen, so a frame that never opened cannot pass. */
   | 'surface-shown';
 
@@ -115,6 +117,75 @@ export function checkNoScrollbackClear(observation: Observation): Violation[] {
     : [];
 }
 
+/**
+ * The styles active just before `index` in `raw`, on its own row: the SGR sequences from the start of the row (the last line feed before
+ * `index`) up to `index`, read as the terminal reads them. `bold` and `dim` end together at 22, as they do on a terminal.
+ */
+export function stylesBefore(raw: string, index: number): ReadonlySet<string> {
+  const rowStart = raw.lastIndexOf('\n', index - 1) + 1;
+  const active = new Set<string>();
+  for (const match of raw.slice(rowStart, index).matchAll(SGR)) {
+    for (const code of (match[1] ?? '').split(/[;:]/u)) {
+      switch (code === '' ? '0' : code) {
+        case '0':
+          active.clear();
+          break;
+        case '1':
+          active.add('bold');
+          break;
+        case '2':
+          active.add('dim');
+          break;
+        case '4':
+          active.add('underline');
+          break;
+        case '7':
+          active.add('inverse');
+          break;
+        case '22':
+          active.delete('bold');
+          active.delete('dim');
+          break;
+        case '24':
+          active.delete('underline');
+          break;
+        case '27':
+          active.delete('inverse');
+          break;
+        default:
+      }
+    }
+  }
+  return active;
+}
+
+/**
+ * (6) For a surface that names its selected row: the last time `text` was written to the terminal it was drawn inverse and bold, in every
+ * cell, colour off included ("no colour" means colour only: ADR-0145 §5, MVP-11 OD-6). `text` is words that only the selected row has
+ * (a command's name, a model's), not its marker, which is `›` with colour and `>` without.
+ */
+export function checkSelectedRow(observation: Observation, text: string): Violation[] {
+  const at = observation.raw.lastIndexOf(text);
+  if (at < 0) {
+    return [
+      {
+        property: 'selected-row',
+        message: `the selected row's words "${text}" were never written to the terminal`,
+      },
+    ];
+  }
+  const active = stylesBefore(observation.raw, at);
+  const missing = ['inverse', 'bold'].filter((style) => !active.has(style));
+  return missing.length === 0
+    ? []
+    : [
+        {
+          property: 'selected-row',
+          message: `the selected row "${text}" is not ${missing.join(' and ')} (colour ${observation.variant.color ? 'on' : 'off'})`,
+        },
+      ];
+}
+
 /** (5) With colour off the raw bytes carry no colour SGR (bold, dim, inverse and underline are allowed). */
 export function checkNoColour(observation: Observation): Violation[] {
   if (observation.variant.color) return [];
@@ -132,9 +203,11 @@ export function checkNoColour(observation: Observation): Violation[] {
 export interface PropertyExpectations {
   /** The words of the key that leaves the surface; absent ⇒ the exit key is not asserted (a below-floor notice has none). */
   readonly exitKey?: string | undefined;
+  /** Words only the surface's selected row has; absent ⇒ the selected row is not asserted (a surface with no selection, or below the floor). */
+  readonly selectedRow?: string | undefined;
 }
 
-/** All five properties over one observation. */
+/** The five properties, and the sixth for a surface that names its selected row, over one observation. */
 export function checkProperties(
   observation: Observation,
   expectations: PropertyExpectations,
@@ -145,5 +218,8 @@ export function checkProperties(
     ...(expectations.exitKey === undefined ? [] : checkExitKey(observation, expectations.exitKey)),
     ...checkNoScrollbackClear(observation),
     ...checkNoColour(observation),
+    ...(expectations.selectedRow === undefined
+      ? []
+      : checkSelectedRow(observation, expectations.selectedRow)),
   ];
 }

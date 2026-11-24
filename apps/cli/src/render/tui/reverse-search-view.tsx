@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { Emph } from './emphasis-view.js';
 import { reverseSearchMatchText, type ReverseSearchState } from './input-history.js';
 import { exitKey, legend } from './legend.js';
 import { colorProps, dimProps } from './projection.js';
@@ -32,7 +33,7 @@ export function ReverseSearchView(
     <Box flexDirection="column" marginTop={1}>
       <Text {...colorProps(color, failed ? 'yellow' : 'cyan')} wrap="truncate-end">
         {failed ? '(failed reverse-i-search) ' : '(reverse-i-search) '}
-        <Text bold>{sanitizeInline(state.query)}</Text>
+        <Emph kinds="bold">{sanitizeInline(state.query)}</Emph>
         {match !== undefined && <Text {...dimProps(color)}>{` → ${sanitizeInline(match)}`}</Text>}
       </Text>
       <Text {...dimProps(color)} wrap="truncate-end">

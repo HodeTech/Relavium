@@ -235,8 +235,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('a stand-alone chat’s /help and hint are byte for byte what they were, with or without naming the surface', () => {
     expect(formatReplHelp()).toBe(STAND_ALONE_HELP);
-    expect(formatReplHelp('chat')).toBe(STAND_ALONE_HELP);
-    expect(replCommandList('chat')).toBe(replCommandList());
+    expect(formatReplHelp('standalone-chat')).toBe(STAND_ALONE_HELP);
+    expect(replCommandList('standalone-chat')).toBe(replCommandList());
   });
 
   it('the chat the Home hosts prints its own list: its palette’s rows, with its words, and /resume', () => {

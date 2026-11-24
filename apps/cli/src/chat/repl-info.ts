@@ -6,6 +6,7 @@ import type { SessionCostRow } from '@relavium/db';
 import { isUsageCoverageComplete, type UsageCoverage } from '@relavium/shared';
 
 import { formatUsdExact } from '../render/notation.js';
+import type { Surface } from '../render/surface.js';
 import { formatReportedCost } from '../render/tui/format.js';
 import { glyph } from '../render/tui/glyphs.js';
 
@@ -191,7 +192,7 @@ export function trimNotice(result: TrimResult): string {
 }
 
 /** Where a `/clear` notice is shown: the Home's hosted chat (it has `/resume`), or a stand-alone `relavium chat` (it has no Home). */
-export type ClearedNoticeSurface = 'home' | 'standalone-chat';
+export type ClearedNoticeSurface = Extract<Surface, 'home' | 'standalone-chat'>;
 
 /**
  * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a

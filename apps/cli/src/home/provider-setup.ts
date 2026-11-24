@@ -18,19 +18,18 @@ import {
   providerKeyAvailabilityMessage,
   providerKeyEnvVar,
   providerRowHint,
-  type CredentialSurface,
   type ProviderKeyAvailability,
   type ProviderResolver,
 } from '../engine/providers.js';
 import type { StandardEnvKeyPolicy } from '../engine/standard-env-policy.js';
 import { runOnboardingWizard, type OnboardingDeps } from '../onboarding/wizard.js';
-import { setupSkippedNotice } from '../onboarding/setup-notes.js';
+import { setupSkippedNotice, type SetupSurface } from '../onboarding/setup-notes.js';
 import type { NativePromptFlow } from '../render/tui/native-prompt-channel.js';
 
 export interface ProviderSetupDeps {
   readonly configReadObserver?: ConfigReadObserver;
   readonly flow: NativePromptFlow;
-  readonly credentialSurface?: Extract<CredentialSurface, 'home' | 'standalone-chat'>;
+  readonly credentialSurface?: SetupSurface;
   readonly resolver: ProviderResolver;
   readonly policy: StandardEnvKeyPolicy;
   readonly globalConfig: GlobalConfig | undefined;

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
-import { settleFrames, waitFor } from './harness-util.js';
+import { settleFrames, waitFor, withoutStyles } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import { createHomeController, type HomeChatSession } from './home-controller.js';
 import { RunScreenView } from './run-screen-view.js';
@@ -106,7 +106,7 @@ interface ViewOptions {
   readonly color?: boolean;
 }
 
-function view(options: ViewOptions = {}) {
+function rawView(options: ViewOptions = {}) {
   return render(
     <RunScreenView
       runId={RUN}
@@ -121,6 +121,18 @@ function view(options: ViewOptions = {}) {
       color={options.color ?? false}
     />,
   );
+}
+
+/** The view, read for its WORDS: the weight the host writes into the title (`emphasis.ts`) is zero columns and is not part of them. */
+function view(options: ViewOptions = {}) {
+  const mounted = rawView(options);
+  return {
+    ...mounted,
+    lastFrame: (): string | undefined => {
+      const frame = mounted.lastFrame();
+      return frame === undefined ? undefined : withoutStyles(frame);
+    },
+  };
 }
 
 const linesOf = (frame: string | undefined): string[] => (frame ?? '').split('\n');
@@ -271,18 +283,24 @@ describe('every state has a glyph and a word, with colour off', () => {
     { name: 'no host', hostedRun: undefined, title: 'o not held' },
   ];
 
-  it.each(STATES)('$name: "$title" and not one escape sequence', ({ hostedRun, title }) => {
-    const frame =
-      view({ hostedRun, store: storeWithNodes(2), notices: ['a notice'] }).lastFrame() ?? '';
+  it.each(STATES)('$name: "$title", bold, and not one colour sequence', ({ hostedRun, title }) => {
+    const options = { hostedRun, store: storeWithNodes(2), notices: ['a notice'] };
+    const frame = view(options).lastFrame() ?? '';
     expect(linesOf(frame)[0]).toBe(`${title}  ·  run run-0001`);
-    expect(frame).not.toContain('\x1b');
+    // "No colour" means colour only (ADR-0145 §5): the title keeps its weight, and no sequence of the frame is a colour.
+    const raw = rawView(options).lastFrame() ?? '';
+    expect(linesOf(raw)[0]).toContain('\x1b[1m');
+    // eslint-disable-next-line no-control-regex -- the assertion is about escape sequences
+    const codes = raw.match(/\x1b\[[0-9;]*m/g) ?? [];
+    expect(codes.filter((code) => !['\x1b[1m', '\x1b[22m'].includes(code))).toEqual([]);
   });
 
   it('draws colour only when colour is on, over the same words', () => {
-    const plain = view({ color: false }).lastFrame() ?? '';
-    expect(plain).not.toContain('\x1b[');
+    const plain = rawView({ color: false }).lastFrame() ?? '';
+    // eslint-disable-next-line no-control-regex -- the assertion is about escape sequences
+    expect(plain.replace(/\x1b\[(?:1|22)m/g, '')).not.toContain('\x1b[');
     // ink-testing-library strips nothing: with colour enabled the title carries SGR codes, and the same text.
-    const coloured = view({ color: true }).lastFrame() ?? '';
+    const coloured = rawView({ color: true }).lastFrame() ?? '';
     // eslint-disable-next-line no-control-regex -- the assertion is about escape sequences
     expect(coloured.replace(/\x1b\[[0-9;]*m/g, '')).toContain('◐ running  ·  run run-0001');
   });

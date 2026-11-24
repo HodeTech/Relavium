@@ -15,10 +15,12 @@ import {
   checkNoColour,
   checkNoScrollbackClear,
   checkProperties,
+  checkSelectedRow,
   checkWidth,
   colourSequences,
   sgrSetsColour,
   stripAnsi,
+  stylesBefore,
   type Observation,
 } from './properties.js';
 import { observe, problemsOf } from './run-cell.js';
@@ -196,6 +198,65 @@ describe('the five properties, each on a surface that breaks it', () => {
     expect(sgrSetsColour('1;4')).toBe(false);
   });
 
+  it('colour: the literal pairs of the emphasis rule are not colour, and a colour hidden in the same parameter list still is', () => {
+    // `emphasis.ts` writes ESC[1m…ESC[22m, ESC[7m…ESC[27m and ESC[4m…ESC[24m, the same bytes with colour on and off: with colour off they pass
+    // (the prompt's cursor is one of them), and a colour code beside them does not.
+    const pairs = [
+      `${sgr('1')}x${sgr('22')}`,
+      `${sgr('7')}x${sgr('27')}`,
+      `${sgr('4')}x${sgr('24')}`,
+      `${sgr('1')}${sgr('7')}x${sgr('27')}${sgr('22')}`,
+      `${sgr('1;7')}x${sgr('22;27')}`,
+    ];
+    for (const raw of pairs)
+      expect(checkNoColour(observation(INLINE_80, ['x'], raw)), JSON.stringify(raw)).toEqual([]);
+    for (const raw of [
+      `${sgr('1')}${sgr('31')}x${sgr('39')}${sgr('22')}`,
+      `${sgr('7;31')}x${sgr('27')}`,
+      `${sgr('1')}${sgr('7')}${sgr('38;5;9')}x${sgr('27')}${sgr('22')}`,
+      `${sgr('7')}${sgr('42')}x${sgr('27')}${sgr('49')}`,
+    ])
+      expect(
+        checkNoColour(observation(INLINE_80, ['x'], raw))[0]?.property,
+        JSON.stringify(raw),
+      ).toBe('no-colour');
+  });
+
+  it('selected row: it is inverse and bold where its words are written, on its own row, or it fails', () => {
+    const row = (styled: string): Observation =>
+      observation(ALT_80, ['> /run  words'], `above\n${styled}`);
+    const drawn = `${sgr('1')}${sgr('7')}> /run  ${sgr('27')}${sgr('22')}words`;
+    expect(checkSelectedRow(row(drawn), '/run  ')).toEqual([]);
+    expect(
+      checkSelectedRow(row(`${sgr('7')}> /run  ${sgr('27')}`), '/run  ')[0]?.message,
+      'inverse alone is not the selected row',
+    ).toContain('not bold');
+    expect(
+      checkSelectedRow(row(`${sgr('1')}> /run  ${sgr('22')}`), '/run  ')[0]?.message,
+      'bold alone is not the selected row',
+    ).toContain('not inverse');
+    expect(checkSelectedRow(row('> /run  words'), '/run  ')[0]?.message).toContain(
+      'inverse and bold',
+    );
+    expect(
+      checkSelectedRow(row(`${sgr('1')}${sgr('7')}> ${sgr('27')}${sgr('22')}/run  `), '/run  ')[0]
+        ?.property,
+      'closed before the words',
+    ).toBe('selected-row');
+    expect(checkSelectedRow(row(drawn), 'never written')[0]?.message).toContain('never written');
+    // a style left open on the row above does not carry to the row below
+    expect(
+      checkSelectedRow(
+        observation(ALT_80, ['a', '> /run  w'], `${sgr('1')}${sgr('7')}a\n> /run  w`),
+        '/run  ',
+      )[0]?.property,
+    ).toBe('selected-row');
+    const closed = `${sgr('1')}${sgr('7')}ab${sgr('22')}c`;
+    expect([...stylesBefore(closed, closed.indexOf('c'))]).toEqual(['inverse']);
+    const reset = `${sgr('1')}ab${sgr('0')}c`;
+    expect([...stylesBefore(reset, reset.indexOf('c'))]).toEqual([]);
+  });
+
   it('all of them together', () => {
     expect(checkProperties(clean, { exitKey: 'Esc' })).toEqual([]);
     expect(checkProperties(clean, { exitKey: 'Ctrl+C' }).map((v) => v.property)).toEqual([
@@ -323,6 +384,76 @@ describe('a surface whose opening key does nothing is not on screen', () => {
     expect(
       (await problemsWith(dead, ALT_80)).some((problem) => problem.startsWith('surface-shown:')),
     ).toBe(true);
+  });
+});
+
+describe('the selected row of a mounted palette is inverse and bold with colour on and off alike', () => {
+  const cells: readonly Variant[] = [
+    ALT_80,
+    INLINE_80,
+    { ...ALT_80, color: true },
+    INLINE_80_COLOUR,
+  ];
+  const strip = (code: string) => (chunk: string) => chunk.replaceAll(sgr(code), '');
+
+  it('control: in every cell the palette’s selected row is written inverse and bold, and the cell has no problem', async () => {
+    for (const variant of cells) {
+      const result = await runCell(PALETTE, variant);
+      const raw = result.observation.raw;
+      const active = stylesBefore(raw, raw.lastIndexOf('/run  '));
+      expect([...active].sort(), JSON.stringify(variant)).toEqual(['bold', 'inverse']);
+      expect(problemsOf(PALETTE, result), JSON.stringify(variant)).toEqual([]);
+    }
+  });
+
+  it('a palette whose selected row loses its inverse (every ESC[7m is removed) fails the cell, with colour off and on', async () => {
+    for (const variant of cells) {
+      const problems = await problemsWith(PALETTE, variant, strip('7'));
+      expect(
+        problems.some(
+          (problem) => problem.startsWith('selected-row:') && problem.includes('inverse'),
+        ),
+        JSON.stringify(variant),
+      ).toBe(true);
+    }
+  });
+
+  it('a palette whose selected row loses its bold (every ESC[1m is removed) fails the cell', async () => {
+    const problems = await problemsWith(PALETTE, ALT_80, strip('1'));
+    expect(
+      problems.some((problem) => problem.startsWith('selected-row:') && problem.includes('bold')),
+    ).toBe(true);
+  });
+
+  it('bold and inverse written with colour off are not a problem, and a colour written beside them still is', async () => {
+    const weight = (chunk: string): string =>
+      `${sgr('1')}${sgr('7')}${chunk}${sgr('27')}${sgr('22')}`;
+    expect(
+      (await problemsWith(PALETTE, ALT_80, weight)).filter((problem) =>
+        problem.startsWith('no-colour:'),
+      ),
+    ).toEqual([]);
+    const withColour = (chunk: string): string => `${sgr('1')}${sgr('7')}${sgr('31')}${chunk}`;
+    expect(
+      (await problemsWith(PALETTE, ALT_80, withColour)).some((problem) =>
+        problem.startsWith('no-colour:'),
+      ),
+    ).toBe(true);
+  });
+
+  it('an entry that names words that are not in the frame fails the cell', async () => {
+    const wrong: HomeSurface = { ...PALETTE, selectedRow: 'a row that is never drawn' };
+    expect(
+      (await problemsWith(wrong, ALT_80)).some((problem) => problem.startsWith('selected-row:')),
+    ).toBe(true);
+  });
+
+  it('below the floor the palette’s notice replaces it, so no selected row is asserted there', async () => {
+    expect(
+      (await problemsWith(PALETTE, BELOW_FLOOR_VARIANT)).filter((problem) =>
+        problem.startsWith('selected-row:'),
+      ),
+    ).toEqual([]);
   });
 });
 

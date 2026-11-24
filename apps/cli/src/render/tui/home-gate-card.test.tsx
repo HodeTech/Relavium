@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HomeSnapshot } from '../../home/home-store.js';
 import type { RunGates } from '../../home/run-gates.js';
 import type { HostedLaunch, HostedLegEnd, RunHostSnapshot } from '../../home/run-host.js';
-import { flush, settleFrames } from './harness-util.js';
+import { flush, settleFrames, withoutStyles } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import type { ParkedRunRow } from './home-attention.js';
 import {
@@ -174,7 +174,7 @@ function mount(options: Options = {}) {
       subscribeResize={() => () => {}}
     />,
   );
-  const frame = (): string => harness.lastFrame() ?? '';
+  const frame = (): string => withoutStyles(harness.lastFrame() ?? '');
   /** The landing's exact current state has been measured and flushed. */
   const homePainted = (): boolean => homeVisible?.(controller.getSnapshot()) === true;
   /** The open card's exact current snapshot has been measured and flushed. */

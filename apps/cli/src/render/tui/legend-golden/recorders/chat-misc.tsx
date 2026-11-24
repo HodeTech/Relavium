@@ -13,9 +13,9 @@ import {
 import {
   providerKeyAvailabilityMessage,
   providerRowHint,
-  type CredentialSurface,
   type ProviderKeyAvailability,
 } from '../../../../engine/providers.js';
+import type { Surface } from '../../../surface.js';
 import { AttachmentBar } from '../../attachment-bar.js';
 import { ChatView, idleHint } from '../../chat-ink.js';
 import { MODE_CHANGE_RUNNING_NOTICE, emptyEditor } from '../../chat-input.js';
@@ -289,7 +289,7 @@ const replWords: Recorder = () => {
   const out: Record<string, string> = {};
   for (const surface of [
     'home',
-    'chat',
+    'standalone-chat',
     'home-chat',
   ] as const satisfies readonly PaletteSurface[]) {
     for (const command of commandsOf(surface)) {
@@ -337,7 +337,7 @@ const providerHints: Recorder = () => {
   for (const [status, availability] of AVAILABILITIES) {
     out[label({ status, text: 'row hint' })] = providerRowHint(availability);
     // A usable key has no remedy to name: one surface says it all.
-    const surfaces: readonly CredentialSurface[] =
+    const surfaces: readonly Surface[] =
       status === 'usable' ? ['home'] : ['home', 'home-chat', 'standalone-chat', 'shell'];
     for (const surface of surfaces) {
       out[label({ status, text: 'message', surface })] = providerKeyAvailabilityMessage(

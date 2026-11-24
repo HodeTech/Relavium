@@ -11,7 +11,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RunGate } from '../../home/run-gates.js';
-import { waitFor } from './harness-util.js';
+import { waitFor, withoutStyles } from './harness-util.js';
 import {
   projectRunCard,
   RUN_CARD_APPEARANCE,
@@ -62,7 +62,7 @@ interface ViewOptions {
   readonly onFrame?: (node: DOMElement | null) => void;
 }
 
-function view(options: ViewOptions = {}) {
+function rawView(options: ViewOptions = {}) {
   return render(
     <RunCardView
       snapshot={options.snapshot ?? snapshot()}
@@ -73,6 +73,18 @@ function view(options: ViewOptions = {}) {
       onFrame={options.onFrame}
     />,
   );
+}
+
+/** The card, read for its WORDS: the weight the host writes into the title and the cursor row (`emphasis.ts`) is zero columns and is not part of them. */
+function view(options: ViewOptions = {}) {
+  const mounted = rawView(options);
+  return {
+    ...mounted,
+    lastFrame: (): string | undefined => {
+      const frame = mounted.lastFrame();
+      return frame === undefined ? undefined : withoutStyles(frame);
+    },
+  };
 }
 
 const linesOf = (frame: string | undefined): string[] => (frame ?? '').split('\n');
@@ -183,18 +195,44 @@ describe('below the minimum', () => {
 });
 
 describe('with colour off', () => {
-  it('draws no styling at all, and colour only adds to the same words', () => {
-    const plain = view({ color: false }).lastFrame() ?? '';
-    const coloured = view({ color: true }).lastFrame() ?? '';
-    expect(plain).not.toMatch(ANSI);
+  /** Every SGR parameter a frame carries. */
+  const codesOf = (frame: string): Set<string> =>
+    new Set([...frame.matchAll(STYLING)].flatMap((match) => match[0].slice(2, -1).split(';')));
+  /** Bold, inverse, underline and their closes: the styles that are not colour (ADR-0145 §5). */
+  const NOT_COLOUR = new Set(['1', '22', '7', '27', '4', '24']);
+
+  it('draws no colour, keeps the weight, and colour only adds to the same words', () => {
+    const plain = rawView({ color: false }).lastFrame() ?? '';
+    const coloured = rawView({ color: true }).lastFrame() ?? '';
+    expect([...codesOf(plain)].filter((code) => !NOT_COLOUR.has(code))).toEqual([]);
+    expect(codesOf(plain), 'the title is bold with colour off').toContain('1');
     expect(coloured).toMatch(ANSI);
+    expect(codesOf(coloured).size).toBeGreaterThan(codesOf(plain).size);
     // Strip the styling from the coloured frame and write its glyphs in their plain forms: what is left is the plain frame, so colour never
     // carried a meaning of its own.
     const inPlainForms = GLYPH_ROLES.reduce(
       (text, role) => text.replaceAll(GLYPHS[role].glyph, GLYPHS[role].ascii),
       coloured.replace(STYLING, ''),
     );
-    expect(inPlainForms).toBe(plain);
+    expect(inPlainForms).toBe(plain.replace(STYLING, ''));
+  });
+
+  it('draws the gate under the cursor as the selected row: bold and inverse, with colour on and off alike', () => {
+    for (const color of [false, true]) {
+      const frame =
+        rawView({
+          color,
+          snapshot: snapshot({ gates: [gate('a'), gate('b'), gate('c')], cursor: 1 }),
+        }).lastFrame() ?? '';
+      const row = frame.split('\n').find((line) => line.includes('b · approval · node'));
+      const open = `${ESC}[1m${ESC}[7m`;
+      expect(row, `colour ${String(color)}`).toContain(open);
+      expect(row, `colour ${String(color)}`).toContain(`${ESC}[27m${ESC}[22m`);
+      const others = frame.split('\n').find((line) => line.includes('a · approval · node'));
+      expect(others, 'a gate that is not under the cursor is not inverse').not.toContain(
+        `${ESC}[7m`,
+      );
+    }
   });
 });
 

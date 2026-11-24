@@ -819,6 +819,7 @@ function tabStrip(current: TabId, width: number): SheetLine {
       from: text.length,
       to: text.length + label.length,
       role: tab.id === current ? 'strong' : 'dim',
+      ...(tab.id === current ? { selected: true as const } : {}),
     });
     text += label;
   });

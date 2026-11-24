@@ -102,7 +102,11 @@ const PALETTES: readonly (readonly [string, PaletteSurface, readonly PaletteEntr
     'home',
     buildPaletteEntries('home', { hasSession: false, hasKey: true, hasSavedSessions: true }),
   ],
-  ['a standalone chat', 'chat', buildPaletteEntries('chat', { hasSession: true, hasKey: true })],
+  [
+    'a standalone chat',
+    'standalone-chat',
+    buildPaletteEntries('standalone-chat', { hasSession: true, hasKey: true }),
+  ],
   [
     'the chat inside the Home',
     'home-chat',
@@ -355,7 +359,7 @@ describe('openPalette: the highlight starts on the first row that can act, never
   });
 
   it('a chat: `/` then Enter runs /models', () => {
-    for (const surface of ['chat', 'home-chat'] as const) {
+    for (const surface of ['standalone-chat', 'home-chat'] as const) {
       const step = foldPaletteKey(
         '',
         { return: true },
@@ -453,10 +457,10 @@ describe('stepPalette', () => {
     it.each([
       ['home', 'e'],
       ['home', 'ex'],
-      ['chat', 'e'],
-      ['chat', 'ex'],
-      ['chat', 'cl'],
-      ['chat', 'co'],
+      ['standalone-chat', 'e'],
+      ['standalone-chat', 'ex'],
+      ['standalone-chat', 'cl'],
+      ['standalone-chat', 'co'],
       ['home-chat', 'e'],
       ['home-chat', 'ex'],
       ['home-chat', 'cl'],
@@ -468,21 +472,21 @@ describe('stepPalette', () => {
 
     it.each([
       ['home', 'exit'],
-      ['chat', 'exit'],
-      ['chat', 'clear'],
-      ['chat', 'cancel'],
-      ['chat', 'compact'],
+      ['standalone-chat', 'exit'],
+      ['standalone-chat', 'clear'],
+      ['standalone-chat', 'cancel'],
+      ['standalone-chat', 'compact'],
       ['home-chat', 'clear'],
     ] as const)('%s: the exact name /%s still wins', (surface, query) => {
       expect(typed(surface, query)).toBe(query);
     });
 
     it('when every row that can act is one of them, one is highlighted only when the query starts its NAME', () => {
-      expect(typed('chat', 'can'), 'only /cancel matches').toBe('cancel');
+      expect(typed('standalone-chat', 'can'), 'only /cancel matches').toBe('cancel');
       expect(typed('home', 'exi'), 'only /exit matches').toBe('exit');
       // Round 2 (A2): `/res` reached `/clear` through its description in a stand-alone chat, which has no `/resume`. A description is not a
       // name: nothing is highlighted and `Enter` answers as it does for a query that matches nothing (`palette-highlight.test.ts`).
-      expect(typed('chat', 'res'), 'a stand-alone chat has no /resume').toBeUndefined();
+      expect(typed('standalone-chat', 'res'), 'a stand-alone chat has no /resume').toBeUndefined();
     });
 
     /** Type `query` into a palette over `list` and read the highlighted row's name. */

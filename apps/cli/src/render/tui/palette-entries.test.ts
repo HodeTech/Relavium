@@ -38,7 +38,7 @@ describe('buildPaletteEntries: the registry’s order, with what each row can do
       'clear',
     ]);
 
-    const chat = buildPaletteEntries('chat', CHAT);
+    const chat = buildPaletteEntries('standalone-chat', CHAT);
     expect(chat).toHaveLength(20);
     expect(groupStarts(chat), 'Model, Context, Inspect, Take away, End').toEqual([
       'models',
@@ -57,12 +57,12 @@ describe('buildPaletteEntries: the registry’s order, with what each row can do
     const byName = (surface: PaletteSurface, name: string): PaletteEntry | undefined =>
       buildPaletteEntries(surface, HOME).find((entry) => entry.command.name === name);
     expect(byName('home', 'exit')?.description).toBe('Leave Relavium.');
-    expect(byName('chat', 'exit')?.description).toBe('End the chat session.');
+    expect(byName('standalone-chat', 'exit')?.description).toBe('End the chat session.');
     expect(byName('home-chat', 'exit')?.description).toBe(
       'Leave this chat and go back to the Home.',
     );
     expect(byName('home', 'exit')?.group).toBe('end');
-    expect(byName('chat', 'doctor')?.group).toBe('inspect');
+    expect(byName('standalone-chat', 'doctor')?.group).toBe('inspect');
     expect(byName('home', 'doctor')?.group).toBe('check');
   });
 
@@ -70,7 +70,7 @@ describe('buildPaletteEntries: the registry’s order, with what each row can do
     const clear = buildPaletteEntries('home', HOME).find((entry) => entry.command.name === 'clear');
     expect(clear?.enabled).toBe(false);
     expect(clear?.reason).toBe('no conversation to clear');
-    for (const surface of ['chat', 'home-chat'] as const) {
+    for (const surface of ['standalone-chat', 'home-chat'] as const) {
       const row = buildPaletteEntries(surface, CHAT).find(
         (entry) => entry.command.name === 'clear',
       );
@@ -110,11 +110,13 @@ describe('buildPaletteEntries: the registry’s order, with what each row can do
     expect(names(buildPaletteEntries('home', { ...HOME, hasKey: true }))[0]).toBe('resume');
     expect(names(buildPaletteEntries('home', { ...HOME, hasKey: undefined }))[0]).toBe('resume');
     // The lead is the Home's: a chat has no /providers, with a key or without one.
-    expect(names(buildPaletteEntries('chat', { ...CHAT, hasKey: false }))[0]).toBe('models');
+    expect(names(buildPaletteEntries('standalone-chat', { ...CHAT, hasKey: false }))[0]).toBe(
+      'models',
+    );
   });
 
   it('ignores a surface inside the context: the surface is the argument', () => {
-    const entries = buildPaletteEntries('chat', { ...CHAT, surface: 'home' });
+    const entries = buildPaletteEntries('standalone-chat', { ...CHAT, surface: 'home' });
     expect(entries).toHaveLength(20);
   });
 });
@@ -125,7 +127,7 @@ describe('the row `/` then `Enter` lands on is never destructive and never ends 
     ['the Home with none', 'home', { ...HOME, hasSavedSessions: false }, 'run'],
     ['the Home before its snapshot is read', 'home', { ...HOME, hasSavedSessions: undefined }, 'resume'],
     ['the keyless Home', 'home', { ...HOME, hasKey: false }, 'providers'],
-    ['a stand-alone chat', 'chat', CHAT, 'models'],
+    ['a stand-alone chat', 'standalone-chat', CHAT, 'models'],
     ['the chat the Home hosts', 'home-chat', CHAT, 'models'],
   ]; // prettier-ignore
 
@@ -139,7 +141,7 @@ describe('the row `/` then `Enter` lands on is never destructive and never ends 
   });
 
   it('is never one of those, whatever the cached facts', () => {
-    for (const surface of ['home', 'chat', 'home-chat'] as const)
+    for (const surface of ['home', 'standalone-chat', 'home-chat'] as const)
       for (const hasKey of [true, false, undefined])
         for (const hasSavedSessions of [true, false, undefined]) {
           const entries = buildPaletteEntries(surface, {
@@ -169,7 +171,7 @@ describe('the row `/` then `Enter` lands on is never destructive and never ends 
 });
 
 describe('filterPaletteEntries ranks a typed query (ADR-0145 §7.6)', () => {
-  const chat = buildPaletteEntries('chat', CHAT);
+  const chat = buildPaletteEntries('standalone-chat', CHAT);
   const home = buildPaletteEntries('home', HOME);
 
   it('leaves an empty or blank query as the list it is, groups and all', () => {

@@ -149,6 +149,7 @@ import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
 import { formatUsdExact } from '../render/notation.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
+import { chatSurfaceOf, noticeSurfaceOf, type Surface } from '../render/surface.js';
 import { KEY_SHAPED_COMMAND_NOTICE, looksLikeProviderKey } from '../render/provider-key-shape.js';
 import { nodeCreateTempDocument, createNodeSpawnEditor } from '../render/editor.js';
 import {
@@ -1577,7 +1578,9 @@ function resumeMissingKeyNotice(providers: ProviderResolver, provider: ProviderI
   // This notice is always read inside a live chat. The Home's resolver speaks for the Home's landing (`/providers`), which a chat the Home
   // hosts answers with a pointer only, so there the remedy is the way back to the Home.
   const surface =
-    providers.credentialSurface === 'home' ? 'home-chat' : providers.credentialSurface;
+    providers.credentialSurface === undefined
+      ? undefined
+      : chatSurfaceOf(providers.credentialSurface);
   return `${missingKeyMessage(provider, surface)} Or switch to a model whose provider has a key with /models.`;
 }
 
@@ -1693,7 +1696,15 @@ export function chatNoticeSurface(
   io: Pick<CliIo, 'stdoutIsTty' | 'env'>,
   global: Pick<GlobalOptions, 'json'>,
 ): NoticeSurface {
-  return chatIsInteractive(io, global) ? 'tui' : 'shell';
+  return noticeSurfaceOf(chatSurface(chatIsInteractive(io, global)));
+}
+
+/**
+ * The surface a chat handler serves, from whether a person can answer it: a chat on a terminal reads as the stand-alone chat (the chat the Home
+ * hosts has the same notice class, which is all this is used for), a plain or `--json` one is scripted output on the shell.
+ */
+function chatSurface(interactive: boolean): Surface {
+  return interactive ? 'standalone-chat' : 'shell';
 }
 
 export function createChatModeControl(
@@ -1767,7 +1778,12 @@ export function createChatModeControl(
     // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
     // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
     store.notice(
-      effortRejectedNote(built.agent.model, seeded, tiers, interactive ? 'tui' : 'shell'),
+      effortRejectedNote(
+        built.agent.model,
+        seeded,
+        tiers,
+        noticeSurfaceOf(chatSurface(interactive)),
+      ),
     );
   }
   return {
@@ -1983,7 +1999,7 @@ export function createChatLineHandler(
   // `emitOutput` (a NOTICE in-view vs. a stderr diagnostic).
   const interactive = chatIsInteractive(deps.io, deps.global);
   /** The wording of every notice this handler composes: the interactive chat's remedies name its own commands, a scripted chat's name the shell's. */
-  const noticeSurface: NoticeSurface = interactive ? 'tui' : 'shell';
+  const noticeSurface: NoticeSurface = noticeSurfaceOf(chatSurface(interactive));
 
   // The reseat-less mode system (ADR-0057) — created HERE so both the `/mode` command (below) and the driver's
   // keys (Shift+Tab / Esc) drive the SAME control. It applies the resolved starting mode immediately, so the
@@ -2400,8 +2416,8 @@ export function createChatLineHandler(
       // A word only the Home has (`/providers`, `/init`, `/import`, `/pricing`, `/run`, `/agents`, and `/resume`, which a stand-alone chat
       // has no list for): one line that names the Home, and nothing opens (ADR-0145 §7.4). It is not an unknown command. This handler
       // is a stand-alone chat's (and a plain or `--json` driver's): the chat the Home hosts answers those words in its controller first,
-      // with its own sentence, so this is the `chat` surface, which also says how to reach the Home.
-      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'chat');
+      // with its own sentence, so this is the `standalone-chat` surface, which also says how to reach the Home.
+      const pointer = name === undefined ? undefined : homeOnlyPointer(name, 'standalone-chat');
       if (pointer !== undefined) {
         emitOutput(pointer);
         return;

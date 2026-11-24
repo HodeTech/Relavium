@@ -29,6 +29,7 @@ import {
   type TabHostState,
   type TabId,
 } from './tab-host.js';
+import { stylesOver } from './emphasis-test-kit.js';
 import { openNodeTab } from './tab-host-node.js';
 import { TabHostView } from './tab-host-view.js';
 
@@ -46,6 +47,7 @@ const GREEN = `${ESC}[32m`;
 const RED = `${ESC}[31m`;
 const YELLOW = `${ESC}[33m`;
 const BOLD = `${ESC}[1m`;
+const INVERSE = `${ESC}[7m`;
 const DIM = `${ESC}[2m`;
 /** Any foreground colour code (the regular and the bright palette). */
 const ANY_COLOUR = new RegExp(`${ESC}\\[(3[0-7]|9[0-7])m`, 'u');
@@ -526,11 +528,37 @@ describe('TabHostView below the minimum', () => {
   );
 });
 
+describe('TabHostView draws the selection the same with colour on and off', () => {
+  it('the current tab and the selected row are bold and inverse (ADR-0145 §5): no colour takes the colour only', () => {
+    for (const color of [false, true]) {
+      const drawn = frame(hostOn('permissions', { ...SNAPSHOT, allowlist: ALLOWLIST }), color);
+      const weight = (needle: string): string[] | undefined =>
+        stylesOver(drawn, needle)?.filter((style) => style !== 'colour');
+      expect(
+        weight('› Permissions') ?? weight('> Permissions'),
+        `tab, colour ${String(color)}`,
+      ).toEqual(['bold', 'inverse']);
+      expect(weight('npm, 1 argument'), `row, colour ${String(color)}`).toEqual([
+        'bold',
+        'inverse',
+      ]);
+      expect(
+        weight('node, 1 argument') ?? [],
+        `the row beside it, colour ${String(color)}`,
+      ).toEqual([]);
+      expect(weight('Defined') ?? [], `another tab, colour ${String(color)}`).not.toContain(
+        'inverse',
+      );
+    }
+  });
+});
+
 describe('TabHostView with colour on', () => {
   it('draws the current tab bold and the others dim, the rule dim, the selected row cyan with its key in red, and the allowlist heading bold', () => {
     const drawn = frame(hostOn('permissions', { ...SNAPSHOT, allowlist: ALLOWLIST }), true);
     const strip = lineWith(drawn, '› Permissions');
-    expect(strip).toContain(`${BOLD}› Permissions`);
+    // the current tab carries the selection marker, so it is the selected item of the strip: bold and inverse
+    expect(strip).toContain(`${BOLD}${INVERSE}› Permissions`);
     expect(strip).toContain(`${DIM}Defined`);
     expect(lineWith(drawn, '────').startsWith(DIM)).toBe(true);
     const selected = lineWith(drawn, '› npm, 1 argument');

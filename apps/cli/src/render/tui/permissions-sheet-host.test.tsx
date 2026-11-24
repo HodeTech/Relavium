@@ -14,7 +14,7 @@ import { ChatApp } from './chat-ink.js';
 import { createChatStore } from './chat-store.js';
 import { SHEET_CONFIRM_DWELL_MS, SHEET_SETTLE_MS } from './permissions-sheet.js';
 import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
-import { bracketed, settleFrames } from './harness-util.js';
+import { bracketed, settleFrames, withoutStyles } from './harness-util.js';
 
 /**
  * The `/permissions` sheet mounted in the standalone `ChatApp` (ADR-0137 §2): the keyboard it owns, what it draws, and that a withdrawal
@@ -113,7 +113,8 @@ function mount(options: {
   return { view, store };
 }
 
-const frame = (view: ReturnType<typeof renderCapture>): string => view.lastFrame() ?? '';
+const frame = (view: ReturnType<typeof renderCapture>): string =>
+  withoutStyles(view.lastFrame() ?? '');
 
 async function openSheet(
   view: ReturnType<typeof renderCapture>,

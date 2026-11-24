@@ -6,7 +6,7 @@ import { createElement } from 'react';
 import stringWidth from 'string-width';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ToolApprovalRequest, ToolPreview } from '@relavium/core';
-import { OwnedTtyInput, OwnedTtyOutput } from '../../test-support.js';
+import { OwnedTtyInput, OwnedTtyOutput, PlainTtyOutput } from '../../test-support.js';
 import { createChatStore } from './chat-store.js';
 import { ChatApp } from './chat-ink.js';
 import { RootApp } from './home-app.js';
@@ -87,7 +87,7 @@ function fixture(
   host: 'chat' | 'home',
   alternate: boolean,
   color: boolean,
-  output = new OwnedTtyOutput(),
+  output = new PlainTtyOutput(),
   ports: { suspendPort?: SuspendPort; reviewClipboard?: ClipboardWriter } = {},
   approvalGuard: ApprovalGuard = NO_APPROVAL_GUARD,
 ) {
@@ -1429,7 +1429,7 @@ describe.each(['chat', 'home'] as const)('review identity and explicit copy %s',
     'copies masked review explicitly after reveal without selection clipboard, alternate=%s',
     async (alternate) => {
       const copied: string[] = [];
-      const f = fixture(host, alternate, false, new OwnedTtyOutput(), {
+      const f = fixture(host, alternate, false, new PlainTtyOutput(), {
         reviewClipboard: (text) => {
           copied.push(text);
           return { kind: 'written', characters: text.length };
@@ -1648,7 +1648,7 @@ it('escapes controls and literal token delimiters in mandatory tool identity', (
   expect(toolReviewIdentity('界'.repeat(100), 'action', 'os', 80).valid).toBe(false);
 });
 
-class HeldOutput extends OwnedTtyOutput {
+class HeldOutput extends PlainTtyOutput {
   held = false;
   blockedWrite: (() => void) | undefined;
   override _write(

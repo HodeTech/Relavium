@@ -37,6 +37,12 @@ export interface SurfaceBase {
   /** Text that is on screen only when THIS surface is: the guard against a surface that never opened and a frame that passes by being empty. */
   readonly landmark: string | RegExp;
   /**
+   * Words that only the surface's SELECTED row has (a command's name, a model's): the matrix asserts that the last time they were written
+   * to the terminal they were bold and inverse, in every cell, colour off included (ADR-0145 §5: the selection is the marker AND an inverse
+   * row, because the marker alone cannot tell a selected row from the prompt). Absent for a surface that draws no selection.
+   */
+  readonly selectedRow?: string | undefined;
+  /**
    * What the surface does below the floor (60×20): a pattern its below-floor text matches (the default is the Home's "too small" notice and
    * the sheets' "enlarge the terminal"), or `'renders'` for a surface that draws normally there and keeps every property, exit key included.
    */

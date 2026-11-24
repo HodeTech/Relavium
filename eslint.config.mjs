@@ -264,6 +264,7 @@ const CLI_DATA_MODULES = [
   'apps/cli/src/render/tui/legend-row.ts',
   'apps/cli/src/render/tui/glyphs.ts',
   'apps/cli/src/render/notation.ts',
+  'apps/cli/src/render/surface.ts',
   'tools/lint-fixtures/forbidden-in-data-module.ts',
 ];
 const ENGINE_NODE_GLOBALS = [

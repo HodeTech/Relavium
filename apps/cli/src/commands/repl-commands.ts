@@ -14,13 +14,14 @@
  * those three can never disagree. The set is deliberately small and **alias-free**.
  *
  * **One table** ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7, MVP-11 Step 2.2): one
- * {@link CommandDefinition} per command name, with a {@link Placement} per surface (`home`, `chat`, `home-chat`) that carries the group, the
+ * {@link CommandDefinition} per command name, with a {@link Placement} per surface (`home`, `standalone-chat`, `home-chat`) that carries the group, the
  * rank, the words, the surface class and an availability function. Everything else here is DERIVED from it: the per-surface lists, the
  * `/help` text, the typed dispatch's lookup. The module is pure data and imports nothing from `ink`, `react` or `node:`.
  */
 
 import { CHAT_MODES, REASONING_EFFORTS } from '@relavium/shared';
 
+import type { Surface } from '../render/surface.js';
 import { keyToken } from '../render/tui/legend.js';
 import type { CommandEffect } from './manifest.js';
 
@@ -122,11 +123,12 @@ export interface ReplArg {
 // ── The one table ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /**
- * The surfaces a command can be offered on ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7): the bare
- * Home, a stand-alone `relavium chat` and the chat the Home hosts. A command is placed on each of them separately: where it sits, what it
- * says and whether it can act differ by surface.
+ * The surfaces a command can be offered on ([ADR-0145](../../../../docs/decisions/0145-the-cli-has-one-surface-language.md) §7): every
+ * {@link Surface} but the shell (a command line has no palette): the bare Home, a stand-alone `relavium chat` (`standalone-chat`) and the chat
+ * the Home hosts (`home-chat`). A command is placed on each of them separately: where it sits, what it says and whether it can act differ by
+ * surface.
  */
-export type PaletteSurface = 'home' | 'chat' | 'home-chat';
+export type PaletteSurface = Exclude<Surface, 'shell'>;
 
 /** The groups of a palette: the Home's four and the chat's five. The order a surface draws them in is {@link SURFACE_GROUPS}. */
 export type CommandGroup =
@@ -146,7 +148,13 @@ export type CommandGroup =
  */
 const SURFACE_GROUPS: Readonly<Record<PaletteSurface, readonly CommandGroup[]>> = Object.freeze({
   home: Object.freeze<CommandGroup[]>(['work', 'setup', 'check', 'end']),
-  chat: Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
+  'standalone-chat': Object.freeze<CommandGroup[]>([
+    'model',
+    'context',
+    'inspect',
+    'takeaway',
+    'end',
+  ]),
   'home-chat': Object.freeze<CommandGroup[]>(['model', 'context', 'inspect', 'takeaway', 'end']),
 });
 
@@ -297,8 +305,8 @@ const resumeNeedsASavedSession = (ctx: AvailabilityContext): Availability =>
 function inChats(
   placement: Placement,
   homeChat: Partial<Placement> = {},
-): { readonly chat: Placement; readonly 'home-chat': Placement } {
-  return { chat: placement, 'home-chat': { ...placement, ...homeChat } };
+): Readonly<Record<CommandListSurface, Placement>> {
+  return { 'standalone-chat': placement, 'home-chat': { ...placement, ...homeChat } };
 }
 
 /** The `run` of a {@link HomeOpenedCommand} in the flattened view: the Home opens the command itself, so a call here is a routing mistake. */
@@ -783,7 +791,11 @@ const ORDER_BY_SURFACE: Readonly<Record<PaletteSurface, readonly CommandDefiniti
     );
     return placed.map((entry) => entry.definition);
   };
-  return { home: orderOf('home'), chat: orderOf('chat'), 'home-chat': orderOf('home-chat') };
+  return {
+    home: orderOf('home'),
+    'standalone-chat': orderOf('standalone-chat'),
+    'home-chat': orderOf('home-chat'),
+  };
 })();
 
 /** DEEP-freeze a definition — the entry, its `args` array + each flag, its `positional` and its placements — so no downstream code can mutate
@@ -843,7 +855,10 @@ export function availabilityOf(
 const availableInOf = (definition: CommandDefinition): readonly ('home' | 'chat')[] => {
   const surfaces: ('home' | 'chat')[] = [];
   if (definition.placements.home !== undefined) surfaces.push('home');
-  if (definition.placements.chat !== undefined || definition.placements['home-chat'] !== undefined)
+  if (
+    definition.placements['standalone-chat'] !== undefined ||
+    definition.placements['home-chat'] !== undefined
+  )
     surfaces.push('chat');
   return Object.freeze(surfaces);
 };
@@ -883,7 +898,7 @@ export function commandsOf(surface: PaletteSurface): readonly ReplCommand[] {
  * plain, `--json` and one-shot drivers run the same handlers and print this order in their `/help`, which is accepted and recorded (ADR-0145
  * §7.7). The chat the Home hosts runs the same handlers but lists {@link HOME_CHAT_PALETTE_COMMANDS} (`formatReplHelp('home-chat')`).
  */
-export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(commandsOf('chat'));
+export const REPL_COMMANDS: readonly ReplCommand[] = Object.freeze(commandsOf('standalone-chat'));
 
 /** O(1) lookup of a chat's REPL command by its slash name (no leading `/`). The `ReadonlyMap` type is the mutation guard
  *  (a `Map`'s internal data can't be `Object.freeze`d); every command it holds is deep-frozen above. */
@@ -906,7 +921,7 @@ export const HOME_PALETTE_COMMANDS: readonly ReplCommand[] = Object.freeze(comma
 /**
  * The one line a chat answers to a command that only the Home has (ADR-0145 §7.4): it names the surface that has the command, opens
  * nothing and is not "unknown command". `undefined` when the surface offers the command, when no command has that name and when no surface
- * but a chat has it (the Home answers a chat's word itself, with its own sentence). A stand-alone chat (`chat`) is not inside the Home, so its
+ * but a chat has it (the Home answers a chat's word itself, with its own sentence). A stand-alone chat (`standalone-chat`) is not inside the Home, so its
  * line also says how to reach it; the chat the Home hosts (`home-chat`) is, and its line only names it.
  */
 export function homeOnlyPointer(name: string, surface: PaletteSurface): string | undefined {
@@ -914,7 +929,7 @@ export function homeOnlyPointer(name: string, surface: PaletteSurface): string |
   const definition = COMMAND_DEFINITIONS_BY_NAME.get(name);
   if (definition === undefined || definition.placements[surface] !== undefined) return undefined;
   if (definition.placements.home === undefined) return undefined;
-  return surface === 'chat'
+  return surface === 'standalone-chat'
     ? `/${name} is available from the Home: start Relavium without arguments.`
     : `/${name} is available from the Home.`;
 }
@@ -925,13 +940,13 @@ export function unavailableNotice(name: string, reason: string): string {
 }
 
 /** The two surfaces that print a command list: a stand-alone chat (every non-interactive driver too) and the chat the Home hosts. */
-export type CommandListSurface = Extract<PaletteSurface, 'chat' | 'home-chat'>;
+export type CommandListSurface = Extract<Surface, 'home-chat' | 'standalone-chat'>;
 
 /**
  * The comma-separated slash list for the unknown-slash hint — `/models, /mode, /effort, …`, in the order the surface's palette lists them. A
  * stand-alone chat (the default, and what the plain, `--json` and one-shot drivers print) and the chat the Home hosts differ by `/resume`.
  */
-export function replCommandList(surface: CommandListSurface = 'chat'): string {
+export function replCommandList(surface: CommandListSurface = 'standalone-chat'): string {
   return commandsOf(surface)
     .map((command) => `/${command.name}`)
     .join(', ');
@@ -942,7 +957,7 @@ export function replCommandList(surface: CommandListSurface = 'chat'): string {
  * (`/exit` reads "End the chat session." in a stand-alone chat and "Leave this chat and go back to the Home." in the Home's), so `/help` and
  * the palette cannot disagree.
  */
-export function formatReplHelp(surface: CommandListSurface = 'chat'): string {
+export function formatReplHelp(surface: CommandListSurface = 'standalone-chat'): string {
   const rows = commandsOf(surface).map((command) => `  /${command.name}  ${command.description}`);
   return `Commands:\n${rows.join('\n')}\n`;
 }

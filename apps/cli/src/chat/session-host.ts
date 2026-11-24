@@ -69,7 +69,6 @@ import {
   createProviderResolver,
   missingKeyMessage,
   providerHasKey,
-  type CredentialSurface,
   type ProviderResolver,
 } from '../engine/providers.js';
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
@@ -86,6 +85,7 @@ import {
 } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
 import type { NoticeSurface } from '../render/notice-surface.js';
+import type { Surface } from '../render/surface.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import {
   effortWithheldNote,
@@ -1063,7 +1063,7 @@ function bindChatAgent(
 function assertProviderKey(
   agent: AgentDefinition,
   hasKey: (id: ProviderId) => boolean,
-  surface?: CredentialSurface,
+  surface?: Surface,
 ): void {
   if (hasKey(agent.provider)) return;
   throw new CliError('invalid_invocation', missingKeyMessage(agent.provider, surface));

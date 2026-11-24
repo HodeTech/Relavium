@@ -21,6 +21,7 @@ import type { RunRenderer } from '../render/renderer.js';
 import { HOSTED_RUN_EXIT_SETTLE_MS } from '../render/tui/tui-constants.js';
 import type { RunJobControl } from '../render/run-job-control.js';
 import { sanitizeInline, sanitizeUntrustedInline } from '../render/sanitize.js';
+import { noticeSurfaceOf } from '../render/surface.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
 import { finishLeg, type LegKind } from '../run-core/finish-leg.js';
 import {
@@ -899,7 +900,7 @@ export class RunHost {
     try {
       await finishLeg({
         leg: leg.kind,
-        noticeSurface: 'tui', // the line a taken-over leg writes becomes a notice in the Home
+        noticeSurface: noticeSurfaceOf('home'), // the line a taken-over leg writes becomes a notice in the Home
         runId: acquired.runId,
         lifetime: leg.lifetime,
         io,
@@ -1054,7 +1055,7 @@ export class RunHost {
       {
         io,
         // Every line a leg writes becomes a notice inside the TUI: its remedies name the Home's actions, never a shell command.
-        noticeSurface: 'tui',
+        noticeSurface: noticeSurfaceOf('home'),
         global: { cwd: this.#projectRoot, configPath: this.#global.configPath },
         // The same home a resume loads from, never the OS's: the host is always handed one.
         home: this.#homeDir,
@@ -1106,7 +1107,12 @@ export class RunHost {
             kind: request.kind,
             decision: request.decision,
           },
-      { io, noticeSurface: 'tui', global: { cwd: this.#projectRoot }, ...this.#services },
+      {
+        io,
+        noticeSurface: noticeSurfaceOf('home'),
+        global: { cwd: this.#projectRoot },
+        ...this.#services,
+      },
       { config: host.config, homeDir: host.homeDir },
       {
         openDb: () => ({ db: this.#db, close: () => undefined }),

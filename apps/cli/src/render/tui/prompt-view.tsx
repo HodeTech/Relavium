@@ -4,11 +4,8 @@ import type { ReactElement } from 'react';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import { promptRows, type PromptRow } from './prompt-cursor.js';
+import { emphasize } from './emphasis.js';
 import { colorProps } from './projection.js';
-
-/** Reverse video on and off, as the terminal reads them: not a colour, so it is kept when colour is off. */
-const INVERSE_ON = '\u001b[7m';
-const INVERSE_OFF = '\u001b[27m';
 
 /**
  * The live multi-line prompt with the cursor drawn at its position (2.5.D step 2) — shared by `ChatView`
@@ -18,7 +15,7 @@ const INVERSE_OFF = '\u001b[27m';
  * sequence cannot corrupt the terminal or inject ANSI/OSC. The cursor cell is an inverse block, drawn WHETHER OR NOT
  * colour is on: "no colour" means colour only (ADR-0145 §5, MVP-11 OD-6), and bold, inverse and underline stay.
  *
- * With colour on the cell is ink's `<Text inverse>`. With colour off it is the SGR pair written out (`ESC[7m` … `ESC[27m`): ink renders
+ * The cell is the SGR pair written out (`ESC[7m` … `ESC[27m`) by the one emphasis rule (`emphasis.ts`) in both modes: ink renders
  * `inverse` through chalk, whose level is 0 under `--no-color`, `FORCE_COLOR=0` and `TERM=dumb`, so there `<Text inverse>` prints nothing
  * and the prompt had no cursor at all (observed, MVP-11 step 1 evidence §A; the first fix covered only the `NO_COLOR` variable). The pair
  * is zero-width to ink's width measurement and wrapping, which read SGR as part of no cell, so a row does not wrap earlier for it.
@@ -50,12 +47,7 @@ export function PromptEditor(
           <Text key={rowOffset} {...colorProps(color, 'cyan')}>
             {rowOffset === 0 ? '> ' : '  '}
             {sanitizeInline(row.before)}
-            {row.at !== undefined &&
-              (color ? (
-                <Text inverse>{cursorCell}</Text>
-              ) : (
-                `${INVERSE_ON}${cursorCell}${INVERSE_OFF}`
-              ))}
+            {row.at !== undefined && emphasize(cursorCell, 'inverse')}
             {sanitizeInline(row.after)}
           </Text>
         );

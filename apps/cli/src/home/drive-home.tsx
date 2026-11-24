@@ -61,6 +61,7 @@ import { onceEffortNotice } from '../chat/effort-notice.js';
 import { reconcileResumedSessionEffects, type NoticeFlush } from '../engine/effect-retention.js';
 import { displayRoots } from '../render/display-roots.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { noticeSurfaceOf } from '../render/surface.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   createSessionPersister,
@@ -928,7 +929,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
     const doctorProbes =
       deps.doctorProbes ??
       assembleDoctorProbes({
-        noticeSurface: 'tui', // the Home is a TTY surface: `/import`, never a shell command
+        noticeSurface: noticeSurfaceOf('home'), // the Home is a TTY surface: `/import`, never a shell command
         readConfig: () => {
           startingModes.read(deps.global.cwd);
         },
@@ -1049,7 +1050,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         const chatDoctorProbes =
           deps.doctorProbes ??
           assembleDoctorProbes({
-            noticeSurface: 'tui', // the Home-hosted chat is read in the TUI
+            noticeSurface: noticeSurfaceOf('home-chat'), // the Home-hosted chat is read in the TUI
             readConfig: () => {
               startingModes.read(built.context.workingDir);
             },
@@ -1438,7 +1439,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
             // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
             onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
-            noticeSurface: 'tui', // the Home's chat has /models and /pricing: its remedies name them, never a shell command
+            noticeSurface: noticeSurfaceOf('home-chat'), // the Home's chat has /models and /pricing: its remedies name them, never a shell command
             onEffectAttention: noteEffectAttention,
             onListenerError: (note) => store.notice(note),
             onUnpriced: (note) => store.notice(note),
@@ -1588,7 +1589,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
             // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
             // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
             onEffortWithheld: onceEffortNotice(noteToStore),
-            noticeSurface: 'tui',
+            noticeSurface: noticeSurfaceOf('home-chat'),
             onEffectAttention: noteEffectAttention,
             onListenerError: noteToStore,
             onUnpriced: noteToStore,

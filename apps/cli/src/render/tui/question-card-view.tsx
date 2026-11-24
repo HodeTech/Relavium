@@ -13,17 +13,19 @@ import {
   createMeasuredFrameAcknowledgement,
   reviewTerminalFits,
 } from './measured-frame-acknowledgement.js';
+import { sanitizeInline } from './chat-projection.js';
+import { EmphText } from './emphasis-view.js';
+import { SELECTED_ROW, type EmphasisSet } from './emphasis.js';
 import { withGlyphForm } from './glyphs.js';
 import { colorProps, dimProps } from './projection.js';
 import { legend } from './legend.js';
 import { QUESTION_STOP, projectQuestionCard, type QuestionRowTone } from './question-card.js';
 
+/** The colour of a row by its tone (none with colour off); the weight of a row is {@link toneEmphasis}, which colour does not switch. */
 function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknown> {
   switch (tone) {
-    case 'header':
-      return { bold: true };
     case 'highlight':
-      return color ? { color: 'cyan', bold: true } : { bold: true };
+      return colorProps(color, 'cyan');
     case 'chosen':
       return colorProps(color, 'green');
     case 'description':
@@ -35,6 +37,12 @@ function toneProps(tone: QuestionRowTone, color: boolean): Record<string, unknow
     default:
       return {};
   }
+}
+
+/** The header is bold and the highlighted option is the selected row, with colour on and off alike. */
+function toneEmphasis(tone: QuestionRowTone): EmphasisSet | undefined {
+  if (tone === 'header') return 'bold';
+  return tone === 'highlight' ? SELECTED_ROW : undefined;
 }
 
 /**
@@ -127,9 +135,15 @@ export function QuestionCardHost(
         {view.rule}
       </Text>
       {view.body.map((row, index) => (
-        <Text key={index} {...toneProps(row.tone, color)} wrap="truncate-end">
-          {row.text.length === 0 ? ' ' : row.text}
-        </Text>
+        <EmphText
+          key={index}
+          {...toneProps(row.tone, color)}
+          emphasis={toneEmphasis(row.tone)}
+          wrap="truncate-end"
+        >
+          {/* the model's header and option labels are drawn inside a style pair: the core refuses a control character in them, and this is the floor under that */}
+          {sanitizeInline(row.text) || ' '}
+        </EmphText>
       ))}
       {view.keys.map((row, index) => (
         <Text key={`keys-${String(index)}`} {...dimProps(color)} wrap="truncate-end">

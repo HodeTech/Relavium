@@ -1,6 +1,7 @@
 import { Box, Text, measureElement, type DOMElement } from 'ink';
 import { useLayoutEffect, useRef, useState, type ReactElement } from 'react';
 
+import { Emph } from './emphasis-view.js';
 import { transcriptStyleProps } from './projection.js';
 import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
@@ -150,7 +151,7 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
             ) : (
               <>
                 {segments.before}
-                <Text inverse>{segments.selected}</Text>
+                <Emph kinds="inverse">{segments.selected}</Emph>
                 {segments.after}
               </>
             )}

@@ -1,6 +1,7 @@
 import { render } from 'ink-testing-library';
 import { describe, expect, it } from 'vitest';
 import type { RunHostSnapshot } from '../../home/run-host.js';
+import { withoutStyles } from './harness-util.js';
 import { HomeView } from './home-view.js';
 import type { StripFocus } from './strip-focus.js';
 
@@ -289,7 +290,7 @@ describe('the focused parked row at 80 columns', () => {
         stripFocus={{ kind: 'run', id: UUID }}
       />,
     );
-    const frame = view.lastFrame() ?? '';
+    const frame = withoutStyles(view.lastFrame() ?? '');
     view.unmount();
     const line = frame.split('\n').find((candidate) => candidate.includes('||'));
     if (line === undefined) throw new Error(`no parked row in:\n${frame}`);

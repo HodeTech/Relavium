@@ -2,6 +2,8 @@ import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
 import { sanitizeInline } from './chat-projection.js';
+import { Emph } from './emphasis-view.js';
+import { SELECTED_ROW } from './emphasis.js';
 import { glyphOf } from './glyphs.js';
 import { exitKey, legend } from './legend.js';
 import { visibleMentions, type MentionState } from './mention.js';
@@ -79,7 +81,9 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
           {...(isSelected ? colorProps(color, 'cyan') : {})}
           wrap="truncate-end"
         >
-          {`${isSelected ? glyphOf('selection', !color) : ' '} ${sanitizeInline(candidate.name)}${marker}`}
+          <Emph kinds={isSelected ? SELECTED_ROW : undefined}>
+            {`${isSelected ? glyphOf('selection', !color) : ' '} ${sanitizeInline(candidate.name)}${marker}`}
+          </Emph>
         </Text>
       );
     });
@@ -88,7 +92,7 @@ export function MentionView(props: Readonly<MentionViewProps>): ReactElement {
     <Box flexDirection="column" marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
         {`@ ${where}`}
-        <Text bold>{sanitizeInline(state.filter)}</Text>
+        <Emph kinds="bold">{sanitizeInline(state.filter)}</Emph>
       </Text>
       {renderBody()}
       <Text {...dimProps(color)} wrap="truncate-end">
