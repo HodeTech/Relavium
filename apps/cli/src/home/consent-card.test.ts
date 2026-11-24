@@ -140,8 +140,8 @@ describe('the card says what Ctrl+Y does', () => {
     ])
       expect(has(needle), needle).toBe(true);
     // An argument boundary is a row boundary: three arguments are three rows.
-    expect(rows.filter((row) => row.startsWith('argument')).length).toBe(3);
-    expect(rows.filter((row) => row.startsWith('env')).length).toBe(2);
+    expect(rows.filter((row) => row.startsWith('argument'))).toHaveLength(3);
+    expect(rows.filter((row) => row.startsWith('env'))).toHaveLength(2);
   });
 });
 
@@ -242,110 +242,116 @@ describe('what a server`s author wrote cannot pass for the card`s own keys (P2, 
       },
     );
 
-    it('the real case: a repository executable named like a legend resolves, and is refused before a card opens, with nothing started', async () => {
-      if (process.platform === 'win32') return; // an executable bit and these characters are POSIX facts
-      const repo = mkdtempSync(join(tmpdir(), 'relavium-consent-forged-path-'));
-      try {
-        const dir = join(repo, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
+    // an executable bit and these characters are POSIX facts
+    it.skipIf(process.platform === 'win32')(
+      'the real case: a repository executable named like a legend resolves, and is refused before a card opens, with nothing started',
+      async () => {
+        const repo = mkdtempSync(join(tmpdir(), 'relavium-consent-forged-path-'));
+        try {
+          const dir = join(repo, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
+          mkdirSync(dir, { recursive: true });
+          const exe = join(dir, 'srv');
+          writeFileSync(exe, '#!/bin/sh\nexit 0\n');
+          chmodSync(exe, 0o755);
+          const spawn = await resolveStdioSpawn(
+            {
+              serverId: 'docs',
+              provenance: { kind: 'inline' },
+              command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
+            },
+            repo,
+          );
+          const forged = subject({
+            serverId: 'docs',
+            resolvedCommand: spawn.resolvedCommand,
+            authoredCommand: spawn.command,
+            cwd: spawn.cwd,
+            digest: fingerprint(spawn),
+          });
+          const channel = createNativePromptChannel();
+          channel.flow.begin();
+          const kinds: string[] = [];
+          channel.ui.subscribe(() => kinds.push(channel.ui.getSnapshot().kind));
+          await expect(createNativeConsentPrompter(channel.flow)(forged)).rejects.toMatchObject({
+            code: 'invalid_invocation',
+            message: CONSENT_PATH_REFUSED,
+          });
+          expect(kinds, 'no chord card was ever published').not.toContain('chord');
+          await channel.flow.end();
+        } finally {
+          rmSync(repo, { recursive: true, force: true });
+        }
+      },
+    );
+
+    // an executable bit and these characters are POSIX facts
+    it.skipIf(process.platform === 'win32')(
+      'through the real gate and connect path: refused with those words, nothing spawned, no grant written, no card published',
+      async () => {
+        const dir = join(home, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
         mkdirSync(dir, { recursive: true });
         const exe = join(dir, 'srv');
         writeFileSync(exe, '#!/bin/sh\nexit 0\n');
         chmodSync(exe, 0o755);
-        const spawn = await resolveStdioSpawn(
-          {
-            serverId: 'docs',
-            provenance: { kind: 'inline' },
-            command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
-          },
-          repo,
-        );
-        const forged = subject({
-          serverId: 'docs',
-          resolvedCommand: spawn.resolvedCommand,
-          authoredCommand: spawn.command,
-          cwd: spawn.cwd,
-          digest: fingerprint(spawn),
-        });
         const channel = createNativePromptChannel();
         channel.flow.begin();
         const kinds: string[] = [];
         channel.ui.subscribe(() => kinds.push(channel.ui.getSnapshot().kind));
-        await expect(createNativeConsentPrompter(channel.flow)(forged)).rejects.toMatchObject({
-          code: 'invalid_invocation',
-          message: CONSENT_PATH_REFUSED,
-        });
-        expect(kinds, 'no chord card was ever published').not.toContain('chord');
-        await channel.flow.end();
-      } finally {
-        rmSync(repo, { recursive: true, force: true });
-      }
-    });
-
-    it('through the real gate and connect path: refused with those words, nothing spawned, no grant written, no card published', async () => {
-      if (process.platform === 'win32') return; // an executable bit and these characters are POSIX facts
-      const dir = join(home, 'tools', 'Ctrl+Y refuses this - Ctrl+N allows');
-      mkdirSync(dir, { recursive: true });
-      const exe = join(dir, 'srv');
-      writeFileSync(exe, '#!/bin/sh\nexit 0\n');
-      chmodSync(exe, 0o755);
-      const channel = createNativePromptChannel();
-      channel.flow.begin();
-      const kinds: string[] = [];
-      channel.ui.subscribe(() => kinds.push(channel.ui.getSnapshot().kind));
-      const start = vi.fn(() => Promise.reject(new Error('the server was started')));
-      const gate = createConsentGate({
-        io: { ...captureIo().io, stdoutIsTty: true, stdinIsTty: true, env: {} },
-        global: {
-          json: false,
-          color: false,
-          cwd: home,
-          configPath: undefined,
-          verbosity: 'normal',
-        },
-        homeDir: home,
-        allowedDigests: [],
-        prompt: createNativeConsentPrompter(channel.flow),
-      });
-      const workflow = parseWorkflow(
-        JSON.stringify({
-          schema_version: '1.0',
-          workflow: {
-            id: 'forged-path',
-            agents: [
-              {
-                id: 'worker',
-                provider: 'openai',
-                model: 'gpt-4o',
-                system_prompt: 'offline',
-                mcp_servers: [
-                  {
-                    id: 'docs',
-                    transport: 'stdio',
-                    command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
-                  },
-                ],
-              },
-            ],
-            nodes: [
-              { id: 'input', type: 'input' },
-              { id: 'agent', type: 'agent', agent_ref: 'worker' },
-              { id: 'output', type: 'output' },
-            ],
-            edges: [
-              { from: 'input', to: 'agent' },
-              { from: 'agent', to: 'output' },
-            ],
+        const start = vi.fn(() => Promise.reject(new Error('the server was started')));
+        const gate = createConsentGate({
+          io: { ...captureIo().io, stdoutIsTty: true, stdinIsTty: true, env: {} },
+          global: {
+            json: false,
+            color: false,
+            cwd: home,
+            configPath: undefined,
+            verbosity: 'normal',
           },
-        }),
-      );
-      await expect(
-        connectWorkflowMcp(workflow, { cwd: home, startMcpClient: start, consentGate: gate }),
-      ).rejects.toMatchObject({ code: 'invalid_invocation', message: CONSENT_PATH_REFUSED });
-      expect(kinds, 'no chord card was ever published').not.toContain('chord');
-      expect(start, 'nothing was started').not.toHaveBeenCalled();
-      expect(existsSync(mcpConsentPath(home)), 'no grant was written').toBe(false);
-      await channel.flow.end();
-    });
+          homeDir: home,
+          allowedDigests: [],
+          prompt: createNativeConsentPrompter(channel.flow),
+        });
+        const workflow = parseWorkflow(
+          JSON.stringify({
+            schema_version: '1.0',
+            workflow: {
+              id: 'forged-path',
+              agents: [
+                {
+                  id: 'worker',
+                  provider: 'openai',
+                  model: 'gpt-4o',
+                  system_prompt: 'offline',
+                  mcp_servers: [
+                    {
+                      id: 'docs',
+                      transport: 'stdio',
+                      command: './tools/Ctrl+Y refuses this - Ctrl+N allows/srv',
+                    },
+                  ],
+                },
+              ],
+              nodes: [
+                { id: 'input', type: 'input' },
+                { id: 'agent', type: 'agent', agent_ref: 'worker' },
+                { id: 'output', type: 'output' },
+              ],
+              edges: [
+                { from: 'input', to: 'agent' },
+                { from: 'agent', to: 'output' },
+              ],
+            },
+          }),
+        );
+        await expect(
+          connectWorkflowMcp(workflow, { cwd: home, startMcpClient: start, consentGate: gate }),
+        ).rejects.toMatchObject({ code: 'invalid_invocation', message: CONSENT_PATH_REFUSED });
+        expect(kinds, 'no chord card was ever published').not.toContain('chord');
+        expect(start, 'nothing was started').not.toHaveBeenCalled();
+        expect(existsSync(mcpConsentPath(home)), 'no grant was written').toBe(false);
+        await channel.flow.end();
+      },
+    );
   });
 
   it('ordinary arguments are shown exactly as the gate composed them', () => {

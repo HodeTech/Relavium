@@ -68,6 +68,18 @@ export function boundedNotice(notice: string): string {
   return `${notice.slice(0, end)}…`;
 }
 
+/**
+ * The rows Home's Continue section takes. One Continue row needs body margin + two headings + its title/directory lines; a recent run alone
+ * needs the margin, the headings and its row.
+ */
+function continueSectionRows(
+  options: Pick<HomeNoticeOptions, 'hasSessions' | 'hasRecentRuns' | 'isEmpty'>,
+): number {
+  if (options.hasSessions) return 5;
+  if (options.hasRecentRuns === true) return 4;
+  return options.isEmpty ? 0 : 1;
+}
+
 /** Keep the source (to {@link MAX_HOME_NOTICE_CHARS}); page only its wrapped presentation after reserving Home's actionable chrome. */
 export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout | undefined {
   if (options.notice === undefined) return undefined;
@@ -78,15 +90,7 @@ export function layoutHomeNotice(options: HomeNoticeOptions): HomeNoticeLayout |
   })
     ? 4
     : 1;
-  // One Continue row needs body margin + two headings + its title/directory lines; a recent run alone needs the margin, the headings and
-  // its row.
-  const continueRows = options.hasSessions
-    ? 5
-    : options.hasRecentRuns === true
-      ? 4
-      : options.isEmpty
-        ? 0
-        : 1;
+  const continueRows = continueSectionRows(options);
   const management = continueRows + (options.hasAttentionRuns === true ? 3 : 0);
   const available = Math.max(
     2,

@@ -169,7 +169,7 @@ describe('buildAgentsModel', () => {
       // shape for the scrubber to know, and they would be shown as the start of a key. Scrubbed whole, the key is one mask.
       const prefix = 'word '.repeat(46);
       const prompt = `${prefix}${KEY} and then some closing text.`;
-      expect(prefix.length).toBe(230);
+      expect(prefix).toHaveLength(230);
       expect(prompt.indexOf(KEY)).toBeLessThan(AGENT_PROMPT_HEAD_CHARS);
       expect(prompt.indexOf(KEY) + KEY.length).toBeGreaterThan(AGENT_PROMPT_HEAD_CHARS);
 

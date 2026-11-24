@@ -370,7 +370,7 @@ async function walk(
   let direction: 1 | -1 = 1;
   while (index >= 0 && index < steps.length) {
     const step = steps[index];
-    if (step === undefined || !step.applies(draft)) {
+    if (!step?.applies(draft)) {
       index += direction;
       continue;
     }

@@ -280,12 +280,14 @@ describe('a failure half way never leaves a damaged file', () => {
     expect(readdirSync(cwd)).toEqual(['s1.relavium.yaml']);
   });
 
-  it('a plain file is replaced and keeps its permission bits', () => {
-    if (process.platform === 'win32') return;
-    writeFileSync(target, 'old scaffold\n');
-    fs.chmodSync(target, 0o664);
-    forced();
-    expect(readFileSync(target, 'utf8')).toContain('schema_version:');
-    expect(fs.statSync(target).mode & 0o777).toBe(0o664);
-  });
+  it.skipIf(process.platform === 'win32')(
+    'a plain file is replaced and keeps its permission bits',
+    () => {
+      writeFileSync(target, 'old scaffold\n');
+      fs.chmodSync(target, 0o664);
+      forced();
+      expect(readFileSync(target, 'utf8')).toContain('schema_version:');
+      expect(fs.statSync(target).mode & 0o777).toBe(0o664);
+    },
+  );
 });

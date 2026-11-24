@@ -552,8 +552,14 @@ export function buildToolActivity(
     recorded: true,
     entries,
     truncated,
-    text: total === 0 ? NO_TOOL_CALLS : `${total} tool ${total === 1 ? 'call' : 'calls'}`,
+    text: toolCallCountText(total),
   };
+}
+
+/** How many tool calls a node made, or that it made none. */
+function toolCallCountText(total: number): string {
+  if (total === 0) return NO_TOOL_CALLS;
+  return `${total} tool ${total === 1 ? 'call' : 'calls'}`;
 }
 
 /**
@@ -807,11 +813,23 @@ export function resolveNodeStatus(input: {
   readonly runFinished: boolean;
 }): NodeRowStatus {
   const { step, log, runFinished } = input;
-  if (step !== undefined) {
-    if (step.status !== 'running') return step.status;
-    if (step.nodeType === 'human_in_the_loop' && log?.gateDecided === true) return 'completed';
-    return runFinished ? 'stopped' : 'running';
-  }
+  if (step !== undefined) return stepRowStatus(step, log, runFinished);
+  return eventLogStatus(log, runFinished);
+}
+
+/** The status of a node that has a step row: the row's own, unless it is `running` and the run or its gate says it is not. */
+function stepRowStatus(
+  step: StepSummaryRecord,
+  log: NodeEventLog | undefined,
+  runFinished: boolean,
+): NodeRowStatus {
+  if (step.status !== 'running') return step.status;
+  if (step.nodeType === 'human_in_the_loop' && log?.gateDecided === true) return 'completed';
+  return runFinished ? 'stopped' : 'running';
+}
+
+/** The status of a node with no step row, from what its events say alone. */
+function eventLogStatus(log: NodeEventLog | undefined, runFinished: boolean): NodeRowStatus {
   if (log?.skipped !== undefined) return 'skipped';
   if (log?.lastTerminal !== undefined) {
     return log.lastTerminal.type === 'node:failed' ? 'failed' : 'completed';

@@ -752,9 +752,8 @@ export class RunHost {
       const stopped = lifetime.isStoppedFailure(cause);
       if (!stopped) lifetime.failure(cause);
       await this.#release(leg, resources);
-      return stopped
-        ? refused('stopped', kind === 'resume' ? HOSTED_RESUME_CANCELLED : HOSTED_START_STOPPED)
-        : refused('rejected', this.#faultMessage(cause));
+      if (!stopped) return refused('rejected', this.#faultMessage(cause));
+      return refused('stopped', kind === 'resume' ? HOSTED_RESUME_CANCELLED : HOSTED_START_STOPPED);
     } finally {
       untie();
     }

@@ -193,7 +193,7 @@ describe('the frame', () => {
     expect(HOME_HELP_COMMANDS.map((command) => command.name)).toEqual(
       expect.arrayContaining(['import', 'pricing']),
     );
-    expect(namedCommands(at80).length).toBe(HOME_HELP_COMMANDS.length);
+    expect(namedCommands(at80)).toHaveLength(HOME_HELP_COMMANDS.length);
   });
 
   it('keeps every span inside its line', () => {

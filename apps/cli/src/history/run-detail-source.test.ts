@@ -261,7 +261,7 @@ describe('what a detail can come to', () => {
     await seedRun(client.db, { slug: 'wf', runId: 'run-y', state: 'failed', atMs: T0 + 1 });
     const read = ready(readRunDetail({ reader, runId: 'run-x', terminalHeld: false }));
     expect(read.status).toBe('completed');
-    expect(read.events.length).toBe(highestSeq('run-x') + 1);
+    expect(read.events).toHaveLength(highestSeq('run-x') + 1);
     expect(read.model.header.runId).toBe('run-x');
   });
 });

@@ -50,7 +50,7 @@ import { resolveProjectDirectory } from '../config/project-directory.js';
 describe('the operator home is an argument of the project initialization, never a default (review L3)', () => {
   it('declares it as a required parameter, so a caller that was never handed one does not read the real home', () => {
     // `Function#length` counts the parameters before the first one with a default value: `home = homedir()` would make this 1.
-    expect(prepareProjectInit.length).toBe(2);
+    expect(prepareProjectInit).toHaveLength(2);
   });
 });
 

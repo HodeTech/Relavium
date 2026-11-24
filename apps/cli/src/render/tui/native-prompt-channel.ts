@@ -650,7 +650,8 @@ export function createNativePromptChannel(options?: NativePromptChannelOptions):
       if (signal?.aborted === true) onAbort();
       try {
         const value = await pending;
-        return typeof value === 'symbol' ? value : value === 'allow' ? 'allow' : 'deny';
+        if (typeof value === 'symbol') return value;
+        return value === 'allow' ? 'allow' : 'deny';
       } finally {
         signal?.removeEventListener('abort', onAbort);
       }

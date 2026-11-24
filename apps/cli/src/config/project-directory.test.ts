@@ -44,8 +44,8 @@ const refusalOf = (run: () => unknown): string | undefined => {
 describe('the home is an argument, not a default', () => {
   it('both rules declare it as a required parameter (a default would make the declared length shorter)', () => {
     // `Function#length` counts the parameters before the first one with a default value: `home = homedir()` would make these 1 and 0.
-    expect(assertProjectArtifactPath.length).toBe(2);
-    expect(resolveProjectDirectory.length).toBe(3);
+    expect(assertProjectArtifactPath).toHaveLength(2);
+    expect(resolveProjectDirectory).toHaveLength(3);
   });
 
   it('a path is judged against the home it is handed: the same path is a project inside one home and global state inside another', () => {

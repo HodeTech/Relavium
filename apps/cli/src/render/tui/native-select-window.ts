@@ -36,7 +36,8 @@ export function selectLegend(back: boolean, windowed: boolean): string {
 export function selectRowText(snapshot: NativePromptSnapshot, index: number): string {
   const option = snapshot.options[index];
   if (option === undefined) return '';
-  return `${index === snapshot.selected ? CURSOR : GUTTER}${option.label}${option.hint ? ` — ${option.hint}` : ''}`;
+  const hint = option.hint ? ` — ${option.hint}` : '';
+  return `${index === snapshot.selected ? CURSOR : GUTTER}${option.label}${hint}`;
 }
 
 export type SelectLine =

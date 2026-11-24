@@ -204,7 +204,7 @@ describe('commitImport writes exactly the plan, once, and never replaces without
     expect(existsSync(join(cwd, '.relavium', 'agents'))).toBe(false);
     commitImport(planned);
     expect(readFileSync(target())).toEqual(Buffer.from(planned.content, 'utf8'));
-    expect(readFileSync(target()).length).toBe(planned.bytes);
+    expect(readFileSync(target())).toHaveLength(planned.bytes);
   });
 
   it('refuses a file that is there, in the command’s words, and keeps it', () => {

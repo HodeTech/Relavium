@@ -171,7 +171,7 @@ describe('createRunPinStore', () => {
             ref: 'r'.repeat(MAX_PIN_REF_LENGTH + 1),
           }),
         ),
-      ).toBe(undefined);
+      ).toBeUndefined();
       expect(
         code(() =>
           store.unpinItem({
@@ -180,7 +180,7 @@ describe('createRunPinStore', () => {
             ref: 'deploy',
           }),
         ),
-      ).toBe(undefined);
+      ).toBeUndefined();
       expect(
         code(() =>
           Reflect.apply(store.unpinItem, undefined, [{ kind: 'bogus', projectRoot: '', ref: 'x' }]),

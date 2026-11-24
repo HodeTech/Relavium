@@ -321,7 +321,7 @@ describe('p on a Defined row pins the workflow, p again unpins it, and the curso
     r.press('p');
     expect(r.message()).toBe('Cannot pin broken: a workflow must declare a node.');
     expect(store.listPins()).toEqual([]);
-    expect(r.reads.mock.calls.length).toBe(readsBefore);
+    expect(r.reads.mock.calls).toHaveLength(readsBefore);
   });
 
   it('says so, and changes nothing, when the Home has no pin store', () => {
@@ -416,7 +416,7 @@ describe('p on a History row pins the run under its canonical key', () => {
       `Cannot pin a1b2c3d4: ${String(MAX_RUN_PINS)} is the limit; ${String(MAX_RUN_PINS)} stored, ${String(MAX_RUN_PINS)} of them workflows.`,
     );
     expect(store.listPins({ kind: 'run' })).toEqual([]);
-    expect(r.read.mock.calls.length).toBe(readsBefore);
+    expect(r.read.mock.calls).toHaveLength(readsBefore);
     expect(r.state.history?.read).toBe(before);
   });
 

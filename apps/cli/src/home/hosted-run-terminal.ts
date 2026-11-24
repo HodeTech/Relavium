@@ -87,11 +87,12 @@ export function describeHostedRunTerminal(input: HostedRunTerminalInput): Hosted
     case EXIT_CODES.moneyDurabilityUncertain: {
       const effectAlso =
         input.departure.effectNeedsAttention || input.terminalError === 'effect_needs_attention';
+      const remedy = effectAlso ? ` ${effectRemedy}` : '';
       return card(
         'uncertain',
         8,
         `Run ${id}: required money receipts could not be confirmed.`,
-        `Do not repeat paid work; check provider billing and ${logs}.${effectAlso ? ` ${effectRemedy}` : ''}`,
+        `Do not repeat paid work; check provider billing and ${logs}.${remedy}`,
       );
     }
     case EXIT_CODES.effectNeedsAttention:

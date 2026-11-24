@@ -334,7 +334,6 @@ function readCatalogText(
 ): CatalogText {
   const rel = sourceLabel(cwd, path);
   if (budget.spent()) return refused(path, rel, budget.reason);
-  let yaml: string;
   try {
     const canonical = realpathSync.native(path);
     try {
@@ -365,44 +364,14 @@ function readCatalogText(
       canonical,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
+    let read: OpenedText;
     try {
-      // Exact bigint identities: Windows has no O_NOFOLLOW, so this is its only swap guard, and its
-      // 64-bit file IDs exceed a Number's precision.
-      const opened = fstatSync(fd, { bigint: true });
-      if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) {
-        return refused(path, rel, 'not the admitted regular file');
-      }
-      const maxBytes = MAX_SOURCE_CHARS * 4;
-      const chunks: Buffer[] = [];
-      let total = 0;
-      for (;;) {
-        const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
-        const count = readSync(fd, buffer, 0, buffer.length, null);
-        if (count === 0) break;
-        total += count;
-        if (total > maxBytes) return refused(path, rel, 'exceeds the size limit');
-        chunks.push(buffer.subarray(0, count));
-      }
-      // A file that grew after its `stat` was charged for its old size: the bytes read beyond it are charged now, so the budget follows
-      // what was really read. (Past the budget the file is refused, as a file that did not fit is.)
-      const grown = total - Number(stats.size);
-      if (grown > 0 && !budget.charge(grown)) return refused(path, rel, budget.reason);
-      try {
-        yaml = STRICT_UTF8.decode(Buffer.concat(chunks, total));
-      } catch {
-        // A lenient decode turns each malformed sequence into U+FFFD: the entry would list as VALID, and the Home would bind and run an
-        // agent whose prompt is no longer the one in the file (review P05-2; the authoring read refuses the same bytes).
-        return refused(path, rel, 'not valid UTF-8');
-      }
-      // What the PARSER will spend follows the nodes, not the bytes (see MAX_CATALOG_SCAN_TOKENS): a file over the per-file budget is
-      // refused here, unparsed and uncharged; any other is charged to the scan before it is parsed, so a scan of files each just under
-      // the per-file budget stops after the few that fit instead of costing eight times one.
-      const tokens = countYamlTokens(yaml, MAX_YAML_TOKENS);
-      if (tokens > MAX_YAML_TOKENS) return refused(path, rel, 'too large to read safely');
-      if (!budget.chargeTokens(tokens)) return refused(path, rel, budget.reason);
+      read = readOpenedText(fd, stats, budget);
     } finally {
       closeSync(fd);
     }
+    if ('reason' in read) return refused(path, rel, read.reason);
+    return { ok: true, yaml: read.yaml, rel };
   } catch (err) {
     // Generic, path-free reason — never echo a raw fs `err.message` (it carries the absolute path) into the
     // catalog entry / `--json` `error` field (error-handling.md; same discipline as parseReason below).
@@ -412,8 +381,68 @@ function readCatalogText(
       errnoCode(err) === 'EACCES' ? 'permission denied' : 'could not read the file',
     );
   }
+}
 
-  return { ok: true, yaml, rel };
+/** What reading one opened catalog file yields: its text, or the short, path-free reason it was refused. */
+type OpenedText = { readonly yaml: string } | { readonly reason: string };
+
+/**
+ * The bytes of one open file, read in bounded chunks: its buffers and their total length, or `undefined` when the file is longer than
+ * `maxBytes` (it may have grown since its `stat`, so the ceiling is enforced on what is really read, one byte past it at most).
+ */
+function readBounded(
+  fd: number,
+  maxBytes: number,
+): { readonly chunks: readonly Buffer[]; readonly total: number } | undefined {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const buffer = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+    const count = readSync(fd, buffer, 0, buffer.length, null);
+    if (count === 0) return { chunks, total };
+    total += count;
+    if (total > maxBytes) return undefined;
+    chunks.push(buffer.subarray(0, count));
+  }
+}
+
+/**
+ * The second half of {@link readCatalogText}: with the file open, check it is still the file that was admitted, read it within the
+ * ceiling, charge what it grew by and its tokens to the scan, and decode it strictly. It never throws a refusal: a fault of the
+ * system's own (a failed read) propagates to the caller's catch, which says nothing about the file.
+ */
+function readOpenedText(
+  fd: number,
+  stats: { readonly dev: bigint; readonly ino: bigint; readonly size: bigint },
+  budget: ScanBudget,
+): OpenedText {
+  // Exact bigint identities: Windows has no O_NOFOLLOW, so this is its only swap guard, and its
+  // 64-bit file IDs exceed a Number's precision.
+  const opened = fstatSync(fd, { bigint: true });
+  if (!opened.isFile() || opened.dev !== stats.dev || opened.ino !== stats.ino) {
+    return { reason: 'not the admitted regular file' };
+  }
+  const read = readBounded(fd, MAX_SOURCE_CHARS * 4);
+  if (read === undefined) return { reason: 'exceeds the size limit' };
+  // A file that grew after its `stat` was charged for its old size: the bytes read beyond it are charged now, so the budget follows
+  // what was really read. (Past the budget the file is refused, as a file that did not fit is.)
+  const grown = read.total - Number(stats.size);
+  if (grown > 0 && !budget.charge(grown)) return { reason: budget.reason };
+  let yaml: string;
+  try {
+    yaml = STRICT_UTF8.decode(Buffer.concat(read.chunks, read.total));
+  } catch {
+    // A lenient decode turns each malformed sequence into U+FFFD: the entry would list as VALID, and the Home would bind and run an
+    // agent whose prompt is no longer the one in the file (review P05-2; the authoring read refuses the same bytes).
+    return { reason: 'not valid UTF-8' };
+  }
+  // What the PARSER will spend follows the nodes, not the bytes (see MAX_CATALOG_SCAN_TOKENS): a file over the per-file budget is
+  // refused here, unparsed and uncharged; any other is charged to the scan before it is parsed, so a scan of files each just under
+  // the per-file budget stops after the few that fit instead of costing eight times one.
+  const tokens = countYamlTokens(yaml, MAX_YAML_TOKENS);
+  if (tokens > MAX_YAML_TOKENS) return { reason: 'too large to read safely' };
+  if (!budget.chargeTokens(tokens)) return { reason: budget.reason };
+  return { yaml };
 }
 
 /** Read + parse one catalog file into an entry; any read/parse fault becomes a `valid: false` entry. */

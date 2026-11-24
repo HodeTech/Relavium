@@ -326,7 +326,7 @@ describe('a frozen command preview is built once per kind of document, and no ki
     expect(createReviewDocument(preview, { command: true })).toBe(command);
     expect(createReviewDocument(preview)).toBe(plain);
     // The card's document is the one that makes every mask a requirement: were it the command's, Allow would count unseen.
-    expect(strict.required.length).toBe(strict.masks.length);
+    expect(strict.required).toHaveLength(strict.masks.length);
     expect(strict.required.length).toBeGreaterThan(0);
     expect(command.required).toHaveLength(0);
     expect(plain.required).toHaveLength(0);

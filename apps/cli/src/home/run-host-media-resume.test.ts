@@ -424,7 +424,7 @@ describe('a run parked on a media job alone is continued with no decision', () =
       const buildsBefore = r.builds.mock.calls.length;
       const again = await r.host.resume({ kind: 'media', runId });
       expect(again).toEqual({ kind: 'settled', message: 'run completed; nothing to resume' });
-      expect(r.builds.mock.calls.length).toBe(buildsBefore);
+      expect(r.builds.mock.calls).toHaveLength(buildsBefore);
       expect(provider.generated()).toBe(1);
     },
     RESUMED_LEG_MS,
@@ -548,7 +548,7 @@ describe('a continue is refused before an engine, a key or a card', () => {
       reason: 'rejected',
       message: MEDIA_RESUME_REFUSALS.pendingGate,
     });
-    expect(r.builds.mock.calls.length).toBe(buildsBefore);
+    expect(r.builds.mock.calls).toHaveLength(buildsBefore);
     // Nothing of the gate was touched: a decision still answers it.
     const end = await started(
       r.host.resume({ runId, kind: 'human', decision: approvalDecision() }),
@@ -616,7 +616,7 @@ describe('a continue is refused before an engine, a key or a card', () => {
     const refused = await r.host.resume({ kind: 'media', runId });
 
     expect(refused).toMatchObject({ kind: 'refused', reason: 'other_project' });
-    expect(r.builds.mock.calls.length).toBe(buildsBefore);
+    expect(r.builds.mock.calls).toHaveLength(buildsBefore);
   });
 });
 
@@ -788,7 +788,7 @@ describe('a continue without the secrets the run needs says so without naming a 
     expect(message).toContain('needs its `secret` input(s) [api_key] re-supplied to continue');
     expect(message).toContain('they are never persisted.');
     expect(message).not.toMatch(/gate|--secret-stdin|relavium gate/u);
-    expect(r.builds.mock.calls.length).toBe(buildsBefore);
+    expect(r.builds.mock.calls).toHaveLength(buildsBefore);
   });
 });
 

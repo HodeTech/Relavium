@@ -126,79 +126,107 @@ export async function logsFollowCommand(
 ): Promise<ExitCode> {
   const { reader, close } = openReader(deps);
   try {
-    const run = requireRun(reader, args.runId);
-    const failedOnly = args.failed === true;
-    const history = readHistory(reader, args.runId);
-    writeSkippedNote(deps.io, history.skipped);
-    writeLog(deps, run, history.events, failedOnly);
-
-    const now = deps.now ?? Date.now;
-    let lastLivenessCheckMs = now();
-    /** When the loop last ran its empty-poll tick (see {@link FOLLOW_RESUME_GRACE_MS}); a gap since it is judged below. */
-    let lastTickMs = lastLivenessCheckMs;
-    /** A no-owner verdict is held back until the injected clock reaches this: set when a gap over one TTL is seen. */
-    let resumeGraceUntilMs = Number.NEGATIVE_INFINITY;
-    let cursor = history.scannedThroughSeq;
-    let state = history.events.reduce(
-      (previous, event) => observeFollow(previous, event),
-      QUIET_RUN,
-    );
-    /** One read after the cursor, printed through the same filter and writer; the events it returned. */
-    const readAndPrintTail = (): readonly RunEvent[] => {
-      const tail = reader.loadRunEventsAfter(args.runId, cursor, MAX_RUN_TAIL_EVENTS);
-      // The cursor moves over the rows this read skipped too (`scannedThroughSeq`, never the last event's
-      // number): parked on the last readable event, a log whose tail a newer binary wrote would be re-read, and
-      // its skip note repeated, on every poll.
-      cursor = tail.scannedThroughSeq;
-      writeSkippedNote(deps.io, tail.skipped);
-      for (const event of tail.events) {
-        // A run that closes in the failure view with no failure before it says so, as the log it replays does.
-        if (failedOnly && !state.sawFailure && closesWithoutFailure(event))
-          writeNoFailureLine(deps);
-        state = observeFollow(state, event);
-        if (!failedOnly || inFailureView(event)) writeFollowed(deps, run.id, event, failedOnly);
-      }
-      return tail.events;
-    };
-    for (;;) {
-      const end = followEnd(state);
-      if (end === 'gate') writeGateNotice(deps, reader, run.id);
-      if (end !== undefined) return EXIT_CODES.success;
-      // A stopped owner refuses here, before another read, whatever the wait below did.
-      deps.commandLifetime?.work.assertAdmitting();
-      const events = readAndPrintTail();
-      if (events.length > 0) continue;
-      // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
-      // not on every poll, whether anyone is still going to write to it.
-      const checkedAtMs = now();
-      // More than a lease TTL since the last tick means this loop (and the owner with it) was suspended, so what the
-      // lease says now is not yet evidence about the owner: hold a no-owner verdict back for one heartbeat.
-      if (checkedAtMs - lastTickMs > RUN_LEASE_TTL_MS) {
-        resumeGraceUntilMs = checkedAtMs + FOLLOW_RESUME_GRACE_MS;
-      }
-      lastTickMs = checkedAtMs;
-      if (checkedAtMs - lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
-        lastLivenessCheckMs = checkedAtMs;
-        const read = followOwnerVerdict(reader, run.id, checkedAtMs);
-        // The lease is read again at each check in the window; only a read that still says it is gone, after the
-        // window, ends the follow. A run row that is gone is not about the clock, and is never held back.
-        const verdict = read === 'no-owner' && checkedAtMs < resumeGraceUntilMs ? undefined : read;
-        if (verdict !== undefined) {
-          // The owner may have committed its closing event and released its lease between the read above and the
-          // lease check, so a verdict alone must not end the follow before that event is shown: read once more,
-          // and print what it returns, first. Whatever it returns, the follow goes on: a closing event, or a gate
-          // park, ends it at the top of the loop as it always does (the note, which would say the run was left
-          // unsettled, is not written), and any other event shows the run was still writing, so the verdict is
-          // judged again at the next check. Only a read that returns nothing ends the follow on the note.
-          if (readAndPrintTail().length > 0) continue;
-          writeOwnerNote(deps, run.id, verdict);
-          return EXIT_CODES.success;
-        }
-      }
-      await (deps.sleep ?? hostSleep)(FOLLOW_POLL_INTERVAL_MS, deps.commandLifetime?.work.signal);
-    }
+    return await followRun(args, deps, reader);
   } finally {
     if (deps.commandLifetime === undefined) close();
+  }
+}
+
+/** The loop's own clock: what lets a poll tell a suspended process from a dead owner. */
+interface FollowClock {
+  /** The injected clock's reading at the last empty-poll tick (see {@link FOLLOW_RESUME_GRACE_MS}); a gap since it is judged by {@link judgeOwner}. */
+  lastTickMs: number;
+  /** The reading at the last time the owner was judged: the judgement is rated by {@link FOLLOW_LIVENESS_INTERVAL_MS}. */
+  lastLivenessCheckMs: number;
+  /** A no-owner verdict is held back until the injected clock reaches this: set when a gap over one TTL is seen. */
+  resumeGraceUntilMs: number;
+}
+
+/**
+ * What an empty poll asks about the run's owner, at the clock reading `checkedAtMs`: a verdict that ends the follow, or `undefined` to carry on.
+ * It is rated (at most once per {@link FOLLOW_LIVENESS_INTERVAL_MS}) and held back after a suspension, both through `clock`, which it updates.
+ */
+function judgeOwner(
+  clock: FollowClock,
+  reader: RunHistoryReader,
+  runId: string,
+  checkedAtMs: number,
+): OwnerVerdict | undefined {
+  // More than a lease TTL since the last tick means this loop (and the owner with it) was suspended, so what the
+  // lease says now is not yet evidence about the owner: hold a no-owner verdict back for one heartbeat.
+  if (checkedAtMs - clock.lastTickMs > RUN_LEASE_TTL_MS) {
+    clock.resumeGraceUntilMs = checkedAtMs + FOLLOW_RESUME_GRACE_MS;
+  }
+  clock.lastTickMs = checkedAtMs;
+  if (checkedAtMs - clock.lastLivenessCheckMs >= FOLLOW_LIVENESS_INTERVAL_MS) {
+    clock.lastLivenessCheckMs = checkedAtMs;
+    const read = followOwnerVerdict(reader, runId, checkedAtMs);
+    // The lease is read again at each check in the window; only a read that still says it is gone, after the
+    // window, ends the follow. A run row that is gone is not about the clock, and is never held back.
+    return read === 'no-owner' && checkedAtMs < clock.resumeGraceUntilMs ? undefined : read;
+  }
+  return undefined;
+}
+
+/** The body of {@link logsFollowCommand} once the reader is open: print the log, then follow it until it ends. */
+async function followRun(
+  args: LogsCommandArgs,
+  deps: LogsCommandDeps,
+  reader: RunHistoryReader,
+): Promise<ExitCode> {
+  const run = requireRun(reader, args.runId);
+  const failedOnly = args.failed === true;
+  const history = readHistory(reader, args.runId);
+  writeSkippedNote(deps.io, history.skipped);
+  writeLog(deps, run, history.events, failedOnly);
+
+  const now = deps.now ?? Date.now;
+  const startMs = now();
+  const clock: FollowClock = {
+    lastTickMs: startMs,
+    lastLivenessCheckMs: startMs,
+    resumeGraceUntilMs: Number.NEGATIVE_INFINITY,
+  };
+  let cursor = history.scannedThroughSeq;
+  let state = history.events.reduce((previous, event) => observeFollow(previous, event), QUIET_RUN);
+  /** One read after the cursor, printed through the same filter and writer; the events it returned. */
+  const readAndPrintTail = (): readonly RunEvent[] => {
+    const tail = reader.loadRunEventsAfter(args.runId, cursor, MAX_RUN_TAIL_EVENTS);
+    // The cursor moves over the rows this read skipped too (`scannedThroughSeq`, never the last event's
+    // number): parked on the last readable event, a log whose tail a newer binary wrote would be re-read, and
+    // its skip note repeated, on every poll.
+    cursor = tail.scannedThroughSeq;
+    writeSkippedNote(deps.io, tail.skipped);
+    for (const event of tail.events) {
+      // A run that closes in the failure view with no failure before it says so, as the log it replays does.
+      if (failedOnly && !state.sawFailure && closesWithoutFailure(event)) writeNoFailureLine(deps);
+      state = observeFollow(state, event);
+      if (!failedOnly || inFailureView(event)) writeFollowed(deps, run.id, event, failedOnly);
+    }
+    return tail.events;
+  };
+  for (;;) {
+    const end = followEnd(state);
+    if (end === 'gate') writeGateNotice(deps, reader, run.id);
+    if (end !== undefined) return EXIT_CODES.success;
+    // A stopped owner refuses here, before another read, whatever the wait below did.
+    deps.commandLifetime?.work.assertAdmitting();
+    if (readAndPrintTail().length > 0) continue;
+    // Nothing new, and the run is neither over nor parked at a gate (the top of the loop ended it): ask, but
+    // not on every poll, whether anyone is still going to write to it.
+    const verdict = judgeOwner(clock, reader, run.id, now());
+    if (verdict !== undefined) {
+      // The owner may have committed its closing event and released its lease between the read above and the
+      // lease check, so a verdict alone must not end the follow before that event is shown: read once more,
+      // and print what it returns, first. Whatever it returns, the follow goes on: a closing event, or a gate
+      // park, ends it at the top of the loop as it always does (the note, which would say the run was left
+      // unsettled, is not written), and any other event shows the run was still writing, so the verdict is
+      // judged again at the next check. Only a read that returns nothing ends the follow on the note.
+      if (readAndPrintTail().length > 0) continue;
+      writeOwnerNote(deps, run.id, verdict);
+      return EXIT_CODES.success;
+    }
+    await (deps.sleep ?? hostSleep)(FOLLOW_POLL_INTERVAL_MS, deps.commandLifetime?.work.signal);
   }
 }
 
@@ -498,9 +526,8 @@ function writeHumanLog(
 ): void {
   const total = `${events.length} event${events.length === 1 ? '' : 's'}`;
   // Both are read back from history.db, the trust boundary, so each gets the one-line floor the rows below get.
-  io.writeOut(
-    `run ${sanitizeInline(run.id)} — ${sanitizeInline(run.status)} (${failedOnly ? `${shown.length} of ${total}` : total})\n`,
-  );
+  const count = failedOnly ? `${shown.length} of ${total}` : total;
+  io.writeOut(`run ${sanitizeInline(run.id)} — ${sanitizeInline(run.status)} (${count})\n`);
   if (failedOnly && closedWithoutFailure(events)) io.writeOut(NO_FAILURE_LINE);
   for (const event of shown) writeHumanEvent(io, run.id, event, !failedOnly);
 }

@@ -23,6 +23,7 @@ import {
   priceToMicrocents,
   pricingField,
   usdTextOfMicrocents,
+  withoutTrailingZeros,
   type PricingFieldId,
 } from './pricing-fields.js';
 
@@ -273,6 +274,37 @@ describe('an exact decimal amount from the stored integer', () => {
     expect(usdTextOfMicrocents(14_999_999)).toBe('0.14999999');
     expect(usdTextOfMicrocents(1_000_000_000_000)).toBe('10000');
     expect(usdTextOfMicrocents(10_000_000_000_001)).toBe('100000.00000001');
+  });
+
+  it('trims trailing zeros exactly as `/0+$/` did, over every short text of the characters a price holds', () => {
+    // The reference pops characters off an array, so it shares nothing with the loop under test; a one-off run of both against the
+    // replaced `/0+$/` agreed on all of these texts.
+    const reference = (text: string): string => {
+      const characters = [...text];
+      while (characters.at(-1) === '0') characters.pop();
+      return characters.join('');
+    };
+    const alphabet = ['0', '1', '.', '-'];
+    let texts = [''];
+    let checked = 0;
+    for (let length = 1; length <= 7; length += 1) {
+      texts = texts.flatMap((text) => alphabet.map((character) => text + character));
+      for (const text of texts) {
+        expect(withoutTrailingZeros(text)).toBe(reference(text));
+        checked += 1;
+      }
+    }
+    expect(checked).toBe(4 + 16 + 64 + 256 + 1024 + 4096 + 16_384);
+  });
+
+  it('trims a very long run of zeros in linear work: one that is not at the end is left whole, one at the end goes whole', () => {
+    // `/0+$/` retries from every zero of a run that is not at the end (SonarCloud S8786): 200 000 of them took 13 s, so this test fails by
+    // exceeding its timeout under that form. Nothing reaches the function with such a length (a stored integer's text is short), so it is
+    // exercised directly.
+    const run = '0'.repeat(200_000);
+    expect(withoutTrailingZeros(`${run}1`)).toBe(`${run}1`);
+    expect(withoutTrailingZeros(`1${run}`)).toBe('1');
+    expect(withoutTrailingZeros(run)).toBe('');
   });
 
   it('is the exact inverse of the conversion, for what the table accepts', () => {

@@ -120,9 +120,11 @@ export const NO_TOOLS_DECLARED = 'none declared';
 export function agentToolsText(detail: AgentDetail): string {
   if (detail.tools.length === 0 && detail.toolsMore === 0) return NO_TOOLS_DECLARED;
   const names = detail.tools.join(', ');
-  return detail.toolsMore > 0
-    ? `${names}${names === '' ? '' : ', '}… and ${String(detail.toolsMore)} more`
-    : names;
+  if (detail.toolsMore > 0) {
+    const separator = names === '' ? '' : ', ';
+    return `${names}${separator}… and ${String(detail.toolsMore)} more`;
+  }
+  return names;
 }
 
 /**

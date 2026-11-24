@@ -68,7 +68,7 @@ export function isFocused(
   row: { readonly kind: StripFocusKind; readonly id: string },
   focus: StripFocus | undefined,
 ): boolean {
-  return focus !== undefined && focus.kind === row.kind && focus.id === row.id;
+  return focus?.kind === row.kind && focus.id === row.id;
 }
 
 /**

@@ -116,21 +116,25 @@ describe('a file is read through the descriptor it was opened as', () => {
     expect(readAuthoredFile(path, 'bad.yaml')).toBe('\ufeffid: ağ\n');
   });
 
-  it('still follows a symbolic link to a regular file, as it always did', () => {
-    if (process.platform === 'win32') return;
-    fs.writeFileSync(join(dir, 'real.yaml'), 'id: linked\n');
-    fs.symlinkSync(join(dir, 'real.yaml'), join(dir, 'link.yaml'));
-    expect(readAuthoredFile(join(dir, 'link.yaml'), 'link.yaml')).toBe('id: linked\n');
-  });
+  it.skipIf(process.platform === 'win32')(
+    'still follows a symbolic link to a regular file, as it always did',
+    () => {
+      fs.writeFileSync(join(dir, 'real.yaml'), 'id: linked\n');
+      fs.symlinkSync(join(dir, 'real.yaml'), join(dir, 'link.yaml'));
+      expect(readAuthoredFile(join(dir, 'link.yaml'), 'link.yaml')).toBe('id: linked\n');
+    },
+  );
 
-  it('a link to a directory, and a link to nothing, are refused in the same words as before', () => {
-    if (process.platform === 'win32') return;
-    fs.mkdirSync(join(dir, 'd'));
-    fs.symlinkSync(join(dir, 'd'), join(dir, 'to-dir'));
-    fs.symlinkSync(join(dir, 'gone'), join(dir, 'dangling'));
-    expect(refusal(join(dir, 'to-dir'), 'to-dir')).toBe('to-dir is not a regular file');
-    expect(refusal(join(dir, 'dangling'), 'dangling')).toBe('no file at dangling');
-  });
+  it.skipIf(process.platform === 'win32')(
+    'a link to a directory, and a link to nothing, are refused in the same words as before',
+    () => {
+      fs.mkdirSync(join(dir, 'd'));
+      fs.symlinkSync(join(dir, 'd'), join(dir, 'to-dir'));
+      fs.symlinkSync(join(dir, 'gone'), join(dir, 'dangling'));
+      expect(refusal(join(dir, 'to-dir'), 'to-dir')).toBe('to-dir is not a regular file');
+      expect(refusal(join(dir, 'dangling'), 'dangling')).toBe('no file at dangling');
+    },
+  );
 
   it('refuses a file over the byte ceiling by its size, and one that grew past it while it was read', async () => {
     const real = await vi.importActual<typeof import('node:fs')>('node:fs');
@@ -149,7 +153,7 @@ describe('a file is read through the descriptor it was opened as', () => {
     const path = join(dir, 'edge.yaml');
     fs.writeFileSync(path, 'x');
     fs.truncateSync(path, CEILING);
-    expect(readAuthoredFile(path, 'edge.yaml').length).toBe(CEILING);
+    expect(readAuthoredFile(path, 'edge.yaml')).toHaveLength(CEILING);
     fs.truncateSync(path, CEILING + 1);
     expect(refusal(path, 'edge.yaml')).toBe('edge.yaml exceeds the size limit');
   });

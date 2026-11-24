@@ -67,21 +67,11 @@ export function formatRunOutputs(
       truncated = true;
       continue;
     }
-    const value = displayValue(key, outputs[key]);
-    masked ||= value.masked;
-    // A final newline ends the value; it is not an empty last row, and it does not count toward the line bound.
-    const shown = clip(withoutFinalNewlines(value.text), Math.min(MAX_VALUE_CHARS, budget));
-    budget -= shown.chars;
-    truncated ||= shown.truncated;
-    const rows = shown.text.split('\n');
-    if (rows.length === 1 && !shown.truncated) {
-      const row = rows[0] ?? '';
-      lines.push(`${label} ${row === '' ? EMPTY_VALUE : row}`);
-      continue;
-    }
-    lines.push(label);
-    for (const row of rows) lines.push(`${indent}    ${row}`);
-    if (shown.truncated) lines.push(`${indent}    …`);
+    const output = renderOutput(key, outputs[key], label, indent, budget);
+    for (const line of output.lines) lines.push(line);
+    budget -= output.chars;
+    masked ||= output.masked;
+    truncated ||= output.truncated;
   }
   if (truncated || masked) {
     const id = runId === undefined ? '<runId>' : sanitizeInline(runId);
@@ -90,6 +80,36 @@ export function formatRunOutputs(
     );
   }
   return lines;
+}
+
+/** What one output contributes to the block: its lines, the value text it spent, and whether it was cut or masked. */
+interface RenderedOutput {
+  readonly lines: readonly string[];
+  readonly chars: number;
+  readonly truncated: boolean;
+  readonly masked: boolean;
+}
+
+/** One output under `label`: a value that fits on one row sits beside its key, any other goes below it, indented, with a cut marked. */
+function renderOutput(
+  key: string,
+  value: unknown,
+  label: string,
+  indent: string,
+  budget: number,
+): RenderedOutput {
+  const display = displayValue(key, value);
+  // A final newline ends the value; it is not an empty last row, and it does not count toward the line bound.
+  const shown = clip(withoutFinalNewlines(display.text), Math.min(MAX_VALUE_CHARS, budget));
+  const spent = { chars: shown.chars, truncated: shown.truncated, masked: display.masked };
+  const rows = shown.text.split('\n');
+  if (rows.length === 1 && !shown.truncated) {
+    const row = rows[0] ?? '';
+    return { ...spent, lines: [`${label} ${row === '' ? EMPTY_VALUE : row}`] };
+  }
+  const lines = [label, ...rows.map((row) => `${indent}    ${row}`)];
+  if (shown.truncated) lines.push(`${indent}    …`);
+  return { ...spent, lines };
 }
 
 /**

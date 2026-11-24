@@ -91,7 +91,7 @@ export function maskThenCut(text: string, limit: number, onMask: () => void): Ma
 
 /** The largest index at or below `limit` that is not between a high surrogate and its low one. */
 function codePointBoundary(text: string, limit: number): number {
-  if (!(limit > 0)) return 0;
+  if (!(limit > 0)) return 0; // NOSONAR — S1940: the negation is deliberate, it is also true for NaN, which `<=` would let through to the read below
   // A pair that starts at `limit - 1` reads as one code point above U+FFFF, so `limit` is then its low half; a lone high surrogate reads as itself.
   const startsPair = (text.codePointAt(limit - 1) ?? 0) > 0xffff;
   return startsPair ? limit - 1 : limit;

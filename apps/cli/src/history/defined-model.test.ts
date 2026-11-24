@@ -292,7 +292,7 @@ describe('buildDefinedModel', () => {
         entries: [entry('long', { name: long })],
         pins: [],
       }).rows;
-      expect(Array.from(row?.name ?? '').length).toBe(MAX_IDENTIFIER_CHARS + 1);
+      expect(Array.from(row?.name ?? '')).toHaveLength(MAX_IDENTIFIER_CHARS + 1);
       expect(row?.name?.endsWith('…')).toBe(true);
     });
   });

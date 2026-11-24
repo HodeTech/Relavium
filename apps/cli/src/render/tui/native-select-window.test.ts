@@ -128,9 +128,9 @@ describe('selectLayout: a select card the terminal cannot hold whole', () => {
       selectLayout(card(60, { message: 'q'.repeat(80 * 22) }), SIZE_80x24),
       'a question of 22 rows leaves no row',
     ).toBeUndefined();
-    expect(selectLayout(card(60, { message: 'Disclosure ' + 's'.repeat(4000) }), SIZE_80x24)).toBe(
-      undefined,
-    );
+    expect(
+      selectLayout(card(60, { message: 'Disclosure ' + 's'.repeat(4000) }), SIZE_80x24),
+    ).toBeUndefined();
   });
 
   it('leaves a terminal below the minimum to the view: its own message says what to do', () => {

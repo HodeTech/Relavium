@@ -1095,7 +1095,7 @@ describe('closing, leaving the tab and tearing the Home down leave no timer', ()
     const before = home.reads.mock.calls.length;
     home.probe.bump();
     await home.advance(POLL * 3);
-    expect(home.reads.mock.calls.length).toBe(before);
+    expect(home.reads.mock.calls).toHaveLength(before);
   });
 
   it('a read that lands after the screen closed paints nothing', async () => {

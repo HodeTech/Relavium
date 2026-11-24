@@ -744,7 +744,7 @@ describe('both tabs fit the 23-row budget at the sizes a terminal has', () => {
           expect(lines.at(-1)).toContain('Esc close');
           for (const line of lines)
             expect(displayWidth(line), line).toBeLessThanOrEqual(usableColumns(columns));
-          expect(lines.filter((line) => line.startsWith('› ')).length).toBe(1);
+          expect(lines.filter((line) => line.startsWith('› '))).toHaveLength(1);
         }
       }
     },

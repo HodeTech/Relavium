@@ -303,7 +303,7 @@ describe('the card says what it would write, and where, before it asks', () => {
     expect(written, 'the written bytes are the plan’s content, exactly').toEqual(
       Buffer.from(plan.content, 'utf8'),
     );
-    expect(written.length).toBe(plan.bytes);
+    expect(written).toHaveLength(plan.bytes);
     expect(readFileSync(join(root, SOURCE), 'utf8'), 'the file named is not changed').toBe(AGENT);
   });
 

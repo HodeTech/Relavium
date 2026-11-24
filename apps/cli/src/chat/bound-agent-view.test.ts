@@ -26,9 +26,9 @@ describe('the tools the chat does not offer', () => {
   it('says nothing when the host did not say: no marks, no counts', () => {
     expect(boundAgentView(definition(), undefined).toolOffer).toBeUndefined();
     expect(boundAgentView(definition(), undefined, {}).toolOffer).toBeUndefined();
-    expect(boundAgentView(definition(), undefined, { wiredTools: undefined }).toolOffer).toBe(
-      undefined,
-    );
+    expect(
+      boundAgentView(definition(), undefined, { wiredTools: undefined }).toolOffer,
+    ).toBeUndefined();
   });
 
   it('marks, in the definition’s own order, each declared tool the session does not offer, and counts the rest', () => {
@@ -86,9 +86,9 @@ describe('the tools the chat does not offer', () => {
 describe('the file label', () => {
   it('is absent when the host names no file, and when the label is empty', () => {
     expect(boundAgentView(definition(), undefined).sourceLabel).toBeUndefined();
-    expect(boundAgentView(definition(), undefined, { sourceLabel: undefined }).sourceLabel).toBe(
-      undefined,
-    );
+    expect(
+      boundAgentView(definition(), undefined, { sourceLabel: undefined }).sourceLabel,
+    ).toBeUndefined();
     expect(
       boundAgentView(definition(), undefined, { sourceLabel: '' }).sourceLabel,
     ).toBeUndefined();

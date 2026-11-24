@@ -74,7 +74,7 @@ export function createStripBackoff(
   /** Start the pending timer again from now, with the delay the count calls for; a no-op with nothing pending. */
   const rearm = (): void => {
     const pending = current;
-    if (pending === undefined || !pending.live) return;
+    if (!pending?.live) return;
     pending.cancelInner?.();
     start(pending);
   };

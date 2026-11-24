@@ -168,7 +168,7 @@ import { RunHost } from './run-host.js';
 import { runMediaContinue } from './media-continue.js';
 import { readRunGates } from './run-gates.js';
 import { createNativeConsentPrompter } from './consent-card.js';
-import { resolveHomeChatAgent, type HomeAgentRequest } from './agent-start.js';
+import { resolveHomeChatAgent, type HomeAgentRequest, type HomeChatAgent } from './agent-start.js';
 import { createAgentsPort } from './agents-port.js';
 import { createDefinedPort, createExportPort } from './defined-port.js';
 import { createSessionsPort } from './sessions-port.js';
@@ -303,6 +303,16 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
     if (process.stdin.isTTY) process.stdin.setRawMode(enabled);
   },
 };
+
+/** The agent a chat is built with: the session's own when it rebinds one, else the definition a `c` read (with its file for the consent prompt), else none. */
+function boundAgentOptions(
+  bound: Pick<BuiltChatSession, 'agent'> | undefined,
+  resolvedAgent: HomeChatAgent | undefined,
+): Pick<BuildChatSessionOptions, 'agent' | 'mcpArtifact'> {
+  if (bound !== undefined) return { agent: bound.agent };
+  if (resolvedAgent === undefined) return {};
+  return { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
+}
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // Ownerless embeddings retain their original cause/cleanup contract. The product boundary
@@ -1323,12 +1333,7 @@ async function driveHomeBody(deps: HomeDeps, ownership?: SessionHomeLifetime): P
         askPort.bind(store);
         // A `/clear` rebinds the agent the session already holds; `c` binds the definition the one read above produced. Neither reads a file, and
         // the file's path rides with the second so the consent prompt names it (ADR-0084 §7).
-        const boundAgent: Pick<BuildChatSessionOptions, 'agent' | 'mcpArtifact'> =
-          bound !== undefined
-            ? { agent: bound.agent }
-            : resolvedAgent === undefined
-              ? {}
-              : { agent: resolvedAgent.agent, mcpArtifact: resolvedAgent.artifact };
+        const boundAgent = boundAgentOptions(bound, resolvedAgent);
         const build = (workOwner?: SessionWorkOwner) =>
           (deps.buildSession ?? buildChatSession)({
             startingMode: start.startingMode,

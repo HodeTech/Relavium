@@ -1000,11 +1000,10 @@ function headerLines(read: RunDetailRead, pinned: boolean): DetailLine[] {
   let duration = 'not finished';
   if (header.durationMs !== undefined) duration = formatDuration(header.durationMs);
   else if (read.terminalHeld) duration = 'end held';
-  lines.push({
-    kind: 'text',
-    left: `Started ${header.startedAt ?? NOT_RECORDED}  ·  took ${duration}`,
-  });
-  lines.push({ kind: 'text', left: `Tokens ${header.tokensText}  ·  cost ${header.costText}` });
+  lines.push(
+    { kind: 'text', left: `Started ${header.startedAt ?? NOT_RECORDED}  ·  took ${duration}` },
+    { kind: 'text', left: `Tokens ${header.tokensText}  ·  cost ${header.costText}` },
+  );
   if (header.error !== undefined) {
     const { code, message, nodeId } = header.error;
     const where = nodeId === undefined ? '' : ` (node ${nodeId})`;
@@ -1021,11 +1020,13 @@ function noteLines(read: RunDetailRead): DetailLine[] {
   if (read.heldUnread) lines.push({ kind: 'notice', left: HISTORY_HELD_UNREAD });
   // Two rows, not one: the remedy is a row of its own, so a narrow terminal cannot clip it away.
   if (!read.eventsComplete) {
-    lines.push({
-      kind: 'notice',
-      left: `Only the first ${String(read.events.length)} events were read: the figures may be partial.`,
-    });
-    lines.push({ kind: 'notice', left: HISTORY_PARTIAL_REMEDY });
+    lines.push(
+      {
+        kind: 'notice',
+        left: `Only the first ${String(read.events.length)} events were read: the figures may be partial.`,
+      },
+      { kind: 'notice', left: HISTORY_PARTIAL_REMEDY },
+    );
   }
   // The attempt rows are cut at the store's bound, so the node table is the first of them, in execution order.
   if (!read.stepsComplete)

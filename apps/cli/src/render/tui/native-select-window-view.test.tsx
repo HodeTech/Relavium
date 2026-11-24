@@ -242,8 +242,8 @@ describe('a select card with more options than the terminal holds (LAUNCH-4)', (
     const fits = await open(workflows(10, hint));
     try {
       // Whole, so every option wraps onto a second row, exactly as before.
-      expect(fits.lines().filter((line) => line.includes('wf-')).length).toBe(10);
-      expect(fits.lines().length).toBe(22);
+      expect(fits.lines().filter((line) => line.includes('wf-'))).toHaveLength(10);
+      expect(fits.lines()).toHaveLength(22);
       expect(fits.frame()).not.toContain('PgUp/PgDn');
     } finally {
       await close(fits);

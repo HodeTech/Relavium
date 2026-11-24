@@ -172,33 +172,35 @@ describe('export --out is the person’s own selection, and keeps its reference 
     expect(readFileSync(join(root, 'elsewhere.agent.yaml'), 'utf8')).toBe(AGENT_CANONICAL);
   });
 
-  it('the DEFAULT destination keeps the rule about global state: a link at it that leads into global configuration is refused, nothing written', () => {
-    if (process.platform === 'win32') return;
-    const inGlobal = join(home, '.relavium', 'victim.agent.yaml');
-    writeFileSync(inGlobal, 'precious\n');
-    symlinkSync(inGlobal, join(project, 'reviewer.agent.yaml'));
-    const { io, out } = captureIo();
-    for (const force of [false, true]) {
-      expect(
-        (() => {
-          try {
-            exportCommand(
-              { id: 'reviewer', force },
-              { io, global: global(project), homeDir: home },
-            );
-            return undefined;
-          } catch (cause) {
-            return isCliError(cause) ? cause.message : String(cause);
-          }
-        })(),
-        `force=${String(force)}`,
-      ).toBe(
-        'The project artifact resolves into home or global configuration. Use a project-owned path and remove links into global state.',
-      );
-    }
-    expect(readFileSync(inGlobal, 'utf8')).toBe('precious\n');
-    expect(out()).toBe('');
-  });
+  it.skipIf(process.platform === 'win32')(
+    'the DEFAULT destination keeps the rule about global state: a link at it that leads into global configuration is refused, nothing written',
+    () => {
+      const inGlobal = join(home, '.relavium', 'victim.agent.yaml');
+      writeFileSync(inGlobal, 'precious\n');
+      symlinkSync(inGlobal, join(project, 'reviewer.agent.yaml'));
+      const { io, out } = captureIo();
+      for (const force of [false, true]) {
+        expect(
+          (() => {
+            try {
+              exportCommand(
+                { id: 'reviewer', force },
+                { io, global: global(project), homeDir: home },
+              );
+              return undefined;
+            } catch (cause) {
+              return isCliError(cause) ? cause.message : String(cause);
+            }
+          })(),
+          `force=${String(force)}`,
+        ).toBe(
+          'The project artifact resolves into home or global configuration. Use a project-owned path and remove links into global state.',
+        );
+      }
+      expect(readFileSync(inGlobal, 'utf8')).toBe('precious\n');
+      expect(out()).toBe('');
+    },
+  );
 });
 
 describe.skipIf(process.platform === 'win32')(

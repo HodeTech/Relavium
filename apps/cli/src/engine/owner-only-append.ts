@@ -73,18 +73,21 @@ export function appendToOwnerOnlyFile(path: string, data: string, mode: number):
   }
 }
 
+/** Why an append was refused: the path is a link (not followed), has a hard link, or is not a regular file. */
+type AppendRefusalReason = 'symlink' | 'hard-link' | 'not-regular';
+
+const APPEND_REFUSAL_SENTENCES: Readonly<Record<AppendRefusalReason, string>> = {
+  symlink: 'the file is a symbolic link; refusing to write through it',
+  'hard-link': 'the file has more than one hard link; refusing to write to it',
+  'not-regular': 'the file is not a regular file; refusing to write to it',
+};
+
 /** The path is a link (not followed), a hard link or not a regular file: the append was refused and nothing was written. */
 export class AppendTargetRefusedError extends Error {
-  readonly reason: 'symlink' | 'hard-link' | 'not-regular';
+  readonly reason: AppendRefusalReason;
 
-  constructor(reason: 'symlink' | 'hard-link' | 'not-regular') {
-    super(
-      reason === 'symlink'
-        ? 'the file is a symbolic link; refusing to write through it'
-        : reason === 'hard-link'
-          ? 'the file has more than one hard link; refusing to write to it'
-          : 'the file is not a regular file; refusing to write to it',
-    );
+  constructor(reason: AppendRefusalReason) {
+    super(APPEND_REFUSAL_SENTENCES[reason]);
     this.name = 'AppendTargetRefusedError';
     this.reason = reason;
   }

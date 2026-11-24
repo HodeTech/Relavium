@@ -6,6 +6,7 @@ import {
   budgetAllowancePricesMatch,
   isTransientEngineStateError,
   type CheckpointState,
+  type Checkpointer,
   type RunHandle,
   type WorkflowDefinition,
   type WorkflowEngine,
@@ -19,6 +20,8 @@ import {
   createRunLeasePort,
   loadRunSnapshot,
   type Db,
+  type RunHistoryStore,
+  type RunResumeSnapshot,
 } from '@relavium/db';
 import {
   MaskedSecretSchema,
@@ -45,7 +48,7 @@ import {
   type StdioConsentGate,
   type WorkflowMcpRuntime,
 } from '../engine/mcp-servers.js';
-import { buildMediaEngineWiring } from '../engine/media-wiring.js';
+import { buildMediaEngineWiring, type MediaEngineWiring } from '../engine/media-wiring.js';
 import { readBudgetPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { assertBudgetDecision, resumeCommandBase, selectBudgetGate } from '../gate/budget.js';
@@ -53,7 +56,10 @@ import { assertDecisionFitsGateType } from '../gate/decision.js';
 import { acquireNativeResource } from '../process/acquire-native-resource.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
-import { nativeProcessesForInvocation } from '../process/native-process-owner.js';
+import {
+  nativeProcessesForInvocation,
+  type NativeProcessController,
+} from '../process/native-process-owner.js';
 import type { GlobalOptions } from '../process/options.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
@@ -258,6 +264,41 @@ export type ResumeRunResult =
       readonly mediaCasRoot: string | undefined;
     };
 
+/** What the stages of one resume share: the arguments `resumeRun` was called with, and the one fact derived from them. */
+interface ResumeContext {
+  readonly runId: string;
+  readonly deps: ResumeRunDeps;
+  readonly host: ResumeRunHost;
+  readonly ports: ResumeRunPorts;
+  readonly lifetime: RunLifetime;
+  readonly resources: RunResources;
+  readonly nativeProcesses: NativeProcessController | undefined;
+}
+
+/** The run this process rebuilt from its durable record, before any decision about it is taken. */
+interface ParkedRun {
+  readonly db: Db;
+  readonly snapshot: RunResumeSnapshot;
+  readonly workflow: WorkflowDefinition;
+  readonly store: RunHistoryStore;
+  readonly checkpointer: Checkpointer;
+  readonly checkpoint: CheckpointState;
+}
+
+/** The one gate a request decides, with the request that carries its decision. A media continue decides none. */
+interface GateAnswer {
+  readonly request: ResumeGateRunRequest;
+  readonly gateId: string;
+}
+
+/** What a request resolved to: a run with nothing left to decide, or the answer (a media continue has none) to carry on with. */
+type ResumeDisposition =
+  | { readonly kind: 'settled'; readonly message: string }
+  | { readonly kind: 'proceed'; readonly answer: GateAnswer | undefined };
+
+/** The provider resolver and MCP secret resolver a host's key resolution produced for this run's database. */
+type ResumeKeys = ReturnType<NonNullable<ResumeRunDeps['resolveKeys']>>;
+
 /**
  * The shared cross-process resume core ([ADR-0139](../../../../docs/decisions/0139-a-workflow-run-is-hosted-inside-the-home.md)
  * §1) — the only path that resumes a run: `relavium gate`, `relavium budget resume` and, from step 3, the Home.
@@ -279,11 +320,96 @@ export async function resumeRun(
   lifetime: RunLifetime,
   resources: RunResources,
 ): Promise<ResumeRunResult> {
-  const nativeProcesses = nativeProcessesForInvocation(lifetime.invocation);
-  const { config, homeDir } = host;
   const { runId } = request;
-  // A gate answer carries its decision; a media continue carries none, and is the only request that names no gate.
-  const gateRequest = request.kind === 'media' ? undefined : request;
+  const ctx: ResumeContext = {
+    runId,
+    deps,
+    host,
+    ports,
+    lifetime,
+    resources,
+    nativeProcesses: nativeProcessesForInvocation(lifetime.invocation),
+  };
+  const parked = await loadParkedRun(ctx);
+  const { db, workflow, snapshot } = parked;
+  const disposition = decideResume(parked, request);
+  if (disposition.kind === 'settled') return disposition;
+
+  // From here on a request either decides one gate (`answer` is set) or continues the media park (it is not): everything below that is
+  // about a gate, a decision or a budget approval is asked of `answer` alone, so a media continue passes none of it and adds none of it.
+  const { answer } = disposition;
+  const resumeInvocation = resumeInvocationFor(answer, runId);
+  const inputs = await resolveSecretInputs(
+    parseInputs(snapshot.inputJson, runId),
+    request,
+    ports,
+    resumeInvocation,
+  );
+  lifetime.checkpoint();
+  // A budget rejection is fatal and dispatches no agent: it needs no provider key and no tool server. A media continue DOES dispatch
+  // (it polls the job's provider and runs what follows), so it resolves exactly what a gate answer resolves.
+  const rejectsBudget =
+    answer?.request.kind === 'budget' && answer.request.decision.decision === 'rejected';
+  const keys = rejectsBudget ? undefined : deps.resolveKeys?.(db);
+  lifetime.checkpoint();
+  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
+  // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
+  // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
+  // stays. `save_to`'s scope root is the ORIGINAL run's project root when it still exists here (see
+  // resolveSaveToRoot), else the resumer's cwd — so a same-machine resume writes under the original dir, while
+  // a resume on a different machine / after that dir was deleted falls back gracefully instead of failing.
+  const saveToRoot = resolveSaveToRoot(snapshot.projectRoot, deps.global.cwd);
+  const wiring = buildMediaEngineWiring(
+    db,
+    host.homeDir,
+    saveToRoot,
+    host.config,
+    lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
+  );
+  // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
+  // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
+  // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
+  assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
+  // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
+  const mcpRuntime =
+    workflowDeclaresMcp(workflow) && !rejectsBudget
+      ? await connectResumeMcp(ctx, { workflow, saveToRoot, keys })
+      : undefined;
+
+  const engine = await buildResumeEngine(ctx, {
+    parked,
+    saveToRoot,
+    wiring,
+    mcpRuntime,
+    providers,
+  });
+  lifetime.adoptEngine(engine, runId);
+  // Same reconcile as the `run` path (ADR-0078 §4/§5, ADR-0079 §7) — a gate resume is equally "the next
+  // `relavium` start", and it is the one a user reaches for after seeing the `durabilityUncertain` exit code
+  // on a gated run. The run this command resumes is parked at its gate, so `reconcile()` leaves it alone.
+  lifetime.checkpoint();
+  await engine.reconcile().catch(() => undefined);
+  lifetime.checkpoint();
+  // THE COMMIT POINT (H1): the last checkpoint is behind us and the engine is next, so nothing may stop the leg between the two.
+  ports.commit?.();
+  const handle = await resumeOrFail(engine, {
+    runId,
+    eventConsumption: 'iterated',
+    workflow,
+    inputs,
+    // A media continue names neither: the engine then re-attaches the parked jobs and refuses a run that also waits on a gate.
+    ...(answer === undefined ? {} : { gateId: answer.gateId, decision: answer.request.decision }),
+  });
+  lifetime.adoptHandle(handle);
+  return { kind: 'resumed', engine, handle, db, mediaCasRoot: wiring.media.casRoot };
+}
+
+/**
+ * Open the history database and rebuild the run from it: the frozen snapshot, the workflow it holds, and the checkpoint folded fresh from the
+ * persisted event log. Every refusal here (no such run, no resumable state) leaves the run exactly as it was.
+ */
+async function loadParkedRun(ctx: ResumeContext): Promise<ParkedRun> {
+  const { runId, ports, lifetime, resources } = ctx;
   lifetime.checkpoint();
   const opened = acquireNativeResource((captureClose) => ports.openDb(captureClose), {
     assertAdmitting: () => lifetime.checkpoint(),
@@ -321,17 +447,38 @@ export async function resumeRun(
     // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
     throw new CliError('invalid_invocation', `run ${runId} has no resumable state`);
   }
+  return { db: opened.db, snapshot, workflow, store, checkpointer, checkpoint };
+}
 
+/** The selection a request makes over the checkpoint: the media park, the one budget gate, or the one human gate. */
+function selectForRequest(
+  checkpoint: CheckpointState,
+  request: ResumeRunRequest,
+): GateSelection | MediaSelection {
+  if (request.kind === 'media') return selectMediaPark(checkpoint);
+  if (request.kind === 'budget') return selectBudgetGate(checkpoint, request.gate);
+  return selectGate(checkpoint, checkpoint.runStatus, request.gate);
+}
+
+/** The gate answer a selection yields, or none: a media continue decides no gate. */
+function answerFor(
+  request: ResumeRunRequest,
+  selection: GateSelection | MediaSelection,
+): GateAnswer | undefined {
+  if (request.kind === 'media' || selection.kind !== 'resume') return undefined;
+  return { request, gateId: selection.gateId };
+}
+
+/**
+ * Select the gate (or the media park) the request names and refuse what cannot proceed: an invalid selection, a media park another process
+ * is working now, a decision that does not fit its gate, a stale budget quote. Every refusal here needs no secret, key or tool server.
+ */
+function decideResume(parked: ParkedRun, request: ResumeRunRequest): ResumeDisposition {
   // The reconstructed `checkpoint.runStatus` is the authoritative run state (folded fresh from the event log
   // right here), so it drives the terminal/idempotency decision — not the `runs.status` column, which a
   // racing process could have advanced between the snapshot read and now (and which the engine would then
   // surface as a closed-handle resume → a misleading exit 1).
-  const selection =
-    gateRequest === undefined
-      ? selectMediaPark(checkpoint)
-      : gateRequest.kind === 'budget'
-        ? selectBudgetGate(checkpoint, gateRequest.gate)
-        : selectGate(checkpoint, checkpoint.runStatus, gateRequest.gate);
+  const selection = selectForRequest(parked.checkpoint, request);
   if (selection.kind === 'invalid') {
     throw new CliError('invalid_invocation', selection.message);
   }
@@ -344,108 +491,105 @@ export async function resumeRun(
   // `runs.status` stays `paused` while a media leg polls, so every other Home's strip and Active tab offer a continue for it, and only the
   // engine's acquire (the authority, below) would refuse it, after the person typed the secrets and approved a server. An EXPIRED lease is
   // not a refusal: the owner is gone, and the engine takes it over.
-  if (gateRequest === undefined) assertNoLiveLease(opened.db, runId, Date.now());
+  if (request.kind === 'media') assertNoLiveLease(parked.db, request.runId, Date.now());
 
-  // From here on a request either decides one gate (`answer` is set) or continues the media park (it is not): everything below that is
-  // about a gate, a decision or a budget approval is asked of `answer` alone, so a media continue passes none of it and adds none of it.
-  const answer =
-    gateRequest === undefined || selection.kind !== 'resume'
-      ? undefined
-      : { request: gateRequest, gateId: selection.gateId };
-  if (answer !== undefined) {
-    const { request: given, gateId } = answer;
-    const pending = checkpoint.pendingGates.find((entry) => entry.gateId === gateId);
-    if (given.kind === 'budget') assertBudgetDecision(pending?.allowance, given.decision);
-    else assertDecisionFitsGateType(workflow, pending?.nodeId, given.decision);
-    // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
-    // A match grants nothing; the later full preparation reads a fresh price snapshot again.
-    if (given.kind === 'budget' && given.decision.decision === 'approved') {
-      if (
-        pending?.allowance?.kind === 'frozen' &&
-        !budgetAllowancePricesMatch(pending.allowance.quote, readBudgetPricingOverlay(opened.db))
-      )
-        throw new CliError(
-          'invalid_invocation',
-          'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
-        );
-    }
+  const answer = answerFor(request, selection);
+  if (answer !== undefined) assertAnswerAdmissible(parked, answer);
+  return { kind: 'proceed', answer };
+}
+
+/** A decision must fit its gate's type, and an approved budget must still match the current prices the frozen quote was made from. */
+function assertAnswerAdmissible(parked: ParkedRun, answer: GateAnswer): void {
+  const { request: given, gateId } = answer;
+  const pending = parked.checkpoint.pendingGates.find((entry) => entry.gateId === gateId);
+  if (given.kind !== 'budget') {
+    assertDecisionFitsGateType(parked.workflow, pending?.nodeId, given.decision);
+    return;
   }
-  // A media continue has no shell command to copy: the shell never continues a media park (a product decision, not this core's).
-  const resumeInvocation =
-    answer === undefined
-      ? undefined
-      : formatResumeInvocation(
-          resumeCommandBase(answer.request.kind, runId, answer.gateId),
-          answer.request.kind,
-          answer.request.decision,
-        );
-  const inputs = await resolveSecretInputs(
-    parseInputs(snapshot.inputJson, runId),
-    request,
-    ports,
-    resumeInvocation,
-  );
-  lifetime.checkpoint();
-  // A budget rejection is fatal and dispatches no agent: it needs no provider key and no tool server. A media continue DOES dispatch
-  // (it polls the job's provider and runs what follows), so it resolves exactly what a gate answer resolves.
-  const rejectsBudget =
-    answer?.request.kind === 'budget' && answer.request.decision.decision === 'rejected';
-  const keys = rejectsBudget ? undefined : deps.resolveKeys?.(opened.db);
-  lifetime.checkpoint();
-  const providers = deps.providers ?? keys?.providers ?? createProviderResolver(deps.io.env);
-  // Media host-wiring (2.S), the SAME helper `run` uses: a gate-resumed run that produces media must wire the
-  // same CAS + retention + catalog as the original run (else it would be silently text-only). The checkpointer
-  // stays. `save_to`'s scope root is the ORIGINAL run's project root when it still exists here (see
-  // resolveSaveToRoot), else the resumer's cwd — so a same-machine resume writes under the original dir, while
-  // a resume on a different machine / after that dir was deleted falls back gracefully instead of failing.
-  const saveToRoot = resolveSaveToRoot(snapshot.projectRoot, deps.global.cwd);
-  const wiring = buildMediaEngineWiring(
-    opened.db,
-    homeDir,
-    saveToRoot,
-    config,
-    lifetime.notification((m: string) => deps.io.writeErr(`${m}\n`)),
-  );
-  // D15 catalog load-check on the resume path too (the SAME helper `run` uses) — re-validate the snapshot's
-  // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
-  // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
-  assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
-  let mcpRuntime: WorkflowMcpRuntime | undefined;
-  // A budget rejection is fatal and dispatches no agent. Do not spawn tools merely to reject it.
-  if (workflowDeclaresMcp(workflow) && !rejectsBudget) {
-    mcpRuntime = await resources.connectMcp(() =>
-      connectWorkflowMcp(workflow, {
-        ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
-        cwd: saveToRoot,
-        preserveFrozenGrants: true,
-        connectSignal: lifetime.signal,
-        assertAdmitting: () => lifetime.checkpoint(),
-        onFailure: (cause) => {
-          if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
-        },
-        onCloseError: resources.reportMcpCloseFailure,
-        budget: lifetime.invocation.registry.budget,
-        work: resources.mcpWork,
-        registrations: config.mcpServers,
-        resolveSecret:
-          deps.mcpSecretResolver ?? keys?.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
-        artifact: `frozen run ${runId}`,
-        consentGate: ports.consentGate(homeDir),
-        ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
-      }),
+  assertBudgetDecision(pending?.allowance, given.decision);
+  // Recorded priced quantities let stale rates refuse before secrets/key-resolver construction/MCP.
+  // A match grants nothing; the later full preparation reads a fresh price snapshot again.
+  if (
+    given.decision.decision === 'approved' &&
+    pending?.allowance?.kind === 'frozen' &&
+    !budgetAllowancePricesMatch(pending.allowance.quote, readBudgetPricingOverlay(parked.db))
+  )
+    throw new CliError(
+      'invalid_invocation',
+      'the frozen budget quote no longer matches current pricing; reject this gate and start a new run',
     );
-    lifetime.checkpoint();
-    if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
-  }
+}
 
+/** The copyable shell invocation for an answer. A media continue has none: the shell never continues a media park (a product decision, not this core's). */
+function resumeInvocationFor(answer: GateAnswer | undefined, runId: string): string | undefined {
+  if (answer === undefined) return undefined;
+  return formatResumeInvocation(
+    resumeCommandBase(answer.request.kind, runId, answer.gateId),
+    answer.request.kind,
+    answer.request.decision,
+  );
+}
+
+/** Reconnect the workflow's MCP servers with the preserved grants; the runtime is registered in `resources` for the host to release. */
+async function connectResumeMcp(
+  ctx: ResumeContext,
+  input: {
+    readonly workflow: WorkflowDefinition;
+    readonly saveToRoot: string;
+    readonly keys: ResumeKeys | undefined;
+  },
+): Promise<WorkflowMcpRuntime | undefined> {
+  const { runId, deps, host, ports, lifetime, resources, nativeProcesses } = ctx;
+  const mcpRuntime = await resources.connectMcp(() =>
+    connectWorkflowMcp(input.workflow, {
+      ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
+      cwd: input.saveToRoot,
+      preserveFrozenGrants: true,
+      connectSignal: lifetime.signal,
+      assertAdmitting: () => lifetime.checkpoint(),
+      onFailure: (cause) => {
+        if (!lifetime.isStoppedFailure(cause)) lifetime.failure(cause);
+      },
+      onCloseError: resources.reportMcpCloseFailure,
+      budget: lifetime.invocation.registry.budget,
+      work: resources.mcpWork,
+      registrations: host.config.mcpServers,
+      resolveSecret:
+        deps.mcpSecretResolver ??
+        input.keys?.mcpSecretResolver ??
+        createMcpSecretResolver(deps.io.env),
+      artifact: `frozen run ${runId}`,
+      consentGate: ports.consentGate(host.homeDir),
+      ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
+    }),
+  );
+  lifetime.checkpoint();
+  if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);
+  return mcpRuntime;
+}
+
+/** Build the engine this leg resumes the run on, wired exactly as the original run's engine was. */
+async function buildResumeEngine(
+  ctx: ResumeContext,
+  input: {
+    readonly parked: ParkedRun;
+    readonly saveToRoot: string;
+    readonly wiring: MediaEngineWiring;
+    readonly mcpRuntime: WorkflowMcpRuntime | undefined;
+    readonly providers: ProviderResolver;
+  },
+): Promise<WorkflowEngine> {
+  const { deps, host, lifetime, nativeProcesses } = ctx;
+  const { parked, saveToRoot, wiring, mcpRuntime, providers } = input;
+  const { db, store, checkpointer } = parked;
   lifetime.checkpoint();
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed
   // workflow's post-gate continuation enforces `budget.max_cost_microcents` on a user-priced model exactly like
   // the original `run` did (pre-egress + realized). Without it a gated run would silently uncap that model on the
   // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
-  const resolvePrice = readUserPricingOverlay(opened.db);
+  const resolvePrice = readUserPricingOverlay(db);
   lifetime.checkpoint();
-  const engine = await (deps.buildEngine ?? defaultBuildEngine)({
+  return (deps.buildEngine ?? defaultBuildEngine)({
     ...(mcpRuntime === undefined
       ? {}
       : {
@@ -459,14 +603,14 @@ export async function resumeRun(
     // tool on exactly the path the gate exists to enable.
     effectJournal: (correlation) =>
       createEffectJournalPort(
-        createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+        createEffectJournalStore(db, { uuid: randomUUID, now: Date.now }),
         correlation,
         { providerAttempt: 1, toolCallId: 'gate' },
       ),
     // …and its READ half. THIS is the gate's home surface: a gate resume is the canonical "the process
     // died mid-node and came back" case, which is exactly what effect-journal.md §4 exists to refuse.
     effectResume: createEffectResumePort(
-      createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+      createEffectJournalStore(db, { uuid: randomUUID, now: Date.now }),
     ),
     providers,
     // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
@@ -498,18 +642,18 @@ export async function resumeRun(
     // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
     // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
     toolEnv: {
-      operatorHomeDir: homeDir,
+      operatorHomeDir: host.homeDir,
       workspaceDir: saveToRoot,
-      fsScopeTier: config.fsScope ?? 'sandboxed',
+      fsScopeTier: host.config.fsScope ?? 'sandboxed',
       ...(nativeProcesses === undefined ? {} : { nativeProcesses }),
     },
     host: createCliHost(store, {
-      operatorHomeDir: homeDir,
+      operatorHomeDir: host.homeDir,
       checkpointer,
       media: wiring.media,
       // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
       // terminal a different process may already have failed to write (ADR-0078 §4).
-      terminalOutboxPath: terminalOutboxPath(homeDir),
+      terminalOutboxPath: terminalOutboxPath(host.homeDir),
       // Same durable lease as the `run` path — a gate resume is exactly where two processes contend.
       runLeases: createRunLeasePort(store),
     }),
@@ -522,25 +666,6 @@ export async function resumeRun(
       : { mediaCostEstimate: wiring.mediaCostEstimate }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
   });
-  lifetime.adoptEngine(engine, runId);
-  // Same reconcile as the `run` path (ADR-0078 §4/§5, ADR-0079 §7) — a gate resume is equally "the next
-  // `relavium` start", and it is the one a user reaches for after seeing the `durabilityUncertain` exit code
-  // on a gated run. The run this command resumes is parked at its gate, so `reconcile()` leaves it alone.
-  lifetime.checkpoint();
-  await engine.reconcile().catch(() => undefined);
-  lifetime.checkpoint();
-  // THE COMMIT POINT (H1): the last checkpoint is behind us and the engine is next, so nothing may stop the leg between the two.
-  ports.commit?.();
-  const handle = await resumeOrFail(engine, {
-    runId,
-    eventConsumption: 'iterated',
-    workflow,
-    inputs,
-    // A media continue names neither: the engine then re-attaches the parked jobs and refuses a run that also waits on a gate.
-    ...(answer === undefined ? {} : { gateId: answer.gateId, decision: answer.request.decision }),
-  });
-  lifetime.adoptHandle(handle);
-  return { kind: 'resumed', engine, handle, db: opened.db, mediaCasRoot: wiring.media.casRoot };
 }
 
 /** The chosen gate, or a typed disposition: an idempotent no-op (exit 0) or an invalid invocation (exit 2). */

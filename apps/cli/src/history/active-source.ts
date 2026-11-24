@@ -172,7 +172,7 @@ function parkEntryOf(
 ): GateCountEntry {
   const key = gateKeyOf(run);
   const kept = cache?.get(run.id);
-  if (kept !== undefined && kept.key === key && clock.nowMs - kept.at < clock.maxAgeMs) return kept;
+  if (kept?.key === key && clock.nowMs - kept.at < clock.maxAgeMs) return kept;
   const entry: GateCountEntry = { key, ...readParkEntry(reader, run), at: clock.nowMs };
   cache?.set(run.id, entry);
   return entry;

@@ -357,6 +357,13 @@ const CLIP_STEPS: readonly (readonly [number, number])[] = [
   [0, 64],
 ];
 
+/** The sentence this store carries for each way the shared append refuses its target. */
+const APPEND_REFUSAL_SENTENCES: Readonly<Record<AppendTargetRefusedError['reason'], string>> = {
+  symlink: 'the MCP consent store is a symbolic link; refusing to write through it',
+  'hard-link': 'the MCP consent store has more than one hard link; refusing to write to it',
+  'not-regular': 'the MCP consent store is not a regular file; refusing to write to it',
+};
+
 /**
  * One append through ONE descriptor ({@link appendToOwnerOnlyFile}): a link at the grant path is refused unfollowed, and so is a file
  * that is not a regular one, and the `0600` mode is set on the descriptor that was written.
@@ -380,13 +387,7 @@ function append(path: string, text: string): void {
     appendToOwnerOnlyFile(path, text, FILE_MODE);
   } catch (error) {
     if (error instanceof AppendTargetRefusedError) {
-      throw new ConsentStoreError(
-        error.reason === 'symlink'
-          ? 'the MCP consent store is a symbolic link; refusing to write through it'
-          : error.reason === 'hard-link'
-            ? 'the MCP consent store has more than one hard link; refusing to write to it'
-            : 'the MCP consent store is not a regular file; refusing to write to it',
-      );
+      throw new ConsentStoreError(APPEND_REFUSAL_SENTENCES[error.reason]);
     }
     throw error;
   }

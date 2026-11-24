@@ -135,7 +135,7 @@ interface PageSlot {
 }
 
 const sameCursor = (a: Cursor | undefined, b: Cursor | undefined): boolean =>
-  a === b || (a !== undefined && b !== undefined && a.createdAt === b.createdAt && a.id === b.id);
+  a === b || (a !== undefined && a.createdAt === b?.createdAt && a.id === b?.id);
 
 export function createHistorySource(
   deps: HistorySourceDeps,

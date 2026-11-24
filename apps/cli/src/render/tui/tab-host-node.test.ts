@@ -549,7 +549,7 @@ describe('n jumps to the first failed attempt', () => {
     // Already showing it: no second read.
     const calls = r.loadNode.mock.calls.length;
     r.press('n');
-    expect(r.loadNode.mock.calls.length).toBe(calls);
+    expect(r.loadNode.mock.calls).toHaveLength(calls);
   });
 
   it('n skips a node that was retried and then succeeded: its failed attempt is not left failed, so nothing is read and the page stays', async () => {

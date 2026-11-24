@@ -250,6 +250,22 @@ function keyRoot(kind: PinKind, projectRoot: string): string {
   return kind === 'workflow' ? canonicalRoot(projectRoot) : projectRoot;
 }
 
+/** The `projectRoot` clause of a listing: none without a root; a run pin's root is compared as given, any other in its canonical form. */
+function listedRootClause(
+  filter:
+    | {
+        readonly kind?: PinKind;
+        readonly projectRoot?: string;
+      }
+    | undefined,
+): SQL | undefined {
+  if (filter?.projectRoot === undefined) return undefined;
+  return eq(
+    runPins.projectRoot,
+    filter.kind === 'run' ? filter.projectRoot : canonicalRoot(filter.projectRoot),
+  );
+}
+
 /**
  * What the list reads of a text column: the whole text when it is at most `maxUnits * 3` bytes (every text within its
  * character bound is), else only its first {@link OVERSIZED_PREVIEW_CODE_POINTS} code points. The byte length is the
@@ -384,12 +400,7 @@ export function createRunPinStore(db: Db): RunPinStore {
         .where(
           and(
             filter?.kind === undefined ? undefined : eq(runPins.kind, filter.kind),
-            filter?.projectRoot === undefined
-              ? undefined
-              : eq(
-                  runPins.projectRoot,
-                  filter.kind === 'run' ? filter.projectRoot : canonicalRoot(filter.projectRoot),
-                ),
+            listedRootClause(filter),
           ),
         )
         // Newest first; the key columns settle a tie so the order never flips between reads.

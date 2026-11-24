@@ -707,7 +707,8 @@ function commandsClause(def: WorkflowDefinition, granted: ReadonlySet<string>): 
     .slice(0, COMMANDS_SHOWN)
     .map((command) => quoted(command, COMMAND_NAME_LIMIT));
   const rest = allowed.length - shown.length;
-  return `run commands, which the file scope does not limit (${shown.join(', ')}${rest > 0 ? `, and ${String(rest)} more` : ''})`;
+  const more = rest > 0 ? `, and ${String(rest)} more` : '';
+  return `run commands, which the file scope does not limit (${shown.join(', ')}${more})`;
 }
 
 /**
@@ -727,7 +728,14 @@ function serversClause(def: WorkflowDefinition): string | undefined {
   if (servers.length === 0) return undefined;
   const shown = servers.slice(0, SERVERS_SHOWN).map((name) => quoted(name, SERVER_NAME_LIMIT));
   const rest = servers.length - shown.length;
-  return `use MCP ${servers.length === 1 ? 'server' : 'servers'} ${shown.join(', ')}${rest > 0 ? ` and ${String(rest)} more` : ''}`;
+  const more = rest > 0 ? ` and ${String(rest)} more` : '';
+  return `use MCP ${servers.length === 1 ? 'server' : 'servers'} ${shown.join(', ')}${more}`;
+}
+
+/** The file-scope sentence of the authority note: the tier, and that this repository's own configuration set it when it did. */
+function fileScopeSentence(fsScope: LaunchFsScope): string {
+  const source = fsScope.fromRepository ? ', set by this repository' : '';
+  return `File scope: ${fsScope.tier}${source}.`;
 }
 
 /**
@@ -758,9 +766,7 @@ export function launchAuthorityNote(
     serversClause(def),
   ].filter((clause): clause is string => clause !== undefined);
   const sentences = [
-    fsScope === undefined || fsScope.tier === 'sandboxed'
-      ? undefined
-      : `File scope: ${fsScope.tier}${fsScope.fromRepository ? ', set by this repository' : ''}.`,
+    fsScope === undefined || fsScope.tier === 'sandboxed' ? undefined : fileScopeSentence(fsScope),
     clauses.length === 0 ? undefined : `This run can ${clauses.join('; ')}.`,
   ].filter((sentence): sentence is string => sentence !== undefined);
   return sentences.length === 0 ? undefined : bounded(sentences.join(' '), AUTHORITY_LIMIT);

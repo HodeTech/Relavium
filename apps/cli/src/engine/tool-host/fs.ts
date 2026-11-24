@@ -1763,6 +1763,28 @@ async function hasIgnoreFile(dir: string, signal: AbortSignalLike | undefined): 
   return false;
 }
 
+/**
+ * The refusals of a discovery call's own arguments, before anything is resolved: a path, a glob or a pattern that is empty or over its
+ * byte and length ceiling, and a pattern with a line break. Each sentence is fixed and names neither the path nor the pattern.
+ */
+function assertDiscoveryArguments(
+  path: string,
+  glob: string | undefined,
+  search: FsSearchOpts | undefined,
+): void {
+  const fits = (value: string, limit: number): boolean =>
+    value.length > 0 && value.length <= limit && Buffer.byteLength(value, 'utf8') <= limit;
+  if (!fits(path, 4096)) throw new FsCapabilityError('discovery: invalid path');
+  if (glob !== undefined && !fits(glob, 4096))
+    throw new FsCapabilityError('discovery: invalid glob');
+  if (search !== undefined && !fits(search.pattern, 1024))
+    throw new FsCapabilityError('search_files: invalid pattern');
+  // The scan reads one line at a time, so a pattern with a line break could never match and a complete-looking result would call a
+  // literal absent that was never looked for. The tool schema refuses it first; a host called without it refuses it here (P1-8).
+  if (search !== undefined && /[\r\n]/.test(search.pattern))
+    throw new FsCapabilityError(SEARCH_PATTERN_LINE_BREAK);
+}
+
 async function discover(
   config: NodeFsCapabilityConfig,
   path: string,
@@ -1789,17 +1811,7 @@ async function discover(
 ): Promise<FsFindResult | FsSearchResult> {
   throwIfAborted(signal);
   const glob = find?.glob ?? search?.glob;
-  const fits = (value: string, limit: number): boolean =>
-    value.length > 0 && value.length <= limit && Buffer.byteLength(value, 'utf8') <= limit;
-  if (!fits(path, 4096)) throw new FsCapabilityError('discovery: invalid path');
-  if (glob !== undefined && !fits(glob, 4096))
-    throw new FsCapabilityError('discovery: invalid glob');
-  if (search !== undefined && !fits(search.pattern, 1024))
-    throw new FsCapabilityError('search_files: invalid pattern');
-  // The scan reads one line at a time, so a pattern with a line break could never match and a complete-looking result would call a
-  // literal absent that was never looked for. The tool schema refuses it first; a host called without it refuses it here (P1-8).
-  if (search !== undefined && /[\r\n]/.test(search.pattern))
-    throw new FsCapabilityError(SEARCH_PATTERN_LINE_BREAK);
+  assertDiscoveryArguments(path, glob, search);
   const inScope = buildScopeChecker(config);
   assertNotSensitiveReadPath(lexicalTarget(config, path), config.pathPolicy);
   const root = await jailExisting(config, inScope, path);

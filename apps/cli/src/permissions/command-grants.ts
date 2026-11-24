@@ -868,6 +868,12 @@ const REFUSED_LINK_OR_UNINSPECTABLE =
   'the remembered-command file cannot be inspected or is a symbolic link; refusing to write';
 const REFUSED_HARD_LINK =
   'the remembered-command file has more than one hard link; refusing to write to it';
+/** This store's own sentence for each way the shared append refuses its target. */
+const APPEND_REFUSAL_SENTENCES: Readonly<Record<AppendTargetRefusedError['reason'], string>> = {
+  symlink: REFUSED_LINK_OR_UNINSPECTABLE,
+  'hard-link': REFUSED_HARD_LINK,
+  'not-regular': 'the remembered-command file is not a regular file',
+};
 
 /**
  * One record, one write, with a LEADING newline (a process killed mid-append leaves a partial last line with no terminator, and
@@ -887,12 +893,6 @@ function appendLine(path: string, record: object): void {
     appendToOwnerOnlyFile(path, `\n${stringifyJsonLine(record)}\n`, FILE_MODE);
   } catch (error) {
     if (!(error instanceof AppendTargetRefusedError)) throw error;
-    throw new Error(
-      error.reason === 'symlink'
-        ? REFUSED_LINK_OR_UNINSPECTABLE
-        : error.reason === 'hard-link'
-          ? REFUSED_HARD_LINK
-          : 'the remembered-command file is not a regular file',
-    );
+    throw new Error(APPEND_REFUSAL_SENTENCES[error.reason]);
   }
 }

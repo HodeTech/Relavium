@@ -370,7 +370,18 @@ export function usdTextOfMicrocents(microcents: number): string {
   const whole = Math.trunc(microcents / MICROCENTS_PER_USD);
   const fraction = microcents - whole * MICROCENTS_PER_USD;
   if (fraction === 0) return String(whole);
-  return `${whole}.${String(fraction).padStart(8, '0').replace(/0+$/, '')}`;
+  return `${whole}.${withoutTrailingZeros(String(fraction).padStart(8, '0'))}`;
+}
+
+/**
+ * `text` without its final run of `0` characters. A loop, not `/0+$/`: that pattern retries from every `0` of a long run that is NOT at the
+ * end, which is quadratic in the run's length (SonarCloud S8786). The only text this module trims is the text of a stored integer, which is
+ * short, so no caller can reach the cost today; the loop is the form that stays linear if one ever can. Exported for its test.
+ */
+export function withoutTrailingZeros(text: string): string {
+  let end = text.length;
+  while (end > 0 && text.codePointAt(end - 1) === 0x30) end -= 1;
+  return text.slice(0, end);
 }
 
 // ── the pairing rule ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -436,8 +447,10 @@ export function pairingSentence(issue: PairingIssue, naming: PricingNaming = 'fl
 export function noTokenPriceSentence(model: string, naming: PricingNaming = 'flag'): string {
   const pair = PRICING_FIELDS.filter((field) => field.pairedWith !== undefined);
   const head = `'${model}' has no token price — the catalog does not price it and you have not either, so a media rate alone would never be applied.`;
-  if (naming === 'flag')
-    return `${head} Re-run with ${pair.map((p) => `${p.flag} ${p.placeholder}`).join(' ')} as well. Nothing written.`;
+  if (naming === 'flag') {
+    const flags = pair.map((p) => `${p.flag} ${p.placeholder}`).join(' ');
+    return `${head} Re-run with ${flags} as well. Nothing written.`;
+  }
   return `${head} Set ${pair.map((p) => p.label).join(' and ')} as well. Nothing written.`;
 }
 

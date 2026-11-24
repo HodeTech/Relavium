@@ -145,69 +145,98 @@ function explicitYamlPath(arg: string): boolean {
  */
 function tryRead(path: string, kind: string, cwd: string): string | undefined {
   const label = sourceLabel(cwd, path);
-  const unreadable = (cause?: unknown): CliError =>
-    new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
-      ...(cause === undefined ? {} : { cause }),
-    });
-  const tooLarge = (): CliError =>
-    new CliError(
-      'invalid_invocation',
-      `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
-    );
-  let admitted: BigIntStats;
-  try {
-    admitted = statSync(path, { bigint: true });
-  } catch (err) {
-    if (errnoCode(err) === 'ENOENT') {
-      return undefined; // this candidate does not exist — try the next
-    }
-    throw unreadable(err);
-  }
+  const faults = readFaults(kind, label);
+  const admitted = statCandidate(path, faults);
+  if (admitted === undefined) return undefined; // this candidate does not exist — try the next
   if (!admitted.isFile()) {
     throw new CliError('invalid_invocation', `${kind} path '${label}' is not a regular file.`);
   }
-  if (admitted.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw tooLarge();
-  let bytes: Buffer;
-  let fd: number | undefined;
-  try {
-    fd = openSync(
-      path,
-      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0),
-    );
-    const opened = fstatSync(fd, { bigint: true });
-    if (!opened.isFile() || opened.dev !== admitted.dev || opened.ino !== admitted.ino) {
-      throw unreadable(); // not the file that was statted: swapped in between, and nothing of it is read
-    }
-    if (opened.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw tooLarge();
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for (;;) {
-      const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_YAML_SOURCE_BYTES + 1 - total));
-      const count = readSync(fd, chunk, 0, chunk.length, null);
-      if (count === 0) break;
-      total += count;
-      if (total > MAX_YAML_SOURCE_BYTES) throw tooLarge();
-      chunks.push(chunk.subarray(0, count));
-    }
-    bytes = Buffer.concat(chunks, total);
-  } catch (err) {
-    if (err instanceof CliError) throw err;
-    throw unreadable(err);
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // A read-only descriptor that fails to close has nothing left to lose.
-      }
-    }
-  }
+  if (admitted.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw faults.tooLarge();
+  const bytes = readAdmittedBytes(path, admitted, faults);
   try {
     return STRICT_UTF8.decode(bytes);
   } catch {
     // A lenient decode turns each malformed sequence into U+FFFD, so the run would start on a prompt that is not the one in the file
     // (review P05-2; the catalog and the authoring read refuse the same bytes).
     throw new CliError('invalid_invocation', `${kind} file '${label}' is not valid UTF-8.`);
+  }
+}
+
+/** The two refusals a candidate read raises, spelled once so every step of the read says the same sentence. */
+interface ReadFaults {
+  readonly unreadable: (cause?: unknown) => CliError;
+  readonly tooLarge: () => CliError;
+}
+
+function readFaults(kind: string, label: string): ReadFaults {
+  return {
+    unreadable: (cause) =>
+      new CliError('invalid_invocation', `${kind} file '${label}' could not be read.`, {
+        ...(cause === undefined ? {} : { cause }),
+      }),
+    tooLarge: () =>
+      new CliError(
+        'invalid_invocation',
+        `${kind} file '${label}' exceeds the ${MAX_YAML_SOURCE_BYTES}-byte size limit.`,
+      ),
+  };
+}
+
+/** The candidate's `stat` (following a link), `undefined` for a genuine miss (`ENOENT`), and a refusal for any other fault. */
+function statCandidate(path: string, faults: ReadFaults): BigIntStats | undefined {
+  try {
+    return statSync(path, { bigint: true });
+  } catch (err) {
+    if (errnoCode(err) === 'ENOENT') {
+      return undefined;
+    }
+    throw faults.unreadable(err);
+  }
+}
+
+/** Open the admitted regular file once and read it through the descriptor; the descriptor is always closed, and every fault is a typed refusal. */
+function readAdmittedBytes(path: string, admitted: BigIntStats, faults: ReadFaults): Buffer {
+  let fd: number | undefined;
+  try {
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0),
+    );
+    return readOpenedBytes(fd, admitted, faults);
+  } catch (err) {
+    if (err instanceof CliError) throw err;
+    throw faults.unreadable(err);
+  } finally {
+    closeQuietly(fd);
+  }
+}
+
+/** Ask the DESCRIPTOR, not the path, whether it is the file that was statted and still within the cap, then read it in bounded chunks. */
+function readOpenedBytes(fd: number, admitted: BigIntStats, faults: ReadFaults): Buffer {
+  const opened = fstatSync(fd, { bigint: true });
+  if (!opened.isFile() || opened.dev !== admitted.dev || opened.ino !== admitted.ino) {
+    throw faults.unreadable(); // not the file that was statted: swapped in between, and nothing of it is read
+  }
+  if (opened.size > BigInt(MAX_YAML_SOURCE_BYTES)) throw faults.tooLarge();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_YAML_SOURCE_BYTES + 1 - total));
+    const count = readSync(fd, chunk, 0, chunk.length, null);
+    if (count === 0) break;
+    total += count;
+    if (total > MAX_YAML_SOURCE_BYTES) throw faults.tooLarge();
+    chunks.push(chunk.subarray(0, count));
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function closeQuietly(fd: number | undefined): void {
+  if (fd === undefined) return;
+  try {
+    closeSync(fd);
+  } catch {
+    // A read-only descriptor that fails to close has nothing left to lose.
   }
 }
 

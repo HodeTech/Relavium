@@ -156,7 +156,7 @@ export function nextCursor(
 ): { readonly createdAt: number; readonly id: string } | undefined {
   if (pageLimit <= 0 || rows.length < pageLimit) return undefined;
   const last = rows.at(-1);
-  if (last === undefined || last.createdAtMs === undefined) return undefined;
+  if (last?.createdAtMs === undefined) return undefined;
   if (!Number.isSafeInteger(last.createdAtMs)) return undefined;
   return { createdAt: last.createdAtMs, id: last.id };
 }

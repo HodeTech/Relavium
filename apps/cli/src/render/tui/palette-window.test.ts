@@ -29,7 +29,7 @@ describe('a palette whose entries all fit is the list it always was', () => {
     const lines = paletteLines(total, 0, maxRows);
     expect(entries(lines)).toEqual(Array.from({ length: total }, (_, index) => index));
     expect(markers(lines)).toEqual([]);
-    expect(lines.length).toBe(total);
+    expect(lines).toHaveLength(total);
   });
 
   it('does not depend on the highlighted entry when they all fit', () => {
@@ -96,7 +96,7 @@ describe('a palette that does not fit draws a window of it', () => {
   });
 
   it('never draws less than one line, and clamps a highlighted entry that is past the end', () => {
-    expect(paletteLines(14, 6, 0).length).toBe(1);
+    expect(paletteLines(14, 6, 0)).toHaveLength(1);
     expect(entries(paletteLines(14, 99, 15))).toContain(13);
     expect(entries(paletteLines(14, -3, 15))).toContain(0);
   });

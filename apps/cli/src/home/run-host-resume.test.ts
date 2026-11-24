@@ -476,7 +476,7 @@ describe('(c) a masked slot is asked for once, by name', () => {
       reason: 'rejected',
       message: 'The answer was cancelled. The gate is still pending.',
     });
-    expect(r.builds.mock.calls.length).toBe(buildsBefore);
+    expect(r.builds.mock.calls).toHaveLength(buildsBefore);
     expect(runStatus(client, runId)).toBe('paused');
 
     // Answer both: each slot has its own field, and the run completes.
@@ -746,7 +746,7 @@ describe('a gate answered from the Home that another process already decided', (
       decision: rejectionDecision(),
     });
     expect(stale).toEqual({ kind: 'settled', message: `gate ${g1} already resolved` });
-    expect(mine.builds.mock.calls.length).toBe(buildsBefore);
+    expect(mine.builds.mock.calls).toHaveLength(buildsBefore);
     expect(decisionsOf(first, runId).map((entry) => entry.nodeId)).toEqual(['g1']);
     expect(runStatus(first, runId)).toBe('paused');
 

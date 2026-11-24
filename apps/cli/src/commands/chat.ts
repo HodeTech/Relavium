@@ -1874,6 +1874,18 @@ export function openCommandGrants(
   });
 }
 
+/** The text of an `/export` fault: the person-facing message when a work owner tracks the session, else the thrown error's own message. */
+function exportFailureText(shown: unknown, tracked: boolean): string {
+  if (tracked) return toUserFacing(shown).message;
+  return shown instanceof Error ? shown.message : String(shown);
+}
+
+/** Why `/workflows` could not list, in the fault's own sanitized words, its code when it has none, and a fixed sentence for anything else. */
+function workflowListFailureReason(shown: unknown): string {
+  if (!(shown instanceof CliError)) return 'unexpected error';
+  return shown.message === '' ? shown.code : sanitizeUntrustedInline(shown.message);
+}
+
 /**
  * Build the slash-aware line handler shared by the chat REPL loop (`runReplLoop`) and the 2.5.B Home's in-tree
  * chat driver: `/exit` stops; `/cancel` ends the (resumable) session AND stops; `/export` scaffolds a workflow
@@ -2037,13 +2049,7 @@ export function createChatLineHandler(
         workOwner?.failure(err);
         if (noticesStopped()) return;
         const shown = faultToShow(err);
-        const message =
-          workOwner === undefined
-            ? shown instanceof Error
-              ? shown.message
-              : String(shown)
-            : toUserFacing(shown).message;
-        emitOutput(`export failed: ${message}`);
+        emitOutput(`export failed: ${exportFailureText(shown, workOwner !== undefined)}`);
       }
     },
     // The curated command list — a clean in-view notice in the ink TTY, a stderr list on the plain / `--json` paths.
@@ -2071,13 +2077,7 @@ export function createChatLineHandler(
         // person can act on it; the text is sanitized, and a fault with no words of its own falls back to its code. A cause that carries an
         // absolute path stays on the error's `cause`, never in the message.
         const shown = faultToShow(err);
-        const reason =
-          shown instanceof CliError
-            ? shown.message === ''
-              ? shown.code
-              : sanitizeUntrustedInline(shown.message)
-            : 'unexpected error';
-        emitOutput(`could not list workflows: ${reason}`);
+        emitOutput(`could not list workflows: ${workflowListFailureReason(shown)}`);
       }
     },
     // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.

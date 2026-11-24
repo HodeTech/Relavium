@@ -256,7 +256,7 @@ describe('the tools this chat does not offer, and the file the agent was read fr
     const declared = agent.tools ?? [];
     const wired = declared.filter((tool) => tool !== 'ask_user' && tool !== 'run_command');
     const view = hostView(agent, wired);
-    expect(declared.length).toBe(9);
+    expect(declared).toHaveLength(9);
     for (const [name, text] of [
       ['the sheet at 80×24', texts(agentSheetLines(view, SIZES[0])).join('\n')],
       ['the notice', agentNotice(view)],

@@ -443,8 +443,7 @@ const searchFilesTool = defineBuiltin({
       pattern: {
         type: 'string',
         maxLength: 1024,
-        description:
-          'Nonempty single-line literal, at most 1024 UTF-8 bytes; never a regular expression. The search matches one line at a time, so a pattern containing a line break (\\n or \\r) is refused: search for one line of it.',
+        description: String.raw`Nonempty single-line literal, at most 1024 UTF-8 bytes; never a regular expression. The search matches one line at a time, so a pattern containing a line break (\n or \r) is refused: search for one line of it.`,
       },
       caseSensitive: {
         type: 'boolean',

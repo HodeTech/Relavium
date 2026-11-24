@@ -944,10 +944,10 @@ describe('the id on the card is the id that is stored', () => {
   it('enforces the 200-code-unit bound too: a string of combining marks is narrow and long', () => {
     // One column wide, three hundred code units long: only the length bound can refuse it.
     const narrow = `a${String.fromCodePoint(0x301).repeat(300)}`;
-    expect(narrow.length).toBe(301);
+    expect(narrow).toHaveLength(301);
     expect(refused(narrow, { input: '3', output: '9' })).toBe(PRICING_MODEL_ID_FAULTS['too-long']);
     const edge = `a${String.fromCodePoint(0x301).repeat(199)}`;
-    expect(edge.length).toBe(200);
+    expect(edge).toHaveLength(200);
     expect(
       port.prepare(
         { modelId: edge, provider: 'openai' },

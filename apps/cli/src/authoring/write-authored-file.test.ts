@@ -215,17 +215,19 @@ describe.skipIf(process.platform === 'win32')(
 );
 
 describe('what --force does write', () => {
-  it('replaces an existing regular file with the new bytes, keeps its permission bits and leaves no temporary file behind', () => {
-    if (process.platform === 'win32') return;
-    const path = join(project, '.relavium', 'agents', 'evil.agent.yaml');
-    writeFileSync(path, 'old\n');
-    // Group-writable: the umask narrows a created file to 0o644, so only an explicit `fchmod` of the new file can keep these bits.
-    chmodSync(path, 0o664);
-    writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true);
-    expect(readFileSync(path, 'utf8')).toBe(AGENT_CANONICAL);
-    expect(statSync(path).mode & 0o777, 'the file keeps the mode it had').toBe(0o664);
-    expect(readdirSync(join(project, '.relavium', 'agents'))).toEqual(['evil.agent.yaml']);
-  });
+  it.skipIf(process.platform === 'win32')(
+    'replaces an existing regular file with the new bytes, keeps its permission bits and leaves no temporary file behind',
+    () => {
+      const path = join(project, '.relavium', 'agents', 'evil.agent.yaml');
+      writeFileSync(path, 'old\n');
+      // Group-writable: the umask narrows a created file to 0o644, so only an explicit `fchmod` of the new file can keep these bits.
+      chmodSync(path, 0o664);
+      writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true);
+      expect(readFileSync(path, 'utf8')).toBe(AGENT_CANONICAL);
+      expect(statSync(path).mode & 0o777, 'the file keeps the mode it had').toBe(0o664);
+      expect(readdirSync(join(project, '.relavium', 'agents'))).toEqual(['evil.agent.yaml']);
+    },
+  );
 
   it('creates the file (and its directories) when nothing is there, as --force always did', () => {
     const path = join(project, '.relavium', 'deeper', 'evil.agent.yaml');
@@ -241,30 +243,34 @@ describe('what --force does write', () => {
     expect(statSync(path).isDirectory()).toBe(true);
   });
 
-  it('a failed replacement leaves the old file as it was and no temporary file (an unwritable directory)', () => {
-    if (process.platform === 'win32' || process.getuid?.() === 0) return;
-    const dir = join(project, '.relavium', 'agents');
-    const path = join(dir, 'evil.agent.yaml');
-    writeFileSync(path, 'old\n');
-    chmodSync(dir, 0o555);
-    try {
-      expect(() => writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true)).toThrow();
-      expect(readFileSync(path, 'utf8'), 'the old bytes survive a failed rewrite').toBe('old\n');
-      expect(readdirSync(dir)).toEqual(['evil.agent.yaml']);
-    } finally {
-      chmodSync(dir, 0o755);
-    }
-  });
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a failed replacement leaves the old file as it was and no temporary file (an unwritable directory)',
+    () => {
+      const dir = join(project, '.relavium', 'agents');
+      const path = join(dir, 'evil.agent.yaml');
+      writeFileSync(path, 'old\n');
+      chmodSync(dir, 0o555);
+      try {
+        expect(() => writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true)).toThrow();
+        expect(readFileSync(path, 'utf8'), 'the old bytes survive a failed rewrite').toBe('old\n');
+        expect(readdirSync(dir)).toEqual(['evil.agent.yaml']);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
 
-  it('a read-only file is not replaced: the rewrite honours the permission the owner set', () => {
-    if (process.platform === 'win32' || process.getuid?.() === 0) return;
-    const path = join(project, '.relavium', 'agents', 'evil.agent.yaml');
-    writeFileSync(path, 'old\n');
-    chmodSync(path, 0o444);
-    expect(() => writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true)).toThrow();
-    expect(readFileSync(path, 'utf8')).toBe('old\n');
-    expect(readdirSync(join(project, '.relavium', 'agents'))).toEqual(['evil.agent.yaml']);
-  });
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'a read-only file is not replaced: the rewrite honours the permission the owner set',
+    () => {
+      const path = join(project, '.relavium', 'agents', 'evil.agent.yaml');
+      writeFileSync(path, 'old\n');
+      chmodSync(path, 0o444);
+      expect(() => writeAuthoredFile(path, 'x.yaml', AGENT_CANONICAL, true)).toThrow();
+      expect(readFileSync(path, 'utf8')).toBe('old\n');
+      expect(readdirSync(join(project, '.relavium', 'agents'))).toEqual(['evil.agent.yaml']);
+    },
+  );
 });
 
 describe.skipIf(process.platform === 'win32')('an interrupted or raced replacement', () => {

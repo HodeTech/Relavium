@@ -337,7 +337,7 @@ describe('the commit writes exactly the prepared bytes, once, and says where', (
     expect(written.toString('utf8')).toBe(
       'id: reviewer\nmodel: claude-sonnet-4-6\nprovider: anthropic\nsystem_prompt: Review the code.\n',
     );
-    expect(written.length).toBe(result.offer.bytes);
+    expect(written).toHaveLength(result.offer.bytes);
   });
 
   it('keeps a literal as written and shows the command’s notice without the value', () => {

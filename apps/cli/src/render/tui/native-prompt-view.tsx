@@ -23,6 +23,29 @@ import {
 const GUTTER = '│ ';
 const CHORD_KEYS: Readonly<Record<string, string>> = { allow: '[Ctrl+Y] ', deny: '[Ctrl+N] ' };
 
+/** The legend under a picker: what its keys do, or, after a failed read, how to try again or change the filter. */
+function pickerLegend(snapshot: NativePromptSnapshot): string {
+  if (snapshot.error === '') {
+    return '↑/↓ select · Enter resume · Tab scope · PgUp/PgDn pages · Esc cancel';
+  }
+  return snapshot.picker?.retryable === true
+    ? 'Enter retry · Esc cancel'
+    : 'Edit filter · Esc cancel';
+}
+
+/** The one-line key legend under a prompt card, by the kind of card; `leave` is what the escape key does for this prompt. */
+function promptLegend(
+  snapshot: NativePromptSnapshot,
+  back: boolean,
+  leave: string,
+  windowed: boolean,
+): string {
+  if (snapshot.kind === 'picker') return pickerLegend(snapshot);
+  if (snapshot.kind === 'select') return selectLegend(back, windowed);
+  if (snapshot.kind === 'busy' || snapshot.kind === 'chord') return leave;
+  return `Enter continue · ${leave}`;
+}
+
 export function NativePromptView({
   snapshot,
   color,
@@ -149,17 +172,7 @@ export function NativePromptView({
       )}
       {snapshot.error !== '' && <Text>{snapshot.error}</Text>}
       <Text {...dimProps(color)}>
-        {snapshot.kind === 'picker'
-          ? snapshot.error !== ''
-            ? snapshot.picker?.retryable === true
-              ? 'Enter retry · Esc cancel'
-              : 'Edit filter · Esc cancel'
-            : '↑/↓ select · Enter resume · Tab scope · PgUp/PgDn pages · Esc cancel'
-          : snapshot.kind === 'select'
-            ? selectLegend(back, selectWindow !== undefined)
-            : snapshot.kind === 'busy' || snapshot.kind === 'chord'
-              ? leave
-              : `Enter continue · ${leave}`}
+        {promptLegend(snapshot, back, leave, selectWindow !== undefined)}
       </Text>
     </Box>
   );
