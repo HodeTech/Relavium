@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 
 import {
   MAX_SOURCE_CHARS,
@@ -11,7 +11,7 @@ import {
 import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
-import { isWindowsDeviceName } from '../authoring/authoring.js';
+import { confineToProjectConfig, isWindowsDeviceName } from '../authoring/authoring.js';
 import { CliError } from '../process/errors.js';
 import { assertProjectArtifactPath, resolveProjectDirectory } from '../config/project-directory.js';
 import {
@@ -23,6 +23,7 @@ import {
   writeFileForStorage,
   storageBoundaryError,
 } from '../process/owned-storage.js';
+import { pinnedDirectoryGuard, type DirectoryGuard } from '../process/forced-write.js';
 import { sourceLabel } from '../process/source-label.js';
 import { takenWorkflowIds } from '../workflows/catalog.js';
 
@@ -134,8 +135,14 @@ const WORKFLOW_ID_GRAMMAR = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
  * that merely sits at an old export's path — the scaffold renamed away and another workflow put there — is never
  * mistaken for it. The rewrite is atomic, and it replaces only the file it recognized: one changed or replaced
  * after the check is left alone, and the export moves on through the same names, rewriting another of this
- * session's own exports there or else taking the next free id. A swap in the moment between the last check and the
- * rename is not detected ({@link replaceFileForStorage}).
+ * session's own exports there or else taking the next free id.
+ *
+ * The write is PINNED to the directory the confinement computed: every file operation names the canonical
+ * `workflows` directory (`confineToProjectConfig`), not the project's spelling of it, and a guard refuses the write once that
+ * directory stops resolving to itself (a link put in its place after the catalog scan). The pin narrows a swap of the directory's
+ * name and, on the rewrite, reports what got through (the file may have gone to another directory); it does not close it, as a true
+ * pin needs `openat` and `renameat`, which Node lacks (see `forced-write.ts`). The path the result and the labels name stays the
+ * project's own spelling.
  */
 export function exportSessionToProject(opts: ExportToProjectOptions): ExportResult {
   const root = resolveProjectDirectory(opts.cwd, opts.homeDir, opts.projectConfigDir);
@@ -157,14 +164,24 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     opts.projectConfigDir === undefined
       ? new Set<string>()
       : takenWorkflowIds(opts.projectConfigDir, opts.cwd, opts.homeDir);
+  // The canonical directory the writes go through, and the guard that holds them to it.
+  const realDir = dirname(
+    confineToProjectConfig(root, join(dir, `${base}.relavium.yaml`), relative(opts.cwd, dir))
+      .writeTarget,
+  );
+  const guard = pinnedDirectoryGuard(realDir);
   for (const id of candidates) {
     const path = join(dir, `${id}.relavium.yaml`);
-    const own = ownExport(path, opts.sessionId);
+    const real = join(realDir, `${id}.relavium.yaml`);
+    const own = ownExport(real, opts.sessionId);
     if (own === undefined) continue;
     const definition = withWorkflowId(scaffold, id);
     assertProjectArtifactPath(path, opts.homeDir);
     try {
-      replaceFileForStorage(path, serializeWorkflow(definition), own.mode, own.identity);
+      replaceFileForStorage(real, serializeWorkflow(definition), own.mode, own.identity, {
+        gid: own.gid,
+        guard,
+      });
     } catch (err) {
       // Changed since it was recognized: no longer known to be ours, so it stays and the export moves on. Its id
       // is in `taken`, so the next loop never writes there either.
@@ -179,7 +196,8 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     const definition = withWorkflowId(scaffold, id);
     const label = sourceLabel(opts.cwd, path);
     assertProjectArtifactPath(path, opts.homeDir);
-    if (writeScaffold(path, serializeWorkflow(definition), false, label) === 'written') {
+    const real = join(realDir, `${id}.relavium.yaml`);
+    if (writeScaffold(real, serializeWorkflow(definition), false, label, guard) === 'written') {
       return exportResult(path, definition, loaded);
     }
   }
@@ -189,9 +207,11 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
   );
 }
 
-/** This session's own earlier export: its permission bits, and its identity for the replace to re-check. */
+/** This session's own earlier export: its permission bits and group, and its identity for the replace to re-check. */
 interface OwnExport {
   readonly mode: number;
+  /** The group of the file, which the rewrite carries over (or else keeps only the owner's bits). */
+  readonly gid: number;
   readonly identity: StorageFileIdentity;
 }
 
@@ -235,7 +255,11 @@ function ownExport(path: string, sessionId: string): OwnExport | undefined {
     // The parser's own bound, in characters, before any YAML is decoded.
     if (text.length > MAX_SOURCE_CHARS) return undefined;
     return readSessionExportMarker(text) === sessionId
-      ? { mode: Number(opened.mode & 0o777n), identity: storageFileIdentity(opened, bytes) }
+      ? {
+          mode: Number(opened.mode & 0o777n),
+          gid: Number(opened.gid),
+          identity: storageFileIdentity(opened, bytes),
+        }
       : undefined;
   } catch {
     return undefined;
@@ -287,10 +311,13 @@ function writeScaffold(
   yaml: string,
   force: boolean,
   label: string,
+  guard?: DirectoryGuard,
 ): 'written' | 'exists' {
   try {
+    guard?.();
     // Create the parent directory (so `--out exports/wf.yaml` just works) before writing the scaffold.
     mkdirForStorage(dirname(path));
+    guard?.();
   } catch (err) {
     const code = exportTargetCode(err);
     // ENOENT/ELOOP here mean a dangling or looping link where a directory belongs; `recursive` creates the rest.
@@ -308,7 +335,7 @@ function writeScaffold(
     // separate existence check and the write. Under `force` the target is looked at without being followed and a plain file is replaced
     // through a temporary and a rename (never opened by path with `w`, which follows a link, waits on a FIFO and truncates first); a
     // link, a FIFO or a device is refused in fixed words (review P0-1; the security sitting's M1).
-    writeFileForStorage(path, yaml, force);
+    writeFileForStorage(path, yaml, force, guard);
     return 'written';
   } catch (err) {
     const code = exportTargetCode(err);

@@ -34,6 +34,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
 import { chatExportCommand } from './chat-export.js';
 import { createCommand } from './create.js';
+import { createExportPort } from '../home/defined-port.js';
 import { exportCommand } from './export.js';
 import { importCommand } from './import.js';
 
@@ -317,7 +318,7 @@ describe('a Windows device name is no id for an authored file, on any platform',
     `'${id}' is a device name on Windows, so no file can be named after it — choose another id.`;
   const agentNamed = (id: string): string => AGENT.replace('id: reviewer', `id: ${id}`);
 
-  it.each(['con', 'prn', 'aux', 'nul', 'com1', 'com9', 'lpt1', 'lpt9'])(
+  it.each(['con', 'prn', 'aux', 'nul', 'com0', 'com1', 'com9', 'lpt0', 'lpt1', 'lpt9'])(
     'import refuses %s, with or without --force, and writes nothing',
     async (id) => {
       writeFileSync(join(project, 'incoming.agent.yaml'), agentNamed(id));
@@ -355,7 +356,7 @@ describe('a Windows device name is no id for an authored file, on any platform',
   });
 
   it('a name that only CONTAINS one, or goes past the reserved range, is an ordinary id', () => {
-    for (const id of ['console', 'com10', 'com0', 'auxiliary', 'nul-device']) {
+    for (const id of ['console', 'com10', 'lpt10', 'auxiliary', 'nul-device']) {
       writeFileSync(join(project, 'incoming.agent.yaml'), agentNamed(id));
       const { io } = captureIo();
       importCommand(
@@ -364,5 +365,62 @@ describe('a Windows device name is no id for an authored file, on any platform',
       );
       expect(existsSync(join(project, '.relavium', 'agents', `${id}.agent.yaml`)), id).toBe(true);
     }
+  });
+
+  describe('export names its default destination after the id, so it refuses these too', () => {
+    // The id comes from a file in the repository (`workflow.id: aux` in `serial.relavium.yaml`), and the default destination is
+    // `<cwd>/<id>.relavium.yaml`: a file name that cannot be added to git on Windows and may open the device. `--out` is the person's own path.
+    const workflowNamed = (id: string): string =>
+      `schema_version: '1.0'\nworkflow:\n  id: ${id}\n  nodes:\n    - { id: s, type: input }\n    - { id: o, type: output }\n  edges:\n    - { from: s, to: o }\n`;
+    const SENTENCE_EXPORT = (id: string): string =>
+      `'${id}' is a device name on Windows, so no file can be named after it — name the file yourself with relavium export <id> --out <path>.`;
+
+    beforeEach(() => {
+      mkdirSync(join(project, '.relavium', 'workflows'), { recursive: true });
+    });
+
+    it.each(['aux', 'com0', 'lpt0', 'nul'])(
+      '%s: refused with nothing written, with or without --force',
+      async (id) => {
+        writeFileSync(
+          join(project, '.relavium', 'workflows', 'serial.relavium.yaml'),
+          workflowNamed(id),
+        );
+        for (const force of [false, true]) {
+          const { io, out } = captureIo();
+          expect(
+            await refusalOf(() =>
+              exportCommand({ id, force }, { io, global: global(project), homeDir: home }),
+            ),
+            `force=${String(force)}`,
+          ).toBe(SENTENCE_EXPORT(id));
+          expect(out()).toBe('');
+        }
+        expect(readdirSync(project).filter((name) => name.startsWith(id))).toEqual([]);
+      },
+    );
+
+    it('an explicit --out is the person’s own path, and is the way out', () => {
+      writeFileSync(
+        join(project, '.relavium', 'workflows', 'serial.relavium.yaml'),
+        workflowNamed('aux'),
+      );
+      const { io } = captureIo();
+      exportCommand(
+        { id: 'aux', out: 'serial-copy.relavium.yaml', force: false },
+        { io, global: global(project), homeDir: home },
+      );
+      expect(readFileSync(join(project, 'serial-copy.relavium.yaml'), 'utf8')).toContain('id: aux');
+    });
+
+    it('the Home’s export card refuses it before it asks, in the same words', () => {
+      writeFileSync(
+        join(project, '.relavium', 'workflows', 'serial.relavium.yaml'),
+        workflowNamed('aux'),
+      );
+      const prepared = createExportPort({ global: global(project), homeDir: home }).prepare('aux');
+      expect(prepared).toEqual({ ok: false, reason: SENTENCE_EXPORT('aux') });
+      expect(readdirSync(project).filter((name) => name.startsWith('aux'))).toEqual([]);
+    });
   });
 });

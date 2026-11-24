@@ -5,12 +5,14 @@ import { assertProjectArtifactPath } from '../config/project-directory.js';
 import {
   authoredFileName,
   detectAndParse,
+  isWindowsDeviceName,
   readAuthoredFile,
   resolveById,
   resolveProjectConfigDir,
   serializeAuthored,
   writeAuthoredFile,
 } from '../authoring/authoring.js';
+import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -79,6 +81,15 @@ export function prepareExport(
   // This validates structure, not secrecy. The basename hint picks the parser for a precise error.
   const parsed = detectAndParse(yaml, displayPath, basename(path));
 
+  // The default destination is named after the id, which comes from a file in the repository: an id Windows reserves for a device
+  // (`aux`, `com1`, ...) makes a file name that cannot be added to git there and may open the device. The explicit `--out` stays the
+  // person's own path, and is the way out.
+  if (args.out === undefined && isWindowsDeviceName(parsed.slug)) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${parsed.slug}' is a device name on Windows, so no file can be named after it — name the file yourself with relavium export <id> --out <path>.`,
+    );
+  }
   const target =
     args.out === undefined
       ? join(cwd, authoredFileName(parsed.kind, parsed.slug))

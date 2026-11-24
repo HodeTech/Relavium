@@ -18,7 +18,12 @@ import { canonicalProjectPath } from '../config/paths.js';
 import { resolveProjectDirectory } from '../config/project-directory.js';
 import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
-import { createExclusive, writeForced, type DirectoryGuard } from '../process/forced-write.js';
+import {
+  createExclusive,
+  pinnedDirectoryGuard,
+  writeForced,
+  type DirectoryGuard,
+} from '../process/forced-write.js';
 import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
 
 /**
@@ -76,8 +81,10 @@ export interface ConfinedTarget {
   /**
    * Where the write goes: the CANONICAL directory the check computed (no link anywhere in it) plus the file name. It is the same
    * directory as {@link ConfinedTarget.target} spelled another way, and it is the one the write must use: `target` is resolved by name again
-   * at the write, so a link put into one of its components after the check would take the write out of the project, where this path
-   * (given to {@link writeAuthoredFile} with `pinDirectory`) is refused as soon as it stops resolving to itself.
+   * at the write, so a link put into one of its components after the check (a project reached through a link that is repointed, say) would
+   * take the write elsewhere. Given to {@link writeAuthoredFile} with `pinDirectory`, this path is also looked at again around the write and
+   * refused when it no longer resolves to itself; that narrows a swap of the directory's own name and does not close it
+   * ({@link writeAuthoredFile} says what remains).
    */
   readonly writeTarget: string;
 }
@@ -391,17 +398,13 @@ function notAFile(displayPath: string, cause?: unknown): CliError {
   );
 }
 
-/** The refusal for a pinned directory that no longer resolves to itself: fixed words, no path. */
-const DIRECTORY_CHANGED =
-  'The target directory was changed by something else while the file was being written, so nothing was written. Retry.';
-
 /** What {@link writeAuthoredFile} may be told about the path it is given. */
 export interface WriteAuthoredOptions {
   /**
    * The directory of `path` is a CANONICAL path a confinement computed ({@link ConfinedTarget.writeTarget}): it must still resolve to
    * itself, with no link in it, before the directories are created, before the target is looked at, before the temporary is created and
-   * right before the rename. A directory that was swapped for a link since the check (to a place outside the project, or inside it) is
-   * refused, and nothing is written through it.
+   * right before the rename, and once more after it. A directory that was swapped for a link since the check (to a place outside the
+   * project, or inside it) is refused when a look catches it. See {@link writeAuthoredFile} for what that does and does not guarantee.
    */
   readonly pinDirectory?: boolean;
 }
@@ -415,10 +418,15 @@ export interface WriteAuthoredOptions {
  * (`EISDIR`/`ENOTDIR`) is also exit 2; other write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a
  * cwd-relative path the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
  *
- * With `pinDirectory` the write also refuses a directory that stopped being the one the confinement approved (see
- * {@link WriteAuthoredOptions}). A swap in the instant between the last look and the system call that follows it is not detectable
- * from here, and a temporary created in a directory swapped away just afterwards stays in that directory, which its name no longer
- * reaches; neither writes anything to the place the swap points at.
+ * With `pinDirectory` the write also looks at the directory ({@link WriteAuthoredOptions}) and refuses one that stopped being the
+ * approved one. That NARROWS a swap's window and does not close it. A second principal with write access to `.relavium/` who exchanges
+ * the directory's name for a link to another directory, fast enough, can still have the temporary created, or the replaced file renamed,
+ * in the directory the swap points at: every step names the directory again, and a true pin would need `openat` and `renameat` on a
+ * directory descriptor, which Node does not offer. What a forced write adds is DETECTION after the rename (the name must hold the file
+ * that was written and the directory must still resolve to itself), reported in fixed words that say the file may have gone to another
+ * directory; it cannot undo a replacement. The exclusive create (no `force`, or nothing at the target) is one system call after the
+ * look and was not seen to escape in 51,141 raced tries, but it has no after-the-fact check. A temporary created in a directory that is
+ * swapped away just afterwards stays in that directory, which its name no longer reaches.
  */
 export function writeAuthoredFile(
   path: string,
@@ -429,13 +437,7 @@ export function writeAuthoredFile(
 ): void {
   const directory = dirname(path);
   const guard: DirectoryGuard =
-    options.pinDirectory === true
-      ? () => {
-          if (canonicalProjectPath(directory) !== directory) {
-            throw new CliError('invalid_invocation', DIRECTORY_CHANGED);
-          }
-        }
-      : () => undefined;
+    options.pinDirectory === true ? pinnedDirectoryGuard(directory) : () => undefined;
   try {
     guard();
     mkdirSync(directory, { recursive: true });
@@ -555,15 +557,16 @@ export class SlugClashError extends CliError {
 /**
  * The names Windows reserves for devices, with or without an extension. A file named `aux.relavium.yaml` cannot be added to git on
  * Windows and may open the device instead, so an id that is one of them is refused as a file name everywhere (the repository is shared
- * across platforms): by `create`, `import` and the in-chat export alike.
+ * across platforms): by `create`, `import`, `export`'s default destination and the in-chat export alike. Microsoft's naming rules list
+ * `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9` and `LPT0`-`LPT9`.
  */
 const WINDOWS_DEVICE_NAMES: ReadonlySet<string> = new Set([
   'con',
   'prn',
   'aux',
   'nul',
-  ...Array.from({ length: 9 }, (_, i) => `com${String(i + 1)}`),
-  ...Array.from({ length: 9 }, (_, i) => `lpt${String(i + 1)}`),
+  ...Array.from({ length: 10 }, (_, i) => `com${String(i)}`),
+  ...Array.from({ length: 10 }, (_, i) => `lpt${String(i)}`),
 ]);
 
 /** Whether `id` (a kebab id, so lower case) is a name Windows reserves for a device, and so cannot be the stem of an authored file. */

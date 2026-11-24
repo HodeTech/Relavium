@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,7 +98,8 @@ describe('own-export descriptor growth', () => {
   it('reads at most the existing byte ceiling plus one when an admitted file grows after fstat', () => {
     const first = exportSession();
     const original = readFileSync(first.path);
-    hooks.path = first.path;
+    // The project write goes through the CANONICAL directory (the pin), so that is the path `ownExport` opens, not the project's spelling.
+    hooks.path = realpathSync(first.path);
     const growth = Buffer.alloc(maxBytes + 1024, 0x78);
     let grew = false;
     hooks.afterStat = () => {

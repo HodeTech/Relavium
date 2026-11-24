@@ -150,7 +150,8 @@ function confinedImportTarget(plan: ImportPlan): ConfinedTarget {
  * project is refused first ({@link assertImportTargetConfined}).
  */
 export function commitImport(plan: ImportPlan): void {
-  // The write goes to the canonical directory this very check computed, and refuses it if it stops resolving to itself: the plan's own
+  // The write goes to the canonical directory this very check computed, and looks at it again around the write (a pin that narrows a swap
+  // of the directory's name and does not close it; see `writeAuthoredFile`): the plan's own
   // `target` is spelled from the project and would be resolved by name again, through any link put into it since the check.
   const { writeTarget } = confinedImportTarget(plan);
   writeAuthoredFile(writeTarget, plan.targetDisplay, plan.content, plan.force, {

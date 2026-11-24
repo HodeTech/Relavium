@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { canonicalProjectPath } from '../config/paths.js';
 import { CliError } from './errors.js';
 
 /**
@@ -32,6 +33,15 @@ import { CliError } from './errors.js';
  *    over the name. A rename replaces the directory entry and never writes through one, so whatever sits at the name when it runs (a
  *    link, a FIFO, another file) is replaced and not followed or waited on, however it got there after the look.
  * 3. Nothing there: create it with `wx`. If the name was taken in the meantime, look once more and take step 2 for a plain file.
+ *
+ * What this does NOT do, and cannot in Node, is pin the DIRECTORY the write goes into. Every step names the directory again, so a second
+ * principal with write access to the directory's parent who exchanges its name for a link to another directory, fast enough, can still
+ * place the temporary, or the file it replaces, in the directory the swap points at (the second security sitting on PR #102 did it with
+ * `renamex_np` and `RENAME_SWAP` in a loop: the link in place when the temporary was created, the real directory back when the pin looked,
+ * the link again at the rename). A true pin needs `openat` and `renameat` on a directory descriptor, which Node does not offer. What is
+ * done instead is to narrow the window ({@link DirectoryGuard} before and right before the rename, the temporary's identity looked for
+ * where its name says it is right before the rename) and to DETECT what got through ({@link verifyPlaced}: after the rename the name must
+ * hold the file that was written and the directory must still be the approved one). A detection reports; it cannot undo a replacement.
  */
 
 /**
@@ -51,6 +61,71 @@ export interface PlainFile {
 export type DirectoryGuard = () => void;
 
 const noGuard: DirectoryGuard = () => undefined;
+
+/** The refusal for a pinned directory that no longer resolves to itself, before anything was written: fixed words, no path. */
+export const DIRECTORY_CHANGED =
+  'The target directory was changed by something else while the file was being written, so nothing was written. Retry.';
+
+/**
+ * The report for a write that may have gone to another directory: after the rename the name did not hold the file that was written, or
+ * the directory no longer resolved to itself, or the temporary was not where its name said it was. Fixed words, nothing named.
+ */
+export const WRITTEN_ELSEWHERE =
+  'The file may have been written to another directory, because the target directory was changed by something else while it was being written. Check where it went, then retry.';
+
+/**
+ * A {@link DirectoryGuard} for a CANONICAL directory a confinement computed: it refuses ({@link DIRECTORY_CHANGED}) once the directory no
+ * longer resolves to itself, that is, once a link has taken the place of it or of one of its ancestors. It narrows a swap's window; it
+ * cannot close it ({@link replacePlainFile}).
+ */
+export function pinnedDirectoryGuard(directory: string): DirectoryGuard {
+  return () => {
+    if (canonicalProjectPath(directory) !== directory) {
+      throw new CliError('invalid_invocation', DIRECTORY_CHANGED);
+    }
+  };
+}
+
+/** A file as the kernel names it: device and inode. */
+export interface FileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/** The identity of the file an open descriptor holds. */
+export function identityOfDescriptor(fd: number): FileIdentity {
+  const stats = fstatSync(fd, { bigint: true });
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+/**
+ * Throw {@link WRITTEN_ELSEWHERE} unless the regular file at `path` (looked at without following) is the one with `expected` identity.
+ * Used on the temporary right before the rename (it must be where its name says) and on the target right after (it must hold the file
+ * that was written).
+ */
+export function assertHolds(path: string, expected: FileIdentity): void {
+  let holds = false;
+  try {
+    const stats = lstatSync(path, { bigint: true });
+    holds = stats.isFile() && stats.dev === expected.dev && stats.ino === expected.ino;
+  } catch {
+    holds = false;
+  }
+  if (!holds) throw new CliError('invalid_invocation', WRITTEN_ELSEWHERE);
+}
+
+/**
+ * The look after a rename: the name holds the file that was written, and the directory is still the approved one. Either failing is
+ * {@link WRITTEN_ELSEWHERE} (never "nothing was written": by now something was).
+ */
+export function verifyPlaced(path: string, expected: FileIdentity, guard: DirectoryGuard): void {
+  assertHolds(path, expected);
+  try {
+    guard();
+  } catch {
+    throw new CliError('invalid_invocation', WRITTEN_ELSEWHERE);
+  }
+}
 
 function errnoCode(err: unknown): string | undefined {
   if (typeof err === 'object' && err !== null && 'code' in err) {
@@ -92,7 +167,7 @@ export function createExclusive(path: string, content: string): void {
  * process is not a member of it, a file system that refuses `chown`), the file keeps ONLY the owner's bits, so a `0660` file of one
  * group is never left readable and writable by another. ACLs and extended attributes are not carried over, on any platform.
  */
-function carryOwnership(fd: number, existing: PlainFile): void {
+export function carryOwnership(fd: number, existing: PlainFile): void {
   let mode = existing.mode;
   try {
     if (fstatSync(fd).gid !== existing.gid) fchownSync(fd, -1, existing.gid);
@@ -111,10 +186,12 @@ function carryOwnership(fd: number, existing: PlainFile): void {
  * removed by the SAME path, so a failing step cannot leave one behind under a name another step does not see. A name a hard link shares
  * is replaced and not the link's other names, which an in-place write would have changed.
  *
- * `guard` runs before the temporary is created and again right before the rename: the directory is looked at on both sides of the
- * work. What it cannot close is a swap of the directory's own name in the instant between the last look and the system call that
- * follows it, and a temporary created in a directory that was swapped away just afterwards stays in that directory, which the name no
- * longer reaches.
+ * About the DIRECTORY (see the header): `guard` runs before the temporary is created and again right before the rename; right before
+ * the rename the temporary must also be found, by its name, with the identity it was created with; and after the rename the name must
+ * hold that identity and `guard` must still pass ({@link verifyPlaced}). These narrow the window in which a swap of the directory's name
+ * can place the temporary, or the replaced file, in another directory, and report what got through ({@link WRITTEN_ELSEWHERE}). They do
+ * not close it: a swap faster than the checks can still do it, and a temporary created in a directory that is swapped away afterwards
+ * stays in that directory, which its name no longer reaches.
  */
 export function replacePlainFile(
   path: string,
@@ -131,10 +208,13 @@ export function replacePlainFile(
     carryOwnership(fd, existing);
     writeFileSync(fd, content, 'utf8');
     fsyncSync(fd);
+    const written = identityOfDescriptor(fd);
     closeSync(fd);
     fd = undefined;
     guard();
+    assertHolds(temp, written);
     renameSync(temp, path);
+    verifyPlaced(path, written, guard);
   } catch (err) {
     if (fd !== undefined) {
       try {
@@ -146,7 +226,7 @@ export function replacePlainFile(
     try {
       unlinkSync(temp);
     } catch {
-      // best effort: the temporary may never have been created
+      // best effort: the temporary may never have been created, or may already be the target
     }
     throw err;
   }

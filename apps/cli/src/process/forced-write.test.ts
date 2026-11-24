@@ -22,7 +22,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writeForced } from './forced-write.js';
+import { WRITTEN_ELSEWHERE, writeForced } from './forced-write.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -120,16 +120,17 @@ describe.skipIf(process.platform === 'win32')(
 );
 
 describe('the guard runs on both sides of the work, and a refusal takes the temporary away', () => {
-  it('before the look, before the temporary and right before the rename', () => {
+  it('before the look, before the temporary, right before the rename and after it', () => {
     writeFileSync(target(), 'old\n');
     const seen: string[][] = [];
     writeForced(target(), 'new\n', () => {
       seen.push(readdirSync(dir).sort());
     });
-    expect(seen).toHaveLength(3);
+    expect(seen).toHaveLength(4);
     expect(seen[0], 'before the look: only the old file').toEqual(['a.agent.yaml']);
     expect(seen[1], 'before the temporary: still only the old file').toEqual(['a.agent.yaml']);
     expect(seen[2]?.length, 'right before the rename: the temporary is there').toBe(2);
+    expect(seen[3], 'after the rename: the new file alone').toEqual(['a.agent.yaml']);
     expect(readFileSync(target(), 'utf8')).toBe('new\n');
   });
 
@@ -143,6 +144,23 @@ describe('the guard runs on both sides of the work, and a refusal takes the temp
       }),
     ).toThrow('the directory changed');
     expect(readFileSync(target(), 'utf8')).toBe('old\n');
+    expect(readdirSync(dir)).toEqual(['a.agent.yaml']);
+  });
+
+  it('a guard that refuses AFTER the rename is reported as a write that may have gone elsewhere, never as "nothing was written"', () => {
+    writeFileSync(target(), 'old\n');
+    let calls = 0;
+    let message: string | undefined;
+    try {
+      writeForced(target(), 'new\n', () => {
+        calls += 1;
+        if (calls === 4) throw new Error('the directory changed');
+      });
+    } catch (cause) {
+      message = cause instanceof Error ? cause.message : String(cause);
+    }
+    expect(message).toBe(WRITTEN_ELSEWHERE);
+    expect(readFileSync(target(), 'utf8'), 'the rename had happened').toBe('new\n');
     expect(readdirSync(dir)).toEqual(['a.agent.yaml']);
   });
 

@@ -20,7 +20,14 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import { CliError, toCliError } from './errors.js';
-import { writeForced } from './forced-write.js';
+import {
+  assertHolds,
+  carryOwnership,
+  identityOfDescriptor,
+  verifyPlaced,
+  writeForced,
+  type DirectoryGuard,
+} from './forced-write.js';
 
 /** Project an escaping open/maintenance failure without inventing storage provenance. */
 export function storageBoundaryError(value: unknown): CliError {
@@ -49,12 +56,22 @@ export function chmodForStorage(path: string, mode: number): void {
  * The session-export file write. Without `force` it is `wx`: atomic no-overwrite admission, never following a link. With `force` it is
  * the forced-write sequence ({@link writeForced}): the target is looked at without being followed, a plain file is replaced through a
  * temporary and a rename, and a link, a FIFO or a device is refused. The `w` open it replaces followed a link swapped in after a look,
- * waited on a FIFO swapped in, and truncated before it wrote (security sitting on PR #102, M1).
+ * waited on a FIFO swapped in, and truncated before it wrote (security sitting on PR #102, M1). `guard`, when given, is run before the
+ * `wx` create and at the forced write's steps ({@link DirectoryGuard}); it narrows a swap of the directory's name and cannot close it.
  */
-export function writeFileForStorage(path: string, content: string, force: boolean): void {
+export function writeFileForStorage(
+  path: string,
+  content: string,
+  force: boolean,
+  guard?: DirectoryGuard,
+): void {
   try {
-    if (force) writeForced(path, content);
-    else writeFileSync(path, content, { encoding: 'utf8', flag: 'wx' });
+    if (force) {
+      writeForced(path, content, guard);
+    } else {
+      guard?.();
+      writeFileSync(path, content, { encoding: 'utf8', flag: 'wx' });
+    }
   } catch (error) {
     throwOwnedFilesystemFailure(error);
   }
@@ -104,7 +121,9 @@ export class StorageTargetChangedError extends Error {
  *
  * It keeps what a write in place would: a file the user made read-only is refused (`EACCES`), not replaced, and the
  * new file gets `mode`, the old file's permission bits, so a file narrowed to `0600` is not widened to the umask's
- * default by its own rewrite.
+ * default by its own rewrite. Given `options.gid`, the old file's group, it is carried over too, and when it cannot be
+ * the new file keeps only the owner's bits ({@link carryOwnership}): a `0660` file of one group is never left readable
+ * and writable by another. ACLs and extended attributes are not carried over.
  *
  * It replaces only the file the caller checked. Before it starts, and again just before the rename, it compares
  * the file at `path` with `expected` and throws {@link StorageTargetChangedError} when it was replaced, rewritten
@@ -114,14 +133,21 @@ export class StorageTargetChangedError extends Error {
  * blocked on or read whole. A link is refused unfollowed when it is there at the `lstat`; on Windows, which has no
  * `O_NOFOLLOW`, one swapped in between the `lstat` and the open is followed, and its target refused. Not detected: a
  * swap in the moment between that last check and the rename (Node has no rename that compares first).
+ *
+ * `options.guard` is a check of the DIRECTORY, run before the temporary is created and right before the rename; after the rename the
+ * name must hold the file that was written and the guard must still pass, or the write is reported as one that may have gone to
+ * another directory. This narrows a swap of the directory's name and detects what got through; it cannot close it (see
+ * `forced-write.ts`).
  */
 export function replaceFileForStorage(
   path: string,
   content: string,
   mode: number,
   expected: StorageFileIdentity,
+  options: { readonly gid?: number; readonly guard?: DirectoryGuard } = {},
 ): void {
   const temp = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  const guard: DirectoryGuard = options.guard ?? (() => undefined);
   /** Throw {@link StorageTargetChangedError} unless `path` is still the regular file the caller checked. */
   const ensureUnchanged = (): void => {
     const current = identityIfUnchanged(path, expected);
@@ -129,16 +155,23 @@ export function replaceFileForStorage(
   };
   let fd: number | undefined;
   try {
+    guard();
     ensureUnchanged();
     accessSync(path, constants.W_OK);
     fd = openSync(temp, 'wx', mode);
-    fchmodSync(fd, mode); // `open`'s mode is narrowed by the umask; this sets exactly the old bits
+    // `open`'s mode is narrowed by the umask; this sets exactly the old bits (and the old group, when it was handed in)
+    if (options.gid === undefined) fchmodSync(fd, mode);
+    else carryOwnership(fd, { mode, gid: options.gid });
     writeFileSync(fd, content, 'utf8');
     fsyncSync(fd);
+    const written = identityOfDescriptor(fd);
     closeSync(fd);
     fd = undefined;
+    guard();
     ensureUnchanged();
+    assertHolds(temp, written);
     renameSync(temp, path);
+    verifyPlaced(path, written, guard);
   } catch (error) {
     if (fd !== undefined) {
       try {
