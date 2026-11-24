@@ -2056,14 +2056,14 @@ export function createChatLineHandler(
       // Never crash the REPL (the discipline every slash command obeys): a config/catalog read fault (e.g. an
       // unreadable .relavium/ subdir → a CliError from discoverCatalog) becomes output, not a session-ending throw.
       try {
-        const { projectConfigDir } = readLiveConfig();
+        const { projectConfigDir, homeDir } = readLiveConfig();
         if (projectConfigDir === undefined) {
           // Path-free (parity with the catch arm): the absolute cwd need not ride the REPL transcript / a screenshare.
           emitOutput('No .relavium/ project found from the current directory.');
           return;
         }
         const scan = (kind: CatalogKind): CatalogEntry[] =>
-          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind });
+          discoverCatalog({ projectConfigDir, cwd: deps.global.cwd, kind, homeDir });
         emitOutput(catalogNotice(scan('workflows'), scan('agents')));
       } catch (err) {
         workOwner?.failure(err);

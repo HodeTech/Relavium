@@ -13,6 +13,7 @@ import {
   serializeAuthored,
   writeAuthoredFile,
   type AuthoredKind,
+  type ConfinedTarget,
 } from '../authoring/authoring.js';
 import { warnSnapshotLiterals } from '../authoring/snapshot-notice.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -135,7 +136,12 @@ export function prepareImport(args: ImportCommandArgs, deps: ImportPrepareDeps):
  * caught here. {@link commitImport} asks it right before the write, and the Home asks it earlier, where it re-checks the destination.
  */
 export function assertImportTargetConfined(plan: ImportPlan): void {
-  confineToProjectConfig(plan.projectConfigDir, plan.target, dirname(plan.targetDisplay));
+  confinedImportTarget(plan);
+}
+
+/** {@link assertImportTargetConfined}, returning what the confinement decided: the canonical path the write must go to. */
+function confinedImportTarget(plan: ImportPlan): ConfinedTarget {
+  return confineToProjectConfig(plan.projectConfigDir, plan.target, dirname(plan.targetDisplay));
 }
 
 /**
@@ -144,8 +150,12 @@ export function assertImportTargetConfined(plan: ImportPlan): void {
  * project is refused first ({@link assertImportTargetConfined}).
  */
 export function commitImport(plan: ImportPlan): void {
-  assertImportTargetConfined(plan);
-  writeAuthoredFile(plan.target, plan.targetDisplay, plan.content, plan.force);
+  // The write goes to the canonical directory this very check computed, and refuses it if it stops resolving to itself: the plan's own
+  // `target` is spelled from the project and would be resolved by name again, through any link put into it since the check.
+  const { writeTarget } = confinedImportTarget(plan);
+  writeAuthoredFile(writeTarget, plan.targetDisplay, plan.content, plan.force, {
+    pinDirectory: true,
+  });
 }
 
 /**

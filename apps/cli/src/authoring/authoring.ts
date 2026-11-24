@@ -1,20 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import {
-  accessSync,
-  closeSync,
-  constants,
-  fchmodSync,
-  fstatSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
 import {
@@ -34,6 +18,7 @@ import { canonicalProjectPath } from '../config/paths.js';
 import { resolveProjectDirectory } from '../config/project-directory.js';
 import { isWithinFsRoot } from '../engine/tool-host/fs-policy.js';
 import { CliError } from '../process/errors.js';
+import { createExclusive, writeForced, type DirectoryGuard } from '../process/forced-write.js';
 import { discoverCatalog, type CatalogKind } from '../workflows/catalog.js';
 
 /**
@@ -81,23 +66,39 @@ export function catalogPath(projectConfigDir: string, kind: AuthoredKind, slug: 
   return join(projectConfigDir, KIND_DIR[kind], authoredFileName(kind, slug));
 }
 
+/** What {@link confineToProjectConfig} decided about a catalog target: the path the person sees, and the path the write goes to. */
+export interface ConfinedTarget {
+  /**
+   * The target with its directory replaced by the real one, still spelled from `projectConfigDir` (so a project reached through a link of
+   * its own keeps its own spelling). This is what is shown, what the rule about global state is asked of, and where an occupant is looked for.
+   */
+  readonly target: string;
+  /**
+   * Where the write goes: the CANONICAL directory the check computed (no link anywhere in it) plus the file name. It is the same
+   * directory as {@link ConfinedTarget.target} spelled another way, and it is the one the write must use: `target` is resolved by name again
+   * at the write, so a link put into one of its components after the check would take the write out of the project, where this path
+   * (given to {@link writeAuthoredFile} with `pinDirectory`) is refused as soon as it stops resolving to itself.
+   */
+  readonly writeTarget: string;
+}
+
 /**
  * Where a catalog file may really be written: the directory it goes into, resolved through every link, must lie inside the project's own
  * configuration directory, resolved the same way (the root the catalog scan holds a listing to). `assertProjectArtifactPath` keeps a write
  * out of the operator's home and global configuration, and says nothing about the rest of the disk, so a `.relavium/workflows` that is a
- * link to a directory elsewhere would otherwise take the file there. A link that stays inside the project is allowed, and the returned
- * target is where it leads, so what is shown and what is written are one path.
+ * link to a directory elsewhere would otherwise take the file there. A link that stays inside the project is allowed. What is shown and
+ * what is written name the same directory by two spellings ({@link ConfinedTarget}): the project's own, for the person, and the real one,
+ * for the write.
  *
- * Returns the target with its directory replaced by the real one, still spelled from `projectConfigDir` (so a project reached through a
- * link of its own keeps its own spelling). `displayDirectory` is the directory as the person sees it (cwd-relative): the sentence names
- * it and never the absolute path. A path that cannot be resolved (a link that points at nothing, a loop, an unreadable component) is
- * refused too: an unresolved link is never evidence that the write stays inside.
+ * `displayDirectory` is the directory as the person sees it (cwd-relative): the sentence names it and never the absolute path. A path
+ * that cannot be resolved (a link that points at nothing, a loop, an unreadable component) is refused too: an unresolved link is never
+ * evidence that the write stays inside.
  */
 export function confineToProjectConfig(
   projectConfigDir: string,
   target: string,
   displayDirectory: string,
-): string {
+): ConfinedTarget {
   const root = canonicalProjectPath(projectConfigDir);
   const directory = canonicalProjectPath(dirname(target));
   if (root === undefined || directory === undefined) {
@@ -112,24 +113,28 @@ export function confineToProjectConfig(
       `The target directory is a link that leaves the project: ${displayDirectory}.`,
     );
   }
-  return join(projectConfigDir, relative(root, directory), basename(target));
+  return {
+    target: join(projectConfigDir, relative(root, directory), basename(target)),
+    writeTarget: join(directory, basename(target)),
+  };
 }
 
 /**
- * {@link confineToProjectConfig} for a catalog file the way a command names it: the real target, and the cwd-relative path to show for
- * it (the one the command prints and the Home's card draws). With no link in the way both are what they always were.
+ * {@link confineToProjectConfig} for a catalog file the way a command names it: the real target, the cwd-relative path to show for it (the
+ * one the command prints and the Home's card draws), and the canonical path to write. With no link in the way the first two are what they
+ * always were.
  */
 export function confineCatalogTarget(opts: {
   readonly projectConfigDir: string;
   readonly cwd: string;
   readonly target: string;
-}): { readonly target: string; readonly targetDisplay: string } {
-  const target = confineToProjectConfig(
+}): ConfinedTarget & { readonly targetDisplay: string } {
+  const confined = confineToProjectConfig(
     opts.projectConfigDir,
     opts.target,
     dirname(relative(opts.cwd, opts.target)),
   );
-  return { target, targetDisplay: relative(opts.cwd, target) };
+  return { ...confined, targetDisplay: relative(opts.cwd, confined.target) };
 }
 
 /** Re-serialize canonical YAML, preserving authored literals and placeholders; this is not secret redaction. */
@@ -378,35 +383,6 @@ function unopenedReason(path: string, displayPath: string): CliError {
   return new CliError('invalid_invocation', `could not read ${displayPath}`);
 }
 
-/**
- * The refusal for a write target that is a link, a FIFO, a socket or a device. Fixed words: no path, no errno, nothing of the entry's
- * own. (A directory has its own, older sentence, {@link writeAuthoredFile}'s `EISDIR` one.)
- */
-const NOT_A_PLAIN_FILE =
-  'The target exists and is a link or not a regular file, so nothing was written. Remove it or choose another path, then retry.';
-
-/**
- * What the final component of a write target is, looked at WITHOUT following it (`lstat`): `undefined` when nothing is there, the
- * permission bits of a regular file, and a typed exit-2 {@link CliError} for anything else (the target is never opened first, so a FIFO
- * with no reader cannot hold the process and a link is never followed). `confineToProjectConfig` canonicalises the directory a target
- * goes into and says nothing about the target itself; this is the rule for the last component, for every caller that overwrites.
- */
-export function inspectWriteTarget(
-  path: string,
-  displayPath: string,
-): { readonly mode: number } | undefined {
-  let stats: ReturnType<typeof lstatSync>;
-  try {
-    stats = lstatSync(path);
-  } catch (err) {
-    if (errnoCode(err) === 'ENOENT') return undefined;
-    throw err;
-  }
-  if (stats.isFile()) return { mode: stats.mode & 0o777 };
-  if (stats.isDirectory()) throw notAFile(displayPath);
-  throw new CliError('invalid_invocation', NOT_A_PLAIN_FILE);
-}
-
 function notAFile(displayPath: string, cause?: unknown): CliError {
   return new CliError(
     'invalid_invocation',
@@ -415,84 +391,59 @@ function notAFile(displayPath: string, cause?: unknown): CliError {
   );
 }
 
-/** Create `path` with `content`, failing `EEXIST` if anything is there: `O_EXCL` never follows a link at the final component. */
-function createExclusive(path: string, content: string): void {
-  writeFileSync(path, content, { encoding: 'utf8', flag: 'wx' });
-}
+/** The refusal for a pinned directory that no longer resolves to itself: fixed words, no path. */
+const DIRECTORY_CHANGED =
+  'The target directory was changed by something else while the file was being written, so nothing was written. Retry.';
 
-/**
- * Replace the regular file at `path` with `content`, atomically: a fresh temporary beside it (`wx`, so it never follows a link or reuses
- * a file), `fsync`ed, then renamed over `path`. A rename replaces the directory entry and never writes through one, so a link put at
- * `path` after {@link inspectWriteTarget} looked is REPLACED, not followed, and no write ever leaves the directory; a crash leaves the old
- * file or the new one, never a truncated mix. The new file takes `mode`, the old file's permission bits (`open`'s own are narrowed by the
- * umask), and a file its owner made read-only is refused (`EACCES`) as an in-place write would have refused it. The temporary is removed
- * whenever anything fails. A name a hard link shares is replaced and not the link's other names, which an in-place write would have
- * changed.
- */
-function replaceRegularFile(path: string, content: string, mode: number): void {
-  const temp = join(dirname(path), `.relavium-write-${randomUUID()}.tmp`);
-  let fd: number | undefined;
-  try {
-    accessSync(path, constants.W_OK);
-    fd = openSync(temp, 'wx', mode);
-    fchmodSync(fd, mode);
-    writeFileSync(fd, content, 'utf8');
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    renameSync(temp, path);
-  } catch (err) {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        // already failing: a secondary close error adds nothing
-      }
-    }
-    try {
-      unlinkSync(temp);
-    } catch {
-      // best effort: the temporary may never have been created
-    }
-    throw err;
-  }
+/** What {@link writeAuthoredFile} may be told about the path it is given. */
+export interface WriteAuthoredOptions {
+  /**
+   * The directory of `path` is a CANONICAL path a confinement computed ({@link ConfinedTarget.writeTarget}): it must still resolve to
+   * itself, with no link in it, before the directories are created, before the target is looked at, before the temporary is created and
+   * right before the rename. A directory that was swapped for a link since the check (to a place outside the project, or inside it) is
+   * refused, and nothing is written through it.
+   */
+  readonly pinDirectory?: boolean;
 }
 
 /**
  * Write an authored YAML file, creating parent dirs. Without `force`, an existing target is a clean exit-2 fault: `wx` fails `EEXIST`,
  * so there is no TOCTOU window between a separate existence check and the write, and a link at the target is "already there" too, since
- * `O_EXCL` never follows one. Under `force` the final component is looked at first, without following it ({@link inspectWriteTarget}):
- * a regular file is replaced atomically ({@link replaceRegularFile}), nothing at all is created exclusively, and a link, a FIFO or a
- * device is refused in fixed words with nothing written (review P0-1: a link committed to a repository took `--force` out of the project).
- * A directory (`EISDIR`/`ENOTDIR`) is also exit 2; other write faults (permissions, disk) propagate. User-facing messages name only
- * `displayPath` (a cwd-relative path the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile}
- * (error-handling.md).
+ * `O_EXCL` never follows one. Under `force` the target is replaced by the forced-write sequence ({@link writeForced}): looked at without
+ * being followed, a plain file replaced through a temporary and a rename that keep its mode and group, a link, a FIFO or a device refused
+ * in fixed words with nothing written (review P0-1: a link committed to a repository took `--force` out of the project). A directory
+ * (`EISDIR`/`ENOTDIR`) is also exit 2; other write faults (permissions, disk) propagate. User-facing messages name only `displayPath` (a
+ * cwd-relative path the caller resolves), never the absolute `path` — mirroring {@link readAuthoredFile} (error-handling.md).
+ *
+ * With `pinDirectory` the write also refuses a directory that stopped being the one the confinement approved (see
+ * {@link WriteAuthoredOptions}). A swap in the instant between the last look and the system call that follows it is not detectable
+ * from here, and a temporary created in a directory swapped away just afterwards stays in that directory, which its name no longer
+ * reaches; neither writes anything to the place the swap points at.
  */
 export function writeAuthoredFile(
   path: string,
   displayPath: string,
   content: string,
   force: boolean,
+  options: WriteAuthoredOptions = {},
 ): void {
+  const directory = dirname(path);
+  const guard: DirectoryGuard =
+    options.pinDirectory === true
+      ? () => {
+          if (canonicalProjectPath(directory) !== directory) {
+            throw new CliError('invalid_invocation', DIRECTORY_CHANGED);
+          }
+        }
+      : () => undefined;
   try {
-    mkdirSync(dirname(path), { recursive: true });
-    if (!force) {
+    guard();
+    mkdirSync(directory, { recursive: true });
+    guard();
+    if (force) {
+      writeForced(path, content, guard);
+    } else {
       createExclusive(path, content);
-      return;
-    }
-    const existing = inspectWriteTarget(path, displayPath);
-    if (existing !== undefined) {
-      replaceRegularFile(path, content, existing.mode);
-      return;
-    }
-    try {
-      createExclusive(path, content);
-    } catch (err) {
-      // Something took the name between the look and the create: look once more, and replace it if it is a plain file.
-      if (errnoCode(err) !== 'EEXIST') throw err;
-      const raced = inspectWriteTarget(path, displayPath);
-      if (raced === undefined) throw err;
-      replaceRegularFile(path, content, raced.mode);
     }
   } catch (err) {
     const code = errnoCode(err);
@@ -602,6 +553,25 @@ export class SlugClashError extends CliError {
 }
 
 /**
+ * The names Windows reserves for devices, with or without an extension. A file named `aux.relavium.yaml` cannot be added to git on
+ * Windows and may open the device instead, so an id that is one of them is refused as a file name everywhere (the repository is shared
+ * across platforms): by `create`, `import` and the in-chat export alike.
+ */
+const WINDOWS_DEVICE_NAMES: ReadonlySet<string> = new Set([
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 9 }, (_, i) => `com${String(i + 1)}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${String(i + 1)}`),
+]);
+
+/** Whether `id` (a kebab id, so lower case) is a name Windows reserves for a device, and so cannot be the stem of an authored file. */
+export function isWindowsDeviceName(id: string): boolean {
+  return WINDOWS_DEVICE_NAMES.has(id);
+}
+
+/**
  * The id-uniqueness guard shared by `create` + `import`. An id is a PROJECT-GLOBAL handle — `resolveById` /
  * `export <id>` resolve a bare id across BOTH catalogs — so a slug must be unique across agents AND workflows,
  * not merely within one kind. Throws a typed exit-2 {@link CliError}, or returns cleanly if the write may go:
@@ -619,6 +589,12 @@ export function assertSlugAvailable(opts: {
   homeDir: string;
 }): void {
   const { projectConfigDir, cwd, kind, slug, force, homeDir } = opts;
+  if (isWindowsDeviceName(slug)) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${slug}' is a device name on Windows, so no file can be named after it — choose another id.`,
+    );
+  }
   const otherKind: AuthoredKind = kind === 'agent' ? 'workflow' : 'agent';
   if (slugExists({ projectConfigDir, cwd, kind: otherKind, slug, homeDir })) {
     throw new SlugClashError(

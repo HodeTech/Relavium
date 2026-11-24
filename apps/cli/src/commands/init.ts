@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { relative } from 'node:path';
 
 import { prepareProjectInit } from '../authoring/project-init.js';
@@ -16,7 +17,7 @@ export function initCommand(deps: {
 }): ExitCode {
   const admit = (): void => deps.commandLifetime?.work.assertAdmitting();
   admit();
-  const result = prepareProjectInit(deps.global.cwd, deps.homeDir).publish(admit);
+  const result = prepareProjectInit(deps.global.cwd, deps.homeDir ?? homedir()).publish(admit);
   const path = relative(deps.global.cwd, result.projectConfigDir) || '.';
   const created = result.created.map((directory) => relative(deps.global.cwd, directory) || '.');
   if (deps.global.json)

@@ -108,12 +108,15 @@ export async function createCommand(
   const catalogTarget = catalogPath(projectConfigDir, parsed.kind, parsed.slug);
   assertProjectArtifactPath(catalogTarget, home);
   // A catalog directory that is a link out of the project would take the file with it: the write goes where the link leads, shown as such.
-  const { target, targetDisplay } = confineCatalogTarget({
+  const { writeTarget, targetDisplay } = confineCatalogTarget({
     projectConfigDir,
     cwd,
     target: catalogTarget,
   });
-  writeAuthoredFile(target, targetDisplay, serializeAuthored(parsed), args.force);
+  // Written through the canonical directory the confinement computed, which must still resolve to itself at the write.
+  writeAuthoredFile(writeTarget, targetDisplay, serializeAuthored(parsed), args.force, {
+    pinDirectory: true,
+  });
   warnSnapshotLiterals(parsed.definition, deps.io);
   // The destination is spelled from the directory names under the project, which a link inside it can make anything: one row, no controls.
   deps.io.writeOut(`Created ${parsed.kind} '${parsed.slug}' at ${sanitizeInline(targetDisplay)}\n`);

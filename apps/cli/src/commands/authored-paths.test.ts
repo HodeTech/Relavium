@@ -308,3 +308,61 @@ describe.skipIf(process.platform === 'win32')(
     });
   },
 );
+
+describe('a Windows device name is no id for an authored file, on any platform', () => {
+  // `con.agent.yaml` cannot be added to git on Windows and may open the device there; the repository is shared across platforms, so the
+  // refusal is the same everywhere. The in-chat export has always skipped these ids (`chat/export-project.test.ts`); import and create
+  // share its predicate (`isWindowsDeviceName`).
+  const SENTENCE = (id: string): string =>
+    `'${id}' is a device name on Windows, so no file can be named after it — choose another id.`;
+  const agentNamed = (id: string): string => AGENT.replace('id: reviewer', `id: ${id}`);
+
+  it.each(['con', 'prn', 'aux', 'nul', 'com1', 'com9', 'lpt1', 'lpt9'])(
+    'import refuses %s, with or without --force, and writes nothing',
+    async (id) => {
+      writeFileSync(join(project, 'incoming.agent.yaml'), agentNamed(id));
+      for (const force of [false, true]) {
+        const { io, out } = captureIo();
+        expect(
+          await refusalOf(() =>
+            importCommand(
+              { path: 'incoming.agent.yaml', force },
+              { io, global: global(project), homeDir: home },
+            ),
+          ),
+          `force=${String(force)}`,
+        ).toBe(SENTENCE(id));
+        expect(out()).toBe('');
+      }
+      expect(readdirSync(join(project, '.relavium'))).toEqual([]);
+    },
+  );
+
+  it('create refuses a name that makes one, before any file is written', async () => {
+    const { io } = captureIo();
+    const named = (name: string): CreatePrompter => ({
+      gather: () => Promise.resolve({ ...SPEC, name }),
+    });
+    expect(
+      await refusalOf(() =>
+        createCommand(
+          { force: true },
+          { io, global: global(project), prompter: named('Aux'), homeDir: home },
+        ),
+      ),
+    ).toBe(SENTENCE('aux'));
+    expect(readdirSync(join(project, '.relavium'))).toEqual([]);
+  });
+
+  it('a name that only CONTAINS one, or goes past the reserved range, is an ordinary id', () => {
+    for (const id of ['console', 'com10', 'com0', 'auxiliary', 'nul-device']) {
+      writeFileSync(join(project, 'incoming.agent.yaml'), agentNamed(id));
+      const { io } = captureIo();
+      importCommand(
+        { path: 'incoming.agent.yaml', force: false },
+        { io, global: global(project), homeDir: home },
+      );
+      expect(existsSync(join(project, '.relavium', 'agents', `${id}.agent.yaml`)), id).toBe(true);
+    }
+  });
+});

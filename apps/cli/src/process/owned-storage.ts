@@ -20,6 +20,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 import { CliError, toCliError } from './errors.js';
+import { writeForced } from './forced-write.js';
 
 /** Project an escaping open/maintenance failure without inventing storage provenance. */
 export function storageBoundaryError(value: unknown): CliError {
@@ -44,10 +45,16 @@ export function chmodForStorage(path: string, mode: number): void {
   }
 }
 
-/** The session-export file write, with atomic no-overwrite admission preserved. */
+/**
+ * The session-export file write. Without `force` it is `wx`: atomic no-overwrite admission, never following a link. With `force` it is
+ * the forced-write sequence ({@link writeForced}): the target is looked at without being followed, a plain file is replaced through a
+ * temporary and a rename, and a link, a FIFO or a device is refused. The `w` open it replaces followed a link swapped in after a look,
+ * waited on a FIFO swapped in, and truncated before it wrote (security sitting on PR #102, M1).
+ */
 export function writeFileForStorage(path: string, content: string, force: boolean): void {
   try {
-    writeFileSync(path, content, { encoding: 'utf8', flag: force ? 'w' : 'wx' });
+    if (force) writeForced(path, content);
+    else writeFileSync(path, content, { encoding: 'utf8', flag: 'wx' });
   } catch (error) {
     throwOwnedFilesystemFailure(error);
   }

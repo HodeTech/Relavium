@@ -11,7 +11,7 @@ import {
 import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionMessage } from '@relavium/shared';
 
-import { inspectWriteTarget } from '../authoring/authoring.js';
+import { isWindowsDeviceName } from '../authoring/authoring.js';
 import { CliError } from '../process/errors.js';
 import { assertProjectArtifactPath, resolveProjectDirectory } from '../config/project-directory.js';
 import {
@@ -109,20 +109,6 @@ export interface ExportToProjectOptions {
   readonly projectConfigDir: string | undefined;
 }
 
-/**
- * The names Windows reserves for devices, with or without an extension. A file named `aux.relavium.yaml` cannot be
- * added to git on Windows and may open the device instead, so the export treats these ids as taken everywhere —
- * the repository is shared across platforms.
- */
-const WINDOWS_DEVICE_NAMES: ReadonlySet<string> = new Set([
-  'con',
-  'prn',
-  'aux',
-  'nul',
-  ...Array.from({ length: 9 }, (_, i) => `com${String(i + 1)}`),
-  ...Array.from({ length: 9 }, (_, i) => `lpt${String(i + 1)}`),
-]);
-
 /** How many `-N` ids are tried before the export refuses rather than search on. */
 const MAX_EXPORT_ID_ATTEMPTS = 100;
 
@@ -188,7 +174,7 @@ export function exportSessionToProject(opts: ExportToProjectOptions): ExportResu
     return exportResult(path, definition, loaded);
   }
   for (const id of candidates) {
-    if (taken.has(id) || WINDOWS_DEVICE_NAMES.has(id)) continue;
+    if (taken.has(id) || isWindowsDeviceName(id)) continue;
     const path = join(dir, `${id}.relavium.yaml`);
     const definition = withWorkflowId(scaffold, id);
     const label = sourceLabel(opts.cwd, path);
@@ -317,13 +303,11 @@ function writeScaffold(
     }
     throw storageBoundaryError(err);
   }
-  // Under `force` the target is looked at WITHOUT being followed before it is written: `w` follows a link at the final component, and a
-  // link committed to a repository (or a FIFO, which `w` would wait on) must not take the export anywhere (review P0-1, the same rule as
-  // `writeAuthoredFile`). A swap between this look and the open is not detected: `writeFileForStorage` opens by path.
-  if (force) inspectWriteTarget(path, label);
   try {
     // Atomic create: `wx` fails with EEXIST if the target already exists — no TOCTOU window between a
-    // separate existence check and the write; `w` truncates/overwrites under `force`.
+    // separate existence check and the write. Under `force` the target is looked at without being followed and a plain file is replaced
+    // through a temporary and a rename (never opened by path with `w`, which follows a link, waits on a FIFO and truncates first); a
+    // link, a FIFO or a device is refused in fixed words (review P0-1; the security sitting's M1).
     writeFileForStorage(path, yaml, force);
     return 'written';
   } catch (err) {

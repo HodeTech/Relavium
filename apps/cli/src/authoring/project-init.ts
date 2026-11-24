@@ -1,5 +1,4 @@
 import { lstatSync, mkdirSync, rmdirSync, statSync, type BigIntStats } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { canonicalProjectPath } from '../config/paths.js';
@@ -116,7 +115,7 @@ function cleanCreated(entries: readonly CreatedDirectory[]): boolean {
 }
 
 /** Read-only preparation, shared by explicit shell init and Home's prewrite confirmation. */
-export function prepareProjectInit(cwd: string, home: string = homedir()): PreparedProjectInit {
+export function prepareProjectInit(cwd: string, home: string): PreparedProjectInit {
   const workingDir = resolve(cwd);
   const planned = inspect(workingDir, home);
   const canonicalTarget = canonicalProjectPath(planned.target);
